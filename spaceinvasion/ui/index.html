@@ -69,6 +69,11 @@
                 <span class="nav-code tabular">BLD</span>
                 <span class="nav-label">Buildings &amp; Tech</span>
               </button>
+              <button type="button" class="nav-item" data-nav="ranking" data-tab-link="ranking">
+                <span class="nav-code tabular">RNK</span>
+                <span class="nav-label">Ranking Evolution</span>
+                <span class="nav-badge tabular" id="nav-rank-badge">#—</span>
+              </button>
               <button type="button" class="nav-item" data-nav="config">
                 <span class="nav-code tabular">CFG</span>
                 <span class="nav-label">Strategy Profile</span>
@@ -316,6 +321,7 @@
                   <button type="button" class="chip active" role="tab" aria-selected="true" data-tab="queue">Queue</button>
                   <button type="button" class="chip" role="tab" aria-selected="false" data-tab="fleet">Escape &amp; Chrome</button>
                   <button type="button" class="chip" role="tab" aria-selected="false" data-tab="levels">Buildings &amp; Tech</button>
+                  <button type="button" class="chip" role="tab" aria-selected="false" data-tab="ranking">Ranking Evolution</button>
                 </div>
                 <span class="ruler-sep" aria-hidden="true"></span>
                 <div class="filter-pills" id="queue-filters">
@@ -407,6 +413,82 @@
                         </thead>
                         <tbody id="research-tbody"></tbody>
                       </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="tab-panel" id="panel-ranking" hidden>
+                <div class="rank-kpi-grid" aria-label="Current rank and score summary">
+                  <div class="rank-kpi-cell">
+                    <div class="rank-kpi-label tabular">Server Rank &amp; Score</div>
+                    <div class="rank-kpi-value tabular" id="rnk-server-pos">—</div>
+                    <div class="rank-kpi-sub tabular" id="rnk-est-pts">—</div>
+                  </div>
+                  <div class="rank-kpi-cell">
+                    <div class="rank-kpi-label tabular">Attack Zone &amp; Shield</div>
+                    <div class="rank-kpi-value tabular" id="rnk-az-label">—</div>
+                    <div class="rank-kpi-sub tabular" id="rnk-az-range">—</div>
+                  </div>
+                  <div class="rank-kpi-cell">
+                    <div class="rank-kpi-label tabular">Steady Empire Pace</div>
+                    <div class="rank-kpi-value tabular" id="rnk-rate-hr">—</div>
+                    <div class="rank-kpi-sub tabular" id="rnk-res-hr">—</div>
+                  </div>
+                  <div class="rank-kpi-cell">
+                    <div class="rank-kpi-label tabular">Investment Split</div>
+                    <div class="rank-kpi-value tabular" id="rnk-breakdown">—</div>
+                    <div class="rank-kpi-sub tabular" id="rnk-spice-val">—</div>
+                  </div>
+                </div>
+
+                <div class="subpanel">
+                  <div class="subpanel-head">
+                    <h3>Score &amp; Attack Zone Horizons</h3>
+                    <span class="module-meta tabular" id="rnk-model-note">Steady Mines vs. Active Bot Compounding</span>
+                  </div>
+                  <div class="table-wrap">
+                    <table class="data-table">
+                      <thead>
+                        <tr>
+                          <th>Horizon</th>
+                          <th class="col-right">Steady Rate Score</th>
+                          <th class="col-right">Steady AZ</th>
+                          <th class="col-right">Compounding Est.</th>
+                          <th class="col-right">Compound AZ</th>
+                        </tr>
+                      </thead>
+                      <tbody id="rnk-horizons-tbody">
+                        <tr><td colspan="5" class="empty-cell">Waiting for state...</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div class="subpanel">
+                  <div class="levels-split rank-split">
+                    <div>
+                      <h3>Upcoming Thresholds</h3>
+                      <div class="table-wrap compact-wrap">
+                        <table class="data-table">
+                          <thead>
+                            <tr>
+                              <th>Milestone</th>
+                              <th class="col-right">Need</th>
+                              <th class="col-right">Steady ETA</th>
+                              <th class="col-right">Bot ETA</th>
+                            </tr>
+                          </thead>
+                          <tbody id="rnk-milestones-tbody"></tbody>
+                        </table>
+                      </div>
+                    </div>
+                    <div>
+                      <h3>Observed History (<span id="rnk-trend-meta">0 samples</span>)</h3>
+                      <div class="rank-chart-wrap">
+                        <svg id="rnk-chart-svg" class="rank-chart-svg" viewBox="0 0 420 110" preserveAspectRatio="none" aria-label="Observed score progression chart"></svg>
+                        <div class="rank-chart-caption tabular" id="rnk-trend-caption">Collecting snapshots over time...</div>
+                      </div>
                     </div>
                   </div>
                 </div>

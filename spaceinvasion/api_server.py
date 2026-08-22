@@ -30,6 +30,11 @@ from spaceinvasion.config import (
 from spaceinvasion.executor import ActionExecutor
 from spaceinvasion.fleet import plan_escape_flight
 from spaceinvasion.logging_utils import append_api_log, redact_sensitive
+from spaceinvasion.ranking import (
+    build_ranking_evolution,
+    load_rank_history,
+    record_rank_snapshot,
+)
 from spaceinvasion.state import GameState, PlanetState
 from spaceinvasion.strategy import PlannedAction, plan_actions
 
@@ -120,6 +125,10 @@ class GameApiBridge:
         self._lock = threading.Lock()
         self._last_state: Optional[GameState] = None
         self._last_url: Optional[str] = None
+        self._rank_history_path: Optional[Path] = (
+            (log_dir.parent / "state" / "rank_history.json") if log_dir is not None else None
+        )
+        self._rank_samples: list[dict[str, Any]] = load_rank_history(self._rank_history_path)
         self._bot_control: dict[str, Any] = {"paused": False, "mode_override": None}
         budget = (
             max_actions_per_hour
@@ -186,8 +195,12 @@ class GameApiBridge:
         raw_lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
         return str(redact_sensitive("\n".join(raw_lines[-lines:])))
 
+    def _record_state(self, state: GameState) -> None:
+        self._last_state = state
+        self._rank_samples = record_rank_snapshot(self._rank_history_path, state)
+
     def dashboard(self, *, refresh: bool = False) -> dict[str, Any]:
-        """Return combined UI telemetry, plan, config, bot controls, and sanitized log tails."""
+        """Return combined UI telemetry, plan, ranking evolution, config, and logs."""
         with self._lock:
             port_open = is_debug_port_open(self.debug_port)
             in_game = self._last_state is not None
@@ -195,8 +208,9 @@ class GameApiBridge:
             if port_open and (refresh or self._last_state is None):
                 try:
                     with self._client_factory(self.debug_port) as client:
+                        snap = client.read_full_snapshot(include_buildings=True)
+                        self._record_state(snap)
                         current_url = str(getattr(client.driver, "current_url", "") or "")
-                        self._last_state = client.read_full_snapshot(include_buildings=True)
                         self._last_url = current_url
                         in_game = True
                 except SpaceInvasionAuthError:
@@ -206,6 +220,11 @@ class GameApiBridge:
                 plan_actions(self._last_state, config=self.strategy_config)
                 if self._last_state is not None
                 else []
+            )
+            ranking = (
+                build_ranking_evolution(self._last_state, self._rank_samples)
+                if self._last_state is not None
+                else None
             )
             return {
                 "ok": True,
@@ -221,6 +240,7 @@ class GameApiBridge:
                 "config": asdict(self.strategy_config),
                 "state": redact_sensitive(asdict(self._last_state)) if self._last_state else None,
                 "plan": redact_sensitive([asdict(a) for a in actions]),
+                "ranking": ranking,
                 "logs": {
                     "commander": self._read_log_tail("commander.log"),
                     "game_api": self._read_log_tail("game_api.log"),
@@ -231,7 +251,7 @@ class GameApiBridge:
         with self._lock:
             with self._client_factory(self.debug_port) as client:
                 state = client.read_full_snapshot(include_buildings=include_buildings)
-                self._last_state = state
+                self._record_state(state)
             return asdict(state)
 
     def _pick_executor(self, dry_run: bool) -> ActionExecutor:
@@ -437,7 +457,7 @@ class GameApiBridge:
             with self._client_factory(self.debug_port) as client:
                 if cmd == "plan":
                     state = client.read_full_snapshot(include_buildings=True)
-                    self._last_state = state
+                    self._record_state(state)
                     actions = plan_actions(state, config=self.strategy_config)
                     return {
                         "ok": True,
@@ -445,9 +465,18 @@ class GameApiBridge:
                         "actions": [asdict(a) for a in actions],
                     }
 
+                if cmd == "ranking_evolution":
+                    state = client.read_full_snapshot(include_buildings=True)
+                    self._record_state(state)
+                    return {
+                        "ok": True,
+                        "command": cmd,
+                        "ranking": build_ranking_evolution(state, self._rank_samples),
+                    }
+
                 if cmd == "tick_once":
                     state = client.read_full_snapshot(include_buildings=True, return_home=False)
-                    self._last_state = state
+                    self._record_state(state)
                     actions = plan_actions(state, config=self.strategy_config)
                     ready = next((a for a in actions if a.executable_now), None)
                     if ready is None:

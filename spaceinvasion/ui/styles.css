@@ -1111,10 +1111,98 @@ input[type="number"] {
   gap: 12px;
 }
 
+/* Ranking Evolution View */
+.rank-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line-dim);
+  background: var(--bg-inset);
+}
+
+.rank-kpi-cell {
+  padding: 12px 16px;
+  border-right: 1px solid var(--line-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rank-kpi-cell:last-child {
+  border-right: none;
+}
+
+.rank-kpi-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+}
+
+.rank-kpi-value {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.rank-kpi-sub {
+  font-size: 0.78rem;
+  color: var(--mint);
+}
+
+.subpanel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.subpanel-head h3 {
+  margin: 0;
+}
+
+.rank-chart-wrap {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rank-chart-svg {
+  width: 100%;
+  height: 120px;
+  display: block;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+}
+
+.rank-chart-caption {
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+}
+
+.rank-split th,
+.rank-split td {
+  padding: 8px 12px;
+}
+
 @media (max-width: 1240px) {
   .upper-deck,
   .workspace-grid {
     grid-template-columns: 1fr;
+  }
+
+  .rank-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .rank-kpi-cell:nth-child(2) {
+    border-right: none;
+  }
+
+  .rank-kpi-cell:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--line-dim);
   }
 }
 

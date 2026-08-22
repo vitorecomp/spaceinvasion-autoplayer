@@ -10,6 +10,7 @@ from spaceinvasion.state import (
     parse_buildings_page,
     parse_home_metadata,
     parse_menu_messages,
+    parse_menu_status,
     parse_planets_overview_json,
     parse_research_page,
     parse_si_int,
@@ -240,6 +241,17 @@ class TestStateParsers(unittest.TestCase):
         self.assertEqual(tut.tasks[1].category, "research")
         self.assertEqual(tut.tasks[1].research_id, "r2")
         self.assertEqual(tut.tasks[2].research_id, "r3")
+
+    def test_parse_menu_status_extracts_points_and_rank(self) -> None:
+        html = """
+        <div>23:47:02 ventkx86 Points 1.250 # 393
+          <a href="indexInternal.es?action=internalMessages">no new messages</a>
+        </div>
+        """
+        counts, pts, rank = parse_menu_status(html)
+        self.assertEqual(counts["total"], 0)
+        self.assertEqual(pts, 1250)
+        self.assertEqual(rank, 393)
 
 
 if __name__ == "__main__":

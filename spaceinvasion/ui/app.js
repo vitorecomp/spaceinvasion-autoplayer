@@ -448,6 +448,183 @@ function renderConfigForm(cfg) {
   el("cfg-max_actions_per_hour").value = cfg.max_actions_per_hour ?? 60;
 }
 
+function renderRankingChart(samples) {
+  const svg = el("rnk-chart-svg");
+  if (!svg) return;
+  const ns = "http://www.w3.org/2000/svg";
+  svg.replaceChildren();
+
+  const w = 420;
+  const h = 110;
+  const padX = 12;
+  const padY = 12;
+
+  for (const frac of [0.25, 0.5, 0.75]) {
+    const line = document.createElementNS(ns, "line");
+    const y = Math.round(padY + (h - 2 * padY) * frac);
+    line.setAttribute("x1", String(padX));
+    line.setAttribute("x2", String(w - padX));
+    line.setAttribute("y1", String(y));
+    line.setAttribute("y2", String(y));
+    line.setAttribute("stroke", "#243135");
+    line.setAttribute("stroke-width", "1");
+    svg.appendChild(line);
+  }
+
+  if (!samples || samples.length === 0) return;
+
+  const estVals = samples.map((s) => Number(s.estimated_points || 0));
+  const srvVals = samples.map((s) => (s.server_points != null ? Number(s.server_points) : null));
+  const allVals = estVals.concat(srvVals.filter((v) => v != null));
+  const minVal = Math.min(...allVals);
+  const maxVal = Math.max(...allVals);
+  const span = Math.max(1, maxVal - minVal);
+
+  const toXY = (idx, val) => {
+    const x = samples.length === 1 ? w / 2 : padX + ((w - 2 * padX) * idx) / (samples.length - 1);
+    const y = h - padY - ((val - minVal) / span) * (h - 2 * padY);
+    return [x.toFixed(1), y.toFixed(1)];
+  };
+
+  if (samples.length >= 2) {
+    const ptsAttr = estVals.map((v, i) => toXY(i, v).join(",")).join(" ");
+    const poly = document.createElementNS(ns, "polyline");
+    poly.setAttribute("fill", "none");
+    poly.setAttribute("stroke", "#16ec98");
+    poly.setAttribute("stroke-width", "2");
+    poly.setAttribute("points", ptsAttr);
+    svg.appendChild(poly);
+  }
+
+  estVals.forEach((v, i) => {
+    const [cx, cy] = toXY(i, v);
+    const dot = document.createElementNS(ns, "circle");
+    dot.setAttribute("cx", cx);
+    dot.setAttribute("cy", cy);
+    dot.setAttribute("r", i === estVals.length - 1 ? "3.5" : "2");
+    dot.setAttribute("fill", i === estVals.length - 1 ? "#e6eef0" : "#16ec98");
+    svg.appendChild(dot);
+  });
+}
+
+function renderRanking(dash) {
+  const rnk = dash?.ranking;
+  const badge = el("nav-rank-badge");
+  if (!rnk) {
+    if (badge) badge.textContent = "#—";
+    return;
+  }
+
+  const cur = rnk.current || {};
+  const az = cur.attack_zone || {};
+  const rates = rnk.rates || {};
+  const trend = rnk.observed_trend || {};
+
+  if (badge) {
+    badge.textContent = cur.server_rank != null ? `#${cur.server_rank}` : az.label || "—";
+  }
+
+  const srvRankTxt = cur.server_rank != null ? `#${fmtInt(cur.server_rank)}` : "Rank pending";
+  const srvPtsTxt = cur.server_points != null ? `${fmtInt(cur.server_points)} pts` : "— pts";
+  el("rnk-server-pos").textContent = `${srvRankTxt} · ${srvPtsTxt}`;
+  el("rnk-est-pts").textContent = `~${Number(cur.estimated_points || 0).toFixed(1)} est. score (bld/res/flt)`;
+
+  el("rnk-az-label").textContent = az.label || "—";
+  const shield = cur.newbie_protected ? `Shielded (<10k · ${cur.newbie_eta_compound || "—"})` : "Open AZ";
+  el("rnk-az-range").textContent = `${az.range_text || ""} · ${shield}`;
+
+  el("rnk-rate-hr").textContent = `+${Number(rates.pts_per_hr_steady || 0).toFixed(2)} pts/hr`;
+  el("rnk-res-hr").textContent = `${fmtInt(Math.round(rates.net_resources_per_hr || 0))} res/hr · x${rates.speedup_factor || 1}`;
+
+  const totalEst = Math.max(0.01, Number(cur.estimated_points || 0));
+  const bPct = Math.round((Number(cur.buildings_points || 0) / totalEst) * 100);
+  const rPct = Math.round((Number(cur.research_points || 0) / totalEst) * 100);
+  const fPct = Math.max(0, 100 - bPct - rPct);
+  el("rnk-breakdown").textContent = `Bld ${bPct}% · Res ${rPct}% · Flt ${fPct}%`;
+  el("rnk-spice-val").textContent = `${fmtInt(Math.round(cur.spice_value || 0))} Spice Eq`;
+
+  const hBody = el("rnk-horizons-tbody");
+  const horizons = rnk.horizons || [];
+  if (horizons.length === 0) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 5;
+    td.className = "empty-cell";
+    td.textContent = "No forecast horizons available.";
+    tr.appendChild(td);
+    hBody.replaceChildren(tr);
+  } else {
+    hBody.replaceChildren(
+      ...horizons.map((row) => {
+        const tr = document.createElement("tr");
+        const tdL = document.createElement("td");
+        tdL.textContent = row.label;
+        const tdS = document.createElement("td");
+        tdS.className = "col-right tabular";
+        tdS.textContent = `${fmtInt(Math.round(row.steady_points))} (+${fmtInt(Math.round(row.steady_delta))})`;
+        const tdSAz = document.createElement("td");
+        tdSAz.className = "col-right tabular";
+        tdSAz.textContent = row.steady_az;
+        const tdC = document.createElement("td");
+        tdC.className = "col-right tabular";
+        tdC.textContent = `${fmtInt(Math.round(row.compound_points))} (+${fmtInt(Math.round(row.compound_delta))})`;
+        const tdCAz = document.createElement("td");
+        tdCAz.className = "col-right tabular";
+        tdCAz.textContent = row.compound_az;
+        tr.append(tdL, tdS, tdSAz, tdC, tdCAz);
+        return tr;
+      })
+    );
+  }
+
+  const mBody = el("rnk-milestones-tbody");
+  const miles = rnk.milestones || [];
+  if (miles.length === 0) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.className = "empty-cell";
+    td.textContent = "All local milestones reached.";
+    tr.appendChild(td);
+    mBody.replaceChildren(tr);
+  } else {
+    mBody.replaceChildren(
+      ...miles.map((m) => {
+        const tr = document.createElement("tr");
+        const tdN = document.createElement("td");
+        tdN.textContent = `${m.label} (${fmtInt(m.target_points)})`;
+        const tdM = document.createElement("td");
+        tdM.className = "col-right tabular";
+        tdM.textContent = `+${fmtInt(Math.round(m.missing_points))}`;
+        const tdSE = document.createElement("td");
+        tdSE.className = "col-right tabular";
+        tdSE.textContent = m.steady_eta;
+        const tdCE = document.createElement("td");
+        tdCE.className = "col-right tabular";
+        tdCE.textContent = m.compound_eta;
+        tr.append(tdN, tdM, tdSE, tdCE);
+        return tr;
+      })
+    );
+  }
+
+  const count = Number(trend.sample_count || 0);
+  el("rnk-trend-meta").textContent = `${count} sample${count === 1 ? "" : "s"}`;
+  if (count >= 2 && trend.delta_points != null) {
+    const sign = trend.delta_points >= 0 ? "+" : "";
+    const rankStr =
+      trend.rank_climbed != null
+        ? ` · Rank ${trend.rank_climbed >= 0 ? "+" : ""}${trend.rank_climbed}`
+        : "";
+    const rateStr = trend.observed_pts_per_hr != null ? ` · ${trend.observed_pts_per_hr} pts/hr` : "";
+    el("rnk-trend-caption").textContent =
+      `Window ${trend.elapsed_hours}h · ${sign}${trend.delta_points} pts${rankStr}${rateStr}`;
+  } else {
+    el("rnk-trend-caption").textContent = "Baseline recorded; chart populates across ticks.";
+  }
+  renderRankingChart(trend.samples || []);
+}
+
 function renderLogs(logs) {
   if (!logs) return;
   const text = state.activeLogSource === "api" ? logs.game_api : logs.commander;
@@ -465,6 +642,7 @@ async function loadDashboard({ refresh = false, preserveConfig = true } = {}) {
     renderTelemetry(dash);
     renderColonyMatrix(dash);
     renderPlanTable(dash);
+    renderRanking(dash);
     renderLevels(dash);
     if (firstLoad || !preserveConfig) {
       renderConfigForm(dash.config);
@@ -624,6 +802,7 @@ function wireEvents() {
     queue: "Operations Queue",
     fleet: "Escape & Chrome Control",
     levels: "Buildings & Tech",
+    ranking: "Ranking Evolution & Forecast",
   };
 
   function setActiveTab(tabName) {
@@ -636,6 +815,7 @@ function wireEvents() {
     el("panel-queue").hidden = tabName !== "queue";
     el("panel-fleet").hidden = tabName !== "fleet";
     el("panel-levels").hidden = tabName !== "levels";
+    el("panel-ranking").hidden = tabName !== "ranking";
     el("queue-filters").hidden = tabName !== "queue";
     const heading = el("ops-heading");
     if (heading && opsTitles[tabName]) heading.textContent = opsTitles[tabName];

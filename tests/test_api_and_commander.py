@@ -181,6 +181,13 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertTrue(dash["bot_control"]["paused"])
             self.assertIsNotNone(dash["state"])
             self.assertGreaterEqual(len(dash["plan"]), 1)
+            self.assertIn("ranking", dash)
+            self.assertEqual(len(dash["ranking"]["horizons"]), 5)
+
+            rnk_cmd = api.send_command({"command": "ranking_evolution"})
+            self.assertTrue(rnk_cmd["ok"])
+            self.assertIn("current", rnk_cmd["ranking"])
+            self.assertGreater(rnk_cmd["ranking"]["current"]["estimated_points"], 0)
 
             with tempfile.TemporaryDirectory() as tmp_cfg:
                 bridge.config_path = Path(tmp_cfg) / "config.yaml"

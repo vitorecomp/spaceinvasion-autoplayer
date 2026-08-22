@@ -270,6 +270,8 @@ class GameState:
     research_offers: tuple[ResearchOffer, ...] = field(default_factory=tuple)
     speedup_factor: Optional[float] = None
     newbie_protection: bool = False
+    account_points: Optional[int] = None
+    account_rank: Optional[int] = None
 
     def active_planet(self) -> Optional[PlanetState]:
         if not self.planets:
@@ -789,8 +791,14 @@ def parse_home_metadata(html: str) -> tuple[Optional[int], Optional[float], bool
     return active_planet_id, speedup, newbie, tuple(queues), tuple(alerts)
 
 
-def parse_menu_messages(html: str) -> dict[str, int]:
-    """Extract unread message counts per category from `F_Navi` (`internalMenu`)."""
+_MENU_POINTS_RANK_RE = re.compile(
+    r"\b(?:Points|Punkte|Pontos)\s*[:\-]?\s*([\d.]+)(?:\s*(?:#|Rank|Platz|Pos)\s*[:\-]?\s*([\d.]+))?",
+    re.IGNORECASE,
+)
+
+
+def parse_menu_status(html: str) -> tuple[dict[str, int], Optional[int], Optional[int]]:
+    """Extract unread message counts, server points, and rank from `F_Navi` (`internalMenu`)."""
     soup = BeautifulSoup(html, "html.parser")
     counts: dict[str, int] = {}
     for anchor in soup.find_all("a", href=True):
@@ -802,6 +810,21 @@ def parse_menu_messages(html: str) -> dict[str, int]:
         txt = " ".join(anchor.get_text(" ", strip=True).split())
         m_num = re.search(r"(\d+)", txt)
         counts[key] = int(m_num.group(1)) if m_num else 0
+
+    full_text = " ".join(soup.get_text(" ", strip=True).split())
+    points: Optional[int] = None
+    rank: Optional[int] = None
+    m_stat = _MENU_POINTS_RANK_RE.search(full_text)
+    if m_stat:
+        points = parse_si_int(m_stat.group(1))
+        if m_stat.group(2):
+            rank = parse_si_int(m_stat.group(2))
+    return counts, points, rank
+
+
+def parse_menu_messages(html: str) -> dict[str, int]:
+    """Extract unread message counts per category from `F_Navi` (`internalMenu`)."""
+    counts, _, _ = parse_menu_status(html)
     return counts
 
 
@@ -948,4 +971,6 @@ def game_state_from_dict(data: dict[str, Any]) -> GameState:
         research_offers=res_offers,
         speedup_factor=data.get("speedup_factor"),
         newbie_protection=bool(data.get("newbie_protection", False)),
+        account_points=data.get("account_points"),
+        account_rank=data.get("account_rank"),
     )

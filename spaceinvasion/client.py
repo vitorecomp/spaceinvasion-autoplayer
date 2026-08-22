@@ -24,6 +24,7 @@ from spaceinvasion.state import (
     parse_buildings_page,
     parse_home_metadata,
     parse_menu_messages,
+    parse_menu_status,
     parse_planets_overview_json,
     parse_research_page,
     parse_tutorial_from_home,
@@ -215,6 +216,11 @@ class GameBrowserClient:
         json_text = jc.get_attribute("textContent") or ""
         return parse_planets_overview_json(json_text)
 
+    def read_menu_status(self) -> tuple[dict[str, int], Optional[int], Optional[int]]:
+        """Read unread message counters, server points, and rank from `F_Navi`."""
+        self._switch_frame("F_Navi")
+        return parse_menu_status(self.driver.page_source or "")
+
     def read_unread_messages(self) -> dict[str, int]:
         """Read unread message category counters from `F_Navi`."""
         self._switch_frame("F_Navi")
@@ -232,7 +238,7 @@ class GameBrowserClient:
         self.ensure_in_game()
 
         state = self.read_planets_overview(refresh=True)
-        unread = self.read_unread_messages()
+        unread, account_points, account_rank = self.read_menu_status()
 
         # Check current main frame URL; navigate to internalHome if on another view
         self._switch_frame("F_Hauptframe")
@@ -305,6 +311,8 @@ class GameBrowserClient:
             research_offers=research_offers,
             speedup_factor=speedup,
             newbie_protection=newbie,
+            account_points=account_points,
+            account_rank=account_rank,
         )
 
     def page_source_safe(self) -> str:

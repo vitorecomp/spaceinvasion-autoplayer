@@ -58,7 +58,7 @@ Or launch services separately:
 .venv/bin/python3 commander.py --loop --reload --live
 ```
 
-Then open the **Operator Control UI** at `http://127.0.0.1:8787/` (served directly by `game_api.py`) to inspect telemetry, pause/resume or switch Commander modes, run or simulate `P0`–`P3` actions, jump Chrome views, pack Escape Flights, edit `config.yaml`, and tail logs.
+Then open the **Operator Control UI** at `http://127.0.0.1:8787/` (served directly by `game_api.py`) to inspect telemetry, track **Ranking Evolution** (`RNK` sidebar tab with AZ tiers, growth horizons, milestone ETAs, and observed history chart), pause/resume or switch Commander modes, run or simulate `P0`–`P3` actions, jump Chrome views, pack Escape Flights, edit `config.yaml`, and tail logs.
 
 ## Operator Control UI
 
@@ -81,6 +81,7 @@ curl -s http://127.0.0.1:8787/state
 curl -s http://127.0.0.1:8787/bot_status
 curl -s http://127.0.0.1:8787/dashboard
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"plan"}'
+curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"ranking_evolution"}'
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"tick_once","dry_run":true}'
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"bot_control","paused":false,"mode_override":null}'
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"fleetsave_plan"}'
