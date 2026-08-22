@@ -198,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         tick = 0
+        last_recovery_at = 0.0
         while True:
             tick += 1
             try:
@@ -244,6 +245,34 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[CMD tick {tick}] API unavailable ({exc}); retrying shortly.")
                 if not run_loop:
                     return 1
+                err_lower = str(exc).lower()
+                if (
+                    isinstance(exc, GameApiError)
+                    and any(
+                        marker in err_lower
+                        for marker in (
+                            "not inside spaceinvasion game shell",
+                            "timed out waiting for frame",
+                            "session expired",
+                            "missing #json-container",
+                        )
+                    )
+                    and (time.monotonic() - last_recovery_at) >= 25.0
+                ):
+                    last_recovery_at = time.monotonic()
+                    try:
+                        api.send_command({"command": "ensure_session"})
+                        print(f"[CMD tick {tick}] Recovered browser session via ensure_session.")
+                        time.sleep(1.0)
+                        continue
+                    except (requests.RequestException, GameApiError) as rec_exc:
+                        print(f"[CMD tick {tick}] Session recovery pending: {rec_exc}")
+                        if any(
+                            gate in str(rec_exc).lower()
+                            for gate in ("captcha", "turnstile", "anti-bot", "2-factor", "2fa")
+                        ):
+                            time.sleep(15.0)
+                            continue
                 time.sleep(3.0)
                 continue
 

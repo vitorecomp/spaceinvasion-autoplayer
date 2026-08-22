@@ -72,12 +72,15 @@ function renderTopbar(dash) {
   if (health.in_game) {
     pip.className = "status-pip online";
     statusText.textContent = `CHROME :${health.debug_port || 9222} ONLINE`;
+    el("btn-ensure-session").hidden = true;
   } else if (health.debug_port_open) {
     pip.className = "status-pip";
     statusText.textContent = `CHROME :${health.debug_port || 9222} STANDBY`;
+    el("btn-ensure-session").hidden = false;
   } else {
     pip.className = "status-pip offline";
     statusText.textContent = `CHROME :${health.debug_port || 9222} OFFLINE`;
+    el("btn-ensure-session").hidden = false;
   }
 
   const gs = dash.state || {};
@@ -500,6 +503,17 @@ function wireEvents() {
     showFeedback("Syncing live snapshot from Chrome...", "ok");
     await loadDashboard({ refresh: true, preserveConfig: true });
     showFeedback("Synced with live Chrome session.", "ok");
+  });
+
+  el("btn-ensure-session").addEventListener("click", async () => {
+    try {
+      showFeedback("Attaching Chrome to SpaceInvasion universe...", "ok");
+      const res = await apiCommand({ command: "ensure_session" });
+      showFeedback(res.message || "Entered universe.", "ok");
+      await loadDashboard({ refresh: true, preserveConfig: true });
+    } catch (err) {
+      showFeedback(`Enter universe failed: ${err.message}`, "error");
+    }
   });
 
   el("btn-tick-now").addEventListener("click", async () => {

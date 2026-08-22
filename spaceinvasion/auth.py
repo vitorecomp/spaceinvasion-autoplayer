@@ -248,16 +248,90 @@ def _split_js_object_array(array_body: str) -> list[str]:
     return items
 
 
+def _extract_balanced_block(text: str, start_idx: int, open_ch: str, close_ch: str) -> Optional[str]:
+    """Return content inside balanced `open_ch`/`close_ch` delimiters starting at `start_idx`."""
+    if start_idx < 0 or start_idx >= len(text) or text[start_idx] != open_ch:
+        return None
+    depth = 0
+    quote: Optional[str] = None
+    escaped = False
+    for idx in range(start_idx, len(text)):
+        ch = text[idx]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+        elif ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return text[start_idx + 1 : idx]
+    return None
+
+
+def universes_from_portal_data(
+    sid: str,
+    instances: list[Mapping[str, object]],
+    base_url: str,
+) -> tuple[UniverseOption, ...]:
+    """Build `UniverseOption` entries from runtime or parsed `SI_TPL.startPortal` data."""
+    clean_sid = str(sid or "").strip()
+    if clean_sid.startswith("sid="):
+        clean_sid = clean_sid[4:]
+
+    options: list[UniverseOption] = []
+    for item in instances:
+        raw_id = item.get("id")
+        raw_name = item.get("name")
+        if raw_id is None or not raw_name:
+            continue
+        try:
+            uid = int(raw_id)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        acc_val = item.get("acc")
+        if isinstance(acc_val, dict):
+            has_acc = bool(acc_val)
+        elif isinstance(acc_val, str):
+            has_acc = bool(acc_val.strip())
+        else:
+            has_acc = bool(acc_val)
+        sid_q = f"&sid={clean_sid}" if clean_sid else ""
+        launch_url = urljoin(base_url, f"?action=externalLogin&instance={uid}{sid_q}")
+        raw_spd = item.get("speed")
+        raw_fspd = item.get("flightSpeed")
+        options.append(
+            UniverseOption(
+                label=str(raw_name),
+                url=launch_url,
+                universe_id=uid,
+                is_si2=bool(item.get("si2")),
+                speed=float(raw_spd) if raw_spd is not None else None,  # type: ignore[arg-type]
+                flight_speed=float(raw_fspd) if raw_fspd is not None else None,  # type: ignore[arg-type]
+                has_account=has_acc,
+            )
+        )
+    return tuple(options)
+
+
 def extract_universes(html: str, base_url: str) -> tuple[UniverseOption, ...]:
     """Extract SpaceInvasion universes from `SI_TPL.startPortal` or fallback links."""
-    portal_block = re.search(r"SI_TPL\.startPortal\s*=\s*\{(.*?)\}\s*;\s*</script>", html, re.DOTALL)
-    if portal_block:
-        block = portal_block.group(1)
+    portal_match = re.search(r"SI_TPL\.startPortal\s*=\s*\{", html)
+    if portal_match:
+        block = _extract_balanced_block(html, portal_match.end() - 1, "{", "}") or ""
         sid_m = re.search(r"\bSID\s*:\s*(['\"])(?:sid=)?([^'\"]+)\1", block)
-        inst_m = re.search(r"\binstances\s*:\s*\[(.*?)\]\s*,\s*campaign\s*:", block, re.DOTALL)
-        if sid_m and inst_m:
-            sid = sid_m.group(2)
-            raw_items = _split_js_object_array(inst_m.group(1))
+        inst_key = re.search(r"\binstances\s*:\s*\[", block)
+        if inst_key:
+            inst_body = _extract_balanced_block(block, inst_key.end() - 1, "[", "]") or ""
+            sid = sid_m.group(2) if sid_m else ""
+            raw_items = _split_js_object_array(inst_body)
             portal_options: list[UniverseOption] = []
             for item in raw_items:
                 id_m = re.search(r"\bid\s*:\s*(\d+)", item)
@@ -271,8 +345,12 @@ def extract_universes(html: str, base_url: str) -> tuple[UniverseOption, ...]:
                 fspd_m = re.search(r"\bflightSpeed\s*:\s*([0-9.]+)", item)
                 acc_obj_m = re.search(r"\bacc\s*:\s*\{", item)
                 acc_str_m = re.search(r"\bacc\s*:\s*(['\"])(.*?)\1", item)
-                has_acc = bool(acc_obj_m or (acc_str_m and acc_str_m.group(2).strip()))
-                launch_url = urljoin(base_url, f"?action=externalLogin&instance={uid}&sid={sid}")
+                acc_bool_m = re.search(r"\bacc\s*:\s*(true)\b", item)
+                has_acc = bool(
+                    acc_obj_m or acc_bool_m or (acc_str_m and acc_str_m.group(2).strip())
+                )
+                sid_q = f"&sid={sid}" if sid else ""
+                launch_url = urljoin(base_url, f"?action=externalLogin&instance={uid}{sid_q}")
                 portal_options.append(
                     UniverseOption(
                         label=name,

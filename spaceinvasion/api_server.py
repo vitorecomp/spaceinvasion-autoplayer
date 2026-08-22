@@ -79,7 +79,7 @@ def ensure_debug_browser_ready(
             debug_port=debug_port,
             detach=True,
         )
-        login_with_browser(creds=creds, config=cfg)
+        login_with_browser(creds=creds, config=cfg, require_in_game=True)
         return
 
     try:
@@ -93,7 +93,7 @@ def ensure_debug_browser_ready(
             attach=True,
             detach=True,
         )
-        login_with_browser(creds=creds, config=cfg)
+        login_with_browser(creds=creds, config=cfg, require_in_game=True)
 
 
 class GameApiBridge:
@@ -155,9 +155,12 @@ class GameApiBridge:
             if port_open:
                 try:
                     with self._client_factory(self.debug_port) as client:
+                        try:
+                            client.ensure_in_game()
+                            in_game = True
+                        except SpaceInvasionAuthError:
+                            in_game = False
                         current_url = str(getattr(client.driver, "current_url", "") or "")
-                        client.ensure_in_game()
-                        in_game = True
                 except SpaceInvasionAuthError:
                     in_game = False
             self._last_url = current_url

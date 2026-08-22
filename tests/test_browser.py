@@ -366,6 +366,91 @@ class TestBrowserLogin(unittest.TestCase):
         close_or_detach_driver(driver2, None, keep_running=False)
         driver2.quit.assert_called_once()
 
+    def test_multi_tab_switches_to_ingame_and_ignores_control_ui_tab(self) -> None:
+        from spaceinvasion.client import GameBrowserClient
+
+        tab_ui = MagicMock()
+        tab_ui_switch = MagicMock()
+        tab_portal = MagicMock()
+
+        state_by_tab = {
+            "ui": {"url": "http://127.0.0.1:8787/", "frames": False},
+            "game": {"url": "https://spaceinvasion.bitmeup.com/indexGame.es?sid=live123", "frames": True},
+        }
+        active = {"handle": "ui"}
+
+        driver = MagicMock()
+        type(driver).window_handles = property(lambda _s: ["ui", "game"])
+        type(driver).current_window_handle = property(lambda _s: active["handle"])
+        type(driver).current_url = property(lambda _s: state_by_tab[active["handle"]]["url"])
+
+        def _switch_window(h: str) -> None:
+            active["handle"] = h
+
+        driver.switch_to.window.side_effect = _switch_window
+
+        def _find_el(_by: str, val: str):
+            if active["handle"] != "game" or val not in ("F_planets", "F_Hauptframe", "F_Navi", "json-container"):
+                raise NoSuchElementException(val)
+            return FakeElement(val)
+
+        driver.find_element.side_effect = _find_el
+
+        client = GameBrowserClient(driver, detach_on_close=True)
+        client.ensure_in_game()
+        self.assertEqual(active["handle"], "game")
+
+        # Also reset to UI tab and verify login_with_browser does not overwrite 127.0.0.1:8787
+        active["handle"] = "ui"
+        driver.page_source = '<iframe id="F_Hauptframe"></iframe>'
+        with tempfile.TemporaryDirectory() as tmp:
+            driver.get_cookies.return_value = []
+            with unittest.mock.patch(
+                "spaceinvasion.browser.open_browser_session",
+                return_value=(driver, None, True),
+            ):
+                res = login_with_browser(
+                    creds=Credentials(email="pilot@example.com", password="secret", universe="RETRO"),
+                    config=BrowserConfig(
+                        profile_dir=Path(tmp) / "profile",
+                        debug_port=9222,
+                        attach=True,
+                        detach=True,
+                    ),
+                    session_dir=Path(tmp) / ".sessions",
+                    require_in_game=True,
+                )
+        driver.get.assert_not_called()
+        self.assertEqual(active["handle"], "game")
+        self.assertTrue(res.already_logged_in)
+
+    def test_require_in_game_auto_enters_single_active_universe_and_errors_if_stuck(self) -> None:
+        class PortalStickyDriver(FakeDriver):
+            def get(self, url: str) -> None:
+                self.visited_urls.append(url)
+                self.current_url = "https://spaceinvasion.bitmeup.com/?sid=abc999"
+                self.page_source = PORTAL_PAGE_HTML
+                self.title = "SpaceInvasion Portal"
+                self.elements = {(By.ID, "sip-tab-universe"): FakeElement("universe selection")}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            driver = PortalStickyDriver(scenario="already_logged_in")
+            with self.assertRaises(SpaceInvasionAuthError):
+                login_with_browser(
+                    creds=Credentials(email="pilot@example.com", password="secret", universe=None),
+                    config=BrowserConfig(
+                        profile_dir=Path(tmp) / "profile",
+                        timeout=0.4,
+                    ),
+                    session_dir=Path(tmp) / ".sessions",
+                    require_in_game=True,
+                    driver_factory=lambda _c: driver,
+                )
+            self.assertIn(
+                "https://spaceinvasion.bitmeup.com/?action=externalLogin&instance=46&sid=abc999",
+                driver.visited_urls,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

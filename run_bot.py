@@ -184,7 +184,7 @@ def ensure_debug_browser_ready(
             debug_port=debug_port,
             detach=True,
         )
-        login_with_browser(creds=creds, config=cfg)
+        login_with_browser(creds=creds, config=cfg, require_in_game=True)
         return
 
     # Verify attached Chrome is still inside the game; recover automatically if kicked to portal
@@ -199,7 +199,7 @@ def ensure_debug_browser_ready(
             attach=True,
             detach=True,
         )
-        login_with_browser(creds=creds, config=cfg)
+        login_with_browser(creds=creds, config=cfg, require_in_game=True)
 
 
 def main(argv: list[str] | None = None) -> int:

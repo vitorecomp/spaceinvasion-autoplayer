@@ -15,6 +15,7 @@ from spaceinvasion.browser import (
     DEFAULT_DEBUG_PORT,
     attach_chrome_driver,
     close_or_detach_driver,
+    find_and_switch_game_tab,
     is_debug_port_open,
 )
 from spaceinvasion.state import (
@@ -100,13 +101,22 @@ class GameBrowserClient:
             )
 
     def ensure_in_game(self) -> None:
-        """Verify the attached browser tab is inside `indexGame.es` with game iframes."""
+        """Verify the attached browser has an active `indexGame.es` tab with game frames."""
         self.driver.switch_to.default_content()
         try:
-            self.driver.find_element(By.ID, "F_planets")
+            f_planets = self.driver.find_element(By.ID, "F_planets")
             self.driver.find_element(By.ID, "F_Hauptframe")
             self.driver.find_element(By.ID, "F_Navi")
+            self.driver.switch_to.frame(f_planets)
+            self.driver.find_element(By.ID, "json-container")
+            self.driver.switch_to.default_content()
         except NoSuchElementException as exc:
+            try:
+                self.driver.switch_to.default_content()
+            except Exception:
+                pass
+            if find_and_switch_game_tab(self.driver):
+                return
             raise SpaceInvasionAuthError(
                 f"Browser is not inside SpaceInvasion game shell (current URL: {self.driver.current_url}). "
                 "Run `python3 login.py --attach` to enter the configured universe first."
@@ -158,11 +168,50 @@ class GameBrowserClient:
 
     def read_planets_overview(self, *, refresh: bool = False) -> GameState:
         """Read `#json-container` from `F_planets`, optionally reloading the iframe first."""
-        self._switch_frame("F_planets")
-        if refresh:
-            self.driver.execute_script("location.reload();")
-            self._wait_frame_ready("F_planets")
-        jc = self.driver.find_element(By.ID, "json-container")
+        self.driver.switch_to.default_content()
+        planets_frame = self.driver.find_element(By.ID, "F_planets")
+        frame_src = ""
+        try:
+            frame_src = str(planets_frame.get_attribute("src") or "")
+        except Exception:
+            frame_src = ""
+        self.driver.switch_to.frame(planets_frame)
+
+        inner_href = str(self.driver.execute_script("return location.href;") or "")
+        wrong_frame_page = (
+            bool(frame_src)
+            and "internalplanetsoverview" not in inner_href.lower()
+            and "internalplanetsoverview" in frame_src.lower()
+        )
+        if refresh or wrong_frame_page:
+            if wrong_frame_page:
+                self.driver.execute_script(
+                    "window.__siReloadPending = 1; location.replace(arguments[0]);",
+                    frame_src,
+                )
+            else:
+                self.driver.execute_script("window.__siReloadPending = 1; location.reload();")
+            deadline = time.monotonic() + min(self.timeout, 12.0)
+            while time.monotonic() < deadline:
+                self._switch_frame("F_planets")
+                pending = self.driver.execute_script("return Boolean(window.__siReloadPending);")
+                ready = self.driver.execute_script("return document.readyState;")
+                if not pending and ready == "complete":
+                    html = self.driver.page_source or ""
+                    self._check_page_guards(html)
+                    if self.driver.execute_script(
+                        "return Boolean(document.getElementById('json-container'));"
+                    ):
+                        break
+                time.sleep(0.2)
+        try:
+            jc = self.driver.find_element(By.ID, "json-container")
+        except NoSuchElementException as exc:
+            html = self.driver.page_source or ""
+            self._check_page_guards(html)
+            raise SpaceInvasionAuthError(
+                "SpaceInvasion session expired (missing #json-container in F_planets)."
+            ) from exc
         json_text = jc.get_attribute("textContent") or ""
         return parse_planets_overview_json(json_text)
 

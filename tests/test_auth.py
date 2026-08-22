@@ -153,6 +153,25 @@ class TestTokenAndAntibotParsing(unittest.TestCase):
         self.assertTrue(unis[2].is_si2)
         self.assertFalse(unis[2].has_account)
 
+    def test_extract_universes_handles_trailing_script_and_reordered_fields(self) -> None:
+        html = """
+        <script>
+        SI_TPL.startPortal = {
+          instances: [
+            {id: 31, si2: false, name: "RETRO", acc: {title: "Colony"}}
+          ],
+          SID: "sid=xyz789"
+        };
+        window.__extraInit = true;
+        </script>
+        """
+        unis = extract_universes(html, "https://spaceinvasion.bitmeup.com/?locale=en")
+        self.assertEqual(len(unis), 1)
+        self.assertEqual(unis[0].label, "RETRO")
+        self.assertEqual(unis[0].universe_id, 31)
+        self.assertTrue(unis[0].has_account)
+        self.assertIn("instance=31&sid=xyz789", unis[0].url)
+
 
 class TestLoginFlow(unittest.TestCase):
     def _make_session(self) -> requests.Session:

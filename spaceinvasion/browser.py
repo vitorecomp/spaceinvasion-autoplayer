@@ -27,6 +27,7 @@ from spaceinvasion.auth import (
     detect_antibot_challenge,
     extract_universes,
     save_session_cookies,
+    universes_from_portal_data,
 )
 
 DEFAULT_DEBUG_PORT = 9222
@@ -477,22 +478,257 @@ def _wait_for_login_outcome(
     )
 
 
+def is_in_game_tab(driver) -> bool:
+    """Return True if the currently focused window holds a live SpaceInvasion game session."""
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+    try:
+        f_planets = driver.find_element(By.ID, "F_planets")
+        driver.find_element(By.ID, "F_Hauptframe")
+        driver.find_element(By.ID, "F_Navi")
+        try:
+            driver.switch_to.frame(f_planets)
+            driver.find_element(By.ID, "json-container")
+            return True
+        except NoSuchElementException:
+            return False
+        except Exception:
+            return False
+        finally:
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+    except NoSuchElementException:
+        cur = (getattr(driver, "current_url", "") or "").lower()
+        if "indexgame.es" in cur and _element_if_visible(driver, By.ID, "F_Hauptframe") is not None:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def find_and_switch_game_tab(driver) -> bool:
+    """Scan open browser tabs and switch WebDriver to an active SpaceInvasion game tab."""
+    if is_in_game_tab(driver):
+        return True
+    handles = list(getattr(driver, "window_handles", None) or [])
+    if len(handles) <= 1:
+        return False
+
+    ordered: list[str] = []
+    other: list[str] = []
+    current_handle = getattr(driver, "current_window_handle", None)
+    for handle in handles:
+        if handle == current_handle:
+            continue
+        try:
+            driver.switch_to.window(handle)
+            url = (getattr(driver, "current_url", "") or "").lower()
+        except Exception:
+            continue
+        if "indexgame.es" in url:
+            ordered.append(handle)
+        elif "spaceinvasion.bitmeup.com" in url:
+            other.append(handle)
+
+    for handle in ordered + other:
+        try:
+            driver.switch_to.window(handle)
+            if is_in_game_tab(driver):
+                return True
+        except Exception:
+            continue
+
+    if current_handle in handles:
+        try:
+            driver.switch_to.window(current_handle)
+        except Exception:
+            pass
+    return False
+
+
+def _select_spaceinvasion_tab(driver, *, allow_new_tab: bool = True) -> None:
+    """Focus any existing SpaceInvasion tab so Control UI (`127.0.0.1`) tabs stay untouched."""
+    if find_and_switch_game_tab(driver):
+        return
+
+    handles = list(getattr(driver, "window_handles", None) or [])
+    current_handle = getattr(driver, "current_window_handle", None)
+    portal_candidates: list[str] = []
+    login_candidates: list[str] = []
+
+    for handle in handles:
+        try:
+            driver.switch_to.window(handle)
+            url = (getattr(driver, "current_url", "") or "").lower()
+        except Exception:
+            continue
+        if "spaceinvasion.bitmeup.com" in url:
+            if _is_portal_authenticated(driver):
+                portal_candidates.append(handle)
+            else:
+                login_candidates.append(handle)
+
+    chosen = (portal_candidates or login_candidates or [None])[0]
+    if chosen is not None:
+        driver.switch_to.window(chosen)
+        return
+
+    if current_handle in handles:
+        try:
+            driver.switch_to.window(current_handle)
+        except Exception:
+            pass
+
+    if allow_new_tab:
+        cur = (getattr(driver, "current_url", "") or "").lower()
+        is_local_ui = "127.0.0.1" in cur or "localhost" in cur
+        if is_local_ui:
+            switch_to = getattr(driver, "switch_to", None)
+            new_win = getattr(switch_to, "new_window", None)
+            if callable(new_win):
+                try:
+                    new_win("tab")
+                except Exception:
+                    pass
+
+
+def _extract_portal_universes(driver, wait_seconds: float = 2.5) -> tuple[UniverseOption, ...]:
+    """Read portal universes from live `window.SI_TPL.startPortal` JS or HTML."""
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    while True:
+        try:
+            js_data = driver.execute_script(
+                "var p = window.SI_TPL && window.SI_TPL.startPortal;"
+                "if (!p || !Array.isArray(p.instances) || p.instances.length === 0) return null;"
+                "return {sid: String(p.SID || ''), instances: p.instances};"
+            )
+        except Exception:
+            js_data = None
+
+        cur_url = getattr(driver, "current_url", "") or BASE_URL
+        if isinstance(js_data, dict) and js_data.get("instances"):
+            parsed = universes_from_portal_data(
+                str(js_data.get("sid") or ""),
+                list(js_data.get("instances") or []),
+                cur_url,
+            )
+            if parsed:
+                return parsed
+
+        parsed_html = extract_universes(getattr(driver, "page_source", "") or "", cur_url)
+        if parsed_html:
+            return parsed_html
+
+        if time.monotonic() >= deadline or not _is_portal_authenticated(driver):
+            return ()
+        time.sleep(0.2)
+
+
+def _click_portal_universe_dom(driver, matched: UniverseOption) -> bool:
+    """Try clicking the universe card or Play button directly in the portal DOM."""
+    label_needle = matched.label.strip().lower()
+    uid = matched.universe_id
+    selectors: list[str] = []
+    if uid is not None:
+        selectors.extend(
+            [
+                f'a[href*="instance={uid}"]',
+                f'[data-instance="{uid}"] a',
+                f'[data-instance="{uid}"] button',
+                f'[data-instance="{uid}"]',
+                f'[onclick*="instance={uid}"]',
+                f'[onclick*="({uid})"]',
+                f'[onclick*="({uid},"]',
+            ]
+        )
+    for sel in selectors:
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, sel)
+            if el is not None:
+                try:
+                    el.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", el)
+                return True
+        except Exception:
+            continue
+
+    try:
+        clicked = bool(
+            driver.execute_script(
+                """
+                var needle = arguments[0];
+                var uidStr = arguments[1] !== null ? String(arguments[1]) : null;
+                var nodes = Array.from(document.querySelectorAll('a, button, [role="button"], .sip-uni, [class*="instance"], [class*="universe"], tr, li, div'));
+                for (var i = 0; i < nodes.length; i++) {
+                  var el = nodes[i];
+                  var txt = (el.innerText || el.textContent || '').trim().toLowerCase();
+                  if (!txt || txt.indexOf(needle) === -1) continue;
+                  var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+                  if (rect && (rect.width === 0 || rect.height === 0)) continue;
+                  var target = el.querySelector && (
+                    el.querySelector('a[href*="externalLogin"], a[href*="instance="], button, a, .play, [class*="play"]')
+                  );
+                  if (target) {
+                    target.click();
+                    return true;
+                  }
+                  if (el.tagName === 'A' || el.tagName === 'BUTTON' || el.getAttribute('onclick') || (uidStr && (el.innerHTML || '').indexOf(uidStr) !== -1)) {
+                    el.click();
+                    return true;
+                  }
+                }
+                return false;
+                """,
+                label_needle,
+                uid,
+            )
+        )
+        return clicked
+    except Exception:
+        return False
+
+
 def _wait_for_universe_entry(
     driver,
     config: BrowserConfig,
     wait_for_manual_gate: Optional[Callable[[str], None]],
-) -> None:
-    """Wait until universe navigation settles on `indexGame.es` (or game frames)."""
+    *,
+    previous_handles: Optional[list[str]] = None,
+) -> bool:
+    """Wait until universe navigation settles on `indexGame.es` (across open tabs)."""
     deadline = time.monotonic() + min(config.timeout, 15.0)
+    prev_set = set(previous_handles or [])
     while time.monotonic() < deadline:
         _handle_antibot_or_raise(driver, config, wait_for_manual_gate)
+        if find_and_switch_game_tab(driver):
+            return True
+
+        handles = list(getattr(driver, "window_handles", None) or [])
+        for handle in handles:
+            if handle in prev_set:
+                continue
+            try:
+                driver.switch_to.window(handle)
+                cur_new = (getattr(driver, "current_url", "") or "").lower()
+                if "indexgame.es" in cur_new or "uni" in cur_new:
+                    if find_and_switch_game_tab(driver) or "action=externallogin" not in cur_new:
+                        return True
+            except Exception:
+                continue
+
         cur = (getattr(driver, "current_url", "") or "").lower()
         if "indexgame.es" in cur or "uni" in cur:
             if _element_if_visible(driver, By.ID, "F_Hauptframe") is not None:
-                return
+                return True
             if "action=externallogin" not in cur:
-                return
+                return True
         time.sleep(0.2)
+    return False
 
 
 def login_with_browser(
@@ -504,6 +740,7 @@ def login_with_browser(
     wait_for_manual_gate: Optional[Callable[[str], None]] = None,
     enter_universe: Optional[str] = None,
     allow_join: bool = False,
+    require_in_game: bool = False,
     driver_factory: Optional[Callable[[BrowserConfig], object]] = None,
     on_session_ready: Optional[Callable[[object, BrowserLoginResult], None]] = None,
 ) -> BrowserLoginResult:
@@ -530,11 +767,20 @@ def login_with_browser(
     keep_running = cfg.detach or (was_already_open and not cfg.keep_open)
 
     try:
+        if was_already_open:
+            _select_spaceinvasion_tab(driver, allow_new_tab=True)
+
         current_url = (getattr(driver, "current_url", "") or "").lower()
+        in_game_now = is_in_game_tab(driver)
+        is_portal_now = (
+            "indexgame.es" not in current_url
+            and "indexinternal.es" not in current_url
+            and _is_portal_authenticated(driver)
+        )
         reused_live_page = (
             was_already_open
             and "spaceinvasion.bitmeup.com" in current_url
-            and _is_portal_authenticated(driver)
+            and (in_game_now or is_portal_now)
         )
         if not reused_live_page:
             driver.get(landing_url)
@@ -562,31 +808,65 @@ def login_with_browser(
                 driver, creds, cfg, two_factor_provider, wait_for_manual_gate
             )
 
-        universes = extract_universes(driver.page_source or "", driver.current_url)
+        in_game_already = is_in_game_tab(driver)
+        universes = () if in_game_already else _extract_portal_universes(driver)
         cookie_path, cookie_names = _sync_browser_cookies(
             driver, session_dir, creds, driver.current_url
         )
         entered_universe: Optional[str] = None
-        in_game_already = "indexgame.es" in (driver.current_url or "").lower()
 
         target_uni = enter_universe if enter_universe is not None else creds.universe
-        if target_uni and universes and not (in_game_already and enter_universe is None):
-            matched = _resolve_universe_choice(universes, target_uni)
-            if matched is None:
+        if not target_uni and require_in_game and not in_game_already and universes:
+            active_unis = [u for u in universes if u.has_account]
+            if len(active_unis) == 1:
+                target_uni = active_unis[0].label
+            elif len(active_unis) > 1:
+                labels = ", ".join(u.label for u in active_unis[:6])
                 raise ConfigurationError(
-                    f"Configured universe '{target_uni}' not found on portal."
+                    f"Multiple universes have active accounts ({labels}); set SPACEINVASION_UNIVERSE in .env."
                 )
-            if not matched.has_account and not allow_join:
-                raise ConfigurationError(
-                    f"Universe '{matched.label}' has no active account yet ([JOIN]). "
-                    "Pass --allow-join if you intend to create a planet there, "
-                    "or --portal-only to stay on the portal."
+
+        if target_uni and not (in_game_already and enter_universe is None):
+            if not universes:
+                if require_in_game:
+                    raise SpaceInvasionAuthError(
+                        f"Could not locate universe selection entries on portal ({driver.current_url})."
+                    )
+            else:
+                matched = _resolve_universe_choice(universes, target_uni)
+                if matched is None:
+                    raise ConfigurationError(
+                        f"Configured universe '{target_uni}' not found on portal."
+                    )
+                if not matched.has_account and not allow_join:
+                    raise ConfigurationError(
+                        f"Universe '{matched.label}' has no active account yet ([JOIN]). "
+                        "Pass --allow-join if you intend to create a planet there, "
+                        "or --portal-only to stay on the portal."
+                    )
+                handles_before = list(getattr(driver, "window_handles", None) or [])
+                driver.get(matched.url)
+                entered_ok = _wait_for_universe_entry(
+                    driver, cfg, wait_for_manual_gate, previous_handles=handles_before
                 )
-            driver.get(matched.url)
-            _wait_for_universe_entry(driver, cfg, wait_for_manual_gate)
-            entered_universe = matched.label
-            cookie_path, cookie_names = _sync_browser_cookies(
-                driver, session_dir, creds, driver.current_url
+                if not entered_ok and _is_portal_authenticated(driver):
+                    if _click_portal_universe_dom(driver, matched):
+                        entered_ok = _wait_for_universe_entry(
+                            driver, cfg, wait_for_manual_gate, previous_handles=handles_before
+                        )
+                if require_in_game and not entered_ok:
+                    raise SpaceInvasionAuthError(
+                        f"Could not enter universe '{matched.label}' (still at {driver.current_url}). "
+                        "Check Chrome for CAPTCHA, cookie prompt, or portal Play button."
+                    )
+                entered_universe = matched.label
+                cookie_path, cookie_names = _sync_browser_cookies(
+                    driver, session_dir, creds, driver.current_url
+                )
+        elif require_in_game and not in_game_already and not is_in_game_tab(driver):
+            raise SpaceInvasionAuthError(
+                f"Browser is still outside SpaceInvasion game shell ({driver.current_url}). "
+                "Set SPACEINVASION_UNIVERSE (e.g. RETRO) in .env or enter the universe in Chrome."
             )
 
         soup = BeautifulSoup(driver.page_source or "", "html.parser")
