@@ -719,7 +719,12 @@ def _plan_unlock_and_advisory_actions(
                 )
             )
 
-        for ship_slug in ("small-transport", "colony-ship"):
+        goal_ships = (
+            ("small-transport", "colony-ship", "phoenix", "transmitter", "battleship", "stealth-bomber")
+            if config.playstyle == "fleeter"
+            else ("small-transport", "colony-ship")
+        )
+        for ship_slug in goal_ships:
             ship_info = game_data.SHIPS.get(ship_slug)
             if not ship_info:
                 continue

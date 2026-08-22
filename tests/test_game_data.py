@@ -62,6 +62,13 @@ class TestGameData(unittest.TestCase):
         self.assertEqual(game_data.resolve_unit("research", "Defence systems")["id"], "r10")
         self.assertEqual(game_data.resolve_unit("research", "Particle analyser")["id"], "r12")
 
+    def test_large_suffix_costs_and_decimal_unit_build_times(self) -> None:
+        l11_micro = game_data.building_cost(17, 11)
+        self.assertEqual(l11_micro["metal"], 512_000_000)
+        self.assertEqual(l11_micro["kryptonite"], 1_020_000_000)
+        self.assertAlmostEqual(game_data.SHIPS["solar-cells"]["base_build_time_s"], 1013.3333, places=4)
+        self.assertAlmostEqual(game_data.SHIPS["battleship"]["base_build_time_s"], 19166.667, places=3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -92,14 +92,35 @@ _DT_STAT_TO_KEY = {
 }
 
 
+_SUFFIX_MULTIPLIERS = {
+    "k": 1_000,
+    "m": 1_000_000,
+    "b": 1_000_000_000,
+    "t": 1_000_000_000_000,
+    "qa": 1_000_000_000_000_000,
+    "qi": 1_000_000_000_000_000_000,
+}
+
+
 def _parse_int(raw: str) -> int:
     text = raw.strip().lstrip("+")
     neg = text.startswith("-")
+    m = re.match(r"^-?\s*([\d,]+(?:\.\d+)?)\s*(qi|qa|t|b|m|k)?\b", text, re.IGNORECASE)
+    if m and m.group(2):
+        num = float(m.group(1).replace(",", ""))
+        val = int(round(num * _SUFFIX_MULTIPLIERS[m.group(2).lower()]))
+        return -val if neg else val
     digits = re.sub(r"[^\d]", "", text)
     if not digits:
         return 0
     val = int(digits)
     return -val if neg else val
+
+
+def _parse_seconds(raw: str) -> float:
+    cleaned = raw.strip().replace(",", "")
+    m = re.search(r"[\d]+(?:\.\d+)?", cleaned)
+    return round(float(m.group(0)), 4) if m else 0.0
 
 
 def _parse_float_pct(raw: str) -> float:
@@ -179,13 +200,13 @@ def _parse_deps(siblings: list[Tag]) -> list[dict[str, Any]]:
     return deps
 
 
-def _parse_unit_build_time(siblings: list[Tag]) -> tuple[int, dict[str, str]]:
-    base_s = 0
+def _parse_unit_build_time(siblings: list[Tag]) -> tuple[float, dict[str, str]]:
+    base_s = 0.0
     factors: dict[str, str] = {}
     for sib in siblings:
         p = sib.find("p", class_="w-big") if sib.name != "p" else sib
         if p and p.get("data-t"):
-            base_s = _parse_int(str(p["data-t"]))
+            base_s = _parse_seconds(str(p["data-t"]))
             if p.get("data-f"):
                 factors["formula"] = str(p["data-f"])
         for sel in sib.find_all("select"):
@@ -229,7 +250,7 @@ def _parse_level_table(table: Tag) -> tuple[dict[int, dict[str, Any]], dict[int,
                 cost[_COST_HEADER_TO_KEY[hdr]] = _parse_int(td.get_text())
             elif hdr in ("Build time", "Research time"):
                 if td.get("data-t") is not None:
-                    entry["base_time_s"] = _parse_int(str(td["data-t"]))
+                    entry["base_time_s"] = _parse_seconds(str(td["data-t"]))
             elif hdr.endswith("/ hour") and "used" not in hdr:
                 raw_v = td.get("data-v")
                 entry["prod"] = _parse_int(str(raw_v)) if raw_v is not None else _parse_int(td.get_text())

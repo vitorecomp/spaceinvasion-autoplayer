@@ -8,10 +8,17 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_SHIPYARD_TARGETS: dict[str, int] = {
-    "small-transport": 4,
-    "spy-probe": 5,
+    "small-fighter": 12,
+    "small-transport": 6,
+    "spy-probe": 10,
     "colony-ship": 1,
-    "recycler": 2,
+    "recycler": 4,
+    "starcruiser": 6,
+    "phoenix": 10,
+    "transmitter": 6,
+    "battleship": 8,
+    "stealth-bomber": 4,
+    "destroyer": 4,
 }
 
 
@@ -19,6 +26,7 @@ DEFAULT_SHIPYARD_TARGETS: dict[str, int] = {
 class StrategyConfig:
     """Empire strategy toggles and safety thresholds loaded from `config.yaml`."""
 
+    playstyle: str = "fleeter"  # "fleeter" | "hybrid" | "miner"
     merchant_mode: bool = False
     allow_research: bool = True
     allow_shipyard: bool = True
@@ -26,6 +34,7 @@ class StrategyConfig:
     allow_fleetsave: bool = False
     allow_galaxy_scan: bool = False
     allow_raids: bool = False
+    allow_pvp_in_az: bool = False
     allow_colonize: bool = False
     storage_warn_ratio: float = 0.85
     blast_pig_iron_max_share: float = 0.70
@@ -114,6 +123,7 @@ def strategy_config_from_dict(data: dict[str, Any]) -> StrategyConfig:
             targets[str(k)] = max(0, int(v))
 
     return StrategyConfig(
+        playstyle=str(data.get("playstyle", "fleeter")).strip().lower() or "fleeter",
         merchant_mode=bool(data.get("merchant_mode", False)),
         allow_research=bool(data.get("allow_research", True)),
         allow_shipyard=bool(data.get("allow_shipyard", True)),
@@ -121,6 +131,7 @@ def strategy_config_from_dict(data: dict[str, Any]) -> StrategyConfig:
         allow_fleetsave=bool(data.get("allow_fleetsave", False)),
         allow_galaxy_scan=bool(data.get("allow_galaxy_scan", False)),
         allow_raids=bool(data.get("allow_raids", False)),
+        allow_pvp_in_az=bool(data.get("allow_pvp_in_az", False)),
         allow_colonize=bool(data.get("allow_colonize", False)),
         storage_warn_ratio=max(0.1, min(0.99, float(data.get("storage_warn_ratio", 0.85)))),
         blast_pig_iron_max_share=max(0.1, min(1.0, float(data.get("blast_pig_iron_max_share", 0.70)))),

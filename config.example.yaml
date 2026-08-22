@@ -1,16 +1,18 @@
-# Non-secret SpaceInvasion Autoplayer strategy profile.
+# Non-secret SpaceInvasion Autoplayer strategy profile (Full-Auto Aggressive Fleeter preset).
 # Copy to `config.yaml` and customize without touching `.env` credentials.
 
+playstyle: fleeter                # "fleeter" | "hybrid" | "miner"
 merchant_mode: false              # Set true if Merchant assistant is active (skips Blast furnace post-tutorial)
 allow_research: true              # Auto-queue global research when Research lab is ready
-allow_shipyard: true              # Maintain baseline Utility/Colony fleet targets in Weapons factory
+allow_shipyard: true              # Scale utility + Diffusion/Warp combat wings as unlocked
 allow_multi_planet: true          # Plan & build across all colonies instead of active planet only
 
-# M5-M6 Fleet & Combat guardrails (enable explicitly once targets/fuel are configured)
-allow_fleetsave: false
-allow_galaxy_scan: false
-allow_raids: false
-allow_colonize: false
+# M5-M6 Fleet & Raid automation controls
+allow_fleetsave: false            # Set true for P0 auto Escape Flight once internalFleet dispatch is wired
+allow_galaxy_scan: false          # Set true to scan nearby systems for Yellow/Spacia/Debris targets
+allow_raids: false                # Set true for automated raids against Yellow inactives & Spacia
+allow_pvp_in_az: false            # Keep false unless explicitly attacking active Light Red / Top-50 players
+allow_colonize: false             # Set true for >=230-field economy & cold-Spice colony scouting/settlement
 
 storage_warn_ratio: 0.85
 blast_pig_iron_max_share: 0.70
@@ -21,7 +23,14 @@ hot_planet_solar_temp_threshold: 40
 min_free_fields_warning: 20
 
 shipyard_targets:
-  small-transport: 4
-  spy-probe: 5
+  small-fighter: 12
+  small-transport: 6
+  spy-probe: 10
   colony-ship: 1
-  recycler: 2
+  recycler: 4
+  starcruiser: 6
+  phoenix: 10
+  transmitter: 6
+  battleship: 8
+  stealth-bomber: 4
+  destroyer: 4

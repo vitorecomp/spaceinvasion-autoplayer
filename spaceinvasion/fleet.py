@@ -507,12 +507,14 @@ def score_raid_target(
     bash_tracker: Optional[BashTracker] = None,
     safety_margin: float = 1.4,
     min_loot_spice_eq: float = 1500.0,
+    allow_pvp_in_az: bool = False,
 ) -> Optional[RaidRecommendation]:
-    """Score a scanned target for safe profitable raiding (favoring overlooked Spacia/inactives)."""
+    """Score a scanned target for safe raiding (Yellow/Spacia default; PvP opt-in)."""
     is_inactive = slot.status_color == "yellow"
     is_spacia = slot.is_spacia or report.is_spacia
-    if slot.status_color not in ("yellow", "light_red"):
-        return None
+    if not (is_inactive or is_spacia):
+        if not (allow_pvp_in_az and slot.status_color == "light_red"):
+            return None
     if bash_tracker is not None and not bash_tracker.can_attack(
         slot.coords,
         is_inactive=is_inactive,
