@@ -95,8 +95,9 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertGreater(rec.loot_spice_equivalent, 1500.0)
 
         pvp_slot = GalaxySlot("02:380:06", 6, name="Rival", owner="PlayerX", status_color="light_red")
-        self.assertIsNone(score_raid_target("02:380:12", pvp_slot, rep, {"s7": 5, "s3": 2}, allow_pvp_in_az=False))
-        self.assertIsNotNone(score_raid_target("02:380:12", pvp_slot, rep, {"s7": 5, "s3": 2}, allow_pvp_in_az=True))
+        pvp_rep = SpyReport("02:380:06", owner="PlayerX", resources=rep.resources, defense=rep.defense, is_spacia=False)
+        self.assertIsNone(score_raid_target("02:380:12", pvp_slot, pvp_rep, {"s7": 5, "s3": 2}, allow_pvp_in_az=False))
+        self.assertIsNotNone(score_raid_target("02:380:12", pvp_slot, pvp_rep, {"s7": 5, "s3": 2}, allow_pvp_in_az=True))
 
         # Colony filtering respects >230 field strategy vs cold_spice
         free_slots = (
