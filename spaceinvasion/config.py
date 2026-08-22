@@ -159,3 +159,33 @@ def load_strategy_config(path: Path = Path("config.yaml")) -> StrategyConfig:
     if not isinstance(parsed, dict):
         return StrategyConfig()
     return strategy_config_from_dict(parsed)
+
+
+def save_strategy_config(cfg: StrategyConfig, path: Path = Path("config.yaml")) -> Path:
+    """Persist `StrategyConfig` cleanly in simple YAML format matching `load_strategy_config`."""
+    lines = [
+        "# SpaceInvasion Autoplayer runtime strategy configuration",
+        f"playstyle: {cfg.playstyle}",
+        f"merchant_mode: {'true' if cfg.merchant_mode else 'false'}",
+        f"allow_research: {'true' if cfg.allow_research else 'false'}",
+        f"allow_shipyard: {'true' if cfg.allow_shipyard else 'false'}",
+        f"allow_multi_planet: {'true' if cfg.allow_multi_planet else 'false'}",
+        f"allow_fleetsave: {'true' if cfg.allow_fleetsave else 'false'}",
+        f"allow_galaxy_scan: {'true' if cfg.allow_galaxy_scan else 'false'}",
+        f"allow_raids: {'true' if cfg.allow_raids else 'false'}",
+        f"allow_pvp_in_az: {'true' if cfg.allow_pvp_in_az else 'false'}",
+        f"allow_colonize: {'true' if cfg.allow_colonize else 'false'}",
+        f"storage_warn_ratio: {cfg.storage_warn_ratio}",
+        f"blast_pig_iron_max_share: {cfg.blast_pig_iron_max_share}",
+        f"combat_safety_margin: {cfg.combat_safety_margin}",
+        f"raid_min_loot_spice_eq: {cfg.raid_min_loot_spice_eq}",
+        f"fleet_save_fuel_reserve_spice: {cfg.fleet_save_fuel_reserve_spice}",
+        f"max_actions_per_hour: {cfg.max_actions_per_hour}",
+        f"hot_planet_solar_temp_threshold: {cfg.hot_planet_solar_temp_threshold}",
+        f"min_free_fields_warning: {cfg.min_free_fields_warning}",
+        "shipyard_targets:",
+    ]
+    for slug, cnt in cfg.shipyard_targets.items():
+        lines.append(f"  {slug}: {int(cnt)}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path

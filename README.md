@@ -58,6 +58,8 @@ Or launch services separately:
 .venv/bin/python3 commander.py --loop --reload --live
 ```
 
+Then open the **Operator Control UI** at `http://127.0.0.1:8787/` (served directly by `game_api.py`) to inspect telemetry, pause/resume or switch Commander modes, run or simulate `P0`–`P3` actions, jump Chrome views, pack Escape Flights, edit `config.yaml`, and tail logs.
+
 ## Strategy Mechanics Implemented
 
 - **Offline Wiki Catalog ([spaceinvasion/game_data.py](spaceinvasion/game_data.py))**: Scraped by [scripts/sync_wiki_data.py](scripts/sync_wiki_data.py) for all **21 buildings**, **16 researches**, **15 ships**, and **11 defenses**.
@@ -67,12 +69,19 @@ Or launch services separately:
 
 ## Useful Commands & HTTP API
 
+Open `http://127.0.0.1:8787/` in any browser for the **Operator Control UI**, or script the HTTP bridge directly:
+
 ```bash
 curl -s http://127.0.0.1:8787/health
 curl -s http://127.0.0.1:8787/state
+curl -s http://127.0.0.1:8787/bot_status
+curl -s http://127.0.0.1:8787/dashboard
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"plan"}'
+curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"tick_once","dry_run":true}'
+curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"bot_control","paused":false,"mode_override":null}'
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"fleetsave_plan"}'
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"config"}'
+curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"update_config","config":{"commander":{"mode":"aggressive_fleeter"}}}'
 ```
 
 Refresh offline wiki tables:

@@ -24,6 +24,10 @@ class GameApiClient:
         resp = self._session.get(f"{self.base_url}/health", timeout=self.timeout)
         return self._decode(resp)
 
+    def get_bot_control(self) -> dict[str, Any]:
+        resp = self._session.get(f"{self.base_url}/bot_status", timeout=self.timeout)
+        return self._decode(resp)
+
     def get_state(self, *, include_buildings: bool = True) -> GameState:
         flag = "1" if include_buildings else "0"
         resp = self._session.get(

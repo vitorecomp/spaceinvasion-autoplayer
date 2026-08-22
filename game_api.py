@@ -135,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _shutdown_handler)
     print(
         f"[API] Listening on http://{args.host}:{args.port} "
-        f"(Chrome debug port: 127.0.0.1:{args.debug_port})"
+        f"(Control UI: http://{args.host}:{args.port}/ | Chrome debug port: 127.0.0.1:{args.debug_port})"
     )
     sys.stdout.flush()
     try:

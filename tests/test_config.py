@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from spaceinvasion.config import StrategyConfig, load_strategy_config
+from spaceinvasion.config import StrategyConfig, load_strategy_config, save_strategy_config
 
 
 class TestStrategyConfig(unittest.TestCase):
@@ -36,6 +36,11 @@ shipyard_targets:
             self.assertAlmostEqual(cfg.combat_safety_margin, 1.55)
             self.assertEqual(cfg.shipyard_targets["small-transport"], 10)
             self.assertEqual(cfg.shipyard_targets["transmitter"], 2)
+
+            out = Path(tmp) / "saved.yaml"
+            save_strategy_config(cfg, out)
+            reloaded = load_strategy_config(out)
+            self.assertEqual(reloaded, cfg)
 
 
 if __name__ == "__main__":

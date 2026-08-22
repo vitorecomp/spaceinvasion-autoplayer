@@ -9,6 +9,9 @@
 *.cookies
 cookies.json
 
+# Local strategy overrides (copy from config.example.yaml)
+config.yaml
+
 # Runtime state snapshots (logs are intentionally committed after sid redaction)
 state/
 

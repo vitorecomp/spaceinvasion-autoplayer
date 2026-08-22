@@ -155,6 +155,39 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertTrue(res_cmd["ok"])
             self.assertTrue(res_cmd["dry_run"])
 
+            # Control UI static assets & /dashboard + bot_control + update_config
+            import requests
+
+            ui_html = requests.get(f"http://127.0.0.1:{port}/", timeout=5)
+            self.assertEqual(ui_html.status_code, 200)
+            self.assertIn("SpaceInvasion Control", ui_html.text)
+            ui_css = requests.get(f"http://127.0.0.1:{port}/styles.css", timeout=5)
+            self.assertEqual(ui_css.status_code, 200)
+            ui_js = requests.get(f"http://127.0.0.1:{port}/app.js", timeout=5)
+            self.assertEqual(ui_js.status_code, 200)
+
+            ctrl = api.send_command({"command": "bot_control", "paused": True, "mode_override": "dry-run"})
+            self.assertTrue(ctrl["bot_control"]["paused"])
+            self.assertEqual(ctrl["bot_control"]["mode_override"], "dry-run")
+            self.assertTrue(api.get_bot_control()["paused"])
+
+            tick_res = api.send_command({"command": "tick_once", "dry_run": True})
+            self.assertTrue(tick_res["ok"])
+            self.assertTrue(tick_res["dry_run"])
+
+            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                dash = requests.get(f"http://127.0.0.1:{port}/dashboard?refresh=0", timeout=5).json()
+            self.assertTrue(dash["ok"])
+            self.assertTrue(dash["bot_control"]["paused"])
+            self.assertIsNotNone(dash["state"])
+            self.assertGreaterEqual(len(dash["plan"]), 1)
+
+            with tempfile.TemporaryDirectory() as tmp_cfg:
+                bridge.config_path = Path(tmp_cfg) / "config.yaml"
+                upd = api.send_command({"command": "update_config", "config": {"merchant_mode": True}})
+                self.assertTrue(upd["config"]["merchant_mode"])
+                self.assertTrue(bridge.config_path.exists())
+
             with self.assertRaises(GameApiError):
                 api.send_command({"command": "navigate", "action": "invalidAction"})
 

@@ -21,12 +21,25 @@ from spaceinvasion.browser import (
     login_with_browser,
 )
 from spaceinvasion.client import GameBrowserClient
-from spaceinvasion.config import StrategyConfig, load_strategy_config
+from spaceinvasion.config import (
+    StrategyConfig,
+    load_strategy_config,
+    save_strategy_config,
+    strategy_config_from_dict,
+)
 from spaceinvasion.executor import ActionExecutor
 from spaceinvasion.fleet import plan_escape_flight
-from spaceinvasion.logging_utils import append_api_log
+from spaceinvasion.logging_utils import append_api_log, redact_sensitive
 from spaceinvasion.state import GameState, PlanetState
 from spaceinvasion.strategy import PlannedAction, plan_actions
+
+UI_DIR = Path(__file__).resolve().parent / "ui"
+_UI_ASSETS: dict[str, tuple[str, str]] = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/styles.css": ("styles.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+}
 
 ALLOWED_MENU_ACTIONS = frozenset(
     {
@@ -105,6 +118,9 @@ class GameApiBridge:
         self.strategy_config: StrategyConfig = load_strategy_config(config_path)
         self.log_dir = log_dir
         self._lock = threading.Lock()
+        self._last_state: Optional[GameState] = None
+        self._last_url: Optional[str] = None
+        self._bot_control: dict[str, Any] = {"paused": False, "mode_override": None}
         budget = (
             max_actions_per_hour
             if max_actions_per_hour is not None
@@ -144,6 +160,7 @@ class GameApiBridge:
                         in_game = True
                 except SpaceInvasionAuthError:
                     in_game = False
+            self._last_url = current_url
             return {
                 "ok": port_open,
                 "debug_port": self.debug_port,
@@ -151,12 +168,67 @@ class GameApiBridge:
                 "in_game": in_game,
                 "url": current_url,
                 "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
+                "bot_control": dict(self._bot_control),
+            }
+
+    def get_bot_control(self) -> dict[str, Any]:
+        return {"ok": True, **dict(self._bot_control)}
+
+    def _read_log_tail(self, filename: str, lines: int = 40) -> str:
+        if self.log_dir is None:
+            return ""
+        target = self.log_dir / filename
+        if not target.exists():
+            return ""
+        raw_lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+        return str(redact_sensitive("\n".join(raw_lines[-lines:])))
+
+    def dashboard(self, *, refresh: bool = False) -> dict[str, Any]:
+        """Return combined UI telemetry, plan, config, bot controls, and sanitized log tails."""
+        with self._lock:
+            port_open = is_debug_port_open(self.debug_port)
+            in_game = self._last_state is not None
+            current_url = self._last_url
+            if port_open and (refresh or self._last_state is None):
+                try:
+                    with self._client_factory(self.debug_port) as client:
+                        current_url = str(getattr(client.driver, "current_url", "") or "")
+                        self._last_state = client.read_full_snapshot(include_buildings=True)
+                        self._last_url = current_url
+                        in_game = True
+                except SpaceInvasionAuthError:
+                    in_game = False
+
+            actions = (
+                plan_actions(self._last_state, config=self.strategy_config)
+                if self._last_state is not None
+                else []
+            )
+            return {
+                "ok": True,
+                "health": {
+                    "ok": port_open,
+                    "debug_port": self.debug_port,
+                    "debug_port_open": port_open,
+                    "in_game": in_game,
+                    "url": redact_sensitive(current_url) if current_url else None,
+                    "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
+                },
+                "bot_control": dict(self._bot_control),
+                "config": asdict(self.strategy_config),
+                "state": redact_sensitive(asdict(self._last_state)) if self._last_state else None,
+                "plan": redact_sensitive([asdict(a) for a in actions]),
+                "logs": {
+                    "commander": self._read_log_tail("commander.log"),
+                    "game_api": self._read_log_tail("game_api.log"),
+                },
             }
 
     def get_state(self, *, include_buildings: bool = True) -> dict[str, Any]:
         with self._lock:
             with self._client_factory(self.debug_port) as client:
                 state = client.read_full_snapshot(include_buildings=include_buildings)
+                self._last_state = state
             return asdict(state)
 
     def _pick_executor(self, dry_run: bool) -> ActionExecutor:
@@ -304,8 +376,10 @@ class GameApiBridge:
         res = self._pick_executor(dry_run).execute_action(client, state, planned)
         if res.executed:
             after_state = client.read_full_snapshot(include_buildings=True, return_home=False)
+            self._last_state = after_state
             after_plan = plan_actions(after_state, config=self.strategy_config)
         else:
+            self._last_state = state
             after_plan = plan_actions(state, config=self.strategy_config)
         next_action = asdict(after_plan[0]) if after_plan else None
         client.navigate_menu("internalHome")
@@ -329,6 +403,29 @@ class GameApiBridge:
         if cmd == "config":
             return {"ok": True, "command": cmd, "config": asdict(self.strategy_config)}
 
+        if cmd == "bot_control":
+            with self._lock:
+                if "paused" in payload:
+                    self._bot_control["paused"] = bool(payload["paused"])
+                if "mode_override" in payload:
+                    raw_mode = payload["mode_override"]
+                    if raw_mode not in (None, "live", "dry-run"):
+                        raise ApiRequestError("mode_override must be null, 'live', or 'dry-run'.")
+                    self._bot_control["mode_override"] = raw_mode
+                return {"ok": True, "command": cmd, "bot_control": dict(self._bot_control)}
+
+        if cmd == "update_config":
+            raw_cfg = payload.get("config")
+            if not isinstance(raw_cfg, dict):
+                raise ApiRequestError("'update_config' requires a 'config' dictionary.")
+            merged = {**asdict(self.strategy_config), **raw_cfg}
+            new_cfg = strategy_config_from_dict(merged)
+            with self._lock:
+                save_strategy_config(new_cfg, self.config_path)
+                self.strategy_config = new_cfg
+                self._live_executor.allow_fleetsave = new_cfg.allow_fleetsave
+            return {"ok": True, "command": cmd, "config": asdict(new_cfg)}
+
         with self._lock:
             if cmd == "ensure_session":
                 self._ensure_session_fn()
@@ -337,12 +434,35 @@ class GameApiBridge:
             with self._client_factory(self.debug_port) as client:
                 if cmd == "plan":
                     state = client.read_full_snapshot(include_buildings=True)
+                    self._last_state = state
                     actions = plan_actions(state, config=self.strategy_config)
                     return {
                         "ok": True,
                         "command": cmd,
                         "actions": [asdict(a) for a in actions],
                     }
+
+                if cmd == "tick_once":
+                    state = client.read_full_snapshot(include_buildings=True, return_home=False)
+                    self._last_state = state
+                    actions = plan_actions(state, config=self.strategy_config)
+                    ready = next((a for a in actions if a.executable_now), None)
+                    if ready is None:
+                        client.navigate_menu("internalHome")
+                        return {
+                            "ok": True,
+                            "command": cmd,
+                            "executed": False,
+                            "dry_run": dry_run,
+                            "message": (
+                                f"Waiting: {actions[0].target_name} ({actions[0].reason})"
+                                if actions
+                                else "No pending actions."
+                            ),
+                            "action": asdict(actions[0]) if actions else None,
+                            "next_action": asdict(actions[1]) if len(actions) > 1 else None,
+                        }
+                    return self._execute_and_summarize(client, state, cmd, ready, dry_run)
 
                 if cmd == "menu":
                     client.ensure_in_game()
@@ -485,14 +605,39 @@ def create_api_server(
             self.end_headers()
             self.wfile.write(raw)
 
+        def _send_static(self, filename: str, content_type: str) -> None:
+            asset_path = UI_DIR / filename
+            if not asset_path.exists():
+                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"Missing UI asset {filename}"})
+                return
+            raw = asset_path.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
         def log_message(self, format: str, *args: Any) -> None:
             return
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             try:
+                if parsed.path in _UI_ASSETS:
+                    filename, ctype = _UI_ASSETS[parsed.path]
+                    self._send_static(filename, ctype)
+                    return
                 if parsed.path == "/health":
                     self._send_json(HTTPStatus.OK, bridge.health())
+                    return
+                if parsed.path == "/bot_status":
+                    self._send_json(HTTPStatus.OK, bridge.get_bot_control())
+                    return
+                if parsed.path == "/dashboard":
+                    qs = parse_qs(parsed.query)
+                    ref = qs.get("refresh", ["0"])[0].lower() in ("1", "true", "yes")
+                    self._send_json(HTTPStatus.OK, bridge.dashboard(refresh=ref))
                     return
                 if parsed.path == "/state":
                     qs = parse_qs(parsed.query)

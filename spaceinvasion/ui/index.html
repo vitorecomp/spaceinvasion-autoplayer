@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SpaceInvasion Control — Autoplayer Operations</title>
+  <meta name="description" content="Operator console for SpaceInvasion Classic autoplayer: live resource telemetry, priority action queue, Escape Flight planner, and strategy configuration." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar" aria-label="Primary controls">
+      <div class="brand-group">
+        <svg class="brand-mark" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+          <polygon points="12 2 21 7 21 17 12 22 3 17 3 7" />
+          <circle cx="12" cy="12" r="3" />
+          <line x1="12" y1="2" x2="12" y2="9" />
+          <line x1="12" y1="15" x2="12" y2="22" />
+        </svg>
+        <div class="brand-text">
+          <h1>SpaceInvasion Control</h1>
+          <div class="connection-row" id="connection-summary">
+            <span class="status-pip" id="chrome-pip" aria-hidden="true"></span>
+            <span id="chrome-status-text">Checking Chrome debug port…</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-strip">
+        <div class="control-field">
+          <label for="planet-select">Planet</label>
+          <select id="planet-select" aria-label="Active planet">
+            <option value="">Loading…</option>
+          </select>
+        </div>
+
+        <div class="control-field">
+          <label for="mode-select">Loop Mode</label>
+          <select id="mode-select" aria-label="Commander loop execution mode">
+            <option value="auto">CLI Default</option>
+            <option value="live">Force Live</option>
+            <option value="dry-run">Force Dry-Run</option>
+          </select>
+        </div>
+
+        <button type="button" class="btn btn-secondary" id="btn-pause-toggle" aria-pressed="false">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <rect x="6" y="4" width="4" height="16" />
+            <rect x="14" y="4" width="4" height="16" />
+          </svg>
+          <span id="pause-label">Pause Auto</span>
+        </button>
+
+        <button type="button" class="btn btn-secondary" id="btn-sync">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <polyline points="23 4 23 10 17 10" />
+            <polyline points="1 20 1 14 7 14" />
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+          </svg>
+          <span>Sync Chrome</span>
+        </button>
+
+        <button type="button" class="btn btn-primary" id="btn-tick-now">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <polygon points="5 3 19 12 5 21 5 3" />
+          </svg>
+          <span>Run 1 Tick</span>
+        </button>
+      </div>
+    </header>
+
+    <div id="feedback-banner" class="feedback-banner" role="status" aria-live="polite" hidden></div>
+
+    <section class="telemetry-grid" aria-label="Empire resources and status">
+      <div class="metric-cell">
+        <div class="metric-head">
+          <span class="metric-name">Pig Iron</span>
+          <span class="metric-sub tabular" id="cap-pig">—</span>
+        </div>
+        <div class="metric-value tabular" id="val-pig">—</div>
+        <div class="meter-track"><div class="meter-fill" id="bar-pig"></div></div>
+      </div>
+
+      <div class="metric-cell">
+        <div class="metric-head">
+          <span class="metric-name">Metal</span>
+          <span class="metric-sub tabular" id="cap-metal">—</span>
+        </div>
+        <div class="metric-value tabular" id="val-metal">—</div>
+        <div class="meter-track"><div class="meter-fill" id="bar-metal"></div></div>
+      </div>
+
+      <div class="metric-cell">
+        <div class="metric-head">
+          <span class="metric-name">Kryptonite</span>
+          <span class="metric-sub tabular" id="cap-kryp">—</span>
+        </div>
+        <div class="metric-value tabular" id="val-kryp">—</div>
+        <div class="meter-track"><div class="meter-fill" id="bar-kryp"></div></div>
+      </div>
+
+      <div class="metric-cell">
+        <div class="metric-head">
+          <span class="metric-name">Spice</span>
+          <span class="metric-sub tabular" id="cap-spice">—</span>
+        </div>
+        <div class="metric-value tabular" id="val-spice">—</div>
+        <div class="meter-track"><div class="meter-fill" id="bar-spice"></div></div>
+      </div>
+
+      <div class="metric-cell">
+        <div class="metric-head">
+          <span class="metric-name">Energy Grid</span>
+          <span class="metric-sub tabular" id="energy-ratio">—</span>
+        </div>
+        <div class="metric-value tabular" id="val-energy">—</div>
+        <div class="metric-foot tabular" id="planet-specs">Temp — · Fields —</div>
+      </div>
+
+      <div class="metric-cell">
+        <div class="metric-head">
+          <span class="metric-name">Empire Rate &amp; Safety</span>
+          <span class="metric-sub tabular" id="val-speedup">—</span>
+        </div>
+        <div class="metric-value tabular" id="val-budget">—</div>
+        <div class="metric-foot tabular" id="val-alerts">No hostile alerts</div>
+      </div>
+    </section>
+
+    <section class="tutorial-bar" id="tutorial-strip" aria-label="Active tutorial step" hidden>
+      <div class="tutorial-info">
+        <strong id="tutorial-title">Tutorial</strong>
+        <span id="tutorial-tasks-summary" class="muted"></span>
+      </div>
+      <button type="button" class="btn btn-primary" id="btn-claim-tutorial" hidden>Claim Reward</button>
+    </section>
+
+    <main class="workspace-grid">
+      <section class="pane pane-primary" aria-label="Decision planner and operations">
+        <div class="pane-header">
+          <div class="tabs" role="tablist" aria-label="Workspace panels">
+            <button type="button" class="tab active" role="tab" aria-selected="true" data-tab="queue">Action Queue</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="fleet">Escape Flight &amp; Chrome</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="levels">Buildings &amp; Tech</button>
+          </div>
+          <div class="filter-pills" id="queue-filters">
+            <button type="button" class="chip active" data-filter="all">All</button>
+            <button type="button" class="chip" data-filter="ready">Ready Only</button>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-queue">
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Prio</th>
+                  <th>Action</th>
+                  <th>Cost / Missing</th>
+                  <th>Reason</th>
+                  <th class="col-right">Dispatch</th>
+                </tr>
+              </thead>
+              <tbody id="plan-tbody">
+                <tr>
+                  <td colspan="5" class="empty-cell">Waiting for state from local API…</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-fleet" hidden>
+          <div class="subpanel">
+            <h2>Escape Flight Value Packer</h2>
+            <p class="muted">
+              Computes SpaceInvasion optimal fleet-save load order (<strong>Spice → Metal → Kryptonite → Pig iron</strong>), holding back fuel reserve, ready for invisible Asteroid-safe transit.
+            </p>
+            <div class="inline-form">
+              <div class="control-field">
+                <label for="fs-target">Target Coordinates (optional)</label>
+                <input id="fs-target" type="text" placeholder="e.g. 02:380:13" />
+              </div>
+              <button type="button" class="btn btn-primary" id="btn-calc-fleetsave">Calculate Save Cargo</button>
+            </div>
+            <pre class="code-readout" id="fleetsave-output">Click "Calculate Save Cargo" to inspect docked ship capacity and optimal load.</pre>
+          </div>
+
+          <div class="subpanel">
+            <h2>Navigate Live Chrome Frame</h2>
+            <p class="muted">Switch the attached Chrome viewport directly through the single-mutex API lock.</p>
+            <div class="nav-button-grid">
+              <button type="button" class="btn btn-secondary nav-jump" data-action="internalHome">Command Central</button>
+              <button type="button" class="btn btn-secondary nav-jump" data-action="internalBuildings">Buildings</button>
+              <button type="button" class="btn btn-secondary nav-jump" data-action="internalResearch">Research</button>
+              <button type="button" class="btn btn-secondary nav-jump" data-action="internalWeaponFactory">Weapons Factory</button>
+              <button type="button" class="btn btn-secondary nav-jump" data-action="internalEconomy">Industry / Upgrades</button>
+              <button type="button" class="btn btn-secondary nav-jump" data-action="internalFleet">Fleet Commands</button>
+              <button type="button" class="btn btn-secondary nav-jump" data-action="internalMessages">Messages</button>
+              <button type="button" class="btn btn-secondary nav-jump" data-action="internalUniverse">Universe &amp; AZ</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-levels" hidden>
+          <div class="levels-split">
+            <div>
+              <h2>Buildings (<span id="levels-planet-label">—</span>)</h2>
+              <div class="table-wrap compact-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Structure</th>
+                      <th class="col-right">Level</th>
+                    </tr>
+                  </thead>
+                  <tbody id="buildings-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <h2>Account Research</h2>
+              <div class="table-wrap compact-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Technology</th>
+                      <th class="col-right">Level</th>
+                    </tr>
+                  </thead>
+                  <tbody id="research-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="pane pane-config" aria-label="Strategy configuration">
+        <div class="pane-header">
+          <h2>Strategy Profile (config.yaml)</h2>
+          <button type="button" class="btn btn-primary" id="btn-save-config">Save Profile</button>
+        </div>
+
+        <form id="config-form" class="config-form">
+          <div class="control-field">
+            <label for="cfg-playstyle">Doctrine</label>
+            <select id="cfg-playstyle" name="playstyle">
+              <option value="fleeter">Aggressive Fleeter</option>
+              <option value="hybrid">Hybrid Eco + Raid</option>
+              <option value="miner">Pacifist Miner</option>
+            </select>
+          </div>
+
+          <div class="toggle-grid">
+            <label class="toggle-row"><input type="checkbox" id="cfg-allow_research" /> <span>Auto Research (r1–r15)</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-allow_shipyard" /> <span>Auto Shipyard Wings</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-allow_multi_planet" /> <span>Multi-Planet Colonies</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-merchant_mode" /> <span>Merchant Mode (skip Blast furnace)</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-allow_fleetsave" /> <span>Live P0 Escape Flight</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-allow_galaxy_scan" /> <span>Live Galaxy Scanning</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-allow_raids" /> <span>Auto Raids (Yellow &amp; Spacia)</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-allow_pvp_in_az" /> <span>Allow PvP Attacks (Light Red AZ)</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-allow_colonize" /> <span>Auto Colonize (&gt;=230 fields)</span></label>
+          </div>
+
+          <div class="numeric-grid">
+            <div class="control-field">
+              <label for="cfg-storage_warn_ratio">Storage Guard Ratio</label>
+              <input type="number" step="0.05" min="0.1" max="0.99" id="cfg-storage_warn_ratio" />
+            </div>
+            <div class="control-field">
+              <label for="cfg-combat_safety_margin">Combat Ratio Floor</label>
+              <input type="number" step="0.1" min="1.0" max="5.0" id="cfg-combat_safety_margin" />
+            </div>
+            <div class="control-field">
+              <label for="cfg-fleet_save_fuel_reserve_spice">Fuel Reserve (Spice)</label>
+              <input type="number" step="50" min="0" id="cfg-fleet_save_fuel_reserve_spice" />
+            </div>
+            <div class="control-field">
+              <label for="cfg-max_actions_per_hour">Hourly Click Cap</label>
+              <input type="number" step="5" min="1" max="240" id="cfg-max_actions_per_hour" />
+            </div>
+          </div>
+        </form>
+      </aside>
+    </main>
+
+    <section class="logs-section" aria-label="Execution activity log">
+      <div class="pane-header">
+        <div class="tabs" role="tablist" aria-label="Log sources">
+          <button type="button" class="tab active" data-log="commander">Commander Log</button>
+          <button type="button" class="tab" data-log="api">Game API Log</button>
+        </div>
+        <button type="button" class="btn btn-secondary" id="btn-refresh-logs">Refresh Logs</button>
+      </div>
+      <pre class="log-stream tabular" id="log-output">Loading logs…</pre>
+    </section>
+  </div>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

@@ -201,16 +201,31 @@ def main(argv: list[str] | None = None) -> int:
         while True:
             tick += 1
             try:
+                strategy_cfg = load_strategy_config(args.config)
+                effective_live = args.live
+                try:
+                    bot_ctrl = api.get_bot_control()
+                    if run_loop and bot_ctrl.get("paused"):
+                        print(f"[CMD tick {tick}] Paused via control UI; waiting.")
+                        time.sleep(max(3.0, min(8.0, args.interval)))
+                        continue
+                    override = bot_ctrl.get("mode_override")
+                    if override in ("live", "dry-run"):
+                        effective_live = override == "live"
+                except (requests.RequestException, GameApiError):
+                    pass
+
+                eff_label = "LIVE" if effective_live else "DRY-RUN"
                 state, actual_action, actual_result, next_action, outcomes = run_commander_tick(
                     api,
-                    live=args.live,
+                    live=effective_live,
                     max_actions=max(1, args.max_actions),
                     config=strategy_cfg,
                 )
                 planet = state.active_planet()
                 res_str = planet.resources.format_short() if planet else "?"
                 msg = (actual_result or {}).get("message", "no action")
-                print(f"[CMD tick {tick} | {mode_label}] {planet.coords if planet else '?'} | {res_str}")
+                print(f"[CMD tick {tick} | {eff_label}] {planet.coords if planet else '?'} | {res_str}")
                 print(f"  Actual: {format_action_summary(actual_action)} => {msg}")
                 print(f"  Next:   {format_action_summary(next_action)}")
                 if args.log_dir:
@@ -218,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.log_dir,
                         source="commander",
                         tick=tick,
-                        mode=mode_label,
+                        mode=eff_label,
                         state=state,
                         actual_action=actual_action,
                         actual_result=actual_result,
