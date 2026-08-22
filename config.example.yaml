@@ -1,0 +1,27 @@
+# Non-secret SpaceInvasion Autoplayer strategy profile.
+# Copy to `config.yaml` and customize without touching `.env` credentials.
+
+merchant_mode: false              # Set true if Merchant assistant is active (skips Blast furnace post-tutorial)
+allow_research: true              # Auto-queue global research when Research lab is ready
+allow_shipyard: true              # Maintain baseline Utility/Colony fleet targets in Weapons factory
+allow_multi_planet: true          # Plan & build across all colonies instead of active planet only
+
+# M5-M6 Fleet & Combat guardrails (enable explicitly once targets/fuel are configured)
+allow_fleetsave: false
+allow_galaxy_scan: false
+allow_raids: false
+allow_colonize: false
+
+storage_warn_ratio: 0.85
+blast_pig_iron_max_share: 0.70
+combat_safety_margin: 1.4
+raid_min_loot_spice_eq: 1500.0
+fleet_save_fuel_reserve_spice: 500
+hot_planet_solar_temp_threshold: 40
+min_free_fields_warning: 20
+
+shipyard_targets:
+  small-transport: 4
+  spy-probe: 5
+  colony-ship: 1
+  recycler: 2
