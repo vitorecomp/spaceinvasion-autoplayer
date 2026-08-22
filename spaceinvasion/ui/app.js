@@ -1,16 +1,23 @@
 const state = {
   dashboard: null,
   selectedPlanetId: null,
+  modeOverride: "auto",
   activeTab: "queue",
   queueFilter: "all",
   activeLogSource: "commander",
-  busy: false,
 };
 
 const el = (id) => document.getElementById(id);
 
 function fmtInt(n) {
   return Number(n || 0).toLocaleString("en-US");
+}
+
+function fmtClock(tsSec) {
+  if (!tsSec) return "SYNC --:--:--";
+  const d = new Date(Number(tsSec) * 1000);
+  if (Number.isNaN(d.getTime())) return "SYNC ACTIVE";
+  return `SYNC ${d.toTimeString().slice(0, 8)}`;
 }
 
 function showFeedback(message, kind = "ok") {
@@ -49,20 +56,34 @@ function activePlanetFrom(dash) {
   return gs.planets.find((p) => p.planet_id === targetId) || gs.planets[0];
 }
 
+function syncModeButtons(modeVal) {
+  state.modeOverride = modeVal;
+  document.querySelectorAll("[data-mode]").forEach((btn) => {
+    const active = btn.dataset.mode === modeVal;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-checked", active ? "true" : "false");
+  });
+}
+
 function renderTopbar(dash) {
   const health = dash.health || {};
   const pip = el("chrome-pip");
   const statusText = el("chrome-status-text");
   if (health.in_game) {
     pip.className = "status-pip online";
-    statusText.textContent = `Chrome :${health.debug_port || 9222} connected · In Game (${dash.state?.nickname || "RETRO"})`;
+    statusText.textContent = `CHROME :${health.debug_port || 9222} ONLINE`;
   } else if (health.debug_port_open) {
     pip.className = "status-pip";
-    statusText.textContent = `Chrome :${health.debug_port || 9222} open · Outside game shell`;
+    statusText.textContent = `CHROME :${health.debug_port || 9222} STANDBY`;
   } else {
     pip.className = "status-pip offline";
-    statusText.textContent = `Chrome :${health.debug_port || 9222} offline`;
+    statusText.textContent = `CHROME :${health.debug_port || 9222} OFFLINE`;
   }
+
+  const gs = dash.state || {};
+  el("hud-universe").textContent = `U${gs.universe_id || 31} · ${gs.nickname || "COMMANDER"}`;
+  el("hud-clock").textContent = fmtClock(gs.timestamp);
+  el("matrix-account-line").textContent = `CMD // ${gs.nickname || "OPERATOR"} · PORT ${health.debug_port || 9222}`;
 
   const botCtrl = dash.bot_control || {};
   const paused = Boolean(botCtrl.paused);
@@ -71,13 +92,26 @@ function renderTopbar(dash) {
   pauseBtn.classList.toggle("btn-warning", paused);
   el("pause-label").textContent = paused ? "Resume Auto" : "Pause Auto";
 
-  el("mode-select").value = botCtrl.mode_override || "auto";
+  const modeVal = botCtrl.mode_override || "auto";
+  syncModeButtons(modeVal);
+
+  const runBadge = el("loop-run-badge");
+  if (paused) {
+    runBadge.textContent = "PAUSED";
+    runBadge.className = "run-badge tabular is-paused";
+  } else if (modeVal === "dry-run") {
+    runBadge.textContent = "DRY";
+    runBadge.className = "run-badge tabular is-dry";
+  } else {
+    runBadge.textContent = "RUN";
+    runBadge.className = "run-badge tabular";
+  }
 
   const planetSel = el("planet-select");
-  const planets = dash.state?.planets || [];
+  const planets = gs.planets || [];
   if (planets.length > 0) {
     const chosen = activePlanetFrom(dash)?.planet_id;
-    planetSel.innerHTML = "";
+    planetSel.replaceChildren();
     for (const p of planets) {
       const opt = document.createElement("option");
       opt.value = String(p.planet_id);
@@ -102,6 +136,7 @@ function renderResourceBar(key, amount, storage) {
 function renderTelemetry(dash) {
   const planet = activePlanetFrom(dash);
   if (planet) {
+    el("command-subpath").textContent = `SECTOR // [${planet.coords}] ${planet.name.toUpperCase()}`;
     renderResourceBar("pig", planet.resources.pig_iron, planet.storage.pig_iron);
     renderResourceBar("metal", planet.resources.metal, planet.storage.metal);
     renderResourceBar("kryp", planet.resources.kryptonite, planet.storage.kryptonite);
@@ -111,21 +146,24 @@ function renderTelemetry(dash) {
     const used = Number(planet.energy?.used || 0);
     const net = produced - used;
     el("val-energy").textContent = `${net >= 0 ? "+" : ""}${fmtInt(net)}`;
-    el("energy-ratio").textContent = `${fmtInt(produced)} / ${fmtInt(used)}`;
-    el("planet-specs").textContent = `Temp ${planet.temperature}°C · Fields ${planet.fields_used}/${planet.fields_max}`;
+    el("energy-ratio").textContent = `${fmtInt(produced)} / ${fmtInt(used)} E`;
+    el("planet-specs").textContent = `TEMP ${planet.temperature}°C · FIELDS ${planet.fields_used}/${planet.fields_max}`;
   }
 
   const health = dash.health || {};
-  el("val-budget").textContent = `${health.remaining_hourly_actions ?? "—"} clicks/hr`;
-  el("val-speedup").textContent = dash.state?.speedup_factor ? `Speed x${dash.state.speedup_factor}` : "Standard";
+  el("val-budget").textContent = `${health.remaining_hourly_actions ?? "—"} OPS/HR`;
+  el("val-speedup").textContent = dash.state?.speedup_factor ? `SPEED x${dash.state.speedup_factor}` : "STD x1";
+
   const hostileCount = (dash.state?.fleet_alerts || []).filter((a) => a.hostile).length;
-  el("val-alerts").textContent = hostileCount > 0 ? `${hostileCount} hostile incoming!` : "No hostile alerts";
+  const beacon = el("hud-alert-beacon");
+  beacon.classList.toggle("is-alert", hostileCount > 0);
+  el("val-alerts").textContent = hostileCount > 0 ? `HOSTILE ALERT (${hostileCount})` : "SECTOR CLEAR · 0 HOSTILES";
 
   const tut = dash.state?.tutorial;
   const tutBar = el("tutorial-strip");
   if (tut) {
     tutBar.hidden = false;
-    el("tutorial-title").textContent = `Tutorial ${tut.step} / ${tut.total_steps}`;
+    el("tutorial-title").textContent = `TUTORIAL ${tut.step}/${tut.total_steps}`;
     const incomplete = (tut.tasks || []).filter((t) => t.current < t.target);
     el("tutorial-tasks-summary").textContent =
       incomplete.length > 0
@@ -134,6 +172,74 @@ function renderTelemetry(dash) {
     el("btn-claim-tutorial").hidden = !tut.can_complete;
   } else {
     tutBar.hidden = true;
+  }
+}
+
+function renderColonyMatrix(dash) {
+  const gs = dash.state || {};
+  const planets = gs.planets || [];
+  const chosenId = activePlanetFrom(dash)?.planet_id;
+  el("colony-count-tag").textContent = `${String(planets.length).padStart(2, "0")}-${String(gs.universe_id || 31)}`;
+
+  const tbody = el("colony-tbody");
+  if (planets.length === 0) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.className = "empty-cell";
+    td.textContent = "No colonies discovered.";
+    tr.appendChild(td);
+    tbody.replaceChildren(tr);
+  } else {
+    const rows = [];
+    for (const p of planets) {
+      const tr = document.createElement("tr");
+      if (p.planet_id === chosenId) tr.classList.add("is-active");
+      tr.addEventListener("click", () => {
+        state.selectedPlanetId = p.planet_id;
+        el("planet-select").value = String(p.planet_id);
+        if (state.dashboard) {
+          renderColonyMatrix(state.dashboard);
+          renderTelemetry(state.dashboard);
+          renderLevels(state.dashboard);
+        }
+      });
+
+      const tdCoords = document.createElement("td");
+      tdCoords.className = "tabular";
+      tdCoords.textContent = p.coords;
+
+      const tdName = document.createElement("td");
+      tdName.textContent = p.name;
+
+      const tdStat = document.createElement("td");
+      const badge = document.createElement("span");
+      const nearFull =
+        p.storage &&
+        ((p.storage.pig_iron && p.resources.pig_iron / p.storage.pig_iron >= 0.85) ||
+          (p.storage.spice && p.resources.spice / p.storage.spice >= 0.85));
+      badge.className = `status-word${nearFull ? " is-warn" : ""}`;
+      badge.textContent = nearFull ? "NEAR-CAP" : p.planet_id === chosenId ? "ONLINE" : "READY";
+      tdStat.appendChild(badge);
+
+      const tdFields = document.createElement("td");
+      tdFields.className = "col-right tabular";
+      tdFields.textContent = `${p.fields_used}/${p.fields_max}`;
+
+      tr.append(tdCoords, tdName, tdStat, tdFields);
+      rows.push(tr);
+    }
+    tbody.replaceChildren(...rows);
+  }
+
+  const queues = gs.active_queues || [];
+  const qNode = el("active-queues-list");
+  if (queues.length === 0) {
+    qNode.textContent = "No active building or research queue jobs.";
+  } else {
+    qNode.textContent = queues
+      .map((q) => `[${String(q.category || "JOB").toUpperCase()}] ${q.name} → L${q.target_level ?? "?"}`)
+      .join(" · ");
   }
 }
 
@@ -176,12 +282,20 @@ function renderPlanTable(dash) {
   if (state.queueFilter === "ready") {
     actions = actions.filter((a) => a.executable_now);
   }
+  el("plan-count-badge").textContent = `${actions.length} TASKS`;
+
   if (actions.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">No matching actions in queue.</td></tr>';
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 5;
+    td.className = "empty-cell";
+    td.textContent = "No matching actions in queue.";
+    tr.appendChild(td);
+    tbody.replaceChildren(tr);
     return;
   }
 
-  tbody.innerHTML = "";
+  const rows = [];
   for (const act of actions) {
     const tr = document.createElement("tr");
 
@@ -251,8 +365,9 @@ function renderPlanTable(dash) {
       tdOps.appendChild(waitTag);
     }
     tr.appendChild(tdOps);
-    tbody.appendChild(tr);
+    rows.push(tr);
   }
+  tbody.replaceChildren(...rows);
 }
 
 function renderLevels(dash) {
@@ -260,7 +375,7 @@ function renderLevels(dash) {
   el("levels-planet-label").textContent = planet ? `${planet.coords} ${planet.name}` : "—";
 
   const bBody = el("buildings-tbody");
-  bBody.innerHTML = "";
+  const bRows = [];
   if (planet) {
     const entries = Object.entries(planet.buildings || {}).sort(
       (a, b) => Number(a[0].slice(1)) - Number(b[0].slice(1))
@@ -278,12 +393,13 @@ function renderLevels(dash) {
       tdLvl.className = "col-right tabular";
       tdLvl.textContent = String(lvl);
       tr.append(tdName, tdLvl);
-      bBody.appendChild(tr);
+      bRows.push(tr);
     }
   }
+  bBody.replaceChildren(...bRows);
 
   const rBody = el("research-tbody");
-  rBody.innerHTML = "";
+  const rRows = [];
   const researches = dash.state?.researches || {};
   const rNames = dash.state?.research_names || {};
   for (const [rkey, lvl] of Object.entries(researches).sort((a, b) => Number(a[0].slice(1)) - Number(b[0].slice(1)))) {
@@ -298,8 +414,9 @@ function renderLevels(dash) {
     tdLvl.className = "col-right tabular";
     tdLvl.textContent = String(lvl);
     tr.append(tdName, tdLvl);
-    rBody.appendChild(tr);
+    rRows.push(tr);
   }
+  rBody.replaceChildren(...rRows);
 }
 
 function renderConfigForm(cfg) {
@@ -340,6 +457,7 @@ async function loadDashboard({ refresh = false, preserveConfig = true } = {}) {
     state.dashboard = dash;
     renderTopbar(dash);
     renderTelemetry(dash);
+    renderColonyMatrix(dash);
     renderPlanTable(dash);
     renderLevels(dash);
     if (firstLoad || !preserveConfig) {
@@ -355,7 +473,7 @@ async function dispatchAction(action, dryRun) {
   const payload = actionPayloadFor(action, dryRun);
   if (!payload) return;
   try {
-    showFeedback(`${dryRun ? "Simulating" : "Executing"} ${action.target_name}…`, "ok");
+    showFeedback(`${dryRun ? "Simulating" : "Executing"} ${action.target_name}...`, "ok");
     const res = await apiCommand(payload);
     showFeedback(res.message || "Command completed.", "ok");
     await loadDashboard({ refresh: false });
@@ -364,18 +482,31 @@ async function dispatchAction(action, dryRun) {
   }
 }
 
+async function updateLoopMode(val) {
+  try {
+    await apiCommand({
+      command: "bot_control",
+      mode_override: val === "auto" ? null : val,
+    });
+    await loadDashboard({ refresh: false });
+    showFeedback(`Loop mode set to ${val}.`, "ok");
+  } catch (err) {
+    showFeedback(`Mode update failed: ${err.message}`, "error");
+  }
+}
+
 function wireEvents() {
   el("btn-sync").addEventListener("click", async () => {
-    showFeedback("Syncing live snapshot from Chrome…", "ok");
+    showFeedback("Syncing live snapshot from Chrome...", "ok");
     await loadDashboard({ refresh: true, preserveConfig: true });
     showFeedback("Synced with live Chrome session.", "ok");
   });
 
   el("btn-tick-now").addEventListener("click", async () => {
     try {
-      const mode = el("mode-select").value;
+      const mode = state.modeOverride || "auto";
       const dryRun = mode === "dry-run";
-      showFeedback(`Running 1 ${dryRun ? "dry-run" : "live"} tick…`, "ok");
+      showFeedback(`Running 1 ${dryRun ? "dry-run" : "live"} tick...`, "ok");
       const res = await apiCommand({ command: "tick_once", dry_run: dryRun });
       showFeedback(res.message || "Tick finished.", "ok");
       await loadDashboard({ refresh: false });
@@ -395,23 +526,14 @@ function wireEvents() {
     }
   });
 
-  el("mode-select").addEventListener("change", async (e) => {
-    const val = e.target.value;
-    try {
-      await apiCommand({
-        command: "bot_control",
-        mode_override: val === "auto" ? null : val,
-      });
-      await loadDashboard({ refresh: false });
-      showFeedback(`Loop mode set to ${val}.`, "ok");
-    } catch (err) {
-      showFeedback(`Mode update failed: ${err.message}`, "error");
-    }
+  document.querySelectorAll("[data-mode]").forEach((btn) => {
+    btn.addEventListener("click", () => updateLoopMode(btn.dataset.mode));
   });
 
   el("planet-select").addEventListener("change", (e) => {
     state.selectedPlanetId = Number(e.target.value);
     if (state.dashboard) {
+      renderColonyMatrix(state.dashboard);
       renderTelemetry(state.dashboard);
       renderLevels(state.dashboard);
     }

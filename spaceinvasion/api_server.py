@@ -166,7 +166,7 @@ class GameApiBridge:
                 "debug_port": self.debug_port,
                 "debug_port_open": port_open,
                 "in_game": in_game,
-                "url": current_url,
+                "url": redact_sensitive(current_url) if current_url else None,
                 "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
                 "bot_control": dict(self._bot_control),
             }

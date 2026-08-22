@@ -60,6 +60,10 @@ Or launch services separately:
 
 Then open the **Operator Control UI** at `http://127.0.0.1:8787/` (served directly by `game_api.py`) to inspect telemetry, pause/resume or switch Commander modes, run or simulate `P0`–`P3` actions, jump Chrome views, pack Escape Flights, edit `config.yaml`, and tail logs.
 
+## Operator Control UI
+
+![SpaceInvasion Control UI](docs/images/control-ui.png)
+
 ## Strategy Mechanics Implemented
 
 - **Offline Wiki Catalog ([spaceinvasion/game_data.py](spaceinvasion/game_data.py))**: Scraped by [scripts/sync_wiki_data.py](scripts/sync_wiki_data.py) for all **21 buildings**, **16 researches**, **15 ships**, and **11 defenses**.
