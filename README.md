@@ -2,7 +2,7 @@
 
 Autonomous strategy engine, local HTTP API, and Selenium browser player for **SpaceInvasion Classic** (`https://spaceinvasion.bitmeup.com/?locale=en`).
 
-See [SPEC.md](SPEC.md) for the full technical specification and [AGENTS.md](AGENTS.md) for contributor/agent guidelines.
+See [SPEC.md](SPEC.md) for the autoplayer architecture, [specifications/README.md](specifications/README.md) for the full SRS game-mechanics specification (`REQ-*`, tables, formulas, and page/click contracts), and [AGENTS.md](AGENTS.md) for contributor/agent guidelines.
 
 ## Architecture (Hot-Reloadable 3-Tier Stack)
 

@@ -1,6 +1,6 @@
 # AGENTS.md — Contributor & Agent Guide
 
-Guide for coding agents working in `spaceinvasion-autoplayer`. Read [SPEC.md](SPEC.md) for the complete SpaceInvasion Classic domain specification.
+Guide for coding agents working in `spaceinvasion-autoplayer`. Read [SPEC.md](SPEC.md) for the runtime architecture and [specifications/README.md](specifications/README.md) for the full SRS game mechanics, scaling tables, formulas, and page/click contracts.
 
 ## Repository Layout
 
