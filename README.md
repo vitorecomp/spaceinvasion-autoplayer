@@ -1,0 +1,88 @@
+# SpaceInvasion Classic Autoplayer
+
+Autonomous strategy engine, local HTTP API, and Selenium browser player for **SpaceInvasion Classic** (`https://spaceinvasion.bitmeup.com/?locale=en`).
+
+See [SPEC.md](SPEC.md) for the full technical specification and [AGENTS.md](AGENTS.md) for contributor/agent guidelines.
+
+## Architecture (Hot-Reloadable 3-Tier Stack)
+
+```text
+[Tier 3] commander.py (--reload) / curl / custom bots
+            │  HTTP JSON (GET /state, POST /command)
+            ▼
+[Tier 2] game_api.py @ 127.0.0.1:8787 (--reload)
+            │  Thread-locked GameBrowserClient + ActionExecutor
+            ▼
+[Tier 1] Persistent Chrome @ 127.0.0.1:9222 (--detach)
+```
+
+- **Tier 1 (Chrome on `127.0.0.1:9222`)**: Persistent login profile (`.browser_profile/`) stays open across API and Commander restarts.
+- **Tier 2 (`game_api.py`)**: Exposes the live 3-iframe game (`F_Navi`, `F_planets`, `F_Hauptframe`) over localhost JSON HTTP and reloads cleanly when backend files change.
+- **Tier 3 (`commander.py`)**: Pure HTTP client computing prioritized `P0`–`P3` decisions, dispatching builds/researches/ships, and logging `ACTUAL` + `NEXT` actions to [logs/](logs/).
+
+## Quickstart
+
+1. **Install dependencies into `.venv/`**:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+2. **Configure credentials in git-ignored `.env`** (see [.env.example](.env.example)):
+
+```env
+SPACEINVASION_EMAIL=you@example.com
+SPACEINVASION_PASSWORD=your-password
+SPACEINVASION_UNIVERSE=RETRO
+```
+
+3. **Optional strategy configuration** via [config.example.yaml](config.example.yaml) copied to `config.yaml`:
+
+- `merchant_mode: false` — set `true` if using *Merchant* to convert Pig iron (`6 : 2.5`) instead of building higher *Blast furnaces*.
+- `allow_research: true` / `allow_shipyard: true` / `allow_multi_planet: true` — enable research (`internalResearch`), baseline ship targets (`internalWeaponFactory`), and cross-colony switching.
+- `allow_fleetsave: false` / `allow_raids: false` / `allow_colonize: false` — keep tactical fleet actions dry-run until explicitly enabled.
+
+4. **Run the full hot-reloadable stack**:
+
+```bash
+.venv/bin/python3 run_stack.py           # Dry-run commander
+.venv/bin/python3 run_stack.py --live    # Live execution in visible Chrome
+```
+
+Or launch services separately:
+
+```bash
+.venv/bin/python3 login.py --debug-port 9222 --detach
+.venv/bin/python3 game_api.py --reload
+.venv/bin/python3 commander.py --loop --reload --live
+```
+
+## Strategy Mechanics Implemented
+
+- **Offline Wiki Catalog ([spaceinvasion/game_data.py](spaceinvasion/game_data.py))**: Scraped by [scripts/sync_wiki_data.py](scripts/sync_wiki_data.py) for all **21 buildings**, **16 researches**, **15 ships**, and **11 defenses**.
+- **Proactive Energy & Zero Excess Spare Energy**: Projects post-queue net energy via `building_energy_delta`; promotes *Fusion plant* ahead of energy-starving mines (`P1` in economy), while deferring non-urgent tutorial Fusion levels behind mines (`bucket = 4`) when ample spare energy already exists. Adopts *Thermosolar plant* (`b6`) when cheaper per energy on cold high-Spice planets, and uses `0-field` orbital *Solar cells* (`s9`) on tight hot colonies.
+- **Economy ROI & Blast Furnace Coupling**: Ranks mine upgrades by Merchant Spice-equivalent payback (`6 : 2.5 : 3 : 1`) adjusted for planet `temperature` and *Mining technology* (`+2%/level`, excluding *Blast furnace*), caps *Blast furnace* `pig_iron_used` at `<= 70%` of *Pig iron mine* output (or skips in `merchant_mode`), and compares cross-planet *Mining technology* payback across the whole empire.
+- **M5–M6 Fleet & Expansion Helpers ([spaceinvasion/fleet.py](spaceinvasion/fleet.py))**: Escape flight cargo packing (`Spice -> Metal -> Kryptonite -> Pig iron` retaining return fuel), `1:1` zero-rapidfire battle power & *Stealth bomber* first-strike evaluation (`>= 1.4x` margin), `BashTracker` (`3/24h` active cap, yellow inactive / *Spacia* exempt), distant *Spacia* target scoring, and `>= 230`-field mid-outer vs. cold-*Spice* colonization slot filtering.
+
+## Useful Commands & HTTP API
+
+```bash
+curl -s http://127.0.0.1:8787/health
+curl -s http://127.0.0.1:8787/state
+curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"plan"}'
+curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"fleetsave_plan"}'
+curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"config"}'
+```
+
+Refresh offline wiki tables:
+
+```bash
+.venv/bin/python3 scripts/sync_wiki_data.py
+```
+
+Run the test suite:
+
+```bash
+.venv/bin/python3 -m unittest discover -s tests -v
+```
