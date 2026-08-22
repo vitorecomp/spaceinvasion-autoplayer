@@ -2,6 +2,7 @@ const state = {
   dashboard: null,
   selectedPlanetId: null,
   modeOverride: "auto",
+  activeNav: "overview",
   activeTab: "queue",
   queueFilter: "all",
   activeLogSource: "commander",
@@ -286,6 +287,8 @@ function renderPlanTable(dash) {
     actions = actions.filter((a) => a.executable_now);
   }
   el("plan-count-badge").textContent = `${actions.length} TASKS`;
+  const navCount = el("nav-queue-count");
+  if (navCount) navCount.textContent = String((dash.plan || []).length);
 
   if (actions.length === 0) {
     const tr = document.createElement("tr");
@@ -617,20 +620,78 @@ function wireEvents() {
     });
   });
 
+  const opsTitles = {
+    queue: "Operations Queue",
+    fleet: "Escape & Chrome Control",
+    levels: "Buildings & Tech",
+  };
+
+  function setActiveTab(tabName) {
+    state.activeTab = tabName;
+    document.querySelectorAll("[data-tab]").forEach((b) => {
+      const active = b.dataset.tab === tabName;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    el("panel-queue").hidden = tabName !== "queue";
+    el("panel-fleet").hidden = tabName !== "fleet";
+    el("panel-levels").hidden = tabName !== "levels";
+    el("queue-filters").hidden = tabName !== "queue";
+    const heading = el("ops-heading");
+    if (heading && opsTitles[tabName]) heading.textContent = opsTitles[tabName];
+  }
+
+  function setActiveNav(navKey) {
+    state.activeNav = navKey;
+    document.querySelectorAll("[data-nav]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.nav === navKey);
+    });
+  }
+
   document.querySelectorAll("[data-tab]").forEach((tabBtn) => {
     tabBtn.addEventListener("click", () => {
-      state.activeTab = tabBtn.dataset.tab;
-      document.querySelectorAll("[data-tab]").forEach((b) => {
-        const active = b.dataset.tab === state.activeTab;
-        b.classList.toggle("active", active);
-        b.setAttribute("aria-selected", active ? "true" : "false");
-      });
-      el("panel-queue").hidden = state.activeTab !== "queue";
-      el("panel-fleet").hidden = state.activeTab !== "fleet";
-      el("panel-levels").hidden = state.activeTab !== "levels";
-      el("queue-filters").hidden = state.activeTab !== "queue";
+      const tab = tabBtn.dataset.tab;
+      setActiveTab(tab);
+      setActiveNav(tab);
     });
   });
+
+  document.querySelectorAll("[data-nav]").forEach((navBtn) => {
+    navBtn.addEventListener("click", () => {
+      const navKey = navBtn.dataset.nav;
+      const tabLink = navBtn.dataset.tabLink;
+      setActiveNav(navKey);
+      if (tabLink) setActiveTab(tabLink);
+
+      const scrollTarget =
+        navKey === "overview"
+          ? document.body
+          : navKey === "config"
+            ? el("section-config")
+            : navKey === "logs"
+              ? el("section-logs")
+              : el("section-ops");
+      if (scrollTarget && typeof scrollTarget.scrollIntoView === "function") {
+        scrollTarget.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+
+      const sidebar = el("app-sidebar");
+      const toggle = el("btn-sidebar-toggle");
+      if (sidebar && sidebar.classList.contains("is-open")) {
+        sidebar.classList.remove("is-open");
+        if (toggle) toggle.setAttribute("aria-expanded", "false");
+      }
+    });
+  });
+
+  const sidebarToggle = el("btn-sidebar-toggle");
+  if (sidebarToggle) {
+    sidebarToggle.addEventListener("click", () => {
+      const sidebar = el("app-sidebar");
+      const isOpen = sidebar.classList.toggle("is-open");
+      sidebarToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    });
+  }
 
   document.querySelectorAll("[data-filter]").forEach((chip) => {
     chip.addEventListener("click", () => {

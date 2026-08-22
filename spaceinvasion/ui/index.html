@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SpaceInvasion Control — Tactical Operations Console</title>
-  <meta name="description" content="Tactical operations console for SpaceInvasion Classic autoplayer: sector telemetry, colony matrix, priority queue, Escape Flight packer, and strategy config." />
+  <meta name="description" content="Tactical operations console for SpaceInvasion Classic autoplayer: persistent navigation sidebar, sector telemetry, colony matrix, priority queue, Escape Flight packer, and strategy config." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -12,54 +12,167 @@
 </head>
 <body>
   <div class="hud-canvas">
-    <div class="app-shell">
-      <!-- Top Telemetry Ruler Bar -->
-      <header class="hud-ruler" aria-label="Session telemetry bar">
-        <div class="ruler-cluster">
-          <span class="ruler-node">
-            <span class="status-pip" id="chrome-pip" aria-hidden="true"></span>
-            <span id="chrome-status-text" class="tabular">Connecting Chrome :9222...</span>
-          </span>
-          <span class="ruler-sep" aria-hidden="true"></span>
-          <span class="ruler-node tabular" id="hud-universe">U31 · RETRO</span>
-          <span class="ruler-sep" aria-hidden="true"></span>
-          <span class="ruler-node tabular" id="hud-clock">SYNC --:--:--</span>
-        </div>
-
-        <div class="ruler-cluster">
-          <button type="button" class="btn btn-warning btn-sm" id="btn-ensure-session" hidden>Enter Universe</button>
-          <div class="beacon-pill tabular" id="hud-alert-beacon" role="status">
-            <span class="beacon-mark" aria-hidden="true"></span>
-            <span id="val-alerts">NO HOSTILE ALERTS</span>
-          </div>
-        </div>
-      </header>
-
-      <div id="feedback-banner" class="feedback-banner" role="status" aria-live="polite" hidden></div>
-
-      <!-- Row 1: Command Deck (Left) + Colony & Active Queue Matrix (Right) -->
-      <section class="upper-deck" aria-label="Command telemetry and colony matrix">
-        <!-- Main Command Window -->
-        <article class="hud-window window-command">
-          <div class="window-bar">
-            <div class="window-title-group">
-              <span class="module-code tabular">CMD</span>
-              <h1>SpaceInvasion Control</h1>
-              <span class="module-meta tabular" id="val-speedup">Speed x1</span>
+    <div class="app-layout">
+      <!-- Persistent Tactical Sidebar -->
+      <aside class="hud-sidebar" id="app-sidebar" aria-label="Control navigation and autopilot">
+        <div class="sidebar-head">
+          <div class="sidebar-brand">
+            <span class="module-code tabular">CMD</span>
+            <div class="brand-titles">
+              <h1>SpaceInvasion</h1>
+              <span class="brand-sub tabular" id="val-speedup">SPEED x1</span>
             </div>
-            <div class="window-bar-right">
+          </div>
+          <button
+            type="button"
+            class="btn btn-secondary btn-sm sidebar-mobile-toggle"
+            id="btn-sidebar-toggle"
+            aria-expanded="false"
+            aria-controls="sidebar-body"
+          >
+            Menu
+          </button>
+        </div>
+
+        <div class="sidebar-body" id="sidebar-body">
+          <!-- Session Health -->
+          <section class="sidebar-section" aria-label="Browser session status">
+            <div class="session-card">
+              <div class="session-row">
+                <span class="status-pip" id="chrome-pip" aria-hidden="true"></span>
+                <span id="chrome-status-text" class="tabular">Connecting Chrome :9222...</span>
+              </div>
+              <button type="button" class="btn btn-warning btn-sm" id="btn-ensure-session" hidden>
+                Enter Universe
+              </button>
+            </div>
+          </section>
+
+          <!-- Primary Navigation -->
+          <section class="sidebar-section" aria-label="Workspace navigation">
+            <div class="sidebar-label tabular">Navigation</div>
+            <nav class="sidebar-nav" aria-label="Primary sections">
+              <button type="button" class="nav-item active" data-nav="overview" data-tab-link="queue">
+                <span class="nav-code tabular">ALL</span>
+                <span class="nav-label">Command Overview</span>
+              </button>
+              <button type="button" class="nav-item" data-nav="queue" data-tab-link="queue">
+                <span class="nav-code tabular">OPS</span>
+                <span class="nav-label">Operations Queue</span>
+                <span class="nav-badge tabular" id="nav-queue-count">0</span>
+              </button>
+              <button type="button" class="nav-item" data-nav="fleet" data-tab-link="fleet">
+                <span class="nav-code tabular">FLT</span>
+                <span class="nav-label">Escape &amp; Chrome</span>
+              </button>
+              <button type="button" class="nav-item" data-nav="levels" data-tab-link="levels">
+                <span class="nav-code tabular">BLD</span>
+                <span class="nav-label">Buildings &amp; Tech</span>
+              </button>
+              <button type="button" class="nav-item" data-nav="config">
+                <span class="nav-code tabular">CFG</span>
+                <span class="nav-label">Strategy Profile</span>
+              </button>
+              <button type="button" class="nav-item" data-nav="logs">
+                <span class="nav-code tabular">LOG</span>
+                <span class="nav-label">Telemetry Logs</span>
+              </button>
+            </nav>
+          </section>
+
+          <!-- Active Colony Switcher -->
+          <section class="sidebar-section" aria-label="Colony selector">
+            <div class="control-field">
+              <label for="planet-select">Active Colony</label>
+              <select id="planet-select" aria-label="Active planet">
+                <option value="">Loading...</option>
+              </select>
+            </div>
+          </section>
+
+          <!-- Autopilot Loop Controls -->
+          <section class="sidebar-section sidebar-autopilot" aria-label="Commander autopilot">
+            <div class="autopilot-status">
               <span class="run-badge tabular" id="loop-run-badge">RUN</span>
-              <span class="budget-readout tabular" id="val-budget">-- / -- OPS</span>
+              <span class="budget-readout tabular" id="val-budget">-- OPS/HR</span>
+            </div>
+
+            <div class="control-field">
+              <label id="mode-group-label">Execution Mode</label>
+              <div class="mode-stack" role="radiogroup" aria-labelledby="mode-group-label">
+                <button type="button" class="stack-item active" role="radio" aria-checked="true" data-mode="auto">CLI Default</button>
+                <button type="button" class="stack-item" role="radio" aria-checked="false" data-mode="live">Force Live</button>
+                <button type="button" class="stack-item" role="radio" aria-checked="false" data-mode="dry-run">Force Dry-Run</button>
+              </div>
+            </div>
+
+            <div class="stack-actions">
+              <button type="button" class="btn btn-secondary" id="btn-pause-toggle" aria-pressed="false">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <rect x="6" y="4" width="4" height="16" />
+                  <rect x="14" y="4" width="4" height="16" />
+                </svg>
+                <span id="pause-label">Pause Auto</span>
+              </button>
+
+              <button type="button" class="btn btn-secondary" id="btn-sync">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <polyline points="23 4 23 10 17 10" />
+                  <polyline points="1 20 1 14 7 14" />
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                </svg>
+                <span>Sync</span>
+              </button>
+
+              <button type="button" class="btn btn-primary btn-span" id="btn-tick-now">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+                <span>Run 1 Tick</span>
+              </button>
+            </div>
+          </section>
+
+          <div class="sidebar-foot tabular">
+            <span>WIN // SIDEBAR</span>
+            <span>PORT :8787</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Operational Canvas -->
+      <div class="main-column">
+        <!-- Top Telemetry Ruler Bar -->
+        <header class="hud-ruler" aria-label="Session telemetry bar">
+          <div class="ruler-cluster">
+            <span class="ruler-node tabular" id="hud-universe">U31 · COMMANDER</span>
+            <span class="ruler-sep" aria-hidden="true"></span>
+            <span class="ruler-node tabular" id="hud-clock">SYNC --:--:--</span>
+            <span class="ruler-sep" aria-hidden="true"></span>
+            <span class="ruler-node tabular" id="planet-specs">TEMP --°C · FIELDS --/--</span>
+          </div>
+
+          <div class="ruler-cluster">
+            <div class="beacon-pill tabular" id="hud-alert-beacon" role="status">
+              <span class="beacon-mark" aria-hidden="true"></span>
+              <span id="val-alerts">SECTOR CLEAR · 0 HOSTILES</span>
             </div>
           </div>
+        </header>
 
-          <div class="command-subbar">
-            <div class="subbar-left tabular" id="command-subpath">SECTOR // ACTIVE COLONY TELEMETRY</div>
-            <div class="subbar-right tabular" id="planet-specs">TEMP --°C · FIELDS --/--</div>
-          </div>
+        <div id="feedback-banner" class="feedback-banner" role="status" aria-live="polite" hidden></div>
 
-          <div class="command-body">
-            <!-- Left Telemetry Readout & Sliders -->
+        <!-- Row 1: Sector Telemetry (Left) + Colony Matrix (Right) -->
+        <section class="upper-deck" aria-label="Sector telemetry and colony matrix">
+          <article class="hud-window window-telemetry">
+            <div class="window-bar">
+              <div class="window-title-group">
+                <span class="module-code tabular">SEC</span>
+                <h2>Sector Resources</h2>
+              </div>
+              <span class="module-meta tabular" id="command-subpath">SECTOR // ACTIVE COLONY TELEMETRY</span>
+            </div>
+
             <div class="telemetry-core">
               <div class="track-list" aria-label="Planetary resource levels">
                 <div class="track-row">
@@ -119,12 +232,11 @@
                 </div>
               </div>
 
-              <!-- Precision Digital Telemetry Block -->
               <div class="digital-readout-row">
                 <div class="digital-counter">
                   <span class="digital-tag tabular">ENG</span>
                   <span class="digital-number tabular" id="val-energy">+0</span>
-                  <span class="digital-sub tabular" id="energy-ratio">0 / 0</span>
+                  <span class="digital-sub tabular" id="energy-ratio">0 / 0 E</span>
                 </div>
 
                 <div class="tutorial-inline" id="tutorial-strip" hidden>
@@ -137,137 +249,80 @@
               </div>
             </div>
 
-            <!-- Right Mode & Dispatch Stack -->
-            <aside class="command-stack" aria-label="Loop controls and dispatch">
-              <div class="control-field">
-                <label for="planet-select">Active Colony</label>
-                <select id="planet-select" aria-label="Active planet">
-                  <option value="">Loading...</option>
-                </select>
+            <div class="window-foot">
+              <span class="foot-tag tabular">WIN // SECTOR-01</span>
+              <span class="foot-bar" aria-hidden="true"></span>
+              <span class="foot-tag tabular">POLL 5S</span>
+            </div>
+          </article>
+
+          <!-- Colony & Live Queue Matrix -->
+          <aside class="hud-window window-matrix" aria-label="Colony and queue matrix">
+            <div class="window-bar">
+              <div class="window-title-group">
+                <span class="module-code tabular">R4</span>
+                <h2>Colony Matrix</h2>
+              </div>
+              <span class="matrix-tag tabular" id="colony-count-tag">01-31</span>
+            </div>
+
+            <div class="matrix-subbar tabular" id="matrix-account-line">
+              ACCOUNT // READY
+            </div>
+
+            <div class="table-wrap matrix-scroll">
+              <table class="data-table matrix-table">
+                <thead>
+                  <tr>
+                    <th>Coords</th>
+                    <th>Station</th>
+                    <th>Status</th>
+                    <th class="col-right">Fields</th>
+                  </tr>
+                </thead>
+                <tbody id="colony-tbody">
+                  <tr>
+                    <td colspan="4" class="empty-cell">Scanning colonies...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="queue-strip" aria-label="Active in-game queues">
+              <div class="queue-strip-head tabular">LIVE BUILD / RESEARCH QUEUES</div>
+              <div id="active-queues-list" class="queue-items tabular">No active jobs</div>
+            </div>
+
+            <div class="window-foot">
+              <span class="foot-tag tabular">WIN // MATRIX</span>
+              <span class="foot-bar" aria-hidden="true"></span>
+              <span class="foot-tag tabular">MULTI-PLANET</span>
+            </div>
+          </aside>
+        </section>
+
+        <!-- Row 2: Operations Workspace (Left) + Strategy Profile (Right) -->
+        <main class="workspace-grid">
+          <section class="hud-window pane-primary" id="section-ops" aria-label="Decision planner and operations">
+            <div class="window-bar window-bar-striped">
+              <div class="window-title-group">
+                <span class="module-code module-code-light tabular">H9</span>
+                <h2 id="ops-heading">Operations Queue</h2>
+                <span class="module-meta tabular" id="plan-count-badge">0 TASKS</span>
               </div>
 
-              <div class="control-field">
-                <label id="mode-group-label">Execution Mode</label>
-                <div class="mode-stack" role="radiogroup" aria-labelledby="mode-group-label">
-                  <button type="button" class="stack-item active" role="radio" aria-checked="true" data-mode="auto">CLI Default</button>
-                  <button type="button" class="stack-item" role="radio" aria-checked="false" data-mode="live">Force Live</button>
-                  <button type="button" class="stack-item" role="radio" aria-checked="false" data-mode="dry-run">Force Dry-Run</button>
+              <div class="pane-controls">
+                <div class="filter-pills" role="tablist" aria-label="Operation tabs">
+                  <button type="button" class="chip active" role="tab" aria-selected="true" data-tab="queue">Queue</button>
+                  <button type="button" class="chip" role="tab" aria-selected="false" data-tab="fleet">Escape &amp; Chrome</button>
+                  <button type="button" class="chip" role="tab" aria-selected="false" data-tab="levels">Buildings &amp; Tech</button>
+                </div>
+                <span class="ruler-sep" aria-hidden="true"></span>
+                <div class="filter-pills" id="queue-filters">
+                  <button type="button" class="chip active" data-filter="all">All</button>
+                  <button type="button" class="chip" data-filter="ready">Ready Only</button>
                 </div>
               </div>
-
-              <div class="stack-actions">
-                <button type="button" class="btn btn-secondary" id="btn-pause-toggle" aria-pressed="false">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <rect x="6" y="4" width="4" height="16" />
-                    <rect x="14" y="4" width="4" height="16" />
-                  </svg>
-                  <span id="pause-label">Pause Auto</span>
-                </button>
-
-                <button type="button" class="btn btn-secondary" id="btn-sync">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <polyline points="23 4 23 10 17 10" />
-                    <polyline points="1 20 1 14 7 14" />
-                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-                  </svg>
-                  <span>Sync</span>
-                </button>
-
-                <button type="button" class="btn btn-primary btn-span" id="btn-tick-now">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <polygon points="5 3 19 12 5 21 5 3" />
-                  </svg>
-                  <span>Run 1 Tick</span>
-                </button>
-              </div>
-            </aside>
-          </div>
-
-          <div class="window-foot">
-            <span class="foot-tag tabular">WIN // SECTOR-01</span>
-            <span class="foot-bar" aria-hidden="true"></span>
-            <span class="foot-tag tabular" id="foot-refresh-state">POLL 5S</span>
-          </div>
-        </article>
-
-        <!-- Right Colony & Queue Matrix Window -->
-        <aside class="hud-window window-matrix" aria-label="Colony and queue matrix">
-          <div class="window-bar">
-            <div class="window-title-group">
-              <span class="module-code tabular">R4</span>
-              <h2>Colony Matrix</h2>
-            </div>
-            <span class="matrix-tag tabular" id="colony-count-tag">01-01</span>
-          </div>
-
-          <div class="matrix-subbar tabular" id="matrix-account-line">
-            ACCOUNT // READY
-          </div>
-
-          <div class="table-wrap matrix-scroll">
-            <table class="data-table matrix-table">
-              <thead>
-                <tr>
-                  <th>Coords</th>
-                  <th>Station</th>
-                  <th>Status</th>
-                  <th class="col-right">Fields</th>
-                </tr>
-              </thead>
-              <tbody id="colony-tbody">
-                <tr>
-                  <td colspan="4" class="empty-cell">Scanning colonies...</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div class="queue-strip" aria-label="Active in-game queues">
-            <div class="queue-strip-head tabular">LIVE BUILD / RESEARCH QUEUES</div>
-            <div id="active-queues-list" class="queue-items tabular">No active jobs</div>
-          </div>
-
-          <div class="window-foot">
-            <span class="foot-tag tabular">WIN // MATRIX</span>
-            <span class="foot-bar" aria-hidden="true"></span>
-            <span class="foot-tag tabular">MULTI-PLANET</span>
-          </div>
-        </aside>
-      </section>
-
-      <!-- Row 2: Operations Workspace (Left) + Strategy Profile (Right) -->
-      <main class="workspace-grid">
-        <section class="hud-window pane-primary" aria-label="Decision planner and operations">
-          <div class="window-bar window-bar-striped">
-            <div class="window-title-group">
-              <span class="module-code module-code-light tabular">H9</span>
-              <h2>Operations Queue</h2>
-              <span class="module-meta tabular" id="plan-count-badge">0 TASKS</span>
-            </div>
-
-            <div class="pane-controls">
-              <div class="filter-pills" id="queue-filters">
-                <button type="button" class="chip active" data-filter="all">All</button>
-                <button type="button" class="chip" data-filter="ready">Ready Only</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="ops-body">
-            <!-- Left Vertical Channel Switcher -->
-            <div class="vertical-tabs" role="tablist" aria-label="Workspace panels">
-              <button type="button" class="vtab active" role="tab" aria-selected="true" data-tab="queue">
-                <span class="vtab-code tabular">Q1</span>
-                <span>Queue</span>
-              </button>
-              <button type="button" class="vtab" role="tab" aria-selected="false" data-tab="fleet">
-                <span class="vtab-code tabular">F2</span>
-                <span>Escape &amp; Chrome</span>
-              </button>
-              <button type="button" class="vtab" role="tab" aria-selected="false" data-tab="levels">
-                <span class="vtab-code tabular">L3</span>
-                <span>Buildings &amp; Tech</span>
-              </button>
             </div>
 
             <div class="ops-panels">
@@ -357,92 +412,92 @@
                 </div>
               </div>
             </div>
-          </div>
 
-          <div class="window-foot">
-            <span class="foot-tag tabular">WIN // OPS-DECISION</span>
-            <span class="foot-bar" aria-hidden="true"></span>
-            <span class="foot-tag tabular">SINGLE-MUTEX LOCK</span>
-          </div>
-        </section>
+            <div class="window-foot">
+              <span class="foot-tag tabular">WIN // OPS-DECISION</span>
+              <span class="foot-bar" aria-hidden="true"></span>
+              <span class="foot-tag tabular">SINGLE-MUTEX LOCK</span>
+            </div>
+          </section>
 
-        <!-- Strategy Profile Window -->
-        <aside class="hud-window pane-config" aria-label="Strategy configuration">
+          <!-- Strategy Profile Window -->
+          <aside class="hud-window pane-config" id="section-config" aria-label="Strategy configuration">
+            <div class="window-bar">
+              <div class="window-title-group">
+                <span class="module-code tabular">CFG</span>
+                <h2>Strategy Profile</h2>
+              </div>
+              <button type="button" class="btn btn-primary btn-sm" id="btn-save-config">Save YAML</button>
+            </div>
+
+            <form id="config-form" class="config-form">
+              <div class="control-field">
+                <label for="cfg-playstyle">Doctrine Preset</label>
+                <select id="cfg-playstyle" name="playstyle">
+                  <option value="fleeter">Aggressive Fleeter</option>
+                  <option value="hybrid">Hybrid Eco + Raid</option>
+                  <option value="miner">Pacifist Miner</option>
+                </select>
+              </div>
+
+              <div class="toggle-grid">
+                <label class="toggle-row"><input type="checkbox" id="cfg-allow_research" /> <span>Auto Research (r1–r15)</span></label>
+                <label class="toggle-row"><input type="checkbox" id="cfg-allow_shipyard" /> <span>Auto Shipyard Wings</span></label>
+                <label class="toggle-row"><input type="checkbox" id="cfg-allow_multi_planet" /> <span>Multi-Planet Colonies</span></label>
+                <label class="toggle-row"><input type="checkbox" id="cfg-merchant_mode" /> <span>Merchant Mode (skip Blast furnace)</span></label>
+                <label class="toggle-row"><input type="checkbox" id="cfg-allow_fleetsave" /> <span>Live P0 Escape Flight</span></label>
+                <label class="toggle-row"><input type="checkbox" id="cfg-allow_galaxy_scan" /> <span>Live Galaxy Scanning</span></label>
+                <label class="toggle-row"><input type="checkbox" id="cfg-allow_raids" /> <span>Auto Raids (Yellow &amp; Spacia)</span></label>
+                <label class="toggle-row"><input type="checkbox" id="cfg-allow_pvp_in_az" /> <span>Allow PvP Attacks (Light Red AZ)</span></label>
+                <label class="toggle-row"><input type="checkbox" id="cfg-allow_colonize" /> <span>Auto Colonize (&gt;=230 fields)</span></label>
+              </div>
+
+              <div class="numeric-grid">
+                <div class="control-field">
+                  <label for="cfg-storage_warn_ratio">Storage Guard</label>
+                  <input type="number" step="0.05" min="0.1" max="0.99" id="cfg-storage_warn_ratio" />
+                </div>
+                <div class="control-field">
+                  <label for="cfg-combat_safety_margin">Combat Ratio</label>
+                  <input type="number" step="0.1" min="1.0" max="5.0" id="cfg-combat_safety_margin" />
+                </div>
+                <div class="control-field">
+                  <label for="cfg-fleet_save_fuel_reserve_spice">Fuel Reserve</label>
+                  <input type="number" step="50" min="0" id="cfg-fleet_save_fuel_reserve_spice" />
+                </div>
+                <div class="control-field">
+                  <label for="cfg-max_actions_per_hour">Click Cap / Hr</label>
+                  <input type="number" step="5" min="1" max="240" id="cfg-max_actions_per_hour" />
+                </div>
+              </div>
+            </form>
+
+            <div class="window-foot">
+              <span class="foot-tag tabular">WIN // CONFIG.YAML</span>
+              <span class="foot-bar" aria-hidden="true"></span>
+              <span class="foot-tag tabular">LIVE RELOAD</span>
+            </div>
+          </aside>
+        </main>
+
+        <!-- Row 3: Execution Log Window -->
+        <section class="hud-window logs-section" id="section-logs" aria-label="Execution activity log">
           <div class="window-bar">
             <div class="window-title-group">
-              <span class="module-code tabular">CFG</span>
-              <h2>Strategy Profile</h2>
+              <span class="module-code tabular">LOG</span>
+              <h2>Telemetry Stream</h2>
             </div>
-            <button type="button" class="btn btn-primary btn-sm" id="btn-save-config">Save YAML</button>
-          </div>
-
-          <form id="config-form" class="config-form">
-            <div class="control-field">
-              <label for="cfg-playstyle">Doctrine Preset</label>
-              <select id="cfg-playstyle" name="playstyle">
-                <option value="fleeter">Aggressive Fleeter</option>
-                <option value="hybrid">Hybrid Eco + Raid</option>
-                <option value="miner">Pacifist Miner</option>
-              </select>
-            </div>
-
-            <div class="toggle-grid">
-              <label class="toggle-row"><input type="checkbox" id="cfg-allow_research" /> <span>Auto Research (r1–r15)</span></label>
-              <label class="toggle-row"><input type="checkbox" id="cfg-allow_shipyard" /> <span>Auto Shipyard Wings</span></label>
-              <label class="toggle-row"><input type="checkbox" id="cfg-allow_multi_planet" /> <span>Multi-Planet Colonies</span></label>
-              <label class="toggle-row"><input type="checkbox" id="cfg-merchant_mode" /> <span>Merchant Mode (skip Blast furnace)</span></label>
-              <label class="toggle-row"><input type="checkbox" id="cfg-allow_fleetsave" /> <span>Live P0 Escape Flight</span></label>
-              <label class="toggle-row"><input type="checkbox" id="cfg-allow_galaxy_scan" /> <span>Live Galaxy Scanning</span></label>
-              <label class="toggle-row"><input type="checkbox" id="cfg-allow_raids" /> <span>Auto Raids (Yellow &amp; Spacia)</span></label>
-              <label class="toggle-row"><input type="checkbox" id="cfg-allow_pvp_in_az" /> <span>Allow PvP Attacks (Light Red AZ)</span></label>
-              <label class="toggle-row"><input type="checkbox" id="cfg-allow_colonize" /> <span>Auto Colonize (&gt;=230 fields)</span></label>
-            </div>
-
-            <div class="numeric-grid">
-              <div class="control-field">
-                <label for="cfg-storage_warn_ratio">Storage Guard</label>
-                <input type="number" step="0.05" min="0.1" max="0.99" id="cfg-storage_warn_ratio" />
+            <div class="pane-controls">
+              <div class="filter-pills" role="tablist" aria-label="Log sources">
+                <button type="button" class="chip active" data-log="commander">Commander Log</button>
+                <button type="button" class="chip" data-log="api">Game API Log</button>
               </div>
-              <div class="control-field">
-                <label for="cfg-combat_safety_margin">Combat Ratio</label>
-                <input type="number" step="0.1" min="1.0" max="5.0" id="cfg-combat_safety_margin" />
-              </div>
-              <div class="control-field">
-                <label for="cfg-fleet_save_fuel_reserve_spice">Fuel Reserve</label>
-                <input type="number" step="50" min="0" id="cfg-fleet_save_fuel_reserve_spice" />
-              </div>
-              <div class="control-field">
-                <label for="cfg-max_actions_per_hour">Click Cap / Hr</label>
-                <input type="number" step="5" min="1" max="240" id="cfg-max_actions_per_hour" />
-              </div>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-logs">Refresh</button>
             </div>
-          </form>
-
-          <div class="window-foot">
-            <span class="foot-tag tabular">WIN // CONFIG.YAML</span>
-            <span class="foot-bar" aria-hidden="true"></span>
-            <span class="foot-tag tabular">LIVE RELOAD</span>
           </div>
-        </aside>
-      </main>
-
-      <!-- Row 3: Execution Log Window -->
-      <section class="hud-window logs-section" aria-label="Execution activity log">
-        <div class="window-bar">
-          <div class="window-title-group">
-            <span class="module-code tabular">LOG</span>
-            <h2>Telemetry Stream</h2>
-          </div>
-          <div class="pane-controls">
-            <div class="filter-pills" role="tablist" aria-label="Log sources">
-              <button type="button" class="chip active" data-log="commander">Commander Log</button>
-              <button type="button" class="chip" data-log="api">Game API Log</button>
-            </div>
-            <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-logs">Refresh</button>
-          </div>
-        </div>
-        <pre class="log-stream tabular" id="log-output">Loading logs...</pre>
-      </section>
+          <pre class="log-stream tabular" id="log-output">Loading logs...</pre>
+        </section>
+      </div>
     </div>
   </div>
   <script src="/app.js" type="module"></script>
