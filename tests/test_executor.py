@@ -3302,6 +3302,8 @@ class TestActionExecutor(unittest.TestCase):
         self.assertIn("fleetErr.noFleet", res_err.message)
 
     def test_claim_tutorial_fallback_selector_and_build_ship_onblur_js_recovery(self) -> None:
+        from dataclasses import replace
+
         planet = PlanetState(
             planet_id=12476,
             name="Colony",
@@ -3386,6 +3388,86 @@ class TestActionExecutor(unittest.TestCase):
             any("arguments[0].value = arguments[1]" in str(c.args[0]) and c.args[2] == "2" for c in driver_wf.execute_script.call_args_list)
         )
         wf_submit.click.assert_called_once()
+
+        # 3. ESCAPE_FLIGHT live Step 2 DOM (value="SAVE" + #goButton LAUNCH):
+        #    - Tutorial reason sends 1x s1 (s1 preferred)
+        #    - P0 survival reason sends all stationed non-s9 ships
+        step1_esc_html = (
+            '<html><body><form name="fleet" action="indexInternal.es?action=internalSendFleet" method="POST">'
+            '<input type="text" name="ship_1" value="0"/>'
+            '<input type="text" name="ship_4" value="0"/>'
+            '<input type="text" name="gal" value="2"/>'
+            '<input type="text" name="sun" value="380"/>'
+            '<input type="text" name="pla" value="12"/>'
+            '<input type="submit" value="Continue"/></form></body></html>'
+        )
+        step2_esc_html = (
+            '<html><body><form id="sendForm" action="indexInternal.es?action=internalSendFleet&send=1" method="POST">'
+            '<label><input name="todo" onclick="javascript:goFleet(this.value)" type="radio" value="TRANSPORT"/> Transport</label>'
+            '<label><input name="todo" onclick="javascript:goFleet(this.value)" type="radio" value="SAVE"/> Escape flight</label>'
+            '<input id="goButton" class="fleet-start-button" onclick="startFleet()" type="button" value="LAUNCH"/>'
+            '</form></body></html>'
+        )
+
+        def _mk_inp() -> MagicMock:
+            el = MagicMock()
+            el.value = ""
+
+            def _sk(v: str) -> None:
+                el.value = v
+
+            el.send_keys.side_effect = _sk
+            el.get_attribute.side_effect = lambda k: el.value if k == "value" else ""
+            return el
+
+        for is_tut, exp_s1, exp_s4_called in ((True, "1", False), (False, "6", True)):
+            s1_el, s4_el = _mk_inp(), _mk_inp()
+            gal_el, sun_el, pla_el = _mk_inp(), _mk_inp(), _mk_inp()
+            cont_el, launch_el = MagicMock(), MagicMock()
+            r_trn = MagicMock()
+            r_trn.get_attribute.side_effect = lambda k: {"name": "todo", "value": "TRANSPORT", "id": ""}.get(k, "")
+            r_trn.is_selected.return_value = False
+            r_save = MagicMock()
+            r_save.get_attribute.side_effect = lambda k: {"name": "todo", "value": "SAVE", "id": ""}.get(k, "")
+            r_save.is_selected.return_value = False
+
+            drv_esc = MagicMock()
+            by_name_els = {"ship_1": [s1_el], "ship_4": [s4_el]}
+            by_name_el = {"gal": gal_el, "sun": sun_el, "pla": pla_el}
+            drv_esc.find_elements.side_effect = lambda by, sel: (
+                by_name_els.get(sel, []) if by == "name" else [r_trn, r_save]
+            )
+            drv_esc.find_element.side_effect = lambda by, sel: (
+                by_name_el[sel]
+                if by == "name"
+                else (launch_el if "goButton" in sel else cont_el)
+            )
+            p_esc = replace(planet, ships={"s1": 6, "s4": 12, "s9": 5})
+            st_esc = GameState(31, 103603, "u", 1000.0, (p_esc,), active_planet_id=12476)
+            cli_esc = MagicMock(spec=GameBrowserClient)
+            cli_esc.driver = drv_esc
+            cli_esc.navigate_menu.return_value = step1_esc_html
+            cli_esc._wait_frame_ready.side_effect = [step2_esc_html, "<html><body>Dispatched</body></html>"]
+            cli_esc.read_planets_overview.return_value = st_esc
+
+            ex_esc = ActionExecutor(dry_run=False, allow_fleetsave=True, action_delay_range=(0.0, 0.0))
+            esc_act = PlannedAction(
+                priority="P2" if is_tut else "P0",
+                kind="ESCAPE_FLIGHT",
+                planet_id=12476,
+                planet_coords="02:380:12",
+                target_name="Save -> 02:380:13",
+                reason="Tutorial 7/11: Make an escape flight 0 / 1" if is_tut else "Survival fleetsave",
+                executable_now=True,
+            )
+            res_esc = ex_esc.execute_action(cli_esc, st_esc, esc_act)
+            self.assertTrue(res_esc.executed, msg=res_esc.message)
+            self.assertEqual(s1_el.value, exp_s1)
+            self.assertEqual(bool(s4_el.value), exp_s4_called)
+            if exp_s4_called:
+                self.assertEqual(s4_el.value, "12")
+            r_save.click.assert_called_once()
+            launch_el.click.assert_called_once()
 
 
 if __name__ == "__main__":

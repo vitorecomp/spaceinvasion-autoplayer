@@ -3265,6 +3265,18 @@ def _opt_tutorial_spy_task(tut: Any) -> Optional[Any]:
     return None
 
 
+def _opt_tutorial_escape_task(tut: Any) -> Optional[Any]:
+    if tut is None or getattr(tut, "can_complete", False):
+        return None
+    for task in getattr(tut, "tasks", ()) or ():
+        if getattr(task, "completed", False) or getattr(task, "category", "") != "milestone":
+            continue
+        desc = _safe_action_str(getattr(task, "description", "")).lower()
+        if any(w in desc for w in ("escape flight", "escape", "flucht", "fleetsave")):
+            return task
+    return None
+
+
 def _opt_milestone_helper_ship_id(desc_lower: str) -> Optional[int]:
     if any(w in desc_lower for w in ("spy", "espionage", "spionage", "probe")):
         return 10
@@ -3373,9 +3385,19 @@ def _tutorial_progress_match(sim: _SimState, kind: str, target_id: Optional[int 
             if any(w in desc for w in ("spy", "espionage", "spionage", "probe")):
                 return 1
         if kind == "BUILD_SHIP" and task.category == "milestone":
-            helper_sid = _opt_milestone_helper_ship_id(_safe_action_str(task.description).lower())
+            desc_low = _safe_action_str(task.description).lower()
+            helper_sid = _opt_milestone_helper_ship_id(desc_low)
             if helper_sid is not None and helper_sid == target_id:
                 return 1
+            if target_id == 1 and any(w in desc_low for w in ("escape flight", "escape", "flucht", "fleetsave")):
+                has_mobile = any(
+                    k != "s9" and max(0, _safe_int(v, 0)) > 0
+                    for pl in sim.planets
+                    if not is_raid_planet(pl)
+                    for k, v in (pl.ships or {}).items()
+                )
+                if not has_mobile:
+                    return 1
         if kind in ("BUILD", "RESEARCH"):
             goal_cat: Optional[str] = None
             goal_key: Optional[int | str] = None
@@ -5625,7 +5647,8 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
                             if t_slug and t_slug not in ship_slugs:
                                 ship_slugs.append(t_slug)
                     elif t_cat == "milestone":
-                        h_sid = _opt_milestone_helper_ship_id(_safe_action_str(getattr(t_task, "description", "")).lower())
+                        t_desc_low = _safe_action_str(getattr(t_task, "description", "")).lower()
+                        h_sid = _opt_milestone_helper_ship_id(t_desc_low)
                         if h_sid is not None:
                             h_skey = f"s{h_sid}"
                             has_any_h = any(
@@ -5637,6 +5660,15 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
                                 h_slug = SHIP_SLUG_BY_KEY.get(h_skey)
                                 if h_slug and h_slug not in ship_slugs:
                                     ship_slugs.append(h_slug)
+                        elif any(w in t_desc_low for w in ("escape flight", "escape", "flucht", "fleetsave")):
+                            has_any_mobile = any(
+                                k != "s9" and max(0, _safe_int(v, 0)) > 0
+                                for pl in planets
+                                if not is_raid_planet(pl)
+                                for k, v in (pl.ships or {}).items()
+                            )
+                            if not has_any_mobile and "small-transport" not in ship_slugs:
+                                ship_slugs.append("small-transport")
             if cfg.playstyle == "fleeter":
                 for fs in ("small-fighter", "small-transport", "starcruiser", "phoenix", "battleship", "stealth-bomber"):
                     if fs not in ship_slugs:
@@ -5677,7 +5709,12 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
                     )
                 )
 
-        if cfg.allow_raids:
+        tut_src = getattr(getattr(sim, "_source_state", None), "tutorial", None)
+        hold_atk_for_escape = (
+            _opt_tutorial_escape_task(tut_src) is not None
+            and not _sim_tutorial_fight_pending(sim)
+        )
+        if cfg.allow_raids and not hold_atk_for_escape:
             atk_ships = {
                 k: max(0, _safe_int(p.ships.get(k, 0), 0))
                 for k in _COMBAT_AND_RAID_SHIP_KEYS
@@ -6864,6 +6901,7 @@ def _materialize_planned_actions(
     tut_obj = state.tutorial if (state.tutorial is not None and not state.tutorial.can_complete) else None
     tutorial_fight_task = _opt_tutorial_fight_task(tut_obj)
     tutorial_spy_task = _opt_tutorial_spy_task(tut_obj)
+    tutorial_escape_task = _opt_tutorial_escape_task(tut_obj)
     tutorial_ship_ids: set[int] = set()
     deferred_non_urgent_fusion_pids: set[int] = set()
     if tut_obj is not None:
@@ -7244,7 +7282,13 @@ def _materialize_planned_actions(
                     best_p = cand_p
             return best_p
 
-        def _emit_opt_ship_with_prereqs(sid_v: int, qty_v: int, reason_str: str) -> None:
+        def _emit_opt_ship_with_prereqs(
+            sid_v: int,
+            qty_v: int,
+            reason_str: str,
+            *,
+            hold_in_flight: bool = False,
+        ) -> None:
             cand_p = _best_ship_planet_opt(sid_v)
             if cand_p is None:
                 return
@@ -7268,6 +7312,7 @@ def _materialize_planned_actions(
             unmet_now = _fast_unmet_prereqs("ships", slug_v, cand_p.buildings, state.researches)
             can_ex = bool(
                 not is_raid_planet(cand_p)
+                and not hold_in_flight
                 and cand_p.building_level(9) >= 1
                 and not unmet_now
                 and bool(cfg.allow_shipyard)
@@ -7278,6 +7323,7 @@ def _materialize_planned_actions(
             if can_ex:
                 avail_res_by_p[cand_p.planet_id] = _sub_resources(av_p, tot_cost)
             p1_done_ships.add((cand_p.planet_id, sid_v))
+            out_reason = f"{reason_str} (hold while own fleet is in transit)" if hold_in_flight else reason_str
             plan.append(
                 _make_planned_action(
                     priority="P2",
@@ -7289,7 +7335,7 @@ def _materialize_planned_actions(
                     target_level=q_eff,
                     cost=tot_cost,
                     missing=av_p.missing(tot_cost),
-                    reason=reason_str,
+                    reason=out_reason,
                     executable_now=can_ex,
                 )
             )
@@ -7310,6 +7356,42 @@ def _materialize_planned_actions(
                 desc_s = _safe_action_str(t_item.description)
                 desc_l = desc_s.lower()
                 if any(w in desc_l for w in ("fight", "attack", "combat", "battle")):
+                    continue
+                if any(w in desc_l for w in ("escape flight", "escape", "flucht", "fleetsave")):
+                    esc_candidates = [
+                        pl
+                        for pl in non_raid_p
+                        if any(k != "s9" and _safe_int(v, 0) > 0 for k, v in (pl.ships or {}).items())
+                    ]
+                    if not esc_candidates:
+                        if non_raid_p:
+                            _emit_opt_ship_with_prereqs(
+                                1,
+                                1,
+                                f"Tutorial {tut_step_s}/{tut_total_s}: build Small transport for {desc_s}",
+                                hold_in_flight=own_fleet_in_flight,
+                            )
+                        continue
+                    esc_p = next(
+                        (pl for pl in esc_candidates if _safe_int(pl.ships.get("s1", 0), 0) > 0),
+                        esc_candidates[0],
+                    )
+                    e_gal, e_sys, e_pos = _parse_gal_sys_pos(_safe_action_str(esc_p.coords))
+                    t_coords_esc = f"{e_gal:02d}:{e_sys:03d}:{(e_pos % 16) + 1:02d}"
+                    esc_reason = f"Tutorial {tut_step_s}/{tut_total_s}: {desc_s}"
+                    if own_fleet_in_flight:
+                        esc_reason += " [Hold: Own fleet in transit]"
+                    plan.append(
+                        _make_planned_action(
+                            priority="P2",
+                            kind="ESCAPE_FLIGHT",
+                            planet_id=esc_p.planet_id,
+                            planet_coords=_safe_action_str(esc_p.coords),
+                            target_name=f"Save -> {t_coords_esc}",
+                            reason=esc_reason,
+                            executable_now=bool(cfg.allow_fleetsave and not own_fleet_in_flight),
+                        )
+                    )
                     continue
                 helper_sid = _opt_milestone_helper_ship_id(desc_l)
                 if helper_sid == 10:
@@ -7950,10 +8032,13 @@ def _materialize_planned_actions(
             ):
                 full_reason = f"{full_reason} [Hold: Rounded raid loot is 0]"
             hold_tut_inflight = (tutorial_fight_task is not None) and own_fleet_in_flight
+            hold_for_escape_tut = (tutorial_escape_task is not None) and (tutorial_fight_task is None)
             tut_zero_loot_ok = (tutorial_fight_task is not None) and not hold_tut_inflight and not already_raided_t0
             if hold_tut_inflight and "already in flight" not in full_reason:
                 full_reason = f"{full_reason} [Hold: Tutorial attack already in flight]"
-            if already_raided_t0 or (is_depleted_now and not tut_zero_loot_ok) or hold_tut_inflight:
+            elif hold_for_escape_tut and "escape flight pending" not in full_reason.lower():
+                full_reason = f"{full_reason} [Hold: Tutorial escape flight pending]"
+            if already_raided_t0 or (is_depleted_now and not tut_zero_loot_ok) or hold_tut_inflight or hold_for_escape_tut:
                 can_exec = False
             else:
                 loot_ok = tut_zero_loot_ok or (

@@ -1491,6 +1491,22 @@ def parse_home_metadata(html: str) -> tuple[Optional[int], Optional[float], bool
                     )
                 )
 
+    if not any(q.category == "fleet" for q in queues):
+        recall_nodes = soup.select(
+            'form[action*="recallFleet"], a[href*="recallFleet"], '
+            'input[name*="recallFleet"], [onclick*="recallFleet"]'
+        )
+        for rnode in recall_nodes:
+            row = rnode.find_parent("tr") or rnode.find_parent("div") or rnode
+            summary_txt = " ".join(row.get_text(" ", strip=True).split()).strip()
+            queues.append(
+                QueueJob(
+                    category="fleet",
+                    name=(summary_txt[:200] if summary_txt else "Active/returning fleet"),
+                )
+            )
+            break
+
     alerts: list[FleetAlert] = []
     # Check for hostile attack indicators rendered on overview
     for tag in soup.select('[class*="attack"], [id*="attack"]'):

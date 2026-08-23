@@ -975,6 +975,19 @@ def _tutorial_spy_task(state: GameState) -> Optional[object]:
     return None
 
 
+def _tutorial_escape_task(state: GameState) -> Optional[object]:
+    """Return active incomplete tutorial escape-flight milestone task, if any."""
+    if state.tutorial is None or state.tutorial.can_complete:
+        return None
+    for task in state.tutorial.tasks:
+        if task.completed or task.category != "milestone":
+            continue
+        desc = _safe_strategy_str(task.description).lower()
+        if any(word in desc for word in ("escape flight", "escape", "flucht", "fleetsave")):
+            return task
+    return None
+
+
 def _milestone_helper_ship_id(desc_lower: str) -> Optional[int]:
     if any(word in desc_lower for word in ("spy", "espionage", "spionage", "probe")):
         return 10
@@ -1025,7 +1038,14 @@ def _plan_tutorial_fleet_milestones(
     seen_build_ids = emitted_build_ids if emitted_build_ids is not None else set()
     seen_res_keys = emitted_res_keys if emitted_res_keys is not None else set()
 
-    def _emit_ship_and_prereqs(sid_num: int, needed_qty: int, base_reason: str, fallback_ship_name: str) -> None:
+    def _emit_ship_and_prereqs(
+        sid_num: int,
+        needed_qty: int,
+        base_reason: str,
+        fallback_ship_name: str,
+        *,
+        hold_in_flight: bool = False,
+    ) -> None:
         if not non_raid_candidates:
             return
         slug = SHIP_SLUG_BY_KEY.get(f"s{sid_num}")
@@ -1056,6 +1076,7 @@ def _plan_tutorial_fleet_milestones(
                 c_can_exec = bool(
                     c_has_wf
                     and c_prereqs_ok
+                    and not hold_in_flight
                     and config.allow_shipyard
                     and c_offer.can_build
                     and cand.resources.can_afford(c_cost)
@@ -1127,7 +1148,9 @@ def _plan_tutorial_fleet_milestones(
                 )
             )
         reason = base_reason
-        if cand.building_level(WEAPONS_FACTORY) < 1:
+        if hold_in_flight:
+            reason += " (hold while own fleet is in transit)"
+        elif cand.building_level(WEAPONS_FACTORY) < 1:
             reason += " (Weapons factory b9 required)"
         elif missing_b:
             first_req = missing_b[0]
@@ -1151,6 +1174,7 @@ def _plan_tutorial_fleet_milestones(
             )
         )
 
+    own_fleet_in_flight = any(q.category == "fleet" for q in state.active_queues)
     for task in tut.tasks:
         if task.completed:
             continue
@@ -1170,6 +1194,44 @@ def _plan_tutorial_fleet_milestones(
             if any(word in desc_l for word in ("fight", "attack", "combat", "battle")):
                 # Handled at P2 as SCAN_GALAXY / ATTACK by `_plan_combat_and_raid_actions`
                 continue
+            if any(word in desc_l for word in ("escape flight", "escape", "flucht", "fleetsave")):
+                esc_planets = [
+                    p
+                    for p in non_raid_candidates
+                    if any(k != "s9" and _safe_strategy_int(v, 0) > 0 for k, v in (p.ships or {}).items())
+                ]
+                if not esc_planets:
+                    if non_raid_candidates:
+                        _emit_ship_and_prereqs(
+                            1,
+                            1,
+                            f"Tutorial {tut_step_s}/{tut_total_s}: build Small transport for {desc_s}",
+                            "Small transport",
+                            hold_in_flight=own_fleet_in_flight,
+                        )
+                        continue
+                else:
+                    esc_planet = next(
+                        (p for p in esc_planets if _safe_strategy_int(p.ships.get("s1", 0), 0) > 0),
+                        esc_planets[0],
+                    )
+                    e_gal, e_sys, e_pos = _parse_gal_sys_pos(esc_planet.coords)
+                    target_coords = f"{e_gal:02d}:{e_sys:03d}:{(e_pos % 16) + 1:02d}"
+                    esc_reason = f"Tutorial {tut_step_s}/{tut_total_s}: {desc_s}"
+                    if own_fleet_in_flight:
+                        esc_reason += " [Hold: Own fleet in transit]"
+                    out.append(
+                        PlannedAction(
+                            priority="P2",
+                            kind="ESCAPE_FLIGHT",
+                            planet_id=esc_planet.planet_id,
+                            planet_coords=_safe_strategy_str(esc_planet.coords),
+                            target_name=f"Save -> {target_coords}",
+                            reason=esc_reason,
+                            executable_now=bool(config.allow_fleetsave and not own_fleet_in_flight),
+                        )
+                    )
+                    continue
             helper_sid = _milestone_helper_ship_id(desc_l)
             if helper_sid == 10:
                 has_any_probe = any(
@@ -1243,8 +1305,10 @@ def _plan_combat_and_raid_actions(
     ref_now = _safe_strategy_float(now_ts, time.time()) if now_ts is not None else time.time()
     tut_fight = _tutorial_fight_task(state)
     tut_spy = _tutorial_spy_task(state)
+    tut_escape = _tutorial_escape_task(state)
     tutorial_fight_pending = tut_fight is not None
     tutorial_spy_pending = tut_spy is not None
+    tutorial_escape_pending = tut_escape is not None
 
     def _planet_attack_ships(planet: PlanetState) -> dict[str, int]:
         return {
@@ -1425,11 +1489,13 @@ def _plan_combat_and_raid_actions(
 
         own_fleet_in_flight = any(q.category == "fleet" for q in state.active_queues)
         hold_tutorial_inflight = bool(tutorial_fight_pending and own_fleet_in_flight)
+        hold_for_escape_tutorial = bool(tutorial_escape_pending and not tutorial_fight_pending)
         can_exec = bool(
             cfg.allow_raids
             and has_attack_fleet
             and rec.combat.safe_to_attack
             and not hold_tutorial_inflight
+            and not hold_for_escape_tutorial
         )
         if rec.loot_spice_equivalent > 0:
             loot_disp = (
@@ -1443,6 +1509,8 @@ def _plan_combat_and_raid_actions(
         gates: list[str] = []
         if hold_tutorial_inflight:
             gates.append("tutorial raid fleet already in transit")
+        if hold_for_escape_tutorial:
+            gates.append("tutorial escape flight pending")
         if not has_attack_fleet:
             gates.append("need stationed attack/transport ships")
         if not cfg.allow_raids:

@@ -3524,9 +3524,41 @@ class TestIteration3Wave2Regressions(unittest.TestCase):
         self.assertLess(exec_b_ids.index(4), exec_b_ids.index(5))
         self.assertIn(9, exec_b_ids)
         self.assertTrue(any(a.kind == "RESEARCH" and a.target_id in (3, 4) and a.executable_now for a in acts_late))
+        esc_late_ga = [a for a in acts_late if a.kind == "ESCAPE_FLIGHT"]
+        self.assertEqual(len(esc_late_ga), 1)
+        self.assertEqual((esc_late_ga[0].priority, esc_late_ga[0].target_name, esc_late_ga[0].executable_now), ("P2", "Save -> 02:380:13", False))
         tut_adv = [a for a in acts_late if a.kind == "TUTORIAL_TASK"]
-        self.assertEqual(len(tut_adv), 4)
+        self.assertEqual(len(tut_adv), 3)
         self.assertTrue(all(not a.executable_now and a.action_href is None for a in tut_adv))
+
+        # Live Step 7/11 ("Make an escape flight 0 / 1") in ga_nn:
+        # 0 non-s9 ships -> builds Small transport s1; stationed ships -> P2 ESCAPE_FLIGHT & holds ATTACK
+        tut_esc7 = TutorialStatus(
+            step=7,
+            total_steps=11,
+            can_complete=False,
+            tasks=(TutorialTask("Make an escape flight 0 / 1", "Make an escape flight", None, 0, 1, "milestone"),),
+        )
+        p_esc_s9_only = dc_replace(
+            p7_probes,
+            ships={"s9": 5},
+            ship_offers=(UnitOffer("ship", 1, "Small transport", 0, Resources(0, 3_000, 3_000, 0), True, "ship[1]"),),
+        )
+        st_esc_s1_ga = dc_replace(st7_b8, planets=(p_esc_s9_only,), researches={"r2": 4, "r3": 2, "r4": 4}, tutorial=tut_esc7)
+        acts_esc_s1_ga = plan_actions(st_esc_s1_ga, config=dc_replace(ga_cfg, allow_fleetsave=True), now_ts=1450.0)
+        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == 1 and a.executable_now for a in acts_esc_s1_ga))
+
+        st_esc_go_ga = dc_replace(
+            st6_idle,
+            tutorial=tut_esc7,
+            raid_targets=({"coords": "02:380:04", "owner": "Idle", "status_color": "yellow", "resources": {"pig_iron": 50_000}},),
+        )
+        acts_esc_go_ga = plan_actions(st_esc_go_ga, config=dc_replace(ga_cfg, allow_fleetsave=True), now_ts=1460.0)
+        esc_act_ga = next((a for a in acts_esc_go_ga if a.kind == "ESCAPE_FLIGHT"), None)
+        self.assertIsNotNone(esc_act_ga)
+        assert esc_act_ga is not None
+        self.assertEqual((esc_act_ga.priority, esc_act_ga.target_name, esc_act_ga.executable_now), ("P2", "Save -> 02:380:13", True))
+        self.assertFalse(any(a.kind == "ATTACK" and a.executable_now for a in acts_esc_go_ga))
 
         # Storage-capped tutorial upgrade triggers warehouse expansion in ga_nn (even when fill ratio < 85%)
         p_capped = dc_replace(

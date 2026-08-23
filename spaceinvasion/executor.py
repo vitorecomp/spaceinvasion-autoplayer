@@ -1712,11 +1712,12 @@ class ActionExecutor:
                                 lbl_parts.append(sib_txt)
                 radio_labels.append((rval, rid, rname, " ".join(lbl_parts).lower()))
 
-        want_tokens = (
-            ("attack", "angriff", "angreif")
-            if mission_kind == "ATTACK"
-            else ("spy", "spio", "spionier", "espionage")
-        )
+        if mission_kind == "ATTACK":
+            want_tokens: tuple[str, ...] = ("attack", "angriff", "angreif")
+        elif mission_kind == "ESCAPE":
+            want_tokens = ("escape", "flucht", "save")
+        else:
+            want_tokens = ("spy", "spio", "spionier", "espionage")
 
         def _is_speed_or_route(r_name: str, lbl: str) -> bool:
             return (
@@ -2168,7 +2169,12 @@ class ActionExecutor:
         ship_desc = ", ".join(
             f"{game_data.fmt_compact_int(qty)}x {k}" for k, qty in ships_to_send.items()
         )
-        verb = "spy probe" if mission_kind == "SPY" else "attack"
+        if mission_kind == "SPY":
+            verb = "spy probe"
+        elif mission_kind == "ESCAPE":
+            verb = "escape flight"
+        else:
+            verb = "attack"
         return ExecutionResult(
             executed=True,
             dry_run=False,
@@ -2178,6 +2184,68 @@ class ActionExecutor:
                 f"from [{coords_s}]."
             ),
             updated_state=updated_state,
+        )
+
+    def _execute_escape_flight(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+        *,
+        active_planet_confirmed: bool = True,
+    ) -> ExecutionResult:
+        planet = next((p for p in state.planets if p.planet_id == action.planet_id), None) or state.active_planet()
+        preferred_order = (
+            "s1",
+            "s10",
+            "s2",
+            "s4",
+            "s5",
+            "s11",
+            "s3",
+            "s6",
+            "s7",
+            "s8",
+            "s12",
+            "s13",
+            "s14",
+            "s15",
+            "s16",
+        )
+        stationed: dict[str, int] = {}
+        if planet is not None:
+            for k in preferred_order:
+                qty = game_data.cap_json_int(game_data.safe_int((planet.ships or {}).get(k, 0), 0))
+                if qty > 0:
+                    stationed[k] = qty
+            for raw_k, raw_v in (planet.ships or {}).items():
+                sk = _safe_str(raw_k).strip()
+                if sk == "s9" or sk in stationed:
+                    continue
+                if sk.startswith("s") and sk[1:].isascii() and sk[1:].isdigit():
+                    qty = game_data.cap_json_int(game_data.safe_int(raw_v, 0))
+                    if qty > 0:
+                        stationed[sk] = qty
+        if not stationed:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: no stationed mobile ships on [{_safe_str(action.planet_coords)}].",
+            )
+        is_tutorial_escape = "tutorial" in _safe_str(action.reason).lower()
+        if is_tutorial_escape:
+            first_key = next(iter(stationed))
+            ships_to_send = {first_key: 1}
+        else:
+            ships_to_send = dict(stationed)
+        return self._dispatch_fleet_mission(
+            client,
+            state,
+            action,
+            ships_to_send=ships_to_send,
+            mission_kind="ESCAPE",
+            active_planet_confirmed=active_planet_confirmed,
         )
 
     def _execute_attack(
@@ -2358,10 +2426,10 @@ class ActionExecutor:
                 active_planet_confirmed=active_planet_confirmed,
             )
         else:
-            res = ExecutionResult(
-                executed=False,
-                dry_run=False,
-                action=action,
-                message=f"Escape flight planned ({_safe_str(action.reason)}); inspect internalFleet before dispatch.",
+            res = self._execute_escape_flight(
+                client,
+                state,
+                action,
+                active_planet_confirmed=active_planet_confirmed,
             )
         return self._attach_observed_planet(res)

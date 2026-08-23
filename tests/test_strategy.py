@@ -2069,10 +2069,54 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual([a.target_id for a in raw_tut_b], [4, 5])
         # Research prerequisites r3/r4 unlocked for s11/s8
         self.assertTrue(any(a.kind == "RESEARCH" and a.target_id in (3, 4) and a.executable_now for a in acts_late))
-        # Every TUTORIAL_TASK advisory strictly preserves executable_now=False and action_href=None
+        # Escape milestone emits P2 ESCAPE_FLIGHT targeting adjacent same-system slot; remaining 3 advisories stay executable_now=False
+        esc_late = [a for a in acts_late if a.kind == "ESCAPE_FLIGHT"]
+        self.assertEqual(len(esc_late), 1)
+        self.assertEqual((esc_late[0].priority, esc_late[0].target_name, esc_late[0].executable_now), ("P2", "Save -> 02:380:13", False))
         tut_advisories = [a for a in acts_late if a.kind == "TUTORIAL_TASK"]
-        self.assertEqual(len(tut_advisories), 4)
+        self.assertEqual(len(tut_advisories), 3)
         self.assertTrue(all(not a.executable_now and a.action_href is None for a in tut_advisories))
+
+        # Live Step 7/11 ("Make an escape flight 0 / 1"):
+        # - 0 non-s9 ships -> P2 BUILD_SHIP Small transport (target_id=1)
+        # - >=1 non-s9 ship & !own_fleet_in_flight -> P2 ESCAPE_FLIGHT (Save -> 02:380:13 / wrap 16->01) & holds ATTACK!
+        tut_esc7 = TutorialStatus(
+            step=7,
+            total_steps=11,
+            can_complete=False,
+            tasks=(TutorialTask("Make an escape flight 0 / 1", "Make an escape flight", None, 0, 1, "milestone"),),
+        )
+        p_only_s9 = replace(
+            p6,
+            ships={"s9": 10},
+            ship_offers=(UnitOffer("ship", 1, "Small transport", 0, Resources(0, 3_000, 3_000, 0), True, "ship[1]"),),
+        )
+        st_esc_need_s1 = GameState(31, 103603, "u", 1500.0, (p_only_s9,), active_planet_id=12476, researches={"r2": 4, "r3": 2, "r4": 4}, tutorial=tut_esc7)
+        acts_esc_s1 = plan_actions(st_esc_need_s1, config=StrategyConfig(allow_shipyard=True, allow_fleetsave=True))
+        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == 1 and a.executable_now for a in acts_esc_s1))
+
+        p_pos16 = replace(p6, coords="02:380:16", ships={"s1": 2, "s4": 6})
+        st_esc_ready = GameState(
+            31,
+            103603,
+            "u",
+            1510.0,
+            (p_pos16,),
+            active_planet_id=12476,
+            researches={"r2": 4, "r3": 2, "r4": 4},
+            tutorial=tut_esc7,
+            raid_targets=({"coords": "02:380:04", "owner": "Idle", "status_color": "yellow", "resources": {"pig_iron": 50_000}},),
+        )
+        acts_esc_go = plan_actions(
+            st_esc_ready,
+            config=StrategyConfig(allow_fleetsave=True, allow_raids=True),
+            now_ts=1510.0,
+        )
+        esc_go = next((a for a in acts_esc_go if a.kind == "ESCAPE_FLIGHT"), None)
+        self.assertIsNotNone(esc_go)
+        assert esc_go is not None
+        self.assertEqual((esc_go.priority, esc_go.target_name, esc_go.executable_now), ("P2", "Save -> 02:380:01", True))
+        self.assertFalse(any(a.kind == "ATTACK" and a.executable_now for a in acts_esc_go))
 
 
 if __name__ == "__main__":

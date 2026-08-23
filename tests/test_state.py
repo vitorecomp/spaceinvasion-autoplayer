@@ -965,6 +965,33 @@ class TestStateParsers(unittest.TestCase):
         self.assertIn("Colonize a planet", milestones)
         self.assertIn("Send an escape flight", milestones)
 
+        # Live Step 7/11 ("Make an escape flight 0 / 1") + recallFleet fallback when #sp-own-fleet is absent
+        live_step7_html = """
+        <html><body>
+          <script>var cfg = {planetID: 12476};</script>
+          <div>Tutorial 7 / 11</div>
+          <div id="tutorial.text">
+            <table><tr><td>Make an escape flight</td><td>0 / 1</td></tr></table>
+          </div>
+          <table><tr><td>
+            Returning raid 02:383:02 -> 02:380:12 00:02:15
+            <form action="indexInternal.es?action=internalHome&recallFleet=991" method="POST">
+              <input type="submit" value="Recall"/>
+            </form>
+          </td></tr></table>
+        </body></html>
+        """
+        tut_live7 = parse_tutorial_from_home(live_step7_html)
+        self.assertIsNotNone(tut_live7)
+        assert tut_live7 is not None
+        self.assertEqual(tut_live7.step, 7)
+        self.assertEqual(len(tut_live7.tasks), 1)
+        self.assertEqual(tut_live7.tasks[0].category, "milestone")
+        self.assertIn("escape flight", tut_live7.tasks[0].description.lower())
+        pid7, _, _, queues7, _ = parse_home_metadata(live_step7_html)
+        self.assertEqual(pid7, 12476)
+        self.assertTrue(any(q.category == "fleet" for q in queues7))
+
 
 if __name__ == "__main__":
     unittest.main()
