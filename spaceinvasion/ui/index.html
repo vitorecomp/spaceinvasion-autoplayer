@@ -530,21 +530,41 @@
               </div>
             </article>
 
-            <!-- Lower Row: Immediate Next Actions + Upcoming Building Reach ETAs -->
+            <!-- Lower Row: 3 Side-by-Side Queues (Building, Fleet, Research) -->
+            <div class="dash-queues-toolbar" aria-label="Planned queues overview and navigation">
+              <div class="window-title-group">
+                <span class="module-meta tabular mode-badge" id="dash-planner-mode-badge">MODE: PRIORITY</span>
+                <span class="module-meta tabular" id="dash-pinned-count-badge" hidden>0 PINNED</span>
+              </div>
+              <div class="inline-actions">
+                <button type="button" class="btn btn-secondary btn-sm" data-goto-page="action-graph">
+                  Action Graph →
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" data-goto-page="operations">
+                  Full Queue →
+                </button>
+              </div>
+            </div>
+
             <div class="dash-lower-grid">
-              <article class="hud-window">
+              <article class="hud-window dash-queue-card" id="dash-queue-card-building">
                 <div class="window-bar window-bar-wrap">
                   <div class="window-title-group">
                     <span class="module-code tabular">NXQ</span>
-                    <h2>Top Planned Actions</h2>
+                    <h2>Building Queue</h2>
+                    <span class="module-meta tabular dash-q-count" id="dash-bld-q-count">0</span>
                   </div>
                   <div class="inline-actions">
-                    <span class="module-meta tabular mode-badge" id="dash-planner-mode-badge">MODE: PRIORITY</span>
-                    <button type="button" class="btn btn-secondary btn-sm" data-goto-page="action-graph">
-                      Action Graph →
+                    <button
+                      type="button"
+                      class="btn btn-primary btn-sm"
+                      id="btn-dash-add-queue"
+                      aria-label="Queue building command"
+                    >
+                      + Queue
                     </button>
-                    <button type="button" class="btn btn-secondary btn-sm" data-goto-page="operations">
-                      Full Queue →
+                    <button type="button" class="btn btn-secondary btn-sm" data-goto-page="buildings">
+                      Buildings →
                     </button>
                   </div>
                 </div>
@@ -563,37 +583,93 @@
                     </thead>
                     <tbody id="dash-plan-tbody">
                       <tr>
-                        <td colspan="6" class="empty-cell">Run Sync to populate actions...</td>
+                        <td colspan="6" class="empty-cell">Run Sync to populate building actions...</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
               </article>
 
-              <article class="hud-window">
-                <div class="window-bar">
+              <article class="hud-window dash-queue-card" id="dash-queue-card-fleet">
+                <div class="window-bar window-bar-wrap">
                   <div class="window-title-group">
-                    <span class="module-code tabular">ETA</span>
-                    <h2>Nearest Building Reach Times</h2>
+                    <span class="module-code tabular">FLT</span>
+                    <h2>Fleet Queue</h2>
+                    <span class="module-meta tabular dash-q-count" id="dash-fleet-q-count">0</span>
                   </div>
-                  <button type="button" class="btn btn-secondary btn-sm" data-goto-page="buildings">
-                    All 21 Buildings →
-                  </button>
+                  <div class="inline-actions">
+                    <button
+                      type="button"
+                      class="btn btn-primary btn-sm"
+                      id="btn-dash-add-fleet-queue"
+                      aria-label="Queue fleet or ship command"
+                    >
+                      + Queue
+                    </button>
+                    <button type="button" class="btn btn-secondary btn-sm" data-goto-page="combat">
+                      Fleet →
+                    </button>
+                  </div>
                 </div>
 
                 <div class="table-wrap table-scroll">
                   <table>
                     <thead>
                       <tr>
-                        <th>Building</th>
-                        <th>Next</th>
-                        <th>Build Time</th>
-                        <th class="col-right">Level Reached</th>
+                        <th>Prio</th>
+                        <th>Action</th>
+                        <th>Missing / Cost</th>
+                        <th class="col-right">Wait ETA</th>
+                        <th class="col-right">Total ETA</th>
+                        <th class="col-right">Ops</th>
                       </tr>
                     </thead>
-                    <tbody id="dash-eta-tbody">
+                    <tbody id="dash-plan-fleet-tbody">
                       <tr>
-                        <td colspan="4" class="empty-cell">Waiting for economy forecast...</td>
+                        <td colspan="6" class="empty-cell">No queued fleet or ship actions.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+
+              <article class="hud-window dash-queue-card" id="dash-queue-card-research">
+                <div class="window-bar window-bar-wrap">
+                  <div class="window-title-group">
+                    <span class="module-code tabular">RES</span>
+                    <h2>Research Queue</h2>
+                    <span class="module-meta tabular dash-q-count" id="dash-research-q-count">0</span>
+                  </div>
+                  <div class="inline-actions">
+                    <button
+                      type="button"
+                      class="btn btn-primary btn-sm"
+                      id="btn-dash-add-res-queue"
+                      aria-label="Queue research command"
+                    >
+                      + Queue
+                    </button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-dash-goto-research">
+                      Research →
+                    </button>
+                  </div>
+                </div>
+
+                <div class="table-wrap table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Prio</th>
+                        <th>Action</th>
+                        <th>Missing / Cost</th>
+                        <th class="col-right">Wait ETA</th>
+                        <th class="col-right">Total ETA</th>
+                        <th class="col-right">Ops</th>
+                      </tr>
+                    </thead>
+                    <tbody id="dash-plan-research-tbody">
+                      <tr>
+                        <td colspan="6" class="empty-cell">No queued research actions.</td>
                       </tr>
                     </tbody>
                   </table>
@@ -696,6 +772,9 @@
                   <div class="inspector-actions">
                     <button type="button" class="btn btn-primary btn-sm" id="btn-insp-build" hidden>
                       Queue Next Level Live
+                    </button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-insp-pin-queue" hidden>
+                      + Pin to Queue (P1)
                     </button>
                   </div>
                 </aside>
@@ -1265,6 +1344,7 @@
                   <span class="module-code tabular">OPS</span>
                   <h2>Priority Action Queue (P0 → P3)</h2>
                   <span class="module-meta tabular" id="plan-count-badge">0 TASKS</span>
+                  <span class="module-meta tabular" id="ops-pinned-badge" hidden>0 PINNED</span>
                   <span class="module-meta tabular mode-badge" id="ops-planner-mode-badge">MODE: PRIORITY</span>
                 </div>
 
@@ -1272,9 +1352,11 @@
                   <div class="filter-chips">
                     <button type="button" class="chip-btn active" data-filter="all">All Planned</button>
                     <button type="button" class="chip-btn" data-filter="ready">Executable Only</button>
+                    <button type="button" class="chip-btn" data-filter="manual" id="chip-filter-manual">Pinned Only (0)</button>
                   </div>
 
                   <div class="inline-actions nav-matrix-inline">
+                    <button type="button" class="btn btn-secondary btn-sm btn-danger-ghost" id="btn-mq-clear" hidden>Clear Pinned</button>
                     <button type="button" class="btn btn-secondary btn-sm" data-goto-page="action-graph">Action Graph →</button>
                     <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalHome">Home</button>
                     <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalBuildings">Buildings</button>
@@ -1284,6 +1366,76 @@
                   </div>
                 </div>
               </div>
+
+              <!-- Operator Manual Command Composer Strip -->
+              <form class="mq-composer-bar" id="mq-composer-form" aria-label="Enqueue prioritized command">
+                <div class="mq-field">
+                  <label for="mq-planet">Colony</label>
+                  <select id="mq-planet">
+                    <option value="0">Active Colony</option>
+                  </select>
+                </div>
+
+                <div class="mq-field">
+                  <label for="mq-kind">Command</label>
+                  <select id="mq-kind">
+                    <option value="BUILD">Build / Upgrade Building</option>
+                    <option value="DEMOLISH_BUILDING">Demolish Building</option>
+                    <option value="RESEARCH">Start Research</option>
+                    <option value="BUILD_SHIP">Build Ships</option>
+                    <option value="THROTTLE_BUILDING">Throttle Building %</option>
+                    <option value="SPY">Spy Target</option>
+                    <option value="ATTACK">Attack / Raid Target</option>
+                    <option value="RECYCLE">Recycle Debris</option>
+                    <option value="COLONIZE">Colonize Free Slot</option>
+                    <option value="SCAN_GALAXY">Scan Galaxy System</option>
+                    <option value="CLAIM_TUTORIAL">Claim Tutorial Reward</option>
+                  </select>
+                </div>
+
+                <div class="mq-field mq-field-wide" id="mq-unit-wrap">
+                  <label for="mq-target-id" id="mq-unit-label">Target Unit</label>
+                  <select id="mq-target-id"></select>
+                </div>
+
+                <div class="mq-field" id="mq-coords-wrap" hidden>
+                  <label for="mq-coords" id="mq-coords-label">Target Coords</label>
+                  <input type="text" id="mq-coords" list="mq-coords-datalist" placeholder="02:381:12" autocomplete="off" />
+                  <datalist id="mq-coords-datalist"></datalist>
+                </div>
+
+                <div class="mq-field mq-field-num" id="mq-level-wrap">
+                  <label for="mq-level" id="mq-level-label">Goal Lvl</label>
+                  <input type="number" id="mq-level" min="0" max="100000" step="1" placeholder="Auto" />
+                </div>
+
+                <div class="mq-field mq-field-prio">
+                  <label for="mq-priority">Priority</label>
+                  <select id="mq-priority">
+                    <option value="P0">P0 · Immediate</option>
+                    <option value="P1" selected>P1 · High</option>
+                    <option value="P2">P2 · Normal</option>
+                    <option value="P3">P3 · Low</option>
+                  </select>
+                </div>
+
+                <div class="mq-field mq-field-pos">
+                  <label for="mq-position">Order</label>
+                  <select id="mq-position">
+                    <option value="top" selected>Top of Band</option>
+                    <option value="bottom">End of Band</option>
+                  </select>
+                </div>
+
+                <div class="mq-field mq-field-note">
+                  <label for="mq-note">Note</label>
+                  <input type="text" id="mq-note" maxlength="140" placeholder="Optional note" />
+                </div>
+
+                <div class="mq-submit-wrap">
+                  <button type="submit" class="btn btn-primary btn-sm" id="btn-mq-submit">+ Enqueue</button>
+                </div>
+              </form>
 
               <div class="table-wrap table-scroll">
                 <table>

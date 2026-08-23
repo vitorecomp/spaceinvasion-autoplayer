@@ -86,8 +86,14 @@ from spaceinvasion.state import (
     parse_tutorial_from_home,
     parse_unread_banner_count,
 )
+from spaceinvasion.migrations import DatabaseMigrationRegistry, LATEST_SCHEMA_VERSION
 from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import PlannedAction, _tutorial_colonize_task, plan_actions
+from spaceinvasion.strategy import (
+    PlannedAction,
+    _tutorial_colonize_task,
+    merge_manual_queue_actions,
+    plan_actions,
+)
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 MAX_REQUEST_BYTES = 1_048_576
@@ -1590,7 +1596,13 @@ class GameApiBridge:
                 )
                 actions = attach_action_etas(enriched_state, list(opt_res.actions))
                 summary = _sanitize_optimizer_summary(opt_res.to_dict())
-                return self._apply_fleet_slot_cooldowns(actions, re_sort_priority=False), summary
+                actions = self._apply_fleet_slot_cooldowns(actions, re_sort_priority=False)
+                return self._apply_manual_queue_to_plan(
+                    enriched_state,
+                    actions,
+                    cfg=cfg,
+                    persist_auto_satisfied=False,
+                ), summary
             with _GLOBAL_OPTIMIZER_LOCK:
                 actions = plan_actions(
                     enriched_state,
@@ -1608,14 +1620,126 @@ class GameApiBridge:
                     self._persist_runtime_state()
                 else:
                     self._last_optimizer_summary = summary
-            return self._apply_fleet_slot_cooldowns(actions, re_sort_priority=False), summary
+            actions = self._apply_fleet_slot_cooldowns(actions, re_sort_priority=False)
+            return self._apply_manual_queue_to_plan(
+                enriched_state,
+                actions,
+                cfg=cfg,
+                persist_auto_satisfied=bool(record_summary and config is None),
+            ), summary
         actions = plan_actions(
             enriched_state,
             config=cfg,
             scanned_systems=self._get_scanned_systems(),
             throttle_cooldowns=self._get_throttle_cooldowns(),
         )
-        return self._apply_fleet_slot_cooldowns(actions, re_sort_priority=True), None
+        actions = self._apply_fleet_slot_cooldowns(actions, re_sort_priority=True)
+        return self._apply_manual_queue_to_plan(
+            enriched_state,
+            actions,
+            cfg=cfg,
+            persist_auto_satisfied=bool(record_summary and config is None),
+        ), None
+
+    def _apply_manual_queue_to_plan(
+        self,
+        state: GameState,
+        actions: list[PlannedAction],
+        *,
+        cfg: StrategyConfig,
+        persist_auto_satisfied: bool = True,
+    ) -> list[PlannedAction]:
+        if self._db is None:
+            return actions
+        get_mq = getattr(self._db, "get_manual_queue", None)
+        if not callable(get_mq):
+            return actions
+        pending_mq = get_mq(status="pending", limit=200)
+        if not pending_mq:
+            return actions
+        merged, auto_done_ids = merge_manual_queue_actions(
+            state,
+            actions,
+            pending_mq,
+            config=cfg,
+        )
+        if auto_done_ids and persist_auto_satisfied:
+            comp_fn = getattr(self._db, "complete_manual_queue_item", None)
+            if callable(comp_fn):
+                for qid in auto_done_ids:
+                    comp_fn(qid, message="Auto-satisfied by current empire state")
+        return merged
+
+    def _review_queue_metal_status_locked(
+        self,
+        planet_id: int,
+        pending_mq: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Inspect Blast furnace Metal production vs pinned queue position on `planet_id`."""
+        if self._last_state is None or not pending_mq:
+            return {"checked": False, "summary": ""}
+        enriched = self._enrich_state(self._last_state)
+        planet = (
+            next((p for p in enriched.planets if p.planet_id == planet_id), None)
+            if planet_id > 0
+            else enriched.active_planet()
+        )
+        if planet is None:
+            return {"checked": False, "summary": ""}
+        b2_lvl = planet.building_level(2)
+        cur_b2_pct = max(0, min(100, _safe_api_int((planet.economy_rates or {}).get("resource2", 100), 100)))
+        merged, _ = merge_manual_queue_actions(
+            enriched,
+            [],
+            pending_mq,
+            config=self.strategy_config,
+        )
+        p_acts = [a for a in merged if a.planet_id == planet.planet_id]
+        bf_throttle = next(
+            (
+                a
+                for a in p_acts
+                if a.manual_queue_id is None and a.kind == "THROTTLE_BUILDING" and a.target_id == 2
+            ),
+            None,
+        )
+        deferred_metal = next(
+            (
+                a
+                for a in p_acts
+                if a.manual_queue_id is not None and "[Metal production queued after" in str(a.reason or "")
+            ),
+            None,
+        )
+        pinned_needs_metal = any(
+            a.manual_queue_id is not None and _safe_api_int(a.missing.metal, 0) > 0
+            for a in p_acts
+        )
+        summary_txt = ""
+        scheduled_pct: Optional[int] = None
+        if bf_throttle is not None:
+            scheduled_pct = _safe_api_int(bf_throttle.target_level, cur_b2_pct)
+            if scheduled_pct > 0:
+                summary_txt = f"Metal production scheduled: Blast furnace {cur_b2_pct}% -> {scheduled_pct}%"
+            else:
+                summary_txt = f"Blast furnace held at 0% until earlier Pig iron item completes"
+        elif deferred_metal is not None:
+            summary_txt = "Metal production queued after earlier Pig iron item completes"
+        elif pinned_needs_metal:
+            if b2_lvl <= 0:
+                summary_txt = "Warning: pinned item needs Metal, and Colony has no Blast furnace (b2=0)"
+            elif cur_b2_pct > 0:
+                summary_txt = f"Metal production active (Blast furnace {cur_b2_pct}%)"
+        return {
+            "checked": True,
+            "planet_id": planet.planet_id,
+            "planet_coords": planet.coords,
+            "blast_furnace_level": b2_lvl,
+            "current_blast_furnace_pct": cur_b2_pct,
+            "scheduled_blast_furnace_pct": scheduled_pct,
+            "pinned_needs_metal": pinned_needs_metal,
+            "summary": summary_txt,
+        }
 
     def _plan_with_context(
         self,
@@ -1767,6 +1891,11 @@ class GameApiBridge:
                         "fleet_slot_cooldowns": self._get_fleet_slot_cooldowns(),
                         "economy_sync_timestamps": dict(self._economy_sync_timestamps),
                         "metal_production_by_planet": metal_prod,
+                        "manual_queue": (
+                            self._db.get_manual_queue(status="pending", limit=200)
+                            if self._db is not None and hasattr(self._db, "get_manual_queue")
+                            else []
+                        ),
                     }
                 )
             )
@@ -2248,13 +2377,20 @@ class GameApiBridge:
                 self._dash_static_cache_json = json.dumps(static_clean, allow_nan=False)
             static_val = json.loads(self._dash_static_cache_json)
 
+            manual_queue_pending = (
+                self._db.get_manual_queue(status="pending", limit=200)
+                if self._db is not None and hasattr(self._db, "get_manual_queue")
+                else []
+            )
             ag_opt = opt_summary if eff_mode == "ga_nn" else None
             ag_opt_sig = _freeze_sig_tree(_summary_without_elapsed(ag_opt))
+            mq_sig = _freeze_sig_tree(manual_queue_pending)
             ag_key = (
                 dash_sig,
                 cfg_sig,
                 eff_mode,
                 ag_opt_sig,
+                mq_sig,
                 tuple(actions),
                 build_action_graph,
             )
@@ -2304,6 +2440,7 @@ class GameApiBridge:
                     "bot_control": dict(self._bot_control),
                     "planner_mode": eff_mode,
                     "optimizer_summary": ag_opt,
+                    "manual_queue": manual_queue_pending,
                     "db_summary": self._db.summary() if self._db is not None else None,
                     "logs": {
                         "commander": self._read_log_tail("commander.log"),
@@ -2331,6 +2468,7 @@ class GameApiBridge:
                 "state": static_val["state"],
                 "plan": ag_val["plan"],
                 "action_graph": ag_val["action_graph"],
+                "manual_queue": envelope["manual_queue"],
                 "optimizer_summary": envelope["optimizer_summary"],
                 "buildings_eta": static_val["buildings_eta"],
                 "combat": static_val["combat"],
@@ -3538,6 +3676,22 @@ class GameApiBridge:
                 dry_run=res.dry_run,
                 message=res.message,
             )
+            if res.executed and not dry_run:
+                comp_match_fn = getattr(self._db, "complete_matching_manual_command", None)
+                if callable(comp_match_fn):
+                    act_tname = game_data.safe_key(res.action.target_name) if res.action.target_name is not None else ""
+                    m_tc = re.search(r"(\d{1,2}:\d{1,3}(?::\d{1,2})?)", act_tname, re.ASCII)
+                    exec_lvl = game_data.safe_optional_int(res.action.target_level, None)
+                    comp_match_fn(
+                        kind=res.action.kind,
+                        planet_id=game_data.safe_int(res.action.planet_id, 0),
+                        target_id=game_data.safe_optional_int(res.action.target_id, None),
+                        target_coords=m_tc.group(1) if m_tc else act_tname,
+                        executed_level=exec_lvl if res.action.kind in ("BUILD", "DEMOLISH_BUILDING", "RESEARCH") else None,
+                        executed_qty=exec_lvl if res.action.kind == "BUILD_SHIP" else None,
+                        message=res.message,
+                    )
+                    self._dash_ag_cache_json = None
             if not dry_run:
                 self._persist_runtime_state()
 
@@ -3752,6 +3906,10 @@ class GameApiBridge:
         }
         if after_state is not None:
             summary["state"] = _sanitize_finite_json(_redact_api_payload(asdict(self._attach_raid_stats(after_state))))
+        if self._db is not None and hasattr(self._db, "get_manual_queue"):
+            summary["manual_queue"] = _sanitize_finite_json(
+                _redact_api_payload(self._db.get_manual_queue(status="pending", limit=200))
+            )
         return _sanitize_finite_json(summary)
 
     def handle_command(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3765,6 +3923,258 @@ class GameApiBridge:
         if not cmd:
             raise ApiRequestError("Request JSON must include a non-empty 'command' field.")
         dry_run = bool(payload.get("dry_run", False))
+
+        if cmd == "queue_list":
+            limit = _parse_command_int("limit", payload.get("limit", 150), min_val=1, max_val=500) or 150
+            with self._lock:
+                pending = (
+                    self._db.get_manual_queue(status="pending", limit=int(limit))
+                    if self._db is not None
+                    else []
+                )
+                all_items = (
+                    self._db.get_manual_queue(status="all", limit=int(limit))
+                    if self._db is not None
+                    else []
+                )
+                history = [x for x in all_items if x.get("status") != "pending"][:50]
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "manual_queue": pending,
+                            "history": history,
+                        }
+                    )
+                )
+
+        if cmd == "queue_add":
+            raw_kind = payload.get("kind")
+            if not isinstance(raw_kind, str) or not raw_kind.strip():
+                raise ApiRequestError("'queue_add' requires a non-empty string 'kind'.")
+            norm_kind = raw_kind.strip().upper()
+            allowed_kinds = {
+                "BUILD",
+                "DEMOLISH_BUILDING",
+                "RESEARCH",
+                "BUILD_SHIP",
+                "THROTTLE_BUILDING",
+                "SPY",
+                "ATTACK",
+                "RECYCLE",
+                "COLONIZE",
+                "SCAN_GALAXY",
+                "CLAIM_TUTORIAL",
+            }
+            if norm_kind not in allowed_kinds:
+                raise ApiRequestError(f"Unsupported queue command kind '{norm_kind}'.")
+            raw_prio = str(payload.get("priority", "P1") or "P1").strip().upper()
+            if raw_prio not in ("P0", "P1", "P2", "P3"):
+                raise ApiRequestError("'priority' must be one of P0, P1, P2, P3.")
+            raw_pos = str(payload.get("position", "top") or "top").strip().lower()
+            if raw_pos not in ("top", "bottom"):
+                raw_pos = "top"
+            pid = _parse_command_int(
+                "planet_id",
+                payload.get("planet_id", 0),
+                allow_none=True,
+                min_val=0,
+                max_val=2**63 - 1,
+            ) or 0
+            tid = _parse_command_int(
+                "target_id",
+                payload.get("target_id"),
+                allow_none=True,
+                min_val=1,
+                max_val=2**31 - 1,
+            )
+            tlvl_raw = payload.get("target_level")
+            if tlvl_raw is None:
+                tlvl_raw = payload.get("quantity")
+            if tlvl_raw is None:
+                tlvl_raw = payload.get("percentage")
+            tlvl = _parse_command_int(
+                "target_level",
+                tlvl_raw,
+                allow_none=True,
+                min_val=0,
+                max_val=100_000,
+            )
+            tname = _bounded_api_str(payload.get("target_name") or "", default="")[:160]
+            tcoords = _bounded_api_str(payload.get("target_coords") or "", default="")[:64]
+            note = _bounded_api_str(payload.get("note") or "", default="")[:280]
+            dedup_flag = bool(payload.get("deduplicate_pending", False))
+
+            if norm_kind in ("BUILD", "DEMOLISH_BUILDING", "RESEARCH", "BUILD_SHIP", "THROTTLE_BUILDING") and tid is None:
+                raise ApiRequestError(f"'{norm_kind}' requires 'target_id'.")
+            if norm_kind in ("SPY", "ATTACK", "RECYCLE", "COLONIZE") and not (tcoords.strip() or tname.strip()):
+                raise ApiRequestError(f"'{norm_kind}' requires 'target_coords'.")
+
+            with self._lock:
+                if self._db is None:
+                    raise ApiRequestError("Database is not configured on this API bridge.")
+                pcoords = ""
+                if self._last_state is not None:
+                    p_match = (
+                        next((p for p in self._last_state.planets if p.planet_id == pid), None)
+                        if pid > 0
+                        else self._last_state.active_planet()
+                    )
+                    if p_match is not None:
+                        if pid <= 0:
+                            pid = p_match.planet_id
+                        pcoords = p_match.coords
+                if not tname:
+                    if norm_kind in ("BUILD", "DEMOLISH_BUILDING", "THROTTLE_BUILDING") and tid is not None:
+                        tname = str((game_data.resolve_unit("buildings", tid) or {}).get("name") or f"Building b{tid}")
+                    elif norm_kind == "RESEARCH" and tid is not None:
+                        tname = str((game_data.resolve_unit("research", f"r{tid}") or {}).get("name") or f"r{tid}")
+                    elif norm_kind == "BUILD_SHIP" and tid is not None:
+                        s_slug = SHIP_SLUG_BY_KEY.get(f"s{tid}", f"s{tid}")
+                        s_inf = (
+                            game_data.resolve_unit("ships", s_slug)
+                            or game_data.resolve_unit("ships", f"s{tid}")
+                            or game_data.resolve_unit("ships", tid)
+                            or {}
+                        )
+                        tname = str(s_inf.get("name") or f"Ship s{tid}")
+                    elif tcoords:
+                        tname = tcoords
+                item = self._db.enqueue_manual_command(
+                    kind=norm_kind,
+                    priority=raw_prio,
+                    position=raw_pos,
+                    planet_id=int(pid),
+                    planet_coords=pcoords,
+                    target_id=tid,
+                    target_name=tname,
+                    target_coords=tcoords or tname,
+                    target_level=tlvl,
+                    note=note,
+                    deduplicate_pending=dedup_flag,
+                )
+                self._dash_ag_cache_json = None
+                pending = self._db.get_manual_queue(status="pending", limit=200)
+                metal_review = self._review_queue_metal_status_locked(int(item.get("planet_id") or 0), pending)
+                msg_suffix = f" ({metal_review['summary']})" if metal_review.get("summary") else ""
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "message": f"Queued {norm_kind} ({tname}) at {item['priority']}{msg_suffix}.",
+                            "item": item,
+                            "manual_queue": pending,
+                            "metal_production_review": metal_review,
+                        }
+                    )
+                )
+
+        if cmd == "queue_update":
+            qid = _parse_command_int("queue_id", payload.get("queue_id"), min_val=1, max_val=2**63 - 1)
+            if qid is None:
+                raise ApiRequestError("'queue_update' requires 'queue_id'.")
+            prio_arg: Optional[str] = None
+            if "priority" in payload and payload["priority"] is not None:
+                prio_arg = str(payload["priority"]).strip().upper()
+                if prio_arg not in ("P0", "P1", "P2", "P3"):
+                    raise ApiRequestError("'priority' must be one of P0, P1, P2, P3.")
+            move_arg: Optional[str] = None
+            if "move" in payload and payload["move"] is not None:
+                move_arg = str(payload["move"]).strip().lower()
+                if move_arg not in ("top", "bottom", "up", "down"):
+                    raise ApiRequestError("'move' must be one of top, bottom, up, down.")
+            srank_arg = _parse_command_int(
+                "sort_rank",
+                payload.get("sort_rank"),
+                allow_none=True,
+                min_val=-1_000_000,
+                max_val=1_000_000,
+            )
+            tlvl_arg: Any = ...
+            if "target_level" in payload:
+                tlvl_arg = _parse_command_int(
+                    "target_level",
+                    payload.get("target_level"),
+                    allow_none=True,
+                    min_val=0,
+                    max_val=100_000,
+                )
+            note_arg = (
+                _bounded_api_str(payload.get("note") or "", default="")[:280]
+                if "note" in payload and payload["note"] is not None
+                else None
+            )
+            with self._lock:
+                if self._db is None:
+                    raise ApiRequestError("Database is not configured on this API bridge.")
+                updated = self._db.update_manual_queue_item(
+                    int(qid),
+                    priority=prio_arg,
+                    move=move_arg,
+                    sort_rank=srank_arg,
+                    target_level=tlvl_arg,
+                    note=note_arg,
+                )
+                if updated is None:
+                    raise ApiRequestError(f"Queue item #{qid} not found.")
+                self._dash_ag_cache_json = None
+                pending = self._db.get_manual_queue(status="pending", limit=200)
+                metal_review = self._review_queue_metal_status_locked(int(updated.get("planet_id") or 0), pending)
+                msg_suffix = f" ({metal_review['summary']})" if metal_review.get("summary") else ""
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "message": f"Updated queue item #{qid} ({updated['priority']}){msg_suffix}.",
+                            "item": updated,
+                            "manual_queue": pending,
+                            "metal_production_review": metal_review,
+                        }
+                    )
+                )
+
+        if cmd == "queue_cancel":
+            qid = _parse_command_int("queue_id", payload.get("queue_id"), min_val=1, max_val=2**63 - 1)
+            if qid is None:
+                raise ApiRequestError("'queue_cancel' requires 'queue_id'.")
+            with self._lock:
+                if self._db is None:
+                    raise ApiRequestError("Database is not configured on this API bridge.")
+                ok_c = self._db.cancel_manual_queue_item(int(qid))
+                self._dash_ag_cache_json = None
+                pending = self._db.get_manual_queue(status="pending", limit=200)
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "canceled": ok_c,
+                            "message": f"Canceled queue item #{qid}." if ok_c else f"Queue item #{qid} already inactive.",
+                            "manual_queue": pending,
+                        }
+                    )
+                )
+
+        if cmd == "queue_clear":
+            with self._lock:
+                if self._db is None:
+                    raise ApiRequestError("Database is not configured on this API bridge.")
+                cnt = self._db.clear_manual_queue()
+                self._dash_ag_cache_json = None
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "cleared_count": cnt,
+                            "message": f"Cleared {cnt} pending command(s) from queue.",
+                            "manual_queue": [],
+                        }
+                    )
+                )
 
         if cmd == "config":
             with self._lock:
@@ -3783,6 +4193,100 @@ class GameApiBridge:
                         "ok": True,
                         "command": cmd,
                         "db": _redact_api_payload(self._db.summary()) if self._db is not None else None,
+                    }
+                )
+
+        if cmd == "db_migrations":
+            ev_limit = _parse_command_int(
+                "limit",
+                payload.get("limit", 50),
+                min_val=1,
+                max_val=500,
+            ) or 50
+            include_all = bool(payload.get("include_all_stores", False))
+            with self._lock:
+                if self._db is None:
+                    return _sanitize_finite_json(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "latest_schema_version": LATEST_SCHEMA_VERSION,
+                            "migrations": None,
+                        }
+                    )
+                status = self._db.get_migration_status(include_events=True, event_limit=ev_limit)
+                resp: dict[str, Any] = {
+                    "ok": True,
+                    "command": cmd,
+                    "latest_schema_version": LATEST_SCHEMA_VERSION,
+                    "migrations": _redact_api_payload(status),
+                }
+                if include_all:
+                    root_dir = (
+                        self._db.db_path.parent.parent
+                        if str(self._db.db_path) != ":memory:"
+                        else Path(".")
+                    )
+                    reg = DatabaseMigrationRegistry(root_dir)
+                    if str(self._db.db_path) != ":memory:":
+                        reg.register_database("primary", self._db.db_path, schema_family="game")
+                    resp["stores"] = _redact_api_payload(reg.status_all(include_events=False))
+                return _sanitize_finite_json(resp)
+
+        if cmd == "db_migrate":
+            dry_run_flag = bool(payload.get("dry_run", False))
+            backup_flag = bool(payload.get("backup", False))
+            tgt_ver = _parse_command_int(
+                "target_version",
+                payload.get("target_version"),
+                allow_none=True,
+                min_val=1,
+                max_val=LATEST_SCHEMA_VERSION,
+            )
+            with self._lock:
+                if self._db is None:
+                    raise ApiRequestError("Database is not configured on this API bridge.")
+                res = self._db.run_migrations(
+                    target_version=tgt_ver,
+                    dry_run=dry_run_flag,
+                    backup=backup_flag,
+                )
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "migration": _redact_api_payload(res),
+                    }
+                )
+
+        if cmd == "db_backup":
+            raw_lbl = _bounded_api_str(payload.get("label") or "manual", default="manual")[:40]
+            with self._lock:
+                if self._db is None:
+                    raise ApiRequestError("Database is not configured on this API bridge.")
+                try:
+                    bkp = self._db.create_backup(label=raw_lbl)
+                except ValueError as exc:
+                    raise ApiRequestError(str(exc)) from exc
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "backup": _redact_api_payload(bkp),
+                    }
+                )
+
+        if cmd == "db_verify":
+            full_chk = bool(payload.get("full_integrity", False))
+            with self._lock:
+                if self._db is None:
+                    raise ApiRequestError("Database is not configured on this API bridge.")
+                ver = self._db.verify_schema(full_integrity=full_chk)
+                return _sanitize_finite_json(
+                    {
+                        "ok": bool(ver.get("ok", False)),
+                        "command": cmd,
+                        "verification": _redact_api_payload(ver),
                     }
                 )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import json
@@ -11,6 +12,9 @@ import os
 from pathlib import Path
 import random
 import re
+import shutil
+import sqlite3
+import tempfile
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
@@ -61,7 +65,7 @@ except ImportError:  # pragma: no cover - optional runtime dependency
 
 TORCH_AVAILABLE: bool = torch is not None
 STATE_FEATURE_DIM: int = 46
-DEFAULT_ATTACK_HISTORY_PATH: Path = Path("data") / "attack_history.json"
+DEFAULT_ATTACK_HISTORY_PATH: Path = Path("state") / "spaceinvasion.db"
 _LAST_SUMMARY_LOCK = threading.Lock()
 _LAST_OPTIMIZER_SUMMARY: Optional[dict[str, Any]] = None
 
@@ -442,14 +446,114 @@ def _is_win_entry(
     return any(tok in s for tok in ("win", "won", "vict", "succ", "loot", "plunder", "captur", "ok"))
 
 
+def _load_attack_history_from_sqlite(db_path: Path) -> dict[str, Any]:
+    """Read raid history, bash blocks, and telemetry counters from an isolated copy of SQLite."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="si_opt_ro_") as td:
+            td_path = Path(td)
+            tmp_db = td_path / "ro.db"
+            shutil.copyfile(db_path, tmp_db)
+            for suf in ("-wal", "-shm", "-journal"):
+                sidecar = db_path.parent / (db_path.name + suf)
+                if sidecar.is_file():
+                    try:
+                        shutil.copyfile(sidecar, td_path / ("ro.db" + suf))
+                    except OSError:
+                        pass
+            with contextlib.closing(sqlite3.connect(str(tmp_db), timeout=5.0)) as conn:
+                tables = {
+                    str(r[0])
+                    for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+                }
+                if not tables:
+                    return {}
+                raw_raids: list[dict[str, Any]] = []
+                if "raid_history" in tables:
+                    for r in conn.execute(
+                        "SELECT target_coords, attacked_ts, is_exempt, outcome, loot_json FROM raid_history ORDER BY attacked_ts ASC, id ASC"
+                    ).fetchall():
+                        try:
+                            loot_d = json.loads(str(r[4] or "{}"))
+                            if not isinstance(loot_d, Mapping):
+                                loot_d = {}
+                        except (TypeError, ValueError):
+                            loot_d = {}
+                        raw_raids.append(
+                            {
+                                "target_coords": str(r[0] or ""),
+                                "attacked_ts": _safe_float_any(r[1], 0.0),
+                                "is_exempt": bool(r[2]),
+                                "outcome": str(r[3] or ""),
+                                "loot": dict(loot_d),
+                            }
+                        )
+                agg = _aggregate_raw_raid_history(raw_raids, now_ts=time.time())
+                bash_list: list[dict[str, Any]] = []
+                blocked_targets: dict[str, dict[str, Any]] = {}
+                now_val = time.time()
+                if "bash_blocks" in tables:
+                    for b in conn.execute(
+                        "SELECT target_coords, blocked_ts, blocked_until_ts, cooldown_seconds, is_bash, reason FROM bash_blocks ORDER BY blocked_ts ASC, id ASC"
+                    ).fetchall():
+                        tc = normalize_coords(str(b[0] or ""))
+                        bts = _safe_float_any(b[1], 0.0)
+                        uts = _safe_float_any(b[2], 0.0)
+                        cd = _safe_float_any(b[3], max(0.0, uts - bts))
+                        ib = bool(b[4])
+                        rsn = str(b[5] or "")
+                        entry = {
+                            "target_coords": tc,
+                            "blocked_ts": bts,
+                            "blocked_until_ts": uts,
+                            "cooldown_seconds": cd,
+                            "is_bash": ib,
+                            "reason": rsn,
+                        }
+                        bash_list.append(entry)
+                        if tc and uts > now_val:
+                            blocked_targets[tc] = entry
+                counts_map: dict[str, int] = {}
+                for tbl in ("rank_snapshots", "planet_snapshots", "action_history", "spy_targets", "raid_history"):
+                    if tbl in tables:
+                        cnt_r = conn.execute(f'SELECT COUNT(*) FROM "{tbl}"').fetchone()
+                        counts_map[tbl] = int(cnt_r[0] or 0) if cnt_r is not None else 0
+                    else:
+                        counts_map[tbl] = 0
+                agg["version"] = 2
+                agg["bash_blocks"] = bash_list
+                agg["blocked_targets"] = blocked_targets
+                agg["telemetry_summary"] = {
+                    "rank_snapshots_count": counts_map["rank_snapshots"],
+                    "planet_snapshots_count": counts_map["planet_snapshots"],
+                    "action_history_count": counts_map["action_history"],
+                    "action_count": counts_map["action_history"],
+                    "spy_targets_count": counts_map["spy_targets"],
+                    "raid_history": {"count": counts_map["raid_history"], "attempts": counts_map["raid_history"]},
+                }
+                return _json_safe(agg)
+    except (OSError, sqlite3.DatabaseError, ValueError, TypeError):
+        return {}
+
+
 def load_attack_history_stats(path: Optional[Path | str] = None) -> dict[str, Any]:
-    """Safely load read-only attack & telemetry history JSON (`data/attack_history.json`)."""
+    """Safely load read-only attack & telemetry history from SQLite (`state/spaceinvasion.db`) or legacy JSON."""
     if path is not None and isinstance(path, str) and not path.strip():
         return {}
     target_path = Path(path) if path is not None else DEFAULT_ATTACK_HISTORY_PATH
     try:
         if not target_path.is_file():
             return {}
+        with target_path.open("rb") as fh:
+            magic = fh.read(16)
+    except OSError:
+        return {}
+
+    if magic == b"SQLite format 3\x00" or target_path.suffix.lower() in (".db", ".sqlite", ".sqlite3"):
+        if magic != b"SQLite format 3\x00" and target_path.stat().st_size > 0:
+            return {}
+        return _load_attack_history_from_sqlite(target_path)
+
+    try:
         raw = json.loads(target_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return {}
@@ -5780,12 +5884,21 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
             p_last_f = _safe_float_any(p_last_t, -1e18)
             t_cd_active = p_last_t is not None and (sim.sim_base_ts + sim.clock_s - p_last_f) < 300.0
             p_e_net = _compute_planet_rates(p, sim.researches, sim.speedup_factor)[1]
-            if not t_cd_active or (p_e_net < 0 and cur_pct > 0):
+            sto_m_sim = _safe_float_any(p.storage_cap.get("metal", 0), 0.0)
+            res_m_sim = _safe_float_any(p.res_f.get("metal", 0.0), 0.0)
+            sto_p_sim = _safe_float_any(p.storage_cap.get("pig_iron", 0), 0.0)
+            res_p_sim = _safe_float_any(p.res_f.get("pig_iron", 0.0), 0.0)
+            met_full_pig_space = (
+                sto_m_sim > 0.0
+                and res_m_sim >= sto_m_sim * 0.98
+                and (sto_p_sim <= 0.0 or res_p_sim < sto_p_sim * 0.99)
+            )
+            if not t_cd_active or ((p_e_net < 0 or met_full_pig_space) and cur_pct > 0):
                 if cur_pct > 0:
                     candidates.append(
                         SimAction("THROTTLE_BUILDING", p.planet_id, target_id=2, quantity=0, reason="Pause Blast furnace to 0%")
                     )
-                else:
+                elif not met_full_pig_space:
                     candidates.append(
                         SimAction("THROTTLE_BUILDING", p.planet_id, target_id=2, quantity=100, reason="Resume Blast furnace to 100%")
                     )
@@ -8560,7 +8673,18 @@ def _materialize_planned_actions(
             field_k = f"resource{bid}" if bid <= 4 else "resource5"
             cur_pct = max(0, min(100, _safe_int((planet.economy_rates or {}).get(field_k, 100), 100)))
             cd_active = (planet.planet_id in active_t_cds) or ((planet.planet_id, bid) in active_t_cds)
-            if cd_active and not (bid == 2 and planet.energy.net < 0 and pct == 0 and cur_pct > 0):
+            sto_m_i = _safe_int(planet.storage.metal, 0)
+            res_m_i = _safe_int(planet.resources.metal, 0)
+            sto_p_i = _safe_int(planet.storage.pig_iron, 0)
+            res_p_i = _safe_int(planet.resources.pig_iron, 0)
+            met_full_pig_space_p = (
+                sto_m_i > 0
+                and res_m_i * 100 >= sto_m_i * 98
+                and (sto_p_i <= 0 or res_p_i * 100 < sto_p_i * 99)
+            )
+            if bid == 2 and pct > 0 and met_full_pig_space_p:
+                continue
+            if cd_active and not (bid == 2 and (planet.energy.net < 0 or met_full_pig_space_p) and pct == 0 and cur_pct > 0):
                 continue
             can_exec = (
                 bool(cfg.auto_throttle_blast_furnace)
@@ -8816,6 +8940,35 @@ def _materialize_planned_actions(
                     executable_now=bool(cfg.allow_galaxy_scan and not on_scan_cd),
                 )
             )
+
+    # Enforce immediate P1 Blast furnace 0% throttle when Metal storage is full and Pig iron has space
+    if cfg.auto_throttle_blast_furnace and not cfg.merchant_mode:
+        for p_chk in state.planets:
+            if normalize_planet_type(p_chk) in ("asteroid", "raid") or p_chk.building_level(2) <= 0:
+                continue
+            cur_b2_p = max(0, min(100, _safe_int((p_chk.economy_rates or {}).get("resource2", 100), 100)))
+            if cur_b2_p <= 0:
+                continue
+            sto_m_p = _safe_int(p_chk.storage.metal, 0)
+            res_m_p = _safe_int(p_chk.resources.metal, 0)
+            sto_p_p = _safe_int(p_chk.storage.pig_iron, 0)
+            res_p_p = _safe_int(p_chk.resources.pig_iron, 0)
+            if sto_m_p > 0 and res_m_p * 100 >= sto_m_p * 98 and (sto_p_p <= 0 or res_p_p * 100 < sto_p_p * 99):
+                if not any(a.planet_id == p_chk.planet_id and a.kind == "THROTTLE_BUILDING" and a.target_id == 2 for a in plan):
+                    plan.insert(
+                        0,
+                        _make_planned_action(
+                            priority="P1",
+                            kind="THROTTLE_BUILDING",
+                            planet_id=p_chk.planet_id,
+                            planet_coords=_safe_action_str(p_chk.coords),
+                            target_id=2,
+                            target_name="Blast furnace 0%",
+                            target_level=0,
+                            reason="Metal storage full while Pig iron has free capacity — disable Blast furnace (0%) to avoid throwing Metal away",
+                            executable_now=True,
+                        ),
+                    )
 
     # Surface gated non-executable advisories when offers/targets exist but `allow_*` is False
     active_ptype = normalize_planet_type(active)

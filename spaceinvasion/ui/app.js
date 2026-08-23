@@ -779,6 +779,322 @@ function formatResourcesInline(res) {
   return parts.join(" · ") || "0";
 }
 
+const MQ_BUILDINGS_CATALOG = [
+  { id: 1, name: "Pig iron mine" },
+  { id: 2, name: "Blast furnace" },
+  { id: 3, name: "Kryptonite mine" },
+  { id: 4, name: "Spice mine" },
+  { id: 5, name: "Fusion plant" },
+  { id: 6, name: "Thermosolar plant" },
+  { id: 7, name: "Development center" },
+  { id: 8, name: "Research lab" },
+  { id: 9, name: "Weapons factory" },
+  { id: 10, name: "Fleet base" },
+  { id: 11, name: "Pig iron warehouse" },
+  { id: 12, name: "Metal warehouse" },
+  { id: 13, name: "Kryptonite warehouse" },
+  { id: 14, name: "Spice warehouse" },
+  { id: 15, name: "Particle cannon" },
+  { id: 16, name: "Particle shield" },
+  { id: 17, name: "Microsystem accelerator" },
+  { id: 18, name: "Teleporter" },
+  { id: 19, name: "Galaxy scanner" },
+  { id: 20, name: "Tunnel system" },
+  { id: 21, name: "Quantum Array" },
+];
+
+const MQ_RESEARCH_CATALOG = [
+  { id: 1, name: "Mining technology" },
+  { id: 2, name: "Energy technology" },
+  { id: 3, name: "Engine research" },
+  { id: 4, name: "Rocket engine" },
+  { id: 5, name: "Diffusion engine" },
+  { id: 6, name: "Warp engine" },
+  { id: 7, name: "Spy technology" },
+  { id: 8, name: "Weapons technology" },
+  { id: 9, name: "Shield technology" },
+  { id: 10, name: "Defense systems" },
+  { id: 11, name: "Targeting systems" },
+  { id: 12, name: "Particle analyzer" },
+  { id: 13, name: "Graviton technology" },
+  { id: 14, name: "Teleportation" },
+  { id: 15, name: "Black hole research" },
+];
+
+const MQ_SHIPS_CATALOG = [
+  { id: 1, name: "Small transport", key: "s1" },
+  { id: 2, name: "Large transport", key: "s2" },
+  { id: 3, name: "Transmitter", key: "s3" },
+  { id: 4, name: "Small fighter", key: "s4" },
+  { id: 5, name: "Warship", key: "s5" },
+  { id: 6, name: "Starcruiser", key: "s6" },
+  { id: 7, name: "Phoenix", key: "s7" },
+  { id: 8, name: "Colony ship", key: "s8" },
+  { id: 9, name: "Solar cells", key: "s9" },
+  { id: 10, name: "Spy probe", key: "s10" },
+  { id: 11, name: "Recycler", key: "s11" },
+  { id: 13, name: "Battleship", key: "s13" },
+  { id: 14, name: "Stealth bomber", key: "s14" },
+  { id: 15, name: "Destroyer", key: "s15" },
+  { id: 16, name: "Imperial starbase", key: "s16" },
+];
+
+async function enqueueManualCommand(params) {
+  try {
+    const res = await apiCommand({ command: "queue_add", ...params });
+    showFeedback(res.message || "Command added to priority queue.", "ok");
+    await loadDashboard({ refresh: false, force: true });
+    return res;
+  } catch (err) {
+    showFeedback(`Queue add failed: ${err.message}`, feedbackKindForError(err));
+    return null;
+  }
+}
+
+async function updateManualQueueItem(queueId, patch) {
+  try {
+    const res = await apiCommand({ command: "queue_update", queue_id: queueId, ...patch });
+    showFeedback(res.message || `Updated queue item #${queueId}.`, "ok");
+    await loadDashboard({ refresh: false, force: true });
+    return res;
+  } catch (err) {
+    showFeedback(`Queue update failed: ${err.message}`, feedbackKindForError(err));
+    return null;
+  }
+}
+
+async function cancelManualQueueItem(queueId) {
+  try {
+    const res = await apiCommand({ command: "queue_cancel", queue_id: queueId });
+    showFeedback(res.message || `Removed queue item #${queueId}.`, "ok");
+    await loadDashboard({ refresh: false, force: true });
+    return res;
+  } catch (err) {
+    showFeedback(`Cancel failed: ${err.message}`, feedbackKindForError(err));
+    return null;
+  }
+}
+
+async function clearAllManualQueue() {
+  try {
+    const res = await apiCommand({ command: "queue_clear" });
+    showFeedback(res.message || "Cleared manual queue.", "ok");
+    await loadDashboard({ refresh: false, force: true });
+  } catch (err) {
+    showFeedback(`Clear queue failed: ${err.message}`, feedbackKindForError(err));
+  }
+}
+
+function pinPlannedActionToQueue(act, priority = "P1") {
+  const normKind = act.kind === "WAIT_RESOURCES" ? "BUILD" : String(act.kind || "").toUpperCase();
+  const mCoords = /(\d{1,2}:\d{1,3}(?::\d{1,2})?)/.exec(act.target_name || "");
+  return enqueueManualCommand({
+    kind: normKind,
+    priority,
+    position: "top",
+    planet_id: act.planet_id || 0,
+    target_id: act.target_id ?? undefined,
+    target_name: act.target_name || "",
+    target_coords: mCoords ? mCoords[1] : undefined,
+    target_level: act.target_level ?? undefined,
+    deduplicate_pending: true,
+  });
+}
+
+function syncManualQueueComposer(dash, { forceDefaultLevel = false } = {}) {
+  const form = el("mq-composer-form");
+  if (!form) return;
+  const activeEl = document.activeElement;
+  if (!forceDefaultLevel && activeEl && form.contains(activeEl) && activeEl.tagName === "INPUT") {
+    return;
+  }
+
+  const pSel = el("mq-planet");
+  const kSel = el("mq-kind");
+  const uWrap = el("mq-unit-wrap");
+  const uLbl = el("mq-unit-label");
+  const uSel = el("mq-target-id");
+  const cWrap = el("mq-coords-wrap");
+  const cLbl = el("mq-coords-label");
+  const cInp = el("mq-coords");
+  const cList = el("mq-coords-datalist");
+  const lWrap = el("mq-level-wrap");
+  const lLbl = el("mq-level-label");
+  const lInp = el("mq-level");
+  if (!pSel || !kSel || !uSel || !cInp || !lInp) return;
+
+  const planets = dash?.state?.planets || [];
+  const activeP = activePlanetFrom(dash) || planets[0] || null;
+  const prevPid = Number(pSel.value || 0);
+  const targetPid = planets.some((p) => p.planet_id === prevPid)
+    ? prevPid
+    : activeP
+      ? activeP.planet_id
+      : 0;
+
+  if (planets.length > 0) {
+    const sig = planets.map((p) => `${p.planet_id}:${p.coords}:${p.name}`).join("|");
+    if (pSel.dataset.sig !== sig) {
+      pSel.dataset.sig = sig;
+      pSel.replaceChildren(
+        ...planets.map((p) => {
+          const opt = document.createElement("option");
+          opt.value = String(p.planet_id);
+          opt.textContent = `[${p.coords}] ${p.name || "Colony"}`;
+          return opt;
+        })
+      );
+    }
+    pSel.value = String(targetPid);
+  }
+
+  const chosenPlanet = planets.find((p) => p.planet_id === Number(pSel.value)) || activeP;
+  const bMap = chosenPlanet?.buildings || {};
+  const rMap = dash?.state?.researches || {};
+  const sMap = chosenPlanet?.ships || {};
+
+  if (cList && dash?.state?.raid_targets) {
+    const coordsSet = new Set();
+    for (const rt of dash.state.raid_targets) {
+      const c = rt.coords || rt.target_coords;
+      if (c) coordsSet.add(c);
+    }
+    const cSig = Array.from(coordsSet).slice(0, 40).join(",");
+    if (cList.dataset.sig !== cSig) {
+      cList.dataset.sig = cSig;
+      cList.replaceChildren(
+        ...Array.from(coordsSet)
+          .slice(0, 40)
+          .map((c) => {
+            const opt = document.createElement("option");
+            opt.value = c;
+            return opt;
+          })
+      );
+    }
+  }
+
+  const kind = String(kSel.value || "BUILD").toUpperCase();
+  const prevTargetVal = uSel.value;
+
+  if (kind === "BUILD" || kind === "DEMOLISH_BUILDING" || kind === "THROTTLE_BUILDING") {
+    uWrap.hidden = false;
+    cWrap.hidden = true;
+    lWrap.hidden = false;
+    uLbl.textContent = "Building";
+    const items = kind === "THROTTLE_BUILDING" ? MQ_BUILDINGS_CATALOG.slice(0, 6) : MQ_BUILDINGS_CATALOG;
+    uSel.replaceChildren(
+      ...items.map((b) => {
+        const opt = document.createElement("option");
+        opt.value = String(b.id);
+        const curL = finiteNum(bMap[`b${b.id}`], 0);
+        opt.textContent = `${b.name} (L${curL})`;
+        return opt;
+      })
+    );
+    if (items.some((b) => String(b.id) === prevTargetVal)) {
+      uSel.value = prevTargetVal;
+    } else if (kind === "DEMOLISH_BUILDING") {
+      uSel.value = "6";
+    } else if (kind === "THROTTLE_BUILDING") {
+      uSel.value = "2";
+    }
+    const selBid = Number(uSel.value || 1);
+    const curL = finiteNum(bMap[`b${selBid}`], 0);
+    if (kind === "BUILD") {
+      lLbl.textContent = "Goal Lvl";
+      lInp.min = "1";
+      lInp.max = "200";
+      lInp.step = "1";
+      if (forceDefaultLevel || !lInp.value) lInp.value = String(curL + 1);
+    } else if (kind === "DEMOLISH_BUILDING") {
+      lLbl.textContent = "Down To Lvl";
+      lInp.min = "0";
+      lInp.max = "200";
+      lInp.step = "1";
+      if (forceDefaultLevel || !lInp.value) lInp.value = String(Math.max(0, curL - 1));
+    } else {
+      lLbl.textContent = "Rate %";
+      lInp.min = "0";
+      lInp.max = "100";
+      lInp.step = "10";
+      if (forceDefaultLevel || !lInp.value) lInp.value = "100";
+    }
+  } else if (kind === "RESEARCH") {
+    uWrap.hidden = false;
+    cWrap.hidden = true;
+    lWrap.hidden = false;
+    uLbl.textContent = "Research";
+    uSel.replaceChildren(
+      ...MQ_RESEARCH_CATALOG.map((r) => {
+        const opt = document.createElement("option");
+        opt.value = String(r.id);
+        const curL = finiteNum(rMap[`r${r.id}`], 0);
+        opt.textContent = `${r.name} (L${curL})`;
+        return opt;
+      })
+    );
+    if (MQ_RESEARCH_CATALOG.some((r) => String(r.id) === prevTargetVal)) {
+      uSel.value = prevTargetVal;
+    }
+    const selRid = Number(uSel.value || 1);
+    const curL = finiteNum(rMap[`r${selRid}`], 0);
+    lLbl.textContent = "Goal Lvl";
+    lInp.min = "1";
+    lInp.max = "200";
+    lInp.step = "1";
+    if (forceDefaultLevel || !lInp.value) lInp.value = String(curL + 1);
+  } else if (kind === "BUILD_SHIP") {
+    uWrap.hidden = false;
+    cWrap.hidden = true;
+    lWrap.hidden = false;
+    uLbl.textContent = "Ship Class";
+    uSel.replaceChildren(
+      ...MQ_SHIPS_CATALOG.map((s) => {
+        const opt = document.createElement("option");
+        opt.value = String(s.id);
+        const owned = finiteNum(sMap[s.key], 0);
+        opt.textContent = `${s.name} (${owned} owned)`;
+        return opt;
+      })
+    );
+    if (MQ_SHIPS_CATALOG.some((s) => String(s.id) === prevTargetVal)) {
+      uSel.value = prevTargetVal;
+    }
+    lLbl.textContent = "Quantity";
+    lInp.min = "1";
+    lInp.max = "99999";
+    lInp.step = "1";
+    if (forceDefaultLevel || !lInp.value || Number(lInp.value) < 1) lInp.value = "1";
+  } else if (kind === "SPY" || kind === "ATTACK" || kind === "RECYCLE" || kind === "COLONIZE") {
+    uWrap.hidden = true;
+    cWrap.hidden = false;
+    cLbl.textContent = "Target Coords";
+    cInp.placeholder = "02:381:12";
+    const usesQty = kind === "SPY" || kind === "RECYCLE";
+    lWrap.hidden = !usesQty;
+    if (usesQty) {
+      lLbl.textContent = kind === "SPY" ? "Probes" : "Recyclers";
+      lInp.min = "1";
+      lInp.max = "9999";
+      lInp.step = "1";
+      if (forceDefaultLevel || !lInp.value || Number(lInp.value) < 1) lInp.value = "1";
+    }
+  } else if (kind === "SCAN_GALAXY") {
+    uWrap.hidden = true;
+    cWrap.hidden = false;
+    lWrap.hidden = true;
+    cLbl.textContent = "System (GG:SSS)";
+    const defSys = chosenPlanet?.coords ? chosenPlanet.coords.slice(0, 6) : "02:380";
+    cInp.placeholder = defSys;
+    if (forceDefaultLevel && !cInp.value) cInp.value = defSys;
+  } else {
+    uWrap.hidden = true;
+    cWrap.hidden = true;
+    lWrap.hidden = true;
+  }
+}
+
 function actionPayloadFor(action, dryRun) {
   if (action.kind === "CLAIM_TUTORIAL") return { command: "claim_tutorial", dry_run: dryRun };
   if (action.kind === "BUILD" && action.target_id != null) {
@@ -877,15 +1193,28 @@ async function dispatchAction(action, dryRun) {
 
 function buildPlanRow(act, { compact = false } = {}) {
   const tr = document.createElement("tr");
+  const isManual = act.manual_queue_id != null && Number(act.manual_queue_id) > 0;
+  if (isManual) {
+    tr.classList.add("is-manual-queued");
+  }
 
   const tdPrio = document.createElement("td");
+  const prioWrap = document.createElement("div");
+  prioWrap.className = "prio-cell-stack";
   const prioTag = document.createElement("span");
   const prioVal = String(act.priority || "?");
   prioTag.className = `prio-tag prio-${prioVal}`;
   const prioDot = document.createElement("span");
   prioDot.className = "prio-dot";
   prioTag.append(prioDot, document.createTextNode(prioVal));
-  tdPrio.appendChild(prioTag);
+  prioWrap.appendChild(prioTag);
+  if (isManual) {
+    const pinBadge = document.createElement("span");
+    pinBadge.className = "mq-pin-badge tabular";
+    pinBadge.textContent = `PIN #${act.manual_queue_id}`;
+    prioWrap.appendChild(pinBadge);
+  }
+  tdPrio.appendChild(prioWrap);
   tr.appendChild(tdPrio);
 
   const tdTarget = document.createElement("td");
@@ -997,10 +1326,10 @@ function buildPlanRow(act, { compact = false } = {}) {
   const tdOps = document.createElement("td");
   tdOps.className = "col-right";
   const cmdTemplate = actionPayloadFor(act, false);
-  if (cmdTemplate && act.executable_now) {
-    const wrap = document.createElement("div");
-    wrap.className = "row-actions";
+  const opsWrap = document.createElement("div");
+  opsWrap.className = "row-actions-wrap";
 
+  if (cmdTemplate && act.executable_now) {
     const runBtn = document.createElement("button");
     runBtn.type = "button";
     runBtn.className = "btn btn-primary btn-sm";
@@ -1013,24 +1342,162 @@ function buildPlanRow(act, { compact = false } = {}) {
     dryBtn.textContent = "Sim";
     dryBtn.addEventListener("click", () => dispatchAction(act, true));
 
-    wrap.append(runBtn, dryBtn);
-    tdOps.appendChild(wrap);
-  } else {
+    opsWrap.append(runBtn, dryBtn);
+  } else if (!isManual) {
     const waitTag = document.createElement("span");
     waitTag.className = "action-sub";
     waitTag.textContent = "Waiting";
-    tdOps.appendChild(waitTag);
+    opsWrap.appendChild(waitTag);
   }
+
+  if (isManual) {
+    const qid = Number(act.manual_queue_id);
+    const targetLabel = String(act.target_name || "command");
+    if (!compact) {
+      const prioSel = document.createElement("select");
+      prioSel.className = "mq-prio-select";
+      prioSel.setAttribute("aria-label", `Priority for ${targetLabel} (#${qid})`);
+      for (const pOpt of ["P0", "P1", "P2", "P3"]) {
+        const o = document.createElement("option");
+        o.value = pOpt;
+        o.textContent = pOpt;
+        if (pOpt === prioVal) o.selected = true;
+        prioSel.appendChild(o);
+      }
+      prioSel.addEventListener("change", () => {
+        updateManualQueueItem(qid, { priority: prioSel.value, move: "top" });
+      });
+      opsWrap.appendChild(prioSel);
+
+      const topBtn = document.createElement("button");
+      topBtn.type = "button";
+      topBtn.className = "btn btn-secondary btn-sm";
+      topBtn.textContent = "Top";
+      topBtn.title = "Move to top of priority band";
+      topBtn.setAttribute("aria-label", `Move ${targetLabel} (#${qid}) to top of ${prioVal}`);
+      topBtn.addEventListener("click", () => updateManualQueueItem(qid, { move: "top" }));
+      opsWrap.appendChild(topBtn);
+    }
+
+    const upBtn = document.createElement("button");
+    upBtn.type = "button";
+    upBtn.className = "btn btn-secondary btn-sm";
+    upBtn.textContent = "Up";
+    upBtn.title = "Move up in queue";
+    upBtn.setAttribute("aria-label", `Move ${targetLabel} (#${qid}) up in queue`);
+    upBtn.addEventListener("click", () => updateManualQueueItem(qid, { move: "up" }));
+
+    const dnBtn = document.createElement("button");
+    dnBtn.type = "button";
+    dnBtn.className = "btn btn-secondary btn-sm";
+    dnBtn.textContent = "Dn";
+    dnBtn.title = "Move down in queue";
+    dnBtn.setAttribute("aria-label", `Move ${targetLabel} (#${qid}) down in queue`);
+    dnBtn.addEventListener("click", () => updateManualQueueItem(qid, { move: "down" }));
+
+    const dropBtn = document.createElement("button");
+    dropBtn.type = "button";
+    dropBtn.className = "btn btn-secondary btn-sm btn-danger-ghost";
+    dropBtn.textContent = "Drop";
+    dropBtn.title = "Remove from manual queue";
+    dropBtn.setAttribute("aria-label", `Remove ${targetLabel} (#${qid}) from manual queue`);
+    dropBtn.addEventListener("click", () => cancelManualQueueItem(qid));
+
+    if (compact) {
+      opsWrap.append(upBtn, dropBtn);
+    } else {
+      opsWrap.append(upBtn, dnBtn, dropBtn);
+    }
+  } else if (actionPayloadFor(act.kind === "WAIT_RESOURCES" ? { ...act, kind: "BUILD" } : act, true)) {
+    const pinBtn = document.createElement("button");
+    pinBtn.type = "button";
+    pinBtn.className = "btn btn-secondary btn-sm";
+    pinBtn.textContent = "Pin P1";
+    pinBtn.title = "Pin & prioritize at top of P1 queue";
+    pinBtn.setAttribute("aria-label", `Pin ${act.target_name || "action"} to P1 queue`);
+    pinBtn.addEventListener("click", () => pinPlannedActionToQueue(act, "P1"));
+    opsWrap.appendChild(pinBtn);
+  }
+
+  tdOps.appendChild(opsWrap);
   tr.appendChild(tdOps);
   return tr;
+}
+
+const DASH_FLEET_KINDS = new Set([
+  "BUILD_SHIP",
+  "SHIP",
+  "BUILD_DEFENSE",
+  "DEFENSE",
+  "SPY",
+  "ATTACK",
+  "RECYCLE",
+  "COLONIZE",
+  "SCAN_GALAXY",
+  "ESCAPE_FLIGHT",
+  "ALERT_HOSTILE",
+]);
+
+function dashboardQueueDomainForAction(act) {
+  const kind = String(act?.kind || "").toUpperCase();
+  if (kind === "RESEARCH") return "research";
+  if (DASH_FLEET_KINDS.has(kind)) return "fleet";
+  return "building";
+}
+
+function renderDashQueueSlice(tbodyEl, countEl, domainActions, emptyText) {
+  if (countEl) {
+    countEl.textContent = String(domainActions.length);
+  }
+  if (!tbodyEl) return;
+  const topSlice = domainActions.slice(0, 10);
+  if (topSlice.length === 0) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 6;
+    td.className = "empty-cell";
+    td.textContent = emptyText;
+    tr.appendChild(td);
+    tbodyEl.replaceChildren(tr);
+  } else {
+    tbodyEl.replaceChildren(...topSlice.map((a) => buildPlanRow(a, { compact: true })));
+  }
 }
 
 function renderPlanTable(dash) {
   const tbody = el("plan-tbody");
   const allActions = dash.plan || [];
+  const manualList = Array.isArray(dash.manual_queue)
+    ? dash.manual_queue
+    : allActions.filter((a) => a.manual_queue_id != null && Number(a.manual_queue_id) > 0);
+  const pinnedCount = manualList.length;
+
+  const dashPinnedBadge = el("dash-pinned-count-badge");
+  if (dashPinnedBadge) {
+    dashPinnedBadge.hidden = pinnedCount === 0;
+    dashPinnedBadge.textContent = `${pinnedCount} PINNED`;
+  }
+  const opsPinnedBadge = el("ops-pinned-badge");
+  if (opsPinnedBadge) {
+    opsPinnedBadge.hidden = pinnedCount === 0;
+    opsPinnedBadge.textContent = `${pinnedCount} PINNED`;
+  }
+  const manualChip = el("chip-filter-manual");
+  if (manualChip) {
+    manualChip.textContent = `Pinned Only (${pinnedCount})`;
+  }
+  const clearBtn = el("btn-mq-clear");
+  if (clearBtn) {
+    clearBtn.hidden = pinnedCount === 0;
+    clearBtn.textContent = `Clear Pinned (${pinnedCount})`;
+  }
+  syncManualQueueComposer(dash);
+
   let actions = allActions;
   if (state.queueFilter === "ready") {
     actions = allActions.filter((a) => a.executable_now);
+  } else if (state.queueFilter === "manual") {
+    actions = allActions.filter((a) => a.manual_queue_id != null && Number(a.manual_queue_id) > 0);
   }
   el("plan-count-badge").textContent = `${actions.length} TASKS`;
   const navCount = el("nav-queue-count");
@@ -1048,21 +1515,38 @@ function renderPlanTable(dash) {
     tbody.replaceChildren(...actions.map((a) => buildPlanRow(a, { compact: false })));
   }
 
-  const dashBody = el("dash-plan-tbody");
-  if (dashBody) {
-    const topDash = allActions.slice(0, 10);
-    if (topDash.length === 0) {
-      const tr = document.createElement("tr");
-      const td = document.createElement("td");
-      td.colSpan = 6;
-      td.className = "empty-cell";
-      td.textContent = "No planned actions right now.";
-      tr.appendChild(td);
-      dashBody.replaceChildren(tr);
+  const buildingActions = [];
+  const fleetActions = [];
+  const researchActions = [];
+  for (const act of allActions) {
+    const domain = dashboardQueueDomainForAction(act);
+    if (domain === "research") {
+      researchActions.push(act);
+    } else if (domain === "fleet") {
+      fleetActions.push(act);
     } else {
-      dashBody.replaceChildren(...topDash.map((a) => buildPlanRow(a, { compact: true })));
+      buildingActions.push(act);
     }
   }
+
+  renderDashQueueSlice(
+    el("dash-plan-tbody"),
+    el("dash-bld-q-count"),
+    buildingActions,
+    "No queued building actions."
+  );
+  renderDashQueueSlice(
+    el("dash-plan-fleet-tbody"),
+    el("dash-fleet-q-count"),
+    fleetActions,
+    "No queued fleet or ship actions."
+  );
+  renderDashQueueSlice(
+    el("dash-plan-research-tbody"),
+    el("dash-research-q-count"),
+    researchActions,
+    "No queued research actions."
+  );
 }
 
 function renderDashNearestEtas(dash) {
@@ -1480,6 +1964,30 @@ function renderBuildingInspector(etaData) {
   } else {
     buildBtn.hidden = true;
   }
+
+  const pinQueueBtn = el("btn-insp-pin-queue");
+  if (pinQueueBtn) {
+    const nextLvl = finiteNum(selected.next_level ?? selected.target_level, null);
+    const unitId = isResearch ? selected.research_id : selected.building_id;
+    if (unitId != null && nextLvl !== null && nextLvl > 0) {
+      pinQueueBtn.hidden = false;
+      pinQueueBtn.textContent = `+ Pin L${nextLvl} to Queue (P1)`;
+      pinQueueBtn.onclick = () => {
+        enqueueManualCommand({
+          kind: isResearch ? "RESEARCH" : "BUILD",
+          priority: "P1",
+          position: "top",
+          planet_id: etaData.planet?.planet_id || 0,
+          target_id: unitId,
+          target_name: selected.name || "",
+          target_level: nextLvl,
+          deduplicate_pending: true,
+        });
+      };
+    } else {
+      pinQueueBtn.hidden = true;
+    }
+  }
 }
 
 function renderBuildingsView(dash) {
@@ -1604,6 +2112,8 @@ function renderBuildingsView(dash) {
 
         const tdCtl = document.createElement("td");
         tdCtl.className = "col-right";
+        const ctlWrap = document.createElement("div");
+        ctlWrap.className = "row-actions-wrap";
         const canExec = isResearch ? row.can_research_live : row.can_build_live;
         if (canExec) {
           const bBtn = document.createElement("button");
@@ -1623,18 +2133,39 @@ function renderBuildingsView(dash) {
               showFeedback(`Failed: ${err.message}`, feedbackKindForError(err));
             }
           });
-          tdCtl.appendChild(bBtn);
+          ctlWrap.appendChild(bBtn);
         } else if (row.unmet_prerequisites && row.unmet_prerequisites.length > 0) {
           const lock = document.createElement("span");
           lock.className = "action-sub";
           lock.textContent = "Locked";
-          tdCtl.appendChild(lock);
-        } else {
-          const insp = document.createElement("span");
-          insp.className = "action-sub";
-          insp.textContent = row.offer_visible ? "Wait" : "Forecast";
-          tdCtl.appendChild(insp);
+          ctlWrap.appendChild(lock);
         }
+
+        const unitId = isResearch ? row.research_id : row.building_id;
+        const nextLvl = finiteNum(row.next_level ?? row.target_level, null);
+        if (unitId != null && nextLvl !== null && nextLvl > 0) {
+          const qBtn = document.createElement("button");
+          qBtn.type = "button";
+          qBtn.className = "btn btn-secondary btn-sm";
+          qBtn.textContent = "+ Queue";
+          qBtn.title = `Add ${row.name} L${nextLvl} to P1 priority queue`;
+          qBtn.setAttribute("aria-label", `Add ${row.name} L${nextLvl} to P1 priority queue`);
+          qBtn.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            enqueueManualCommand({
+              kind: isResearch ? "RESEARCH" : "BUILD",
+              priority: "P1",
+              position: "top",
+              planet_id: p.planet_id || 0,
+              target_id: unitId,
+              target_name: row.name || "",
+              target_level: nextLvl,
+              deduplicate_pending: true,
+            });
+          });
+          ctlWrap.appendChild(qBtn);
+        }
+        tdCtl.appendChild(ctlWrap);
 
         tr.append(tdUnit, tdLvl, tdNext, tdMiss, tdBuildT, tdReady, tdReach, tdCtl);
         return tr;
@@ -1696,16 +2227,16 @@ function renderCombatView(dash) {
 
       const tdOrd = document.createElement("td");
       tdOrd.className = "col-right";
-      if (offer && offer.can_build) {
-        const wrap = document.createElement("div");
-        wrap.className = "row-actions";
-        const inp = document.createElement("input");
-        inp.type = "number";
-        inp.min = "1";
-        inp.value = "1";
-        inp.className = "qty-inline";
-        inp.setAttribute("aria-label", `Order quantity for ${s.name}`);
+      const wrap = document.createElement("div");
+      wrap.className = "row-actions-wrap";
+      const inp = document.createElement("input");
+      inp.type = "number";
+      inp.min = "1";
+      inp.value = "1";
+      inp.className = "qty-inline";
+      inp.setAttribute("aria-label", `Order quantity for ${s.name}`);
 
+      if (offer && offer.can_build) {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "btn btn-primary btn-sm";
@@ -1727,13 +2258,30 @@ function renderCombatView(dash) {
           }
         });
         wrap.append(inp, btn);
-        tdOrd.appendChild(wrap);
       } else {
-        const st = document.createElement("span");
-        st.className = "action-sub";
-        st.textContent = offer ? offer.status_text || "Locked" : "Sync Shipyard";
-        tdOrd.appendChild(st);
+        wrap.appendChild(inp);
       }
+
+      const qShipBtn = document.createElement("button");
+      qShipBtn.type = "button";
+      qShipBtn.className = "btn btn-secondary btn-sm";
+      qShipBtn.textContent = "+ Queue";
+      qShipBtn.title = `Add ${s.name} order to P1 priority queue`;
+      qShipBtn.setAttribute("aria-label", `Add ${s.name} order to P1 priority queue`);
+      qShipBtn.addEventListener("click", () => {
+        const qty = Math.max(1, Math.round(finiteNum(inp.value, 1)));
+        enqueueManualCommand({
+          kind: "BUILD_SHIP",
+          priority: "P1",
+          position: "top",
+          planet_id: cmb.planet_id || 0,
+          target_id: s.unit_id,
+          target_name: s.name || "",
+          target_level: qty,
+        });
+      });
+      wrap.appendChild(qShipBtn);
+      tdOrd.appendChild(wrap);
 
       tr.append(tdN, tdO, tdA, tdC, tdOrd);
       return tr;
@@ -3147,12 +3695,22 @@ function renderRanking(dash) {
 
 function formatDbSummary(db) {
   if (!db) return "SQLite database disabled (no persistent state directory configured).";
+  const sch = db.schema || null;
+  const schemaLine = sch
+    ? `Schema Version: ${sch.version_tag || `V00${sch.version || 0}`} / ${sch.target_version_tag || `V00${sch.target_version || 0}`} (${sch.up_to_date ? "UP-TO-DATE" : `${sch.pending_count || 0} PENDING`}) · Checksum=${String(sch.schema_checksum || "").slice(0, 12) || "n/a"}${Array.isArray(sch.checksum_drift) && sch.checksum_drift.length > 0 ? ` · DRIFT(${sch.checksum_drift.length})` : ""}`
+    : "Schema Version: legacy";
   const lines = [
     `DB Path: ${db.db_path} (${fmtInt(db.size_bytes)} bytes)`,
+    schemaLine,
     `Row Counts: ${Object.entries(db.counts || {}).map(([k, v]) => `${k}=${v}`).join(" · ")}`,
-    "",
-    "== Tutorial Progress ==",
   ];
+  if (sch && Array.isArray(sch.applied_migrations) && sch.applied_migrations.length > 0) {
+    lines.push("", "== Applied Schema Migrations ==");
+    for (const m of sch.applied_migrations) {
+      lines.push(`${m.version_tag} — ${m.name} (${fmtShortDateTime(m.applied_ts)})`);
+    }
+  }
+  lines.push("", "== Tutorial Progress ==");
   for (const t of db.tutorial_history || []) {
     const status = t.completed_ts ? "DONE" : t.can_complete ? "READY TO CLAIM" : "ACTIVE";
     const tStr = (t.tasks || []).map((x) => x.description).join(" | ") || "(no tasks parsed)";
@@ -4407,6 +4965,88 @@ function wireEvents() {
       document.querySelectorAll("[data-filter]").forEach((c) => c.classList.toggle("active", c === chip));
       if (state.dashboard) renderPlanTable(state.dashboard);
     });
+  });
+
+  el("btn-dash-add-queue")?.addEventListener("click", () => {
+    setActivePage("operations");
+    if (el("mq-kind")) el("mq-kind").value = "BUILD";
+    syncManualQueueComposer(state.dashboard, { forceDefaultLevel: true });
+    el("mq-kind")?.focus?.();
+  });
+
+  el("btn-dash-add-fleet-queue")?.addEventListener("click", () => {
+    setActivePage("operations");
+    if (el("mq-kind")) el("mq-kind").value = "BUILD_SHIP";
+    syncManualQueueComposer(state.dashboard, { forceDefaultLevel: true });
+    el("mq-kind")?.focus?.();
+  });
+
+  el("btn-dash-add-res-queue")?.addEventListener("click", () => {
+    setActivePage("operations");
+    if (el("mq-kind")) el("mq-kind").value = "RESEARCH";
+    syncManualQueueComposer(state.dashboard, { forceDefaultLevel: true });
+    el("mq-kind")?.focus?.();
+  });
+
+  el("btn-dash-goto-research")?.addEventListener("click", () => {
+    state.bldCategory = "research";
+    savePersistedUiState();
+    applySavedTabButtons();
+    setActivePage("buildings");
+    if (state.dashboard) renderBuildingsView(state.dashboard);
+  });
+
+  el("mq-kind")?.addEventListener("change", () => {
+    syncManualQueueComposer(state.dashboard, { forceDefaultLevel: true });
+  });
+  el("mq-planet")?.addEventListener("change", () => {
+    syncManualQueueComposer(state.dashboard, { forceDefaultLevel: true });
+  });
+  el("mq-target-id")?.addEventListener("change", () => {
+    syncManualQueueComposer(state.dashboard, { forceDefaultLevel: true });
+  });
+  el("btn-mq-clear")?.addEventListener("click", () => {
+    clearAllManualQueue();
+  });
+
+  el("mq-composer-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const kind = String(el("mq-kind")?.value || "BUILD").toUpperCase();
+    const priority = String(el("mq-priority")?.value || "P1").toUpperCase();
+    const position = String(el("mq-position")?.value || "top").toLowerCase();
+    const planetId = Math.max(0, Math.round(finiteNum(el("mq-planet")?.value, 0)));
+    const note = String(el("mq-note")?.value || "").trim();
+    const payload = {
+      kind,
+      priority,
+      position,
+      planet_id: planetId,
+      note,
+    };
+
+    if (["BUILD", "DEMOLISH_BUILDING", "RESEARCH", "BUILD_SHIP", "THROTTLE_BUILDING"].includes(kind)) {
+      payload.target_id = Math.max(1, Math.round(finiteNum(el("mq-target-id")?.value, 1)));
+      const rawLvl = String(el("mq-level")?.value ?? "").trim();
+      if (rawLvl !== "") {
+        payload.target_level = Math.max(0, Math.round(finiteNum(rawLvl, 1)));
+      }
+    } else if (["SPY", "ATTACK", "RECYCLE", "COLONIZE", "SCAN_GALAXY"].includes(kind)) {
+      const coords = String(el("mq-coords")?.value || "").trim();
+      if (!coords) {
+        showFeedback("Enter target coordinates (e.g. 02:381:12) before queuing.", "warn");
+        el("mq-coords")?.focus?.();
+        return;
+      }
+      payload.target_coords = coords;
+      if (kind === "SPY" || kind === "RECYCLE") {
+        payload.target_level = Math.max(1, Math.round(finiteNum(el("mq-level")?.value, 1)));
+      }
+    }
+
+    const res = await enqueueManualCommand(payload);
+    if (res && el("mq-note")) {
+      el("mq-note").value = "";
+    }
   });
 
   document.querySelectorAll("[data-log]").forEach((tabBtn) => {

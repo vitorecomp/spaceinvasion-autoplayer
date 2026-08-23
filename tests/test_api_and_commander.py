@@ -5673,6 +5673,153 @@ class TestApiAndCommander(unittest.TestCase):
                 server.server_close()
                 bridge.close()
 
+    def test_manual_queue_api_crud_reprioritize_commander_tick_execution_and_append_only_events(self) -> None:
+        from dataclasses import replace
+        import time
+        import requests
+        from commander import run_commander_tick
+        from spaceinvasion.commander_client import GameApiClient
+        from spaceinvasion.executor import ExecutionResult
+
+        p_home = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=15,
+            fields_used=55,
+            fields_max=230,
+            resources=Resources(95_000, 80_000, 65_000, 45_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(2200, 900),
+            buildings={"b1": 10, "b2": 9, "b3": 8, "b4": 7, "b5": 15, "b7": 5, "b8": 4, "b9": 4},
+            ships={"s1": 6, "s8": 1, "s10": 8, "s11": 2},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 10, 11, Resources(10_000, 5_000, 0, 0), True, "Build", "?b=1"),
+                BuildingOffer(4, "Spice mine", 7, 8, Resources(15_000, 12_000, 8_000, 0), True, "Build", "?b=4"),
+            ),
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=103603,
+            nickname="ventkx86",
+            timestamp=1700000500.0,
+            planets=(p_home,),
+            active_planet_id=12476,
+            researches={"r1": 3, "r2": 6, "r6": 3},
+            speedup_factor=10.0,
+        )
+
+        with tempfile.TemporaryDirectory(prefix="si_mq_api_") as td:
+            td_path = Path(td)
+            cfg_path = td_path / "config.yaml"
+            cfg_path.write_text("planner_mode: priority\nallow_build: true\n", encoding="utf-8")
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
+            fake_client.read_full_snapshot.return_value = st
+            fake_client.navigate_menu.return_value = "<html>ok</html>"
+
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=td_path / "mq.db",
+                log_dir=None,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            assert bridge._db is not None
+            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge._last_snapshot_at = time.monotonic()
+
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                r1 = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "queue_add", "kind": "SPY", "priority": "P2", "target_coords": "02:381:12", "target_level": 1},
+                    timeout=5,
+                ).json()
+                self.assertTrue(r1["ok"])
+                qid_spy = r1["item"]["id"]
+
+                r2 = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "queue_add", "kind": "BUILD", "priority": "P2", "position": "bottom", "planet_id": 12476, "target_id": 4, "target_level": 8},
+                    timeout=5,
+                ).json()
+                self.assertTrue(r2["ok"])
+                qid_bld = r2["item"]["id"]
+                self.assertEqual([x["id"] for x in r2["manual_queue"]], [qid_spy, qid_bld])
+
+                r_upd = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "queue_update", "queue_id": qid_bld, "priority": "P0", "move": "top"},
+                    timeout=5,
+                ).json()
+                self.assertTrue(r_upd["ok"])
+                self.assertEqual([x["id"] for x in r_upd["manual_queue"]], [qid_bld, qid_spy])
+
+                dash = requests.get(f"{base_url}/dashboard?refresh=0", timeout=5).json()
+                self.assertEqual(dash["plan"][0]["manual_queue_id"], qid_bld)
+                self.assertEqual(dash["plan"][0]["priority"], "P0")
+                self.assertEqual(dash["plan"][0]["target_id"], 4)
+
+                bot_st = requests.get(f"{base_url}/bot_status", timeout=5).json()
+                self.assertEqual([x["id"] for x in bot_st["manual_queue"]], [qid_bld, qid_spy])
+
+                p_after = replace(p_home, buildings={**p_home.buildings, "b4": 8})
+                st_after = replace(st, planets=(p_after,))
+
+                def _mock_live_exec(_client, _st, act, **_kw):
+                    return ExecutionResult(
+                        executed=True,
+                        dry_run=False,
+                        action=act,
+                        message=f"Built {act.target_name}",
+                        updated_state=st_after,
+                    )
+
+                with (
+                    patch("spaceinvasion.api_server.is_debug_port_open", return_value=True),
+                    patch.object(bridge._live_executor, "execute_action", side_effect=_mock_live_exec),
+                    GameApiClient(base_url=base_url) as api_cli,
+                ):
+                    _, actual_act, actual_res, _, _ = run_commander_tick(
+                        api_cli,
+                        live=True,
+                        max_actions=1,
+                        config=bridge.strategy_config,
+                        include_buildings=False,
+                        manual_queue=bot_st["manual_queue"],
+                    )
+                self.assertIsNotNone(actual_act)
+                self.assertEqual(actual_act.manual_queue_id, qid_bld)
+                self.assertTrue(actual_res["executed"])
+
+                r_canc = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "queue_cancel", "queue_id": qid_spy},
+                    timeout=5,
+                ).json()
+                self.assertTrue(r_canc["ok"])
+                self.assertTrue(r_canc["canceled"])
+                self.assertEqual(r_canc["manual_queue"], [])
+
+                q_list = requests.post(f"{base_url}/command", json={"command": "queue_list"}, timeout=5).json()
+                self.assertEqual(len(q_list["manual_queue"]), 0)
+                statuses = {h["id"]: h["status"] for h in q_list["history"]}
+                self.assertEqual(statuses[qid_bld], "completed")
+                self.assertEqual(statuses[qid_spy], "canceled")
+                self.assertEqual(bridge._db.summary()["counts"]["manual_queue"], 2)
+                self.assertGreaterEqual(bridge._db.summary()["counts"]["manual_queue_events"], 4)
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

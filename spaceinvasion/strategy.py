@@ -52,6 +52,7 @@ SPICE_MINE = 4
 DEVELOPMENT_CENTER = 7
 RESEARCH_LAB = 8
 WEAPONS_FACTORY = 9
+FLEET_BASE = 10
 PIG_IRON_WAREHOUSE = 11
 METAL_WAREHOUSE = 12
 KRYPTONITE_WAREHOUSE = 13
@@ -2284,6 +2285,52 @@ def _plan_unlock_and_advisory_actions(
         )
         build_unlocks.append(_apply_queue_cap_if_full(act, queue_full))
 
+    # Scale Fleet base (`b10`) to increase concurrent fleet flight slots (`1 + b10` max simultaneous flights)
+    fb = _eff_level(planet, eff_buildings, FLEET_BASE)
+    in_flight_fleets = sum(
+        1 for q in (getattr(state, "active_queues", ()) or ()) if getattr(q, "category", "") == "fleet"
+    )
+    mission_ships = sum(
+        max(0, _safe_strategy_int(cnt, 0))
+        for skey, cnt in (getattr(planet, "ships", None) or {}).items()
+        if skey != "s9"
+    )
+    if (
+        wf >= 1
+        and _planet_has_free_building_fields(planet)
+        and _is_building_allowed_on_planet(planet, FLEET_BASE, offers)
+    ):
+        slots_saturated = in_flight_fleets >= (1 + fb)
+        target_fb = 0
+        if slots_saturated:
+            target_fb = max(fb + 1, in_flight_fleets + 1)
+        elif mission_ships >= 1 or in_flight_fleets > 0 or (config.playstyle == "fleeter" and min(pig, kryp) >= 8):
+            target_fb = min(15, max(2, dev // 2 + (2 if config.playstyle == "fleeter" else 1)))
+        if fb < target_fb:
+            fb_prio = "P2" if (slots_saturated or fb < 2 or in_flight_fleets >= max(1, fb)) else "P3"
+            fb_reason = (
+                f"Expand Fleet base to L{fb + 1} (+1 concurrent flight slot: "
+                f"{1 + fb} -> {2 + fb} flights; {in_flight_fleets}/{1 + fb} currently in transit)"
+                if slots_saturated
+                else f"Increase Fleet base to L{fb + 1} ({1 + fb} -> {2 + fb} concurrent fleet flights)"
+            )
+            fb_act = _make_build_action(
+                fb_prio,
+                planet,
+                FLEET_BASE,
+                "Fleet base",
+                fb_reason,
+                offers,
+                effective_level=fb,
+                researches=state.researches,
+                allow_remote_colony_build=allow_remote_build,
+            )
+            capped_fb = _apply_queue_cap_if_full(fb_act, queue_full)
+            if fb_prio == "P2":
+                build_unlocks.append(capped_fb)
+            else:
+                advisories.append(capped_fb)
+
     # Cross-planet Mining tech (`r1`) ROI + Energy/Ship unlock steps once Research lab L1 exists
     is_raid = _norm_planet_type(planet) == "raid"
     if lab >= 1 and not is_raid:
@@ -2571,9 +2618,18 @@ def _plan_economy_for_planet(
             for t in state.tutorial.tasks
         )
     )
+    res_pig_eco = _safe_strategy_int(getattr(planet.resources, "pig_iron", 0), 0)
+    res_met_eco = _safe_strategy_int(getattr(planet.resources, "metal", 0), 0)
+    sto_pig_eco = _safe_strategy_int(getattr(planet.storage, "pig_iron", 0), 0)
+    sto_met_eco = _safe_strategy_int(getattr(planet.storage, "metal", 0), 0)
+    metal_full_pig_space_eco = (
+        sto_met_eco > 0
+        and res_met_eco * 100 >= sto_met_eco * 98
+        and (sto_pig_eco <= 0 or res_pig_eco * 100 < sto_pig_eco * 99)
+    )
     b2_offer = offers.get(BLAST_FURNACE)
     blast_paused_hold = (
-        cur_b2_pct == 0
+        (cur_b2_pct == 0 or metal_full_pig_space_eco)
         and blast_lvl >= 1
         and config.auto_throttle_blast_furnace
         and not config.merchant_mode
@@ -2880,11 +2936,14 @@ def _plan_blast_furnace_throttle(
     res_met = _safe_strategy_int(getattr(planet.resources, "metal", 0), 0)
     sto_pig = _safe_strategy_int(getattr(planet.storage, "pig_iron", 0), 0)
     sto_met = _safe_strategy_int(getattr(planet.storage, "metal", 0), 0)
+    pig_has_space = sto_pig <= 0 or res_pig * 100 < sto_pig * 99
+    metal_is_full = sto_met > 0 and res_met * 100 >= sto_met * 98
+    metal_full_with_pig_space = metal_is_full and pig_has_space
 
     ref_now = _safe_strategy_float(now_ts, time.time()) if now_ts is not None else time.time()
     last_t_val = _safe_strategy_float(last_throttle_ts, -1.0) if last_throttle_ts is not None else None
     if last_t_val is not None and last_t_val >= 0.0 and (ref_now - last_t_val) < 300.0:
-        if not (e_net < 0 and cur_b2_pct > 0):
+        if not ((e_net < 0 or metal_full_with_pig_space) and cur_b2_pct > 0):
             return None
 
     mining_tech = max(0, _safe_strategy_int((state.researches or {}).get("r1", 0), 0))
@@ -2947,7 +3006,22 @@ def _plan_blast_furnace_throttle(
     candidate: Optional[PlannedAction] = None
 
     if cur_b2_pct > 0:
-        if (
+        if metal_full_with_pig_space:
+            candidate = PlannedAction(
+                priority="P1",
+                kind="THROTTLE_BUILDING",
+                planet_id=planet.planet_id,
+                planet_coords=_safe_strategy_str(planet.coords),
+                target_id=BLAST_FURNACE,
+                target_name="Blast furnace 0%",
+                target_level=0,
+                reason=(
+                    f"Metal storage full ({metal_cap_pct * 100:.0f}%) while Pig iron has free capacity — "
+                    f"disable Blast furnace (0%) to avoid throwing Metal away and save +{bf_pig_used_full:.0f} Pig iron/h"
+                ),
+                executable_now=True,
+            )
+        elif (
             top_needs_pig_only
             and not top_pig_storage_capped
             and not metal_starved_with_positive_pig
@@ -2992,7 +3066,7 @@ def _plan_blast_furnace_throttle(
             return None
     else:
         # Currently paused (0%): apply energy-coupling lookahead and symmetric deadband before resuming 100%
-        if metal_cap_pct >= warn_ratio * 0.85:
+        if metal_full_with_pig_space or metal_cap_pct >= warn_ratio * 0.85:
             return None
         if any(
             a.priority == "P1"
@@ -3811,7 +3885,7 @@ def merge_manual_queue_actions(
     sorted_items = sorted(
         (m for m in manual_queue if isinstance(m, Mapping) and str(m.get("status", "pending")).lower() == "pending"),
         key=lambda m: (
-            prio_rank.get(_safe_strategy_str(m.get("priority"), "P1").strip().upper(), 1),
+            prio_rank.get((_safe_strategy_str(m.get("priority")) or "P1").strip().upper(), 1),
             _safe_strategy_int(m.get("sort_rank"), 1000),
             _safe_strategy_int(m.get("id"), 0),
         ),
@@ -3821,10 +3895,10 @@ def merge_manual_queue_actions(
         qid = _safe_strategy_int(item.get("id"), 0)
         if qid <= 0:
             continue
-        raw_prio = _safe_strategy_str(item.get("priority"), "P1").strip().upper()
+        raw_prio = (_safe_strategy_str(item.get("priority")) or "P1").strip().upper()
         prio = raw_prio if raw_prio in ("P0", "P1", "P2", "P3") else "P1"
         srank = _safe_strategy_int(item.get("sort_rank"), (idx_m + 1) * 10)
-        kind = _safe_strategy_str(item.get("kind"), "").strip().upper()
+        kind = _safe_strategy_str(item.get("kind")).strip().upper()
         pid_req = _safe_strategy_int(item.get("planet_id"), 0)
         pcoords_req = _normalize_manual_coords(item.get("planet_coords"))
         planet = (
@@ -4013,7 +4087,12 @@ def merge_manual_queue_actions(
 
         elif kind == "BUILD_SHIP":
             sid = _safe_strategy_int(item.get("target_id"), 0)
-            s_info = (game_data.resolve_unit("ships", f"s{sid}") or game_data.resolve_unit("ships", sid)) if sid > 0 else None
+            s_slug = SHIP_SLUG_BY_KEY.get(f"s{sid}", f"s{sid}")
+            s_info = (
+                game_data.resolve_unit("ships", s_slug)
+                or game_data.resolve_unit("ships", f"s{sid}")
+                or game_data.resolve_unit("ships", sid)
+            ) if sid > 0 else None
             if sid <= 0 or not s_info:
                 continue
             s_name = _safe_strategy_str(s_info.get("name") or item.get("target_name") or f"Ship s{sid}")
@@ -4232,7 +4311,11 @@ def merge_manual_queue_actions(
         ):
             _, res_need = res_entry
             p_obj = planets_by_id.get(act.planet_id)
-            qty_mult = max(1, _safe_strategy_int(act.target_level, 1)) if act.kind == "BUILD_SHIP" else 1
+            qty_mult = (
+                max(1, _safe_strategy_int(act.target_level, 1))
+                if (act.kind == "BUILD_SHIP" and act.manual_queue_id is None)
+                else 1
+            )
             act_spend = Resources(
                 pig_iron=act.cost.pig_iron * qty_mult,
                 metal=act.cost.metal * qty_mult,
@@ -4271,4 +4354,244 @@ def merge_manual_queue_actions(
         return (p_band, 1, 0 if a.executable_now else 1, orig_idx)
 
     ordered = [a for _, a in sorted(enumerate(combined_list), key=_merge_sort_key)]
-    return attach_action_etas(state, ordered), auto_satisfied_ids
+    ordered, eta_state = _reconcile_queue_metal_production(state, ordered)
+    return attach_action_etas(eta_state, ordered), auto_satisfied_ids
+
+
+def _reconcile_queue_metal_production(
+    state: GameState,
+    ordered: list[PlannedAction],
+) -> tuple[list[PlannedAction], GameState]:
+    """Review and adjust Blast furnace (`b2`) Metal production based on pinned queue position.
+
+    Walks each colony's merged queue in execution order:
+    - When a pinned item needs Metal (`cumulative_missing_metal > 0`) and is NOT behind an
+      earlier Pig-iron-starved item, cancels any auto `b2 -> 0%` pause and immediately
+      schedules `THROTTLE_BUILDING` (`Blast furnace -> 100%` or sustainable `%`) right ahead
+      of the pinned item when `b2` is throttled/paused (`< 100%`).
+    - When a pinned Metal-needing item sits BEHIND an earlier Pig-iron-only item that still
+      lacks Pig iron, holds `b2` at `0%` until the earlier item's Pig iron requirement is met.
+    """
+    if not ordered or not state.planets:
+        return ordered, state
+
+    mining_tech = max(0, _safe_strategy_int((state.researches or {}).get("r1", 0), 0))
+    speedup = _safe_strategy_float(getattr(state, "speedup_factor", 1.0), 1.0)
+    if speedup <= 0:
+        speedup = 1.0
+
+    projected_rates_by_pid: dict[int, int] = {}
+    out_list = list(ordered)
+
+    for planet in state.planets:
+        pid = planet.planet_id
+        b2_lvl = planet.building_level(BLAST_FURNACE)
+        if b2_lvl <= 0:
+            continue
+        p_acts_all = [a for a in out_list if a.planet_id == pid]
+        if not any(a.manual_queue_id is not None for a in p_acts_all):
+            continue
+        # Respect explicit user-pinned Blast furnace throttle if present
+        if any(
+            a.manual_queue_id is not None
+            and a.kind == "THROTTLE_BUILDING"
+            and a.target_id == BLAST_FURNACE
+            for a in p_acts_all
+        ):
+            continue
+
+        rates = planet.economy_rates or {}
+        cur_b2_pct = max(0, min(100, _safe_strategy_int(rates.get("resource2", 100), 100)))
+        cur_b1_pct = max(0, min(100, _safe_strategy_int(rates.get("resource1", 100), 100)))
+        res_pig = _safe_strategy_int(getattr(planet.resources, "pig_iron", 0), 0)
+        res_met = _safe_strategy_int(getattr(planet.resources, "metal", 0), 0)
+        sto_pig = _safe_strategy_int(getattr(planet.storage, "pig_iron", 0), 0)
+        sto_met = _safe_strategy_int(getattr(planet.storage, "metal", 0), 0)
+        metal_is_full = sto_met > 0 and res_met * 100 >= sto_met * 98
+
+        e_prod = _safe_strategy_int(getattr(planet.energy, "produced", 0), 0)
+        e_used = _safe_strategy_int(getattr(planet.energy, "used", 0), 0)
+        prod_ratio = game_data.safe_big_ratio(e_prod, e_used, cap=1.0) if (e_used > 0 and e_prod < e_used) else 1.0
+        factor = speedup * prod_ratio
+        p_pig_gross = (
+            game_data.mine_production_per_hour(
+                PIG_IRON_MINE,
+                planet.building_level(PIG_IRON_MINE),
+                temperature=_safe_strategy_int(planet.temperature, 0),
+                mining_tech_level=mining_tech,
+            )
+            * factor
+            * (max(0, cur_b1_pct) / 100.0)
+        )
+        bf_pig_used_full = game_data.blast_furnace_pig_iron_used(b2_lvl) * factor
+        net_pig_at_100 = p_pig_gross - bf_pig_used_full
+
+        # Walk resource-consuming items on this planet in exact queue order
+        avail_pig = res_pig
+        avail_met = res_met
+        queue_eval: list[tuple[PlannedAction, Resources, int, int]] = []
+        for act in p_acts_all:
+            if act.kind not in ("BUILD", "WAIT_RESOURCES", "RESEARCH", "BUILD_SHIP"):
+                continue
+            rsn_low = _safe_strategy_str(act.reason).lower()
+            if "[unmet prereqs:" in rsn_low or "(requires research lab" in rsn_low or "(requires weapons factory" in rsn_low:
+                continue
+            qty_m = (
+                max(1, _safe_strategy_int(act.target_level, 1))
+                if (act.kind == "BUILD_SHIP" and act.manual_queue_id is None)
+                else 1
+            )
+            spend = Resources(
+                pig_iron=max(0, _safe_strategy_int(act.cost.pig_iron, 0)) * qty_m,
+                metal=max(0, _safe_strategy_int(act.cost.metal, 0)) * qty_m,
+                kryptonite=max(0, _safe_strategy_int(act.cost.kryptonite, 0)) * qty_m,
+                spice=max(0, _safe_strategy_int(act.cost.spice, 0)) * qty_m,
+            )
+            need_pig = max(0, spend.pig_iron - avail_pig)
+            need_met = max(0, spend.metal - avail_met)
+            avail_pig = max(0, avail_pig - spend.pig_iron)
+            avail_met = max(0, avail_met - spend.metal)
+            queue_eval.append((act, spend, need_pig, need_met))
+
+        first_metal_idx: Optional[int] = None
+        for idx_q, (act_q, spend_q, _np, nm) in enumerate(queue_eval):
+            if act_q.manual_queue_id is not None and spend_q.metal > 0 and nm > 0:
+                first_metal_idx = idx_q
+                break
+
+        if first_metal_idx is None:
+            continue
+
+        m_act, m_spend, m_need_pig, m_need_met = queue_eval[first_metal_idx]
+        earlier_items = queue_eval[:first_metal_idx]
+        earlier_pig_blocker = next(
+            (
+                (ea, esp, enp)
+                for (ea, esp, enp, enm) in earlier_items
+                if enp > 0 and enm == 0 and not (sto_pig > 0 and esp.pig_iron > sto_pig)
+            ),
+            None,
+        )
+
+        if earlier_pig_blocker is not None:
+            blk_act, _blk_spend, blk_need_pig = earlier_pig_blocker
+            # Remove any auto Blast furnace > 0% resume while earlier queue item needs Pig iron
+            out_list = [
+                a
+                for a in out_list
+                if not (
+                    a.planet_id == pid
+                    and a.manual_queue_id is None
+                    and a.kind == "THROTTLE_BUILDING"
+                    and a.target_id == BLAST_FURNACE
+                    and _safe_strategy_int(a.target_level, 0) > 0
+                )
+            ]
+            if cur_b2_pct > 0 and not any(
+                a.planet_id == pid
+                and a.kind == "THROTTLE_BUILDING"
+                and a.target_id == BLAST_FURNACE
+                and _safe_strategy_int(a.target_level, -1) == 0
+                for a in out_list
+            ):
+                pause_act = PlannedAction(
+                    priority=blk_act.priority,
+                    kind="THROTTLE_BUILDING",
+                    planet_id=pid,
+                    planet_coords=_safe_strategy_str(planet.coords),
+                    target_id=BLAST_FURNACE,
+                    target_name="Blast furnace 0%",
+                    target_level=0,
+                    reason=(
+                        f"Hold Blast furnace ({cur_b2_pct}% -> 0%) for earlier queued "
+                        f"{blk_act.target_name} (missing {blk_need_pig:,} Pig iron) before "
+                        f"smelting Metal for #{m_act.manual_queue_id} {m_act.target_name}"
+                    ),
+                    executable_now=True,
+                )
+                ins_pos = next((i for i, x in enumerate(out_list) if x is blk_act), 0)
+                out_list.insert(ins_pos, pause_act)
+                projected_rates_by_pid[pid] = 0
+            out_list = [
+                replace(
+                    x,
+                    reason=f"{x.reason} [Metal production queued after {blk_act.target_name} Pig iron completes]",
+                )
+                if x is m_act and "[Metal production queued" not in _safe_strategy_str(x.reason)
+                else x
+                for x in out_list
+            ]
+            continue
+
+        # Check if an earlier unexecuted item reserved Pig iron that would be drained by negative net_pig
+        sum_pig_ahead_waiting = sum(
+            esp.pig_iron for (ea, esp, _enp, _enm) in earlier_items if not ea.executable_now
+        )
+        if sum_pig_ahead_waiting > 0 and net_pig_at_100 < 0 and res_pig < sum_pig_ahead_waiting + 500:
+            continue
+
+        # Active Metal frontier reached: strip any auto Blast furnace 0% pause on this colony
+        out_list = [
+            a
+            for a in out_list
+            if not (
+                a.planet_id == pid
+                and a.manual_queue_id is None
+                and a.kind == "THROTTLE_BUILDING"
+                and a.target_id == BLAST_FURNACE
+                and _safe_strategy_int(a.target_level, -1) == 0
+            )
+        ]
+
+        if not metal_is_full and cur_b2_pct < 100:
+            target_pct = 100
+            if m_need_pig > 0 and bf_pig_used_full > p_pig_gross > 0 and res_pig < m_spend.pig_iron:
+                target_pct = 10
+                for cand_pct in (90, 80, 70, 60, 50, 40, 30, 20, 10):
+                    if bf_pig_used_full * (cand_pct / 100.0) <= p_pig_gross * 0.85:
+                        target_pct = cand_pct
+                        break
+
+            if cur_b2_pct != target_pct:
+                # Replace any existing auto resume throttle on this colony so we place it cleanly ahead of m_act
+                out_list = [
+                    a
+                    for a in out_list
+                    if not (
+                        a.planet_id == pid
+                        and a.manual_queue_id is None
+                        and a.kind == "THROTTLE_BUILDING"
+                        and a.target_id == BLAST_FURNACE
+                    )
+                ]
+                resume_act = PlannedAction(
+                    priority=m_act.priority,
+                    kind="THROTTLE_BUILDING",
+                    planet_id=pid,
+                    planet_coords=_safe_strategy_str(planet.coords),
+                    target_id=BLAST_FURNACE,
+                    target_name=f"Blast furnace {target_pct}%",
+                    target_level=target_pct,
+                    reason=(
+                        f"Enable Metal production ({cur_b2_pct}% -> {target_pct}%) for pinned "
+                        f"#{m_act.manual_queue_id} {m_act.target_name} (needs {m_need_met:,} Metal)"
+                    ),
+                    executable_now=True,
+                )
+                m_idx_out = next((i for i, x in enumerate(out_list) if x is m_act), 0)
+                out_list.insert(m_idx_out, resume_act)
+                projected_rates_by_pid[pid] = target_pct
+
+    if not projected_rates_by_pid:
+        return out_list, state
+
+    adj_planets = tuple(
+        replace(
+            p,
+            economy_rates={**(p.economy_rates or {}), "resource2": projected_rates_by_pid[p.planet_id]},
+        )
+        if p.planet_id in projected_rates_by_pid
+        else p
+        for p in state.planets
+    )
+    return out_list, replace(state, planets=adj_planets)

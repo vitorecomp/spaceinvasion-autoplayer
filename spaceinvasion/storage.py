@@ -31,11 +31,21 @@ from spaceinvasion.logging_utils import (
     is_secret_dict_key,
     redact_sensitive,
 )
+from spaceinvasion.migrations import (
+    ATTACK_HISTORY_SCHEMA_VERSION,
+    DEFAULT_GAME_MIGRATION_RUNNER,
+    GAME_DB_MIGRATIONS,
+    LATEST_SCHEMA_VERSION,
+    PROTECTED_META_KEYS,
+    SCHEMA_LEDGER_DDL,
+    SCHEMA_VERSION,
+    create_sqlite_backup,
+    import_legacy_attack_history_json,
+)
 from spaceinvasion.state import GameState, game_state_from_dict, normalize_planet_type
 
 DEFAULT_DB_PATH = Path("state") / "spaceinvasion.db"
-DEFAULT_ATTACK_HISTORY_PATH = Path("data") / "attack_history.json"
-SCHEMA_VERSION = "1"
+DEFAULT_ATTACK_HISTORY_PATH: Optional[Path] = None
 
 _RESOURCE_KEYS: tuple[str, ...] = ("pig_iron", "metal", "kryptonite", "spice")
 _EXTRA_SID_RE = re.compile(_LOG_SID_RE.pattern, _LOG_SID_RE.flags)
@@ -815,7 +825,7 @@ CREATE TABLE IF NOT EXISTS manual_queue_events (
 );
 CREATE INDEX IF NOT EXISTS idx_manual_queue_events_qid_ts
     ON manual_queue_events(queue_id, ts);
-"""
+""" + SCHEMA_LEDGER_DDL
 
 
 def _stringify_keys(
@@ -892,7 +902,7 @@ def _resolve_attack_history_path(
         return None
     if db_path.resolve() == DEFAULT_DB_PATH.resolve():
         return DEFAULT_ATTACK_HISTORY_PATH
-    return db_path.with_name("attack_history.json")
+    return None
 
 
 class GameDatabase:
@@ -904,6 +914,8 @@ class GameDatabase:
         *,
         legacy_rank_json: Optional[Path] = None,
         attack_history_path: Optional[Path | str] = None,
+        target_schema_version: Optional[int] = None,
+        backup_on_upgrade: Optional[bool] = None,
     ) -> None:
         raw_path = _raw_text(db_path, "")
         self._is_memory = ":memory:" in raw_path or "mode=memory" in raw_path
@@ -941,96 +953,29 @@ class GameDatabase:
                     self._conn.execute("PRAGMA journal_mode=WAL;")
                     self._conn.execute("PRAGMA synchronous=NORMAL;")
                 self._conn.execute("PRAGMA foreign_keys=ON;")
-                self._conn.executescript(_SCHEMA_SQL)
-                existing_cols = {
-                    r["name"]
-                    for r in self._conn.execute("PRAGMA table_info(spy_targets)").fetchall()
-                }
-                if "planet_name" not in existing_cols:
-                    self._conn.execute(
-                        "ALTER TABLE spy_targets ADD COLUMN planet_name TEXT NOT NULL DEFAULT ''"
-                    )
-                if "status_color" not in existing_cols:
-                    self._conn.execute(
-                        "ALTER TABLE spy_targets ADD COLUMN status_color TEXT NOT NULL DEFAULT 'yellow'"
-                    )
-                if "last_spied_ts" not in existing_cols:
-                    self._conn.execute(
-                        "ALTER TABLE spy_targets ADD COLUMN last_spied_ts REAL NOT NULL DEFAULT 0.0"
-                    )
-                if "has_debris" not in existing_cols:
-                    self._conn.execute(
-                        "ALTER TABLE spy_targets ADD COLUMN has_debris INTEGER NOT NULL DEFAULT 0"
-                    )
-                if "blocked_until_ts" not in existing_cols:
-                    self._conn.execute(
-                        "ALTER TABLE spy_targets ADD COLUMN blocked_until_ts REAL NOT NULL DEFAULT 0.0"
-                    )
-                if "block_reason" not in existing_cols:
-                    self._conn.execute(
-                        "ALTER TABLE spy_targets ADD COLUMN block_reason TEXT NOT NULL DEFAULT ''"
-                    )
-                if "bash_hits" not in existing_cols:
-                    self._conn.execute(
-                        "ALTER TABLE spy_targets ADD COLUMN bash_hits INTEGER NOT NULL DEFAULT 0"
-                    )
-                if "last_blocked_ts" not in existing_cols:
-                    self._conn.execute(
-                        "ALTER TABLE spy_targets ADD COLUMN last_blocked_ts REAL NOT NULL DEFAULT 0.0"
-                    )
-                if "uninhabited_fields" not in existing_cols:
-                    self._conn.execute(
-                        "ALTER TABLE spy_targets ADD COLUMN uninhabited_fields INTEGER"
-                    )
-                if "spy_count" not in existing_cols:
-                    self._conn.execute(
-                        "ALTER TABLE spy_targets ADD COLUMN spy_count INTEGER NOT NULL DEFAULT 0"
-                    )
-                if "is_own_planet" not in existing_cols:
-                    self._conn.execute(
-                        "ALTER TABLE spy_targets ADD COLUMN is_own_planet INTEGER NOT NULL DEFAULT 0"
-                    )
-                if "merged_into" not in existing_cols:
-                    self._conn.execute(
-                        "ALTER TABLE spy_targets ADD COLUMN merged_into TEXT NOT NULL DEFAULT ''"
-                    )
-                rep_cols = {
-                    r["name"]
-                    for r in self._conn.execute("PRAGMA table_info(spy_reports)").fetchall()
-                }
-                for col_name, col_ddl in (
-                    ("planet_name", "TEXT NOT NULL DEFAULT ''"),
-                    ("buildings_json", "TEXT NOT NULL DEFAULT '{}'"),
-                    ("researches_json", "TEXT NOT NULL DEFAULT '{}'"),
-                    ("server_msg_id", "TEXT NOT NULL DEFAULT ''"),
-                    ("msg_date_text", "TEXT NOT NULL DEFAULT ''"),
-                    ("raw_text", "TEXT NOT NULL DEFAULT ''"),
-                ):
-                    if col_name not in rep_cols:
-                        self._conn.execute(
-                            f"ALTER TABLE spy_reports ADD COLUMN {col_name} {col_ddl}"
-                        )
-                rec_cols = {
-                    r["name"]
-                    for r in self._conn.execute("PRAGMA table_info(recycle_reports)").fetchall()
-                }
-                for col_name, col_ddl in (
-                    ("harvested_kryptonite", "INTEGER NOT NULL DEFAULT 0"),
-                    ("harvested_spice", "INTEGER NOT NULL DEFAULT 0"),
-                ):
-                    if col_name not in rec_cols:
-                        self._conn.execute(
-                            f"ALTER TABLE recycle_reports ADD COLUMN {col_name} {col_ddl}"
-                        )
                 self._last_slot_history_sig: Optional[tuple[float, tuple[str, ...]]] = None
                 now_ts = time.time()
-                self._conn.execute(
-                    "INSERT OR IGNORE INTO meta(key, value, updated_ts) VALUES(?, ?, ?)",
-                    ("schema_version", SCHEMA_VERSION, now_ts),
+                self._migration_result = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
+                    self._conn,
+                    db_path=None if self._is_memory else self.db_path,
+                    is_memory=self._is_memory,
+                    target_version=target_schema_version,
+                    backup=bool(backup_on_upgrade) if backup_on_upgrade is not None else False,
+                    auto_backup_default_db=(True if backup_on_upgrade is None else bool(backup_on_upgrade)),
+                    now_ts=now_ts,
                 )
                 if legacy_rank_json is not None and legacy_rank_json.exists():
                     self._migrate_legacy_rank_json(legacy_rank_json)
-                self._backfill_reports_from_game_messages_locked(now_ts)
+                if (
+                    not self._is_memory
+                    and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "raid_history")
+                    and self.db_path.resolve() == DEFAULT_DB_PATH.resolve()
+                ):
+                    legacy_atk = self.db_path.parent.parent / "data" / "attack_history.json"
+                    if legacy_atk.is_file():
+                        import_legacy_attack_history_json(self._conn, legacy_atk, now_ts=now_ts)
+                if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "game_messages"):
+                    self._backfill_reports_from_game_messages_locked(now_ts)
                 self._conn.commit()
         except Exception:
             self._conn.close()
@@ -1589,7 +1534,7 @@ class GameDatabase:
 
     def _save_meta_json_locked(self, key: str, payload: Any, now_ts: float) -> None:
         clean_key = _sanitize_text(key).strip()
-        if not clean_key or clean_key == "schema_version":
+        if not clean_key or clean_key in PROTECTED_META_KEYS:
             return
         self._conn.execute(
             """
@@ -1609,7 +1554,7 @@ class GameDatabase:
 
     def load_meta_json(self, key: str) -> Any:
         clean_key = _sanitize_text(key).strip()
-        if not clean_key or clean_key == "schema_version":
+        if not clean_key or clean_key in PROTECTED_META_KEYS:
             return None
         with self._lock:
             row = self._conn.execute(
@@ -3970,6 +3915,8 @@ class GameDatabase:
         payload = _sanitize_obj(
             {
                 "version": 1,
+                "schema_version": ATTACK_HISTORY_SCHEMA_VERSION,
+                "db_schema_version": LATEST_SCHEMA_VERSION,
                 "updated_at": round(time.time(), 3),
                 "overall": stats["overall"],
                 "per_target": stats["per_target"],
@@ -4654,6 +4601,132 @@ class GameDatabase:
             self._conn.commit()
             return qid
 
+    # ------------------------------------------------------------------
+    # Schema Versioning, Migrations, Online Backups & Verification
+    # ------------------------------------------------------------------
+
+    def get_schema_version(self) -> dict[str, Any]:
+        """Return lightweight schema version, tag, checksum, and sync status."""
+        with self._lock:
+            st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
+                self._conn,
+                db_path=None if self._is_memory else self.db_path,
+                include_events=False,
+            )
+        return _sanitize_obj(
+            {
+                "version": st["version"],
+                "version_tag": st["version_tag"],
+                "target_version": st["target_version"],
+                "target_version_tag": st["target_version_tag"],
+                "user_version": st["user_version"],
+                "meta_schema_version": st["meta_schema_version"],
+                "schema_checksum": st["schema_checksum"],
+                "up_to_date": st["up_to_date"],
+                "newer_than_code": st["newer_than_code"],
+                "applied_count": st["applied_count"],
+                "pending_count": st["pending_count"],
+                "checksum_drift": st["checksum_drift"],
+            }
+        )
+
+    def get_migration_status(
+        self,
+        *,
+        include_events: bool = True,
+        event_limit: int = 50,
+    ) -> dict[str, Any]:
+        """Return full migration ledger, pending steps, checksum audit, and events."""
+        with self._lock:
+            st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
+                self._conn,
+                db_path=None if self._is_memory else self.db_path,
+                include_events=include_events,
+                event_limit=event_limit,
+            )
+        return _sanitize_obj(st)
+
+    def run_migrations(
+        self,
+        *,
+        target_version: Optional[int] = None,
+        dry_run: bool = False,
+        backup: bool = False,
+        backup_dir: Optional[Path] = None,
+    ) -> dict[str, Any]:
+        """Run pending forward migrations up to `target_version` (or preview with `dry_run=True`)."""
+        with self._lock:
+            res = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
+                self._conn,
+                db_path=None if self._is_memory else self.db_path,
+                is_memory=self._is_memory,
+                target_version=target_version,
+                dry_run=dry_run,
+                backup=backup,
+                auto_backup_default_db=False,
+                backup_dir=backup_dir,
+            )
+            if not dry_run and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "game_messages"):
+                self._backfill_reports_from_game_messages_locked(time.time())
+                self._conn.commit()
+        return _sanitize_obj(res)
+
+    def create_backup(
+        self,
+        *,
+        label: str = "manual",
+        backup_dir: Optional[Path] = None,
+    ) -> dict[str, Any]:
+        """Create an online WAL-consistent backup snapshot via `sqlite3.Connection.backup`."""
+        if self._is_memory:
+            raise ValueError("Cannot create file backup of an in-memory SQLite database.")
+        with self._lock:
+            st = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
+                self._conn,
+                db_path=self.db_path,
+                include_events=False,
+            )
+            ver = int(st["version"])
+            bkp_path = create_sqlite_backup(
+                self._conn,
+                self.db_path,
+                from_version=ver,
+                to_version=ver,
+                label=label,
+                backup_dir=backup_dir,
+            )
+            DEFAULT_GAME_MIGRATION_RUNNER._ensure_ledger_tables(self._conn)
+            DEFAULT_GAME_MIGRATION_RUNNER._record_event(
+                self._conn,
+                ts=time.time(),
+                event_type="backup_created",
+                from_version=ver,
+                to_version=ver,
+                backup_path=str(bkp_path),
+                details={"label": _sanitize_text(label)[:40]},
+            )
+            self._conn.commit()
+        return _sanitize_obj(
+            {
+                "ok": True,
+                "db_path": _sanitize_text(self.db_path),
+                "backup_path": _sanitize_text(bkp_path),
+                "size_bytes": bkp_path.stat().st_size if bkp_path.exists() else 0,
+                "version": ver,
+                "version_tag": f"V{ver:03d}",
+            }
+        )
+
+    def verify_schema(self, *, full_integrity: bool = False) -> dict[str, Any]:
+        """Verify SQLite B-tree integrity, required tables/columns, version sync, and checksums."""
+        with self._lock:
+            res = DEFAULT_GAME_MIGRATION_RUNNER.verify(
+                self._conn,
+                db_path=None if self._is_memory else self.db_path,
+                full_integrity=full_integrity,
+            )
+        return _sanitize_obj(res)
+
     def summary(self) -> dict[str, Any]:
         tables = (
             "rank_snapshots",
@@ -4675,26 +4748,47 @@ class GameDatabase:
             "recycle_reports",
             "manual_queue",
             "manual_queue_events",
+            "schema_migrations",
+            "schema_migration_events",
         )
         counts: dict[str, int] = {}
         with self._lock:
+            existing_tables = {
+                str(r[0])
+                for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }
             for tbl in tables:
-                counts[tbl] = int(
-                    self._conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+                counts[tbl] = (
+                    int(self._conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0])
+                    if tbl in existing_tables
+                    else 0
                 )
-            meta_keys = {
-                _sanitize_text(_raw_text(r["key"], ""))
-                for r in self._conn.execute("SELECT key FROM meta").fetchall()
-            }
-            msg_cats = {
-                _sanitize_text(_raw_text(r["category"], "general")): int(r["cnt"])
-                for r in self._conn.execute(
-                    "SELECT category, COUNT(*) AS cnt FROM game_messages WHERE msg_uid NOT LIKE 'id:msg-%' AND TRIM(body_text) NOT GLOB '[0-9]* / [0-9]*' GROUP BY category"
-                ).fetchall()
-            }
-        tut_rows = self.get_tutorial_history()
-        recent_actions = self.get_recent_actions(limit=12)
-        spy_targets = self.get_spy_targets(limit=25)
+            meta_keys = (
+                {
+                    _sanitize_text(_raw_text(r["key"], ""))
+                    for r in self._conn.execute("SELECT key FROM meta").fetchall()
+                }
+                if "meta" in existing_tables
+                else set()
+            )
+            msg_cats = (
+                {
+                    _sanitize_text(_raw_text(r["category"], "general")): int(r["cnt"])
+                    for r in self._conn.execute(
+                        "SELECT category, COUNT(*) AS cnt FROM game_messages WHERE msg_uid NOT LIKE 'id:msg-%' AND TRIM(body_text) NOT GLOB '[0-9]* / [0-9]*' GROUP BY category"
+                    ).fetchall()
+                }
+                if "game_messages" in existing_tables
+                else {}
+            )
+            mig_info = DEFAULT_GAME_MIGRATION_RUNNER.inspect(
+                self._conn,
+                db_path=None if self._is_memory else self.db_path,
+                include_events=False,
+            )
+        tut_rows = self.get_tutorial_history() if "tutorial_progress" in existing_tables else []
+        recent_actions = self.get_recent_actions(limit=12) if "action_history" in existing_tables else []
+        spy_targets = self.get_spy_targets(limit=25) if "spy_targets" in existing_tables else []
         size_bytes = (
             self.db_path.stat().st_size
             if (not self._is_memory and self.db_path.exists())
@@ -4704,6 +4798,28 @@ class GameDatabase:
             {
                 "db_path": ":memory:" if self._is_memory else _sanitize_text(self.db_path),
                 "size_bytes": size_bytes,
+                "schema": {
+                    "version": mig_info["version"],
+                    "version_tag": mig_info["version_tag"],
+                    "target_version": mig_info["target_version"],
+                    "target_version_tag": mig_info["target_version_tag"],
+                    "user_version": mig_info["user_version"],
+                    "meta_schema_version": mig_info["meta_schema_version"],
+                    "up_to_date": mig_info["up_to_date"],
+                    "applied_count": mig_info["applied_count"],
+                    "pending_count": mig_info["pending_count"],
+                    "schema_checksum": mig_info["schema_checksum"],
+                    "checksum_drift": mig_info["checksum_drift"],
+                    "applied_migrations": [
+                        {
+                            "version": m["version"],
+                            "version_tag": m["version_tag"],
+                            "name": m["name"],
+                            "applied_ts": m["applied_ts"],
+                        }
+                        for m in mig_info["applied_migrations"]
+                    ],
+                },
                 "counts": counts,
                 "message_categories": msg_cats,
                 "persisted_meta_keys": sorted(k for k in meta_keys if k),

@@ -36,10 +36,8 @@ from spaceinvasion.strategy import PlannedAction, plan_actions
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK_PATH = REPO_ROOT / "notebooks" / "optimizer_experimentation.ipynb"
-ATTACK_HISTORY_PATH = REPO_ROOT / "data" / "attack_history.json"
-EXPECTED_ATTACK_HISTORY_SHA256 = (
-    "51c3bf9611ba3511a3fe7e56f2391e3f005e20523683e453d811466fa0c8f13b"
-)
+ATTACK_HISTORY_PATH = REPO_ROOT / "state" / "spaceinvasion.db"
+LEGACY_ATTACK_JSON_PATH = REPO_ROOT / "data" / "attack_history.json"
 SHIP_SLUG_BY_ID: dict[int, str] = {
     1: "small-transport",
     4: "small-fighter",
@@ -183,7 +181,7 @@ class TestExperimentationNotebook(unittest.TestCase):
             code_cells = code_cells[:max_cells]
         self.assertGreater(len(code_cells), 0)
 
-        before_sha = _sha256_bytes(ATTACK_HISTORY_PATH)
+        before_sha = _sha256_bytes(ATTACK_HISTORY_PATH) if ATTACK_HISTORY_PATH.is_file() else None
         orig_cwd = Path.cwd()
         orig_mpl = os.environ.get("MPLBACKEND")
         orig_sys_path = list(sys.path)
@@ -248,13 +246,14 @@ class TestExperimentationNotebook(unittest.TestCase):
             f"Unexpected ResourceWarnings during notebook execution: {[str(w.message) for w in res_warnings]}",
         )
         if cwd.resolve() not in (REPO_ROOT.resolve(), (REPO_ROOT / "notebooks").resolve()):
+            after_sha = _sha256_bytes(ATTACK_HISTORY_PATH) if ATTACK_HISTORY_PATH.is_file() else None
             self.assertEqual(
-                _sha256_bytes(ATTACK_HISTORY_PATH),
+                after_sha,
                 before_sha,
-                "Headless notebook execution mutated tracked data/attack_history.json",
+                "Headless notebook execution mutated repo state/spaceinvasion.db",
             )
         else:
-            self.assertTrue(ATTACK_HISTORY_PATH.is_file())
+            self.assertFalse(LEGACY_ATTACK_JSON_PATH.exists())
         return ns, stdout_buf.getvalue()
 
     def _assert_expected_namespace(
@@ -439,6 +438,33 @@ class TestExperimentationNotebook(unittest.TestCase):
             f"Expected diverse best_fitness across fleeter sweep rows; got {fleeter_rows}",
         )
 
+        # Action Graph DAG & isolated parameter override preview checks (Chapter 5).
+        for graph_key, expected_mode, expected_dirty in (
+            ("prio_graph", "priority", False),
+            ("ga_graph", "ga_nn", False),
+            ("sim_preview_graph", "ga_nn", True),
+        ):
+            g_obj = ns[graph_key]
+            self.assertEqual(g_obj["mode"], expected_mode)
+            self.assertEqual(g_obj["is_dirty"], expected_dirty)
+            self.assertGreater(g_obj["summary"]["total_nodes"], 0)
+            node_layers = {n["id"]: n["topological_layer"] for n in g_obj["nodes"]}
+            for edge in g_obj["edges"]:
+                self.assertLess(
+                    node_layers[edge["source"]],
+                    node_layers[edge["target"]],
+                    f"Non-DAG edge in {graph_key}: {edge}",
+                )
+
+        # Planetary solar policy ablation checks (Chapter 6).
+        solar_rows = ns["solar_ablation_rows"]
+        self.assertEqual(len(solar_rows), 4)
+        solar_demolish_graph = ns["solar_demolish_graph"]
+        self.assertTrue(
+            any(n["kind"] == "DEMOLISH_BUILDING" for n in solar_demolish_graph["nodes"]),
+            f"Expected DEMOLISH_BUILDING node in solar_demolish_graph; got {solar_demolish_graph['nodes']}",
+        )
+
         self.assertTrue(stdout_text.strip())
         self.assertEqual(
             re.findall(r"sid=([A-Za-z0-9_.-]+)", stdout_text, flags=re.IGNORECASE),
@@ -557,12 +583,12 @@ class TestExperimentationNotebook(unittest.TestCase):
 
         cells = nb.get("cells")
         self.assertIsInstance(cells, list)
-        self.assertGreaterEqual(len(cells), 8)
+        self.assertGreaterEqual(len(cells), 25)
 
         md_cells = [c for c in cells if c.get("cell_type") == "markdown"]
         code_cells = [c for c in cells if c.get("cell_type") == "code"]
-        self.assertGreaterEqual(len(md_cells), 4)
-        self.assertGreaterEqual(len(code_cells), 4)
+        self.assertGreaterEqual(len(md_cells), 13)
+        self.assertGreaterEqual(len(code_cells), 12)
 
         seen_ids: set[str] = set()
         for idx, cell in enumerate(cells):
@@ -610,6 +636,8 @@ class TestExperimentationNotebook(unittest.TestCase):
             "optimize_plan_actions",
             "attach_action_etas",
             "generation_history",
+            "build_action_graph",
+            "merge_strategy_config_overrides",
         ):
             self.assertIn(
                 required_tok,
@@ -618,19 +646,22 @@ class TestExperimentationNotebook(unittest.TestCase):
             )
 
     def test_hygiene_secrets_and_tracked_data_integrity(self) -> None:
-        raw, nb = self._load_notebook()
-        self.assertTrue(ATTACK_HISTORY_PATH.is_file())
-        hist_raw = ATTACK_HISTORY_PATH.read_text(encoding="utf-8")
-        hist_obj = json.loads(hist_raw)
-        self.assertIsInstance(hist_obj, dict)
-        for req_key in ("version", "overall", "per_target", "history", "telemetry_summary"):
-            self.assertIn(req_key, hist_obj)
-        self.assertEqual(
-            re.findall(r"sid=([A-Za-z0-9_.-]+)", hist_raw, flags=re.IGNORECASE),
-            [],
-        )
+        from spaceinvasion.optimizer import load_attack_history_stats
 
-        for rel in ("data/attack_history.json", "notebooks/optimizer_experimentation.ipynb"):
+        raw, nb = self._load_notebook()
+        self.assertFalse(LEGACY_ATTACK_JSON_PATH.exists(), "Legacy data/attack_history.json must be retired into SQLite")
+        if ATTACK_HISTORY_PATH.is_file():
+            hist_obj = load_attack_history_stats(ATTACK_HISTORY_PATH)
+            self.assertIsInstance(hist_obj, dict)
+            for req_key in ("version", "overall", "per_target", "history", "telemetry_summary"):
+                self.assertIn(req_key, hist_obj)
+            hist_raw = json.dumps(hist_obj, allow_nan=False)
+            self.assertEqual(
+                re.findall(r"sid=([A-Za-z0-9_.-]+)", hist_raw, flags=re.IGNORECASE),
+                [],
+            )
+
+        for rel in ("notebooks/optimizer_experimentation.ipynb",):
             chk = subprocess.run(
                 ["git", "check-ignore", "-q", rel],
                 cwd=str(REPO_ROOT),
@@ -714,7 +745,7 @@ class TestExperimentationNotebook(unittest.TestCase):
         self.assertIn(str(REPO_ROOT.resolve()), proc.stdout)
 
     def test_build_sample_game_state_prerequisites_and_ga_seed_determinism(self) -> None:
-        ns, _ = self._run_notebook_headless(REPO_ROOT, max_cells=4)
+        ns, _ = self._run_notebook_headless(REPO_ROOT, max_cells=8)
 
         high_res = ns["build_sample_game_state"](
             resources=Resources(500_000, 500_000, 500_000, 500_000)
@@ -974,7 +1005,7 @@ class TestExperimentationNotebook(unittest.TestCase):
             db_path.chmod(0o444)
             try:
                 before_bytes = db_path.read_bytes()
-                ns_ro, _ = self._run_notebook_headless(tmp_path, max_cells=2)
+                ns_ro, _ = self._run_notebook_headless(tmp_path, max_cells=3)
                 insp = ns_ro["live_db_inspection"]
                 self.assertIsNone(insp["error"])
                 self.assertEqual(insp["counts"]["raid_history"], 1)
@@ -1030,7 +1061,7 @@ class TestExperimentationNotebook(unittest.TestCase):
                     (p.stat().st_mode & 0o777, p.stat().st_mtime_ns, p.read_bytes())
                     for p in ro_files
                 ]
-                ns_ro_wal, out_ro_wal = self._run_notebook_headless(tmp_path, max_cells=2)
+                ns_ro_wal, out_ro_wal = self._run_notebook_headless(tmp_path, max_cells=3)
                 insp_wal = ns_ro_wal["live_db_inspection"]
                 self.assertIsNone(insp_wal["error"])
                 self.assertEqual(insp_wal["counts"]["raid_history"], 2)
@@ -1123,7 +1154,7 @@ class TestExperimentationNotebook(unittest.TestCase):
                 orig_raw[:1],
             ):
                 db_path.write_bytes(raw_variant)
-                ns_p2, out_p2 = self._run_notebook_headless(tmp_path, max_cells=2)
+                ns_p2, out_p2 = self._run_notebook_headless(tmp_path, max_cells=3)
                 insp_p2 = ns_p2["live_db_inspection"]
                 self.assertTrue(insp_p2["exists"])
                 self.assertIsInstance(insp_p2["error"], str)
@@ -1135,7 +1166,7 @@ class TestExperimentationNotebook(unittest.TestCase):
             # Corrupt -wal sidecar alongside valid DB: SQLite ignores garbage WAL frames cleanly.
             db_path.write_bytes(orig_raw)
             Path(f"{db_path}-wal").write_bytes(b"corrupt_wal_garbage_bytes" * 16)
-            ns_wal_bad, out_wal_bad = self._run_notebook_headless(tmp_path, max_cells=2)
+            ns_wal_bad, out_wal_bad = self._run_notebook_headless(tmp_path, max_cells=3)
             insp_wal_bad = ns_wal_bad["live_db_inspection"]
             self.assertTrue(insp_wal_bad["exists"])
             self.assertIsNone(insp_wal_bad["error"])
@@ -1181,7 +1212,7 @@ class TestExperimentationNotebook(unittest.TestCase):
                 self.assertEqual(len(ic_chk), 1)
                 self.assertIn("missing from index idx_raid_history_coords_ts", ic_chk[0][0])
 
-            ns_idx, out_idx = self._run_notebook_headless(idx_dir, max_cells=2)
+            ns_idx, out_idx = self._run_notebook_headless(idx_dir, max_cells=3)
             insp_idx = ns_idx["live_db_inspection"]
             self.assertTrue(insp_idx["exists"])
             self.assertIsInstance(insp_idx["error"], str)
@@ -1276,7 +1307,7 @@ class TestExperimentationNotebook(unittest.TestCase):
                 with contextlib.closing(sqlite3.connect(bad_db_path)) as conn:
                     conn.executescript(bad_ddl)
                     conn.commit()
-                ns_sch, out_sch = self._run_notebook_headless(tmp_path, max_cells=2)
+                ns_sch, out_sch = self._run_notebook_headless(tmp_path, max_cells=3)
                 insp_sch = ns_sch["live_db_inspection"]
                 self.assertTrue(insp_sch["exists"])
                 self.assertIsInstance(insp_sch["error"], str)
@@ -1294,7 +1325,7 @@ class TestExperimentationNotebook(unittest.TestCase):
             with contextlib.closing(sqlite3.connect(leg_db_path)) as conn:
                 conn.executescript(legacy_spy_ddl)
                 conn.commit()
-                ns_leg, out_leg = self._run_notebook_headless(tmp_path, max_cells=2)
+                ns_leg, out_leg = self._run_notebook_headless(tmp_path, max_cells=3)
             insp_leg = ns_leg["live_db_inspection"]
             self.assertTrue(insp_leg["exists"])
             self.assertIsNone(insp_leg["error"])
@@ -1316,7 +1347,7 @@ class TestExperimentationNotebook(unittest.TestCase):
                 trig_db._conn.commit()
             finally:
                 trig_db.close()
-            ns_trig, out_trig = self._run_notebook_headless(tmp_path, max_cells=2)
+            ns_trig, out_trig = self._run_notebook_headless(tmp_path, max_cells=3)
             insp_trig = ns_trig["live_db_inspection"]
             self.assertTrue(insp_trig["exists"])
             self.assertIsNone(insp_trig["error"])
@@ -1354,7 +1385,7 @@ class TestExperimentationNotebook(unittest.TestCase):
                     db._conn.commit()
                 finally:
                     db.close()
-                ns_w, out_w = self._run_notebook_headless(tmp_path, max_cells=2)
+                ns_w, out_w = self._run_notebook_headless(tmp_path, max_cells=3)
                 insp_w = ns_w["live_db_inspection"]
                 self.assertTrue(insp_w["exists"])
                 self.assertIsNone(insp_w["error"])
@@ -1383,7 +1414,7 @@ class TestExperimentationNotebook(unittest.TestCase):
                     "VALUES ('02:380:04', 1700000100.0, 1, 'Victory', '{\"pig_iron\":5000}');"
                 )
                 conn.commit()
-            ns_nt, out_nt = self._run_notebook_headless(tmp_path, max_cells=2)
+            ns_nt, out_nt = self._run_notebook_headless(tmp_path, max_cells=3)
             insp_nt = ns_nt["live_db_inspection"]
             self.assertTrue(insp_nt["exists"])
             self.assertIsNone(insp_nt["error"])
@@ -1435,7 +1466,7 @@ class TestExperimentationNotebook(unittest.TestCase):
                 unreadable_json.chmod(0o000)
                 unreadable_db.chmod(0o000)
                 try:
-                    ns_perm, out_perm = self._run_notebook_headless(tmp_path, max_cells=2)
+                    ns_perm, out_perm = self._run_notebook_headless(tmp_path, max_cells=3)
                     self.assertIsNone(ns_perm["attack_history_sha256"])
                     self.assertEqual(ns_perm["disk_overall"], {})
                     insp_perm = ns_perm["live_db_inspection"]
@@ -1518,7 +1549,7 @@ class TestExperimentationNotebook(unittest.TestCase):
             os.chdir(REPO_ROOT)
             ns_a: dict = {"__name__": "__main__"}
             with contextlib.redirect_stdout(io.StringIO()):
-                for idx in range(4):
+                for idx in range(8):
                     exec(compile(code_cells[idx], f"mpl_a_{idx}", "exec"), ns_a, ns_a)
             self.assertTrue(ns_a["HAS_MATPLOTLIB"])
             self.assertEqual(log_a["use_calls"], ["Agg"])
@@ -1534,7 +1565,7 @@ class TestExperimentationNotebook(unittest.TestCase):
             sys.modules["ipykernel"] = types.ModuleType("ipykernel")
             ns_b: dict = {"__name__": "__main__"}
             with contextlib.redirect_stdout(io.StringIO()):
-                for idx in range(4):
+                for idx in range(8):
                     exec(compile(code_cells[idx], f"mpl_b_{idx}", "exec"), ns_b, ns_b)
             self.assertTrue(ns_b["HAS_MATPLOTLIB"])
             self.assertEqual(log_b["use_calls"], [])
@@ -1562,8 +1593,10 @@ class TestExperimentationNotebook(unittest.TestCase):
                 self.assertIsNone(cell.get("execution_count"))
 
         cell3_src = _cell_source(nb["cells"][3])
-        self.assertIn("bkey[1:].isascii() and bkey[1:].isdigit()", cell3_src)
-        self.assertIn("allow_nan=False", cell3_src)
+        cell7_src = _cell_source(nb["cells"][7])
+        cell9_src = _cell_source(nb["cells"][9])
+        self.assertIn("bkey[1:].isascii() and bkey[1:].isdigit()", cell7_src)
+        self.assertIn("allow_nan=False", cell9_src)
 
         tree = ast.parse(cell3_src)
         helpers = [
@@ -1587,6 +1620,106 @@ class TestExperimentationNotebook(unittest.TestCase):
         self.assertEqual(si(float("nan")), 0)
         self.assertEqual(si(frozenset({1})), 0)
         self.assertEqual(si(10**5000), 10**5000)
+
+    def test_full_planner_notebook_attack_stats_time_and_success_rate(self) -> None:
+        fp_path = REPO_ROOT / "notebooks" / "full_planner.ipynb"
+        self.assertTrue(fp_path.is_file(), f"Missing {fp_path}")
+        raw = fp_path.read_text(encoding="utf-8")
+        nb = json.loads(raw)
+        self.assertEqual((nb.get("nbformat"), nb.get("nbformat_minor")), (4, 5))
+
+        cells = nb.get("cells") or []
+        self.assertGreaterEqual(len(cells), 13)
+        md_cells = [c for c in cells if c.get("cell_type") == "markdown"]
+        code_cells = [c for c in cells if c.get("cell_type") == "code"]
+        self.assertGreaterEqual(len(md_cells), 7)
+        self.assertGreaterEqual(len(code_cells), 6)
+
+        for idx, cell in enumerate(code_cells):
+            self.assertEqual(cell.get("outputs"), [])
+            self.assertIsNone(cell.get("execution_count"))
+            src = _cell_source(cell)
+            self._assert_cell_ast_safe(src, f"full_planner code cell {idx}")
+            parsed_cell = ast.parse(src)
+            import_nodes = [
+                n for n in ast.walk(parsed_cell) if isinstance(n, (ast.Import, ast.ImportFrom))
+            ]
+            func_names = {
+                n.name for n in parsed_cell.body if isinstance(n, ast.FunctionDef)
+            }
+            if idx == 0:
+                self.assertGreater(len(import_nodes), 0, "First code cell in full_planner must hold imports")
+                self.assertNotIn("resolve_repo_root", func_names)
+            else:
+                self.assertEqual(
+                    import_nodes,
+                    [],
+                    f"Non-import code cell {idx} in full_planner must not contain imports: {import_nodes}",
+                )
+            if idx == 1:
+                self.assertIn("resolve_repo_root", func_names, "Utils code cell must define resolve_repo_root")
+
+        orig_cwd = Path.cwd()
+        try:
+            with tempfile.TemporaryDirectory(prefix="si_fp_test_") as tmp:
+                tmp_path = Path(tmp)
+                (tmp_path / "data").mkdir()
+                (tmp_path / "state").mkdir()
+                db = GameDatabase(tmp_path / "state" / "spaceinvasion.db", legacy_rank_json=None)
+                try:
+                    db.record_state_snapshot(_sample_snapshot_state())
+                    db.record_raid(
+                        "02:383:02",
+                        attacked_ts=1_700_000_000.0,
+                        is_exempt=True,
+                        outcome="Dispatched attack",
+                        loot={},
+                    )
+                    db.record_raid(
+                        "02:383:02",
+                        attacked_ts=1_700_001_000.0,
+                        is_exempt=True,
+                        outcome="Dispatched attack",
+                        loot={},
+                    )
+                    db.record_raid(
+                        "02:378:15",
+                        attacked_ts=1_700_003_000.0,
+                        is_exempt=True,
+                        outcome="Dispatched attack",
+                        loot={},
+                    )
+                    db._conn.executemany(
+                        "INSERT INTO battle_reports("
+                        "ts, msg_uid, server_msg_id, battle_id, msg_date_text, target_coords, "
+                        "attacker, defender, outcome, rounds, pig_iron, metal, kryptonite, spice, loot_spice_eq"
+                        ") VALUES (?, ?, ?, ?, ?, ?, 'Me', 'Target', ?, 1, ?, ?, ?, ?, ?)",
+                        [
+                            (1_700_000_300.0, "m1", "1", "b1", "2023-11-14 22:18:20", "02:383:02", "win", 6000, 2500, 3000, 1000, 4000.0),
+                            (1_700_001_360.0, "m2", "2", "b2", "2023-11-14 22:36:00", "02:383:02", "win", 3000, 1250, 1500, 500, 2000.0),
+                            (1_700_003_200.0, "m3", "3", "b3", "2023-11-14 23:06:40", "02:378:15", "loss", 0, 0, 0, 0, 0.0),
+                        ],
+                    )
+                    db._conn.commit()
+                finally:
+                    db.close()
+
+                os.chdir(tmp_path)
+                ns: dict = {"__name__": "__main__"}
+                with contextlib.redirect_stdout(io.StringIO()):
+                    for idx, cell in enumerate(code_cells):
+                        exec(compile(_cell_source(cell), f"fp_{idx}", "exec"), ns, ns)
+
+                self.assertAlmostEqual(ns["attack_resource_mean"]["spice_eq"], 2000.0, places=2)
+                self.assertAlmostEqual(ns["attack_resource_std"]["spice_eq"], 2000.0, places=2)
+                self.assertAlmostEqual(ns["winning_attack_resource_mean"]["spice_eq"], 3000.0, places=2)
+                self.assertGreater(ns["attack_time_mean_sec"], 0.0)
+                self.assertGreater(ns["attack_time_std_sec"], 0.0)
+                self.assertAlmostEqual(ns["inter_attack_time_mean_sec"], 1500.0, places=2)
+                self.assertAlmostEqual(ns["attack_success_rate"], 2.0 / 3.0, places=4)
+                self.assertEqual(ns["ATTACK_SIM_PARAMS"]["attempts"], 3)
+        finally:
+            os.chdir(orig_cwd)
 
 
 if __name__ == "__main__":

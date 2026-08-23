@@ -14,7 +14,7 @@ import signal
 import sys
 import threading
 import time
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 import requests
 
@@ -51,7 +51,7 @@ from spaceinvasion.state import (  # noqa: E402
     is_asteroid_planet,
     normalize_planet_type,
 )
-from spaceinvasion.strategy import PlannedAction, plan_actions  # noqa: E402
+from spaceinvasion.strategy import PlannedAction, merge_manual_queue_actions, plan_actions  # noqa: E402
 
 WATCH_PATHS = (
     Path("commander.py"),
@@ -440,6 +440,7 @@ def run_commander_tick(
     throttle_cooldowns: Optional[Mapping[int, float]] = None,
     economy_sync_timestamps: Optional[Mapping[int, float]] = None,
     fleet_slot_cooldowns: Optional[Mapping[int, float]] = None,
+    manual_queue: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> tuple[GameState, Optional[PlannedAction], Optional[dict], Optional[PlannedAction], list[dict]]:
     """Fetch state via HTTP, compute `plan_actions`, and send commands.
 
@@ -476,16 +477,25 @@ def run_commander_tick(
                 if compute_rate_limit_backoff(_safe_cmd_str(sync_exc)) is not None:
                     raise
     is_ga_nn = str(getattr(cfg, "planner_mode", "priority") or "priority").strip().lower() == "ga_nn"
-    actions = _hold_busy_fleet_slots(
-        plan_actions(
-            state,
-            config=cfg,
-            scanned_systems=scanned_systems,
-            throttle_cooldowns=throttle_cooldowns,
-        ),
-        fleet_slot_cooldowns,
-        re_sort_priority=not is_ga_nn,
-    )
+    cur_mq: Optional[Sequence[Mapping[str, Any]]] = manual_queue
+
+    def _compute_tick_actions(cur_st: GameState, mq_items: Optional[Sequence[Mapping[str, Any]]]) -> list[PlannedAction]:
+        base = _hold_busy_fleet_slots(
+            plan_actions(
+                cur_st,
+                config=cfg,
+                scanned_systems=scanned_systems,
+                throttle_cooldowns=throttle_cooldowns,
+            ),
+            fleet_slot_cooldowns,
+            re_sort_priority=not is_ga_nn,
+        )
+        if mq_items:
+            merged, _ = merge_manual_queue_actions(cur_st, base, mq_items, config=cfg)
+            return _hold_busy_fleet_slots(merged, fleet_slot_cooldowns, re_sort_priority=False)
+        return base
+
+    actions = _compute_tick_actions(state, cur_mq)
     if not include_buildings and not any(a.executable_now for a in actions):
         # Refresh buildings immediately ONLY if resources now cover an affordable wait item
         # not blocked by a full build queue or un-unlocked/future card.
@@ -497,7 +507,7 @@ def run_commander_tick(
         queue_cap = 1 if is_astro else (6 if has_cmd else 5)
         active_queue_full = b_queued >= queue_cap
         for act in actions:
-            if act.kind != "WAIT_RESOURCES" or act.target_id is None or act.cost.is_zero():
+            if act.kind not in ("WAIT_RESOURCES", "BUILD") or act.target_id is None or act.cost.is_zero():
                 continue
             reason_l = (act.reason or "").lower()
             if (
@@ -516,16 +526,7 @@ def run_commander_tick(
             if offer is not None and offer.can_build:
                 continue
             state = api.get_state(include_buildings=True)
-            actions = _hold_busy_fleet_slots(
-                plan_actions(
-                    state,
-                    config=cfg,
-                    scanned_systems=scanned_systems,
-                    throttle_cooldowns=throttle_cooldowns,
-                ),
-                fleet_slot_cooldowns,
-                re_sort_priority=not is_ga_nn,
-            )
+            actions = _compute_tick_actions(state, cur_mq)
             break
 
     outcomes: list[dict] = []
@@ -573,6 +574,8 @@ def run_commander_tick(
                 f"Expected JSON object from send_command, got {type(res).__name__}"
             )
         res_dict = dict(res) if not isinstance(res, dict) else res
+        if isinstance(res_dict.get("manual_queue"), list):
+            cur_mq = [x for x in res_dict["manual_queue"] if isinstance(x, Mapping)]
         actual_result = res_dict
         outcomes.append(res_dict)
         acted += 1
@@ -581,16 +584,7 @@ def run_commander_tick(
         if not res_dict.get("executed"):
             if isinstance(res_dict.get("state"), Mapping):
                 state = game_state_from_dict(res_dict["state"])
-                actions = _hold_busy_fleet_slots(
-                    plan_actions(
-                        state,
-                        config=cfg,
-                        scanned_systems=scanned_systems,
-                        throttle_cooldowns=throttle_cooldowns,
-                    ),
-                    fleet_slot_cooldowns,
-                    re_sort_priority=not is_ga_nn,
-                )
+                actions = _compute_tick_actions(state, cur_mq)
                 continue
             break
         after_live = True
@@ -598,16 +592,7 @@ def run_commander_tick(
             state = game_state_from_dict(res_dict["state"])
         elif acted < max_actions:
             state = api.get_state(include_buildings=False)
-        actions = _hold_busy_fleet_slots(
-            plan_actions(
-                state,
-                config=cfg,
-                scanned_systems=scanned_systems,
-                throttle_cooldowns=throttle_cooldowns,
-            ),
-            fleet_slot_cooldowns,
-            re_sort_priority=not is_ga_nn,
-        )
+        actions = _compute_tick_actions(state, cur_mq)
 
     if actual_action is None and actions:
         actual_action = actions[0]
@@ -782,6 +767,7 @@ def main(argv: list[str] | None = None) -> int:
                 throttle_cooldowns: Optional[dict[int, float]] = None
                 economy_sync_timestamps: Optional[dict[int, float]] = None
                 fleet_slot_cooldowns: Optional[dict[int, float]] = None
+                manual_queue: Optional[list[Mapping[str, Any]]] = None
                 paused_via_ui = False
                 try:
                     bot_ctrl = api.get_bot_control()
@@ -860,6 +846,9 @@ def main(argv: list[str] | None = None) -> int:
                                     if re.fullmatch(r"-?\d{1,18}", ks, re.ASCII):
                                         parsed_fsc[int(ks)] = fv
                             fleet_slot_cooldowns = parsed_fsc
+                        raw_mq = bot_ctrl.get("manual_queue")
+                        if isinstance(raw_mq, list):
+                            manual_queue = [x for x in raw_mq if isinstance(x, Mapping)]
                 except (requests.RequestException, GameApiError):
                     pass
 
@@ -885,6 +874,7 @@ def main(argv: list[str] | None = None) -> int:
                         throttle_cooldowns=throttle_cooldowns,
                         economy_sync_timestamps=economy_sync_timestamps,
                         fleet_slot_cooldowns=fleet_slot_cooldowns,
+                        manual_queue=manual_queue,
                     )
                     refreshed_buildings = need_buildings or (
                         effective_live

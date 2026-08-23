@@ -2574,6 +2574,267 @@ return {
                 server.server_close()
                 bridge.close()
 
+    def test_node_vm_manual_queue_composer_pin_reprioritize_reorder_and_drop(self) -> None:
+        import time
+
+        p_home = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=15,
+            fields_used=55,
+            fields_max=230,
+            resources=Resources(95_000, 80_000, 65_000, 45_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(2200, 900),
+            buildings={"b1": 10, "b2": 9, "b3": 8, "b4": 7, "b5": 15, "b7": 5, "b8": 4, "b9": 4},
+            ships={"s1": 6, "s8": 1, "s10": 8, "s11": 2},
+            building_offers=_sample_state().planets[0].building_offers,
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=103603,
+            nickname="ventkx86",
+            timestamp=1700000600.0,
+            planets=(p_home,),
+            active_planet_id=12476,
+            researches={"r1": 3, "r2": 6, "r6": 3},
+            speedup_factor=10.0,
+        )
+        with tempfile.TemporaryDirectory(prefix="si_ui_mq_") as td:
+            td_path = Path(td)
+            cfg_path = td_path / "config.yaml"
+            cfg_path.write_text("planner_mode: priority\nallow_build: true\n", encoding="utf-8")
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
+            fake_client.read_full_snapshot.return_value = st
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=td_path / "mq.db",
+                log_dir=None,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge._last_snapshot_at = time.monotonic()
+
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                scenario_js = r"""
+await __waitUntil(() => state.dashboard !== null && Array.isArray(state.dashboard.plan));
+
+// 1. Click "+ Queue Command" from Dashboard -> jumps to Operations & populates composer
+el("btn-dash-add-queue").click();
+await __waitUntil(() => !el("view-operations").hidden && el("mq-target-id").children.length > 0);
+
+// 2. Submit a P1 BUILD Spice mine (b4) -> L8 via the composer form
+el("mq-kind").value = "BUILD";
+el("mq-kind").dispatchEvent({ type: "change" });
+el("mq-target-id").value = "4";
+el("mq-target-id").dispatchEvent({ type: "change" });
+el("mq-level").value = "8";
+el("mq-priority").value = "P1";
+el("mq-note").value = "Priority Spice";
+el("mq-composer-form").dispatchEvent({ type: "submit", preventDefault() {} });
+await __waitUntil(() => (state.dashboard?.manual_queue || []).length === 1);
+
+// 3. Submit a second P1 SPY command at bottom -> now 2 pinned items
+el("mq-kind").value = "SPY";
+el("mq-kind").dispatchEvent({ type: "change" });
+el("mq-coords").value = "02:381:12";
+el("mq-level").value = "1";
+el("mq-priority").value = "P1";
+el("mq-position").value = "bottom";
+el("mq-composer-form").dispatchEvent({ type: "submit", preventDefault() {} });
+await __waitUntil(() => (state.dashboard?.manual_queue || []).length === 2);
+
+const beforeMove = state.dashboard.manual_queue.map((x) => x.kind);
+
+// 4. Click "Up" on the second pinned row (SPY) -> moves SPY above BUILD!
+const manualRows = Array.from(el("plan-tbody").querySelectorAll("tr.is-manual-queued"));
+const secondRowUpBtn = Array.from(manualRows[1].querySelectorAll("button")).find((b) => b.textContent.trim() === "Up");
+secondRowUpBtn.click();
+await __waitUntil(() => (state.dashboard?.manual_queue || [])[0]?.kind === "SPY");
+const afterMove = state.dashboard.manual_queue.map((x) => x.kind);
+
+// 5. Change first row's priority dropdown to P0
+const firstPrioSel = el("plan-tbody").querySelector("tr.is-manual-queued select.mq-prio-select");
+firstPrioSel.value = "P0";
+firstPrioSel.dispatchEvent({ type: "change" });
+await __waitUntil(() => (state.dashboard?.manual_queue || [])[0]?.priority === "P0");
+
+// 6. Filter to "Pinned Only" chip and check row count = 2, then Drop 1 item
+el("chip-filter-manual").click();
+const pinnedFilteredRows = el("plan-tbody").querySelectorAll("tr.is-manual-queued").length;
+const dropBtn = Array.from(el("plan-tbody").querySelectorAll("tr.is-manual-queued button")).find((b) => b.textContent.trim() === "Drop");
+dropBtn.click();
+await __waitUntil(() => (state.dashboard?.manual_queue || []).length === 1);
+
+return {
+  beforeMove,
+  afterMove,
+  topPrio: state.dashboard.manual_queue[0].priority,
+  pinnedFilteredRows,
+  remainingCount: state.dashboard.manual_queue.length,
+  opsText: el("view-operations").textContent,
+};
+"""
+                with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                    res = _run_node_ui(base_url, scenario_js)
+                self.assertEqual(res["errors"], [])
+                sc = res["scenario"]
+                self.assertEqual(sc["beforeMove"], ["BUILD", "SPY"])
+                self.assertEqual(sc["afterMove"], ["SPY", "BUILD"])
+                self.assertEqual(sc["pinnedFilteredRows"], 2)
+                self.assertEqual(sc["remainingCount"], 1)
+                self.assertNotIn("NaN", sc["opsText"])
+                self.assertNotIn("undefined", sc["opsText"])
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
+    def test_dashboard_removes_building_eta_card_and_splits_three_side_by_side_queues(self) -> None:
+        import time
+
+        p_home = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=15,
+            fields_used=55,
+            fields_max=230,
+            resources=Resources(95_000, 80_000, 65_000, 45_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(2200, 900),
+            buildings={"b1": 10, "b2": 9, "b3": 8, "b4": 7, "b5": 15, "b7": 5, "b8": 4, "b9": 4},
+            ships={"s1": 6, "s8": 1, "s10": 8, "s11": 2},
+            building_offers=_sample_state().planets[0].building_offers,
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=103603,
+            nickname="ventkx86",
+            timestamp=1700000700.0,
+            planets=(p_home,),
+            active_planet_id=12476,
+            researches={"r1": 3, "r2": 6, "r6": 3},
+            speedup_factor=10.0,
+        )
+        with tempfile.TemporaryDirectory(prefix="si_ui_3q_") as td:
+            td_path = Path(td)
+            cfg_path = td_path / "config.yaml"
+            cfg_path.write_text("planner_mode: priority\nallow_build: true\n", encoding="utf-8")
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
+            fake_client.read_full_snapshot.return_value = st
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=td_path / "three_q.db",
+                log_dir=None,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge._last_snapshot_at = time.monotonic()
+
+            # Enqueue 1 Building, 1 Fleet (Ship), and 1 Research command so all 3 Dashboard queues populate
+            bridge._db.enqueue_manual_command(
+                kind="BUILD", planet_id=12476, planet_coords="02:380:12", target_id=4, target_name="Spice mine", target_level=8, priority="P1"
+            )
+            bridge._db.enqueue_manual_command(
+                kind="BUILD_SHIP", planet_id=12476, planet_coords="02:380:12", target_id=10, target_name="Spy probe", target_level=4, priority="P1"
+            )
+            bridge._db.enqueue_manual_command(
+                kind="RESEARCH", planet_id=12476, planet_coords="02:380:12", target_id=1, target_name="Mining technology", target_level=4, priority="P1"
+            )
+
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                html_txt = requests.get(f"{base_url}/", timeout=5).text
+                css_txt = requests.get(f"{base_url}/styles.css", timeout=5).text
+                self.assertNotIn('id="dash-eta-tbody"', html_txt)
+                self.assertNotIn("Nearest Building Reach Times", html_txt)
+                self.assertIn('id="eta-table-tbody"', html_txt)
+                self.assertRegex(
+                    css_txt,
+                    r"\.dash-lower-grid\s*\{[^}]*grid-template-columns\s*:\s*repeat\(\s*3\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\s*\)",
+                )
+
+                scenario_js = r"""
+await __waitUntil(() => state.dashboard !== null && Array.isArray(state.dashboard.plan));
+const dashView = el("view-dashboard");
+const cards = Array.from(dashView.querySelectorAll(".dash-queue-card")).map((c) => c.id);
+const bldTxt = el("dash-plan-tbody").textContent;
+const fltTxt = el("dash-plan-fleet-tbody").textContent;
+const resTxt = el("dash-plan-research-tbody").textContent;
+const bldCount = Number(el("dash-bld-q-count").textContent);
+const fltCount = Number(el("dash-fleet-q-count").textContent);
+const resCount = Number(el("dash-research-q-count").textContent);
+
+// Click "Research ->" button on Research Queue card -> jumps to Buildings view filtered to research
+el("btn-dash-goto-research").click();
+const onBldView = !el("view-buildings").hidden;
+const catAfterJump = state.bldCategory;
+
+// Click "+ Queue" on Fleet Queue card -> jumps to Operations with BUILD_SHIP selected
+el("btn-dash-add-fleet-queue").click();
+const mqKindAfterFleetJump = el("mq-kind").value;
+
+return {
+  hasDashEta: Boolean(el("dash-eta-tbody")),
+  cards,
+  bldTxt,
+  fltTxt,
+  resTxt,
+  bldCount,
+  fltCount,
+  resCount,
+  onBldView,
+  catAfterJump,
+  mqKindAfterFleetJump,
+};
+"""
+                with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                    res = _run_node_ui(base_url, scenario_js)
+                self.assertEqual(res["errors"], [])
+                sc = res["scenario"]
+                self.assertFalse(sc["hasDashEta"])
+                self.assertEqual(
+                    sc["cards"],
+                    ["dash-queue-card-building", "dash-queue-card-fleet", "dash-queue-card-research"],
+                )
+                self.assertGreaterEqual(sc["bldCount"], 1)
+                self.assertGreaterEqual(sc["fltCount"], 1)
+                self.assertGreaterEqual(sc["resCount"], 1)
+                self.assertIn("Spice mine", sc["bldTxt"])
+                self.assertNotIn("Spy probe", sc["bldTxt"])
+                self.assertNotIn("Mining technology", sc["bldTxt"])
+                self.assertIn("Spy probe", sc["fltTxt"])
+                self.assertNotIn("Spice mine", sc["fltTxt"])
+                self.assertIn("Mining technology", sc["resTxt"])
+                self.assertNotIn("Spice mine", sc["resTxt"])
+                self.assertTrue(sc["onBldView"])
+                self.assertEqual(sc["catAfterJump"], "research")
+                self.assertEqual(sc["mqKindAfterFleetJump"], "BUILD_SHIP")
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

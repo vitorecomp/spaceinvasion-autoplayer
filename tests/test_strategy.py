@@ -2218,6 +2218,159 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertTrue(any(a.planet_id == 12477 and a.target_id == 5 for a in acts_mixed))
         self.assertTrue(any(a.planet_id == 12478 and a.kind == "BUILD_SHIP" and a.target_id == 9 and a.executable_now for a in acts_mixed))
 
+    def test_manual_queue_merge_priority_reorder_resource_reservation_and_auto_satisfaction(self) -> None:
+        from spaceinvasion.strategy import merge_manual_queue_actions
+
+        planet = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=10,
+            fields_used=60,
+            fields_max=230,
+            resources=Resources(50_000, 15_000, 50_000, 30_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(1800, 1200),
+            buildings={"b1": 10, "b2": 9, "b3": 9, "b4": 8, "b5": 14, "b7": 5, "b8": 4, "b9": 4},
+            ships={"s4": 6, "s8": 1, "s10": 5, "s11": 2},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 10, 11, Resources(12_000, 8_000, 0, 0), True, "Build", "?b=1"),
+                BuildingOffer(4, "Spice mine", 8, 9, Resources(25_000, 30_000, 10_000, 0), False, "Not enough resources", "?b=4"),
+            ),
+            ship_offers=(
+                UnitOffer("ship", 4, "Small fighter", 6, Resources(3_000, 1_000, 0, 0), True, "ship[4]"),
+            ),
+        )
+        st = GameState(31, 103603, "ventkx86", 3000.0, (planet,), active_planet_id=12476, researches={"r1": 3, "r6": 3})
+        cfg = StrategyConfig(allow_shipyard=True, shipyard_targets={"small-fighter": 12})
+        auto_plan = plan_actions(st, config=cfg, now_ts=3000.0)
+        self.assertTrue(any(a.kind == "BUILD" and a.target_id == 1 and a.executable_now for a in auto_plan))
+
+        mq = [
+            {
+                "id": 10,
+                "status": "pending",
+                "priority": "P1",
+                "sort_rank": 5,
+                "kind": "BUILD",
+                "planet_id": 12476,
+                "target_id": 1,
+                "target_name": "Pig iron mine",
+                "target_level": 9,
+            },
+            {
+                "id": 11,
+                "status": "pending",
+                "priority": "P1",
+                "sort_rank": 10,
+                "kind": "BUILD",
+                "planet_id": 12476,
+                "target_id": 4,
+                "target_name": "Spice mine",
+                "target_level": 9,
+                "note": "Save metal for Spice L9",
+            },
+            {
+                "id": 12,
+                "status": "pending",
+                "priority": "P0",
+                "sort_rank": 10,
+                "kind": "SPY",
+                "planet_id": 12476,
+                "target_coords": "02:381:12",
+                "target_level": 1,
+            },
+        ]
+        merged, satisfied_ids = merge_manual_queue_actions(st, auto_plan, mq, config=cfg)
+        self.assertEqual(satisfied_ids, [10])
+        self.assertEqual(merged[0].manual_queue_id, 12)
+        self.assertEqual(merged[0].priority, "P0")
+        self.assertEqual(merged[0].kind, "SPY")
+        self.assertTrue(merged[0].executable_now)
+        self.assertEqual(merged[1].manual_queue_id, 11)
+        self.assertEqual(merged[1].priority, "P1")
+        self.assertEqual(merged[1].kind, "BUILD")
+        self.assertFalse(merged[1].executable_now)
+        p2_spenders = [a for a in merged if a.manual_queue_id is None and a.kind in ("BUILD", "BUILD_SHIP") and a.target_id in (1, 4)]
+        self.assertTrue(p2_spenders)
+        for act in p2_spenders:
+            self.assertFalse(act.executable_now)
+            self.assertIn("Saving resources", act.reason)
+
+    def test_fleet_base_slot_scaling_and_metal_full_pig_space_blast_furnace_pause(self) -> None:
+        # 1. Metal storage full (200k / 200k = 100%) while Pig iron still has space (120k / 400k = 30%),
+        #    even when a future build needs >200k Metal AND even within the 300s throttle cooldown:
+        #    Blast furnace MUST disable to 0% at P1 in both priority and ga_nn modes!
+        p_met_full = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=15,
+            fields_used=80,
+            fields_max=230,
+            resources=Resources(120_000, 200_000, 90_000, 60_000),
+            storage=Resources(400_000, 200_000, 400_000, 400_000),
+            energy=EnergyBalance(2500, 1200),
+            buildings={"b1": 16, "b2": 14, "b3": 15, "b4": 14, "b5": 18, "b7": 8, "b8": 6, "b9": 5, "b10": 1, "b11": 2, "b12": 1},
+            ships={"s1": 9, "s4": 20, "s8": 1, "s10": 11},
+            economy_rates={"resource1": 100, "resource2": 100},
+            building_offers=(
+                BuildingOffer(7, "Development center", 8, 9, Resources(0, 307_200, 153_600, 102_400), False, "Not enough resources", "?b=7"),
+                BuildingOffer(10, "Fleet base", 1, 2, Resources(0, 4_000, 1_000, 1_600), True, "Build", "?b=10"),
+                BuildingOffer(12, "Metal warehouse", 1, 2, Resources(4_000, 1_600, 0, 0), True, "Build", "?b=12"),
+            ),
+        )
+        st_full = GameState(
+            universe_id=31,
+            user_id=103603,
+            nickname="ventkx86",
+            timestamp=4000.0,
+            planets=(p_met_full,),
+            active_planet_id=12476,
+            researches={"r1": 4, "r2": 6, "r6": 3},
+            active_queues=(
+                QueueJob("fleet", "Recycle [02:380:05]", 1, "00:12:00"),
+                QueueJob("fleet", "Spy [02:381:12]", 1, "00:02:10"),
+            ),
+        )
+        cfg = StrategyConfig(
+            playstyle="fleeter",
+            auto_throttle_blast_furnace=True,
+            ga_population_size=6,
+            ga_generations=2,
+            ga_horizon_steps=4,
+            ga_seed=11,
+        )
+        for mode in ("priority", "ga_nn"):
+            acts = plan_actions(
+                st_full,
+                config=replace(cfg, planner_mode=mode),
+                throttle_cooldowns={12476: 3900.0},  # Only 100s elapsed (<300s), still overrides to stop overflow!
+                now_ts=4000.0,
+            )
+            throt = next((a for a in acts if a.kind == "THROTTLE_BUILDING" and a.target_id == 2), None)
+            self.assertIsNotNone(throt, mode)
+            assert throt is not None
+            self.assertEqual(throt.priority, "P1", mode)
+            self.assertEqual(throt.target_level, 0, mode)
+            self.assertTrue(throt.executable_now, mode)
+
+        # 2. Fleet base (b10) scales at P2 when concurrent flight slots (1 + b10 = 2) are saturated by 2 active flights
+        prio_acts = plan_actions(st_full, config=cfg, now_ts=4000.0)
+        fb_act = next((a for a in prio_acts if a.target_id == 10 and a.kind in ("BUILD", "WAIT_RESOURCES")), None)
+        self.assertIsNotNone(fb_act)
+        assert fb_act is not None
+        self.assertEqual((fb_act.priority, fb_act.target_level, fb_act.executable_now), ("P2", 2, True))
+        self.assertIn("concurrent flight slot", fb_act.reason)
+
+        # 3. Once paused (0%) while Metal remains full, Blast furnace NEVER resumes to 100%
+        p_paused = replace(p_met_full, economy_rates={"resource1": 100, "resource2": 0})
+        st_paused = replace(st_full, planets=(p_paused,))
+        paused_acts = plan_actions(st_paused, config=cfg, now_ts=4000.0)
+        self.assertFalse(any(a.kind == "THROTTLE_BUILDING" and a.target_id == 2 and a.target_level == 100 for a in paused_acts))
+
 
 if __name__ == "__main__":
     unittest.main()
