@@ -40,6 +40,9 @@ _ANTIBOT_PATTERNS = (
     re.compile(r"h-captcha", re.IGNORECASE),
     re.compile(r"<title>\s*Just a moment", re.IGNORECASE),
     re.compile(r"Attention Required!\s*\|\s*Cloudflare", re.IGNORECASE),
+    re.compile(r"Sicherheitspr(?:ü|ue)fung", re.IGNORECASE),
+    re.compile(r"best(?:ä|ae)tigen,\s*dass\s+du\s+kein\s+Bot\s+bist", re.IGNORECASE),
+    re.compile(r"confirm\s+that\s+you\s+are\s+not\s+a\s+bot", re.IGNORECASE),
 )
 
 _PORTAL_FIELDS_RE = re.compile(

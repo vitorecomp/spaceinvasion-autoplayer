@@ -11,15 +11,6 @@ from typing import Any, Mapping, Optional, Sequence
 
 from spaceinvasion import game_data
 from spaceinvasion.config import StrategyConfig, normalize_planner_mode
-from spaceinvasion.fleet import (
-    SHIP_SLUG_BY_KEY,
-    GalaxySlot,
-    SpyReport,
-    normalize_coords,
-    plan_escape_flight,
-    score_raid_target,
-)
-from spaceinvasion.ranking import attach_action_etas
 from spaceinvasion.state import (
     RAID_COLONY_FORBIDDEN_BUILDINGS,
     BuildingOffer,
@@ -32,6 +23,24 @@ from spaceinvasion.state import (
     is_building_allowed_on_planet_type,
     normalize_planet_type,
 )
+
+SHIP_SLUG_BY_KEY: dict[str, str] = {
+    "s1": "small-transport",
+    "s2": "large-transport",
+    "s3": "transmitter",
+    "s4": "small-fighter",
+    "s5": "warship",
+    "s6": "starcruiser",
+    "s7": "phoenix",
+    "s8": "colony-ship",
+    "s9": "solar-cells",
+    "s10": "spy-probe",
+    "s11": "recycler",
+    "s13": "battleship",
+    "s14": "stealth-bomber",
+    "s15": "destroyer",
+    "s16": "imperial-starbase",
+}
 
 # SpaceInvasion building IDs matching `internalBuildings`
 FUSION_PLANT = 5
@@ -96,6 +105,44 @@ class PlannedAction:
     total_seconds: Optional[float] = 0.0
     total_eta: str = "Ready"
     eta_bottleneck: Optional[str] = None
+    manual_queue_id: Optional[int] = None
+    manual_sort_rank: Optional[int] = None
+
+
+_fleet_mod: Any = None
+
+
+def _get_fleet() -> Any:
+    global _fleet_mod
+    if _fleet_mod is None:
+        from spaceinvasion import fleet as _loaded_fleet
+
+        _fleet_mod = _loaded_fleet
+    return _fleet_mod
+
+
+def attach_action_etas(state: GameState, actions: list[PlannedAction]) -> list[PlannedAction]:
+    from spaceinvasion.ranking import attach_action_etas as _attach_etas
+
+    return _attach_etas(state, actions)
+
+
+_FLEET_REEXPORTS: frozenset[str] = frozenset(
+    {
+        "BashTracker",
+        "GalaxySlot",
+        "SpyReport",
+        "normalize_coords",
+        "plan_escape_flight",
+        "score_raid_target",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    if name in _FLEET_REEXPORTS:
+        return getattr(_get_fleet(), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _resources_from_dict(raw: dict[str, int]) -> Resources:
@@ -430,14 +477,24 @@ def _effective_building_levels_and_energy(
             continue
         cur_lvl = sim_levels.get(bid, planet.building_level(bid))
         j_tgt = game_data.safe_optional_int(job.target_level, None)
-        tgt = j_tgt if (j_tgt is not None and j_tgt > cur_lvl) else cur_lvl + 1
-        max_tbl = max(
-            _safe_strategy_int((game_data.BUILDING_BY_ID.get(bid) or {}).get("max_table_level", 100), 100),
-            100,
-        )
-        step_hi = min(tgt, max_tbl + 1)
-        for step_lvl in range(cur_lvl + 1, step_hi + 1):
-            projected_net += game_data.building_energy_delta(bid, step_lvl)
+        if j_tgt is not None and 0 <= j_tgt < cur_lvl:
+            tgt = j_tgt
+            max_tbl = max(
+                _safe_strategy_int((game_data.BUILDING_BY_ID.get(bid) or {}).get("max_table_level", 100), 100),
+                100,
+            )
+            step_hi = min(cur_lvl, max_tbl + 1)
+            for step_lvl in range(tgt + 1, step_hi + 1):
+                projected_net -= game_data.building_energy_delta(bid, step_lvl)
+        else:
+            tgt = j_tgt if (j_tgt is not None and j_tgt > cur_lvl) else cur_lvl + 1
+            max_tbl = max(
+                _safe_strategy_int((game_data.BUILDING_BY_ID.get(bid) or {}).get("max_table_level", 100), 100),
+                100,
+            )
+            step_hi = min(tgt, max_tbl + 1)
+            for step_lvl in range(cur_lvl + 1, step_hi + 1):
+                projected_net += game_data.building_energy_delta(bid, step_lvl)
         sim_levels[bid] = tgt
         eff_map[f"b{bid}"] = tgt
 
@@ -460,44 +517,51 @@ def _pick_best_power_building(
     planet: PlanetState,
     eff_buildings: dict[str, int],
     researches: dict[str, int],
+    *,
+    forbid_planetary_solar: bool = False,
 ) -> tuple[int, str, str]:
-    """Select between Fusion plant (`b5`) and Thermosolar plant (`b6`) by cost per energy."""
-    fusion_lvl = _eff_level(planet, eff_buildings, FUSION_PLANT)
-    fusion_delta = max(1, game_data.building_energy_delta(FUSION_PLANT, fusion_lvl + 1))
-    fusion_cost_sp = game_data.spice_equivalent(game_data.building_cost(FUSION_PLANT, fusion_lvl + 1))
-    fusion_cpe = fusion_cost_sp / fusion_delta
-
-    thermo_unmet = game_data.missing_prerequisites(
-        "buildings",
-        THERMOSOLAR_PLANT,
-        buildings=eff_buildings,
-        researches=researches,
-    )
+    """Select Fusion plant (`b5`) by default, allowing Thermosolar (`b6`) only when `forbid_planetary_solar=False` on deep-cold colonies."""
+    if forbid_planetary_solar and _norm_planet_type(planet) != "asteroid":
+        return FUSION_PLANT, "Fusion plant", "No-fuel planetary energy generation"
+    temp_c = _safe_strategy_int(planet.temperature, 0)
     spice_lvl = _eff_level(planet, eff_buildings, SPICE_MINE)
-    if not thermo_unmet and spice_lvl >= 6:
-        thermo_lvl = _eff_level(planet, eff_buildings, THERMOSOLAR_PLANT)
-        thermo_row = game_data.building_level_stats(THERMOSOLAR_PLANT, thermo_lvl + 1)
-        thermo_delta = max(0, game_data.building_energy_delta(THERMOSOLAR_PLANT, thermo_lvl + 1))
-        spice_burn = _safe_strategy_float(thermo_row.get("spice_used", 0), 0.0)
-        spice_prod = game_data.mine_production_per_hour(
-            SPICE_MINE,
-            spice_lvl,
-            temperature=_safe_strategy_int(planet.temperature, 0),
-            mining_tech_level=max(0, _safe_strategy_int((researches or {}).get("r1", 0), 0)),
+    thermo_lvl = _eff_level(planet, eff_buildings, THERMOSOLAR_PLANT)
+    spacious_for_b6 = (
+        _safe_strategy_int(planet.fields_max, 0) <= 0
+        or _safe_strategy_int(planet.fields_remaining, 0) > 40
+    )
+    if temp_c <= -100 and spice_lvl >= 12 and spacious_for_b6 and thermo_lvl < 6:
+        thermo_unmet = game_data.missing_prerequisites(
+            "buildings",
+            THERMOSOLAR_PLANT,
+            buildings=eff_buildings,
+            researches=researches,
         )
-        if thermo_delta > 0 and spice_burn <= spice_prod * 0.5:
-            # Penalize build cost with ~24h fuel burn so cold high-Spice planets only adopt when truly cheaper
-            thermo_cost_sp = game_data.spice_equivalent(
-                game_data.building_cost(THERMOSOLAR_PLANT, thermo_lvl + 1)
-            ) + spice_burn * 12.0
-            thermo_cpe = thermo_cost_sp / thermo_delta
-            if thermo_cpe < fusion_cpe * 0.70:
-                return (
-                    THERMOSOLAR_PLANT,
-                    "Thermosolar plant",
-                    f"Cheaper mid-game power than Fusion ({thermo_cpe:.1f} vs {fusion_cpe:.1f} Spice/energy)",
-                )
-
+        if not thermo_unmet:
+            fusion_lvl = _eff_level(planet, eff_buildings, FUSION_PLANT)
+            fusion_delta = max(1, game_data.building_energy_delta(FUSION_PLANT, fusion_lvl + 1))
+            fusion_cost_sp = game_data.spice_equivalent(game_data.building_cost(FUSION_PLANT, fusion_lvl + 1))
+            fusion_cpe = fusion_cost_sp / fusion_delta
+            thermo_row = game_data.building_level_stats(THERMOSOLAR_PLANT, thermo_lvl + 1)
+            thermo_delta = max(0, game_data.building_energy_delta(THERMOSOLAR_PLANT, thermo_lvl + 1))
+            spice_burn = _safe_strategy_float(thermo_row.get("spice_used", 0), 0.0)
+            spice_prod = game_data.mine_production_per_hour(
+                SPICE_MINE,
+                spice_lvl,
+                temperature=temp_c,
+                mining_tech_level=max(0, _safe_strategy_int((researches or {}).get("r1", 0), 0)),
+            )
+            if thermo_delta > 0 and spice_burn <= spice_prod * 0.5:
+                thermo_cost_sp = game_data.spice_equivalent(
+                    game_data.building_cost(THERMOSOLAR_PLANT, thermo_lvl + 1)
+                ) + spice_burn * 12.0
+                thermo_cpe = thermo_cost_sp / thermo_delta
+                if thermo_cpe < fusion_cpe * 0.70:
+                    return (
+                        THERMOSOLAR_PLANT,
+                        "Thermosolar plant",
+                        f"Cheaper deep-cold power than Fusion ({thermo_cpe:.1f} vs {fusion_cpe:.1f} Spice/energy)",
+                    )
     return FUSION_PLANT, "Fusion plant", "No-fuel planetary energy generation"
 
 
@@ -988,10 +1052,42 @@ def _tutorial_escape_task(state: GameState) -> Optional[object]:
     return None
 
 
+def _tutorial_recycle_task(state: GameState) -> Optional[object]:
+    """Return active incomplete tutorial space-rubble recycling milestone task, if any."""
+    if state.tutorial is None or state.tutorial.can_complete:
+        return None
+    for task in state.tutorial.tasks:
+        if task.completed or task.category != "milestone":
+            continue
+        desc = _safe_strategy_str(task.description).lower()
+        if any(
+            word in desc
+            for word in ("recycle", "recycling", "recycler", "debris", "rubble", "trümmer", "truemmer", "abbau", "harvest")
+        ):
+            return task
+    return None
+
+
+def _tutorial_colonize_task(state: GameState) -> Optional[object]:
+    """Return active incomplete tutorial colonization milestone task, if any."""
+    if state.tutorial is None or state.tutorial.can_complete:
+        return None
+    for task in state.tutorial.tasks:
+        if task.completed or task.category != "milestone":
+            continue
+        desc = _safe_strategy_str(task.description).lower()
+        if any(word in desc for word in ("colonize", "colonisation", "colonization", "kolonisier")):
+            return task
+    return None
+
+
 def _milestone_helper_ship_id(desc_lower: str) -> Optional[int]:
     if any(word in desc_lower for word in ("spy", "espionage", "spionage", "probe")):
         return 10
-    if any(word in desc_lower for word in ("recycle", "recycler", "debris", "rubble")):
+    if any(
+        word in desc_lower
+        for word in ("recycle", "recycling", "recycler", "debris", "rubble", "trümmer", "truemmer", "abbau", "harvest")
+    ):
         return 11
     if any(word in desc_lower for word in ("colonize", "colony", "colonisation", "colonization")):
         return 8
@@ -1249,18 +1345,35 @@ def _plan_tutorial_fleet_milestones(
                         "Spy probe",
                     )
                     continue
-            elif helper_sid in (8, 11) and non_raid_candidates:
-                has_any_helper = any(
-                    _safe_strategy_int(p.ships.get(f"s{helper_sid}", 0), 0) > 0
+            elif helper_sid == 11:
+                has_any_recycler = any(
+                    _safe_strategy_int(p.ships.get("s11", 0), 0) > 0
                     for p in non_raid_candidates
                 )
-                if not has_any_helper:
-                    helper_name = "Colony ship" if helper_sid == 8 else "Recycler"
+                if has_any_recycler:
+                    # Handled at P2 as SCAN_GALAXY / RECYCLE by `_plan_combat_and_raid_actions`
+                    continue
+                if non_raid_candidates:
                     _emit_ship_and_prereqs(
-                        helper_sid,
+                        11,
                         1,
-                        f"Tutorial {tut_step_s}/{tut_total_s}: build {helper_name} for {desc_s}",
-                        helper_name,
+                        f"Tutorial {tut_step_s}/{tut_total_s}: build Recycler for {desc_s}",
+                        "Recycler",
+                    )
+            elif helper_sid == 8:
+                has_any_helper = any(
+                    _safe_strategy_int(p.ships.get("s8", 0), 0) > 0
+                    for p in non_raid_candidates
+                )
+                if has_any_helper:
+                    # Handled at P2 as SCAN_GALAXY / SPY / COLONIZE by `_plan_combat_and_raid_actions`
+                    continue
+                if non_raid_candidates:
+                    _emit_ship_and_prereqs(
+                        8,
+                        1,
+                        f"Tutorial {tut_step_s}/{tut_total_s}: build Colony ship for {desc_s}",
+                        "Colony ship",
                     )
             out.append(
                 PlannedAction(
@@ -1297,8 +1410,9 @@ def _plan_combat_and_raid_actions(
     *,
     scanned_systems: Optional[Mapping[str, float]] = None,
     now_ts: Optional[float] = None,
+    raid_stats: Optional[Mapping[str, Any]] = None,
 ) -> list[PlannedAction]:
-    """Plan Galaxy exploration sweep, Spy probe scouting, and scored Attack targets."""
+    """Plan Galaxy exploration sweep, Spy probe scouting, Space Rubble recycling, and scored Attack targets."""
     if state.tutorial is not None and state.tutorial.can_complete:
         return []
 
@@ -1306,9 +1420,15 @@ def _plan_combat_and_raid_actions(
     tut_fight = _tutorial_fight_task(state)
     tut_spy = _tutorial_spy_task(state)
     tut_escape = _tutorial_escape_task(state)
+    tut_recycle = _tutorial_recycle_task(state)
+    tut_colonize = _tutorial_colonize_task(state)
     tutorial_fight_pending = tut_fight is not None
     tutorial_spy_pending = tut_spy is not None
     tutorial_escape_pending = tut_escape is not None
+    tutorial_recycle_pending = tut_recycle is not None
+    tutorial_colonize_pending = tut_colonize is not None
+    want_colonize = bool(cfg.allow_colonize or tutorial_colonize_pending)
+    min_colony_fields = max(50, _safe_strategy_int(getattr(cfg, "min_colony_fields", 300), 300))
 
     def _planet_attack_ships(planet: PlanetState) -> dict[str, int]:
         return {
@@ -1343,16 +1463,45 @@ def _plan_combat_and_raid_actions(
         )
     )
     has_probes = probe_planet is not None
+    recycler_planet = (
+        active
+        if _norm_planet_type(active) != "raid" and _safe_strategy_int(active.ships.get("s11", 0), 0) > 0
+        else next(
+            (
+                p
+                for p in state.planets
+                if _norm_planet_type(p) != "raid" and _safe_strategy_int(p.ships.get("s11", 0), 0) > 0
+            ),
+            None,
+        )
+    )
+    has_recyclers = recycler_planet is not None
+    colony_planet = (
+        active
+        if _norm_planet_type(active) != "raid" and _safe_strategy_int(active.ships.get("s8", 0), 0) > 0
+        else next(
+            (
+                p
+                for p in state.planets
+                if _norm_planet_type(p) != "raid" and _safe_strategy_int(p.ships.get("s8", 0), 0) > 0
+            ),
+            None,
+        )
+    )
+    has_colony_ship = colony_planet is not None
     raid_targets = getattr(state, "raid_targets", ()) or ()
 
     if (
         not raid_targets
         and not tutorial_fight_pending
         and not tutorial_spy_pending
+        and not tutorial_recycle_pending
+        and not want_colonize
         and not cfg.allow_galaxy_scan
         and not cfg.allow_raids
         and not has_attack_fleet
         and not has_probes
+        and not has_recyclers
     ):
         return []
 
@@ -1367,9 +1516,108 @@ def _plan_combat_and_raid_actions(
                     _safe_strategy_float(raw_ts, 0.0),
                 )
 
-    own_coords = {normalize_coords(p.coords) for p in state.planets}
-    scored_attacks: list[tuple[tuple[int, float, float], PlannedAction]] = []
+    _fleet = _get_fleet()
+    bash_tracker = _fleet.BashTracker()
+    latest_battle_by_sys: dict[str, float] = {}
+    stats_sources: list[Mapping[str, Any]] = []
+    state_rs = getattr(state, "raid_stats", None)
+    if isinstance(state_rs, Mapping):
+        stats_sources.append(state_rs)
+    if isinstance(raid_stats, Mapping) and raid_stats is not state_rs:
+        stats_sources.append(raid_stats)
+    hist_entries: list[tuple[float, int, str, bool]] = []
+    seen_hist_keys: set[tuple[str, float]] = set()
+    skew_max = (ref_now + 60.0) if ref_now > 0.0 else float("inf")
+    max_until_ts = (ref_now + 86400.0 * 2.0) if ref_now > 0.0 else float("inf")
+    for rs_src in stats_sources:
+        raw_hist = rs_src.get("history")
+        if isinstance(raw_hist, Sequence) and not isinstance(raw_hist, (str, bytes)):
+            for idx_h, hrow in enumerate(raw_hist):
+                if not isinstance(hrow, Mapping):
+                    continue
+                raw_hc = game_data.safe_key(hrow.get("target_coords") or hrow.get("coords") or "").strip()
+                if not raw_hc:
+                    continue
+                norm_hc = _fleet.normalize_coords(raw_hc)
+                raw_hts = (
+                    hrow.get("attacked_ts")
+                    if hrow.get("attacked_ts") is not None
+                    else (hrow.get("ts") if hrow.get("ts") is not None else hrow.get("timestamp"))
+                )
+                hts = _safe_strategy_float(raw_hts, 0.0)
+                if hts <= 0.0 or hts > skew_max:
+                    continue
+                h_gal, h_sys, _ = _parse_gal_sys_pos(norm_hc)
+                h_skey = f"{h_gal:02d}:{h_sys:03d}"
+                latest_battle_by_sys[h_skey] = max(latest_battle_by_sys.get(h_skey, 0.0), hts)
+                dedup_k = (norm_hc, round(hts, 3))
+                if dedup_k in seen_hist_keys:
+                    continue
+                seen_hist_keys.add(dedup_k)
+                if (ref_now - 86400.0) <= hts <= skew_max:
+                    hist_entries.append((min(hts, ref_now), idx_h, norm_hc, bool(hrow.get("is_exempt", False))))
+        raw_bt = rs_src.get("blocked_targets")
+        if isinstance(raw_bt, Mapping):
+            for bk, bv in raw_bt.items():
+                bk_s = game_data.safe_key(bk).strip()
+                if not bk_s:
+                    continue
+                if isinstance(bv, Mapping):
+                    b_until = _safe_strategy_float(bv.get("blocked_until_ts"), 0.0)
+                    b_last_ts = _safe_strategy_float(
+                        bv.get("last_blocked_ts")
+                        if bv.get("last_blocked_ts") is not None
+                        else bv.get("blocked_ts"),
+                        0.0,
+                    )
+                    b_reason = _safe_strategy_str(bv.get("reason") or bv.get("block_reason"))
+                else:
+                    b_until = _safe_strategy_float(bv, 0.0)
+                    b_last_ts = 0.0
+                    b_reason = ""
+                if b_last_ts > 0.0 and b_last_ts > skew_max:
+                    continue
+                if b_last_ts <= 0.0 and b_until > max_until_ts:
+                    continue
+                if b_until > ref_now:
+                    bash_tracker.record_block(_fleet.normalize_coords(bk_s), b_until, reason=b_reason)
+        raw_bb = rs_src.get("bash_blocks")
+        if isinstance(raw_bb, Sequence) and not isinstance(raw_bb, (str, bytes)):
+            for brow in raw_bb:
+                if not isinstance(brow, Mapping):
+                    continue
+                bc_s = game_data.safe_key(brow.get("target_coords") or brow.get("coords") or "").strip()
+                b_until = _safe_strategy_float(brow.get("blocked_until_ts"), 0.0)
+                b_ts = _safe_strategy_float(
+                    brow.get("blocked_ts")
+                    if brow.get("blocked_ts") is not None
+                    else brow.get("last_blocked_ts"),
+                    0.0,
+                )
+                if b_ts > 0.0 and b_ts > skew_max:
+                    continue
+                if b_ts <= 0.0 and b_until > max_until_ts:
+                    continue
+                if bc_s and b_until > ref_now:
+                    bash_tracker.record_block(
+                        _fleet.normalize_coords(bc_s),
+                        b_until,
+                        reason=_safe_strategy_str(brow.get("reason")),
+                    )
+    hist_entries.sort(key=lambda item: (item[0], item[1]))
+    for hts, _, norm_hc, is_ex in hist_entries:
+        if not is_ex:
+            bash_tracker.record_attack(norm_hc, timestamp=hts)
+
+    own_coords = {_fleet.normalize_coords(p.coords) for p in state.planets}
+    own_fleet_in_flight = any(q.category == "fleet" for q in state.active_queues)
+    scored_attacks: list[tuple[tuple[int, float, float, int], PlannedAction]] = []
     spy_actions: list[tuple[tuple[int, float], PlannedAction]] = []
+    recycle_actions: list[tuple[tuple[int, int], PlannedAction]] = []
+    colonize_actions: list[tuple[tuple[int, int, int, int], PlannedAction]] = []
+    colony_spy_actions: list[tuple[tuple[int, int, int, int], PlannedAction]] = []
+    seen_recycle_coords: set[str] = set()
+    seen_colony_coords: set[str] = set()
 
     for raw in raid_targets:
         if not isinstance(raw, Mapping):
@@ -1377,12 +1625,61 @@ def _plan_combat_and_raid_actions(
         coords = game_data.safe_key(raw.get("coords") or raw.get("target_coords") or "").strip()
         if not coords:
             continue
-        t_gal, t_sys, pos = _parse_gal_sys_pos(coords)
+        norm_coords = _fleet.normalize_coords(coords)
+        t_gal, t_sys, pos = _parse_gal_sys_pos(norm_coords)
+        skey = f"{t_gal:02d}:{t_sys:03d}"
         raw_scanned_ts = _safe_strategy_float(raw.get("last_scanned_ts"), 0.0)
         if raw_scanned_ts > 0.0:
-            skey = f"{t_gal:02d}:{t_sys:03d}"
             scanned_map[skey] = max(scanned_map.get(skey, 0.0), raw_scanned_ts)
-        if normalize_coords(coords) in own_coords:
+        raw_last_atk = max(
+            _safe_strategy_float(raw.get("last_attack_ts"), 0.0),
+            _safe_strategy_float(raw.get("last_attacked_ts"), 0.0),
+        )
+        if raw_last_atk > 0.0:
+            latest_battle_by_sys[skey] = max(latest_battle_by_sys.get(skey, 0.0), raw_last_atk)
+        raw_blocked_until = _safe_strategy_float(raw.get("blocked_until_ts"), 0.0)
+        if raw_blocked_until > ref_now:
+            bash_tracker.record_block(
+                norm_coords,
+                raw_blocked_until,
+                reason=_safe_strategy_str(raw.get("block_reason")),
+            )
+
+        owner = game_data.safe_key(raw.get("owner") or "")
+        pname = game_data.safe_key(raw.get("planet_name") or "")
+        if bool(raw.get("has_debris", False)) and has_recyclers and norm_coords not in seen_recycle_coords:
+            assert recycler_planet is not None
+            seen_recycle_coords.add(norm_coords)
+            rec_qty = max(1, _safe_strategy_int(recycler_planet.ships.get("s11", 0), 1))
+            hold_rec_inflight = bool(tutorial_recycle_pending and own_fleet_in_flight)
+            can_exec_rec = bool((cfg.allow_raids or cfg.allow_galaxy_scan) and not hold_rec_inflight)
+            rec_gal, rec_sys, rec_pos = _parse_gal_sys_pos(recycler_planet.coords)
+            rec_dist = abs(rec_gal - t_gal) * 20000 + abs(rec_sys - t_sys) * 95 + abs(rec_pos - pos) * 5
+            rec_lbl = f"Rubble -> {norm_coords}" + (f" ({owner or pname})" if (owner or pname) else "")
+            rec_prefix = "Tutorial recycle: " if tutorial_recycle_pending else ""
+            rec_reason = f"{rec_prefix}Harvest space rubble at {norm_coords} with {rec_qty} Recycler(s)"
+            if hold_rec_inflight:
+                rec_reason += " [Hold: Own fleet in transit]"
+            elif not (cfg.allow_raids or cfg.allow_galaxy_scan):
+                rec_reason += " [Hold: allow_raids/allow_galaxy_scan disabled in Config]"
+            recycle_actions.append(
+                (
+                    (0 if can_exec_rec else 1, rec_dist),
+                    PlannedAction(
+                        priority="P2",
+                        kind="RECYCLE",
+                        planet_id=recycler_planet.planet_id,
+                        planet_coords=_safe_strategy_str(recycler_planet.coords),
+                        target_id=11,
+                        target_level=rec_qty,
+                        target_name=rec_lbl,
+                        reason=rec_reason,
+                        executable_now=can_exec_rec,
+                    ),
+                )
+            )
+
+        if norm_coords in own_coords:
             continue
 
         is_spacia = bool(raw.get("is_spacia", False))
@@ -1395,13 +1692,97 @@ def _plan_combat_and_raid_actions(
             status_color = "light_red"
         else:
             status_color = "yellow"
+
+        if (
+            want_colonize
+            and not is_spacia
+            and (status_color == "free" or (not owner and raw.get("uninhabited_fields") is not None))
+            and norm_coords not in seen_colony_coords
+        ):
+            seen_colony_coords.add(norm_coords)
+            raw_uf = raw.get("uninhabited_fields")
+            uf = game_data.safe_optional_int(raw_uf, None) if raw_uf is not None else None
+            spied_ts_col = _safe_strategy_float(raw.get("last_spied_ts"), 0.0)
+            col_ref_planet = colony_planet or probe_planet or origin
+            grade_info = _fleet.grade_colony_candidate(
+                coords=norm_coords,
+                position=pos,
+                uninhabited_fields=uf,
+                origin_coords=col_ref_planet.coords,
+                min_fields_target=min_colony_fields,
+            )
+            if uf is not None and uf >= min_colony_fields:
+                col_exec_planet = colony_planet if colony_planet is not None else origin
+                can_exec_col = bool(cfg.allow_colonize and has_colony_ship and not own_fleet_in_flight)
+                col_prefix = "Tutorial colonize: " if tutorial_colonize_pending else ""
+                col_reason = (
+                    f"{col_prefix}Colonize {norm_coords} "
+                    f"({uf} fields >= {min_colony_fields} target, Grade {grade_info['grade']} {grade_info['score']}/100)"
+                )
+                if not has_colony_ship:
+                    col_reason += " [Hold: Build Colony ship (s8) first]"
+                elif own_fleet_in_flight:
+                    col_reason += " [Hold: Own fleet in transit]"
+                elif not cfg.allow_colonize:
+                    col_reason += " [Hold: allow_colonize=false in Config]"
+                colonize_actions.append(
+                    (
+                        (0 if can_exec_col else 1, -int(grade_info["score"]), -uf, int(grade_info["distance"])),
+                        PlannedAction(
+                            priority="P2",
+                            kind="COLONIZE",
+                            planet_id=col_exec_planet.planet_id,
+                            planet_coords=_safe_strategy_str(col_exec_planet.coords),
+                            target_id=8,
+                            target_level=1,
+                            target_name=f"Colonize -> {norm_coords} ({uf} fields)",
+                            reason=col_reason,
+                            executable_now=can_exec_col,
+                        ),
+                    )
+                )
+            elif uf is None and spied_ts_col <= 0.0 and has_probes:
+                assert probe_planet is not None
+                if 7 <= pos <= 12:
+                    zone_prio = 0
+                elif 4 <= pos <= 6:
+                    zone_prio = 1
+                elif 13 <= pos <= 16:
+                    zone_prio = 2
+                else:
+                    zone_prio = 3
+                can_exec_pcol = bool((cfg.allow_galaxy_scan or cfg.allow_colonize) and not own_fleet_in_flight)
+                pcol_reason = (
+                    f"Probe free slot {norm_coords} (pos {pos}, {grade_info['orbital_zone']}) "
+                    f"to check for {min_colony_fields}+ building fields"
+                )
+                if own_fleet_in_flight:
+                    pcol_reason += " [Hold: Own fleet in transit]"
+                elif not (cfg.allow_galaxy_scan or cfg.allow_colonize):
+                    pcol_reason += " [Hold: allow_galaxy_scan/allow_colonize disabled in Config]"
+                colony_spy_actions.append(
+                    (
+                        (0 if can_exec_pcol else 1, zone_prio, int(grade_info["distance"]), pos),
+                        PlannedAction(
+                            priority="P2",
+                            kind="SPY",
+                            planet_id=probe_planet.planet_id,
+                            planet_coords=_safe_strategy_str(probe_planet.coords),
+                            target_id=10,
+                            target_level=1,
+                            target_name=f"{norm_coords} (Free slot)",
+                            reason=pcol_reason,
+                            executable_now=can_exec_pcol,
+                        ),
+                    )
+                )
+            continue
+
         if not is_spacia and status_color in ("free", "blue", "green", "white", "purple", "dark_red"):
             continue
 
-        owner = game_data.safe_key(raw.get("owner") or "")
-        pname = game_data.safe_key(raw.get("planet_name") or "")
-        slot = GalaxySlot(
-            coords=coords,
+        slot = _fleet.GalaxySlot(
+            coords=norm_coords,
             position=pos,
             name=pname,
             owner=owner,
@@ -1433,10 +1814,21 @@ def _plan_combat_and_raid_actions(
             or status_color == "yellow"
             or (cfg.allow_pvp_in_az and status_color == "light_red")
         )
+        can_attack_now = bash_tracker.can_attack(
+            norm_coords,
+            is_inactive=(status_color == "yellow"),
+            is_spacia=is_spacia,
+            timestamp=ref_now,
+        )
         tag = "Spacia" if is_spacia else ("Inactive" if status_color == "yellow" else status_color.title())
         target_label = f"{coords} ({owner or pname or tag})"
 
-        if has_probes and (tutorial_spy_pending or not tutorial_fight_pending) and eligible_target and (tutorial_spy_pending or not has_intel or stale_intel):
+        if (
+            has_probes
+            and (tutorial_spy_pending or (not tutorial_fight_pending and can_attack_now))
+            and eligible_target
+            and (tutorial_spy_pending or not has_intel or stale_intel)
+        ):
             assert probe_planet is not None
             spy_actions.append(
                 (
@@ -1460,8 +1852,8 @@ def _plan_combat_and_raid_actions(
             if tutorial_spy_pending or not has_intel:
                 continue
 
-        report = SpyReport(
-            target_coords=coords,
+        report = _fleet.SpyReport(
+            target_coords=norm_coords,
             owner=owner,
             resources=res,
             fleet=clean_fleet,
@@ -1474,20 +1866,21 @@ def _plan_combat_and_raid_actions(
         safety_margin_val = _safe_strategy_float(getattr(cfg, "combat_safety_margin", 1.4), 1.4)
         if safety_margin_val <= 0.0:
             safety_margin_val = 1.4
-        rec = score_raid_target(
+        rec = _fleet.score_raid_target(
             origin.coords,
             slot,
             report,
             sim_fleet,
             attacker_researches=state.researches,
+            bash_tracker=bash_tracker,
             safety_margin=safety_margin_val,
             min_loot_spice_eq=min_loot,
             allow_pvp_in_az=cfg.allow_pvp_in_az,
+            timestamp=ref_now,
         )
         if rec is None:
             continue
 
-        own_fleet_in_flight = any(q.category == "fleet" for q in state.active_queues)
         hold_tutorial_inflight = bool(tutorial_fight_pending and own_fleet_in_flight)
         hold_for_escape_tutorial = bool(tutorial_escape_pending and not tutorial_fight_pending)
         can_exec = bool(
@@ -1537,55 +1930,83 @@ def _plan_combat_and_raid_actions(
             )
         )
 
-    if tutorial_spy_pending and spy_actions:
-        spy_actions.sort(key=lambda item: item[0])
-        return [act for _, act in spy_actions[:3]]
+    if tutorial_recycle_pending:
+        if recycle_actions:
+            recycle_actions.sort(key=lambda item: item[0])
+            return [act for _, act in recycle_actions[:3]]
+        if has_recyclers and not own_fleet_in_flight:
+            assert recycler_planet is not None
+            r_gal, r_sys, _ = _parse_gal_sys_pos(recycler_planet.coords)
+            unscanned_battles: list[tuple[int, float, int, int]] = []
+            for skey_b, b_ts in latest_battle_by_sys.items():
+                if b_ts > scanned_map.get(skey_b, 0.0):
+                    parts_b = skey_b.split(":")
+                    if len(parts_b) == 2 and parts_b[0].isdigit() and parts_b[1].isdigit():
+                        bg, bs = int(parts_b[0]), int(parts_b[1])
+                        if 1 <= bs <= 400:
+                            dist_b = abs(r_gal - bg) * 400 + abs(r_sys - bs)
+                            unscanned_battles.append((dist_b, -b_ts, bg, bs))
+            if unscanned_battles:
+                unscanned_battles.sort()
+                _, _, gal_b, sys_b = unscanned_battles[0]
+                scan_note_r = "" if cfg.allow_galaxy_scan else " (enable allow_galaxy_scan in Config)"
+                return [
+                    PlannedAction(
+                        priority="P2",
+                        kind="SCAN_GALAXY",
+                        planet_id=recycler_planet.planet_id,
+                        planet_coords=_safe_strategy_str(recycler_planet.coords),
+                        target_name=f"Galaxy [{gal_b:02d}:{sys_b:03d}]",
+                        reason=f"Scan battle system {gal_b:02d}:{sys_b:03d} for space rubble ({_safe_strategy_str(tut_recycle.description)}){scan_note_r}",
+                        executable_now=bool(cfg.allow_galaxy_scan),
+                    )
+                ]
 
-    if scored_attacks:
-        scored_attacks.sort(key=lambda item: item[0])
-        out_actions = [act for _, act in scored_attacks[:3]]
-        if spy_actions:
-            spy_actions.sort(key=lambda item: item[0])
-            out_actions.extend(act for _, act in spy_actions[:2])
-        return out_actions
+    def _next_spiral_scan_action() -> Optional[PlannedAction]:
+        scan_cooldown_s = 1800.0
+        primary_scan_p = (
+            recycler_planet
+            if (tutorial_recycle_pending and recycler_planet is not None)
+            else (colony_planet if (want_colonize and colony_planet is not None) else origin)
+        )
+        base_planets = [primary_scan_p]
+        if cfg.allow_multi_planet:
+            for p in state.planets:
+                if p.planet_id != primary_scan_p.planet_id and _norm_planet_type(p) != "raid":
+                    base_planets.append(p)
+        colonies = [(p, *_parse_gal_sys_pos(p.coords)[:2]) for p in base_planets]
+        max_radius = 25 if (tutorial_recycle_pending or want_colonize) else 15
+        offsets = [0] + [off for d in range(1, max_radius + 1) for off in (d, -d)]
 
-    if spy_actions:
-        spy_actions.sort(key=lambda item: item[0])
-        return [act for _, act in spy_actions[:3]]
+        chosen: Optional[tuple[PlanetState, int, int]] = None
+        for off in offsets:
+            for col_p, col_gal, col_sys in colonies:
+                cand_sys = col_sys + off
+                if not (1 <= cand_sys <= 400):
+                    continue
+                skey = f"{col_gal:02d}:{cand_sys:03d}"
+                prev_ts = scanned_map.get(skey)
+                if prev_ts is not None and (ref_now - prev_ts) < scan_cooldown_s:
+                    continue
+                chosen = (col_p, col_gal, cand_sys)
+                break
+            if chosen is not None:
+                break
 
-    # Outward spiral exploration sweep across neighbor solar systems with 30m cooldown
-    scan_cooldown_s = 1800.0
-    base_planets = [origin]
-    if cfg.allow_multi_planet:
-        for p in state.planets:
-            if p.planet_id != origin.planet_id and _norm_planet_type(p) != "raid":
-                base_planets.append(p)
-    colonies = [(p, *_parse_gal_sys_pos(p.coords)[:2]) for p in base_planets]
-    offsets = [0] + [off for d in range(1, 16) for off in (d, -d)]
+        if chosen is None:
+            return None
 
-    chosen: Optional[tuple[PlanetState, int, int]] = None
-    for off in offsets:
-        for col_p, col_gal, col_sys in colonies:
-            cand_sys = col_sys + off
-            if not (1 <= cand_sys <= 400):
-                continue
-            skey = f"{col_gal:02d}:{cand_sys:03d}"
-            prev_ts = scanned_map.get(skey)
-            if prev_ts is not None and (ref_now - prev_ts) < scan_cooldown_s:
-                continue
-            chosen = (col_p, col_gal, cand_sys)
-            break
-        if chosen is not None:
-            break
-
-    if chosen is None:
-        return []
-
-    scan_planet, gal_num, sys_num = chosen
-    tut_hint = f" for {_safe_strategy_str(tut_fight.description)}" if tut_fight is not None else ""
-    scan_note = "" if cfg.allow_galaxy_scan else " (click Scan Galaxy in Combat or enable allow_galaxy_scan in Config)"
-    return [
-        PlannedAction(
+        scan_planet, gal_num, sys_num = chosen
+        if want_colonize:
+            tut_hint = f" and {min_colony_fields}+ field colony slots"
+        elif tut_recycle is not None:
+            tut_hint = f" and space rubble for {_safe_strategy_str(tut_recycle.description)}"
+        elif tut_fight is not None:
+            tut_hint = f" for {_safe_strategy_str(tut_fight.description)}"
+        else:
+            tut_hint = ""
+        scan_note = "" if cfg.allow_galaxy_scan else " (click Scan Galaxy in Combat or enable allow_galaxy_scan in Config)"
+        return PlannedAction(
             priority="P2",
             kind="SCAN_GALAXY",
             planet_id=scan_planet.planet_id,
@@ -1594,7 +2015,40 @@ def _plan_combat_and_raid_actions(
             reason=f"Scan system {gal_num:02d}:{sys_num:03d} for yellow inactive / Spacia raid targets{tut_hint}{scan_note}",
             executable_now=bool(cfg.allow_galaxy_scan),
         )
-    ]
+
+    if tutorial_spy_pending and spy_actions:
+        spy_actions.sort(key=lambda item: item[0])
+        return [act for _, act in spy_actions[:3]]
+
+    if colonize_actions or colony_spy_actions or scored_attacks or recycle_actions:
+        out_actions: list[PlannedAction] = []
+        if colonize_actions:
+            colonize_actions.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in colonize_actions[:1])
+        elif colony_spy_actions:
+            colony_spy_actions.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in colony_spy_actions[:2])
+        if recycle_actions:
+            recycle_actions.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in recycle_actions[:2])
+        if scored_attacks:
+            scored_attacks.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in scored_attacks[:3])
+        if spy_actions:
+            spy_actions.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in spy_actions[:2])
+        if want_colonize and not colonize_actions and not colony_spy_actions:
+            nxt_scan = _next_spiral_scan_action()
+            if nxt_scan is not None:
+                out_actions.append(nxt_scan)
+        return out_actions
+
+    if spy_actions:
+        spy_actions.sort(key=lambda item: item[0])
+        return [act for _, act in spy_actions[:3]]
+
+    nxt_scan = _next_spiral_scan_action()
+    return [nxt_scan] if nxt_scan is not None else []
 
 
 def _mine_payback_hours(
@@ -1981,6 +2435,13 @@ def _plan_unlock_and_advisory_actions(
         for ship_slug, target_cnt in norm_shipyard_targets_2.items():
             if target_cnt <= 0:
                 continue
+            if (
+                ship_slug == "solar-cells"
+                and _norm_planet_type(planet) != "asteroid"
+                and bool(getattr(config, "forbid_planetary_solar", False))
+                and 9 not in tutorial_ship_ids
+            ):
+                continue
             skey = slug_to_skey.get(ship_slug)
             if not skey or len(skey) > 8 or not skey[1:].isascii() or not skey[1:].isdigit():
                 continue
@@ -2168,25 +2629,30 @@ def _plan_economy_for_planet(
         _, top_bid, top_nxt, _ = scored_mines[0]
         starve_delta = _energy_starvation_delta(top_bid, top_nxt, projected_net)
         if starve_delta < 0 and _safe_strategy_int(planet.energy.net, 0) >= 0:
+            forbid_solar = bool(getattr(config, "forbid_planetary_solar", False))
             power_bid, power_name, power_note = _pick_best_power_building(
                 planet,
                 eff_buildings,
                 state.researches,
+                forbid_planetary_solar=forbid_solar,
             )
-            # Hot planets with tight free building fields prefer 0-field orbital Solar cells (`s9`)
+            # Solar cells (`s9`) on Asteroids (and hot tight-field colonies only when `forbid_planetary_solar=False`)
             solar_offer = ship_offers.get(SOLAR_CELLS_ID)
-            prefer_s9 = (
-                temp_i >= config.hot_planet_solar_temp_threshold
-                and 0 < fields_rem_i <= config.min_free_fields_warning
+            hot_tight_s9 = (
+                not forbid_solar
+                and _norm_planet_type(planet) == "normal"
+                and _safe_strategy_int(planet.fields_max, 0) > 0
+                and 0 < fields_rem_i <= _safe_strategy_int(config.min_free_fields_warning, 20)
+                and temp_i >= _safe_strategy_int(config.hot_planet_solar_temp_threshold, 40)
             )
             if (
-                prefer_s9
-                and _norm_planet_type(planet) != "raid"
+                (_norm_planet_type(planet) == "asteroid" or hot_tight_s9)
                 and planet.building_level(WEAPONS_FACTORY) >= 1
                 and solar_offer is not None
                 and solar_offer.can_build
                 and config.allow_shipyard
             ):
+                s9_lbl = "asteroid" if _norm_planet_type(planet) == "asteroid" else "colony"
                 priority_builds.append(
                     PlannedAction(
                         priority="P1",
@@ -2199,7 +2665,7 @@ def _plan_economy_for_planet(
                         cost=solar_offer.cost,
                         missing=planet.resources.missing(solar_offer.cost),
                         reason=(
-                            f"0-field orbital power on {temp_s}C planet "
+                            f"0-field orbital power on {temp_s}C {s9_lbl} "
                             f"({game_data.fmt_compact_int(fields_rem_i)} fields left)"
                         ),
                         executable_now=planet.resources.can_afford(solar_offer.cost),
@@ -2296,6 +2762,7 @@ def _plan_economy_for_planet(
                 planet,
                 eff_buildings,
                 state.researches,
+                forbid_planetary_solar=bool(getattr(config, "forbid_planetary_solar", False)),
             )
             already_has_power = any(
                 a.target_id in (FUSION_PLANT, THERMOSOLAR_PLANT, SOLAR_CELLS_ID)
@@ -2557,7 +3024,9 @@ def _plan_blast_furnace_throttle(
         allow_remote = cfg.allow_multi_planet and not is_active
 
         has_p1_power = any(
-            a.priority == "P1" and a.target_id in (FUSION_PLANT, THERMOSOLAR_PLANT, SOLAR_CELLS_ID)
+            a.priority == "P1"
+            and a.kind in ("BUILD", "WAIT_RESOURCES", "BUILD_SHIP")
+            and a.target_id in (FUSION_PLANT, THERMOSOLAR_PLANT, SOLAR_CELLS_ID)
             for a in p_acts
         )
         would_trigger_p1_power = has_p1_power
@@ -2573,10 +3042,21 @@ def _plan_blast_furnace_throttle(
                     would_trigger_p1_power = True
                     break
         if would_trigger_p1_power:
+            forbid_solar_bf = bool(getattr(cfg, "forbid_planetary_solar", False))
             solar_offer = _ship_offer_map(planet).get(SOLAR_CELLS_ID)
+            f_rem_bf = _safe_strategy_int(planet.fields_remaining, 0)
+            hot_tight_bf = (
+                not forbid_solar_bf
+                and _norm_planet_type(planet) == "normal"
+                and _safe_strategy_int(planet.fields_max, 0) > 0
+                and 0 < f_rem_bf <= _safe_strategy_int(cfg.min_free_fields_warning, 20)
+                and _safe_strategy_int(planet.temperature, 0) >= _safe_strategy_int(cfg.hot_planet_solar_temp_threshold, 40)
+            )
             use_solar_cells = (
-                _safe_strategy_int(planet.temperature, 0) >= cfg.hot_planet_solar_temp_threshold
-                and 0 < _safe_strategy_int(planet.fields_remaining, 0) <= cfg.min_free_fields_warning
+                (
+                    _norm_planet_type(planet) == "asteroid"
+                    or (not forbid_solar_bf and (not _planet_has_free_building_fields(planet) or hot_tight_bf))
+                )
                 and solar_offer is not None
                 and solar_offer.can_build
                 and cfg.allow_shipyard
@@ -2586,7 +3066,12 @@ def _plan_blast_furnace_throttle(
                 miss_pw = planet.resources.missing(solar_offer.cost)
                 can_exec_power = planet.resources.can_afford(solar_offer.cost)
             else:
-                power_bid, _, _ = _pick_best_power_building(planet, eff_buildings, state.researches)
+                power_bid, _, _ = _pick_best_power_building(
+                    planet,
+                    eff_buildings,
+                    state.researches,
+                    forbid_planetary_solar=forbid_solar_bf,
+                )
                 power_lvl = _eff_level(planet, eff_buildings, power_bid) + 1
                 power_cost = _resources_from_dict(game_data.building_cost(power_bid, power_lvl))
                 power_offer = _offer_map(planet).get(power_bid)
@@ -2730,7 +3215,7 @@ def _build_pre_throttle_plan(
                 (p.coords for p in state.planets if p.planet_id != active.planet_id),
                 active.coords,
             )
-            escape = plan_escape_flight(
+            escape = _get_fleet().plan_escape_flight(
                 active,
                 target_coords=other_coords,
                 fuel_reserve_spice=cfg.fleet_save_fuel_reserve_spice,
@@ -2773,18 +3258,63 @@ def _build_pre_throttle_plan(
         queue_full = active_queue_full if is_active else False
         allow_remote = cfg.allow_multi_planet and not is_active
 
-        # P1: Negative energy guard per planet (asteroids & raid colonies cannot construct power plants)
+        # P1: Negative energy guard per planet (Solar cells on Asteroids ONLY; Fusion plant on normal planets)
         ptype_now = _norm_planet_type(planet)
-        if ptype_now not in ("asteroid", "raid") and _safe_strategy_int(planet.energy.net, 0) < 0:
+        if ptype_now == "asteroid" and _safe_strategy_int(planet.energy.net, 0) < 0:
             solar_offer = _ship_offer_map(planet).get(SOLAR_CELLS_ID)
-            has_free_fields = _planet_has_free_building_fields(planet)
+            if planet.building_level(WEAPONS_FACTORY) >= 1:
+                solar_cost = (
+                    solar_offer.cost
+                    if (solar_offer is not None and not solar_offer.cost.is_zero())
+                    else _resources_from_dict((game_data.SHIPS.get("solar-cells") or {}).get("base_cost", {}))
+                )
+                can_exec_s9 = bool(
+                    cfg.allow_shipyard
+                    and solar_offer is not None
+                    and solar_offer.can_build
+                    and planet.resources.can_afford(solar_cost)
+                )
+                plan.append(
+                    PlannedAction(
+                        priority="P1",
+                        kind="BUILD_SHIP",
+                        planet_id=planet.planet_id,
+                        planet_coords=_safe_strategy_str(planet.coords),
+                        target_id=SOLAR_CELLS_ID,
+                        target_name=(_safe_strategy_str(solar_offer.name) if solar_offer else "") or "Solar cells",
+                        target_level=1,
+                        cost=solar_cost,
+                        missing=planet.resources.missing(solar_cost),
+                        reason=(
+                            f"Negative energy on asteroid ({game_data.fmt_compact_int(planet.energy.produced)}/"
+                            f"{game_data.fmt_compact_int(planet.energy.used)}); build Solar cells (0 fields)"
+                        ),
+                        executable_now=can_exec_s9,
+                    )
+                )
+        elif ptype_now not in ("asteroid", "raid") and _safe_strategy_int(planet.energy.net, 0) < 0:
+            forbid_solar_p1 = bool(getattr(cfg, "forbid_planetary_solar", False))
+            solar_offer = _ship_offer_map(planet).get(SOLAR_CELLS_ID)
+            f_rem_p1 = _safe_strategy_int(planet.fields_remaining, 0)
+            hot_tight_p1 = (
+                not forbid_solar_p1
+                and _safe_strategy_int(planet.fields_max, 0) > 0
+                and 0 < f_rem_p1 <= _safe_strategy_int(cfg.min_free_fields_warning, 20)
+                and _safe_strategy_int(planet.temperature, 0) >= _safe_strategy_int(cfg.hot_planet_solar_temp_threshold, 40)
+            )
             if (
-                not has_free_fields
+                not forbid_solar_p1
+                and (not _planet_has_free_building_fields(planet) or hot_tight_p1)
                 and planet.building_level(WEAPONS_FACTORY) >= 1
-                and cfg.allow_shipyard
                 and solar_offer is not None
                 and solar_offer.can_build
+                and cfg.allow_shipyard
             ):
+                solar_cost = (
+                    solar_offer.cost
+                    if not solar_offer.cost.is_zero()
+                    else _resources_from_dict((game_data.SHIPS.get("solar-cells") or {}).get("base_cost", {}))
+                )
                 plan.append(
                     PlannedAction(
                         priority="P1",
@@ -2794,13 +3324,13 @@ def _build_pre_throttle_plan(
                         target_id=SOLAR_CELLS_ID,
                         target_name=_safe_strategy_str(solar_offer.name) or "Solar cells",
                         target_level=1,
-                        cost=solar_offer.cost,
-                        missing=planet.resources.missing(solar_offer.cost),
+                        cost=solar_cost,
+                        missing=planet.resources.missing(solar_cost),
                         reason=(
                             f"Negative energy ({game_data.fmt_compact_int(planet.energy.produced)}/"
-                            f"{game_data.fmt_compact_int(planet.energy.used)}) & 0 free fields; build Solar cells (0 fields)"
+                            f"{game_data.fmt_compact_int(planet.energy.used)}) with 0 free building fields; build Solar cells (0 fields)"
                         ),
-                        executable_now=planet.resources.can_afford(solar_offer.cost),
+                        executable_now=planet.resources.can_afford(solar_cost),
                     )
                 )
             else:
@@ -2808,6 +3338,7 @@ def _build_pre_throttle_plan(
                     planet,
                     eff_buildings,
                     state.researches,
+                    forbid_planetary_solar=forbid_solar_p1,
                 )
                 if _is_building_allowed_on_planet(planet, power_bid, offers):
                     plan.append(
@@ -2820,6 +3351,106 @@ def _build_pre_throttle_plan(
                                 f"Negative energy ({game_data.fmt_compact_int(planet.energy.produced)}/{game_data.fmt_compact_int(planet.energy.used)}); mines throttled",
                                 offers,
                                 effective_level=_eff_level(planet, eff_buildings, power_bid),
+                                researches=state.researches,
+                                allow_remote_colony_build=allow_remote,
+                            ),
+                            queue_full,
+                        )
+                    )
+
+        # P1: Demolish already-built Thermosolar plant (`b6`) on normal planets to reclaim building fields
+        cold_spice_keep_b6 = (
+            not bool(getattr(cfg, "forbid_planetary_solar", False))
+            and _safe_strategy_int(planet.temperature, 0) <= -100
+            and _eff_level(planet, eff_buildings, SPICE_MINE) >= 12
+            and (_safe_strategy_int(planet.fields_max, 0) <= 0 or _safe_strategy_int(planet.fields_remaining, 0) > 40)
+            and planet.building_level(THERMOSOLAR_PLANT) <= 6
+        )
+        if (
+            ptype_now not in ("asteroid", "raid")
+            and not (state.tutorial and state.tutorial.can_complete)
+            and not cold_spice_keep_b6
+        ):
+            cur_b6 = planet.building_level(THERMOSOLAR_PLANT)
+            tut_needs_b6 = bool(
+                state.tutorial
+                and not state.tutorial.can_complete
+                and any(
+                    not t.completed
+                    and t.category == "building"
+                    and game_data.safe_optional_int(t.building_id, None) == THERMOSOLAR_PLANT
+                    for t in state.tutorial.tasks
+                )
+            )
+            b6_in_queue = bool(
+                is_active
+                and any(
+                    q.category == "building"
+                    and (
+                        game_data.safe_optional_int(q.building_id, None) == THERMOSOLAR_PLANT
+                        or "thermosolar" in _safe_strategy_str(q.name).lower()
+                        or "thermal" in _safe_strategy_str(q.name).lower()
+                    )
+                    for q in state.active_queues
+                )
+            )
+            if cur_b6 > 0 and not tut_needs_b6 and not b6_in_queue:
+                r2_lvl = max(0, _safe_strategy_int((state.researches or {}).get("r2", 0), 0))
+                raw_b6_step = max(0, game_data.building_energy_delta(THERMOSOLAR_PLANT, cur_b6))
+                safe_b6_loss = int(math.ceil(raw_b6_step * (1.0 + 0.01 * min(r2_lvl, 200))))
+                throttled_reserve = 0
+                e_rates = planet.economy_rates if isinstance(planet.economy_rates, Mapping) else {}
+                for bid_m, rkey_m in (
+                    (PIG_IRON_MINE, "resource1"),
+                    (BLAST_FURNACE, "resource2"),
+                    (KRYPTONITE_MINE, "resource3"),
+                    (SPICE_MINE, "resource4"),
+                ):
+                    pct_m = max(0, min(100, _safe_strategy_int(e_rates.get(rkey_m, 100), 100)))
+                    lvl_m = planet.building_level(bid_m)
+                    if pct_m < 100 and lvl_m > 0:
+                        full_m = abs(sum(game_data.building_energy_delta(bid_m, l) for l in range(1, min(lvl_m, 101) + 1)))
+                        throttled_reserve += int(math.ceil(full_m * (100 - pct_m) / 100.0))
+                avail_e_buffer = min(_safe_strategy_int(planet.energy.net, 0), projected_net) - throttled_reserve
+                if avail_e_buffer - safe_b6_loss >= 0:
+                    allow_bld_cfg = bool(getattr(cfg, "allow_build", True))
+                    can_dem_now = bool(allow_bld_cfg and not queue_full and (is_active or allow_remote))
+                    dem_reason = f"Tear down Thermosolar plant (L{cur_b6} -> L{cur_b6 - 1}) to reclaim planetary building fields"
+                    if queue_full:
+                        dem_reason += " (build queue full)"
+                    elif not allow_bld_cfg:
+                        dem_reason += " (allow_build=false in Config)"
+                    elif not (is_active or allow_remote):
+                        dem_reason += " (remote colony build disabled)"
+                    plan.append(
+                        PlannedAction(
+                            priority="P1",
+                            kind="DEMOLISH_BUILDING",
+                            planet_id=planet.planet_id,
+                            planet_coords=_safe_strategy_str(planet.coords),
+                            target_id=THERMOSOLAR_PLANT,
+                            target_name="Thermosolar plant",
+                            target_level=cur_b6 - 1,
+                            reason=dem_reason,
+                            executable_now=can_dem_now,
+                        )
+                    )
+                elif _is_building_allowed_on_planet(planet, FUSION_PLANT, offers) and not any(
+                    a.planet_id == planet.planet_id
+                    and a.target_id == FUSION_PLANT
+                    and a.kind in ("BUILD", "WAIT_RESOURCES")
+                    for a in plan
+                ):
+                    plan.append(
+                        _apply_queue_cap_if_full(
+                            _make_build_action(
+                                "P1",
+                                planet,
+                                FUSION_PLANT,
+                                "Fusion plant",
+                                f"Upgrade Fusion plant before tearing down Thermosolar plant L{cur_b6} (needs +{safe_b6_loss} energy buffer)",
+                                offers,
+                                effective_level=_eff_level(planet, eff_buildings, FUSION_PLANT),
                                 researches=state.researches,
                                 allow_remote_colony_build=allow_remote,
                             ),
@@ -3023,6 +3654,9 @@ def _build_pre_throttle_plan(
             not tutorial_actions
             or _tutorial_fight_task(state) is not None
             or _tutorial_spy_task(state) is not None
+            or _tutorial_recycle_task(state) is not None
+            or _tutorial_colonize_task(state) is not None
+            or cfg.allow_colonize
         ):
             plan.extend(
                 _plan_combat_and_raid_actions(
@@ -3073,8 +3707,13 @@ def plan_actions(
         ga_actions = optimize_plan_actions(state, **opt_kwargs)
         return attach_action_etas(state, ga_actions)
 
+    state_for_plan = (
+        replace(state, raid_stats=dict(raid_stats))
+        if isinstance(raid_stats, Mapping)
+        else state
+    )
     plan, planets_to_check = _build_pre_throttle_plan(
-        state,
+        state_for_plan,
         warn_ratio=warn_ratio,
         cfg=cfg,
         scanned_systems=scanned_systems,
@@ -3116,3 +3755,520 @@ def plan_actions(
             seen_keys.add(key)
             deduped.append(act)
     return attach_action_etas(state, deduped)
+
+
+def _normalize_manual_coords(raw: Any) -> str:
+    txt = _safe_strategy_str(raw).strip()
+    if not txt:
+        return ""
+    m3 = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", txt, re.ASCII)
+    if m3:
+        g, s, p = int(m3.group(1)), int(m3.group(2)), int(m3.group(3))
+        if 1 <= g <= 14 and 1 <= s <= 400 and 1 <= p <= 16:
+            return f"{g:02d}:{s:03d}:{p:02d}"
+    m2 = re.search(r"(\d{1,2}):(\d{1,3})", txt, re.ASCII)
+    if m2:
+        g, s = int(m2.group(1)), int(m2.group(2))
+        if 1 <= g <= 14 and 1 <= s <= 400:
+            return f"{g:02d}:{s:03d}"
+    return txt[:32]
+
+
+def merge_manual_queue_actions(
+    state: GameState,
+    planned_actions: Sequence[PlannedAction],
+    manual_queue: Optional[Sequence[Mapping[str, Any]]],
+    *,
+    config: Optional[StrategyConfig] = None,
+) -> tuple[list[PlannedAction], list[int]]:
+    """Merge operator-enqueued manual commands into `planned_actions` with priority & resource reservation.
+
+    Returns `(merged_actions, auto_satisfied_queue_ids)`.
+    """
+    if not manual_queue or not state.planets:
+        return list(planned_actions), []
+
+    from spaceinvasion.ranking import attach_action_etas
+
+    cfg = config or StrategyConfig()
+    active_p = state.active_planet() or state.planets[0]
+    planets_by_id = {p.planet_id: p for p in state.planets}
+    planets_by_coords = {_normalize_manual_coords(p.coords): p for p in state.planets if p.coords}
+
+    b_queued_active = sum(
+        1 for q in (getattr(state, "active_queues", ()) or ()) if getattr(q, "category", "") == "building"
+    )
+    r_queued_total = sum(
+        1 for q in (getattr(state, "active_queues", ()) or ()) if getattr(q, "category", "") == "research"
+    )
+    has_cmd = game_data.safe_int((getattr(state, "specs", None) or {}).get("construction_commander", 0), 0) > 0
+
+    manual_actions: list[PlannedAction] = []
+    auto_satisfied_ids: list[int] = []
+    reserved_by_pid: dict[int, tuple[int, Resources]] = {}
+    prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+    sorted_items = sorted(
+        (m for m in manual_queue if isinstance(m, Mapping) and str(m.get("status", "pending")).lower() == "pending"),
+        key=lambda m: (
+            prio_rank.get(_safe_strategy_str(m.get("priority"), "P1").strip().upper(), 1),
+            _safe_strategy_int(m.get("sort_rank"), 1000),
+            _safe_strategy_int(m.get("id"), 0),
+        ),
+    )
+
+    for idx_m, item in enumerate(sorted_items):
+        qid = _safe_strategy_int(item.get("id"), 0)
+        if qid <= 0:
+            continue
+        raw_prio = _safe_strategy_str(item.get("priority"), "P1").strip().upper()
+        prio = raw_prio if raw_prio in ("P0", "P1", "P2", "P3") else "P1"
+        srank = _safe_strategy_int(item.get("sort_rank"), (idx_m + 1) * 10)
+        kind = _safe_strategy_str(item.get("kind"), "").strip().upper()
+        pid_req = _safe_strategy_int(item.get("planet_id"), 0)
+        pcoords_req = _normalize_manual_coords(item.get("planet_coords"))
+        planet = (
+            planets_by_id.get(pid_req)
+            or (planets_by_coords.get(pcoords_req) if pcoords_req else None)
+            or active_p
+        )
+        is_active_planet = planet.planet_id == active_p.planet_id
+        is_astro = _norm_planet_type(planet) == "asteroid"
+        b_cap = 1 if is_astro else (6 if has_cmd else 5)
+        b_queue_full = is_active_planet and b_queued_active >= b_cap
+        r_queue_full = r_queued_total >= 1
+
+        note_s = _safe_strategy_str(item.get("note")).strip()
+        note_suffix = f" · {note_s}" if note_s else ""
+        base_tag = f"User Queue #{qid}"
+
+        built_act: Optional[PlannedAction] = None
+        prereq_met_for_reserve = False
+        reserve_bundle = Resources()
+
+        if kind == "BUILD":
+            bid = _safe_strategy_int(item.get("target_id"), 0)
+            b_info = game_data.resolve_unit("buildings", bid) if bid > 0 else None
+            if bid <= 0 or not b_info:
+                continue
+            b_name = _safe_strategy_str(b_info.get("name") or item.get("target_name") or f"Building b{bid}")
+            cur_lvl = planet.building_level(bid)
+            goal_lvl = game_data.safe_optional_int(item.get("target_level"), None)
+            if goal_lvl is not None and goal_lvl > 0 and cur_lvl >= goal_lvl:
+                auto_satisfied_ids.append(qid)
+                continue
+            b_offers = _offer_map(planet)
+            offer = b_offers.get(bid)
+            offer_tgt = game_data.safe_optional_int(offer.target_level, None) if offer is not None else None
+            if goal_lvl is not None and offer_tgt is not None and offer_tgt > goal_lvl:
+                # Target level is already queued inside the in-game construction queue
+                built_act = PlannedAction(
+                    priority=prio,
+                    kind="BUILD",
+                    planet_id=planet.planet_id,
+                    planet_coords=planet.coords,
+                    target_id=bid,
+                    target_name=b_name,
+                    target_level=goal_lvl,
+                    cost=Resources(),
+                    missing=Resources(),
+                    reason=f"{base_tag}: In-game build queue already covers L{goal_lvl}{note_suffix}",
+                    executable_now=False,
+                    manual_queue_id=qid,
+                    manual_sort_rank=srank,
+                )
+            else:
+                eff_cur = max(cur_lvl, (offer_tgt - 1) if (offer_tgt is not None and offer_tgt > cur_lvl) else cur_lvl)
+                goal_hint = f" (goal L{goal_lvl})" if (goal_lvl is not None and goal_lvl > eff_cur + 1) else ""
+                raw_b = _make_build_action(
+                    prio,
+                    planet,
+                    bid,
+                    b_name,
+                    f"{base_tag}: Queued upgrade{goal_hint}{note_suffix}",
+                    b_offers,
+                    effective_level=eff_cur,
+                    researches=state.researches,
+                    allow_remote_colony_build=bool(cfg.allow_multi_planet),
+                )
+                exec_now = raw_b.executable_now and not b_queue_full
+                rsn = f"{raw_b.reason} (build queue full)" if (raw_b.executable_now and b_queue_full) else raw_b.reason
+                built_act = replace(
+                    raw_b,
+                    priority=prio,
+                    kind="BUILD",
+                    executable_now=exec_now,
+                    reason=rsn,
+                    manual_queue_id=qid,
+                    manual_sort_rank=srank,
+                )
+                unmet = game_data.missing_prerequisites(
+                    "buildings",
+                    bid,
+                    buildings=planet.buildings,
+                    researches=state.researches or {},
+                )
+                prereq_met_for_reserve = not unmet and _is_building_allowed_on_planet(planet, bid, b_offers)
+                reserve_bundle = built_act.cost
+
+        elif kind == "DEMOLISH_BUILDING":
+            bid = _safe_strategy_int(item.get("target_id"), 6) or 6
+            b_info = game_data.resolve_unit("buildings", bid)
+            b_name = _safe_strategy_str((b_info or {}).get("name") or item.get("target_name") or f"Building b{bid}")
+            cur_lvl = planet.building_level(bid)
+            raw_goal = game_data.safe_optional_int(item.get("target_level"), None)
+            if cur_lvl <= 0 or (raw_goal is not None and cur_lvl <= max(0, raw_goal)):
+                auto_satisfied_ids.append(qid)
+                continue
+            step_lvl = max(0, cur_lvl - 1)
+            energy_loss = max(0, game_data.building_energy_delta(bid, cur_lvl))
+            energy_ok = True
+            if energy_loss > 0:
+                spare_e = getattr(planet.energy, "net", 0)
+                if spare_e - energy_loss < 0:
+                    energy_ok = False
+            exec_now = (not b_queue_full) and energy_ok
+            goal_hint = f" (goal L{max(0, raw_goal)})" if (raw_goal is not None and raw_goal < step_lvl) else ""
+            rsn = f"{base_tag}: Demolish L{cur_lvl} -> L{step_lvl}{goal_hint}{note_suffix}"
+            if b_queue_full:
+                rsn += " (build queue full)"
+            elif not energy_ok:
+                rsn += " (insufficient spare energy — upgrade Fusion plant first)"
+            built_act = PlannedAction(
+                priority=prio,
+                kind="DEMOLISH_BUILDING",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=bid,
+                target_name=b_name,
+                target_level=step_lvl,
+                cost=Resources(),
+                missing=Resources(),
+                reason=rsn,
+                executable_now=exec_now,
+                manual_queue_id=qid,
+                manual_sort_rank=srank,
+            )
+
+        elif kind == "RESEARCH":
+            rid = _safe_strategy_int(item.get("target_id"), 0)
+            rkey = f"r{rid}"
+            r_info = game_data.resolve_unit("research", rkey) if rid > 0 else None
+            if rid <= 0 or not r_info:
+                continue
+            r_name = _safe_strategy_str(r_info.get("name") or item.get("target_name") or rkey)
+            cur_lvl = max(0, _safe_strategy_int((state.researches or {}).get(rkey, 0), 0))
+            goal_lvl = game_data.safe_optional_int(item.get("target_level"), None)
+            if goal_lvl is not None and goal_lvl > 0 and cur_lvl >= goal_lvl:
+                auto_satisfied_ids.append(qid)
+                continue
+            nxt_lvl = cur_lvl + 1
+            r_offers = _research_offer_map(state)
+            r_off = r_offers.get(rkey)
+            if r_off is not None and game_data.safe_optional_int(r_off.target_level, None) == nxt_lvl:
+                cost = r_off.cost
+            else:
+                lvl_row = (r_info.get("levels") or {}).get(nxt_lvl) or {}
+                cost = _resources_from_dict(lvl_row.get("cost"))
+            missing = planet.resources.missing(cost) if not cost.is_zero() else Resources()
+            unmet = game_data.missing_prerequisites(
+                "research",
+                rkey,
+                buildings=planet.buildings,
+                researches=state.researches or {},
+            )
+            has_lab = planet.building_level(RESEARCH_LAB) >= 1
+            can_afford = not cost.is_zero() and planet.resources.can_afford(cost)
+            exec_now = (
+                has_lab
+                and not unmet
+                and not r_queue_full
+                and (bool(r_off.can_research) if (r_off is not None and is_active_planet) else can_afford)
+            )
+            goal_hint = f" (goal L{goal_lvl})" if (goal_lvl is not None and goal_lvl > nxt_lvl) else ""
+            rsn = f"{base_tag}: Queued research{goal_hint}{note_suffix}"
+            if not has_lab:
+                rsn += " (requires Research lab)"
+            elif unmet:
+                rsn += f" (needs {unmet[0]['name']} L{unmet[0]['required']})"
+            elif r_queue_full:
+                rsn += " (research queue busy)"
+            built_act = PlannedAction(
+                priority=prio,
+                kind="RESEARCH",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=rid,
+                target_name=r_name,
+                target_level=nxt_lvl,
+                cost=cost,
+                missing=missing,
+                reason=rsn,
+                executable_now=exec_now,
+                manual_queue_id=qid,
+                manual_sort_rank=srank,
+            )
+            prereq_met_for_reserve = has_lab and not unmet
+            reserve_bundle = cost
+
+        elif kind == "BUILD_SHIP":
+            sid = _safe_strategy_int(item.get("target_id"), 0)
+            s_info = (game_data.resolve_unit("ships", f"s{sid}") or game_data.resolve_unit("ships", sid)) if sid > 0 else None
+            if sid <= 0 or not s_info:
+                continue
+            s_name = _safe_strategy_str(s_info.get("name") or item.get("target_name") or f"Ship s{sid}")
+            qty = max(1, _safe_strategy_int(item.get("target_level"), 1))
+            s_offers = _ship_offer_map(planet)
+            s_off = s_offers.get(sid)
+            unit_cost = s_off.cost if s_off is not None else _resources_from_dict(s_info.get("base_cost"))
+            total_cost = Resources(
+                pig_iron=unit_cost.pig_iron * qty,
+                metal=unit_cost.metal * qty,
+                kryptonite=unit_cost.kryptonite * qty,
+                spice=unit_cost.spice * qty,
+            )
+            missing = planet.resources.missing(total_cost) if not total_cost.is_zero() else Resources()
+            unmet = game_data.missing_prerequisites(
+                "ships",
+                s_info.get("slug", f"s{sid}"),
+                buildings=planet.buildings,
+                researches=state.researches or {},
+            )
+            has_wf = planet.building_level(WEAPONS_FACTORY) >= 1
+            solar_blocked = (
+                sid == SOLAR_CELLS_ID
+                and bool(getattr(cfg, "forbid_planetary_solar", False))
+                and _norm_planet_type(planet) != "asteroid"
+            )
+            exec_now = (
+                has_wf
+                and not unmet
+                and not solar_blocked
+                and not total_cost.is_zero()
+                and planet.resources.can_afford(total_cost)
+            )
+            rsn = f"{base_tag}: Build {qty}x {s_name}{note_suffix}"
+            if solar_blocked:
+                rsn += " (blocked on normal planets by forbid_planetary_solar)"
+            elif not has_wf:
+                rsn += " (requires Weapons factory)"
+            elif unmet:
+                rsn += f" (needs {unmet[0]['name']} L{unmet[0]['required']})"
+            built_act = PlannedAction(
+                priority=prio,
+                kind="BUILD_SHIP",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=sid,
+                target_name=s_name,
+                target_level=qty,
+                cost=unit_cost,
+                missing=missing,
+                reason=rsn,
+                executable_now=exec_now,
+                manual_queue_id=qid,
+                manual_sort_rank=srank,
+            )
+            prereq_met_for_reserve = has_wf and not unmet and not solar_blocked
+            reserve_bundle = total_cost
+
+        elif kind == "THROTTLE_BUILDING":
+            bid = _safe_strategy_int(item.get("target_id"), 2) or 2
+            b_info = game_data.resolve_unit("buildings", bid)
+            b_name = _safe_strategy_str((b_info or {}).get("name") or item.get("target_name") or f"Building b{bid}")
+            raw_pct = _safe_strategy_int(item.get("target_level"), 100)
+            pct = max(0, min(100, (raw_pct // 10) * 10))
+            cur_rate = (planet.economy_rates or {}).get(f"resource{bid}")
+            if cur_rate is not None and _safe_strategy_int(cur_rate, -1) == pct:
+                auto_satisfied_ids.append(qid)
+                continue
+            has_bld = planet.building_level(bid) > 0
+            built_act = PlannedAction(
+                priority=prio,
+                kind="THROTTLE_BUILDING",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=bid,
+                target_name=b_name,
+                target_level=pct,
+                cost=Resources(),
+                missing=Resources(),
+                reason=f"{base_tag}: Set {b_name} rate to {pct}%{note_suffix}",
+                executable_now=has_bld,
+                manual_queue_id=qid,
+                manual_sort_rank=srank,
+            )
+
+        elif kind in ("SPY", "ATTACK", "RECYCLE", "COLONIZE"):
+            tc = _normalize_manual_coords(item.get("target_coords") or item.get("target_name"))
+            if not tc:
+                continue
+            ships_d = planet.ships or {}
+            qty_opt = game_data.safe_optional_int(item.get("target_level"), None)
+            if kind == "SPY":
+                qty = max(1, qty_opt or 1)
+                ready = _safe_strategy_int(ships_d.get("s10", 0), 0) >= 1
+                t_lbl = f"{tc} (Spy)"
+                rsn = f"{base_tag}: Dispatch {qty}x Spy probe to {tc}{note_suffix}" + ("" if ready else " (needs Spy probe s10)")
+            elif kind == "COLONIZE":
+                qty = 1
+                ready = _safe_strategy_int(ships_d.get("s8", 0), 0) >= 1
+                t_lbl = f"{tc} (Colonize)"
+                rsn = f"{base_tag}: Dispatch Colony ship (s8) to {tc}{note_suffix}" + ("" if ready else " (needs Colony ship s8)")
+            elif kind == "RECYCLE":
+                owned_rec = _safe_strategy_int(ships_d.get("s11", 0), 0) + _safe_strategy_int(ships_d.get("s111", 0), 0)
+                qty = max(1, qty_opt or max(1, owned_rec))
+                ready = owned_rec >= 1
+                t_lbl = f"{tc} (Debris)"
+                rsn = f"{base_tag}: Dispatch {qty}x Recycler to {tc}{note_suffix}" + ("" if ready else " (needs Recycler s11)")
+            else:
+                qty = None
+                combat_ships = sum(
+                    max(0, _safe_strategy_int(v, 0))
+                    for k, v in ships_d.items()
+                    if k not in ("s8", "s9", "s10", "s11", "s111")
+                )
+                ready = combat_ships >= 1
+                t_lbl = _safe_strategy_str(item.get("target_name")).strip() or tc
+                if tc not in t_lbl:
+                    t_lbl = f"{tc} ({t_lbl})"
+                rsn = f"{base_tag}: Raid target {tc}{note_suffix}" + ("" if ready else " (no stationed raid/transport ships)")
+            built_act = PlannedAction(
+                priority=prio,
+                kind=kind,
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=None,
+                target_name=t_lbl,
+                target_level=qty,
+                cost=Resources(),
+                missing=Resources(),
+                reason=rsn,
+                executable_now=ready,
+                manual_queue_id=qid,
+                manual_sort_rank=srank,
+            )
+
+        elif kind == "SCAN_GALAXY":
+            sys_c = _normalize_manual_coords(item.get("target_coords") or item.get("target_name") or planet.coords[:6])
+            m_gs = re.search(r"(\d{1,2}):(\d{1,3})", sys_c, re.ASCII)
+            lbl_gs = f"{int(m_gs.group(1)):02d}:{int(m_gs.group(2)):03d}" if m_gs else (planet.coords[:6] or "01:001")
+            built_act = PlannedAction(
+                priority=prio,
+                kind="SCAN_GALAXY",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=None,
+                target_name=f"Galaxy [{lbl_gs}]",
+                target_level=None,
+                cost=Resources(),
+                missing=Resources(),
+                reason=f"{base_tag}: Scan system [{lbl_gs}]{note_suffix}",
+                executable_now=True,
+                manual_queue_id=qid,
+                manual_sort_rank=srank,
+            )
+
+        elif kind == "CLAIM_TUTORIAL":
+            tut_ok = bool(state.tutorial is not None and getattr(state.tutorial, "can_complete", False))
+            built_act = PlannedAction(
+                priority=prio,
+                kind="CLAIM_TUTORIAL",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=None,
+                target_name="Claim Tutorial Reward",
+                target_level=None,
+                cost=Resources(),
+                missing=Resources(),
+                reason=f"{base_tag}: Claim completed tutorial step{note_suffix}" + ("" if tut_ok else " (tasks incomplete)"),
+                executable_now=tut_ok,
+                manual_queue_id=qid,
+                manual_sort_rank=srank,
+            )
+
+        if built_act is not None:
+            manual_actions.append(built_act)
+            if prio in ("P0", "P1") and prereq_met_for_reserve and not reserve_bundle.is_zero():
+                p_rank_val = prio_rank.get(prio, 1)
+                prev_entry = reserved_by_pid.get(planet.planet_id)
+                if prev_entry is None:
+                    reserved_by_pid[planet.planet_id] = (p_rank_val, reserve_bundle)
+                else:
+                    prev_pr, prev_res = prev_entry
+                    reserved_by_pid[planet.planet_id] = (
+                        min(prev_pr, p_rank_val),
+                        Resources(
+                            pig_iron=prev_res.pig_iron + reserve_bundle.pig_iron,
+                            metal=prev_res.metal + reserve_bundle.metal,
+                            kryptonite=prev_res.kryptonite + reserve_bundle.kryptonite,
+                            spice=prev_res.spice + reserve_bundle.spice,
+                        ),
+                    )
+
+    if not manual_actions:
+        return list(planned_actions), auto_satisfied_ids
+
+    # Build lookup of manual targets so auto-planned duplicates are superseded cleanly
+    manual_sigs: set[tuple[str, int, Optional[int], str]] = set()
+    for ma in manual_actions:
+        norm_k = "BUILD" if ma.kind in ("BUILD", "WAIT_RESOURCES") else ma.kind
+        c_tok = _normalize_manual_coords(ma.target_name) if norm_k in ("SPY", "ATTACK", "RECYCLE", "COLONIZE", "SCAN_GALAXY") else ""
+        manual_sigs.add((norm_k, ma.planet_id, ma.target_id, c_tok))
+
+    filtered_auto: list[PlannedAction] = []
+    for act in planned_actions:
+        norm_k = "BUILD" if act.kind in ("BUILD", "WAIT_RESOURCES") else act.kind
+        c_tok = _normalize_manual_coords(act.target_name) if norm_k in ("SPY", "ATTACK", "RECYCLE", "COLONIZE", "SCAN_GALAXY") else ""
+        if (norm_k, act.planet_id, act.target_id, c_tok) in manual_sigs:
+            continue
+        act_pr = prio_rank.get(act.priority, 9)
+        res_entry = reserved_by_pid.get(act.planet_id)
+        if (
+            res_entry is not None
+            and act.executable_now
+            and act_pr > res_entry[0]
+            and not act.cost.is_zero()
+        ):
+            _, res_need = res_entry
+            p_obj = planets_by_id.get(act.planet_id)
+            qty_mult = max(1, _safe_strategy_int(act.target_level, 1)) if act.kind == "BUILD_SHIP" else 1
+            act_spend = Resources(
+                pig_iron=act.cost.pig_iron * qty_mult,
+                metal=act.cost.metal * qty_mult,
+                kryptonite=act.cost.kryptonite * qty_mult,
+                spice=act.cost.spice * qty_mult,
+            )
+            overlaps = (
+                (res_need.pig_iron > 0 and act_spend.pig_iron > 0)
+                or (res_need.metal > 0 and act_spend.metal > 0)
+                or (res_need.kryptonite > 0 and act_spend.kryptonite > 0)
+                or (res_need.spice > 0 and act_spend.spice > 0)
+            )
+            combined = Resources(
+                pig_iron=res_need.pig_iron + act_spend.pig_iron,
+                metal=res_need.metal + act_spend.metal,
+                kryptonite=res_need.kryptonite + act_spend.kryptonite,
+                spice=res_need.spice + act_spend.spice,
+            )
+            if overlaps and p_obj is not None and not p_obj.resources.can_afford(combined):
+                act = replace(
+                    act,
+                    executable_now=False,
+                    reason=f"{act.reason} [Saving resources for prioritized user queue]",
+                )
+        filtered_auto.append(act)
+
+    combined_list = list(manual_actions) + filtered_auto
+
+    def _merge_sort_key(item_idx_pair: tuple[int, PlannedAction]) -> tuple[int, int, int, int]:
+        orig_idx, a = item_idx_pair
+        p_band = prio_rank.get(a.priority, 9)
+        if a.kind in ("ALERT_HOSTILE", "ESCAPE_FLIGHT") and a.priority == "P0" and a.manual_queue_id is None:
+            return (-1, 0, 0, orig_idx)
+        if a.manual_queue_id is not None:
+            return (p_band, 0, _safe_strategy_int(a.manual_sort_rank, 1000), orig_idx)
+        return (p_band, 1, 0 if a.executable_now else 1, orig_idx)
+
+    ordered = [a for _, a in sorted(enumerate(combined_list), key=_merge_sort_key)]
+    return attach_action_etas(state, ordered), auto_satisfied_ids

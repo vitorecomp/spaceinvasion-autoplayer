@@ -69,10 +69,35 @@
               <span class="nav-title">Combat &amp; Fleet</span>
               <span class="nav-badge tabular" id="nav-cmb-badge">1:1</span>
             </button>
+            <button type="button" class="sidebar-link" data-page="espionage">
+              <span class="nav-code tabular">SPY</span>
+              <span class="nav-title">Espionage Intel</span>
+              <span class="nav-badge tabular" id="nav-spy-badge">0</span>
+            </button>
+            <button type="button" class="sidebar-link" data-page="colonies">
+              <span class="nav-code tabular">COL</span>
+              <span class="nav-title">Possible Colonies</span>
+              <span class="nav-badge tabular" id="nav-col-badge">0</span>
+            </button>
+            <button type="button" class="sidebar-link" data-page="attacks">
+              <span class="nav-code tabular">ATK</span>
+              <span class="nav-title">Attack Results</span>
+              <span class="nav-badge tabular" id="nav-atk-badge">0</span>
+            </button>
+            <button type="button" class="sidebar-link" data-page="recyclers">
+              <span class="nav-code tabular">REC</span>
+              <span class="nav-title">Recyclers &amp; Inbox</span>
+              <span class="nav-badge tabular" id="nav-rec-badge">0</span>
+            </button>
             <button type="button" class="sidebar-link" data-page="operations">
               <span class="nav-code tabular">OPS</span>
               <span class="nav-title">Operations Queue</span>
               <span class="nav-badge tabular" id="nav-queue-count">0</span>
+            </button>
+            <button type="button" class="sidebar-link" data-page="action-graph">
+              <span class="nav-code tabular">DAG</span>
+              <span class="nav-title">Action Graph</span>
+              <span class="nav-badge tabular" id="nav-graph-badge">PRI</span>
             </button>
             <button type="button" class="sidebar-link" data-page="ranking">
               <span class="nav-code tabular">RNK</span>
@@ -515,6 +540,9 @@
                   </div>
                   <div class="inline-actions">
                     <span class="module-meta tabular mode-badge" id="dash-planner-mode-badge">MODE: PRIORITY</span>
+                    <button type="button" class="btn btn-secondary btn-sm" data-goto-page="action-graph">
+                      Action Graph →
+                    </button>
                     <button type="button" class="btn btn-secondary btn-sm" data-goto-page="operations">
                       Full Queue →
                     </button>
@@ -854,6 +882,381 @@
             </div>
           </section>
 
+          <!-- ==================== VIEW 3B: ESPIONAGE INTEL ==================== -->
+          <section id="view-espionage" class="page-view" aria-label="Espionage targets and spy report archive" hidden>
+            <div class="combat-top-cards">
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Spied Targets</span>
+                <strong class="kpi-value tabular" id="esp-kpi-targets">0</strong>
+                <span class="kpi-sub tabular" id="esp-kpi-reports">0 archived spy reports</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Spacia &amp; Inactives</span>
+                <strong class="kpi-value tabular" id="esp-kpi-spacia">0 Spacia</strong>
+                <span class="kpi-sub tabular" id="esp-kpi-inactives">0 yellow inactive planets</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Debris &amp; Top Loot</span>
+                <strong class="kpi-value tabular" id="esp-kpi-debris">0 Debris</strong>
+                <span class="kpi-sub tabular" id="esp-kpi-top-loot">Best loot: 0 SpEq</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Espionage Sync</span>
+                <div class="combat-jumps">
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-esp-sync">Sync All Folders</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-esp-refresh">Refresh DB</button>
+                  <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalMessages">Messages</button>
+                </div>
+              </div>
+            </div>
+
+            <article class="hud-window page-fill">
+              <div class="window-bar window-bar-wrap">
+                <div class="window-title-group">
+                  <span class="module-code tabular">SPY</span>
+                  <h2>Espionage Intelligence &amp; Spy Report Archive</h2>
+                  <span class="module-meta tabular" id="esp-meta-count">0 TARGETS</span>
+                </div>
+                <div class="tab-group" role="tablist" aria-label="Espionage subtabs">
+                  <button type="button" class="tab-btn active" data-esp-tab="targets">Spied Targets</button>
+                  <button type="button" class="tab-btn" data-esp-tab="reports">Historical Spy Reports</button>
+                </div>
+              </div>
+
+              <div class="intel-pane" id="esp-pane-targets">
+                <div class="table-wrap table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Coords</th>
+                        <th>Player / Planet</th>
+                        <th>Status</th>
+                        <th class="col-right">Fields</th>
+                        <th>Resources (Pig / Met / Kry / Spi)</th>
+                        <th class="col-right">Loot SpEq</th>
+                        <th>Fleet / Defense</th>
+                        <th class="col-right">Ops</th>
+                      </tr>
+                    </thead>
+                    <tbody id="esp-targets-tbody">
+                      <tr>
+                        <td colspan="8" class="empty-cell">No espionage targets recorded yet.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="intel-pane" id="esp-pane-reports" hidden>
+                <div class="table-wrap table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Recorded</th>
+                        <th>Coords</th>
+                        <th>Owner / Planet</th>
+                        <th class="col-right">Fields</th>
+                        <th>Resources &amp; SpEq</th>
+                        <th>Buildings / Techs</th>
+                        <th>Fleet / Defense</th>
+                      </tr>
+                    </thead>
+                    <tbody id="esp-reports-tbody">
+                      <tr>
+                        <td colspan="7" class="empty-cell">No historical spy reports stored yet.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <!-- ==================== VIEW 3C: POSSIBLE COLONIES & GRADING ==================== -->
+          <section id="view-colonies" class="page-view" aria-label="Possible colonies and planetary field grading" hidden>
+            <div class="combat-top-cards">
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Qualified 300+ Colonies</span>
+                <strong class="kpi-value tabular" id="col-kpi-qualified">0 Ready</strong>
+                <span class="kpi-sub tabular" id="col-kpi-grades">S:0 · A+:0 · A:0 · B:0</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Scouted Free Slots</span>
+                <strong class="kpi-value tabular" id="col-kpi-probed">0 Probed</strong>
+                <span class="kpi-sub tabular" id="col-kpi-unprobed">0 unprobed free slots</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Colonization Fleet</span>
+                <strong class="kpi-value tabular" id="col-kpi-ships">0 s8 · 0 s10</strong>
+                <span class="kpi-sub tabular" id="col-kpi-origin">Origin [--]</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Colony Policy</span>
+                <div class="colony-policy-controls">
+                  <label class="colony-inline-field tabular" for="col-min-fields">
+                    Min Fields
+                    <input type="number" id="col-min-fields" min="50" max="600" step="10" value="300" />
+                  </label>
+                  <label class="toggle-chip colony-inline-toggle">
+                    <input type="checkbox" id="col-allow-colonize" /> Auto Colonize
+                  </label>
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-col-save">Apply</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-col-scan">Scan Galaxy</button>
+                </div>
+              </div>
+            </div>
+
+            <article class="hud-window page-fill">
+              <div class="window-bar window-bar-wrap">
+                <div class="window-title-group">
+                  <span class="module-code tabular">COL</span>
+                  <h2>Possible Colonies &amp; Spied Field Grading</h2>
+                  <span class="module-meta tabular" id="col-meta-count">0 CANDIDATES</span>
+                </div>
+                <div class="filter-toolbar">
+                  <div class="filter-chips" role="group" aria-label="Colony candidate filters">
+                    <button type="button" class="chip-btn active" data-col-filter="all">All Slots</button>
+                    <button type="button" class="chip-btn" data-col-filter="probed">Spied &amp; Graded</button>
+                    <button type="button" class="chip-btn" data-col-filter="qualified">300+ Fields (S / A+)</button>
+                    <button type="button" class="chip-btn" data-col-filter="unprobed">Unprobed (?)</button>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-col-sync">Sync Spy Reports</button>
+                </div>
+              </div>
+
+              <div class="table-wrap table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Grade</th>
+                      <th class="col-right">Score</th>
+                      <th>Coords</th>
+                      <th>Orbital Zone</th>
+                      <th class="col-right">Fields</th>
+                      <th class="col-right">Distance</th>
+                      <th>Assessment</th>
+                      <th class="col-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="col-candidates-tbody">
+                    <tr>
+                      <td colspan="8" class="empty-cell">Scan neighbor systems or sync spy reports to grade free planet slots.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </section>
+
+          <!-- ==================== VIEW 3D: ATTACK RESULTS ==================== -->
+          <section id="view-attacks" class="page-view" aria-label="Battle reports, plunder, and bash protection status" hidden>
+            <div class="combat-top-cards">
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Recorded Battles</span>
+                <strong class="kpi-value tabular" id="atk-kpi-total">0 Battles</strong>
+                <span class="kpi-sub tabular" id="atk-kpi-wl">W 0 · L 0 · D 0</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Plundered Resources</span>
+                <strong class="kpi-value tabular" id="atk-kpi-loot">0 SpEq</strong>
+                <span class="kpi-sub tabular" id="atk-kpi-loss">Attacker losses: 0 SpEq</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">24h Raid &amp; Bash Status</span>
+                <strong class="kpi-value tabular" id="atk-kpi-raids24">0 / 24h</strong>
+                <span class="kpi-sub tabular" id="atk-kpi-blocks">0 active bash blocks</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Battle Report Sync</span>
+                <div class="combat-jumps">
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-atk-sync">Sync All Folders</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-atk-refresh">Refresh DB</button>
+                </div>
+              </div>
+            </div>
+
+            <article class="hud-window page-fill">
+              <div class="window-bar window-bar-wrap">
+                <div class="window-title-group">
+                  <span class="module-code tabular">ATK</span>
+                  <h2>Combat Reports, Plunder &amp; Bash Timeouts</h2>
+                  <span class="module-meta tabular" id="atk-meta-count">0 REPORTS</span>
+                </div>
+                <div class="tab-group" role="tablist" aria-label="Attack view subtabs">
+                  <button type="button" class="tab-btn active" data-atk-tab="battles">Battle Reports</button>
+                  <button type="button" class="tab-btn" data-atk-tab="blocks">Bash &amp; Server Blocks</button>
+                </div>
+              </div>
+
+              <div class="intel-pane" id="atk-pane-battles">
+                <div class="table-wrap table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Target</th>
+                        <th>Defender</th>
+                        <th>Outcome</th>
+                        <th class="col-right">Rounds</th>
+                        <th>Plundered Loot</th>
+                        <th>Losses (Atk / Def)</th>
+                        <th>Debris Created</th>
+                      </tr>
+                    </thead>
+                    <tbody id="atk-battles-tbody">
+                      <tr>
+                        <td colspan="8" class="empty-cell">Click Sync All Folders to archive in-game battle reports.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="intel-pane" id="atk-pane-blocks" hidden>
+                <div class="table-wrap table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Coords</th>
+                        <th>Owner / Planet</th>
+                        <th class="col-right">Bash Hits</th>
+                        <th class="col-right">Cooldown Left</th>
+                        <th>Server Protection Reason</th>
+                        <th class="col-right">Ops</th>
+                      </tr>
+                    </thead>
+                    <tbody id="atk-blocks-tbody">
+                      <tr>
+                        <td colspan="6" class="empty-cell">No active bash protection or server blocks recorded.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <!-- ==================== VIEW 3E: RECYCLER RESULTS & INBOX ARCHIVE ==================== -->
+          <section id="view-recyclers" class="page-view" aria-label="Recycler harvests, floating debris, and archived emails" hidden>
+            <div class="combat-top-cards">
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Recycler Runs</span>
+                <strong class="kpi-value tabular" id="rec-kpi-runs">0 Harvests</strong>
+                <span class="kpi-sub tabular" id="rec-kpi-ships">0 Recyclers (s11) owned</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Total Rubble Collected</span>
+                <strong class="kpi-value tabular" id="rec-kpi-speq">0 SpEq</strong>
+                <span class="kpi-sub tabular" id="rec-kpi-raw">0 Pig · 0 Met</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Active Debris Fields</span>
+                <strong class="kpi-value tabular" id="rec-kpi-debris">0 Fields</strong>
+                <span class="kpi-sub tabular" id="rec-kpi-debris-note">Ready for s11 harvest</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Other Emails &amp; Sync</span>
+                <strong class="kpi-value tabular" id="rec-kpi-emails">0 Emails</strong>
+                <div class="combat-jumps">
+                  <span class="kpi-sub tabular" id="rec-kpi-cats">User 0 · Fleet 0</span>
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-rec-sync">Sync All Folders</button>
+                </div>
+              </div>
+            </div>
+
+            <article class="hud-window page-fill">
+              <div class="window-bar window-bar-wrap">
+                <div class="window-title-group">
+                  <span class="module-code tabular">REC</span>
+                  <h2>Recycler Harvests, Debris &amp; Inbox Emails</h2>
+                  <span class="module-meta tabular" id="rec-meta-count">0 HARVESTS</span>
+                </div>
+                <div class="tab-group" role="tablist" aria-label="Recycler and email subtabs">
+                  <button type="button" class="tab-btn active" data-rec-tab="harvests">Recycler Reports</button>
+                  <button type="button" class="tab-btn" data-rec-tab="debris">Active Debris</button>
+                  <button type="button" class="tab-btn" data-rec-tab="emails">Other Emails &amp; Fleet</button>
+                </div>
+              </div>
+
+              <div class="intel-pane" id="rec-pane-harvests">
+                <div class="table-wrap table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Debris Coords</th>
+                        <th class="col-right">Recyclers / Cap</th>
+                        <th class="col-right">Pig Iron</th>
+                        <th class="col-right">Metal</th>
+                        <th class="col-right">Harvest SpEq</th>
+                        <th>Field Before</th>
+                      </tr>
+                    </thead>
+                    <tbody id="rec-harvests-tbody">
+                      <tr>
+                        <td colspan="7" class="empty-cell">Click Sync All Folders to archive fleet recycling reports.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="intel-pane" id="rec-pane-debris" hidden>
+                <div class="table-wrap table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Coords</th>
+                        <th>Planet / Owner</th>
+                        <th>Status</th>
+                        <th class="col-right">Last Seen</th>
+                        <th class="col-right">Dispatch</th>
+                      </tr>
+                    </thead>
+                    <tbody id="rec-debris-tbody">
+                      <tr>
+                        <td colspan="5" class="empty-cell">No active floating debris fields spotted in scanned systems.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="intel-pane" id="rec-pane-emails" hidden>
+                <div class="email-filter-bar">
+                  <div class="filter-chips" role="group" aria-label="Email category filters">
+                    <button type="button" class="chip-btn active" data-email-cat="all">All Non-Spy/Battle</button>
+                    <button type="button" class="chip-btn" data-email-cat="general">User / Alliance / Admin</button>
+                    <button type="button" class="chip-btn" data-email-cat="fleet_return">Fleet Return</button>
+                    <button type="button" class="chip-btn" data-email-cat="fleet_transport">Transport</button>
+                    <button type="button" class="chip-btn" data-email-cat="colonize_report">Colonization</button>
+                    <button type="button" class="chip-btn" data-email-cat="counter_spy">Counter-Spy</button>
+                    <button type="button" class="chip-btn" data-email-cat="recycle_report">Recycle Raw</button>
+                  </div>
+                </div>
+                <div class="table-wrap table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Folder / Type</th>
+                        <th>Sender</th>
+                        <th>Subject</th>
+                        <th>Coords</th>
+                        <th>Message Body</th>
+                      </tr>
+                    </thead>
+                    <tbody id="rec-emails-tbody">
+                      <tr>
+                        <td colspan="6" class="empty-cell">No other emails or fleet notices archived yet.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </article>
+          </section>
+
           <!-- ==================== VIEW 4: OPERATIONS QUEUE ==================== -->
           <section id="view-operations" class="page-view" aria-label="Operations priority queue" hidden>
             <article class="hud-window page-fill">
@@ -872,6 +1275,7 @@
                   </div>
 
                   <div class="inline-actions nav-matrix-inline">
+                    <button type="button" class="btn btn-secondary btn-sm" data-goto-page="action-graph">Action Graph →</button>
                     <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalHome">Home</button>
                     <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalBuildings">Buildings</button>
                     <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalEconomy">Economy</button>
@@ -902,6 +1306,246 @@
                 </table>
               </div>
             </article>
+          </section>
+
+          <!-- ==================== VIEW 4B: ACTION GRAPH ==================== -->
+          <section id="view-action-graph" class="page-view ag-view" aria-label="Action sequence and dependency graph" hidden>
+            <!-- Left/Center Operational Action Graph Window -->
+            <article class="hud-window ag-main-window" id="ag-main-window">
+              <div class="window-bar window-bar-wrap">
+                <div class="window-title-group">
+                  <span class="module-code tabular">DAG</span>
+                  <h2>Action Sequence &amp; Dependency Graph</h2>
+                  <span class="ag-status-pill tabular" id="ag-sim-status-pill" role="status">LIVE ACTIVE CONFIG</span>
+                </div>
+
+                <div class="inline-actions">
+                  <div class="tab-group" id="ag-mode-switch" role="radiogroup" aria-label="Action graph planner mode">
+                    <button type="button" class="tab-btn active" id="ag-mode-priority" role="radio" aria-checked="true" data-ag-mode="priority">
+                      Heuristic (priority)
+                    </button>
+                    <button type="button" class="tab-btn" id="ag-mode-ga_nn" role="radio" aria-checked="false" data-ag-mode="ga_nn">
+                      GA + Neural (ga_nn)
+                    </button>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-ag-refresh">Refresh</button>
+                </div>
+              </div>
+
+              <!-- 1px Hairline Summary Telemetry Strip -->
+              <div class="ag-kpi-strip" aria-label="Action graph summary metrics">
+                <div class="ag-kpi-cell">
+                  <span class="ag-kpi-label">Planned Actions</span>
+                  <strong class="ag-kpi-val tabular" id="ag-kpi-nodes">0 nodes</strong>
+                  <span class="ag-kpi-sub tabular" id="ag-kpi-ready">0 ready · 0 waiting</span>
+                </div>
+                <div class="ag-kpi-cell">
+                  <span class="ag-kpi-label">Dependencies &amp; Flow</span>
+                  <strong class="ag-kpi-val tabular" id="ag-kpi-edges">0 edges</strong>
+                  <span class="ag-kpi-sub tabular" id="ag-kpi-dep-breakdown">0 prereq · 0 resource</span>
+                </div>
+                <div class="ag-kpi-cell">
+                  <span class="ag-kpi-label">Critical Path ETA</span>
+                  <strong class="ag-kpi-val tabular" id="ag-kpi-horizon">Ready</strong>
+                  <span class="ag-kpi-sub tabular" id="ag-kpi-bottleneck">No bottleneck</span>
+                </div>
+                <div class="ag-kpi-cell">
+                  <span class="ag-kpi-label">Engine Telemetry</span>
+                  <strong class="ag-kpi-val tabular" id="ag-kpi-engine">PRIORITY · P0–P3</strong>
+                  <span class="ag-kpi-sub tabular" id="ag-kpi-engine-sub">Active profile</span>
+                </div>
+              </div>
+
+              <!-- Edge Legend & Topology Filter Bar -->
+              <div class="ag-legend-bar">
+                <div class="ag-legend-items" aria-label="Graph edge legend">
+                  <span class="ag-legend-item"><span class="ag-swatch is-seq" aria-hidden="true"></span>Sequence Flow</span>
+                  <span class="ag-legend-item"><span class="ag-swatch is-prereq" aria-hidden="true"></span>Prerequisite Unlock</span>
+                  <span class="ag-legend-item"><span class="ag-swatch is-resource" aria-hidden="true"></span>Resource / Power / B2%</span>
+                  <span class="ag-legend-item"><span class="ag-swatch is-queue" aria-hidden="true"></span>Queue / Slot Order</span>
+                </div>
+                <div class="filter-chips">
+                  <button type="button" class="chip-btn active" data-ag-edge-filter="all">All Links</button>
+                  <button type="button" class="chip-btn" data-ag-edge-filter="deps">Dependencies Only</button>
+                </div>
+              </div>
+
+              <!-- Scrollable Deterministic Multi-Lane DAG Stage -->
+              <div class="ag-canvas-scroll" id="ag-canvas-scroll">
+                <div class="ag-canvas-stage" id="ag-canvas-stage">
+                  <div class="ag-lanes-layer" id="ag-lanes-layer" aria-hidden="true"></div>
+                  <div class="ag-edges-layer" id="ag-edges-layer" aria-hidden="true"></div>
+                  <div class="ag-nodes-layer" id="ag-nodes-layer" role="list" aria-label="Planned action graph nodes"></div>
+                </div>
+                <div class="ag-empty-state" id="ag-empty-state" hidden>
+                  No planned actions for the current empire snapshot and simulation parameters.
+                </div>
+              </div>
+
+              <!-- Selected Node Detail Inspector Footer -->
+              <div class="ag-inspector-bar" id="ag-node-inspector" aria-label="Selected action node details">
+                <div class="ag-insp-main">
+                  <span class="module-code tabular" id="ag-insp-step">#—</span>
+                  <div class="ag-insp-copy">
+                    <strong id="ag-insp-title">Select a node in the graph to inspect dependencies and ETAs</strong>
+                    <p class="ag-insp-sub tabular" id="ag-insp-meta">Click any node card above to highlight upstream prerequisites and downstream dependents.</p>
+                  </div>
+                </div>
+                <div class="ag-insp-deps tabular" id="ag-insp-deps"></div>
+              </div>
+            </article>
+
+            <!-- Right-Side Parameter Simulation & Explicit Apply Panel -->
+            <aside class="hud-window ag-control-panel" id="ag-control-panel" aria-label="Planner parameter simulation and apply controls">
+              <div class="window-bar window-bar-wrap">
+                <div class="window-title-group">
+                  <span class="module-code tabular">PRM</span>
+                  <h2>Planner Parameters</h2>
+                </div>
+                <span class="ag-dirty-badge tabular" id="ag-dirty-badge">ACTIVE SYNCED</span>
+              </div>
+
+              <div class="ag-panel-tabs" role="tablist" aria-label="Parameter categories">
+                <button type="button" class="tab-btn active" role="tab" aria-selected="true" id="ag-ptab-btn-core" data-ag-ptab="core">
+                  Mode &amp; Tuning
+                </button>
+                <button type="button" class="tab-btn" role="tab" aria-selected="false" id="ag-ptab-btn-scope" data-ag-ptab="scope">
+                  Automation &amp; Limits
+                </button>
+              </div>
+
+              <div class="ag-panel-body">
+                <!-- Sub-pane 1: Planner Mode, Doctrine, GA+NN Hyperparameters & Heuristic Thresholds -->
+                <div class="ag-param-pane" id="ag-param-pane-core">
+                  <div class="control-field">
+                    <label for="ag-cfg-planner_mode">Simulated Planner Mode</label>
+                    <select id="ag-cfg-planner_mode">
+                      <option value="priority">priority — Rule-Based Heuristic</option>
+                      <option value="ga_nn">ga_nn — GA + Neural Network</option>
+                    </select>
+                  </div>
+
+                  <div class="control-field">
+                    <label for="ag-cfg-playstyle">Playstyle Doctrine</label>
+                    <select id="ag-cfg-playstyle">
+                      <option value="fleeter">fleeter — Combat &amp; Techs</option>
+                      <option value="hybrid">hybrid — Balanced</option>
+                      <option value="miner">miner — Economy ROI</option>
+                    </select>
+                  </div>
+
+                  <div class="ag-param-group" id="ag-ga-params-group">
+                    <h3>GA + Neural Optimizer</h3>
+                    <div class="ag-param-grid">
+                      <div class="control-field">
+                        <label for="ag-cfg-ga_population_size">Population (4–200)</label>
+                        <input type="number" id="ag-cfg-ga_population_size" min="4" max="200" step="1" value="24" />
+                      </div>
+                      <div class="control-field">
+                        <label for="ag-cfg-ga_generations">GA Generations (1–200)</label>
+                        <input type="number" id="ag-cfg-ga_generations" min="1" max="200" step="1" value="12" />
+                      </div>
+                      <div class="control-field">
+                        <label for="ag-cfg-ga_horizon_steps">Horizon Steps (1–24)</label>
+                        <input type="number" id="ag-cfg-ga_horizon_steps" min="1" max="24" step="1" value="6" />
+                      </div>
+                      <div class="control-field">
+                        <label for="ag-cfg-ga_mutation_rate">Mutation Rate (0–1)</label>
+                        <input type="number" id="ag-cfg-ga_mutation_rate" min="0" max="1" step="0.05" value="0.25" />
+                      </div>
+                      <div class="control-field">
+                        <label for="ag-cfg-ga_nn_weight">Neural Weight (0–1)</label>
+                        <input type="number" id="ag-cfg-ga_nn_weight" min="0" max="1" step="0.05" value="0.35" />
+                      </div>
+                      <div class="control-field">
+                        <label for="ag-cfg-ga_seed">GA Seed (Blank = Auto)</label>
+                        <input type="number" id="ag-cfg-ga_seed" step="1" placeholder="Auto" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="ag-param-group" id="ag-heuristic-params-group">
+                    <h3>Economy &amp; Safety Thresholds</h3>
+                    <div class="ag-param-grid">
+                      <div class="control-field">
+                        <label for="ag-cfg-storage_warn_ratio">Storage Warn Ratio</label>
+                        <input type="number" id="ag-cfg-storage_warn_ratio" min="0.1" max="0.99" step="0.05" value="0.85" />
+                      </div>
+                      <div class="control-field">
+                        <label for="ag-cfg-blast_pig_iron_max_share">Max b2 Pig Share</label>
+                        <input type="number" id="ag-cfg-blast_pig_iron_max_share" min="0.1" max="1.0" step="0.05" value="0.70" />
+                      </div>
+                      <div class="control-field">
+                        <label for="ag-cfg-combat_safety_margin">Combat Margin (≥1.0)</label>
+                        <input type="number" id="ag-cfg-combat_safety_margin" min="1.0" max="1000.0" step="0.1" value="1.4" />
+                      </div>
+                      <div class="control-field">
+                        <label for="ag-cfg-raid_min_loot_spice_eq">Min Raid Loot (SpEq)</label>
+                        <input type="number" id="ag-cfg-raid_min_loot_spice_eq" min="0" step="100" value="1500" />
+                      </div>
+                      <div class="control-field">
+                        <label for="ag-cfg-hot_planet_solar_temp_threshold">Solar Temp (°C)</label>
+                        <input type="number" id="ag-cfg-hot_planet_solar_temp_threshold" min="-273" max="1000" step="5" value="40" />
+                      </div>
+                      <div class="control-field">
+                        <label for="ag-cfg-min_free_fields_warning">Min Free Fields</label>
+                        <input type="number" id="ag-cfg-min_free_fields_warning" min="1" max="1000" step="1" value="20" />
+                      </div>
+                      <div class="control-field">
+                        <label for="ag-cfg-min_colony_fields">Min Colony Fields</label>
+                        <input type="number" id="ag-cfg-min_colony_fields" min="50" max="600" step="10" value="300" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Sub-pane 2: Automation Toggles & Operational Budgets -->
+                <div class="ag-param-pane" id="ag-param-pane-scope" hidden>
+                  <div class="ag-param-grid">
+                    <div class="control-field">
+                      <label for="ag-cfg-fleet_save_fuel_reserve_spice">Escape Fuel Reserve</label>
+                      <input type="number" id="ag-cfg-fleet_save_fuel_reserve_spice" min="0" step="50" value="500" />
+                    </div>
+                    <div class="control-field">
+                      <label for="ag-cfg-action_batch_interval_seconds">Batch &amp; Refresh Interval (s)</label>
+                      <input type="number" id="ag-cfg-action_batch_interval_seconds" min="5" max="86400" step="5" value="120" />
+                    </div>
+                  </div>
+
+                  <div class="ag-toggles-stack">
+                    <label class="toggle-chip"><input type="checkbox" id="ag-cfg-auto_throttle_blast_furnace" checked /> Auto-pause Blast furnace (0%)</label>
+                    <label class="toggle-chip"><input type="checkbox" id="ag-cfg-merchant_mode" /> Merchant Mode (Skip b2)</label>
+                    <label class="toggle-chip"><input type="checkbox" id="ag-cfg-allow_research" checked /> Auto Research</label>
+                    <label class="toggle-chip"><input type="checkbox" id="ag-cfg-allow_shipyard" checked /> Auto Shipyard</label>
+                    <label class="toggle-chip"><input type="checkbox" id="ag-cfg-allow_multi_planet" checked /> Multi-Planet Planning</label>
+                    <label class="toggle-chip"><input type="checkbox" id="ag-cfg-allow_fleetsave" /> P0 Auto Escape Flight</label>
+                    <label class="toggle-chip"><input type="checkbox" id="ag-cfg-allow_galaxy_scan" /> Galaxy Scanner</label>
+                    <label class="toggle-chip"><input type="checkbox" id="ag-cfg-allow_raids" /> Auto Raids (Inactive/Spacia)</label>
+                    <label class="toggle-chip"><input type="checkbox" id="ag-cfg-allow_pvp_in_az" /> Allow PvP inside AZ</label>
+                    <label class="toggle-chip"><input type="checkbox" id="ag-cfg-allow_colonize" /> Auto Colonize</label>
+                    <label class="toggle-chip"><input type="checkbox" id="ag-cfg-forbid_planetary_solar" /> Forbid Solar on Planets (Asteroid Only)</label>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Sticky Simulation vs Explicit Apply Footer -->
+              <div class="ag-panel-footer">
+                <p class="ag-sim-note" id="ag-sim-note">
+                  Edits simulate a preview graph without modifying active config.yaml until applied.
+                </p>
+                <div class="ag-footer-actions">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-ag-simulate">
+                    Simulate Graph
+                  </button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-ag-reset">
+                    Reset to Active
+                  </button>
+                  <button type="button" class="btn btn-primary btn-sm btn-span" id="btn-ag-apply">
+                    Apply to Active Config
+                  </button>
+                </div>
+              </div>
+            </aside>
           </section>
 
           <!-- ==================== VIEW 5: RANKING EVOLUTION ==================== -->
@@ -1038,8 +1682,13 @@
                   </div>
 
                   <div class="control-field">
-                    <label for="cfg-max_actions_per_hour">Max Live Actions / Hour</label>
-                    <input type="number" id="cfg-max_actions_per_hour" min="1" max="120" />
+                    <label for="cfg-action_batch_interval_seconds">Min Batch &amp; Refresh Interval (s)</label>
+                    <input type="number" id="cfg-action_batch_interval_seconds" min="5" max="86400" step="5" />
+                  </div>
+
+                  <div class="control-field">
+                    <label for="cfg-min_colony_fields">Min Colony Fields Target</label>
+                    <input type="number" id="cfg-min_colony_fields" min="50" max="600" step="10" />
                   </div>
 
                   <div class="control-field">
@@ -1074,6 +1723,7 @@
                   <label class="toggle-chip"><input type="checkbox" id="cfg-allow_raids" /> Auto Raids (Inactive/Spacia)</label>
                   <label class="toggle-chip"><input type="checkbox" id="cfg-allow_pvp_in_az" /> Allow PvP inside AZ</label>
                   <label class="toggle-chip"><input type="checkbox" id="cfg-allow_colonize" /> Auto Colonize</label>
+                  <label class="toggle-chip"><input type="checkbox" id="cfg-forbid_planetary_solar" /> Forbid Solar on Planets (Asteroid Only)</label>
                 </div>
               </div>
             </article>

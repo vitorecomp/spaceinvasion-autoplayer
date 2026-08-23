@@ -1993,5 +1993,587 @@ return {
             self._tmp.cleanup()
 
 
+    def test_action_graph_static_html_css_js_and_english_only_contracts(self) -> None:
+        from spaceinvasion.api_server import UI_DIR
+
+        html_txt = (UI_DIR / "index.html").read_text(encoding="utf-8")
+        css_txt = (UI_DIR / "styles.css").read_text(encoding="utf-8")
+        js_txt = (UI_DIR / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-page="action-graph"', html_txt)
+        self.assertIn('id="nav-graph-badge"', html_txt)
+        self.assertIn('data-goto-page="action-graph"', html_txt)
+        self.assertIn('id="view-action-graph"', html_txt)
+        self.assertIn('id="ag-main-window"', html_txt)
+        self.assertIn('id="ag-control-panel"', html_txt)
+
+        svgs = re.findall(r"<svg\b[^>]*>.*?</svg>", html_txt, flags=re.IGNORECASE | re.DOTALL)
+        non_chart_svgs = [s for s in svgs if "rnk-chart" not in s]
+        self.assertEqual(len(non_chart_svgs), 1)
+        main_win_match = re.search(
+            r'<article[^>]*id="ag-main-window"[^>]*>(.*?)</article>',
+            html_txt,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        self.assertIsNotNone(main_win_match)
+        assert main_win_match is not None
+        self.assertNotIn("generation", main_win_match.group(1).lower())
+
+        for attr_val in re.findall(r'="([^"]*)"', html_txt):
+            self.assertNotIn(">", attr_val, f"Literal '>' found inside HTML attribute value: {attr_val!r}")
+
+        ag_css = css_txt.split("VIEW 4B: ACTION GRAPH", 1)[1]
+        for rem_str in re.findall(r"font-size:\s*([0-9.]+)rem", ag_css):
+            self.assertGreaterEqual(float(rem_str), 0.86, f"Font size {rem_str}rem < 0.86rem floor")
+        self.assertIn(".page-view.ag-view", css_txt)
+        self.assertIn(".ag-edge-path", css_txt)
+        self.assertIn(".ag-node-card", css_txt)
+
+        forbidden_non_english = (
+            "grafo",
+            "ações",
+            "acoes",
+            "parâmetros",
+            "parametros",
+            "simular",
+            "aplicar",
+            "configuração",
+            "configuracao",
+            "heurística",
+            "algoritmo",
+            "dependências",
+        )
+        combined_low = (html_txt + "\n" + js_txt).lower()
+        for word in forbidden_non_english:
+            self.assertNotIn(word, combined_low, f"Non-English token {word!r} found in UI")
+
+    def test_node_vm_action_graph_render_mode_switch_simulation_poll_guard_reset_and_apply(self) -> None:
+        from spaceinvasion.config import load_strategy_config
+
+        self.assertIsNotNone(shutil.which("node"), "Node.js is required")
+        bridge, server, base_url = self._start_server(planner_mode="priority")
+        try:
+            fetch_patch_js = r"""
+async (url, opts, fullUrl, nativeFetch) => {
+  if (url === "/command" && opts && opts.body) {
+    const b = JSON.parse(String(opts.body));
+    if (b.command === "action_graph") {
+      if (globalThis.__agHookMode === "slow_ga" && b.planner_mode === "ga_nn") {
+        await new Promise((r) => setTimeout(r, 60));
+      } else if (globalThis.__agHookMode === "fail_500") {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ ok: false, error: "Injected 500 simulation error" }),
+        };
+      }
+    }
+  }
+}
+"""
+            scenario_js = r"""
+await __waitUntil(() => state.dashboard !== null);
+
+const navBtn = document.querySelector('[data-page="action-graph"]');
+navBtn.click();
+const viewVisible = !el("view-action-graph").hidden && el("view-dashboard").hidden;
+const initialNodes = document.querySelectorAll(".ag-node-card").length;
+const svgEl = el("ag-edges-svg");
+const initialPaths = document.querySelectorAll(".ag-edge-path").length;
+const mainWinHasGen = el("ag-main-window").textContent.toLowerCase().includes("generation");
+const initialStatusPill = el("ag-sim-status-pill").textContent;
+
+const firstCard = document.querySelector(".ag-node-card");
+if (firstCard) firstCard.click();
+const inspStepAfterClick = el("ag-insp-step").textContent;
+const inspTitleAfterClick = el("ag-insp-title").textContent;
+
+document.querySelector('[data-ag-edge-filter="deps"]').click();
+const depsFilterActive = document.querySelector('[data-ag-edge-filter="deps"]').classList.contains("active");
+document.querySelector('[data-ag-edge-filter="all"]').click();
+
+el("ag-mode-ga_nn").click();
+await __waitUntil(() => state.agSimRunning === 0 && state.actionGraphData?.mode === "ga_nn");
+const simModeStatusPill = el("ag-sim-status-pill").textContent;
+const simDirtyBadge = el("ag-dirty-badge").textContent;
+const simGaNodes = document.querySelectorAll(".ag-node-card").length;
+const mainWinHasGenInGa = el("ag-main-window").textContent.toLowerCase().includes("generation");
+const updateCallsDuringSim = fetchLog.filter((f) => f.url === "/command" && f.body?.command === "update_config").length;
+
+// 2a. Toggling "priority" -> "ga_nn" -> "priority" resets state.agSimDirty to false and restores LIVE ACTIVE CONFIG
+el("ag-mode-priority").click();
+await __waitUntil(() => state.agSimRunning === 0 && state.actionGraphData?.mode === "priority");
+const dirtyAfterRoundtripPrio = state.agSimDirty;
+const statusPillAfterRoundtripPrio = el("ag-sim-status-pill").textContent;
+const dirtyBadgeAfterRoundtripPrio = el("ag-dirty-badge").textContent;
+const engineSubAfterRoundtripPrio = el("ag-kpi-engine-sub").textContent;
+
+// Editing an input and reverting it back to active_config value resets state.agSimDirty to false
+const origPlaystyle = el("ag-cfg-playstyle").value;
+el("ag-cfg-playstyle").value = "miner";
+el("ag-cfg-playstyle").dispatchEvent("change");
+await __waitUntil(() => state.agSimRunning === 0 && state.agSimDirty === true);
+const dirtyAfterInputEdit = state.agSimDirty;
+el("ag-cfg-playstyle").value = origPlaystyle;
+el("ag-cfg-playstyle").dispatchEvent("change");
+await __waitUntil(() => state.agSimRunning === 0 && state.agSimDirty === false);
+const dirtyAfterInputRevert = state.agSimDirty;
+const statusPillAfterInputRevert = el("ag-sim-status-pill").textContent;
+
+// 2b. Rapid overlapping "ga_nn" <-> "priority" switches & HTTP 400 / 500 errors keep state.gaCalcCount === 0
+globalThis.__agHookMode = "slow_ga";
+el("ag-mode-ga_nn").click();
+const gaCalcDuringSlowGa = state.gaCalcCount;
+el("ag-mode-priority").click();
+el("ag-mode-ga_nn").click();
+el("ag-mode-priority").click();
+await __waitUntil(() => state.agSimRunning === 0 && state.gaCalcCount === 0 && state.actionGraphData?.mode === "priority");
+const gaCalcAfterOverlap = state.gaCalcCount;
+const hudCalcAfterOverlap = el("gann-calc-hud").classList.contains("is-calculating");
+const dirtyAfterOverlapPrio = state.agSimDirty;
+globalThis.__agHookMode = null;
+
+// Simulated HTTP 400 validation error in "ga_nn" mode
+el("ag-cfg-planner_mode").value = "ga_nn";
+el("ag-cfg-ga_seed").value = "bad_seed_400";
+await runAgSimulation({ explicit: true });
+const gaCalcAfter400 = state.gaCalcCount;
+const bannerAfter400 = el("feedback-banner").textContent;
+
+// Simulated HTTP 500 command error in "ga_nn" mode
+el("ag-cfg-ga_seed").value = "42";
+globalThis.__agHookMode = "fail_500";
+await runAgSimulation({ explicit: true });
+const gaCalcAfter500 = state.gaCalcCount;
+const bannerAfter500 = el("feedback-banner").textContent;
+globalThis.__agHookMode = null;
+
+el("ag-cfg-planner_mode").value = "ga_nn";
+el("ag-cfg-ga_population_size").value = "8";
+el("ag-cfg-ga_generations").value = "2";
+el("ag-cfg-ga_horizon_steps").value = "4";
+el("ag-cfg-ga_seed").value = "33";
+el("ag-cfg-playstyle").value = "miner";
+el("ag-ptab-btn-scope").click();
+const scopePaneVisible = !el("ag-param-pane-scope").hidden;
+el("ag-cfg-allow_raids").checked = true;
+el("btn-ag-simulate").click();
+await __waitUntil(() => state.agSimRunning === 0 && el("feedback-banner").textContent.includes("Simulated ga_nn action graph"));
+
+await loadDashboard({ refresh: false, preserveConfig: true, force: true });
+const popAfterPoll = el("ag-cfg-ga_population_size").value;
+const playAfterPoll = el("ag-cfg-playstyle").value;
+const modeAfterPoll = state.actionGraphData?.mode;
+const activeDashModeDuringSim = state.dashboard?.config?.planner_mode;
+
+el("btn-ag-reset").click();
+await __waitUntil(() => !state.agSimDirty && state.actionGraphData?.mode === "priority");
+const statusAfterReset = el("ag-sim-status-pill").textContent;
+const modeSelectAfterReset = el("ag-cfg-planner_mode").value;
+
+el("ag-ptab-btn-core").click();
+el("ag-cfg-planner_mode").value = "ga_nn";
+el("ag-cfg-ga_population_size").value = "8";
+el("ag-cfg-ga_generations").value = "2";
+el("ag-cfg-ga_horizon_steps").value = "4";
+el("ag-cfg-ga_seed").value = "55";
+el("ag-cfg-playstyle").value = "hybrid";
+el("btn-ag-apply").click();
+await __waitUntil(() => state.configSaving === 0 && !state.agSimDirty && state.dashboard?.config?.planner_mode === "ga_nn" && state.dashboard?.config?.ga_seed === 55);
+
+const fullText = el("view-action-graph").textContent;
+return {
+  viewVisible,
+  initialNodes,
+  hasSvg: Boolean(svgEl),
+  initialPaths,
+  mainWinHasGen,
+  mainWinHasGenInGa,
+  initialStatusPill,
+  inspStepAfterClick,
+  inspTitleAfterClick,
+  depsFilterActive,
+  simModeStatusPill,
+  simDirtyBadge,
+  simGaNodes,
+  updateCallsDuringSim,
+  dirtyAfterRoundtripPrio,
+  statusPillAfterRoundtripPrio,
+  dirtyBadgeAfterRoundtripPrio,
+  engineSubAfterRoundtripPrio,
+  dirtyAfterInputEdit,
+  dirtyAfterInputRevert,
+  statusPillAfterInputRevert,
+  gaCalcDuringSlowGa,
+  gaCalcAfterOverlap,
+  hudCalcAfterOverlap,
+  dirtyAfterOverlapPrio,
+  gaCalcAfter400,
+  bannerAfter400,
+  gaCalcAfter500,
+  bannerAfter500,
+  scopePaneVisible,
+  popAfterPoll,
+  playAfterPoll,
+  modeAfterPoll,
+  activeDashModeDuringSim,
+  statusAfterReset,
+  modeSelectAfterReset,
+  appliedDashMode: state.dashboard?.config?.planner_mode,
+  appliedPlaystyle: state.dashboard?.config?.playstyle,
+  appliedCfgFormMode: el("cfg-planner_mode").value,
+  dashBadgeAfterApply: el("dash-planner-mode-badge").textContent,
+  navGraphBadgeAfterApply: el("nav-graph-badge").textContent,
+  applyBanner: el("feedback-banner").textContent,
+  hasUndefinedOrNan: /\b(undefined|NaN|Infinity)\b/.test(fullText),
+};
+"""
+            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                res = _run_node_ui(base_url, scenario_js, fetch_patch_js=fetch_patch_js)
+            self.assertEqual(res["errors"], [])
+            sc = res["scenario"]
+            self.assertTrue(sc["viewVisible"])
+            self.assertGreater(sc["initialNodes"], 0)
+            self.assertTrue(sc["hasSvg"])
+            self.assertFalse(sc["mainWinHasGen"])
+            self.assertFalse(sc["mainWinHasGenInGa"])
+            self.assertEqual(sc["initialStatusPill"], "LIVE ACTIVE CONFIG")
+            self.assertEqual(sc["inspStepAfterClick"], "#1")
+            self.assertTrue(sc["depsFilterActive"])
+            self.assertEqual(sc["simModeStatusPill"], "SIMULATION PREVIEW · UNSAVED")
+            self.assertEqual(sc["simDirtyBadge"], "MODIFIED (PREVIEW)")
+            self.assertGreater(sc["simGaNodes"], 0)
+            self.assertEqual(sc["updateCallsDuringSim"], 0)
+            self.assertFalse(sc["dirtyAfterRoundtripPrio"])
+            self.assertEqual(sc["statusPillAfterRoundtripPrio"], "LIVE ACTIVE CONFIG")
+            self.assertEqual(sc["dirtyBadgeAfterRoundtripPrio"], "ACTIVE SYNCED")
+            self.assertIn("Active ·", sc["engineSubAfterRoundtripPrio"])
+            self.assertTrue(sc["dirtyAfterInputEdit"])
+            self.assertFalse(sc["dirtyAfterInputRevert"])
+            self.assertEqual(sc["statusPillAfterInputRevert"], "LIVE ACTIVE CONFIG")
+            self.assertGreaterEqual(sc["gaCalcDuringSlowGa"], 1)
+            self.assertEqual(sc["gaCalcAfterOverlap"], 0)
+            self.assertFalse(sc["hudCalcAfterOverlap"])
+            self.assertFalse(sc["dirtyAfterOverlapPrio"])
+            self.assertEqual(sc["gaCalcAfter400"], 0)
+            self.assertIn("Simulation preview error", sc["bannerAfter400"])
+            self.assertEqual(sc["gaCalcAfter500"], 0)
+            self.assertIn("Simulation preview error", sc["bannerAfter500"])
+            self.assertTrue(sc["scopePaneVisible"])
+            self.assertEqual(sc["popAfterPoll"], "8")
+            self.assertEqual(sc["playAfterPoll"], "miner")
+            self.assertEqual(sc["modeAfterPoll"], "ga_nn")
+            self.assertEqual(sc["activeDashModeDuringSim"], "priority")
+            self.assertEqual(sc["statusAfterReset"], "LIVE ACTIVE CONFIG")
+            self.assertEqual(sc["modeSelectAfterReset"], "priority")
+            self.assertEqual(sc["appliedDashMode"], "ga_nn")
+            self.assertEqual(sc["appliedPlaystyle"], "hybrid")
+            self.assertEqual(sc["appliedCfgFormMode"], "ga_nn")
+            self.assertEqual(sc["dashBadgeAfterApply"], "MODE: GA+NN")
+            self.assertEqual(sc["navGraphBadgeAfterApply"], "GA")
+            self.assertIn("Applied parameters to active StrategyConfig", sc["applyBanner"])
+            self.assertFalse(sc["hasUndefinedOrNan"])
+
+            persisted = load_strategy_config(bridge.config_path)
+            self.assertEqual(persisted.planner_mode, "ga_nn")
+            self.assertEqual(persisted.playstyle, "hybrid")
+            self.assertEqual(persisted.ga_seed, 55)
+        finally:
+            bridge.close()
+            server.shutdown()
+            server.server_close()
+            self._tmp.cleanup()
+
+    def test_node_vm_demolish_building_sim_dispatch_shows_clean_feedback_banner(self) -> None:
+        self.assertIsNotNone(shutil.which("node"), "Node.js is required")
+        planet = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=16,
+            fields_max=230,
+            resources=Resources(5500, 900, 3100, 200),
+            storage=Resources(100000, 100000, 100000, 100000),
+            energy=EnergyBalance(500, 120),
+            buildings={"b1": 3, "b3": 3, "b5": 8, "b6": 2},
+            building_names={
+                "b1": "Pig iron mine",
+                "b3": "Kryptonite mine",
+                "b5": "Fusion plant",
+                "b6": "Thermosolar plant",
+            },
+            building_offers=_sample_state().planets[0].building_offers,
+            economy_rates={"resource1": 80},
+        )
+        dem_state = GameState(
+            universe_id=31,
+            user_id=103603,
+            nickname="ventkx86",
+            timestamp=1234.5,
+            planets=(planet,),
+            active_planet_id=12476,
+            researches={"r1": 1, "r2": 4},
+            research_names={"r1": "Mining technology", "r2": "Energy technology"},
+            speedup_factor=10.0,
+        )
+        with tempfile.TemporaryDirectory(prefix="si_ui_dem_") as td:
+            td_path = Path(td)
+            cfg_path = td_path / "config.yaml"
+            cfg_path.write_text("planner_mode: priority\nallow_build: true\n", encoding="utf-8")
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
+            fake_client.read_full_snapshot.return_value = dem_state
+            fake_client.navigate_menu.return_value = "<html>ok</html>"
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=td_path / "s.db",
+                log_dir=None,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            bridge._economy_rates[12476] = {"resource1": 80}
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                scenario_js = r"""
+await __waitUntil(() => state.dashboard !== null && Array.isArray(state.dashboard.plan));
+
+const demIdx = state.dashboard.plan.findIndex((a) => a.kind === "DEMOLISH_BUILDING");
+if (demIdx < 0) {
+  throw new Error("Expected planned DEMOLISH_BUILDING action in dashboard.plan");
+}
+const planRows = el("plan-tbody").querySelectorAll("tr");
+const demRow = planRows[demIdx];
+const simBtn = Array.from(demRow.querySelectorAll("button")).find((b) => b.textContent.trim() === "Sim");
+if (!simBtn) {
+  throw new Error("Expected Sim button on executable DEMOLISH_BUILDING row");
+}
+simBtn.click();
+await __waitUntil(() =>
+  fetchLog.some((f) => f.url === "/command" && f.body?.command === "demolish_building") &&
+  el("feedback-banner").textContent.includes("DEMOLISH_BUILDING")
+);
+
+const banner = el("feedback-banner");
+const cmdEntry = fetchLog.find((f) => f.url === "/command" && f.body?.command === "demolish_building");
+return {
+  demActionKind: state.dashboard.plan[demIdx].kind,
+  cmdBody: cmdEntry ? cmdEntry.body : null,
+  bannerClass: banner.className,
+  bannerHasError: banner.classList.contains("is-error"),
+  bannerText: banner.textContent,
+};
+"""
+                with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                    res = _run_node_ui(base_url, scenario_js)
+                self.assertEqual(res["errors"], [])
+                sc = res["scenario"]
+                self.assertEqual(sc["demActionKind"], "DEMOLISH_BUILDING")
+                self.assertEqual(
+                    sc["cmdBody"],
+                    {
+                        "command": "demolish_building",
+                        "building_id": 6,
+                        "planet_id": 12476,
+                        "dry_run": True,
+                    },
+                )
+                self.assertFalse(sc["bannerHasError"], sc)
+                self.assertNotIn("is-error", sc["bannerClass"])
+                self.assertIn("Would execute DEMOLISH_BUILDING: Thermosolar plant -> L1", sc["bannerText"])
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
+    def test_node_vm_espionage_colonies_attacks_and_recyclers_views(self) -> None:
+        import time
+        from spaceinvasion.fleet import GalaxySlot, InboxMessage, SpyReport
+
+        p_home = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=-5,
+            fields_used=126,
+            fields_max=230,
+            resources=Resources(90000, 65000, 45000, 25000),
+            storage=Resources(500000, 500000, 500000, 500000),
+            energy=EnergyBalance(5500, 1500),
+            buildings={"b1": 19, "b2": 18, "b5": 21, "b6": 10, "b13": 6},
+            ships={"s1": 12, "s8": 1, "s10": 11, "s11": 4},
+            building_offers=_sample_state().planets[0].building_offers,
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=103603,
+            nickname="ventkx86",
+            timestamp=1700000100.0,
+            planets=(p_home,),
+            active_planet_id=12476,
+            researches={"r1": 4, "r2": 8, "r3": 6, "r6": 3},
+            speedup_factor=10.0,
+        )
+        with tempfile.TemporaryDirectory(prefix="si_ui_intel_") as td:
+            td_path = Path(td)
+            cfg_path = td_path / "config.yaml"
+            cfg_path.write_text(
+                "planner_mode: priority\nallow_build: true\nforbid_planetary_solar: true\nallow_colonize: true\nmin_colony_fields: 300\n",
+                encoding="utf-8",
+            )
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
+            fake_client.read_full_snapshot.return_value = st
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=td_path / "s.db",
+                log_dir=None,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            assert bridge._db is not None
+            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge._last_snapshot_at = time.monotonic()
+
+            slots = [
+                GalaxySlot("02:380:05", 5, name="DebrisTarget", owner="Pirate", status_color="yellow", has_debris=True),
+                GalaxySlot("02:380:09", 9, status_color="free"),
+                GalaxySlot("02:380:10", 10, status_color="free"),
+                GalaxySlot("02:378:15", 15, name="Colony", owner="Rival", status_color="white"),
+            ]
+            bridge._db.record_galaxy_scan(2, 380, slots[:3], ts=1700000050.0)
+            bridge._db.record_galaxy_slots(slots, ts=1700000050.0)
+            bridge._db.record_spy_report(
+                SpyReport(target_coords="02:380:09", owner="", resources=Resources(), uninhabited_fields=330),
+                status_color="free",
+                ts=1700000060.0,
+            )
+            bridge._db.record_spy_report(
+                SpyReport(
+                    target_coords="02:383:02",
+                    owner="Spacia",
+                    planet_name="Spacia",
+                    is_spacia=True,
+                    resources=Resources(60000, 40000, 30000, 20000),
+                ),
+                ts=1700000070.0,
+            )
+            bridge._db.record_game_messages(
+                [
+                    InboxMessage(
+                        msg_uid="uid:88001",
+                        server_msg_id="88001",
+                        folder_type="battle",
+                        category="battle_report",
+                        sender="System",
+                        subject="Battle report Spacia [02:383:02]",
+                        msg_date_text="11/16/2026 19:00:00",
+                        coords="02:383:02",
+                        body_text="Battle report #16254211 Winner: Attacker",
+                        parsed_data={
+                            "outcome": "win",
+                            "rounds": 1,
+                            "defender": "Spacia",
+                            "loot": {"pig_iron": 3075, "metal": 2250, "kryptonite": 5565, "spice": 2550},
+                            "loot_spice_eq": 5842.5,
+                            "debris": {"pig_iron": 0, "metal": 0},
+                        },
+                    ),
+                    InboxMessage(
+                        msg_uid="uid:88002",
+                        server_msg_id="88002",
+                        folder_type="fleet",
+                        category="recycle_report",
+                        sender="System",
+                        subject="Space rubble [02:380:05]",
+                        msg_date_text="11/16/2026 19:05:00",
+                        coords="02:380:05",
+                        body_text="You have processed 17036 Pig iron, 12036 Metal, 14310 Kryptonite, 18098 Spice pieces of rubble.",
+                        parsed_data={
+                            "recycler_count": 3,
+                            "cargo_capacity": 60000,
+                            "harvested": {"pig_iron": 17036, "metal": 12036, "kryptonite": 14310, "spice": 18098},
+                            "harvested_spice_eq": 30521.1,
+                            "debris_available": {"pig_iron": 17036, "metal": 12036, "kryptonite": 14310, "spice": 18098},
+                        },
+                    ),
+                    InboxMessage(
+                        msg_uid="uid:88003",
+                        server_msg_id="88003",
+                        folder_type="fleet",
+                        category="fleet_return",
+                        sender="System",
+                        subject="Colony [02:380:12] fleet return",
+                        msg_date_text="11/16/2026 19:10:00",
+                        coords="02:380:12",
+                        body_text="A fleet returning from duty reaches Colony [02:380:12].",
+                        parsed_data={"unloaded": {"pig_iron": 17036, "metal": 12036, "kryptonite": 14310, "spice": 18098}},
+                    ),
+                ]
+            )
+            bridge._db.record_target_block("02:378:15", blocked_until_ts=time.time() + 3600.0, reason="bash protection", is_bash=True)
+
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                scenario_js = r"""
+await __waitUntil(() => state.dashboard !== null && Array.isArray(state.dashboard.plan));
+
+document.querySelector('[data-page="espionage"]').click();
+await __waitUntil(() => state.espData !== null && el("esp-targets-tbody").textContent.includes("02:383:02"));
+const espTxt = el("view-espionage").textContent;
+
+document.querySelector('[data-page="colonies"]').click();
+await __waitUntil(() => state.colonyData !== null && el("col-candidates-tbody").textContent.includes("330 fields"));
+const colTxt = el("view-colonies").textContent;
+
+document.querySelector('[data-page="attacks"]').click();
+await __waitUntil(() => state.atkData !== null && el("atk-battles-tbody").textContent.includes("02:383:02"));
+const atkTxt = el("view-attacks").textContent;
+
+document.querySelector('[data-page="recyclers"]').click();
+await __waitUntil(() => state.recData !== null && el("rec-harvests-tbody").textContent.includes("02:380:05"));
+const recTxt = el("view-recyclers").textContent;
+
+return {
+  forbidChecked: Boolean(el("cfg-forbid_planetary_solar")?.checked),
+  espTxt,
+  colTxt,
+  atkTxt,
+  recTxt,
+};
+"""
+                with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                    res = _run_node_ui(base_url, scenario_js)
+                self.assertEqual(res["errors"], [])
+                sc = res["scenario"]
+                self.assertTrue(sc["forbidChecked"])
+                for key in ("espTxt", "colTxt", "atkTxt", "recTxt"):
+                    self.assertNotIn("NaN", sc[key])
+                    self.assertNotIn("undefined", sc[key])
+                self.assertIn("SPACIA", sc["espTxt"])
+                self.assertIn("330 fields", sc["colTxt"])
+                self.assertIn("Unprobed", sc["colTxt"])
+                self.assertIn("WIN", sc["atkTxt"])
+                self.assertIn("02:378:15", sc["atkTxt"])
+                self.assertIn("14,310 Kry", sc["recTxt"])
+                self.assertIn("fleet_return", sc["recTxt"])
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
+
 if __name__ == "__main__":
     unittest.main()

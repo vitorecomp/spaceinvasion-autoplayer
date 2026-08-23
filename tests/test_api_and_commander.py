@@ -3463,5 +3463,2216 @@ class TestApiAndCommander(unittest.TestCase):
                 bridge.close()
 
 
+    def test_action_graph_command_isolated_simulation_zero_mutation_and_zero_browser_views(self) -> None:
+        from dataclasses import asdict
+        import requests
+        from spaceinvasion.config import StrategyConfig, save_strategy_config
+        from spaceinvasion.optimizer import get_last_optimizer_summary, run_optimizer
+        from spaceinvasion.state import BuildingOffer, ResearchOffer
+
+        with tempfile.TemporaryDirectory(prefix="si_ag_iso_") as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.yaml"
+            db_path = tmp_path / "state" / "spaceinvasion.db"
+            log_dir = tmp_path / "logs"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            init_cfg = StrategyConfig(
+                planner_mode="priority",
+                playstyle="fleeter",
+                ga_population_size=16,
+                ga_generations=4,
+                ga_horizon_steps=5,
+                allow_raids=False,
+                allow_fleetsave=False,
+                max_actions_per_hour=45,
+            )
+            save_strategy_config(init_cfg, cfg_path)
+            disk_before = cfg_path.read_text(encoding="utf-8")
+
+            p1 = PlanetState(
+                planet_id=101,
+                name="Homeworld",
+                coords="01:042:07",
+                planet_type="normal",
+                temperature=25,
+                fields_used=22,
+                fields_max=230,
+                resources=Resources(25_000, 18_000, 12_000, 8_000),
+                storage=Resources(100_000, 100_000, 100_000, 100_000),
+                energy=EnergyBalance(300, 110),
+                buildings={"b1": 4, "b2": 3, "b3": 4, "b4": 3, "b5": 6, "b7": 3, "b8": 2, "b9": 2},
+                building_offers=(
+                    BuildingOffer(1, "Pig iron mine", 4, 5, Resources(800, 320, 0, 0), True, "Available", "indexInternal.es?b=1"),
+                    BuildingOffer(3, "Kryptonite mine", 4, 5, Resources(700, 500, 0, 0), True, "Available", "indexInternal.es?b=3"),
+                ),
+            )
+            st = GameState(
+                universe_id=1,
+                user_id=1,
+                nickname="cmdr",
+                timestamp=1200.0,
+                planets=(p1,),
+                active_planet_id=101,
+                researches={"r2": 2, "r3": 2},
+                research_offers=(
+                    ResearchOffer(2, "r2", "Energy technology", 2, 3, Resources(0, 1600, 3200, 1600), True, "Available", "indexInternal.es?r=2"),
+                ),
+                speedup_factor=4.0,
+            )
+
+            client_calls = [0]
+
+            def _counting_factory(_port: int):
+                client_calls[0] += 1
+                raise AssertionError("Browser client_factory must NOT be invoked when refresh=False")
+
+            seed_opt_cfg = StrategyConfig(planner_mode="ga_nn", ga_population_size=6, ga_generations=2, ga_horizon_steps=3, ga_seed=5)
+            run_optimizer(st, config=seed_opt_cfg, record_global_summary=True)
+            global_summary_before = json.loads(json.dumps(get_last_optimizer_summary(), allow_nan=False))
+
+            bridge = GameApiBridge(
+                client_factory=_counting_factory,
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=log_dir,
+                ensure_session_fn=lambda: None,
+            )
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                bridge._last_state = st
+                bridge.record_rate_limit(20.0)
+
+                r_sim = requests.post(
+                    f"{base}/command",
+                    json={
+                        "command": "action_graph",
+                        "planner_mode": "ga_nn",
+                        "config": {
+                            "ga_population_size": 8,
+                            "ga_generations": 2,
+                            "ga_horizon_steps": 4,
+                            "ga_seed": 42,
+                            "playstyle": "miner",
+                            "allow_raids": True,
+                            "allow_fleetsave": True,
+                            "max_actions_per_hour": 95,
+                        },
+                        "simulated": True,
+                        "refresh": False,
+                    },
+                    timeout=10,
+                )
+                self.assertEqual(r_sim.status_code, 200, r_sim.text)
+                body = r_sim.json()
+                self.assertTrue(body["ok"])
+                ag = body["action_graph"]
+                self.assertEqual(ag["mode"], "ga_nn")
+                self.assertTrue(ag["simulated"])
+                self.assertTrue(ag["is_dirty"])
+                self.assertIn("planner_mode", ag["changed_keys"])
+                self.assertIsNotNone(ag["ga_summary"])
+                self.assertIn("step_outcomes", ag["ga_summary"]["best_simulation"])
+                self.assertGreater(len(ag["nodes"]), 0)
+
+                # Strict isolation proof: zero browser calls, zero runtime/disk/executor/summary mutation
+                self.assertEqual(client_calls[0], 0)
+                self.assertEqual(bridge.strategy_config, init_cfg)
+                self.assertEqual(cfg_path.read_text(encoding="utf-8"), disk_before)
+                self.assertFalse(bridge._live_executor.allow_raids)
+                self.assertFalse(bridge._live_executor.allow_fleetsave)
+                self.assertEqual(bridge._live_executor.max_actions_per_hour, 45)
+                self.assertFalse(bridge._dry_executor.allow_raids)
+                self.assertIsNone(bridge._last_optimizer_summary)
+                self.assertEqual(get_last_optimizer_summary(), global_summary_before)
+
+                r_cfg = requests.post(f"{base}/command", json={"command": "config"}, timeout=5).json()
+                self.assertEqual(r_cfg["config"], asdict(init_cfg))
+
+                r_dash = requests.get(f"{base}/dashboard?refresh=0", timeout=10).json()
+                self.assertEqual(r_dash["planner_mode"], "priority")
+                self.assertEqual(r_dash["action_graph"]["mode"], "priority")
+                self.assertFalse(r_dash["action_graph"]["simulated"])
+
+                # Reverse direction: active mode is ga_nn -> simulate priority and tweaked ga_nn without clobbering active summary
+                requests.post(
+                    f"{base}/command",
+                    json={
+                        "command": "update_config",
+                        "config": {
+                            "planner_mode": "ga_nn",
+                            "ga_population_size": 6,
+                            "ga_generations": 2,
+                            "ga_horizon_steps": 3,
+                            "ga_seed": 11,
+                        },
+                    },
+                    timeout=10,
+                )
+                dash_ga = requests.get(f"{base}/dashboard?refresh=0", timeout=10).json()
+                self.assertEqual(dash_ga["planner_mode"], "ga_nn")
+                active_bridge_sum = json.loads(json.dumps(bridge._last_optimizer_summary, allow_nan=False))
+                active_global_sum = json.loads(json.dumps(get_last_optimizer_summary(), allow_nan=False))
+                self.assertIsNotNone(active_bridge_sum)
+
+                r_sim_prio = requests.post(
+                    f"{base}/command",
+                    json={"command": "action_graph", "planner_mode": "priority", "simulated": True, "refresh": False},
+                    timeout=10,
+                ).json()
+                self.assertEqual(r_sim_prio["action_graph"]["mode"], "priority")
+                self.assertEqual(bridge._last_optimizer_summary, active_bridge_sum)
+                self.assertEqual(get_last_optimizer_summary(), active_global_sum)
+
+                r_sim_ga2 = requests.post(
+                    f"{base}/command",
+                    json={
+                        "command": "action_graph",
+                        "config": {"ga_population_size": 10, "ga_generations": 3, "ga_seed": 99},
+                        "simulated": True,
+                        "refresh": False,
+                    },
+                    timeout=10,
+                ).json()
+                self.assertEqual(r_sim_ga2["action_graph"]["effective_config"]["ga_population_size"], 10)
+                self.assertEqual(bridge.strategy_config.ga_population_size, 6)
+                self.assertEqual(bridge._last_optimizer_summary, active_bridge_sum)
+                self.assertEqual(get_last_optimizer_summary(), active_global_sum)
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
+    def test_action_graph_validation_errors_and_update_config_apply_persistence(self) -> None:
+        import requests
+        from spaceinvasion.config import StrategyConfig, load_strategy_config, save_strategy_config
+
+        with tempfile.TemporaryDirectory(prefix="si_ag_val_") as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.yaml"
+            db_path = tmp_path / "state" / "spaceinvasion.db"
+            log_dir = tmp_path / "logs"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            init_cfg = StrategyConfig(
+                planner_mode="priority",
+                shipyard_targets={"small-fighter": 12, "spy-probe": 10, "recycler": 4},
+            )
+            save_strategy_config(init_cfg, cfg_path)
+            baseline_cfg = load_strategy_config(cfg_path)
+
+            p1 = PlanetState(
+                planet_id=101,
+                name="Homeworld",
+                coords="01:042:07",
+                planet_type="normal",
+                temperature=20,
+                fields_used=15,
+                fields_max=230,
+                resources=Resources(10_000, 8_000, 5_000, 4_000),
+                storage=Resources(100_000, 100_000, 100_000, 100_000),
+                energy=EnergyBalance(200, 80),
+                buildings={"b1": 3, "b5": 4, "b7": 2},
+            )
+            st = GameState(1, 1, "cmdr", 1000.0, (p1,), active_planet_id=101)
+
+            bridge = GameApiBridge(
+                debug_port=1,
+                client_factory=lambda _port: MagicMock(),
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=log_dir,
+                ensure_session_fn=lambda: None,
+            )
+            bridge._last_state = st
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                invalid_payloads = [
+                    {"command": "action_graph", "planner_mode": "bogus_mode?sid=SECRET_TOK_77"},
+                    {"command": "action_graph", "planner_mode": ""},
+                    {"command": "action_graph", "config": "not_a_dict"},
+                    {"command": "action_graph", "config": {"ga_population_size": 0}},
+                    {"command": "action_graph", "config": {"ga_generations": 500}},
+                    {"command": "action_graph", "config": {"ga_horizon_steps": 0}},
+                    {"command": "action_graph", "config": {"ga_mutation_rate": 2.5}},
+                    {"command": "action_graph", "config": {"storage_warn_ratio": 1.5}},
+                    {"command": "action_graph", "config": {"ga_seed": "abc"}},
+                    {"command": "action_graph", "config": {"allow_raids": "yes"}},
+                    {"command": "action_graph", "config": {"shipyard_targets": {"small-fighter": -3}}},
+                    {"command": "action_graph", "config": {"ga_population_size": "1_6"}},
+                    {"command": "action_graph", "config": {"ga_mutation_rate": "0_1.5"}},
+                    {"command": "action_graph", "config": {"shipyard_targets": {"small-fighter": "1_6"}}},
+                    {"command": "action_graph", "simulated": "yes"},
+                    {"command": "action_graph", "planet_id": 999999},
+                    {"command": "action_graph", "planet_id": "1_01"},
+                    {"command": "action_graph", "config": {"min_colony_fields": "1_00"}},
+                    {"command": "action_graph", "config": {"min_colony_fields": 49}},
+                    {"command": "action_graph", "config": {"min_colony_fields": 601}},
+                    {"command": "update_config", "config": {"ga_population_size": "1_6"}},
+                    {"command": "update_config", "config": {"min_colony_fields": "1_00"}},
+                    {"command": "build", "planet_id": "1_01", "building_id": 1},
+                ]
+                for bad in invalid_payloads:
+                    resp = requests.post(f"{base}/command", json=bad, timeout=5)
+                    self.assertEqual(resp.status_code, 400, msg=f"bad={bad!r}: {resp.text}")
+                    self.assertNotIn("SECRET_TOK_77", resp.text)
+
+                raw_nan = requests.post(
+                    f"{base}/command",
+                    data='{"command": "action_graph", "config": {"ga_mutation_rate": NaN}}',
+                    headers={"Content-Type": "application/json"},
+                    timeout=5,
+                )
+                self.assertEqual(raw_nan.status_code, 400)
+                self.assertEqual(bridge.strategy_config, baseline_cfg)
+
+                r_apply = requests.post(
+                    f"{base}/command",
+                    json={
+                        "command": "update_config",
+                        "config": {
+                            "planner_mode": "ga_nn",
+                            "playstyle": "hybrid",
+                            "ga_population_size": 8,
+                            "ga_generations": 2,
+                            "ga_horizon_steps": 4,
+                            "ga_seed": 21,
+                            "allow_raids": True,
+                            "allow_fleetsave": True,
+                            "max_actions_per_hour": 80,
+                            "shipyard_targets": {"small-fighter": 28},
+                        },
+                        "include_action_graph": True,
+                    },
+                    timeout=10,
+                )
+                self.assertEqual(r_apply.status_code, 200, r_apply.text)
+                applied = r_apply.json()
+                self.assertEqual(applied["config"]["planner_mode"], "ga_nn")
+                self.assertEqual(applied["config"]["shipyard_targets"]["small-fighter"], 28)
+                self.assertEqual(applied["config"]["shipyard_targets"]["spy-probe"], 10)
+                self.assertEqual(applied["action_graph"]["mode"], "ga_nn")
+                self.assertFalse(applied["action_graph"]["simulated"])
+                self.assertFalse(applied["action_graph"]["is_dirty"])
+                self.assertEqual(applied["action_graph"]["changed_keys"], [])
+
+                reloaded = load_strategy_config(cfg_path)
+                self.assertEqual(reloaded.planner_mode, "ga_nn")
+                self.assertEqual(reloaded.playstyle, "hybrid")
+                self.assertEqual(reloaded.ga_seed, 21)
+                self.assertEqual(reloaded.shipyard_targets["small-fighter"], 28)
+                self.assertEqual(reloaded.shipyard_targets["spy-probe"], 10)
+                self.assertTrue(bridge._live_executor.allow_raids)
+                self.assertTrue(bridge._live_executor.allow_fleetsave)
+                self.assertEqual(bridge._live_executor.max_actions_per_hour, 80)
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
+    def test_bash_protection_timeout_persistence_across_db_json_and_planners(self) -> None:
+        from dataclasses import replace as dc_replace
+        import time
+        from spaceinvasion.executor import ExecutionResult
+        from spaceinvasion.fleet import GalaxySlot, SpyReport
+        from spaceinvasion.strategy import plan_actions
+
+        base = _sample_state()
+        p0 = dc_replace(
+            base.planets[0],
+            ships={"s1": 9, "s4": 20},
+        )
+        state = dc_replace(base, planets=(p0,), tutorial=None)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "state" / "spaceinvasion.db"
+            hist_json_path = tmp_path / "data" / "attack_history.json"
+            cfg_path = tmp_path / "config.yaml"
+            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.read_full_snapshot.return_value = state
+
+            bridge = GameApiBridge(
+                debug_port=9222,
+                config_path=cfg_path,
+                log_dir=tmp_path / "logs",
+                db_path=db_path,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                assert bridge._db is not None
+                bridge._db.attack_history_path = hist_json_path
+                bridge._db.record_galaxy_slots(
+                    [
+                        GalaxySlot(
+                            coords="02:383:02",
+                            position=2,
+                            name="SpaciaWorld",
+                            owner="Spacia",
+                            status_color="yellow",
+                            is_spacia=True,
+                        )
+                    ]
+                )
+                bridge._db.record_spy_report(
+                    SpyReport(
+                        target_coords="02:383:02",
+                        owner="Spacia",
+                        resources=Resources(50000, 30000, 20000, 10000),
+                        is_spacia=True,
+                    )
+                )
+                bridge._raid_targets = bridge._enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
+
+                def _mock_bash_blocked_exec(_client, _st, act, **_kw):
+                    return ExecutionResult(
+                        action=act,
+                        executed=False,
+                        dry_run=False,
+                        message="Aborted on internalSendFleet: Attack (forbidden): Player was attacked too often by you (bash protection) (cooldown 59540s)",
+                        target_cooldown_seconds=59540.0,
+                        target_block_reason="Attack (forbidden): Player was attacked too often by you (bash protection)",
+                        target_is_bash_block=True,
+                    )
+
+                with patch.object(bridge._live_executor, "execute_action", side_effect=_mock_bash_blocked_exec):
+                    atk_resp = bridge.handle_command(
+                        {"command": "attack", "target_coords": "02:383:02", "dry_run": False}
+                    )
+                self.assertFalse(atk_resp["executed"])
+                self.assertIn("bash protection", atk_resp["message"].lower())
+
+                # Verified persisted in SQLite spy_targets + bash_blocks + attack_history.json
+                row = bridge._db.get_spy_target_by_coords("02:383:02")
+                self.assertIsNotNone(row)
+                assert row is not None
+                self.assertGreater(row["blocked_until_ts"], time.time() + 50000.0)
+                self.assertEqual(row["bash_hits"], 1)
+                self.assertEqual(bridge._db.summary()["counts"]["bash_blocks"], 1)
+                exported = json.loads(hist_json_path.read_text(encoding="utf-8"))
+                self.assertIn("02:383:02", exported["blocked_targets"])
+                self.assertEqual(len(exported["bash_blocks"]), 1)
+
+                # Subsequent attack command is immediately rejected without touching Selenium
+                atk_again = bridge.handle_command(
+                    {"command": "attack", "target_coords": "02:383:02", "dry_run": False}
+                )
+                self.assertFalse(atk_again["executed"])
+                self.assertIn("BashTracker", atk_again["message"])
+
+                # Both priority and ga_nn planners exclude or hold 02:383:02 during cooldown
+                enriched_state = bridge._attach_raid_stats(bridge._merge_economy_rates(state))
+                prio_plan = plan_actions(
+                    enriched_state,
+                    config=dc_replace(bridge.strategy_config, planner_mode="priority"),
+                )
+                self.assertFalse(
+                    any(a.kind == "ATTACK" and "02:383:02" in a.target_name for a in prio_plan)
+                )
+                ga_plan = plan_actions(
+                    enriched_state,
+                    config=dc_replace(
+                        bridge.strategy_config,
+                        planner_mode="ga_nn",
+                        ga_population_size=6,
+                        ga_generations=1,
+                        ga_horizon_steps=3,
+                        ga_seed=7,
+                    ),
+                )
+                self.assertFalse(
+                    any(
+                        a.kind == "ATTACK" and "02:383:02" in a.target_name and a.executable_now
+                        for a in ga_plan
+                    )
+                )
+            finally:
+                bridge.close()
+
+    def test_tutorial_step9_recycler_build_scan_dispatch_and_debris_clear(self) -> None:
+        from dataclasses import replace as dc_replace
+        from spaceinvasion.executor import ExecutionResult
+        from spaceinvasion.fleet import GalaxySlot
+        from spaceinvasion.strategy import PlannedAction, plan_actions
+        import commander
+
+        base = _sample_state()
+        tut9 = TutorialStatus(
+            step=9,
+            total_steps=11,
+            tasks=(
+                TutorialTask(
+                    description="Recycle space rubble 0 / 1",
+                    building_name="",
+                    building_id=None,
+                    current=0,
+                    target=1,
+                    category="milestone",
+                ),
+            ),
+            reward_text="5000 Metal",
+            can_complete=False,
+        )
+
+        # 1) When s11 == 0, both planners emit BUILD_SHIP for Recycler (s11)
+        p_no_rec = dc_replace(base.planets[0], buildings={"b1": 5, "b5": 5, "b8": 3, "b9": 4}, ships={"s1": 5})
+        st_no_rec = dc_replace(
+            base,
+            planets=(p_no_rec,),
+            researches={"r2": 4, "r3": 4, "r6": 2},
+            tutorial=tut9,
+        )
+        cfg_live = StrategyConfig(allow_raids=True, allow_galaxy_scan=True, allow_shipyard=True)
+        plan_build_rec = plan_actions(st_no_rec, config=cfg_live)
+        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == 11 for a in plan_build_rec))
+
+        # 2) When s11 > 0 and battle history is newer than last scan, planner scans the battle system for rubble
+        p_with_rec = dc_replace(p_no_rec, ships={"s1": 9, "s4": 20, "s11": 3})
+        st_scan = dc_replace(
+            st_no_rec,
+            planets=(p_with_rec,),
+            raid_targets=(
+                {
+                    "coords": "02:383:02",
+                    "owner": "Spacia",
+                    "status_color": "yellow",
+                    "is_spacia": True,
+                    "has_debris": False,
+                    "last_scanned_ts": 1000.0,
+                },
+            ),
+            raid_stats={
+                "history": [
+                    {"target_coords": "02:383:02", "attacked_ts": 1500.0, "is_exempt": True, "outcome": "Dispatched"}
+                ]
+            },
+        )
+        plan_scan = plan_actions(st_scan, config=cfg_live, now_ts=1600.0)
+        self.assertEqual(plan_scan[0].kind, "SCAN_GALAXY")
+        self.assertIn("02:383", plan_scan[0].target_name)
+
+        # 3) Once debris is discovered (even on a free slot or battle planet), planner emits RECYCLE and API clears has_debris
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "state" / "spaceinvasion.db"
+            cfg_path = tmp_path / "config.yaml"
+            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.read_full_snapshot.return_value = dc_replace(st_no_rec, planets=(p_with_rec,))
+
+            bridge = GameApiBridge(
+                debug_port=9222,
+                config_path=cfg_path,
+                log_dir=None,
+                db_path=db_path,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                assert bridge._db is not None
+                bridge._db.record_galaxy_slots(
+                    [
+                        GalaxySlot(
+                            coords="02:383:02",
+                            position=2,
+                            name="",
+                            owner="",
+                            status_color="free",
+                            has_debris=True,
+                        )
+                    ]
+                )
+                bridge._raid_targets = bridge._enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
+                plan_resp = bridge.handle_command({"command": "plan"})
+                rec_actions = [a for a in plan_resp["actions"] if a["kind"] == "RECYCLE"]
+                self.assertTrue(rec_actions)
+                self.assertTrue(rec_actions[0]["executable_now"])
+                self.assertIn("02:383:02", rec_actions[0]["target_name"])
+
+                ga_resp = bridge.handle_command({"command": "plan", "planner_mode": "ga_nn"})
+                self.assertTrue(any(a["kind"] == "RECYCLE" and a["executable_now"] for a in ga_resp["actions"]))
+
+                planned_rec = PlannedAction(
+                    priority="P2",
+                    kind="RECYCLE",
+                    planet_id=p_with_rec.planet_id,
+                    planet_coords=p_with_rec.coords,
+                    target_id=11,
+                    target_level=3,
+                    target_name="Rubble -> 02:383:02",
+                    reason="Tutorial recycle",
+                    executable_now=True,
+                )
+                cmd_payload = commander._action_to_command_payload(planned_rec, dry_run=False)
+                self.assertEqual(cmd_payload["command"], "recycle")
+                self.assertEqual(cmd_payload["target_coords"], "02:383:02")
+                self.assertEqual(cmd_payload["quantity"], 3)
+
+                def _mock_rec_exec(_client, _st, act, **_kw):
+                    return ExecutionResult(
+                        action=act,
+                        executed=True,
+                        dry_run=False,
+                        message="Dispatched 3 Recycler(s) (s11) to harvest rubble at 02:383:02",
+                        clear_target_debris=True,
+                    )
+
+                with patch.object(bridge._live_executor, "execute_action", side_effect=_mock_rec_exec):
+                    rec_res = bridge.handle_command(cmd_payload)
+                self.assertTrue(rec_res["executed"])
+                updated_row = bridge._db.get_spy_target_by_coords("02:383:02")
+                assert updated_row is not None
+                self.assertFalse(updated_row["has_debris"])
+            finally:
+                bridge.close()
+
+    def test_antibot_captcha_auto_pauses_bridge_and_stops_commander_immediately(self) -> None:
+        import threading
+        import requests
+        from spaceinvasion.auth import AntiBotChallengeError
+        import commander
+
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value = fake_client
+        fake_client.read_full_snapshot.side_effect = AntiBotChallengeError(
+            "Anti-bot or CAPTCHA challenge detected (Sicherheitspruefung) — complete verification manually in Chrome."
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.yaml"
+            cfg_path.write_text("allow_build: true\n", encoding="utf-8")
+            bridge = GameApiBridge(
+                debug_port=9222,
+                config_path=cfg_path,
+                log_dir=None,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            port = server.server_address[1]
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            base_url = f"http://127.0.0.1:{port}"
+            try:
+                resp = requests.get(f"{base_url}/state", timeout=5)
+                self.assertEqual(resp.status_code, 503)
+                body = resp.json()
+                self.assertTrue(body["captcha_detected"])
+                self.assertTrue(body["paused"])
+
+                bot_status = requests.get(f"{base_url}/bot_status", timeout=5).json()
+                self.assertTrue(bot_status["paused"])
+                self.assertTrue(bot_status["captcha_blocked"])
+
+                # Commander in --loop mode must exit immediately with code 2 without sleeping/retrying
+                with patch("commander.time.sleep", side_effect=AssertionError("commander must not sleep/retry on CAPTCHA")):
+                    rc = commander.main(
+                        [
+                            "--api-url",
+                            base_url,
+                            "--loop",
+                            "--live",
+                            "--config",
+                            str(cfg_path),
+                            "--log-dir",
+                            "",
+                        ]
+                    )
+                self.assertEqual(rc, 2)
+
+                # Also verify direct tick exception path when captcha_blocked was not yet set beforehand
+                requests.post(f"{base_url}/command", json={"command": "bot_control", "paused": False}, timeout=5)
+                bot_cleared = requests.get(f"{base_url}/bot_status", timeout=5).json()
+                self.assertFalse(bot_cleared["captcha_blocked"])
+
+                with patch("commander.time.sleep", side_effect=AssertionError("commander must not sleep/retry on CAPTCHA")):
+                    rc2 = commander.main(
+                        [
+                            "--api-url",
+                            base_url,
+                            "--loop",
+                            "--live",
+                            "--config",
+                            str(cfg_path),
+                            "--log-dir",
+                            "",
+                        ]
+                    )
+                self.assertEqual(rc2, 2)
+                self.assertEqual(fake_client.read_full_snapshot.call_count, 2)
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
+    def test_batch_interval_spy_inbox_sync_and_exact_build_wakeup_timers(self) -> None:
+        from dataclasses import replace as dc_replace
+        import commander
+        from spaceinvasion.config import load_strategy_config, save_strategy_config
+        from spaceinvasion.executor import ExecutionResult
+        from spaceinvasion.fleet import GalaxySlot
+        from spaceinvasion.state import QueueJob, parse_unread_banner_count
+        from spaceinvasion.strategy import PlannedAction
+
+        # 1) Top banner unread count ("You have 13 unread Messages!") & German/RETRO inbox spy reports
+        self.assertEqual(parse_unread_banner_count("<div>✉️ You have 13 unread Messages! [i]</div>"), 13)
+        self.assertEqual(parse_unread_banner_count("<div>Du hast 4 ungelesene Nachrichten!</div>"), 4)
+
+        base = _sample_state()
+        st_unread = dc_replace(base, unread_messages={"total": 13}, tutorial=None)
+        inbox_html = """
+        <html><body>
+          <div class="message">
+            Spionagebericht auf 02:381:05 Spieler: LazyMiner
+            Roheisen: 45.000 Metall: 22.000 Kryptonit: 11.000 Spice: 4.500
+          </div>
+        </body></html>
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.yaml"
+            db_path = tmp_path / "state" / "spaceinvasion.db"
+            save_strategy_config(
+                StrategyConfig(action_batch_interval_seconds=180, allow_raids=True, allow_galaxy_scan=True),
+                cfg_path,
+            )
+            loaded_cfg = load_strategy_config(cfg_path)
+            self.assertEqual(loaded_cfg.action_batch_interval_seconds, 180)
+
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.read_full_snapshot.return_value = st_unread
+            # First call ("spio") has no reports; fallback call ("") reads main inbox!
+            fake_client.open_messages.side_effect = ["<html>empty spio tab</html>", inbox_html]
+
+            bridge = GameApiBridge(
+                debug_port=9222,
+                config_path=cfg_path,
+                log_dir=None,
+                db_path=db_path,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                # Live executor does NOT enforce hourly cap when using action_batch_interval_seconds
+                self.assertFalse(bridge._live_executor.enforce_hourly_cap)
+                assert bridge._db is not None
+                bridge._db.record_galaxy_slots(
+                    [
+                        GalaxySlot(
+                            coords="02:381:05",
+                            position=5,
+                            name="Colony",
+                            owner="LazyMiner",
+                            status_color="yellow",
+                        )
+                    ]
+                )
+                bridge._raid_targets = bridge._enrich_raid_targets(bridge._db.get_spy_targets(limit=100))
+
+                # GET /state automatically reads unread spy reports from main inbox once and deduplicates
+                state_dict = bridge.get_state(include_buildings=True)
+                self.assertEqual(fake_client.open_messages.call_count, 2)
+                spied_row = bridge._db.get_spy_target_by_coords("02:381:05")
+                self.assertIsNotNone(spied_row)
+                assert spied_row is not None
+                self.assertTrue(spied_row["has_spy_intel"])
+                self.assertEqual(spied_row["resources"]["pig_iron"], 45000)
+                self.assertEqual(spied_row["resources"]["metal"], 22000)
+                self.assertEqual(spied_row["spy_count"], 1)
+
+                # Record a second spy report + uninhabited colony probe and verify append-only spy_reports table
+                import time
+                from spaceinvasion.fleet import SpyReport
+
+                bridge._db.record_spy_report(
+                    SpyReport(
+                        target_coords="02:381:05",
+                        owner="LazyMiner",
+                        resources=Resources(60000, 30000, 15000, 9000),
+                    ),
+                    is_inactive=True,
+                    ts=time.time() + 10.0,
+                )
+                bridge._db.record_spy_report(
+                    SpyReport(
+                        target_coords="02:381:09",
+                        owner="",
+                        resources=Resources(),
+                        uninhabited_fields=245,
+                    ),
+                    status_color="free",
+                    ts=time.time() + 20.0,
+                )
+                hist_reports = bridge._db.get_spy_reports(target_coords="02:381:05")
+                self.assertEqual(len(hist_reports), 2)
+                self.assertEqual(hist_reports[0]["resources"]["pig_iron"], 60000)
+                self.assertEqual(hist_reports[1]["resources"]["pig_iron"], 45000)
+                col_row = bridge._db.get_spy_target_by_coords("02:381:09")
+                self.assertIsNotNone(col_row)
+                assert col_row is not None
+                self.assertEqual(col_row["uninhabited_fields"], 245)
+                self.assertEqual(bridge._db.summary()["counts"]["spy_reports"], 3)
+
+                # Power building selection blocks Thermosolar plant (b6) when fields are tight (<=40 free) or b6 >= 6
+                from spaceinvasion.strategy import _pick_best_power_building
+
+                tight_cold = PlanetState(
+                    planet_id=12476,
+                    name="EndGameCold",
+                    coords="02:380:15",
+                    planet_type="normal",
+                    temperature=-120,
+                    fields_used=200,
+                    fields_max=230,
+                    resources=Resources(50000, 50000, 50000, 10000),
+                    storage=Resources(500000, 500000, 500000, 500000),
+                    energy=EnergyBalance(100, 150),
+                    buildings={"b1": 15, "b2": 10, "b3": 14, "b4": 14, "b5": 15, "b6": 0},
+                )
+                bid_tight, _, _ = _pick_best_power_building(
+                    tight_cold, dict(tight_cold.buildings), {"r2": 4}
+                )
+                self.assertEqual(bid_tight, 5)  # Fusion plant (b5), preserving scarce fields
+
+                # Force snapshot cache expiry with unchanged unread total=13 -> zero extra open_messages calls
+                bridge._last_snapshot_at = 0.0
+                bridge.get_state(include_buildings=False)
+                self.assertEqual(fake_client.open_messages.call_count, 2)
+
+                # update_config validates and persists action_batch_interval_seconds
+                upd = bridge.handle_command(
+                    {"command": "update_config", "config": {"action_batch_interval_seconds": 240}}
+                )
+                self.assertEqual(upd["config"]["action_batch_interval_seconds"], 240)
+
+                # 2) Exact build/queue wakeup timer calculation
+                wait_act = PlannedAction(
+                    priority="P2",
+                    kind="WAIT_RESOURCES",
+                    planet_id=12476,
+                    planet_coords="02:380:12",
+                    target_id=3,
+                    target_name="Kryptonite mine",
+                    target_level=7,
+                    reason="Waiting for resources",
+                    executable_now=False,
+                    wait_seconds=420.0,
+                )
+                wake_long, reason_long = commander.compute_next_wakeup_seconds(
+                    st_unread, wait_act, [], min_interval_s=120.0, max_idle_s=900.0
+                )
+                self.assertAlmostEqual(wake_long, 422.0, places=1)
+                self.assertIn("Kryptonite mine", reason_long)
+
+                # Short wait (< min_interval_s) honors min_interval_s so actions accumulate into a batch
+                short_act = dc_replace(wait_act, wait_seconds=35.0)
+                wake_short, _ = commander.compute_next_wakeup_seconds(
+                    st_unread, short_act, [], min_interval_s=120.0, max_idle_s=900.0
+                )
+                self.assertAlmostEqual(wake_short, 120.0, places=1)
+
+                # Queue completion timer wakes right when research/fleet finishes if earlier than wait_act
+                st_queue = dc_replace(
+                    st_unread,
+                    active_queues=(QueueJob(category="research", name="Energy technology", remaining_text="00:03:20"),),
+                )
+                wake_q, reason_q = commander.compute_next_wakeup_seconds(
+                    st_queue, wait_act, [], min_interval_s=120.0, max_idle_s=900.0
+                )
+                self.assertAlmostEqual(wake_q, 202.0, places=1)
+                self.assertIn("research queue completion", reason_q)
+
+                # 3) Batch execution sends multiple accumulated builds in one tick with 1 get_state call
+                st_after_1 = dict(state_dict)
+                st_after_1["planets"] = [dict(state_dict["planets"][0])]
+                st_after_1["planets"][0]["buildings"] = {"b1": 3, "b3": 2, "b5": 4}
+                st_after_1["planets"][0]["building_offers"] = [
+                    o for o in state_dict["planets"][0]["building_offers"] if o["building_id"] != 5
+                ]
+                st_after_2 = dict(state_dict)
+                st_after_2["planets"] = [dict(state_dict["planets"][0])]
+                st_after_2["planets"][0]["buildings"] = {"b1": 4, "b3": 2, "b5": 4}
+                st_after_2["planets"][0]["building_offers"] = []
+                mock_api = MagicMock()
+                mock_api.get_state.return_value = base
+                mock_api.send_command.side_effect = [
+                    {"ok": True, "command": "build", "executed": True, "message": "Built b5", "state": st_after_1},
+                    {"ok": True, "command": "build", "executed": True, "message": "Built b1", "state": st_after_2},
+                ]
+                _, _, _, _, batch_outcomes = commander.run_commander_tick(
+                    mock_api,
+                    live=True,
+                    max_actions=10,
+                    config=StrategyConfig(action_batch_interval_seconds=120),
+                    include_buildings=True,
+                )
+                self.assertEqual(mock_api.get_state.call_count, 1)
+                self.assertGreaterEqual(len([o for o in batch_outcomes if o.get("executed")]), 2)
+            finally:
+                bridge.close()
+
+    def test_realistic_5_planet_dashboard_refresh_false_latency_under_20ms(self) -> None:
+        import statistics
+        import time
+        from spaceinvasion.config import save_strategy_config
+        from spaceinvasion.state import FleetAlert, ResearchOffer, UnitOffer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.yaml"
+            db_path = tmp_path / "spaceinvasion.db"
+            log_dir = tmp_path / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            save_strategy_config(StrategyConfig(allow_multi_planet=True, allow_raids=True, allow_fleetsave=True), cfg_path)
+
+            planets = []
+            for idx in range(5):
+                pid = 500 + idx
+                coords = f"01:0{40 + idx}:0{idx + 3}"
+                b_offers = tuple(
+                    BuildingOffer(
+                        building_id=bid,
+                        name=f"Building {bid}",
+                        current_level=4,
+                        target_level=5,
+                        cost=Resources(800 * bid, 500 * bid, 300 * bid, 100 * bid),
+                        can_build=True,
+                        status_text="Available",
+                        build_href=f"indexInternal.es?action=internalBuildItem&buildingID={bid}",
+                    )
+                    for bid in (1, 2, 3, 4, 5, 7, 8, 9)
+                )
+                s_offers = tuple(
+                    UnitOffer(
+                        unit_type="ship",
+                        unit_id=sid,
+                        name=sname,
+                        owned=2,
+                        cost=Resources(2000, 1500, 500, 200),
+                        can_build=True,
+                        input_name=f"ship[{sid}]",
+                    )
+                    for sid, sname in ((1, "Small transporter"), (4, "Small fighter"), (10, "Spy probe"), (11, "Recycler"))
+                )
+                planets.append(
+                    PlanetState(
+                        planet_id=pid,
+                        name=f"Colony-{idx + 1}",
+                        coords=coords,
+                        planet_type="normal",
+                        temperature=25 - idx * 4,
+                        fields_used=36,
+                        fields_max=230,
+                        resources=Resources(45_000, 32_000, 24_000, 15_000),
+                        storage=Resources(200_000, 200_000, 200_000, 200_000),
+                        energy=EnergyBalance(420, 310),
+                        buildings={"b1": 6, "b2": 5, "b3": 6, "b4": 5, "b5": 8, "b7": 4, "b8": 3, "b9": 3, "b12": 4},
+                        ships={"s1": 8, "s4": 15, "s10": 6, "s11": 2},
+                        building_offers=b_offers,
+                        ship_offers=s_offers,
+                    )
+                )
+            st = GameState(
+                universe_id=31,
+                user_id=103603,
+                nickname="cmdr_perf",
+                timestamp=2000.0,
+                planets=tuple(planets),
+                active_planet_id=500,
+                researches={"r1": 2, "r2": 3, "r3": 3, "r4": 2, "r5": 2},
+                research_offers=(
+                    ResearchOffer(2, "r2", "Energy technology", 3, 4, Resources(0, 3200, 6400, 3200), True, "Available", "indexInternal.es?r=2"),
+                    ResearchOffer(5, "r5", "Spy technology", 2, 3, Resources(800, 4000, 800, 0), True, "Available", "indexInternal.es?r=5"),
+                ),
+                fleet_alerts=(
+                    FleetAlert(
+                        mission="attack",
+                        hostile=True,
+                        summary="Hostile fleet inbound to [01:040:03]",
+                    ),
+                ),
+                speedup_factor=4.0,
+            )
+
+            bridge = GameApiBridge(
+                debug_port=1,
+                client_factory=lambda _port: MagicMock(),
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=log_dir,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                bridge._record_state(st)
+                warm = bridge.dashboard(refresh=False)
+                self.assertTrue(warm["ok"])
+                self.assertGreaterEqual(warm["action_graph"]["summary"]["total_nodes"], 15)
+
+                samples_ms: list[float] = []
+                for _ in range(20):
+                    t0 = time.perf_counter()
+                    d = bridge.dashboard(refresh=False)
+                    samples_ms.append((time.perf_counter() - t0) * 1000.0)
+                    self.assertTrue(d["ok"])
+
+                median_ms = statistics.median(samples_ms)
+                self.assertLess(
+                    median_ms,
+                    20.0,
+                    msg=f"5-planet dashboard(refresh=False) median={median_ms:.2f}ms samples={[round(x, 2) for x in samples_ms]}",
+                )
+
+                bridge.handle_command({"command": "update_config", "config": {"playstyle": "miner"}})
+                after_cfg = bridge.dashboard(refresh=False)
+                self.assertEqual(after_cfg["action_graph"]["effective_config"]["playstyle"], "miner")
+                self.assertFalse(after_cfg["action_graph"]["is_dirty"])
+            finally:
+                bridge.close()
+
+    def test_full_sqlite_state_persistence_across_bridge_restarts(self) -> None:
+        import time
+        from spaceinvasion.fleet import GalaxySlot, SpyReport
+        from spaceinvasion.state import FleetAlert, QueueJob, ResearchOffer, UnitOffer
+
+        with tempfile.TemporaryDirectory(prefix="si_full_db_") as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.yaml"
+            db_path = tmp_path / "spaceinvasion.db"
+            log_dir = tmp_path / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            now_wall = time.time()
+            planet = PlanetState(
+                planet_id=777,
+                name="Prime",
+                coords="02:380:08",
+                planet_type="normal",
+                temperature=22,
+                fields_used=31,
+                fields_max=242,
+                resources=Resources(64_000, 41_000, 29_000, 18_500),
+                storage=Resources(200_000, 200_000, 200_000, 200_000),
+                energy=EnergyBalance(520, 390),
+                buildings={"b1": 7, "b2": 6, "b3": 7, "b4": 5, "b5": 8, "b10": 3},
+                ships={"s1": 12, "s4": 18, "s8": 1, "s10": 6, "s11": 3},
+                economy_rates={"b1": 100, "b2": 80, "b3": 100, "b4": 100, "b5": 100, "b6": 0},
+                building_offers=(
+                    BuildingOffer(
+                        building_id=1,
+                        name="Pig iron mine",
+                        current_level=7,
+                        target_level=8,
+                        cost=Resources(2400, 900, 0, 0),
+                        can_build=True,
+                        status_text="Available",
+                        build_href="indexInternal.es?action=internalBuildItem&buildingID=1",
+                    ),
+                ),
+                ship_offers=(
+                    UnitOffer(
+                        unit_type="ship",
+                        unit_id=11,
+                        name="Recycler",
+                        owned=3,
+                        cost=Resources(10_000, 6000, 2000, 0),
+                        can_build=True,
+                        input_name="ship[11]",
+                    ),
+                ),
+            )
+            persisted_state = GameState(
+                universe_id=31,
+                user_id=103603,
+                nickname="persist_cmdr",
+                timestamp=now_wall,
+                planets=(planet,),
+                active_planet_id=777,
+                researches={"r1": 3, "r2": 4, "r3": 4, "r5": 3},
+                unread_messages={"spio": 2, "fleet": 1, "total": 3},
+                active_queues=(
+                    QueueJob(
+                        category="building",
+                        name="Pig iron mine",
+                        building_id=1,
+                        target_level=8,
+                        remaining_text="00:03:05",
+                    ),
+                ),
+                fleet_alerts=(
+                    FleetAlert(
+                        mission="recycle",
+                        hostile=False,
+                        summary="Recycling [02:380:04]",
+                    ),
+                ),
+                research_offers=(
+                    ResearchOffer(
+                        research_id=5,
+                        research_key="r5",
+                        name="Spy technology",
+                        current_level=3,
+                        target_level=4,
+                        cost=Resources(1600, 8000, 1600, 0),
+                        can_research=True,
+                        status_text="Available",
+                        research_href="indexInternal.es?action=internalBuildResearch&researchID=5",
+                    ),
+                ),
+                speedup_factor=4.0,
+            )
+
+            bridge1 = GameApiBridge(
+                debug_port=1,
+                client_factory=lambda _port: MagicMock(),
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=log_dir,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                bridge1.handle_command(
+                    {
+                        "command": "update_config",
+                        "config": {
+                            "action_batch_interval_seconds": 180,
+                            "planner_mode": "ga_nn",
+                            "playstyle": "fleeter",
+                        },
+                    }
+                )
+                bridge1._record_state(persisted_state)
+                assert bridge1._db is not None
+                slots = [
+                    GalaxySlot(
+                        position=4,
+                        coords="02:380:04",
+                        name="Spacia Outpost",
+                        owner="Spacia",
+                        status_color="yellow",
+                        is_spacia=True,
+                        has_debris=True,
+                    ),
+                    GalaxySlot(
+                        position=9,
+                        coords="02:380:09",
+                        name="",
+                        owner="",
+                        status_color="free",
+                        is_spacia=False,
+                        has_debris=False,
+                    ),
+                    GalaxySlot(
+                        position=15,
+                        coords="02:380:15",
+                        name="",
+                        owner="",
+                        status_color="free",
+                        is_spacia=False,
+                        has_debris=False,
+                    ),
+                ]
+                saved_targets = bridge1._db.record_galaxy_slots(slots, ts=now_wall)
+                self.assertEqual(saved_targets, 1)
+                bridge1._db.record_galaxy_scan(2, 380, slots, ts=now_wall)
+
+                bridge1._db.record_spy_report(
+                    SpyReport(
+                        target_coords="02:380:04",
+                        owner="Spacia",
+                        is_spacia=True,
+                        resources=Resources(40_000, 30_000, 20_000, 10_000),
+                        fleet={},
+                        defense={},
+                        dug_in=False,
+                    ),
+                    ts=now_wall - 60.0,
+                )
+                bridge1._db.record_spy_report(
+                    SpyReport(
+                        target_coords="02:380:04",
+                        owner="Spacia",
+                        is_spacia=True,
+                        resources=Resources(55_000, 42_000, 28_000, 14_000),
+                        fleet={"s1": 2},
+                        defense={"d1": 1},
+                        dug_in=False,
+                    ),
+                    ts=now_wall - 10.0,
+                )
+                bridge1._db.record_spy_report(
+                    SpyReport(
+                        target_coords="02:380:09",
+                        owner="",
+                        is_spacia=False,
+                        resources=Resources(0, 0, 0, 0),
+                        fleet={},
+                        defense={},
+                        dug_in=None,
+                        uninhabited_fields=248,
+                    ),
+                    ts=now_wall - 5.0,
+                )
+                bridge1._db.record_target_block(
+                    "02:383:02",
+                    blocked_until_ts=now_wall + 7200.0,
+                    reason="Attack (forbidden): Player was attacked too often by you (bash protection)",
+                    is_bash=True,
+                    ts=now_wall,
+                )
+
+                now_mono = time.monotonic()
+                bridge1._fleet_slot_cooldown_until[777] = now_mono + 150.0
+                bridge1._economy_sync_timestamps[777] = now_wall - 20.0
+                bridge1._last_synced_unread_total = 3
+                bridge1._pending_spy_sync = True
+                bridge1._last_spio_sync_at = now_mono - 5.0
+                bridge1._last_url = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalBuildings"
+                bridge1._last_optimizer_summary = {"mode": "ga_nn", "improvement_pct": 14.5}
+                bridge1._bot_control["mode_override"] = "dry-run"
+                bridge1._record_antibot_pause(RuntimeError("Cloudflare Turnstile challenge"))
+            finally:
+                bridge1.close()
+
+            # Remove config.yaml on disk to prove strategy_config rehydrates from SQLite meta
+            if cfg_path.exists():
+                cfg_path.unlink()
+
+            client_calls = 0
+
+            def _forbidden_client(_port: int) -> Any:
+                nonlocal client_calls
+                client_calls += 1
+                raise AssertionError("Offline dashboard read must use SQLite state without opening Chrome")
+
+            bridge2 = GameApiBridge(
+                debug_port=1,
+                client_factory=_forbidden_client,
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=log_dir,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                self.assertEqual(bridge2.strategy_config.action_batch_interval_seconds, 180)
+                self.assertEqual(bridge2.strategy_config.planner_mode, "ga_nn")
+                self.assertEqual(bridge2.strategy_config.playstyle, "fleeter")
+                self.assertTrue(bridge2._bot_control["paused"])
+                self.assertTrue(bridge2._bot_control["captcha_blocked"])
+                self.assertIn("Turnstile", bridge2._bot_control["captcha_message"] or "")
+                self.assertEqual(bridge2._bot_control["mode_override"], "dry-run")
+                self.assertEqual(bridge2._last_synced_unread_total, 3)
+                self.assertTrue(bridge2._pending_spy_sync)
+                self.assertGreater(bridge2._get_fleet_slot_cooldowns().get("777", 0.0), 60.0)
+                self.assertIsNotNone(bridge2._last_state)
+                assert bridge2._last_state is not None
+                self.assertEqual(len(bridge2._last_state.active_queues), 1)
+                self.assertEqual(bridge2._last_state.active_queues[0].name, "Pig iron mine")
+                self.assertEqual(len(bridge2._last_state.research_offers), 1)
+                self.assertEqual(len(bridge2._last_state.planets[0].building_offers), 1)
+                self.assertEqual(len(bridge2._last_state.planets[0].ship_offers), 1)
+
+                dash = bridge2.dashboard(refresh=False)
+                self.assertEqual(client_calls, 0)
+                self.assertTrue(dash["ok"])
+                self.assertTrue(dash["bot_control"]["paused"])
+                self.assertTrue(dash["bot_control"]["captcha_blocked"])
+                self.assertEqual(dash["state"]["nickname"], "persist_cmdr")
+
+                assert bridge2._db is not None
+                reports_04 = bridge2._db.get_spy_reports(target_coords="02:380:04")
+                self.assertEqual(len(reports_04), 2)
+                self.assertEqual(reports_04[0]["resources"]["pig_iron"], 55_000)
+                self.assertEqual(reports_04[1]["resources"]["pig_iron"], 40_000)
+                reports_09 = bridge2._db.get_spy_reports(target_coords="02:380:09")
+                self.assertEqual(len(reports_09), 1)
+                self.assertEqual(reports_09[0]["uninhabited_fields"], 248)
+
+                free_slots = bridge2._db.get_galaxy_slots(galaxy=2, system=380, status_color="free")
+                self.assertEqual([s["coords"] for s in free_slots], ["02:380:09", "02:380:15"])
+
+                db_sum = bridge2.handle_command({"command": "db_summary"})
+                self.assertTrue(db_sum["ok"])
+                self.assertEqual(db_sum["db"]["counts"]["galaxy_slots"], 3)
+                self.assertEqual(db_sum["db"]["counts"]["spy_reports"], 3)
+                self.assertEqual(db_sum["db"]["counts"]["bash_blocks"], 1)
+                for key in ("latest_game_state", "bridge_runtime_state", "strategy_config"):
+                    self.assertIn(key, db_sum["db"]["persisted_meta_keys"])
+            finally:
+                bridge2.close()
+
+    def test_archive_messages_delete_in_game_after_db_commit_and_append_only_universe_history(self) -> None:
+        import time
+        from dataclasses import replace as dc_replace
+        from spaceinvasion.fleet import GalaxySlot, SpyReport
+
+        with tempfile.TemporaryDirectory(prefix="si_msg_archive_") as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.yaml"
+            db_path = tmp_path / "spaceinvasion.db"
+            log_dir = tmp_path / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            base_state = _sample_state()
+            st_unread = dc_replace(base_state, unread_messages={"total": 3}, tutorial=None)
+
+            inbox_html = """
+            <html><body>
+              <span id="planet-coords">[02:380:12]</span>
+              <form id="ress">
+                <span id="roheisen">Pig iron: 269.575</span>
+                <span id="metall">Metal: 7.044</span>
+                <span id="kryptonit">Kryptonite: 400.432</span>
+                <span id="spice">Spice: 157.956</span>
+              </form>
+              <form action="indexInternal.es?action=internalMessages&sid=TOPSECRET" method="post">
+                <table>
+                  <tr>
+                    <td><input type="checkbox" name="del[701]" value="701" /></td>
+                    <td>2026-11-16 16:10:01</td>
+                    <td>Fleet Command</td>
+                    <td>Espionage report on Vault [02:381:07]</td>
+                  </tr>
+                  <tr>
+                    <td colspan="4">
+                      Player: StarMiner | Pig iron: 92.000 Metal: 46.000 Kryptonite: 28.000 Spice: 14.000
+                      Pig iron mine: 15 Fusion plant: 13 Energy technology: 6
+                      Small transporter: 4 Mortar: 1 Defenses are not dug-in
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><input type="checkbox" name="del[702]" value="702" /></td>
+                    <td>2026-11-16 16:11:05</td>
+                    <td>Fleet Command</td>
+                    <td>Battle report [02:382:04]</td>
+                  </tr>
+                  <tr>
+                    <td colspan="4">
+                      Attacker won! Debris field: Pig iron: 24.000 Metal: 12.000
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><input type="checkbox" name="del[703]" value="703" /></td>
+                    <td>2026-11-16 16:12:30</td>
+                    <td>Recycler Fleet</td>
+                    <td>Recycling report [02:380:04]</td>
+                  </tr>
+                  <tr>
+                    <td colspan="4">
+                      Your Recycler fleet harvested Pig iron: 20.000 Metal: 10.000 at [02:380:04].
+                    </td>
+                  </tr>
+                </table>
+              </form>
+            </body></html>
+            """
+
+            db_rows_at_delete_time: list[int] = []
+            deleted_batches: list[list[str]] = []
+
+            class _FakeDeletingClient:
+                def __init__(self, bridge_ref_holder: list[Any]) -> None:
+                    self._holder = bridge_ref_holder
+                    self.open_calls: list[str] = []
+
+                def __enter__(self) -> "_FakeDeletingClient":
+                    return self
+
+                def __exit__(self, *_exc: Any) -> None:
+                    return None
+
+                def ensure_in_game(self, **_kw: Any) -> None:
+                    return None
+
+                def read_full_snapshot(self, **_kw: Any) -> GameState:
+                    return st_unread
+
+                def open_messages(self, msg_type: str = "", **_kw: Any) -> str:
+                    self.open_calls.append(msg_type)
+                    if msg_type == "spio":
+                        return "<html><body>No espionage tab messages</body></html>"
+                    return inbox_html
+
+                def expand_collapsed_messages_on_page(self) -> Optional[str]:
+                    return None
+
+                def delete_messages_on_current_page(
+                    self,
+                    server_msg_ids: Any = (),
+                    *,
+                    all_on_page_persisted: bool = False,
+                    priority: str = "normal",
+                ) -> tuple[bool, str]:
+                    br = self._holder[0]
+                    assert br._db is not None
+                    # Strictly verify SQLite already committed all 3 messages BEFORE in-game deletion runs
+                    committed = br._db.get_game_messages()
+                    db_rows_at_delete_time.append(len(committed))
+                    self.assert_before_delete_ok = (
+                        len(committed) == 3
+                        and all(not m["deleted_in_game"] for m in committed)
+                        and all_on_page_persisted
+                    )
+                    deleted_batches.append(list(server_msg_ids))
+                    return (True, "<html><body>No messages</body></html>")
+
+            holder: list[Any] = [None]
+            client = _FakeDeletingClient(holder)
+            bridge = GameApiBridge(
+                debug_port=9222,
+                config_path=cfg_path,
+                log_dir=log_dir,
+                db_path=db_path,
+                client_factory=lambda _port: client,
+                ensure_session_fn=lambda: None,
+            )
+            holder[0] = bridge
+            try:
+                assert bridge._db is not None
+                t0 = time.time()
+                # Pre-seed own planet 02:380:12 (simulating historical self-planet bug), legacy unpadded 2:381:7,
+                # plus battle target 02:382:04 (no debris yet) and recycle target 02:380:04 (with debris)
+                bridge._db.record_spy_report(
+                    SpyReport(target_coords="02:380:12", owner="self", resources=Resources(100, 100, 100, 100)),
+                    ts=t0 - 120.0,
+                )
+                # Insert both raw unnormalized '2:381:7' and canonical '02:381:07' to verify non-destructive merged_into
+                with bridge._db._lock:
+                    bridge._db._conn.execute(
+                        "INSERT INTO spy_targets(coords, owner, status_color, is_inactive, last_scanned_ts) VALUES ('2:381:7', 'StarMiner', 'yellow', 1, ?)",
+                        (t0 - 95.0,),
+                    )
+                    bridge._db._conn.execute(
+                        "INSERT INTO spy_targets(coords, owner, status_color, is_inactive, last_scanned_ts) VALUES ('02:381:07', 'StarMiner', 'yellow', 1, ?)",
+                        (t0 - 90.0,),
+                    )
+                    bridge._db._conn.commit()
+                bridge._db.record_galaxy_slots(
+                    [
+                        GalaxySlot("02:382:04", 4, "Warzone", "Defender", "yellow", has_debris=False),
+                        GalaxySlot("02:380:04", 4, "Scrapyard", "Spacia", "yellow", is_spacia=True, has_debris=True),
+                    ],
+                    ts=t0 - 60.0,
+                )
+                # Repeated scan at a later timestamp appends new rows to galaxy_slot_history and galaxy_scan_history
+                bridge._db.record_galaxy_scan(
+                    2,
+                    380,
+                    [GalaxySlot("02:380:04", 4, "Scrapyard", "Spacia", "yellow", is_spacia=True, has_debris=True)],
+                    ts=t0 - 30.0,
+                )
+                bridge._db.record_galaxy_scan(
+                    2,
+                    380,
+                    [GalaxySlot("02:380:04", 4, "Scrapyard", "Spacia", "yellow", is_spacia=True, has_debris=False)],
+                    ts=t0 - 10.0,
+                )
+
+                # Trigger state read -> archives inbox to SQLite first, then deletes in-game, then marks deleted_in_game=1
+                bridge.get_state(include_buildings=True)
+
+                self.assertEqual(db_rows_at_delete_time, [3])
+                self.assertTrue(getattr(client, "assert_before_delete_ok", False))
+                self.assertEqual(deleted_batches, [["701", "702", "703"]])
+                # Because messages were deleted in-game, _last_synced_unread_total resets to 0 for future arrivals
+                self.assertEqual(bridge._last_synced_unread_total, 0)
+
+                archived = bridge._db.get_game_messages()
+                self.assertEqual(len(archived), 3)
+                self.assertTrue(all(m["deleted_in_game"] for m in archived))
+                self.assertTrue(all((m["deleted_ts"] or 0.0) > 0.0 for m in archived))
+
+                cmd_msgs = bridge.handle_command({"command": "game_messages", "category": "spy_report"})
+                self.assertTrue(cmd_msgs["ok"])
+                self.assertEqual(cmd_msgs["count"], 1)
+                self.assertEqual(cmd_msgs["messages"][0]["coords"], "02:381:07")
+                self.assertEqual(cmd_msgs["messages"][0]["parsed"]["buildings"].get("b1"), 15)
+                self.assertEqual(cmd_msgs["messages"][0]["parsed"]["researches"].get("r2"), 6)
+                self.assertNotIn("TOPSECRET", cmd_msgs["messages"][0]["raw_html"])
+
+                # Battle report set has_debris=True on 02:382:04; Recycle report cleared has_debris=False on 02:380:04
+                t_war = bridge._db.get_spy_target_by_coords("02:382:04")
+                t_rec = bridge._db.get_spy_target_by_coords("02:380:04")
+                assert t_war is not None and t_rec is not None
+                self.assertTrue(t_war["has_debris"])
+                self.assertFalse(t_rec["has_debris"])
+
+                # Own planet 02:380:12 is hidden from active get_spy_targets() via is_own_planet=1, NEVER deleted
+                active_targets = {t["coords"] for t in bridge._db.get_spy_targets(limit=50)}
+                self.assertNotIn("02:380:12", active_targets)
+                self.assertIn("02:381:07", active_targets)
+                raw_spy_target_rows = bridge._db._conn.execute(
+                    "SELECT coords, merged_into, is_own_planet FROM spy_targets"
+                ).fetchall()
+                by_raw = {r["coords"]: (r["merged_into"], r["is_own_planet"]) for r in raw_spy_target_rows}
+                self.assertEqual(by_raw["02:380:12"][1], 1)
+                self.assertEqual(by_raw["2:381:7"][0], "02:381:07")
+
+                # Repeated config updates append to config_history without deleting prior configs
+                bridge.handle_command({"command": "update_config", "config": {"playstyle": "miner"}})
+                bridge.handle_command({"command": "update_config", "config": {"playstyle": "fleeter"}})
+
+                counts = bridge._db.summary()["counts"]
+                self.assertEqual(counts["game_messages"], 3)
+                self.assertEqual(counts["spy_reports"], 2)
+                self.assertEqual(counts["galaxy_scan_history"], 2)
+                self.assertGreaterEqual(counts["galaxy_slot_history"], 3)
+                self.assertGreaterEqual(counts["config_history"], 2)
+            finally:
+                bridge.close()
+
+    def test_dashboard_cache_mutation_isolation_deep_sig_null_planet_and_ga_nn_warm_hit(self) -> None:
+        from dataclasses import fields as dc_fields
+        import threading
+        import requests
+        import spaceinvasion.api_server as api_srv
+
+        # Every field of StrategyConfig must be covered by _validate_config_patch
+        for f in dc_fields(StrategyConfig):
+            bad_val: object = [] if f.name != "shipyard_targets" else "not_a_mapping"
+            with self.assertRaises(api_srv.ApiRequestError, msg=f"unvalidated StrategyConfig field: {f.name}"):
+                api_srv._validate_config_patch({f.name: bad_val})
+
+        # R2-1 & R2-2: Caller mutation isolation (including HTTP /dashboard) & deep nested state sig invalidation
+        p1 = PlanetState(
+            101,
+            "Alpha",
+            "01:042:07",
+            "normal",
+            25,
+            20,
+            220,
+            Resources(15_000, 10_000, 8_000, 5_000),
+            Resources(100_000, 100_000, 100_000, 100_000),
+            EnergyBalance(300, 120),
+            buildings={"b1": 5, "b5": 6},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 5, 6, Resources(1200, 500, 0, 0), True, "Available", "?b=1"),
+            ),
+        )
+        st = GameState(
+            31,
+            7,
+            "cmdr",
+            1e9,
+            (p1,),
+            active_planet_id=101,
+            raid_targets=({"coords": "01:042:08", "resources": {"spice": 15_000}},),
+            raid_stats={"per_target": {"01:042:08": {"wins": 3}}},
+        )
+        with (
+            patch("spaceinvasion.api_server.is_debug_port_open", return_value=False),
+            tempfile.TemporaryDirectory() as td,
+        ):
+            td_path = Path(td)
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=td_path / "c.yaml",
+                db_path=None,
+                log_dir=None,
+                client_factory=lambda _: MagicMock(),
+                ensure_session_fn=lambda: None,
+            )
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                bridge._last_state = st
+                bridge._rank_samples = [
+                    {"ts": 100.0, "server_points": 1000, "estimated_points": 1000.0},
+                    {"ts": 4000.0, "server_points": 1200, "estimated_points": 1200.0},
+                ]
+                d1 = bridge.dashboard(refresh=False)
+                orig_n = len(d1["action_graph"]["nodes"])
+                self.assertGreater(orig_n, 0)
+
+                # Mutate returned dashboard payload aggressively in place (R2-1)
+                d1["action_graph"]["nodes"].clear()
+                d1["action_graph"]["is_dirty"] = True
+                d1["action_graph"]["summary"]["critical_path_seconds"] = float("nan")
+                d1["plan"].clear()
+                d1["state"]["planets"].clear()
+                d1["config"]["planner_mode"] = "CORRUPTED_MODE"
+
+                d2 = bridge.dashboard(refresh=False)
+                self.assertEqual(len(d2["action_graph"]["nodes"]), orig_n)
+                self.assertFalse(d2["action_graph"]["is_dirty"])
+                self.assertEqual(len(d2["plan"]), orig_n)
+                self.assertEqual(len(d2["state"]["planets"]), 1)
+                self.assertEqual(d2["config"]["planner_mode"], "priority")
+                json.dumps(d2, allow_nan=False)
+
+                http_dash = requests.get(f"{base_url}/dashboard?refresh=0", timeout=5)
+                self.assertEqual(http_dash.status_code, 200)
+                self.assertEqual(len(http_dash.json()["action_graph"]["nodes"]), orig_n)
+
+                # Mutate nested raid_stats, raid_targets, and rank_samples[0] in place (R2-2)
+                bridge._invalidate_dashboard_cache()
+                _ = bridge.dashboard(refresh=False)
+                bridge._last_state.raid_stats["per_target"]["01:042:08"]["wins"] = 777
+                bridge._last_state.raid_targets[0]["resources"]["spice"] = 999_888
+                bridge._rank_samples[0]["server_points"] = 500
+                d3 = bridge.dashboard(refresh=False)
+                self.assertEqual(d3["state"]["raid_stats"]["per_target"]["01:042:08"]["wins"], 777)
+                self.assertEqual(d3["state"]["raid_targets"][0]["resources"]["spice"], 999_888)
+                self.assertEqual(d3["ranking"]["observed_trend"]["delta_points"], 700.0)
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
+        # R2-3 & R2-4: PlanetState(..., None, None, None) safety & ga_nn warm poll cache hit without DB churn
+        p_none = PlanetState(101, "C", "01:010:01", "normal", 25, 10, 200, None, None, None)  # type: ignore[arg-type]
+        self.assertEqual(p_none.resources, Resources())
+        self.assertEqual(p_none.storage, Resources())
+        self.assertEqual(p_none.energy, EnergyBalance())
+
+        with (
+            patch("spaceinvasion.api_server.is_debug_port_open", return_value=False),
+            tempfile.TemporaryDirectory() as td2,
+        ):
+            td2_path = Path(td2)
+            bridge2 = GameApiBridge(
+                debug_port=19999,
+                env_file=td2_path / "no.env",
+                config_path=td2_path / "c.yaml",
+                db_path=td2_path / "s.db",
+                log_dir=None,
+                client_factory=lambda _: MagicMock(),
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                bridge2._last_state = GameState(1, 1, "u", 1000.0, (p_none,), active_planet_id=101)
+                d_none = bridge2.dashboard(refresh=False)
+                json.dumps(d_none, allow_nan=False)
+                ag_none = bridge2.handle_command({"command": "action_graph", "refresh": False})
+                self.assertTrue(ag_none["ok"])
+                json.dumps(ag_none, allow_nan=False)
+
+                bridge2._last_state = st
+                bridge2.strategy_config = StrategyConfig(
+                    planner_mode="ga_nn",
+                    ga_population_size=6,
+                    ga_generations=2,
+                    ga_horizon_steps=3,
+                    ga_seed=42,
+                )
+                bridge2._invalidate_dashboard_cache()
+                with (
+                    patch.object(
+                        bridge2, "_persist_runtime_state", wraps=bridge2._persist_runtime_state
+                    ) as mock_persist,
+                    patch.object(
+                        api_srv, "build_action_graph", wraps=api_srv.build_action_graph
+                    ) as mock_bag,
+                ):
+                    cold_ga = bridge2.dashboard(refresh=False)
+                    self.assertEqual(cold_ga["planner_mode"], "ga_nn")
+                    self.assertEqual(mock_persist.call_count, 1)
+                    self.assertEqual(mock_bag.call_count, 1)
+                    for _ in range(3):
+                        warm_ga = bridge2.dashboard(refresh=False)
+                        self.assertEqual(warm_ga["planner_mode"], "ga_nn")
+                        self.assertEqual(
+                            warm_ga["action_graph"]["ga_summary"]["elapsed_ms"],
+                            warm_ga["optimizer_summary"]["elapsed_ms"],
+                        )
+                    self.assertEqual(mock_persist.call_count, 1)
+                    self.assertEqual(mock_bag.call_count, 1)
+            finally:
+                bridge2.close()
+
+    def test_demolish_building_command_guards_cache_invalidation_and_null_planet_offers(self) -> None:
+        import requests
+        import time
+        from spaceinvasion.executor import ExecutionResult
+        from spaceinvasion.optimizer import _LAST_OPTIMIZER_SUMMARY, run_optimizer
+
+        # R3-N1: PlanetState(..., building_offers=None, ship_offers=None, defense_offers=None) safe in run_optimizer
+        p_null_offers = PlanetState(
+            101,
+            "NullOffers",
+            "01:042:07",
+            "normal",
+            25,
+            12,
+            220,
+            Resources(15000, 10000, 8000, 5000),
+            Resources(100000, 100000, 100000, 100000),
+            EnergyBalance(300, 120),
+            buildings={"b1": 4, "b5": 6, "b6": 1},
+            building_offers=None,  # type: ignore[arg-type]
+            ship_offers=None,  # type: ignore[arg-type]
+            defense_offers=None,  # type: ignore[arg-type]
+        )
+        self.assertEqual(p_null_offers.building_offers, ())
+        self.assertEqual(p_null_offers.ship_offers, ())
+        self.assertEqual(p_null_offers.defense_offers, ())
+        st_null_opt = GameState(31, 7, "cmdr", 1000.0, (p_null_offers,), active_planet_id=101)
+        prev_global_summary = _LAST_OPTIMIZER_SUMMARY
+        opt_summary = run_optimizer(
+            st_null_opt,
+            config=StrategyConfig(
+                planner_mode="ga_nn",
+                ga_population_size=6,
+                ga_generations=2,
+                ga_horizon_steps=3,
+                ga_seed=19,
+            ),
+            record_global_summary=False,
+        )
+        self.assertIs(_LAST_OPTIMIZER_SUMMARY, prev_global_summary)
+        self.assertIsInstance(opt_summary.actions, tuple)
+        json.dumps(opt_summary.to_dict(), allow_nan=False)
+
+        # R3-UI-1: POST /command {"command": "demolish_building", ...} across dry_run, guards, and live invalidation
+        p_main = PlanetState(
+            101,
+            "Alpha",
+            "01:042:07",
+            "normal",
+            25,
+            20,
+            220,
+            Resources(25000, 15000, 12000, 6000),
+            Resources(100000, 100000, 100000, 100000),
+            EnergyBalance(500, 120),
+            buildings={"b1": 4, "b2": 3, "b5": 8, "b6": 2, "b7": 2},
+            economy_rates={"resource1": 80, "resource2": 70},
+        )
+        p_remote = PlanetState(
+            202,
+            "Beta",
+            "01:042:09",
+            "normal",
+            20,
+            15,
+            200,
+            Resources(10000, 8000, 6000, 4000),
+            Resources(100000, 100000, 100000, 100000),
+            EnergyBalance(300, 80),
+            buildings={"b1": 3, "b5": 6, "b6": 1},
+        )
+        p_ast = PlanetState(
+            303,
+            "Rock",
+            "01:042:10",
+            "asteroid",
+            10,
+            5,
+            40,
+            Resources(5000, 4000, 3000, 2000),
+            Resources(100000, 100000, 100000, 100000),
+            EnergyBalance(100, 20),
+            buildings={"b7": 2},
+        )
+        st_dem = GameState(
+            31,
+            7,
+            "cmdr",
+            1000.0,
+            (p_main, p_remote, p_ast),
+            active_planet_id=101,
+            researches={"r1": 2, "r2": 5},
+        )
+
+        with (
+            patch("spaceinvasion.api_server.is_debug_port_open", return_value=False),
+            tempfile.TemporaryDirectory() as td,
+        ):
+            td_path = Path(td)
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=td_path / "c.yaml",
+                db_path=td_path / "s.db",
+                log_dir=None,
+                client_factory=lambda _: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                bridge._record_state(st_dem, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+                bridge._economy_rates[101] = {"resource1": 80, "resource2": 70}
+                bridge._last_snapshot_at = time.monotonic()
+
+                # 1. Valid b6 >= 1 dry_run=True with throttled economy_rates & r2 > 0
+                r_ok = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "demolish_building", "building_id": 6, "planet_id": 101, "dry_run": True},
+                    timeout=5,
+                )
+                self.assertEqual(r_ok.status_code, 200, r_ok.text)
+                body_ok = r_ok.json()
+                self.assertTrue(body_ok["ok"])
+                self.assertTrue(body_ok["dry_run"])
+                self.assertFalse(body_ok["executed"])
+                self.assertEqual(body_ok["action"]["kind"], "DEMOLISH_BUILDING")
+                self.assertEqual(body_ok["action"]["target_id"], 6)
+                self.assertEqual(body_ok["action"]["target_name"], "Thermosolar plant")
+                self.assertEqual(body_ok["action"]["target_level"], 1)
+                self.assertTrue(body_ok["action"]["executable_now"])
+                self.assertIn("[DRY-RUN] Would execute DEMOLISH_BUILDING: Thermosolar plant -> L1", body_ok["message"])
+                json.dumps(body_ok, allow_nan=False)
+
+                # 2. General bid != 6 (Fusion plant b5 & Development center b7)
+                r_b5 = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "demolish_building", "building_id": 5, "planet_id": 101, "dry_run": True},
+                    timeout=5,
+                )
+                self.assertEqual(r_b5.status_code, 200)
+                self.assertTrue(r_b5.json()["ok"])
+                self.assertTrue(r_b5.json()["action"]["executable_now"])
+                self.assertEqual(r_b5.json()["action"]["target_name"], "Fusion plant")
+
+                r_b7 = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "demolish_building", "building_id": 7, "planet_id": 101, "dry_run": True},
+                    timeout=5,
+                )
+                self.assertEqual(r_b7.status_code, 200)
+                self.assertTrue(r_b7.json()["action"]["executable_now"])
+                self.assertEqual(r_b7.json()["action"]["target_name"], "Development center")
+
+                # 3. Missing building b99 (level 0)
+                r_b99 = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "demolish_building", "building_id": 99, "planet_id": 101, "dry_run": True},
+                    timeout=5,
+                )
+                self.assertEqual(r_b99.status_code, 200, r_b99.text)
+                body_b99 = r_b99.json()
+                self.assertTrue(body_b99["ok"])
+                self.assertFalse(body_b99["action"]["executable_now"])
+                self.assertEqual(body_b99["action"]["target_name"], "Building 99")
+                self.assertIn("already at Level 0", body_b99["action"]["reason"])
+
+                # 4. Asteroid guard
+                r_ast = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "demolish_building", "building_id": 7, "planet_id": 303, "dry_run": True},
+                    timeout=5,
+                )
+                self.assertEqual(r_ast.status_code, 200)
+                self.assertFalse(r_ast.json()["action"]["executable_now"])
+                self.assertIn("unavailable on asteroid", r_ast.json()["action"]["reason"])
+
+                # 5. Busy building queue (b6 in queue and full 5-slot queue on 101, while remote 202 stays unblocked)
+                st_busy = GameState(
+                    31,
+                    7,
+                    "cmdr",
+                    1005.0,
+                    (p_main, p_remote, p_ast),
+                    active_planet_id=101,
+                    researches={"r1": 2, "r2": 5},
+                    active_queues=tuple(
+                        QueueJob(category="building", name="Pig iron mine", building_id=1, target_level=4 + idx)
+                        for idx in range(5)
+                    ),
+                )
+                bridge._record_state(st_busy, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+                bridge._last_snapshot_at = time.monotonic()
+
+                r_busy_101 = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "demolish_building", "building_id": 6, "planet_id": 101, "dry_run": True},
+                    timeout=5,
+                )
+                self.assertEqual(r_busy_101.status_code, 200)
+                self.assertFalse(r_busy_101.json()["action"]["executable_now"])
+                self.assertEqual(r_busy_101.json()["action"]["reason"], "Building queue busy")
+
+                r_free_202 = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "demolish_building", "building_id": 6, "planet_id": 202, "dry_run": True},
+                    timeout=5,
+                )
+                self.assertEqual(r_free_202.status_code, 200)
+                self.assertTrue(r_free_202.json()["action"]["executable_now"])
+
+                # 6. Energy-deficit guard driven by throttled mine reserve + r2 Energy tech bonus
+                p_tight_e = PlanetState(
+                    101,
+                    "Alpha",
+                    "01:042:07",
+                    "normal",
+                    25,
+                    20,
+                    220,
+                    Resources(25000, 15000, 12000, 6000),
+                    Resources(100000, 100000, 100000, 100000),
+                    EnergyBalance(100, 50),  # net=+50, but b1=8 @ 50% reserves 49 + b6 L2 @ r2=20 loses 15 -> -14 < 0
+                    buildings={"b1": 8, "b5": 4, "b6": 2},
+                    economy_rates={"resource1": 50},
+                )
+                st_deficit = GameState(
+                    31,
+                    7,
+                    "cmdr",
+                    1010.0,
+                    (p_tight_e, p_remote),
+                    active_planet_id=101,
+                    researches={"r2": 20},
+                )
+                bridge._economy_rates[101] = {"resource1": 50}
+                bridge._record_state(st_deficit, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+                bridge._last_snapshot_at = time.monotonic()
+
+                r_def = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "demolish_building", "building_id": 6, "planet_id": 101, "dry_run": True},
+                    timeout=5,
+                )
+                self.assertEqual(r_def.status_code, 200)
+                body_def = r_def.json()
+                self.assertTrue(body_def["ok"])
+                self.assertFalse(body_def["action"]["executable_now"])
+                self.assertIn("Insufficient spare energy", body_def["action"]["reason"])
+
+                # 7. Live dry_run=False state mutation invalidates dashboard cache and returns finite JSON
+                bridge._economy_rates[101] = {"resource1": 80, "resource2": 70}
+                bridge._record_state(st_dem, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+                bridge._last_snapshot_at = time.monotonic()
+                d_before = bridge.dashboard(refresh=False)
+                self.assertEqual(d_before["state"]["planets"][0]["buildings"]["b6"], 2)
+
+                p_main_after = PlanetState(
+                    101,
+                    "Alpha",
+                    "01:042:07",
+                    "normal",
+                    25,
+                    19,
+                    220,
+                    Resources(25000, 15000, 12000, 6000),
+                    Resources(100000, 100000, 100000, 100000),
+                    EnergyBalance(488, 120),
+                    buildings={"b1": 4, "b2": 3, "b5": 8, "b6": 1, "b7": 2},
+                    economy_rates={"resource1": 80, "resource2": 70},
+                )
+                st_after = GameState(
+                    31,
+                    7,
+                    "cmdr",
+                    1020.0,
+                    (p_main_after, p_remote, p_ast),
+                    active_planet_id=101,
+                    researches={"r1": 2, "r2": 5},
+                )
+                with (
+                    patch.object(
+                        bridge._live_executor,
+                        "execute_action",
+                        side_effect=lambda _cli, _st, act, **_kw: ExecutionResult(
+                            executed=True,
+                            dry_run=False,
+                            action=act,
+                            message="Demolished/queued downgrade of Thermosolar plant -> L1 (current_lvl=1).",
+                            updated_state=st_after,
+                        ),
+                    ),
+                    patch.object(
+                        bridge,
+                        "_invalidate_dashboard_cache",
+                        wraps=bridge._invalidate_dashboard_cache,
+                    ) as mock_inv,
+                ):
+                    r_live = requests.post(
+                        f"{base_url}/command",
+                        json={"command": "demolish_building", "building_id": 6, "planet_id": 101, "dry_run": False},
+                        timeout=5,
+                    )
+                self.assertEqual(r_live.status_code, 200, r_live.text)
+                body_live = r_live.json()
+                self.assertTrue(body_live["ok"])
+                self.assertTrue(body_live["executed"])
+                self.assertGreaterEqual(mock_inv.call_count, 1)
+                json.dumps(body_live, allow_nan=False)
+
+                d_after = requests.get(f"{base_url}/dashboard?refresh=0", timeout=5).json()
+                self.assertEqual(d_after["state"]["planets"][0]["buildings"]["b6"], 1)
+                json.dumps(body_live, allow_nan=False)
+                json.dumps(d_after, allow_nan=False)
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
+    def test_intel_views_colonize_forbid_solar_and_game_messages_report_backfill(self) -> None:
+        import time
+        import requests
+        from spaceinvasion.fleet import GalaxySlot, SpyReport
+        from spaceinvasion.storage import GameDatabase
+
+        with tempfile.TemporaryDirectory(prefix="si_intel_backfill_") as td:
+            td_path = Path(td)
+            db_path = td_path / "intel.db"
+            cfg_path = td_path / "config.yaml"
+            cfg_path.write_text(
+                "planner_mode: priority\nallow_build: true\nallow_colonize: true\nmin_colony_fields: 300\n",
+                encoding="utf-8",
+            )
+
+            # Seed legacy un-backfilled game_messages rows directly before reopening GameDatabase
+            db_seed = GameDatabase(db_path)
+            with db_seed._lock:
+                db_seed._conn.execute("DELETE FROM meta WHERE key = 'reports_backfill_v2'")
+                db_seed._conn.execute(
+                    """
+                    INSERT INTO game_messages(
+                        ingested_ts, msg_uid, server_msg_id, folder_type, category, sender, subject, msg_date_text,
+                        coords, body_text, raw_html, parsed_json, deleted_in_game
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    """,
+                    (
+                        1700000010.0,
+                        "uid:99001",
+                        "99001",
+                        "fleet",
+                        "recycle_report",
+                        "System",
+                        "Colony [02:380:12] fleet return",
+                        "11/16/2026 19:00:00",
+                        "02:380:12",
+                        "Pig iron 86.812 11% Message from System: A fleet returning from duty reaches Colony [02:380:12]. 17.036 Pig iron, 12.036 Metal, 14.310 Kryptonite and 18.098 Spice were unloaded. Fleet reports★",
+                        "",
+                        "{}",
+                    ),
+                )
+                db_seed._conn.execute(
+                    """
+                    INSERT INTO game_messages(
+                        ingested_ts, msg_uid, server_msg_id, folder_type, category, sender, subject, msg_date_text,
+                        coords, body_text, raw_html, parsed_json, deleted_in_game
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    """,
+                    (
+                        1700000020.0,
+                        "uid:99002",
+                        "99002",
+                        "fleet",
+                        "general",
+                        "System",
+                        "Space rubble [02:380:05]",
+                        "11/16/2026 18:55:00",
+                        "02:380:05",
+                        "Pig iron 86.812 11% Message from System: 3 Recyclers with a total cargo capacity of 60000 reach their goal [02:380:05]. In space float 17036 Pig iron, 12036 Metal, 14310 Kryptonite, 18098 Spice pieces of rubble. You have processed 17036 Pig iron, 12036 Metal, 14310 Kryptonite, 18098 Spice pieces of rubble. Fleet reports★",
+                        "",
+                        "{}",
+                    ),
+                )
+                db_seed._conn.execute(
+                    """
+                    INSERT INTO game_messages(
+                        ingested_ts, msg_uid, server_msg_id, folder_type, category, sender, subject, msg_date_text,
+                        coords, body_text, raw_html, parsed_json, deleted_in_game
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    """,
+                    (
+                        1700000030.0,
+                        "uid:99003",
+                        "99003",
+                        "battle",
+                        "battle_report",
+                        "System",
+                        "Battle report Spacia [02:383:02] (V:0,A:0)",
+                        "11/16/2026 18:40:00",
+                        "02:383:02",
+                        "Message from System: Battle report #16254211 Attacker ventkx86 vs Defender Spacia [02:383:02] Winner: Attacker",
+                        '<div data-battle-json=\'{"ok":true,"id":16254211,"winner":1,"rounds":1,"stolen":[{"r":1,"v":"3.075"},{"r":2,"v":"2.250"},{"r":3,"v":"5.565"},{"r":4,"v":"2.550"}],"rubble":[],"attacker":{"name":"ventkx86","lost":0},"defender":{"name":"Spacia","lost":0}}\'></div>',
+                        "{}",
+                    ),
+                )
+                db_seed._conn.execute(
+                    """
+                    INSERT INTO game_messages(
+                        ingested_ts, msg_uid, server_msg_id, folder_type, category, sender, subject, msg_date_text,
+                        coords, body_text, raw_html, parsed_json, deleted_in_game
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    """,
+                    (
+                        1700000035.0,
+                        "uid:99004",
+                        "99004",
+                        "spio",
+                        "spy_report",
+                        "System",
+                        "Colony [02:378:15] spy report",
+                        "11/16/2026 17:09:42",
+                        "02:378:15",
+                        '2026-11-16 17:09:42 System Colony [02:378:15] spy report Spaceinvasion { "info": { "si": "classic", "v": 1, "type": "spy-report" }, "planet": { "id": 12447, "coords": "02:378:15", "type": "PLANET", "name": "Colony", "resources": [ 480817, 174581, 357879, 27926 ], "buildings": { "b1": { "name": "Pig iron mine", "level": 24 } }, "ships": false, "defense": false, "researches": false } }',
+                        "",
+                        "{}",
+                    ),
+                )
+                db_seed._conn.commit()
+            db_seed.close()
+
+            # Reopen via GameApiBridge so startup reports_backfill_v2 runs automatically (zero row deletions!)
+            p_home = PlanetState(
+                planet_id=12476,
+                name="Colony",
+                coords="02:380:12",
+                planet_type="normal",
+                temperature=-5,
+                fields_used=126,
+                fields_max=230,
+                resources=Resources(90000, 65000, 45000, 25000),
+                storage=Resources(500000, 500000, 500000, 500000),
+                energy=EnergyBalance(5500, 1500),
+                buildings={"b1": 19, "b2": 18, "b5": 21, "b6": 10, "b13": 6},
+                ships={"s1": 12, "s8": 1, "s10": 11, "s11": 4},
+                building_offers=_sample_state().planets[0].building_offers,
+            )
+            st = GameState(
+                universe_id=31,
+                user_id=103603,
+                nickname="ventkx86",
+                timestamp=1700000100.0,
+                planets=(p_home,),
+                active_planet_id=12476,
+                researches={"r1": 4, "r2": 8, "r3": 6, "r6": 3},
+                speedup_factor=10.0,
+            )
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
+            fake_client.read_full_snapshot.return_value = st
+
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=None,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            assert bridge._db is not None
+            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge._last_snapshot_at = time.monotonic()
+
+            # Seed scanned free slots + spied 325-field slot + bash block
+            slots = [
+                GalaxySlot("02:380:05", 5, name="DebrisTarget", owner="Pirate", status_color="yellow", has_debris=True),
+                GalaxySlot("02:380:09", 9, status_color="free"),
+                GalaxySlot("02:380:10", 10, status_color="free"),
+                GalaxySlot("02:378:15", 15, name="Colony", owner="Rival", status_color="white"),
+            ]
+            bridge._db.record_galaxy_scan(2, 380, slots[:3], ts=1700000050.0)
+            bridge._db.record_galaxy_slots(slots, ts=1700000050.0)
+            bridge._db.record_spy_report(
+                SpyReport(
+                    target_coords="02:380:09",
+                    owner="",
+                    resources=Resources(),
+                    uninhabited_fields=325,
+                ),
+                status_color="free",
+                ts=1700000060.0,
+            )
+            bridge._db.record_spy_report(
+                SpyReport(
+                    target_coords="02:383:02",
+                    owner="Spacia",
+                    planet_name="Spacia",
+                    is_spacia=True,
+                    resources=Resources(60000, 40000, 30000, 20000),
+                ),
+                ts=1700000070.0,
+            )
+            bridge._db.record_target_block("02:378:15", blocked_until_ts=time.time() + 3600.0, reason="bash protection", is_bash=True)
+            bridge._db.record_raid("02:383:02", is_exempt=True, outcome="win", loot={"pig_iron": 3075, "spice": 2550})
+
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                # Verify all 4 game_messages rows remain preserved (append-only, 0 deleted)
+                self.assertEqual(bridge._db.summary()["counts"]["game_messages"], 4)
+
+                r_cfg = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "update_config", "config": {"forbid_planetary_solar": True}},
+                    timeout=5,
+                )
+                self.assertEqual(r_cfg.status_code, 200, r_cfg.text)
+                self.assertTrue(r_cfg.json()["config"]["forbid_planetary_solar"])
+
+                r_esp = requests.post(f"{base_url}/command", json={"command": "espionage_intel"}, timeout=5).json()
+                self.assertTrue(r_esp["ok"])
+                self.assertGreaterEqual(r_esp["summary"]["spied_targets"], 2)
+                self.assertGreaterEqual(r_esp["summary"]["spacia_count"], 1)
+
+                r_col = requests.post(f"{base_url}/command", json={"command": "colony_candidates"}, timeout=5).json()
+                self.assertTrue(r_col["ok"])
+                self.assertEqual(r_col["min_colony_fields"], 300)
+                self.assertEqual(r_col["qualified_count"], 1)
+                by_coords = {c["coords"]: c for c in r_col["candidates"]}
+                self.assertIn(by_coords["02:380:09"]["grade"], ("S", "A+"))
+                self.assertTrue(by_coords["02:380:09"]["probed"])
+                self.assertEqual(by_coords["02:380:10"]["grade"], "?")
+                self.assertFalse(by_coords["02:380:10"]["probed"])
+
+                r_atk = requests.post(f"{base_url}/command", json={"command": "attack_results"}, timeout=5).json()
+                self.assertTrue(r_atk["ok"])
+                self.assertEqual(r_atk["summary"]["total_battles"], 1)
+                self.assertEqual(r_atk["summary"]["wins"], 1)
+                self.assertGreater(r_atk["battles"][0]["loot"]["spice_eq"], 5000.0)
+                self.assertEqual(r_atk["raid_stats"]["total_24h"], 1)
+                self.assertGreaterEqual(r_atk["summary"]["active_blocks_count"], 1)
+
+                r_rec = requests.post(f"{base_url}/command", json={"command": "recycler_results"}, timeout=5).json()
+                self.assertTrue(r_rec["ok"])
+                self.assertEqual(r_rec["summary"]["total_runs"], 1)
+                self.assertEqual(r_rec["summary"]["total_pig_iron"], 17036)
+                self.assertEqual(r_rec["summary"]["total_metal"], 12036)
+                self.assertEqual(r_rec["summary"]["total_kryptonite"], 14310)
+                self.assertEqual(r_rec["summary"]["total_spice"], 18098)
+                # Fleet return was reclassified out of recycle_reports and appears under other_emails!
+                self.assertEqual(len(r_rec["other_emails"]), 1)
+                self.assertEqual(r_rec["other_emails"][0]["category"], "fleet_return")
+                self.assertNotIn("86.812", r_rec["other_emails"][0]["body_text"])
+
+                with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                    r_col_sim = requests.post(
+                        f"{base_url}/command",
+                        json={"command": "colonize", "target_coords": "02:380:09", "planet_id": 12476, "dry_run": True},
+                        timeout=5,
+                    ).json()
+                self.assertTrue(r_col_sim["ok"])
+                self.assertTrue(r_col_sim["dry_run"])
+                self.assertEqual(r_col_sim["action"]["kind"], "COLONIZE")
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
+
 if __name__ == "__main__":
     unittest.main()

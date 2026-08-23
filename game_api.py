@@ -46,6 +46,7 @@ from spaceinvasion.reloader import (  # noqa: E402
 WATCH_PATHS = (
     Path("game_api.py"),
     Path("config.yaml"),
+    Path("spaceinvasion/action_graph.py"),
     Path("spaceinvasion/auth.py"),
     Path("spaceinvasion/browser.py"),
     Path("spaceinvasion/config.py"),

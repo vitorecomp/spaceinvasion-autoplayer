@@ -2118,6 +2118,106 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual((esc_go.priority, esc_go.target_name, esc_go.executable_now), ("P2", "Save -> 02:380:01", True))
         self.assertFalse(any(a.kind == "ATTACK" and a.executable_now for a in acts_esc_go))
 
+    def test_forbid_planetary_solar_demolish_b6_and_300_plus_colonization_in_priority_and_ga_nn(self) -> None:
+        from dataclasses import replace
+
+        # 1. Normal planet with b6=10 + spare Fusion energy emits P1 DEMOLISH_BUILDING (b6: 10 -> 9)
+        #    and strictly forbids b6/s9 even at -120C or hot tight fields when forbid_planetary_solar=True
+        home_b6 = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=-120,
+            fields_used=126,
+            fields_max=230,
+            resources=Resources(80_000, 50_000, 80_000, 80_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(4500, 540),
+            buildings={"b1": 20, "b2": 16, "b3": 20, "b4": 18, "b5": 21, "b6": 10, "b7": 8, "b8": 6, "b9": 6},
+            ships={"s8": 1, "s10": 5},
+            building_offers=(
+                BuildingOffer(5, "Fusion plant", 21, 22, Resources(20_000, 10_000, 5_000, 0), True, "Build", "?b=5"),
+                BuildingOffer(6, "Thermosolar plant", 10, 11, Resources(1_000, 500, 0, 0), True, "Build", "?b=6"),
+            ),
+            ship_offers=(
+                UnitOffer("ship", 9, "Solar cells", 0, Resources(0, 2_000, 200, 400), True, "ship[9]"),
+            ),
+        )
+        raid_targets = (
+            {"coords": "02:380:08", "owner": "", "status_color": "free", "uninhabited_fields": 240, "last_spied_ts": 1000.0},
+            {"coords": "02:380:09", "owner": "", "status_color": "free", "uninhabited_fields": 318, "last_spied_ts": 1005.0},
+        )
+        st_dem_col = GameState(
+            31,
+            103603,
+            "ventkx86",
+            2000.0,
+            (home_b6,),
+            active_planet_id=12476,
+            researches={"r1": 4, "r2": 6, "r3": 4, "r4": 5},
+            raid_targets=raid_targets,
+        )
+        cfg_strict = StrategyConfig(
+            forbid_planetary_solar=True,
+            allow_colonize=True,
+            allow_galaxy_scan=True,
+            min_colony_fields=300,
+            shipyard_targets={"solar-cells": 10, "small-transport": 2},
+            ga_population_size=6,
+            ga_generations=2,
+            ga_horizon_steps=4,
+            ga_seed=7,
+        )
+        for mode in ("priority", "ga_nn"):
+            acts = plan_actions(st_dem_col, config=replace(cfg_strict, planner_mode=mode), now_ts=2000.0)
+            self.assertFalse(any(a.kind in ("BUILD", "WAIT_RESOURCES") and a.target_id == 6 for a in acts), mode)
+            self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 9 for a in acts), mode)
+            dem = next((a for a in acts if a.kind == "DEMOLISH_BUILDING"), None)
+            self.assertIsNotNone(dem, mode)
+            assert dem is not None
+            self.assertEqual((dem.priority, dem.target_id, dem.target_level, dem.executable_now), ("P1", 6, 9, True))
+            col = next((a for a in acts if a.kind == "COLONIZE"), None)
+            self.assertIsNotNone(col, mode)
+            assert col is not None
+            self.assertIn("02:380:09", col.target_name)
+            self.assertIn("318", col.target_name)
+            self.assertTrue(col.executable_now)
+
+        # 2. Hot tight-field planet with negative energy still builds Fusion (NOT Solar cells) under forbid_planetary_solar=True,
+        #    while an Asteroid with negative energy STILL builds Solar cells (s9)!
+        hot_planet = replace(
+            home_b6,
+            planet_id=12477,
+            coords="02:380:02",
+            temperature=85,
+            fields_used=225,
+            fields_max=230,
+            energy=EnergyBalance(400, 650),
+            buildings={"b1": 15, "b5": 10, "b6": 0, "b9": 3},
+        )
+        asteroid = PlanetState(
+            planet_id=12478,
+            name="Asteroid",
+            coords="02:380:16",
+            planet_type="asteroid",
+            temperature=20,
+            fields_used=5,
+            fields_max=25,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(50, 120),
+            buildings={"b7": 2, "b9": 2, "b19": 1},
+            ship_offers=(
+                UnitOffer("ship", 9, "Solar cells", 2, Resources(0, 2_000, 200, 400), True, "ship[9]"),
+            ),
+        )
+        st_mixed = GameState(31, 103603, "ventkx86", 2000.0, (hot_planet, asteroid), active_planet_id=12477, researches={"r2": 4})
+        acts_mixed = plan_actions(st_mixed, config=cfg_strict, now_ts=2000.0)
+        self.assertFalse(any(a.planet_id == 12477 and a.kind == "BUILD_SHIP" and a.target_id == 9 for a in acts_mixed))
+        self.assertTrue(any(a.planet_id == 12477 and a.target_id == 5 for a in acts_mixed))
+        self.assertTrue(any(a.planet_id == 12478 and a.kind == "BUILD_SHIP" and a.target_id == 9 and a.executable_now for a in acts_mixed))
+
 
 if __name__ == "__main__":
     unittest.main()

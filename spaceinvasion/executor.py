@@ -27,7 +27,11 @@ from selenium.webdriver.support.ui import Select
 
 from spaceinvasion import game_data
 from spaceinvasion.client import GameBrowserClient, PageViewLimiter
-from spaceinvasion.fleet import GalaxySlot, parse_galaxy_system_html
+from spaceinvasion.fleet import (
+    GalaxySlot,
+    parse_galaxy_system_html,
+    parse_send_fleet_mission_block,
+)
 from spaceinvasion.logging_utils import append_crash_debug_log, redact_sensitive
 from spaceinvasion.state import (
     GameState,
@@ -176,6 +180,10 @@ class ExecutionResult:
     updated_state: Optional[GameState] = None
     observed_active_planet_id: Optional[int] = None
     observed_active_planet_confirmed: Optional[bool] = None
+    target_cooldown_seconds: Optional[float] = None
+    target_block_reason: Optional[str] = None
+    target_is_bash_block: bool = False
+    clear_target_debris: bool = False
 
 
 class ActionExecutor:
@@ -186,17 +194,21 @@ class ActionExecutor:
         *,
         dry_run: bool = True,
         max_actions_per_hour: int = 30,
+        enforce_hourly_cap: bool = True,
         action_delay_range: tuple[float, float] = (0.4, 0.9),
         allow_fleetsave: bool = False,
         allow_raids: bool = False,
+        allow_colonize: bool = False,
         page_limiter: Optional[PageViewLimiter] = None,
         max_limiter_wait: Optional[float] = None,
     ) -> None:
         self.dry_run = dry_run
         self.max_actions_per_hour = _safe_hourly_cap(max_actions_per_hour, 30)
+        self.enforce_hourly_cap = bool(enforce_hourly_cap)
         self.action_delay_range = action_delay_range
         self.allow_fleetsave = allow_fleetsave
         self.allow_raids = allow_raids
+        self.allow_colonize = allow_colonize
         self.page_limiter = page_limiter
         self.max_limiter_wait: Optional[float] = _safe_optional_wait_limit(max_limiter_wait)
         self._recent_timestamps: Deque[float] = deque()
@@ -682,12 +694,36 @@ class ActionExecutor:
                 priority="interactive",
             )
 
-        html = _call_with_optional_priority(
-            client.navigate_menu,
-            menu_action,
-            priority="interactive",
-        )
-        html_str = html if isinstance(html, str) else ""
+        is_real_selenium = getattr(
+            getattr(client, "driver", None), "__class__", object
+        ).__module__.startswith("selenium")
+        html_str = ""
+        if is_real_selenium:
+            try:
+                client._switch_frame("F_Hauptframe")
+                cur_url = str(client.driver.execute_script("return location.href;") or "")
+                cur_html = str(client.driver.page_source or "")
+                cur_url_l = cur_url.lower()
+                if (
+                    f"action={menu_action}".lower() in cur_url_l
+                    and "internalbuilditem" not in cur_url_l
+                    and cur_html.strip()
+                    and not is_server_rate_limit_html(cur_html)
+                    and "bitmeup-login" not in cur_html.lower()
+                ):
+                    html_str = cur_html
+            except Exception:
+                html_str = ""
+
+        if not html_str:
+            html = _call_with_optional_priority(
+                client.navigate_menu,
+                menu_action,
+                priority="interactive",
+            )
+            html_str = html if isinstance(html, str) else ""
+        else:
+            html = html_str
         obs_pid = self._extract_selected_planet_id(html_str, menu_action)
         if obs_pid is not None:
             self._record_observed_planet(obs_pid, confirmed=True)
@@ -928,6 +964,91 @@ class ActionExecutor:
         detail = (
             f"Built/queued {_safe_str(action.target_name)} -> L{tgt_txt} "
             f"(verified={'ok' if in_queue else 'submitted'}, current_lvl={new_lvl_txt})."
+        )
+        updated_state = self._build_updated_state(
+            client,
+            state,
+            action,
+            updated,
+            page_html=after_html if isinstance(after_html, str) else "",
+            include_buildings=True,
+        )
+        return ExecutionResult(
+            executed=True,
+            dry_run=False,
+            action=action,
+            message=detail,
+            updated_state=updated_state,
+        )
+
+    def _execute_demolish_building(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+    ) -> ExecutionResult:
+        html = self._navigate_and_select_planet(client, state, "internalBuildings", action.planet_id)
+        mismatch_pid = self._confirmed_planet_mismatch(action.planet_id)
+        if mismatch_pid is not None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=(
+                    f"Aborted: active planet is {mismatch_pid}, "
+                    f"not requested planet {game_data.fmt_compact_int(action.planet_id)}."
+                ),
+                observed_active_planet_id=mismatch_pid,
+                observed_active_planet_confirmed=True,
+            )
+        planet = next((p for p in state.planets if p.planet_id == action.planet_id), None)
+        tid = game_data.cap_json_int(game_data.safe_int(action.target_id, 0))
+        if planet is not None and planet.building_level(tid) <= 0:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: {_safe_str(action.target_name)} is already at level 0.",
+            )
+
+        open_detail_fn = getattr(client, "open_building_detail", None)
+        detail_html = html
+        if callable(open_detail_fn) and f"destructableid={tid}" not in (html or "").lower():
+            d_res = _call_with_optional_priority(open_detail_fn, tid, priority="interactive")
+            if isinstance(d_res, str) and d_res:
+                detail_html = d_res
+
+        selector = (
+            f'input[onclick*="destructableID={tid}"], '
+            f'button[onclick*="destructableID={tid}"], '
+            f'a[href*="destructableID={tid}"], '
+            f'a[onclick*="destructableID={tid}"]'
+        )
+
+        def _ready(page_html: str) -> bool:
+            return f"destructableid={tid}" in (page_html or "").lower()
+
+        after_html, err = self._click_dom_link_with_retry(client, action, detail_html, selector, _ready)
+        if err is not None:
+            return err
+        assert after_html is not None
+
+        updated = _call_with_optional_priority(
+            client.read_planets_overview,
+            refresh=True,
+            priority="interactive",
+        )
+        after_planet = next(
+            (p for p in updated.planets if p.planet_id == action.planet_id),
+            updated.active_planet(),
+        )
+        new_lvl = after_planet.building_level(tid) if after_planet else None
+        tgt_lvl_opt = game_data.safe_optional_int(action.target_level, None)
+        tgt_txt = game_data.fmt_compact_int(tgt_lvl_opt) if tgt_lvl_opt is not None else "0"
+        new_lvl_txt = game_data.fmt_compact_int(new_lvl) if new_lvl is not None else "None"
+        detail = (
+            f"Demolished/queued downgrade of {_safe_str(action.target_name)} -> L{tgt_txt} "
+            f"(current_lvl={new_lvl_txt})."
         )
         updated_state = self._build_updated_state(
             client,
@@ -1716,6 +1837,28 @@ class ActionExecutor:
             want_tokens: tuple[str, ...] = ("attack", "angriff", "angreif")
         elif mission_kind == "ESCAPE":
             want_tokens = ("escape", "flucht", "save")
+        elif mission_kind == "RECYCLE":
+            want_tokens = (
+                "recycle",
+                "recycl",
+                "rubble",
+                "debris",
+                "trümmer",
+                "truemmer",
+                "abbau",
+                "harvest",
+                "sammeln",
+                "tf",
+            )
+        elif mission_kind == "COLONIZE":
+            want_tokens = (
+                "colonize",
+                "colonisation",
+                "colonization",
+                "kolonisier",
+                "colony",
+                "siedel",
+            )
         else:
             want_tokens = ("spy", "spio", "spionier", "espionage")
 
@@ -1975,6 +2118,16 @@ class ActionExecutor:
                         astro_cb = client.driver.find_element(By.NAME, "astro")
                     if not astro_cb.is_selected():
                         self._safe_click(client, astro_cb)
+                if mission_kind == "RECYCLE":
+                    for rb_name in ("rubblefield", "rubble", "debris", "tf"):
+                        if rb_name in soup_input_names:
+                            if _field_needs_scoping(rb_name):
+                                rb_cb = client.driver.find_element(By.CSS_SELECTOR, _scoped_field_css(rb_name))
+                            else:
+                                rb_cb = client.driver.find_element(By.NAME, rb_name)
+                            if str(rb_cb.get_attribute("type") or "").strip().lower() == "checkbox" and not rb_cb.is_selected():
+                                self._safe_click(client, rb_cb)
+                            break
 
                 cont_btn = client.driver.find_element(By.CSS_SELECTOR, step1_submit_css)
                 if not paced1:
@@ -2050,6 +2203,19 @@ class ActionExecutor:
                 radios = client.driver.find_elements(By.CSS_SELECTOR, f'{form_css} input[type="radio"]')
                 mission_radio = self._match_mission_radio(send_soup, form_css, radios, mission_kind)
                 if mission_radio is None:
+                    mission_block = parse_send_fleet_mission_block(send_html, mission_kind)
+                    if mission_block is not None:
+                        blk_reason, blk_cd, blk_bash = mission_block
+                        return ExecutionResult(
+                            executed=False,
+                            dry_run=False,
+                            action=action,
+                            message=f"Aborted: {blk_reason}.",
+                            target_cooldown_seconds=blk_cd,
+                            target_block_reason=blk_reason,
+                            target_is_bash_block=blk_bash,
+                            clear_target_debris=(mission_kind == "RECYCLE"),
+                        )
                     append_crash_debug_log(
                         component="executor._dispatch_fleet_mission",
                         event="mission_radio_missing",
@@ -2134,6 +2300,19 @@ class ActionExecutor:
                 )
 
         confirm_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token2)
+        confirm_block = parse_send_fleet_mission_block(confirm_html, mission_kind)
+        if confirm_block is not None:
+            blk_reason, blk_cd, blk_bash = confirm_block
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: {blk_reason}.",
+                target_cooldown_seconds=blk_cd,
+                target_block_reason=blk_reason,
+                target_is_bash_block=blk_bash,
+                clear_target_debris=(mission_kind == "RECYCLE"),
+            )
         server_err = self._extract_fleet_server_error(confirm_html)
         if server_err:
             append_crash_debug_log(
@@ -2173,6 +2352,10 @@ class ActionExecutor:
             verb = "spy probe"
         elif mission_kind == "ESCAPE":
             verb = "escape flight"
+        elif mission_kind == "RECYCLE":
+            verb = "recycler harvest"
+        elif mission_kind == "COLONIZE":
+            verb = "colonization fleet"
         else:
             verb = "attack"
         return ExecutionResult(
@@ -2184,6 +2367,7 @@ class ActionExecutor:
                 f"from [{coords_s}]."
             ),
             updated_state=updated_state,
+            clear_target_debris=(mission_kind == "RECYCLE"),
         )
 
     def _execute_escape_flight(
@@ -2310,6 +2494,60 @@ class ActionExecutor:
             active_planet_confirmed=active_planet_confirmed,
         )
 
+    def _execute_recycle(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+        *,
+        active_planet_confirmed: bool = True,
+    ) -> ExecutionResult:
+        planet = next((p for p in state.planets if p.planet_id == action.planet_id), None) or state.active_planet()
+        avail = game_data.cap_json_int(game_data.safe_int(planet.ships.get("s11", 0), 0)) if planet is not None else 0
+        if avail <= 0:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: no recyclers (s11) stationed on [{_safe_str(action.planet_coords)}].",
+            )
+        req_qty = game_data.safe_optional_int(action.target_level, None)
+        rec_count = min(avail, max(1, game_data.cap_json_int(req_qty))) if req_qty is not None else avail
+        return self._dispatch_fleet_mission(
+            client,
+            state,
+            action,
+            ships_to_send={"s11": rec_count},
+            mission_kind="RECYCLE",
+            active_planet_confirmed=active_planet_confirmed,
+        )
+
+    def _execute_colonize(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+        *,
+        active_planet_confirmed: bool = True,
+    ) -> ExecutionResult:
+        planet = next((p for p in state.planets if p.planet_id == action.planet_id), None) or state.active_planet()
+        avail = game_data.cap_json_int(game_data.safe_int(planet.ships.get("s8", 0), 0)) if planet is not None else 0
+        if avail <= 0:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: no colony ship (s8) stationed on [{_safe_str(action.planet_coords)}].",
+            )
+        return self._dispatch_fleet_mission(
+            client,
+            state,
+            action,
+            ships_to_send={"s8": 1},
+            mission_kind="COLONIZE",
+            active_planet_confirmed=active_planet_confirmed,
+        )
+
     def execute_action(
         self,
         client: GameBrowserClient,
@@ -2318,7 +2556,7 @@ class ActionExecutor:
         *,
         active_planet_confirmed: bool = True,
     ) -> ExecutionResult:
-        """Execute one approved action (`BUILD`, `CLAIM_TUTORIAL`, `RESEARCH`, `BUILD_SHIP`, `THROTTLE_BUILDING`, `SCAN_GALAXY`, `SPY`, `ATTACK`)."""
+        """Execute one approved action (`BUILD`, `DEMOLISH_BUILDING`, `CLAIM_TUTORIAL`, `RESEARCH`, `BUILD_SHIP`, `THROTTLE_BUILDING`, `SCAN_GALAXY`, `SPY`, `RECYCLE`, `COLONIZE`, `ATTACK`)."""
         self._reset_observed_planet_tracking()
         if not action.executable_now:
             return ExecutionResult(
@@ -2330,6 +2568,7 @@ class ActionExecutor:
 
         supported = (
             "BUILD",
+            "DEMOLISH_BUILDING",
             "CLAIM_TUTORIAL",
             "RESEARCH",
             "BUILD_SHIP",
@@ -2337,6 +2576,8 @@ class ActionExecutor:
             "ESCAPE_FLIGHT",
             "SCAN_GALAXY",
             "SPY",
+            "RECYCLE",
+            "COLONIZE",
             "ATTACK",
         )
         if action.kind not in supported:
@@ -2347,7 +2588,7 @@ class ActionExecutor:
                 message=f"Skipped: unsupported live action kind {action.kind}.",
             )
         if (
-            action.kind in ("BUILD", "RESEARCH", "BUILD_SHIP", "THROTTLE_BUILDING")
+            action.kind in ("BUILD", "DEMOLISH_BUILDING", "RESEARCH", "BUILD_SHIP", "THROTTLE_BUILDING")
             and action.target_id is None
         ):
             return ExecutionResult(
@@ -2366,6 +2607,12 @@ class ActionExecutor:
                 suffix = f" x{game_data.fmt_compact_int(tgt_lvl_opt)}"
             elif action.kind == "SPY":
                 suffix = f" ({max(1, game_data.cap_json_int(game_data.safe_int(action.target_level, 1)))}x s10)"
+            elif action.kind == "RECYCLE":
+                suffix = f" ({max(1, game_data.cap_json_int(game_data.safe_int(action.target_level, 1)))}x s11)"
+            elif action.kind == "COLONIZE":
+                suffix = " (1x s8)"
+            elif tgt_lvl_opt is not None and action.kind == "DEMOLISH_BUILDING":
+                suffix = f" -> L{game_data.fmt_compact_int(tgt_lvl_opt)}"
             elif tgt_lvl_opt:
                 suffix = f" -> L{game_data.fmt_compact_int(tgt_lvl_opt)}"
             return ExecutionResult(
@@ -2383,6 +2630,14 @@ class ActionExecutor:
                 message="Guarded: live ESCAPE_FLIGHT requires allow_fleetsave=true in config.",
             )
 
+        if action.kind == "COLONIZE" and not self.allow_colonize:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message="Guarded: live COLONIZE requires allow_colonize=true in config.",
+            )
+
         if action.kind == "ATTACK" and not self.allow_raids:
             return ExecutionResult(
                 executed=False,
@@ -2391,7 +2646,7 @@ class ActionExecutor:
                 message="Guarded: live ATTACK requires allow_raids=true in config.",
             )
 
-        if action.kind != "SCAN_GALAXY" and self.remaining_hourly_budget() <= 0:
+        if self.enforce_hourly_cap and action.kind != "SCAN_GALAXY" and self.remaining_hourly_budget() <= 0:
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
@@ -2403,6 +2658,8 @@ class ActionExecutor:
             res = self._execute_claim_tutorial(client, action, state=state)
         elif action.kind == "BUILD":
             res = self._execute_build(client, state, action)
+        elif action.kind == "DEMOLISH_BUILDING":
+            res = self._execute_demolish_building(client, state, action)
         elif action.kind == "RESEARCH":
             res = self._execute_research(client, state, action)
         elif action.kind == "BUILD_SHIP":
@@ -2413,6 +2670,20 @@ class ActionExecutor:
             res = self._execute_scan_galaxy(client, state, action)
         elif action.kind == "SPY":
             res = self._execute_spy(
+                client,
+                state,
+                action,
+                active_planet_confirmed=active_planet_confirmed,
+            )
+        elif action.kind == "RECYCLE":
+            res = self._execute_recycle(
+                client,
+                state,
+                action,
+                active_planet_confirmed=active_planet_confirmed,
+            )
+        elif action.kind == "COLONIZE":
+            res = self._execute_colonize(
                 client,
                 state,
                 action,

@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
+import hashlib
+import json
 import math
 import os
 import re
 import time
-from typing import Any, Deque, Mapping, Optional
+from typing import Any, Collection, Deque, Iterable, Mapping, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
 from spaceinvasion import game_data
+from spaceinvasion.logging_utils import redact_sensitive
 from spaceinvasion.state import PlanetState, Resources, parse_si_int
 
 # Map `#json-container` / form ship keys (`s1`..) to wiki slugs
@@ -94,6 +97,31 @@ class SpyReport:
     dug_in: Optional[bool] = None
     uninhabited_fields: Optional[int] = None
     is_spacia: bool = False
+    buildings: dict[str, int] = field(default_factory=dict)
+    researches: dict[str, int] = field(default_factory=dict)
+    planet_name: str = ""
+    server_msg_id: str = ""
+    msg_date_text: str = ""
+    raw_text: str = ""
+
+
+@dataclass(frozen=True)
+class InboxMessage:
+    """Single archived SpaceInvasion `internalMessages` entry (any folder/category)."""
+
+    msg_uid: str
+    server_msg_id: str = ""
+    folder_type: str = ""
+    category: str = "other"
+    msg_date_text: str = ""
+    sender: str = ""
+    subject: str = ""
+    coords: str = ""
+    body_text: str = ""
+    raw_html: str = ""
+    parsed_data: dict[str, Any] = field(default_factory=dict)
+    spy_report: Optional[SpyReport] = None
+    body_complete: bool = True
 
 
 @dataclass(frozen=True)
@@ -434,12 +462,14 @@ def simulate_raid_outcome(
 
 
 class BashTracker:
-    """Enforce SpaceInvasion's 3-attacks-per-24h bash cap on active players."""
+    """Enforce SpaceInvasion's 3-attacks-per-24h bash cap and server-enforced target blocks."""
 
     def __init__(self, *, max_active_attacks_24h: int = 3, war_max_24h: int = 5) -> None:
         self.max_active_attacks_24h = max_active_attacks_24h
         self.war_max_24h = war_max_24h
         self._history: dict[str, Deque[float]] = defaultdict(deque)
+        self._blocked_until: dict[str, float] = {}
+        self._block_reasons: dict[str, str] = {}
 
     @staticmethod
     def _norm_coords(target_coords: str) -> str:
@@ -467,6 +497,44 @@ class BashTracker:
         self._prune(key, now)
         self._history[key].append(now)
 
+    def record_block(
+        self,
+        target_coords: str,
+        blocked_until_ts: float,
+        *,
+        reason: str = "",
+    ) -> None:
+        key = self._norm_coords(target_coords)
+        if not key:
+            return
+        try:
+            until = float(blocked_until_ts)
+        except Exception:
+            return
+        if not math.isfinite(until) or until <= 0.0:
+            return
+        prev = self._blocked_until.get(key, 0.0)
+        if until >= prev:
+            self._blocked_until[key] = until
+            if reason:
+                self._block_reasons[key] = game_data.safe_key(reason).strip()
+
+    def blocked_until(self, target_coords: str, *, timestamp: Optional[float] = None) -> float:
+        now = self._resolve_ts(timestamp)
+        key = self._norm_coords(target_coords)
+        until = self._blocked_until.get(key, 0.0)
+        if until <= now:
+            if key in self._blocked_until:
+                self._blocked_until.pop(key, None)
+                self._block_reasons.pop(key, None)
+            return 0.0
+        return until
+
+    def block_reason(self, target_coords: str, *, timestamp: Optional[float] = None) -> str:
+        if self.blocked_until(target_coords, timestamp=timestamp) <= 0.0:
+            return ""
+        return self._block_reasons.get(self._norm_coords(target_coords), "")
+
     def attacks_last_24h(self, target_coords: str, *, timestamp: Optional[float] = None) -> int:
         now = self._resolve_ts(timestamp)
         key = self._norm_coords(target_coords)
@@ -482,10 +550,111 @@ class BashTracker:
         in_declared_war: bool = False,
         timestamp: Optional[float] = None,
     ) -> bool:
+        if self.blocked_until(target_coords, timestamp=timestamp) > 0.0:
+            return False
         if is_inactive or is_spacia:
             return True
         cap = self.war_max_24h if in_declared_war else self.max_active_attacks_24h
         return self.attacks_last_24h(target_coords, timestamp=timestamp) < cap
+
+
+_MISSION_FORBIDDEN_PATTERNS: dict[str, re.Pattern[str]] = {
+    "ATTACK": re.compile(
+        r"\b(?:Attack\s*\(\s*forbidden\s*\)|Angriff\s*\(\s*verboten\s*\))\s*:\s*([^<\r\n]+)",
+        re.IGNORECASE,
+    ),
+    "SPY": re.compile(
+        r"\b(?:(?:Spying|Espionage|Spy)\s*\(\s*forbidden\s*\)|Spionage\s*\(\s*verboten\s*\))\s*:\s*([^<\r\n]+)",
+        re.IGNORECASE,
+    ),
+    "RECYCLE": re.compile(
+        r"\b(?:(?:Recycl(?:e|ing)|Harvest|Rubble(?:\s+field)?|Debris(?:\s+field)?)\s*\(\s*forbidden\s*\)|(?:Abbau|Recycl(?:e|ing)|Tr[üu]mmerfeld)\s*\(\s*verboten\s*\))\s*:\s*([^<\r\n]+)",
+        re.IGNORECASE,
+    ),
+    "ESCAPE": re.compile(
+        r"\b(?:(?:Escape(?:\s+flight)?|Save)\s*\(\s*forbidden\s*\)|Flucht(?:flug)?\s*\(\s*verboten\s*\))\s*:\s*([^<\r\n]+)",
+        re.IGNORECASE,
+    ),
+}
+_BASH_RESET_TIMER_RE = re.compile(
+    r"(?:Reset\s+in|Zur[üu]cksetzen\s+in)\s+(\d{1,3}):(\d{2}):(\d{2})",
+    re.IGNORECASE,
+)
+
+
+def parse_send_fleet_mission_block(
+    html: str,
+    mission_kind: str,
+) -> Optional[tuple[str, float, bool]]:
+    """Parse mission-specific `(forbidden)` / bash-protection banners on `internalSendFleet`.
+
+    Returns `(reason, cooldown_seconds, is_bash_block)` or `None` when the requested
+    `mission_kind` is not explicitly forbidden (e.g., ignores benign `Transport (forbidden)`
+    notices on inactive targets when launching `ATTACK`, `SPY`, `RECYCLE`, or `ESCAPE`).
+    """
+    if not isinstance(html, str) or not html.strip():
+        return None
+    mk = game_data.safe_key(mission_kind).strip().upper()
+    pat = _MISSION_FORBIDDEN_PATTERNS.get(mk)
+    if pat is None:
+        return None
+
+    soup = BeautifulSoup(html, "html.parser")
+    lines = [
+        " ".join(raw_ln.split()).strip()
+        for raw_ln in soup.get_text("\n", strip=True).splitlines()
+        if raw_ln and raw_ln.strip()
+    ]
+    joined_lines = "\n".join(lines)
+    m_forb = pat.search(joined_lines)
+    if m_forb is None and mk == "RECYCLE":
+        low_all = joined_lines.lower()
+        for phrase in (
+            "no rubble field",
+            "no debris field",
+            "kein trümmerfeld",
+            "kein truemmerfeld",
+        ):
+            if phrase in low_all:
+                return (f"Recycle (forbidden): {phrase}", 1800.0, False)
+    if m_forb is None:
+        return None
+
+    full_match = " ".join(m_forb.group(0).split()).strip()
+    m_reset = _BASH_RESET_TIMER_RE.search(joined_lines)
+    reset_seconds: Optional[float] = None
+    reset_label = ""
+    if m_reset is not None:
+        hh = int(m_reset.group(1))
+        mm = int(m_reset.group(2))
+        ss = int(m_reset.group(3))
+        reset_seconds = float(hh * 3600 + mm * 60 + ss) + 30.0
+        reset_label = f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+    low_match = full_match.lower()
+    low_page = joined_lines.lower()
+    is_bash = mk == "ATTACK" and (
+        "bash" in low_match
+        or "too often" in low_match
+        or "zu oft" in low_match
+        or ("attack-bash-regulations" in low_page and m_reset is not None)
+    )
+    if reset_seconds is not None and reset_seconds > 0.0:
+        cooldown_s = min(7 * 86400.0, max(60.0, reset_seconds))
+    elif is_bash:
+        cooldown_s = 86400.0
+    elif any(
+        tok in low_match
+        for tok in ("vacation", "urlaub", "newbie", "noob", "spectral", "zone", "strong", "weak")
+    ):
+        cooldown_s = 21600.0
+    elif mk == "RECYCLE":
+        cooldown_s = 1800.0
+    else:
+        cooldown_s = 3600.0
+
+    reason_out = f"{full_match} (Reset in {reset_label})" if reset_label else full_match
+    return (reason_out[:240], cooldown_s, is_bash)
 
 
 def _parse_coords_distance(a: Any, b: Any) -> float:
@@ -1464,67 +1633,485 @@ def _extract_spy_link_coords(soup: Any) -> str:
     return ""
 
 
+_GERMAN_SHIP_ALIASES: dict[str, tuple[str, ...]] = {
+    "s1": ("Kleiner Transporter",),
+    "s2": ("Großer Transporter", "Grosser Transporter"),
+    "s3": ("Transmitter",),
+    "s4": ("Kleiner Jäger", "Kleiner Jaeger"),
+    "s5": ("Kriegsschiff",),
+    "s6": ("Sternenkreuzer",),
+    "s7": ("Phönix", "Phoenix"),
+    "s8": ("Kolonieschiff",),
+    "s9": ("Solarzellen", "Solarzelle"),
+    "s10": ("Spionagesonde",),
+    "s11": ("Recycler",),
+    "s13": ("Schlachtschiff",),
+    "s14": ("Tarnkappenbomber",),
+    "s15": ("Zerstörer", "Zerstoerer"),
+    "s16": ("Imperiale Sternenbasis",),
+}
+
+_GERMAN_DEFENSE_ALIASES: dict[str, tuple[str, ...]] = {
+    "d1": ("Mörser", "Moerser"),
+    "d2": ("Lasergeschützbatterie", "Lasergeschuetzbatterie"),
+    "d3": ("Ionenkanone",),
+    "d4": ("Positronenfeuerzeug", "Positronengeschütz", "Positronengeschuetz"),
+    "d5": ("Turboflak",),
+    "d6": ("Intervallkanone",),
+    "d7": ("Solarkanone",),
+    "d8": ("Leichte Gravitonkanone",),
+    "d9": ("Schwere Gravitonkanone",),
+    "d10": (" Kleine Schildkuppel", "Kleine Schildkuppel"),
+    "d11": ("Große Schildkuppel", "Grosse Schildkuppel"),
+}
+
+_GERMAN_BUILDING_ALIASES: dict[str, tuple[str, ...]] = {
+    "b1": ("Roheisenmine",),
+    "b2": ("Hochofen",),
+    "b3": ("Kryptonitmine",),
+    "b4": ("Spicemine",),
+    "b5": ("Fusionskraftwerk",),
+    "b6": ("Thermosolarkraftwerk",),
+    "b7": ("Entwicklungszentrum",),
+    "b8": ("Forschungslabor",),
+    "b9": ("Waffenfabrik",),
+    "b10": ("Flottenstützpunkt", "Flottenstuetzpunkt"),
+    "b11": ("Schutzschild", "Schildgenerator"),
+    "b12": ("Roheisenlager",),
+    "b13": ("Metalllager",),
+    "b14": ("Kryptonitlager",),
+    "b15": ("Spicelager",),
+    "b16": ("Mikrosystembeschleuniger",),
+    "b17": ("Teleporter",),
+    "b18": ("Galaxiescanner",),
+}
+
+_GERMAN_RESEARCH_ALIASES: dict[str, tuple[str, ...]] = {
+    "r1": ("Bergbautechnik",),
+    "r2": ("Energietechnik",),
+    "r3": ("Raketentriebwerk", "Verbrennungstriebwerk"),
+    "r4": ("Diffusionstriebwerk",),
+    "r5": ("Spionagetechnik",),
+    "r6": ("Warpantrieb",),
+    "r7": ("Waffentechnik",),
+    "r8": ("Schildtechnik",),
+    "r9": ("Zielsysteme",),
+    "r10": ("Schiffskonstruktion", "Raumschiffpanzerung"),
+    "r11": ("Gravitonforschung", "Gravitontechnik"),
+    "r12": ("Teleportation",),
+    "r15": ("Schwarzes-Loch-Forschung",),
+}
+
+_MSG_DATE_RE = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?|\d{1,2}[./]\d{1,2}[./]\d{2,4}\s*,?\s*\d{2}:\d{2}(?::\d{2})?)\b",
+    re.ASCII,
+)
+
+_MSG_ID_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^check[_-](\d{1,20})$", re.IGNORECASE | re.ASCII),
+    re.compile(r"(?:del|delete|msg|message|id)\s*\[\s*(\d{1,20})\s*\]", re.IGNORECASE | re.ASCII),
+    re.compile(r"(?:msg[_-]?id|message[_-]?id|del[_-]?id|del|delete|read|reportID|battle|id)\s*=\s*(\d{1,20})\b", re.IGNORECASE | re.ASCII),
+    re.compile(r"\b(?:deleteMessage|delMsg|showMessage|openMessage|toggleMessage|readMessage|showSpionageReport|showBattleReport)\s*\(\s*['\"]?(\d{1,20})['\"]?", re.IGNORECASE | re.ASCII),
+    re.compile(r"^(?:msg|message|row|tr[_-]?msg)[_-]?(\d{1,20})$", re.IGNORECASE | re.ASCII),
+)
+
+_FOLDER_COUNTER_IDS: frozenset[str] = frozenset(
+    {
+        "msg-normal",
+        "msg-alliance",
+        "msg-spio",
+        "msg-battle",
+        "msg-fleet",
+        "msg-admin",
+        "msg-outgoing",
+        "msg-system",
+        "msg-economy",
+    }
+)
+
+
+def _is_folder_counter_node(el: Any) -> bool:
+    if el is None:
+        return False
+    eid = str(el.get("id") or "").strip().lower()
+    if eid in _FOLDER_COUNTER_IDS:
+        return True
+    cls_raw = el.get("class") or ()
+    cls_tokens = [str(x).lower() for x in (cls_raw if isinstance(cls_raw, list) else str(cls_raw).split())]
+    if "messagebox" in cls_tokens:
+        return True
+    if eid.startswith("msg-") and "info" in cls_tokens:
+        return True
+    return False
+
+
+def _norm_coord_triple(coords: str) -> str:
+    m = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", str(coords or ""), re.ASCII)
+    if not m:
+        return ""
+    g, s, p = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if not (1 <= g <= 99 and 1 <= s <= 999 and 1 <= p <= 16):
+        return ""
+    return f"{g:02d}:{s:03d}:{p:02d}"
+
+
+def _is_select_all_checkbox(inp: Any) -> bool:
+    nm = str(inp.get("name") or "").strip().lower()
+    cid = str(inp.get("id") or "").strip().lower()
+    if nm == "check" or cid == "check":
+        return True
+    for attr in ("name", "id", "class", "onclick", "onchange", "title"):
+        raw = inp.get(attr)
+        if isinstance(raw, list):
+            raw = " ".join(str(x) for x in raw)
+        txt = str(raw or "").lower()
+        if any(
+            tok in txt
+            for tok in ("allmessages", "checkall", "selectall", "markall", "toggleall", "all_msg", "setall")
+        ):
+            return True
+    return False
+
+
+def _extract_element_msg_id(el: Any) -> str:
+    if el is None or _is_folder_counter_node(el):
+        return ""
+    for attr in ("data-msg-id", "data-message-id", "data-id", "data-mfav", "id"):
+        val = str(el.get(attr) or "").strip()
+        if not val:
+            continue
+        if attr == "id" and val.lower() in _FOLDER_COUNTER_IDS:
+            continue
+        if attr != "id" and val.isascii() and val.isdigit():
+            return val
+        for pat in _MSG_ID_PATTERNS:
+            m = pat.search(val)
+            if m:
+                return m.group(1)
+    for cb in el.find_all("input", attrs={"type": re.compile(r"^checkbox$", re.IGNORECASE)}):
+        if _is_select_all_checkbox(cb):
+            continue
+        val = str(cb.get("value") or "").strip()
+        name = str(cb.get("name") or "").strip()
+        cid = str(cb.get("id") or "").strip()
+        for blob in (name, cid):
+            for pat in _MSG_ID_PATTERNS:
+                m = pat.search(blob)
+                if m:
+                    return m.group(1)
+        if val.isascii() and val.isdigit() and val not in ("0", "1"):
+            return val
+    for tag in el.find_all(["span", "a", "button", "input", "tr", "div", "td"]):
+        if _is_folder_counter_node(tag):
+            continue
+        for attr in ("data-mfav", "data-msg-id", "data-id", "href", "onclick", "id", "name", "data-bsum"):
+            val = str(tag.get(attr) or "").strip()
+            if not val:
+                continue
+            if attr in ("data-mfav", "data-msg-id", "data-id", "data-bsum") and val.isascii() and val.isdigit():
+                return val
+            for pat in _MSG_ID_PATTERNS:
+                m = pat.search(val)
+                if m:
+                    return m.group(1)
+    return ""
+
+
+def _strip_own_planet_header_dom(soup: BeautifulSoup) -> None:
+    """Remove `F_Hauptframe` top planet/resource/folder header bars so header chrome is never parsed as messages."""
+    for sel in (
+        "#planet-coords",
+        "#planet-list",
+        "form#ress",
+        "#ress",
+        "select[name='planet']",
+        "#top-bar",
+        ".top-bar",
+        "#resource-bar",
+        ".resource-bar",
+        "#infobox",
+        ".messagebox",
+        "div.info[id^='msg-']",
+        "#roheisen",
+        "#metall",
+        "#kryptonit",
+        "#spice",
+    ):
+        for node in list(soup.select(sel)):
+            if sel in ("#roheisen", "#metall", "#kryptonit", "#spice"):
+                parent_tbl = node.find_parent("table") or node.find_parent("div")
+                if parent_tbl is not None and not parent_tbl.select(
+                    "input[type='checkbox'], div.message, div.msg, tr.message, tr.msg, a[href*='internalMessages']"
+                ):
+                    txt_low = parent_tbl.get_text(" ", strip=True).lower()
+                    if not any(
+                        tok in txt_low
+                        for tok in ("espionage", "spionage", "battle", "kampfbericht", "player:", "spieler:")
+                    ):
+                        parent_tbl.decompose()
+                        continue
+            node.decompose()
+    for node in list(soup.find_all(attrs={"id": True})):
+        if _is_folder_counter_node(node):
+            node.decompose()
+    for form in list(soup.find_all("form")):
+        act = str(form.get("action") or "").lower()
+        if "newplanet=" in act:
+            form.decompose()
+    for a in list(soup.find_all("a", href=True)):
+        a_txt = " ".join(a.get_text(" ", strip=True).split())
+        if re.search(r"(?:unread\s+messages?|ungelesene\s+nachrichten?)", a_txt, re.IGNORECASE):
+            a.decompose()
+
+
+def _extract_embedded_spy_json(text: str) -> Optional[dict[str, Any]]:
+    """Extract embedded SpaceInvasion Classic `{"info": ..., "type": "spy-report", "planet": ...}` JSON if present."""
+    if "spy-report" not in text:
+        return None
+    marker = text.find("spy-report")
+    decoder = json.JSONDecoder()
+    search_start = max(0, marker - 400)
+    idx = text.find("{", search_start)
+    while 0 <= idx < marker:
+        try:
+            obj, _ = decoder.raw_decode(text, idx)
+            if isinstance(obj, dict):
+                info = obj.get("info")
+                if (isinstance(info, Mapping) and str(info.get("type") or "") == "spy-report") or isinstance(
+                    obj.get("planet"), Mapping
+                ):
+                    return obj
+        except ValueError:
+            pass
+        idx = text.find("{", idx + 1)
+    return None
+
+
+def _parse_embedded_unit_val(entry: Any) -> int:
+    if isinstance(entry, Mapping):
+        for k in ("level", "count", "amount", "v", "val"):
+            if entry.get(k) is not None:
+                return _parse_embedded_unit_val(entry.get(k))
+        return 0
+    if isinstance(entry, bool) or entry is None:
+        return 0
+    if isinstance(entry, int):
+        return max(0, entry)
+    if isinstance(entry, float):
+        return max(0, int(round(entry))) if math.isfinite(entry) else 0
+    s = str(entry).strip()
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+|\d+", s, re.ASCII):
+        return parse_si_int(s)
+    return max(0, game_data.safe_int(s, 0))
+
+
 def parse_spy_report_html(html: str, *, target_coords: str = "") -> SpyReport:
     """Parse an espionage or uninhabited-ecology report snippet into `SpyReport`."""
     soup = BeautifulSoup(html, "html.parser")
+    server_msg_id = _extract_element_msg_id(soup)
     text = " ".join(soup.get_text(" ", strip=True).split())
+    clean_raw_text = redact_sensitive(text)[:4000]
+    embedded_json = _extract_embedded_spy_json(text)
 
     coords = target_coords
+    if embedded_json is not None and isinstance(embedded_json.get("planet"), Mapping):
+        emb_c = _norm_coord_triple(str(embedded_json["planet"].get("coords") or ""))
+        if emb_c:
+            coords = emb_c
     if not coords:
         coords = _extract_spy_coords(text) or _extract_spy_link_coords(soup)
+
+    m_dt = _MSG_DATE_RE.search(text)
+    msg_date_text = m_dt.group(1).strip() if m_dt else ""
+
+    planet_name = ""
+    if embedded_json is not None and isinstance(embedded_json.get("planet"), Mapping):
+        emb_pn = str(embedded_json["planet"].get("name") or "").strip()
+        if emb_pn:
+            planet_name = emb_pn[:60]
+    if not planet_name:
+        m_pl = re.search(
+            r"(?:on|auf|for|von|planet)\s+([A-Za-z0-9_.\- ]{1,40}?)\s*\[\s*\d{1,2}:\d{1,3}:\d{1,2}\s*\]",
+            text,
+            re.IGNORECASE | re.ASCII,
+        )
+        if m_pl:
+            cand_pl = m_pl.group(1).strip(" -:|")
+            if cand_pl.lower() not in ("espionage report", "spionagebericht", "report", "planet"):
+                planet_name = cand_pl
 
     def _find_res(label: str) -> int:
         m = re.search(rf"{label}\s*:?\s*([\d.]+)", text, re.IGNORECASE | re.ASCII)
         return parse_si_int(m.group(1)) if m else 0
 
     res = Resources(
-        pig_iron=_find_res(r"Pig\s+iron"),
-        metal=_find_res(r"Metal"),
-        kryptonite=_find_res(r"Kryptonite"),
+        pig_iron=_find_res(r"(?:Pig\s+iron|Roheisen)"),
+        metal=_find_res(r"(?:Metal|Metall)"),
+        kryptonite=_find_res(r"(?:Kryptonite|Kryptonit)"),
         spice=_find_res(r"Spice"),
     )
+    if embedded_json is not None and isinstance(embedded_json.get("planet"), Mapping):
+        emb_res = embedded_json["planet"].get("resources")
+        if isinstance(emb_res, Sequence) and not isinstance(emb_res, (str, bytes)) and len(emb_res) >= 4:
+            res = Resources(
+                pig_iron=_parse_embedded_unit_val(emb_res[0]),
+                metal=_parse_embedded_unit_val(emb_res[1]),
+                kryptonite=_parse_embedded_unit_val(emb_res[2]),
+                spice=_parse_embedded_unit_val(emb_res[3]),
+            )
 
     uninhabited_fields: Optional[int] = None
     m_fld = re.search(
-        r"(?:approx\.?|estimated|expected)?\s*(\d{2,3})\s*(?:building\s*)?fields",
+        r"(?:approx\.?|estimated|expected|ca\.?)?\s*([0-9]{2,3})\s*(?:building\s*|bau)?(?:fields|felder)\b",
         text,
-        re.IGNORECASE | re.ASCII,
+        re.IGNORECASE,
     )
     if m_fld:
         uninhabited_fields = int(m_fld.group(1))
+    else:
+        m_fld_alt = re.search(
+            r"(?:building\s*fields|baufelder|planet\s*size|fields|felder)\s*(?::|=)\s*(?:[0-9]{1,3}\s*/\s*)?([0-9]{2,3})\b",
+            text,
+            re.IGNORECASE,
+        )
+        if m_fld_alt:
+            uninhabited_fields = int(m_fld_alt.group(1))
 
+    low_text = text.lower()
     dug_in: Optional[bool] = None
-    if "dug in" in text.lower() or "dug-in" in text.lower():
-        dug_in = "not dug in" not in text.lower()
+    if "dug in" in low_text or "dug-in" in low_text:
+        dug_in = "not dug in" not in low_text
+    elif "eingegraben" in low_text:
+        dug_in = "nicht eingegraben" not in low_text
 
     fleet: dict[str, int] = {}
     for skey, slug in SHIP_SLUG_BY_KEY.items():
+        names: list[str] = []
         info = game_data.SHIPS.get(slug)
-        if not info:
-            continue
-        m_u = re.search(rf"{re.escape(info['name'])}\s*:?\s*([\d.]+)", text, re.IGNORECASE | re.ASCII)
-        if m_u:
-            fleet[skey] = parse_si_int(m_u.group(1))
+        if info and info.get("name"):
+            names.append(str(info["name"]))
+        names.extend(_GERMAN_SHIP_ALIASES.get(skey, ()))
+        for nm in names:
+            m_u = re.search(rf"\b{re.escape(nm.strip())}\s*:?\s*([0-9][0-9.]*)", text, re.IGNORECASE)
+            if m_u:
+                fleet[skey] = parse_si_int(m_u.group(1))
+                break
 
     defense: dict[str, int] = {}
     for dkey, slug in DEFENSE_SLUG_BY_KEY.items():
+        names_d: list[str] = []
         info = game_data.DEFENSES.get(slug)
-        if not info:
-            continue
-        m_u = re.search(rf"{re.escape(info['name'])}\s*:?\s*([\d.]+)", text, re.IGNORECASE | re.ASCII)
-        if m_u:
-            defense[dkey] = parse_si_int(m_u.group(1))
+        if info and info.get("name"):
+            names_d.append(str(info["name"]))
+        names_d.extend(_GERMAN_DEFENSE_ALIASES.get(dkey, ()))
+        for nm in names_d:
+            m_u = re.search(rf"\b{re.escape(nm.strip())}\s*:?\s*([0-9][0-9.]*)", text, re.IGNORECASE)
+            if m_u:
+                defense[dkey] = parse_si_int(m_u.group(1))
+                break
 
-    is_spacia = "spacia" in text.lower()
+    buildings: dict[str, int] = {}
+    for info in game_data.BUILDINGS.values():
+        bid = info.get("id")
+        if not bid:
+            continue
+        bkey = f"b{bid}"
+        names_b: list[str] = []
+        if info.get("name"):
+            names_b.append(str(info["name"]))
+        names_b.extend(_GERMAN_BUILDING_ALIASES.get(bkey, ()))
+        for nm in names_b:
+            m_b = re.search(rf"\b{re.escape(nm.strip())}\s*(?:\(\s*Level\s*|:)?\s*([0-9]{{1,3}})\b", text, re.IGNORECASE)
+            if m_b:
+                buildings[bkey] = parse_si_int(m_b.group(1))
+                break
+
+    researches: dict[str, int] = {}
+    for info in game_data.RESEARCHES.values():
+        rkey = str(info.get("id") or "")
+        if not rkey:
+            continue
+        names_r: list[str] = []
+        if info.get("name"):
+            names_r.append(str(info["name"]))
+        names_r.extend(_GERMAN_RESEARCH_ALIASES.get(rkey, ()))
+        for nm in names_r:
+            m_r = re.search(rf"\b{re.escape(nm.strip())}\s*(?:\(\s*Level\s*|:)?\s*([0-9]{{1,3}})\b", text, re.IGNORECASE)
+            if m_r:
+                researches[rkey] = parse_si_int(m_r.group(1))
+                break
+
+    if embedded_json is not None and isinstance(embedded_json.get("planet"), Mapping):
+        pl_j = embedded_json["planet"]
+        emb_b = pl_j.get("buildings")
+        if isinstance(emb_b, Mapping):
+            for bk, bv in emb_b.items():
+                bk_s = str(bk).strip().lower()
+                if re.fullmatch(r"b\d{1,2}", bk_s):
+                    lvl_v = _parse_embedded_unit_val(bv)
+                    if lvl_v > 0:
+                        buildings[bk_s] = lvl_v
+        emb_s = pl_j.get("ships") or pl_j.get("fleet")
+        if isinstance(emb_s, Mapping):
+            for sk, sv in emb_s.items():
+                sk_s = str(sk).strip().lower()
+                if sk_s in SHIP_SLUG_BY_KEY:
+                    cnt_v = _parse_embedded_unit_val(sv)
+                    if cnt_v > 0:
+                        fleet[sk_s] = cnt_v
+        emb_d = pl_j.get("defense") or pl_j.get("defenses")
+        if isinstance(emb_d, Mapping):
+            for dk, dv in emb_d.items():
+                dk_s = str(dk).strip().lower()
+                if dk_s in DEFENSE_SLUG_BY_KEY:
+                    cnt_v = _parse_embedded_unit_val(dv)
+                    if cnt_v > 0:
+                        defense[dk_s] = cnt_v
+        emb_r = pl_j.get("researches") or embedded_json.get("researches")
+        if isinstance(emb_r, Mapping):
+            for rk, rv in emb_r.items():
+                rk_s = str(rk).strip().lower()
+                if re.fullmatch(r"r\d{1,2}", rk_s):
+                    lvl_v = _parse_embedded_unit_val(rv)
+                    if lvl_v > 0:
+                        researches[rk_s] = lvl_v
+
+    is_spacia = "spacia" in low_text
     owner = "Spacia" if is_spacia else ""
+    if not owner and embedded_json is not None:
+        pl_j = embedded_json.get("planet") if isinstance(embedded_json.get("planet"), Mapping) else {}
+        for cand_own in (embedded_json.get("player"), pl_j.get("owner"), pl_j.get("player")):
+            if isinstance(cand_own, Mapping) and cand_own.get("name"):
+                owner = str(cand_own["name"]).strip()[:80]
+                break
+            if isinstance(cand_own, str) and cand_own.strip():
+                owner = cand_own.strip()[:80]
+                break
     if not owner:
         m_own = re.search(
-            r"(?:Player|Owner|Spieler)\s*:\s*(.+?)(?=\s+(?:Resources|Pig\s+iron|Metal|Kryptonite|Spice|Fleet|Defense|Buildings|Approx|Dug|\d{1,2}:\d{1,3}:\d{1,2}|$)|$)",
+            r"(?:Player|Owner|Spieler)\s*:\s*(.+?)(?=\s+(?:Resources|Rohstoffe|Pig\s+iron|Roheisen|Metal|Metall|Kryptonite|Kryptonit|Spice|Fleet|Flotte|Defense|Verteidigung|Buildings|Gebäude|Gebaeude|Research|Forschung|Approx|Dug|Eingegraben|[0-9]{1,2}:[0-9]{1,3}:[0-9]{1,2}|$)|$)",
             text,
-            re.IGNORECASE | re.ASCII,
+            re.IGNORECASE,
         )
         if m_own:
-            owner = m_own.group(1).strip(" |:-")
+            owner = m_own.group(1).strip(" |:-()'\"")
+
+    if uninhabited_fields is None and embedded_json is not None and isinstance(embedded_json.get("planet"), Mapping):
+        pl_j = embedded_json["planet"]
+        for fk in ("maxFields", "max_fields", "fields"):
+            if pl_j.get(fk) is not None and not isinstance(pl_j.get(fk), Mapping):
+                fv = _parse_embedded_unit_val(pl_j.get(fk))
+                if 30 <= fv <= 600:
+                    uninhabited_fields = fv
+                    break
+
+    # Avoid treating occupied-planet field counts as uninhabited colony fields unless explicitly uninhabited
+    if (
+        uninhabited_fields is not None
+        and (owner or is_spacia or buildings)
+        and not any(tok in low_text for tok in ("uninhabited", "unbewohnt", "free planet", "empty planet"))
+    ):
+        uninhabited_fields = None
 
     return SpyReport(
         target_coords=coords,
@@ -1535,30 +2122,171 @@ def parse_spy_report_html(html: str, *, target_coords: str = "") -> SpyReport:
         dug_in=dug_in,
         uninhabited_fields=uninhabited_fields,
         is_spacia=is_spacia,
+        buildings=buildings,
+        researches=researches,
+        planet_name=planet_name,
+        server_msg_id=server_msg_id,
+        msg_date_text=msg_date_text,
+        raw_text=clean_raw_text,
     )
 
 
-def parse_spy_messages_html(html: str) -> tuple[SpyReport, ...]:
-    """Parse multiple espionage reports from `internalMessages&type=spio` HTML."""
+def _group_table_message_blocks(soup: BeautifulSoup) -> list[str]:
+    """Group multi-`<tr>` SpaceInvasion `internalMessages` entries (header `<tr>` with checkbox/msgID + body `<tr>`s)."""
+    grouped: list[str] = []
+    seen_tr_ids: set[int] = set()
+    for tbl in soup.find_all("table"):
+        # Skip outer layout tables that merely wrap sub-tables with checkboxes
+        direct_rows: list[Any] = []
+        tbody = tbl.find("tbody", recursive=False)
+        row_parent = tbody if tbody is not None else tbl
+        for tr in row_parent.find_all("tr", recursive=False):
+            direct_rows.append(tr)
+        if not direct_rows:
+            continue
+        header_indices: list[int] = []
+        for idx, tr in enumerate(direct_rows):
+            if id(tr) in seen_tr_ids:
+                continue
+            cbs = [
+                cb
+                for cb in tr.find_all("input", attrs={"type": re.compile(r"^checkbox$", re.IGNORECASE)})
+                if not _is_select_all_checkbox(cb)
+            ]
+            # Do not treat a sub-table wrapper row holding multiple checkboxes as a single header
+            if len(cbs) == 1:
+                header_indices.append(idx)
+                continue
+            tr_id = str(tr.get("id") or "")
+            tr_cls = " ".join(tr.get("class") or ())
+            if (
+                re.match(r"^(?:msg|message)[_-]?\d+$", tr_id, re.IGNORECASE)
+                or any(c in ("message", "msg", "msg-head", "msg-header") for c in tr_cls.split())
+                or tr.get("data-msg-id")
+                or tr.get("data-message-id")
+            ):
+                header_indices.append(idx)
+        if not header_indices:
+            continue
+        for pos_i, start_idx in enumerate(header_indices):
+            end_idx = header_indices[pos_i + 1] if (pos_i + 1) < len(header_indices) else len(direct_rows)
+            chunk: list[str] = []
+            for r_idx in range(start_idx, end_idx):
+                tr = direct_rows[r_idx]
+                if r_idx > start_idx:
+                    # Stop before footer delete-controls row (`select[name*="del"]` or submit button)
+                    if tr.find("select") is not None or tr.find("input", attrs={"type": re.compile(r"^(?:submit|button)$", re.IGNORECASE)}) is not None:
+                        if not _extract_spy_coords(tr.get_text(" ", strip=True)):
+                            break
+                seen_tr_ids.add(id(tr))
+                chunk.append(str(tr))
+            if chunk:
+                grouped.append("<table>" + "".join(chunk) + "</table>")
+    return grouped
+
+
+def parse_spy_messages_html(
+    html: str,
+    *,
+    exclude_coords: Iterable[str] = (),
+) -> tuple[SpyReport, ...]:
+    """Parse multiple espionage reports from `internalMessages&type=spio` or main inbox HTML."""
     soup = BeautifulSoup(html or "", "html.parser")
-    keywords = ("pig iron", "metal", "kryptonite", "spice", "fields")
+    _strip_own_planet_header_dom(soup)
+    excl_norm = {_norm_coord_triple(c) for c in (exclude_coords or ()) if _norm_coord_triple(c)}
+    keywords = (
+        "pig iron",
+        "roheisen",
+        "metal",
+        "metall",
+        "kryptonite",
+        "kryptonit",
+        "spice",
+        "fields",
+        "felder",
+        "espionage",
+        "spionage",
+    )
 
     def _looks_like_spy_block(txt: str, el: Any = None) -> bool:
         low = txt.lower()
         if not any(k in low for k in keywords):
             return False
+        has_explicit_spy = any(
+            tok in low for tok in ("espionage report", "spionagebericht", "spy report")
+        )
+        # Exclude unexpanded header-only `Colony [coords] spy report` rows that lack any payload
+        if (
+            el is not None
+            and el.select_one('[onclick*="showSpionageReport"]') is not None
+            and el.find(attrs={"data-si-expanded": "1"}) is None
+            and el.select_one(".si-expanded-body") is None
+            and not any(rk in low for rk in ("pig iron", "roheisen", "kryptonite", "kryptonit", "fields", "felder"))
+        ):
+            return False
+        # Exclude counter-espionage warnings that have no resource/field payload
+        if (
+            ("foreign fleet" in low or "fremde flotte" in low or "counter-espionage" in low or "spionageabwehr" in low)
+            and not has_explicit_spy
+            and not any(rk in low for rk in ("pig iron", "roheisen", "kryptonite", "kryptonit", "fields", "felder"))
+        ):
+            return False
+        # Exclude battle, recycle, and transport delivery messages that mention loot/debris resources
+        if not has_explicit_spy and any(
+            tok in low
+            for tok in (
+                "battle report",
+                "combat report",
+                "kampfbericht",
+                "attacker",
+                "angreifer",
+                "plundered",
+                "looted",
+                "erbeutet",
+                "debris field",
+                "trümmerfeld",
+                "truemmerfeld",
+                "recycling report",
+                "space rubble",
+                "harvested",
+                "recycled",
+                "trümmerfeld abgebaut",
+                "delivered",
+                "geliefert",
+            )
+        ):
+            return False
         return bool(_extract_spy_coords(txt) or (el is not None and _extract_spy_link_coords(el)))
 
     blocks: list[str] = []
-    # 1. Explicit message containers
-    containers = soup.select("div.message, div.msg, tr.message, tr.msg, tr[id^='msg'], div[id^='msg']")
+    # 1. Explicit message containers (merging adjacent body `<tr>` when header is a `<tr>`)
+    containers = [
+        el
+        for el in soup.select(
+            "div.message, div.msg, tr.message, tr.msg, tr[id^='msg'], div[id^='msg'], [data-msg-id], [data-message-id]"
+        )
+        if not _is_folder_counter_node(el)
+    ]
     for el in containers:
-        if _looks_like_spy_block(el.get_text(" ", strip=True), el):
-            blocks.append(str(el))
+        combined_html = str(el)
+        if el.name == "tr":
+            nxt = el.find_next_sibling("tr")
+            if nxt is not None and nxt not in containers and not _extract_element_msg_id(nxt):
+                combined_html = f"<table>{el}{nxt}</table>"
+        comb_soup = BeautifulSoup(combined_html, "html.parser")
+        if _looks_like_spy_block(comb_soup.get_text(" ", strip=True), comb_soup):
+            blocks.append(combined_html)
+
+    # 1b. Checkbox-grouped multi-`<tr>` table messages (header row + resource/fleet body row)
+    if not blocks:
+        for grp_html in _group_table_message_blocks(soup):
+            grp_soup = BeautifulSoup(grp_html, "html.parser")
+            if _looks_like_spy_block(grp_soup.get_text(" ", strip=True), grp_soup):
+                blocks.append(grp_html)
 
     # 2. Fallback: innermost table rows / divs containing spy blocks without nested spy containers
     if not blocks:
-        candidates = soup.find_all(["tr", "div", "li"])
+        candidates = [el for el in soup.find_all(["tr", "div", "li"]) if not _is_folder_counter_node(el)]
         for el in candidates:
             txt = el.get_text(" ", strip=True)
             if not _looks_like_spy_block(txt, el):
@@ -1572,19 +2300,661 @@ def parse_spy_messages_html(html: str) -> tuple[SpyReport, ...]:
 
     # 3. Last resort: single report in whole page text
     if not blocks and _looks_like_spy_block(soup.get_text(" ", strip=True), soup):
-        blocks.append(html)
+        blocks.append(str(soup))
 
     reports: list[SpyReport] = []
-    seen_coords: set[str] = set()
+    seen_keys: set[tuple[str, str]] = set()
     for blk in blocks:
         rep = parse_spy_report_html(blk)
         if not rep.target_coords:
             continue
-        if rep.target_coords in seen_coords:
+        norm_c = _norm_coord_triple(rep.target_coords)
+        if norm_c and norm_c in excl_norm:
             continue
-        seen_coords.add(rep.target_coords)
+        dedup_key = (norm_c or rep.target_coords, rep.server_msg_id)
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
         reports.append(rep)
     return tuple(reports)
+
+
+def extract_message_folder_links(html: str) -> list[tuple[str, str, int, int]]:
+    """Extract `(folder_type, href, unread_count, total_count)` links from `internalMessages` or `F_Navi`."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    found: dict[str, tuple[str, str, int, int]] = {}
+
+    def _parse_counts(txt: str, primary_txt: str = "") -> tuple[int, int]:
+        m_slash = re.search(r"(\d[\d.]*)\s*/\s*(\d[\d.]*)", primary_txt or txt, re.ASCII)
+        if not m_slash and primary_txt:
+            m_slash = re.search(r"(\d[\d.]*)\s*/\s*(\d[\d.]*)", txt, re.ASCII)
+        if m_slash:
+            return parse_si_int(m_slash.group(1)), parse_si_int(m_slash.group(2))
+        m_par = re.search(r"\(\s*(\d[\d.]*)\s*\)", primary_txt or txt, re.ASCII)
+        if m_par:
+            u = parse_si_int(m_par.group(1))
+            return u, u
+        nums = [parse_si_int(m.group(1)) for m in re.finditer(r"\b(\d[\d.]*)\b", txt, re.ASCII)]
+        if len(nums) >= 2:
+            return nums[0], nums[1]
+        if len(nums) == 1:
+            return nums[0], nums[0]
+        return 0, 0
+
+    for a in soup.find_all("a", href=True):
+        href = str(a.get("href") or "").strip()
+        if "action=internalmessages" not in href.lower():
+            continue
+        m_type = re.search(r"[?&](?:type|cat|category)=([a-zA-Z0-9_-]+)", href)
+        ftype = m_type.group(1).lower() if m_type else ""
+        if not ftype:
+            continue
+        row = a.find_parent("tr") or a.find_parent("li") or a
+        txt = " ".join(row.get_text(" ", strip=True).split())
+        a_txt = " ".join(a.get_text(" ", strip=True).split())
+        unread, total = _parse_counts(txt, a_txt)
+        clean_href = redact_sensitive(href)
+        prev = found.get(ftype)
+        if prev is None or (unread, total) > (prev[2], prev[3]):
+            found[ftype] = (ftype, clean_href, unread, total)
+
+    for box in soup.find_all(attrs={"onclick": True}):
+        oc = str(box.get("onclick") or "").strip()
+        if "action=internalmessages" not in oc.lower():
+            continue
+        m_url = re.search(r"['\"]([^'\"]*action=internalMessages[^'\"]*)['\"]", oc, re.IGNORECASE)
+        href = m_url.group(1).strip() if m_url else oc
+        m_type = re.search(r"[?&](?:type|cat|category)=([a-zA-Z0-9_-]+)", href, re.IGNORECASE)
+        ftype = m_type.group(1).lower() if m_type else ""
+        if not ftype:
+            continue
+        info_el = box.find(attrs={"id": f"msg-{ftype}"}) or box.select_one(".info")
+        info_txt = " ".join(info_el.get_text(" ", strip=True).split()) if info_el is not None else ""
+        box_txt = " ".join(box.get_text(" ", strip=True).split())
+        unread, total = _parse_counts(box_txt, info_txt)
+        clean_href = redact_sensitive(href)
+        prev = found.get(ftype)
+        if prev is None or (unread, total) > (prev[2], prev[3]):
+            found[ftype] = (ftype, clean_href, unread, total)
+
+    for ftype in ("normal", "alliance", "spio", "battle", "fleet", "admin"):
+        if ftype in found:
+            continue
+        cnt_el = soup.find(attrs={"id": f"msg-{ftype}"})
+        if cnt_el is not None:
+            cnt_txt = " ".join(cnt_el.get_text(" ", strip=True).split())
+            unread, total = _parse_counts(cnt_txt, cnt_txt)
+            found[ftype] = (ftype, f"indexInternal.es?action=internalMessages&type={ftype}", unread, total)
+
+    return list(found.values())
+
+
+def _classify_and_parse_inbox_block(
+    block_html: str,
+    *,
+    folder_type: str = "",
+    exclude_coords: SetLike = frozenset(),
+) -> Optional[InboxMessage]:
+    soup = BeautifulSoup(block_html or "", "html.parser")
+    # Exclude dummy folder counter fragments (`0 / 7`) if passed directly
+    if re.fullmatch(r"\d[\d.]*\s*/\s*\d[\d.]*", " ".join(soup.get_text(" ", strip=True).split())):
+        return None
+    text = " ".join(soup.get_text(" ", strip=True).split()).strip()
+    if not text or len(text) < 4:
+        return None
+    low = text.lower()
+    if low in ("no messages", "keine nachrichten", "delete marked", "markierte löschen", "proceed"):
+        return None
+
+    has_expanded = bool(
+        soup.find(attrs={"data-si-expanded": "1"}) is not None
+        or soup.select_one(".si-expanded-body") is not None
+    )
+    needs_expand = bool(
+        soup.select_one(
+            '[onclick*="showSpionageReport"], [onclick*="showBattleReport"], '
+            '[data-bsum], a[href*="action=internalMessages"][href*="read="]'
+        )
+    )
+    body_complete = has_expanded or not needs_expand
+
+    server_msg_id = _extract_element_msg_id(soup)
+    m_dt = _MSG_DATE_RE.search(text)
+    msg_date_text = m_dt.group(1).strip() if m_dt else ""
+
+    sender = ""
+    subject = ""
+    # Extract sender / subject from header cells when structured as a table row
+    first_tr = soup.find("tr")
+    if first_tr is not None:
+        cells: list[str] = []
+        for td in first_tr.find_all(["td", "th"], recursive=False):
+            td_clone = BeautifulSoup(str(td), "html.parser")
+            for exp_div in td_clone.select(".si-expanded-body"):
+                exp_div.decompose()
+            cells.append(" ".join(td_clone.get_text(" ", strip=True).split()).strip())
+        non_empty = [c for c in cells if c and not _MSG_DATE_RE.fullmatch(c)]
+        if len(non_empty) >= 2:
+            sender = non_empty[0][:120]
+            subject = non_empty[1][:200]
+        elif len(non_empty) == 1:
+            subject = non_empty[0][:200]
+    if not subject:
+        hdr_el = soup.select_one(".subject, .msg-subject, .title, .msg-title, b, strong, th")
+        if hdr_el is not None:
+            subject = " ".join(hdr_el.get_text(" ", strip=True).split())[:200]
+
+    m_inner = re.search(
+        r"(?:Message\s+from|Nachricht\s+von)\s+[^:]{1,60}:\s*(.+?)(?=\s*['\"]?\s*(?:Fleet\s+reports|Battle\s+reports|Espionage|System|User|Alliance)\s*[\u2605*]|\s*[\u2605*]\s*Favourites|\s*Received\s+on:\s*From:|$)",
+        text,
+        re.IGNORECASE,
+    )
+    inner_body = m_inner.group(1).strip() if m_inner else ""
+    body_for_parse = inner_body if inner_body else text
+    low = body_for_parse.lower()
+    subj_low = subject.lower()
+
+    coords_raw = _extract_spy_coords(body_for_parse) or _extract_spy_coords(text) or _extract_spy_link_coords(soup)
+    norm_coords = _norm_coord_triple(coords_raw)
+    if norm_coords and norm_coords in exclude_coords:
+        # Check if there is a second target coordinate in the message (e.g. "from [own] to [target]")
+        for m_br in _SPY_BRACKETED_COORDS_RE.finditer(body_for_parse):
+            cand_n = _norm_coord_triple(f"{m_br.group(1)}:{m_br.group(2)}:{m_br.group(3)}")
+            if cand_n and cand_n not in exclude_coords:
+                norm_coords = cand_n
+                break
+
+    def _res_pair(lbl: str, src_txt: str = "") -> int:
+        seg_t = src_txt or body_for_parse
+        m = re.search(rf"{lbl}\s*:?\s*([\d.]+)", seg_t, re.IGNORECASE | re.ASCII)
+        if m:
+            return parse_si_int(m.group(1))
+        m_rev = re.search(rf"([\d.]+)\s+(?:units?\s+of\s+)?{lbl}\b", seg_t, re.IGNORECASE | re.ASCII)
+        return parse_si_int(m_rev.group(1)) if m_rev else 0
+
+    category = "other"
+    parsed_data: dict[str, Any] = {}
+    spy_rep: Optional[SpyReport] = None
+    f_low = (folder_type or "").strip().lower()
+
+    battle_json_el = soup.find(attrs={"data-battle-json": True})
+    bsum_el = soup.find(attrs={"data-bsum": True})
+
+    is_counter_spy = any(
+        tok in low or tok in subj_low
+        for tok in ("foreign fleet", "fremde flotte", "counter-espionage", "spionageabwehr", "spied on", "ausspioniert")
+    ) and not any(tok in low or tok in subj_low for tok in ("espionage report", "spionagebericht", "spy report"))
+
+    is_fleet_return_notice = (
+        any(
+            tok in subj_low or tok in low
+            for tok in (
+                "fleet return",
+                "flottenrückkehr",
+                "flottenrueckkehr",
+                "returning from duty",
+                "were unloaded",
+                "wurden ausgeladen",
+            )
+        )
+        and "recycling report" not in subj_low
+        and "trümmerfeldbericht" not in subj_low
+    )
+
+    is_battle = (
+        f_low == "battle"
+        or battle_json_el is not None
+        or bsum_el is not None
+        or any(
+            tok in low or tok in subj_low
+            for tok in (
+                "battle report",
+                "combat report",
+                "kampfbericht",
+                "attacker",
+                "angreifer",
+                "plundered",
+                "looted",
+                "erbeutet",
+                "debris field",
+                "trümmerfeld",
+                "truemmerfeld",
+            )
+        )
+    )
+    is_recycle = (
+        not is_battle
+        and not is_fleet_return_notice
+        and any(
+            tok in low or tok in subj_low
+            for tok in (
+                "recycling report",
+                "space rubble",
+                "recycler",
+                "harvested",
+                "recycled",
+                "processed",
+                "abbau",
+                "verwertet",
+                "trümmerfeld abgebaut",
+            )
+        )
+        and not any(tok in low or tok in subj_low for tok in ("espionage report", "spionagebericht", "spy report"))
+    )
+
+    is_spy = (
+        not is_counter_spy
+        and not is_battle
+        and not is_recycle
+        and not is_fleet_return_notice
+        and (
+            f_low == "spio"
+            or any(tok in low or tok in subj_low for tok in ("espionage report", "spionagebericht", "spy report", "uninhabited", "unbewohnt"))
+            or (
+                bool(norm_coords)
+                and norm_coords not in exclude_coords
+                and sum(1 for rk in ("pig iron", "roheisen", "metal", "metall", "kryptonite", "kryptonit", "spice") if rk in low) >= 2
+            )
+            or bool(re.search(r"\b[0-9]{2,3}\s*(?:building\s*|bau)?(?:fields|felder)\b", low))
+        )
+    )
+
+    if is_spy:
+        rep = parse_spy_report_html(block_html, target_coords=norm_coords or "")
+        rep_norm = _norm_coord_triple(rep.target_coords)
+        if rep_norm and rep_norm not in exclude_coords:
+            category = "spy_report"
+            norm_coords = rep_norm
+            has_spy_payload = bool(
+                body_complete
+                or rep.uninhabited_fields is not None
+                or rep.resources.total > 0
+                or rep.buildings
+                or rep.fleet
+                or rep.defense
+                or rep.researches
+            )
+            if has_spy_payload:
+                spy_rep = rep
+            parsed_data = {
+                "target_coords": rep_norm,
+                "owner": rep.owner,
+                "planet_name": rep.planet_name,
+                "is_spacia": rep.is_spacia,
+                "resources": {
+                    "pig_iron": rep.resources.pig_iron,
+                    "metal": rep.resources.metal,
+                    "kryptonite": rep.resources.kryptonite,
+                    "spice": rep.resources.spice,
+                },
+                "buildings": dict(rep.buildings),
+                "fleet": dict(rep.fleet),
+                "defense": dict(rep.defense),
+                "researches": dict(rep.researches),
+                "dug_in": rep.dug_in,
+                "uninhabited_fields": rep.uninhabited_fields,
+            }
+    elif is_counter_spy:
+        category = "counter_spy"
+        parsed_data = {"coords": norm_coords}
+    elif is_battle:
+        category = "battle_report"
+        battle_id = str(bsum_el.get("data-bsum") or "").strip() if bsum_el is not None else ""
+        if not battle_id:
+            m_bid = re.search(r"showBattleReport\s*\(\s*['\"]?(\d+)['\"]?", block_html, re.IGNORECASE | re.ASCII)
+            if m_bid:
+                battle_id = m_bid.group(1)
+        if not battle_id:
+            m_bid_txt = re.search(r"Battle\s+report\s*#(\d+)", body_for_parse, re.IGNORECASE | re.ASCII)
+            if m_bid_txt:
+                battle_id = m_bid_txt.group(1)
+        plunder_tail = body_for_parse
+        m_ptail = re.search(r"(?:Plundered|Erbeutet)\s+(.+)$", body_for_parse, re.IGNORECASE)
+        if m_ptail:
+            plunder_tail = m_ptail.group(1)
+        loot_dict = {
+            "pig_iron": _res_pair(r"(?:Pig\s+iron|Roheisen)", plunder_tail),
+            "metal": _res_pair(r"(?:Metal|Metall)", plunder_tail),
+            "kryptonite": _res_pair(r"(?:Kryptonite|Kryptonit)", plunder_tail),
+            "spice": _res_pair(r"Spice", plunder_tail),
+        }
+        debris_pig = 0
+        debris_met = 0
+        m_deb = re.search(
+            r"(?:debris|rubble|trümmer|truemmer)[^.]{0,120}?(?:Pig\s+iron|Roheisen)\s*:?\s*([0-9][0-9.]*)[^.]{0,60}?(?:Metal|Metall)\s*:?\s*([0-9][0-9.]*)",
+            body_for_parse,
+            re.IGNORECASE,
+        )
+        if m_deb:
+            debris_pig = parse_si_int(m_deb.group(1))
+            debris_met = parse_si_int(m_deb.group(2))
+        attacker_name = ""
+        defender_name = ""
+        outcome = "win"
+        rounds = 0
+        attacker_lost = 0
+        defender_lost = 0
+        m_att_txt = re.search(
+            r"\bAttacker\s*:\s*([^|(]+?)\s*\(\s*Lost\s*:\s*([0-9][0-9.]*)\s*\)",
+            body_for_parse,
+            re.IGNORECASE,
+        )
+        if m_att_txt:
+            attacker_name = m_att_txt.group(1).strip()[:120]
+            attacker_lost = parse_si_int(m_att_txt.group(2))
+        else:
+            m_lost = re.search(r"\bLost\s*:?\s*([0-9][0-9.]*)", body_for_parse, re.IGNORECASE | re.ASCII)
+            if m_lost:
+                attacker_lost = parse_si_int(m_lost.group(1))
+        m_def_txt = re.search(
+            r"\bDefender\s*:\s*([^|(]+?)\s*\(\s*Lost\s*:\s*([0-9][0-9.]*)\s*\)",
+            body_for_parse,
+            re.IGNORECASE,
+        )
+        if m_def_txt:
+            defender_name = m_def_txt.group(1).strip()[:120]
+            defender_lost = parse_si_int(m_def_txt.group(2))
+        else:
+            m_dest = re.search(r"\bDestroyed\s*:?\s*([0-9][0-9.]*)", body_for_parse, re.IGNORECASE | re.ASCII)
+            if m_dest:
+                defender_lost = parse_si_int(m_dest.group(1))
+        m_rnd = re.search(r"\bRounds\s*:?\s*([0-9]{1,3})\b", body_for_parse, re.IGNORECASE | re.ASCII)
+        if m_rnd:
+            rounds = int(m_rnd.group(1))
+        m_win_code = re.search(r"\bWinner\s*:\s*([012])\b", body_for_parse, re.IGNORECASE | re.ASCII)
+        if m_win_code:
+            wc = int(m_win_code.group(1))
+            outcome = "win" if wc == 1 else ("loss" if wc == 2 else "draw")
+        elif any(tok in low for tok in ("defender has won", "verteidiger hat die schlacht gewonnen", "fleet was destroyed")):
+            outcome = "loss"
+        elif any(tok in low for tok in ("ended in a draw", "endet unentschieden", "draw")):
+            outcome = "draw"
+
+        loot_spice_eq = round(
+            loot_dict["pig_iron"] / 6.0
+            + loot_dict["metal"] / 2.5
+            + loot_dict["kryptonite"] / 3.0
+            + float(loot_dict["spice"]),
+            2,
+        )
+        if loot_spice_eq <= 0.0:
+            m_loot_tot = re.search(r"\bLooted\s*:?\s*([0-9][0-9.]*)", body_for_parse, re.IGNORECASE | re.ASCII)
+            if m_loot_tot:
+                loot_spice_eq = float(parse_si_int(m_loot_tot.group(1)))
+
+        if battle_json_el is not None:
+            try:
+                bj = json.loads(str(battle_json_el.get("data-battle-json") or "{}"))
+            except (ValueError, TypeError):
+                bj = {}
+            if isinstance(bj, dict) and bj.get("ok"):
+                rounds = game_data.safe_int(bj.get("rounds"), rounds)
+                win_code = game_data.safe_int(bj.get("winner"), 1)
+                outcome = "win" if win_code == 1 else ("loss" if win_code == 2 else "draw")
+                att_obj = bj.get("attacker") if isinstance(bj.get("attacker"), Mapping) else {}
+                def_obj = bj.get("defender") if isinstance(bj.get("defender"), Mapping) else {}
+                attacker_name = str(att_obj.get("name") or attacker_name).strip()[:120]
+                defender_name = str(def_obj.get("name") or defender_name).strip()[:120]
+                attacker_lost = _parse_embedded_unit_val(att_obj.get("lost")) if att_obj.get("lost") is not None else attacker_lost
+                defender_lost = _parse_embedded_unit_val(def_obj.get("lost")) if def_obj.get("lost") is not None else defender_lost
+                stolen_arr = bj.get("stolen")
+                if isinstance(stolen_arr, list):
+                    bj_loot = {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0}
+                    rmap = {1: "pig_iron", 2: "metal", 3: "kryptonite", 4: "spice"}
+                    for item in stolen_arr:
+                        if isinstance(item, Mapping):
+                            rk = rmap.get(game_data.safe_int(item.get("r"), 0))
+                            if rk:
+                                bj_loot[rk] = max(0, _parse_embedded_unit_val(item.get("v")))
+                    loot_dict = bj_loot
+                    loot_spice_eq = round(
+                        loot_dict["pig_iron"] / 6.0
+                        + loot_dict["metal"] / 2.5
+                        + loot_dict["kryptonite"] / 3.0
+                        + float(loot_dict["spice"]),
+                        2,
+                    )
+                if bj.get("stolenSpice") is not None and loot_spice_eq <= 0.0:
+                    loot_spice_eq = float(max(0, _parse_embedded_unit_val(bj.get("stolenSpice"))))
+                rubble_arr = bj.get("rubble")
+                if isinstance(rubble_arr, list):
+                    debris_pig = 0
+                    debris_met = 0
+                    for item in rubble_arr:
+                        if isinstance(item, Mapping):
+                            rc = game_data.safe_int(item.get("r"), 0)
+                            if rc == 1:
+                                debris_pig = max(0, _parse_embedded_unit_val(item.get("v")))
+                            elif rc == 2:
+                                debris_met = max(0, _parse_embedded_unit_val(item.get("v")))
+        if not defender_name and "spacia" in low:
+            defender_name = "Spacia"
+
+        debris_spice_eq = round(debris_pig / 6.0 + debris_met / 2.5, 2)
+        parsed_data = {
+            "battle_id": battle_id,
+            "coords": norm_coords,
+            "attacker": attacker_name,
+            "defender": defender_name,
+            "outcome": outcome,
+            "rounds": rounds,
+            "loot": dict(loot_dict),
+            "loot_spice_eq": loot_spice_eq,
+            "resources_mentioned": dict(loot_dict),
+            "attacker_lost_spice": attacker_lost,
+            "defender_lost_spice": defender_lost,
+            "debris": {"pig_iron": debris_pig, "metal": debris_met},
+            "debris_spice_eq": debris_spice_eq,
+            "has_debris": (debris_pig + debris_met) > 0,
+        }
+    elif is_recycle:
+        category = "recycle_report"
+        # Prefer target rubble coordinate in subject (`Space rubble [02:383:14] recycling report`) or `goal ... [02:383:14]`
+        m_subj_c = _SPY_BRACKETED_COORDS_RE.search(subject)
+        if m_subj_c:
+            cand_sc = _norm_coord_triple(f"{m_subj_c.group(1)}:{m_subj_c.group(2)}:{m_subj_c.group(3)}")
+            if cand_sc and cand_sc not in exclude_coords:
+                norm_coords = cand_sc
+        else:
+            m_goal_c = re.search(
+                r"(?:goal|ziel|at|bei)\s+[^\[\]]{0,60}\[\s*(\d{1,2})\s*:\s*(\d{1,3})\s*:\s*(\d{1,2})\s*\]",
+                body_for_parse,
+                re.IGNORECASE,
+            )
+            if m_goal_c:
+                cand_gc = _norm_coord_triple(f"{m_goal_c.group(1)}:{m_goal_c.group(2)}:{m_goal_c.group(3)}")
+                if cand_gc and cand_gc not in exclude_coords:
+                    norm_coords = cand_gc
+        rec_count = 0
+        m_rc = re.search(r"\b([0-9][0-9.]*)\s*Recycler\b", body_for_parse, re.IGNORECASE | re.ASCII)
+        if m_rc:
+            rec_count = parse_si_int(m_rc.group(1))
+        cargo_cap = 0
+        m_cap = re.search(
+            r"(?:capacity|ladekapazit[aä]t|storage)[^0-9]{0,30}([0-9][0-9.]*)",
+            body_for_parse,
+            re.IGNORECASE,
+        )
+        if m_cap:
+            cargo_cap = parse_si_int(m_cap.group(1))
+
+        # Prefer numbers appearing after `harvested` / `processed` / `collected` / `abgebaut`
+        harv_tail = body_for_parse
+        m_htail = re.search(
+            r"(?:harvested|collected|recycled|gathered|processed|abgebaut|gesammelt|verwertet)(.+)$",
+            body_for_parse,
+            re.IGNORECASE,
+        )
+        if m_htail:
+            harv_tail = m_htail.group(1)
+
+        def _extract_res_from_segment(seg: str, lbl: str) -> int:
+            m1 = re.search(rf"{lbl}\s*:?\s*([\d.]+)", seg, re.IGNORECASE | re.ASCII)
+            if m1:
+                return parse_si_int(m1.group(1))
+            m2 = re.search(rf"([\d.]+)\s*(?:units?\s+of\s+)?{lbl}\b", seg, re.IGNORECASE | re.ASCII)
+            return parse_si_int(m2.group(1)) if m2 else 0
+
+        harv_pig = _extract_res_from_segment(harv_tail, r"(?:Pig\s+iron|Roheisen)")
+        harv_met = _extract_res_from_segment(harv_tail, r"(?:Metal|Metall)")
+        harv_kry = _extract_res_from_segment(harv_tail, r"(?:Kryptonite|Kryptonit)")
+        harv_spi = _extract_res_from_segment(harv_tail, r"Spice")
+        if (harv_pig + harv_met + harv_kry + harv_spi) == 0 and harv_tail != body_for_parse:
+            harv_pig = _extract_res_from_segment(body_for_parse, r"(?:Pig\s+iron|Roheisen)")
+            harv_met = _extract_res_from_segment(body_for_parse, r"(?:Metal|Metall)")
+            harv_kry = _extract_res_from_segment(body_for_parse, r"(?:Kryptonite|Kryptonit)")
+            harv_spi = _extract_res_from_segment(body_for_parse, r"Spice")
+
+        avail_pig = harv_pig
+        avail_met = harv_met
+        if m_htail:
+            head_seg = body_for_parse[: m_htail.start()]
+            ap = _extract_res_from_segment(head_seg, r"(?:Pig\s+iron|Roheisen)")
+            am = _extract_res_from_segment(head_seg, r"(?:Metal|Metall)")
+            if ap > 0 or am > 0:
+                avail_pig, avail_met = ap, am
+
+        harv_spice_eq = round(harv_pig / 6.0 + harv_met / 2.5 + harv_kry / 3.0 + float(harv_spi), 2)
+        parsed_data = {
+            "coords": norm_coords,
+            "recycler_count": rec_count,
+            "cargo_capacity": cargo_cap,
+            "debris_available": {"pig_iron": avail_pig, "metal": avail_met},
+            "harvested": {
+                "pig_iron": harv_pig,
+                "metal": harv_met,
+                "kryptonite": harv_kry,
+                "spice": harv_spi,
+            },
+            "harvested_spice_eq": harv_spice_eq,
+        }
+    elif any(tok in low or tok in subj_low for tok in ("coloniz", "kolonisier")):
+        category = "colonize_report"
+        parsed_data = {"coords": norm_coords}
+    elif not is_fleet_return_notice and any(tok in low or tok in subj_low for tok in ("transport", "delivered", "geliefert", "liefert")):
+        category = "fleet_transport"
+        parsed_data = {
+            "coords": norm_coords,
+            "resources": {
+                "pig_iron": _res_pair(r"(?:Pig\s+iron|Roheisen)"),
+                "metal": _res_pair(r"(?:Metal|Metall)"),
+                "kryptonite": _res_pair(r"(?:Kryptonite|Kryptonit)"),
+                "spice": _res_pair(r"Spice"),
+            },
+        }
+    elif is_fleet_return_notice or f_low == "fleet" or any(tok in low or tok in subj_low for tok in ("fleet", "flotte", "returned", "zurückgekehrt", "escape flight", "tarnflug")):
+        category = "fleet_return"
+        parsed_data = {
+            "coords": norm_coords,
+            "unloaded": {
+                "pig_iron": _res_pair(r"(?:Pig\s+iron|Roheisen)"),
+                "metal": _res_pair(r"(?:Metal|Metall)"),
+                "kryptonite": _res_pair(r"(?:Kryptonite|Kryptonit)"),
+                "spice": _res_pair(r"Spice"),
+            },
+        }
+    elif f_low in ("normal", "alliance"):
+        category = "player"
+    elif f_low == "admin":
+        category = "system"
+
+    clean_text = redact_sensitive(inner_body if inner_body else text)[:8000]
+    clean_html = redact_sensitive(block_html)[:16000]
+    clean_sender = redact_sensitive(sender)[:120]
+    clean_subject = redact_sensitive(subject)[:240]
+
+    if server_msg_id:
+        msg_uid = f"id:{server_msg_id}"
+    else:
+        digest = hashlib.sha256(
+            f"{f_low}|{category}|{msg_date_text}|{clean_sender}|{clean_subject}|{norm_coords}|{clean_text}".encode("utf-8")
+        ).hexdigest()[:24]
+        msg_uid = f"sha:{digest}"
+
+    return InboxMessage(
+        msg_uid=msg_uid,
+        server_msg_id=server_msg_id,
+        folder_type=f_low or "inbox",
+        category=category,
+        msg_date_text=msg_date_text,
+        sender=clean_sender,
+        subject=clean_subject,
+        coords=norm_coords,
+        body_text=clean_text,
+        raw_html=clean_html,
+        parsed_data=parsed_data,
+        spy_report=spy_rep,
+        body_complete=body_complete,
+    )
+
+
+SetLike = Collection[str]
+
+
+def parse_inbox_messages_html(
+    html: str,
+    *,
+    folder_type: str = "",
+    exclude_coords: Iterable[str] = (),
+) -> tuple[InboxMessage, ...]:
+    """Parse all messages (espionage, battle, recycle, fleet, system, player) from `internalMessages` HTML."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    _strip_own_planet_header_dom(soup)
+    excl_norm = {_norm_coord_triple(c) for c in (exclude_coords or ()) if _norm_coord_triple(c)}
+
+    raw_blocks: list[str] = []
+    # 1. Explicit `.message` / `.msg` / `id^="msg"` containers (excluding folder counters)
+    containers = [
+        el
+        for el in soup.select(
+            "div.message, div.msg, tr.message, tr.msg, tr[id^='msg'], div[id^='msg'], [data-msg-id], [data-message-id]"
+        )
+        if not _is_folder_counter_node(el)
+    ]
+    if containers:
+        for el in containers:
+            if el.name == "tr":
+                nxt = el.find_next_sibling("tr")
+                if nxt is not None and nxt not in containers and not _extract_element_msg_id(nxt):
+                    raw_blocks.append(f"<table>{el}{nxt}</table>")
+                    continue
+            raw_blocks.append(str(el))
+
+    # 2. Multi-row checkbox-anchored `<table>` messages
+    if not raw_blocks:
+        raw_blocks.extend(_group_table_message_blocks(soup))
+
+    # 3. Fallback: standalone spy/battle/recycle/fleet blocks when no message classes or checkboxes exist
+    if not raw_blocks:
+        for rep in parse_spy_messages_html(str(soup), exclude_coords=excl_norm):
+            raw_blocks.append(
+                f"<div class='msg'>{rep.raw_text or rep.target_coords}</div>"
+            )
+
+    messages: list[InboxMessage] = []
+    seen_uids: set[str] = set()
+    for blk in raw_blocks:
+        msg = _classify_and_parse_inbox_block(
+            blk,
+            folder_type=folder_type,
+            exclude_coords=excl_norm,
+        )
+        if msg is None or msg.msg_uid in seen_uids:
+            continue
+        # Ignore folder-index navigation rows (e.g. `Espionage (3)` links on the folder overview screen)
+        blk_soup = BeautifulSoup(blk, "html.parser")
+        folder_anchors = [
+            a
+            for a in blk_soup.find_all("a", href=True)
+            if "action=internalmessages" in str(a.get("href") or "").lower()
+            and re.search(r"[?&](?:type|cat|category)=", str(a.get("href") or ""), re.IGNORECASE)
+            and "read=" not in str(a.get("href") or "").lower()
+        ]
+        if folder_anchors and not msg.server_msg_id and msg.spy_report is None and len(msg.body_text) < 120:
+            continue
+        seen_uids.add(msg.msg_uid)
+        messages.append(msg)
+    return tuple(messages)
 
 
 def score_raid_target(
@@ -1598,6 +2968,7 @@ def score_raid_target(
     safety_margin: float = 1.4,
     min_loot_spice_eq: float = 1500.0,
     allow_pvp_in_az: bool = False,
+    timestamp: Optional[float] = None,
 ) -> Optional[RaidRecommendation]:
     """Score a scanned target for safe raiding (Yellow/Spacia default; PvP opt-in)."""
     is_inactive = slot.status_color == "yellow"
@@ -1609,6 +2980,7 @@ def score_raid_target(
         slot.coords,
         is_inactive=is_inactive,
         is_spacia=is_spacia,
+        timestamp=timestamp,
     ):
         return None
 
@@ -1637,14 +3009,143 @@ def score_raid_target(
     )
 
 
+def grade_colony_candidate(
+    first_coords: str = "",
+    second_coords: Optional[str] = None,
+    *,
+    coords: Optional[str] = None,
+    origin_coords: str = "",
+    position: Optional[int] = None,
+    uninhabited_fields: Optional[int] = None,
+    spied: bool = False,
+    min_fields_target: int = 300,
+    last_spied_ts: float = 0.0,
+    last_scanned_ts: float = 0.0,
+) -> dict[str, Any]:
+    """Grade an uninhabited/free galaxy slot (`S`..`D` when spied, `?` when unprobed)."""
+    if coords is not None:
+        eff_coords = coords
+        eff_origin = origin_coords or first_coords
+    elif second_coords is not None:
+        eff_origin = origin_coords or first_coords
+        eff_coords = second_coords
+    else:
+        eff_coords = first_coords
+        eff_origin = origin_coords
+
+    norm_c = normalize_coords(eff_coords)
+    m = re.fullmatch(r"(\d+):(\d+):(\d+)", norm_c, re.ASCII)
+    gal = int(m.group(1)) if m else 0
+    sys_num = int(m.group(2)) if m else 0
+    pos = int(position) if (position is not None and 1 <= int(position) <= 16) else (int(m.group(3)) if m else 0)
+
+    norm_orig = normalize_coords(eff_origin) if eff_origin else norm_c
+    m_orig = re.fullmatch(r"(\d+):(\d+):(\d+)", norm_orig, re.ASCII)
+    orig_gal = int(m_orig.group(1)) if m_orig else gal
+    orig_sys = int(m_orig.group(2)) if m_orig else sys_num
+    sys_dist = abs(gal - orig_gal) * 400 + abs(sys_num - orig_sys) if (gal > 0 and sys_num > 0) else 0
+
+    dist = _parse_coords_distance(norm_orig or norm_c, norm_c) if norm_c else 0.0
+    dist_penalty = min(5, int(max(0.0, dist - 1000.0) / 800.0))
+    min_tgt = max(50, min(600, game_data.safe_int(min_fields_target, 300)))
+
+    if 7 <= pos <= 12:
+        zone_label = "Prime Large-Field Belt (Pos 7-12)"
+        est_temp = "10°C .. 55°C"
+    elif 13 <= pos <= 16:
+        zone_label = "Cold Spice Belt (Pos 13-16)"
+        est_temp = "-70°C .. 5°C"
+    elif 4 <= pos <= 6:
+        zone_label = "Temperate Mid Belt (Pos 4-6)"
+        est_temp = "55°C .. 95°C"
+    else:
+        zone_label = "Hot Inner Core (Pos 1-3)"
+        est_temp = "100°C .. 220°C"
+
+    fields_val = game_data.safe_optional_int(uninhabited_fields, None)
+    is_spied = bool(spied or fields_val is not None or last_spied_ts > 0.0)
+    is_probed = bool(is_spied and fields_val is not None)
+
+    if is_probed and fields_val is not None:
+        if fields_val >= 310:
+            grade = "S"
+            base_score = min(100, 95 + (fields_val - 310) // 4)
+        elif fields_val >= 300:
+            grade = "A+"
+            base_score = 90 + min(4, int((fields_val - 300) * 0.5))
+        elif fields_val >= 270:
+            grade = "A"
+            base_score = 78 + min(11, int((fields_val - 270) * 0.4))
+        elif fields_val >= 230:
+            grade = "B"
+            base_score = 62 + min(15, int((fields_val - 230) * 0.4))
+        elif fields_val >= 180:
+            grade = "C"
+            base_score = 40 + min(21, int((fields_val - 180) * 0.42))
+        else:
+            grade = "D"
+            base_score = max(5, min(39, int(fields_val * 0.22)))
+        score = max(1, min(100, base_score - dist_penalty))
+        meets_target = fields_val >= min_tgt
+        recommendation = "COLONIZE_NOW" if meets_target else "SKIP_TOO_SMALL"
+        if meets_target:
+            reason = f"Confirmed {fields_val} fields >= {min_tgt} target ({zone_label}) — ready to colonize"
+        else:
+            reason = f"Confirmed {fields_val} fields < {min_tgt} target — skip for {min_tgt}+ end-game focus"
+    else:
+        grade = "?"
+        if 7 <= pos <= 12:
+            pot = 82 - int(abs(pos - 9.5) * 3.0)
+            recommendation = "PROBE_PRIME_SLOT"
+            reason = f"Unprobed prime slot (pos {pos}) — highest statistical odds for {min_tgt}+ fields"
+        elif 4 <= pos <= 6:
+            pot = 56 - abs(pos - 5) * 3
+            recommendation = "PROBE_SECONDARY"
+            reason = f"Unprobed temperate slot (pos {pos}) — moderate field odds; probe after pos 7-12"
+        elif 13 <= pos <= 16:
+            pot = 48 - abs(pos - 14) * 2
+            recommendation = "PROBE_COLD_SPICE"
+            reason = f"Unprobed cold Spice slot (pos {pos}) — bonus Spice output, typically smaller field roll"
+        else:
+            pot = 30
+            recommendation = "LOW_FIELD_ODDS"
+            reason = f"Unprobed hot inner slot (pos {pos}) — low probability of {min_tgt}+ fields"
+        score = max(5, min(85, pot - dist_penalty))
+        meets_target = False
+
+    return {
+        "coords": norm_c,
+        "galaxy": gal,
+        "system": sys_num,
+        "position": pos,
+        "spied": is_probed,
+        "probed": is_probed,
+        "uninhabited_fields": fields_val,
+        "grade": grade,
+        "score": int(score),
+        "meets_target": bool(meets_target),
+        "min_fields_target": min_tgt,
+        "zone_label": zone_label,
+        "orbital_zone": zone_label,
+        "orbital_band": f"{zone_label} ({est_temp})",
+        "est_temp_range": est_temp,
+        "distance": round(float(dist), 1),
+        "system_distance": int(sys_dist),
+        "recommendation": recommendation,
+        "reason": reason,
+        "last_spied_ts": float(last_spied_ts or 0.0),
+        "last_scanned_ts": float(last_scanned_ts or 0.0),
+    }
+
+
 def pick_colony_candidates(
     slots: tuple[GalaxySlot, ...],
     *,
     goal: str = "large_fields",
-    min_fields_target: int = 230,
+    min_fields_target: int = 300,
     uninhabited_reports: Optional[Mapping[str, SpyReport]] = None,
 ) -> list[GalaxySlot]:
-    """Filter & rank free galaxy slots for large economy colonies (pos 7-12) or cold Spice (13-16)."""
+    """Filter & rank free galaxy slots for large economy colonies (pos 7-12, 300+ fields) or cold Spice (13-16)."""
     reports = uninhabited_reports or {}
     free = [s for s in slots if s.status_color == "free"]
     filtered: list[tuple[float, GalaxySlot]] = []
@@ -1658,7 +3159,7 @@ def pick_colony_candidates(
             # Edge cold positions 13-16 yield maximum Spice
             pos_score = 100.0 - abs(slot.position - 15) * 15.0
         else:
-            # Mid-outer slots 7-12 offer best statistical odds for >=230-300+ field rolls
+            # Mid-outer slots 7-12 offer best statistical odds for >=300 field rolls
             pos_score = 100.0 - abs(slot.position - 9.5) * 12.0
         if rep and rep.uninhabited_fields:
             pos_score += rep.uninhabited_fields * 0.25

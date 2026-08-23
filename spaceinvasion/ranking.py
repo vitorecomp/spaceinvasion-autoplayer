@@ -1760,6 +1760,14 @@ def compute_action_eta(state: GameState, action: Any) -> dict[str, Any]:
             base_s = _safe_finite_float(stats.get("base_time_s", 0.0), 0.0)
             b_divisor = max(1.0, float(min(dev_lvl, 1_000_000) + 1) * micro_mult * speedup)
             dur_s_raw = _cap_eta_float(base_s / b_divisor)
+    elif kind == "DEMOLISH_BUILDING":
+        bid = _resolve_building_id(raw_tid, raw_tname)
+        step_lvl = max(1, _safe_eta_int(raw_tlvl, 0) + 1)
+        if bid is not None and step_lvl > 0:
+            stats = game_data.building_level_stats(bid, step_lvl)
+            base_s = _safe_finite_float(stats.get("base_time_s", 0.0), 0.0)
+            b_divisor = max(1.0, float(min(dev_lvl, 1_000_000) + 1) * micro_mult * speedup)
+            dur_s_raw = _cap_eta_float(base_s / b_divisor)
     elif kind == "RESEARCH":
         rkey = _resolve_research_key(raw_tid, raw_tname)
         tgt_lvl = max(0, _safe_eta_int(raw_tlvl, 0))

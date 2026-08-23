@@ -20,15 +20,18 @@ allow_fleetsave: false            # Set true for P0 auto Escape Flight once inte
 allow_galaxy_scan: false          # Set true to scan nearby systems for Yellow/Spacia/Debris targets
 allow_raids: false                # Set true for automated raids against Yellow inactives & Spacia
 allow_pvp_in_az: false            # Keep false unless explicitly attacking active Light Red / Top-50 players
-allow_colonize: false             # Set true for >=230-field economy & cold-Spice colony scouting/settlement
+allow_colonize: true              # Set true for >=300-field economy & cold-Spice colony scouting/settlement
+forbid_planetary_solar: true      # Forbid Thermosolar plant & Solar cells on normal planets (Asteroids ONLY)
 
 storage_warn_ratio: 0.85
 blast_pig_iron_max_share: 0.70
 combat_safety_margin: 1.4
 raid_min_loot_spice_eq: 1500.0
 fleet_save_fuel_reserve_spice: 500
+action_batch_interval_seconds: 120 # Min seconds to accumulate actions into a single batch & refresh state
 hot_planet_solar_temp_threshold: 40
 min_free_fields_warning: 20
+min_colony_fields: 300            # Minimum building fields required for automated colonization (300+ focus)
 
 shipyard_targets:
   small-fighter: 12

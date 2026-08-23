@@ -12,10 +12,18 @@ import sqlite3
 import tempfile
 import threading
 import time
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from spaceinvasion import game_data
-from spaceinvasion.fleet import BashTracker, GalaxySlot, SpyReport, normalize_coords
+from spaceinvasion.fleet import (
+    BashTracker,
+    GalaxySlot,
+    InboxMessage,
+    SpyReport,
+    _classify_and_parse_inbox_block,
+    grade_colony_candidate,
+    normalize_coords,
+)
 from spaceinvasion.logging_utils import (
     _SECRET_DICT_KEYS,
     _SID_RE as _LOG_SID_RE,
@@ -23,7 +31,7 @@ from spaceinvasion.logging_utils import (
     is_secret_dict_key,
     redact_sensitive,
 )
-from spaceinvasion.state import GameState, normalize_planet_type
+from spaceinvasion.state import GameState, game_state_from_dict, normalize_planet_type
 
 DEFAULT_DB_PATH = Path("state") / "spaceinvasion.db"
 DEFAULT_ATTACK_HISTORY_PATH = Path("data") / "attack_history.json"
@@ -580,6 +588,7 @@ CREATE TABLE IF NOT EXISTS spy_targets (
     status_color TEXT NOT NULL DEFAULT 'yellow',
     is_inactive INTEGER NOT NULL DEFAULT 0,
     is_spacia INTEGER NOT NULL DEFAULT 0,
+    has_debris INTEGER NOT NULL DEFAULT 0,
     points INTEGER,
     pig_iron INTEGER NOT NULL DEFAULT 0,
     metal INTEGER NOT NULL DEFAULT 0,
@@ -589,8 +598,61 @@ CREATE TABLE IF NOT EXISTS spy_targets (
     defense_json TEXT NOT NULL DEFAULT '{}',
     dug_in INTEGER NOT NULL DEFAULT 0,
     last_scanned_ts REAL NOT NULL,
-    last_spied_ts REAL NOT NULL DEFAULT 0.0
+    last_spied_ts REAL NOT NULL DEFAULT 0.0,
+    blocked_until_ts REAL NOT NULL DEFAULT 0.0,
+    block_reason TEXT NOT NULL DEFAULT '',
+    bash_hits INTEGER NOT NULL DEFAULT 0,
+    last_blocked_ts REAL NOT NULL DEFAULT 0.0,
+    uninhabited_fields INTEGER,
+    spy_count INTEGER NOT NULL DEFAULT 0,
+    is_own_planet INTEGER NOT NULL DEFAULT 0,
+    merged_into TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS spy_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    target_coords TEXT NOT NULL,
+    owner TEXT NOT NULL DEFAULT '',
+    planet_name TEXT NOT NULL DEFAULT '',
+    is_spacia INTEGER NOT NULL DEFAULT 0,
+    pig_iron INTEGER NOT NULL DEFAULT 0,
+    metal INTEGER NOT NULL DEFAULT 0,
+    kryptonite INTEGER NOT NULL DEFAULT 0,
+    spice INTEGER NOT NULL DEFAULT 0,
+    loot_spice_eq REAL NOT NULL DEFAULT 0.0,
+    buildings_json TEXT NOT NULL DEFAULT '{}',
+    fleet_json TEXT NOT NULL DEFAULT '{}',
+    defense_json TEXT NOT NULL DEFAULT '{}',
+    researches_json TEXT NOT NULL DEFAULT '{}',
+    dug_in INTEGER,
+    uninhabited_fields INTEGER,
+    server_msg_id TEXT NOT NULL DEFAULT '',
+    msg_date_text TEXT NOT NULL DEFAULT '',
+    raw_text TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_spy_reports_coords_ts ON spy_reports(target_coords, ts);
+
+CREATE TABLE IF NOT EXISTS game_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ingested_ts REAL NOT NULL,
+    msg_uid TEXT NOT NULL UNIQUE,
+    server_msg_id TEXT NOT NULL DEFAULT '',
+    folder_type TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'other',
+    msg_date_text TEXT NOT NULL DEFAULT '',
+    sender TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    coords TEXT NOT NULL DEFAULT '',
+    body_text TEXT NOT NULL DEFAULT '',
+    raw_html TEXT NOT NULL DEFAULT '',
+    parsed_json TEXT NOT NULL DEFAULT '{}',
+    deleted_in_game INTEGER NOT NULL DEFAULT 0,
+    deleted_ts REAL
+);
+CREATE INDEX IF NOT EXISTS idx_game_messages_ts ON game_messages(ingested_ts);
+CREATE INDEX IF NOT EXISTS idx_game_messages_coords ON game_messages(coords, ingested_ts);
+CREATE INDEX IF NOT EXISTS idx_game_messages_cat ON game_messages(category, ingested_ts);
 
 CREATE TABLE IF NOT EXISTS galaxy_scans (
     galaxy INTEGER NOT NULL,
@@ -603,6 +665,58 @@ CREATE TABLE IF NOT EXISTS galaxy_scans (
 );
 CREATE INDEX IF NOT EXISTS idx_galaxy_scans_ts ON galaxy_scans(last_scanned_ts);
 
+CREATE TABLE IF NOT EXISTS galaxy_scan_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    galaxy INTEGER NOT NULL,
+    system INTEGER NOT NULL,
+    occupied_count INTEGER NOT NULL DEFAULT 0,
+    target_count INTEGER NOT NULL DEFAULT 0,
+    free_count INTEGER NOT NULL DEFAULT 0,
+    debris_count INTEGER NOT NULL DEFAULT 0,
+    asteroid_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_galaxy_scan_history_sys_ts ON galaxy_scan_history(galaxy, system, ts);
+
+CREATE TABLE IF NOT EXISTS galaxy_slots (
+    coords TEXT PRIMARY KEY,
+    galaxy INTEGER NOT NULL,
+    system INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    planet_name TEXT NOT NULL DEFAULT '',
+    owner TEXT NOT NULL DEFAULT '',
+    status_color TEXT NOT NULL DEFAULT 'free',
+    is_inactive INTEGER NOT NULL DEFAULT 0,
+    is_spacia INTEGER NOT NULL DEFAULT 0,
+    has_debris INTEGER NOT NULL DEFAULT 0,
+    last_scanned_ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_galaxy_slots_sys ON galaxy_slots(galaxy, system, position);
+
+CREATE TABLE IF NOT EXISTS galaxy_slot_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    coords TEXT NOT NULL,
+    galaxy INTEGER NOT NULL,
+    system INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    planet_name TEXT NOT NULL DEFAULT '',
+    owner TEXT NOT NULL DEFAULT '',
+    status_color TEXT NOT NULL DEFAULT 'free',
+    is_inactive INTEGER NOT NULL DEFAULT 0,
+    is_spacia INTEGER NOT NULL DEFAULT 0,
+    has_debris INTEGER NOT NULL DEFAULT 0,
+    has_asteroid INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_galaxy_slot_history_coords_ts ON galaxy_slot_history(coords, ts);
+
+CREATE TABLE IF NOT EXISTS config_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    config_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_config_history_ts ON config_history(ts);
+
 CREATE TABLE IF NOT EXISTS raid_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     target_coords TEXT NOT NULL,
@@ -612,6 +726,95 @@ CREATE TABLE IF NOT EXISTS raid_history (
     loot_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_raid_history_coords_ts ON raid_history(target_coords, attacked_ts);
+
+CREATE TABLE IF NOT EXISTS bash_blocks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_coords TEXT NOT NULL,
+    blocked_ts REAL NOT NULL,
+    blocked_until_ts REAL NOT NULL,
+    cooldown_seconds REAL NOT NULL DEFAULT 0.0,
+    is_bash INTEGER NOT NULL DEFAULT 1,
+    reason TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_bash_blocks_coords_ts ON bash_blocks(target_coords, blocked_ts);
+
+CREATE TABLE IF NOT EXISTS battle_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    msg_uid TEXT NOT NULL UNIQUE,
+    server_msg_id TEXT NOT NULL DEFAULT '',
+    battle_id TEXT NOT NULL DEFAULT '',
+    msg_date_text TEXT NOT NULL DEFAULT '',
+    target_coords TEXT NOT NULL DEFAULT '',
+    attacker TEXT NOT NULL DEFAULT '',
+    defender TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT 'win',
+    rounds INTEGER NOT NULL DEFAULT 0,
+    pig_iron INTEGER NOT NULL DEFAULT 0,
+    metal INTEGER NOT NULL DEFAULT 0,
+    kryptonite INTEGER NOT NULL DEFAULT 0,
+    spice INTEGER NOT NULL DEFAULT 0,
+    loot_spice_eq REAL NOT NULL DEFAULT 0.0,
+    attacker_lost_spice INTEGER NOT NULL DEFAULT 0,
+    defender_lost_spice INTEGER NOT NULL DEFAULT 0,
+    debris_pig_iron INTEGER NOT NULL DEFAULT 0,
+    debris_metal INTEGER NOT NULL DEFAULT 0,
+    debris_spice_eq REAL NOT NULL DEFAULT 0.0,
+    raw_text TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_battle_reports_coords_ts ON battle_reports(target_coords, ts);
+
+CREATE TABLE IF NOT EXISTS recycle_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    msg_uid TEXT NOT NULL UNIQUE,
+    server_msg_id TEXT NOT NULL DEFAULT '',
+    msg_date_text TEXT NOT NULL DEFAULT '',
+    coords TEXT NOT NULL DEFAULT '',
+    recycler_count INTEGER NOT NULL DEFAULT 0,
+    cargo_capacity INTEGER NOT NULL DEFAULT 0,
+    debris_avail_pig INTEGER NOT NULL DEFAULT 0,
+    debris_avail_metal INTEGER NOT NULL DEFAULT 0,
+    harvested_pig_iron INTEGER NOT NULL DEFAULT 0,
+    harvested_metal INTEGER NOT NULL DEFAULT 0,
+    harvested_kryptonite INTEGER NOT NULL DEFAULT 0,
+    harvested_spice INTEGER NOT NULL DEFAULT 0,
+    harvested_spice_eq REAL NOT NULL DEFAULT 0.0,
+    raw_text TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_recycle_reports_coords_ts ON recycle_reports(coords, ts);
+
+CREATE TABLE IF NOT EXISTS manual_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_ts REAL NOT NULL,
+    updated_ts REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    priority TEXT NOT NULL DEFAULT 'P1',
+    sort_rank INTEGER NOT NULL DEFAULT 1000,
+    kind TEXT NOT NULL,
+    planet_id INTEGER NOT NULL DEFAULT 0,
+    planet_coords TEXT NOT NULL DEFAULT '',
+    target_id INTEGER,
+    target_name TEXT NOT NULL DEFAULT '',
+    target_coords TEXT NOT NULL DEFAULT '',
+    target_level INTEGER,
+    note TEXT NOT NULL DEFAULT '',
+    completed_ts REAL,
+    canceled_ts REAL,
+    result_message TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_manual_queue_status_prio_rank
+    ON manual_queue(status, priority, sort_rank, id);
+
+CREATE TABLE IF NOT EXISTS manual_queue_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    queue_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_manual_queue_events_qid_ts
+    ON manual_queue_events(queue_id, ts);
 """
 
 
@@ -755,6 +958,71 @@ class GameDatabase:
                     self._conn.execute(
                         "ALTER TABLE spy_targets ADD COLUMN last_spied_ts REAL NOT NULL DEFAULT 0.0"
                     )
+                if "has_debris" not in existing_cols:
+                    self._conn.execute(
+                        "ALTER TABLE spy_targets ADD COLUMN has_debris INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "blocked_until_ts" not in existing_cols:
+                    self._conn.execute(
+                        "ALTER TABLE spy_targets ADD COLUMN blocked_until_ts REAL NOT NULL DEFAULT 0.0"
+                    )
+                if "block_reason" not in existing_cols:
+                    self._conn.execute(
+                        "ALTER TABLE spy_targets ADD COLUMN block_reason TEXT NOT NULL DEFAULT ''"
+                    )
+                if "bash_hits" not in existing_cols:
+                    self._conn.execute(
+                        "ALTER TABLE spy_targets ADD COLUMN bash_hits INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "last_blocked_ts" not in existing_cols:
+                    self._conn.execute(
+                        "ALTER TABLE spy_targets ADD COLUMN last_blocked_ts REAL NOT NULL DEFAULT 0.0"
+                    )
+                if "uninhabited_fields" not in existing_cols:
+                    self._conn.execute(
+                        "ALTER TABLE spy_targets ADD COLUMN uninhabited_fields INTEGER"
+                    )
+                if "spy_count" not in existing_cols:
+                    self._conn.execute(
+                        "ALTER TABLE spy_targets ADD COLUMN spy_count INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "is_own_planet" not in existing_cols:
+                    self._conn.execute(
+                        "ALTER TABLE spy_targets ADD COLUMN is_own_planet INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "merged_into" not in existing_cols:
+                    self._conn.execute(
+                        "ALTER TABLE spy_targets ADD COLUMN merged_into TEXT NOT NULL DEFAULT ''"
+                    )
+                rep_cols = {
+                    r["name"]
+                    for r in self._conn.execute("PRAGMA table_info(spy_reports)").fetchall()
+                }
+                for col_name, col_ddl in (
+                    ("planet_name", "TEXT NOT NULL DEFAULT ''"),
+                    ("buildings_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("researches_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("server_msg_id", "TEXT NOT NULL DEFAULT ''"),
+                    ("msg_date_text", "TEXT NOT NULL DEFAULT ''"),
+                    ("raw_text", "TEXT NOT NULL DEFAULT ''"),
+                ):
+                    if col_name not in rep_cols:
+                        self._conn.execute(
+                            f"ALTER TABLE spy_reports ADD COLUMN {col_name} {col_ddl}"
+                        )
+                rec_cols = {
+                    r["name"]
+                    for r in self._conn.execute("PRAGMA table_info(recycle_reports)").fetchall()
+                }
+                for col_name, col_ddl in (
+                    ("harvested_kryptonite", "INTEGER NOT NULL DEFAULT 0"),
+                    ("harvested_spice", "INTEGER NOT NULL DEFAULT 0"),
+                ):
+                    if col_name not in rec_cols:
+                        self._conn.execute(
+                            f"ALTER TABLE recycle_reports ADD COLUMN {col_name} {col_ddl}"
+                        )
+                self._last_slot_history_sig: Optional[tuple[float, tuple[str, ...]]] = None
                 now_ts = time.time()
                 self._conn.execute(
                     "INSERT OR IGNORE INTO meta(key, value, updated_ts) VALUES(?, ?, ?)",
@@ -762,10 +1030,297 @@ class GameDatabase:
                 )
                 if legacy_rank_json is not None and legacy_rank_json.exists():
                     self._migrate_legacy_rank_json(legacy_rank_json)
+                self._backfill_reports_from_game_messages_locked(now_ts)
                 self._conn.commit()
         except Exception:
             self._conn.close()
             raise
+
+    def _backfill_reports_from_game_messages_locked(self, now_ts: float) -> None:
+        """Non-destructively re-parse existing `game_messages` rows to populate `battle_reports`, `recycle_reports`, and `spy_reports`."""
+        max_row = self._conn.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM game_messages").fetchone()
+        max_id = int(max_row["max_id"] or 0) if max_row is not None else 0
+        if max_id <= 0:
+            return
+        meta_row = self._conn.execute(
+            "SELECT value FROM meta WHERE key = 'reports_backfill_v2'"
+        ).fetchone()
+        if meta_row is not None and str(meta_row["value"]) == str(max_id):
+            return
+
+        own_coords = {
+            normalize_coords(_raw_text(r["coords"], ""))
+            for r in self._conn.execute("SELECT DISTINCT coords FROM planet_snapshots").fetchall()
+            if normalize_coords(_raw_text(r["coords"], ""))
+        }
+        own_coords.update(
+            normalize_coords(_raw_text(r["coords"], ""))
+            for r in self._conn.execute("SELECT coords FROM spy_targets WHERE is_own_planet = 1").fetchall()
+            if normalize_coords(_raw_text(r["coords"], ""))
+        )
+
+        msg_rows = self._conn.execute(
+            """
+            SELECT id, ingested_ts, msg_uid, server_msg_id, folder_type, category,
+                   msg_date_text, sender, subject, coords, body_text, raw_html
+            FROM game_messages
+            WHERE msg_uid NOT LIKE 'id:msg-%'
+            ORDER BY id ASC
+            """
+        ).fetchall()
+
+        for r in msg_rows:
+            raw_html = _raw_text(r["raw_html"], "").strip()
+            btxt_orig = _raw_text(r["body_text"], "").strip()
+            if re.fullmatch(r"\d[\d.]*\s*/\s*\d[\d.]*", btxt_orig):
+                continue
+            ftype = _raw_text(r["folder_type"], "")
+            subj_orig = _raw_text(r["subject"], "")
+            sender_orig = _raw_text(r["sender"], "")
+            dt_orig = _raw_text(r["msg_date_text"], "")
+            fallback_html = (
+                f"<table><tr><td>{dt_orig}</td><td>{sender_orig}</td><td>{subj_orig}</td></tr>"
+                f"<tr><td colspan='3'>{btxt_orig}{raw_html}</td></tr></table>"
+            )
+            reparsed = (
+                _classify_and_parse_inbox_block(
+                    raw_html,
+                    folder_type=ftype,
+                    exclude_coords=own_coords,
+                )
+                if raw_html
+                else None
+            )
+            if reparsed is None:
+                reparsed = _classify_and_parse_inbox_block(
+                    fallback_html,
+                    folder_type=ftype,
+                    exclude_coords=own_coords,
+                )
+            if reparsed is None:
+                continue
+
+            row_ts = _safe_float(r["ingested_ts"], now_ts) or now_ts
+            uid = _sanitize_text(r["msg_uid"])
+            srv_id_s = _sanitize_text(r["server_msg_id"] or reparsed.server_msg_id)[:64]
+            dt_s = _sanitize_text(dt_orig or reparsed.msg_date_text)[:64]
+            cat_s = _sanitize_text(reparsed.category or r["category"] or "other")[:64]
+            norm_c = normalize_coords(reparsed.coords) if reparsed.coords else normalize_coords(_raw_text(r["coords"], ""))
+            clean_btxt = _sanitize_text(reparsed.body_text or btxt_orig)[:8000]
+            pdata = reparsed.parsed_data if isinstance(reparsed.parsed_data, Mapping) else {}
+
+            self._conn.execute(
+                """
+                UPDATE game_messages
+                SET category = ?,
+                    coords = CASE WHEN ? != '' THEN ? ELSE coords END,
+                    body_text = CASE WHEN ? != '' THEN ? ELSE body_text END,
+                    parsed_json = CASE WHEN ? != '{}' THEN ? ELSE parsed_json END
+                WHERE id = ?
+                """,
+                (
+                    cat_s,
+                    norm_c,
+                    norm_c,
+                    clean_btxt,
+                    clean_btxt,
+                    _json_dumps(pdata),
+                    _json_dumps(pdata),
+                    int(r["id"]),
+                ),
+            )
+
+            if cat_s == "battle_report":
+                loot_obj = pdata.get("loot") if isinstance(pdata.get("loot"), Mapping) else {}
+                deb_obj = pdata.get("debris") if isinstance(pdata.get("debris"), Mapping) else {}
+                b_pig = max(0, _sql_int(loot_obj.get("pig_iron"), 0))
+                b_met = max(0, _sql_int(loot_obj.get("metal"), 0))
+                b_kry = max(0, _sql_int(loot_obj.get("kryptonite"), 0))
+                b_spi = max(0, _sql_int(loot_obj.get("spice"), 0))
+                b_seq = _safe_float(
+                    pdata.get("loot_spice_eq"),
+                    round(b_pig / 6.0 + b_met / 2.5 + b_kry / 3.0 + float(b_spi), 2),
+                )
+                d_pig = max(0, _sql_int(deb_obj.get("pig_iron"), 0))
+                d_met = max(0, _sql_int(deb_obj.get("metal"), 0))
+                d_seq = _safe_float(pdata.get("debris_spice_eq"), round(d_pig / 6.0 + d_met / 2.5, 2))
+                self._conn.execute(
+                    """
+                    INSERT INTO battle_reports(
+                        ts, msg_uid, server_msg_id, battle_id, msg_date_text,
+                        target_coords, attacker, defender, outcome, rounds,
+                        pig_iron, metal, kryptonite, spice, loot_spice_eq,
+                        attacker_lost_spice, defender_lost_spice,
+                        debris_pig_iron, debris_metal, debris_spice_eq, raw_text
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(msg_uid) DO UPDATE SET
+                        battle_id = CASE WHEN excluded.battle_id != '' THEN excluded.battle_id ELSE battle_reports.battle_id END,
+                        attacker = CASE WHEN excluded.attacker != '' THEN excluded.attacker ELSE battle_reports.attacker END,
+                        defender = CASE WHEN excluded.defender != '' THEN excluded.defender ELSE battle_reports.defender END,
+                        outcome = excluded.outcome,
+                        rounds = MAX(battle_reports.rounds, excluded.rounds),
+                        pig_iron = MAX(battle_reports.pig_iron, excluded.pig_iron),
+                        metal = MAX(battle_reports.metal, excluded.metal),
+                        kryptonite = MAX(battle_reports.kryptonite, excluded.kryptonite),
+                        spice = MAX(battle_reports.spice, excluded.spice),
+                        loot_spice_eq = MAX(battle_reports.loot_spice_eq, excluded.loot_spice_eq),
+                        attacker_lost_spice = MAX(battle_reports.attacker_lost_spice, excluded.attacker_lost_spice),
+                        defender_lost_spice = MAX(battle_reports.defender_lost_spice, excluded.defender_lost_spice),
+                        debris_pig_iron = MAX(battle_reports.debris_pig_iron, excluded.debris_pig_iron),
+                        debris_metal = MAX(battle_reports.debris_metal, excluded.debris_metal),
+                        debris_spice_eq = MAX(battle_reports.debris_spice_eq, excluded.debris_spice_eq),
+                        raw_text = CASE WHEN excluded.raw_text != '' THEN excluded.raw_text ELSE battle_reports.raw_text END
+                    """,
+                    (
+                        row_ts,
+                        uid,
+                        srv_id_s,
+                        _sanitize_text(pdata.get("battle_id") or "")[:64],
+                        dt_s,
+                        norm_c,
+                        _sanitize_text(pdata.get("attacker") or "")[:120],
+                        _sanitize_text(pdata.get("defender") or "")[:120],
+                        _sanitize_text(pdata.get("outcome") or "win")[:32],
+                        max(0, _sql_int(pdata.get("rounds"), 0)),
+                        b_pig,
+                        b_met,
+                        b_kry,
+                        b_spi,
+                        b_seq,
+                        max(0, _sql_int(pdata.get("attacker_lost_spice"), 0)),
+                        max(0, _sql_int(pdata.get("defender_lost_spice"), 0)),
+                        d_pig,
+                        d_met,
+                        d_seq,
+                        clean_btxt[:8000],
+                    ),
+                )
+            elif cat_s == "recycle_report":
+                harv_obj = pdata.get("harvested") if isinstance(pdata.get("harvested"), Mapping) else {}
+                avail_obj = pdata.get("debris_available") if isinstance(pdata.get("debris_available"), Mapping) else {}
+                h_pig = max(0, _sql_int(harv_obj.get("pig_iron"), 0))
+                h_met = max(0, _sql_int(harv_obj.get("metal"), 0))
+                h_kry = max(0, _sql_int(harv_obj.get("kryptonite"), 0))
+                h_spi = max(0, _sql_int(harv_obj.get("spice"), 0))
+                h_seq = _safe_float(
+                    pdata.get("harvested_spice_eq"),
+                    round(h_pig / 6.0 + h_met / 2.5 + h_kry / 3.0 + float(h_spi), 2),
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO recycle_reports(
+                        ts, msg_uid, server_msg_id, msg_date_text, coords,
+                        recycler_count, cargo_capacity, debris_avail_pig, debris_avail_metal,
+                        harvested_pig_iron, harvested_metal, harvested_kryptonite, harvested_spice,
+                        harvested_spice_eq, raw_text
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(msg_uid) DO UPDATE SET
+                        coords = CASE WHEN excluded.coords != '' THEN excluded.coords ELSE recycle_reports.coords END,
+                        recycler_count = MAX(recycle_reports.recycler_count, excluded.recycler_count),
+                        cargo_capacity = MAX(recycle_reports.cargo_capacity, excluded.cargo_capacity),
+                        debris_avail_pig = excluded.debris_avail_pig,
+                        debris_avail_metal = excluded.debris_avail_metal,
+                        harvested_pig_iron = excluded.harvested_pig_iron,
+                        harvested_metal = excluded.harvested_metal,
+                        harvested_kryptonite = excluded.harvested_kryptonite,
+                        harvested_spice = excluded.harvested_spice,
+                        harvested_spice_eq = excluded.harvested_spice_eq,
+                        raw_text = CASE WHEN excluded.raw_text != '' THEN excluded.raw_text ELSE recycle_reports.raw_text END
+                    """,
+                    (
+                        row_ts,
+                        uid,
+                        srv_id_s,
+                        dt_s,
+                        norm_c,
+                        max(0, _sql_int(pdata.get("recycler_count"), 0)),
+                        max(0, _sql_int(pdata.get("cargo_capacity"), 0)),
+                        max(0, _sql_int(avail_obj.get("pig_iron"), 0)),
+                        max(0, _sql_int(avail_obj.get("metal"), 0)),
+                        h_pig,
+                        h_met,
+                        h_kry,
+                        h_spi,
+                        h_seq,
+                        clean_btxt[:8000],
+                    ),
+                )
+            elif cat_s == "spy_report" and reparsed.spy_report is not None:
+                srep = reparsed.spy_report
+                srep_res_sum = (
+                    _sql_int(srep.resources.pig_iron, 0)
+                    + _sql_int(srep.resources.metal, 0)
+                    + _sql_int(srep.resources.kryptonite, 0)
+                    + _sql_int(srep.resources.spice, 0)
+                )
+                if srv_id_s and (srep_res_sum > 0 or srep.buildings or srep.uninhabited_fields is not None):
+                    self._conn.execute(
+                        """
+                        UPDATE spy_reports
+                        SET planet_name = CASE WHEN ? != '' THEN ? ELSE planet_name END,
+                            pig_iron = CASE WHEN ? > 0 THEN ? ELSE pig_iron END,
+                            metal = CASE WHEN ? > 0 THEN ? ELSE metal END,
+                            kryptonite = CASE WHEN ? > 0 THEN ? ELSE kryptonite END,
+                            spice = CASE WHEN ? > 0 THEN ? ELSE spice END,
+                            buildings_json = CASE WHEN ? != '{}' THEN ? ELSE buildings_json END,
+                            fleet_json = CASE WHEN ? != '{}' THEN ? ELSE fleet_json END,
+                            defense_json = CASE WHEN ? != '{}' THEN ? ELSE defense_json END,
+                            researches_json = CASE WHEN ? != '{}' THEN ? ELSE researches_json END,
+                            uninhabited_fields = COALESCE(?, uninhabited_fields)
+                        WHERE server_msg_id = ?
+                        """,
+                        (
+                            _sanitize_text(srep.planet_name)[:80],
+                            _sanitize_text(srep.planet_name)[:80],
+                            _sql_int(srep.resources.pig_iron, 0),
+                            _sql_int(srep.resources.pig_iron, 0),
+                            _sql_int(srep.resources.metal, 0),
+                            _sql_int(srep.resources.metal, 0),
+                            _sql_int(srep.resources.kryptonite, 0),
+                            _sql_int(srep.resources.kryptonite, 0),
+                            _sql_int(srep.resources.spice, 0),
+                            _sql_int(srep.resources.spice, 0),
+                            _json_dumps(srep.buildings),
+                            _json_dumps(srep.buildings),
+                            _json_dumps(srep.fleet),
+                            _json_dumps(srep.fleet),
+                            _json_dumps(srep.defense),
+                            _json_dumps(srep.defense),
+                            _json_dumps(srep.researches),
+                            _json_dumps(srep.researches),
+                            _sql_optional_int(srep.uninhabited_fields),
+                            srv_id_s,
+                        ),
+                    )
+                    if norm_c and srep_res_sum > 0:
+                        self._conn.execute(
+                            """
+                            UPDATE spy_targets
+                            SET planet_name = CASE WHEN planet_name = '' AND ? != '' THEN ? ELSE planet_name END,
+                                pig_iron = CASE WHEN pig_iron = 0 THEN ? ELSE pig_iron END,
+                                metal = CASE WHEN metal = 0 THEN ? ELSE metal END,
+                                kryptonite = CASE WHEN kryptonite = 0 THEN ? ELSE kryptonite END,
+                                spice = CASE WHEN spice = 0 THEN ? ELSE spice END
+                            WHERE coords = ?
+                            """,
+                            (
+                                _sanitize_text(srep.planet_name)[:80],
+                                _sanitize_text(srep.planet_name)[:80],
+                                _sql_int(srep.resources.pig_iron, 0),
+                                _sql_int(srep.resources.metal, 0),
+                                _sql_int(srep.resources.kryptonite, 0),
+                                _sql_int(srep.resources.spice, 0),
+                                norm_c,
+                            ),
+                        )
+
+        self._conn.execute(
+            """
+            INSERT INTO meta(key, value, updated_ts) VALUES('reports_backfill_v2', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_ts = excluded.updated_ts
+            """,
+            (str(max_id), now_ts),
+        )
 
     def _migrate_legacy_rank_json(self, legacy_path: Path) -> None:
         count = self._conn.execute("SELECT COUNT(*) FROM rank_snapshots").fetchone()[0]
@@ -1013,8 +1568,137 @@ class GameDatabase:
                     (now_ts,),
                 )
 
+            # 4. Mark player's own planet coordinates in spy_targets (non-destructive; never deletes rows)
+            own_norm_coords = [
+                normalize_coords(_raw_text(p.coords, "").strip())
+                for p in state.planets
+                if normalize_coords(_raw_text(p.coords, "").strip())
+            ]
+            if own_norm_coords:
+                ph_own = ", ".join("?" for _ in own_norm_coords)
+                self._conn.execute(
+                    f"UPDATE spy_targets SET is_own_planet = 1 WHERE coords IN ({ph_own})",
+                    own_norm_coords,
+                )
+
+            # 5. Full latest GameState snapshot (queues, offers, alerts, unread badges)
+            self._save_latest_game_state_locked(state, now_ts)
+
             self._conn.commit()
         return self.get_rank_samples()
+
+    def _save_meta_json_locked(self, key: str, payload: Any, now_ts: float) -> None:
+        clean_key = _sanitize_text(key).strip()
+        if not clean_key or clean_key == "schema_version":
+            return
+        self._conn.execute(
+            """
+            INSERT INTO meta(key, value, updated_ts) VALUES(?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_ts = excluded.updated_ts
+            """,
+            (clean_key, _json_dumps(payload), round(_safe_float(now_ts, time.time()), 3)),
+        )
+
+    def save_meta_json(self, key: str, payload: Any, *, ts: Optional[float] = None) -> None:
+        now_ts = _safe_float(ts, time.time()) if ts is not None else time.time()
+        with self._lock:
+            self._save_meta_json_locked(key, payload, now_ts)
+            self._conn.commit()
+
+    def load_meta_json(self, key: str) -> Any:
+        clean_key = _sanitize_text(key).strip()
+        if not clean_key or clean_key == "schema_version":
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key = ? LIMIT 1",
+                (clean_key,),
+            ).fetchone()
+        if row is None or not row["value"]:
+            return None
+        try:
+            parsed = json.loads(row["value"])
+        except (TypeError, ValueError):
+            return None
+        return _sanitize_obj(parsed)
+
+    def _save_latest_game_state_locked(
+        self,
+        state: GameState | Mapping[str, Any],
+        now_ts: float,
+    ) -> None:
+        if is_dataclass(state) and not isinstance(state, type):
+            raw = asdict(state)
+        elif isinstance(state, Mapping):
+            raw = dict(state)
+        else:
+            return
+        raw.pop("raid_stats", None)
+        raw.pop("raid_targets", None)
+        self._save_meta_json_locked("latest_game_state", raw, now_ts)
+
+    def save_latest_game_state(
+        self,
+        state: GameState | Mapping[str, Any],
+        *,
+        ts: Optional[float] = None,
+    ) -> None:
+        now_ts = _safe_float(ts, time.time()) if ts is not None else time.time()
+        with self._lock:
+            self._save_latest_game_state_locked(state, now_ts)
+            self._conn.commit()
+
+    def load_latest_game_state(self) -> Optional[GameState]:
+        raw = self.load_meta_json("latest_game_state")
+        if not isinstance(raw, Mapping):
+            return None
+        try:
+            return game_state_from_dict(dict(raw))
+        except Exception:
+            return None
+
+    def save_runtime_state(
+        self,
+        runtime_state: Mapping[str, Any],
+        *,
+        ts: Optional[float] = None,
+    ) -> None:
+        if not isinstance(runtime_state, Mapping):
+            return
+        self.save_meta_json("bridge_runtime_state", dict(runtime_state), ts=ts)
+
+    def load_runtime_state(self) -> dict[str, Any]:
+        raw = self.load_meta_json("bridge_runtime_state")
+        return dict(raw) if isinstance(raw, Mapping) else {}
+
+    def save_strategy_config_snapshot(
+        self,
+        config_payload: Mapping[str, Any],
+        *,
+        ts: Optional[float] = None,
+    ) -> None:
+        if not isinstance(config_payload, Mapping):
+            return
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        cfg_dict = dict(config_payload)
+        cfg_json = _json_dumps(cfg_dict)
+        with self._lock:
+            self._save_meta_json_locked("strategy_config", cfg_dict, now_ts)
+            last_cfg = self._conn.execute(
+                "SELECT config_json FROM config_history ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if last_cfg is None or last_cfg["config_json"] != cfg_json:
+                self._conn.execute(
+                    "INSERT INTO config_history(ts, config_json) VALUES (?, ?)",
+                    (now_ts, cfg_json),
+                )
+            self._conn.commit()
+
+    def load_strategy_config_snapshot(self) -> Optional[dict[str, Any]]:
+        raw = self.load_meta_json("strategy_config")
+        return dict(raw) if isinstance(raw, Mapping) else None
 
     def get_rank_samples(self, *, limit: int = 240) -> list[dict[str, Any]]:
         with self._lock:
@@ -1158,9 +1842,10 @@ class GameDatabase:
             return
         placeholders = ", ".join("?" for _ in cands)
         sql = (
-            "SELECT coords, owner, planet_name, status_color, is_inactive, is_spacia, "
+            "SELECT coords, owner, planet_name, status_color, is_inactive, is_spacia, has_debris, "
             "points, pig_iron, metal, kryptonite, spice, fleet_json, defense_json, "
-            "dug_in, last_scanned_ts, last_spied_ts "
+            "dug_in, last_scanned_ts, last_spied_ts, blocked_until_ts, block_reason, bash_hits, "
+            "last_blocked_ts, uninhabited_fields, spy_count "
             f"FROM spy_targets WHERE coords IN ({placeholders})"
         )
         params: list[Any] = list(cands)
@@ -1198,6 +1883,23 @@ class GameDatabase:
         best_points = next((r["points"] for r in ranked if r["points"] is not None), None)
         max_scanned = max(_safe_float(r["last_scanned_ts"], 0.0) for r in all_rows)
         best_spacia = 1 if any(bool(r["is_spacia"]) for r in all_rows) else 0
+        best_debris = 1 if any(bool(r["has_debris"]) for r in all_rows) else 0
+        max_blocked_until = max(_safe_float(r["blocked_until_ts"], 0.0) for r in all_rows)
+        best_block_reason = next(
+            (
+                _raw_text(r["block_reason"], "")
+                for r in sorted(all_rows, key=lambda x: _safe_float(x["blocked_until_ts"], 0.0), reverse=True)
+                if _raw_text(r["block_reason"], "").strip()
+            ),
+            "",
+        )
+        sum_bash_hits = sum(max(0, _safe_int(r["bash_hits"], 0)) for r in all_rows)
+        max_last_blocked = max(_safe_float(r["last_blocked_ts"], 0.0) for r in all_rows)
+        best_uninhabited_fields = next(
+            (r["uninhabited_fields"] for r in ranked if r["uninhabited_fields"] is not None),
+            None,
+        )
+        sum_spy_count = sum(max(0, _safe_int(r["spy_count"], 0)) for r in all_rows)
         best_owner = next((_raw_text(r["owner"], "") for r in ranked if _raw_text(r["owner"], "").strip()), "")
         best_pname = next((_raw_text(r["planet_name"], "") for r in ranked if _raw_text(r["planet_name"], "").strip()), "")
 
@@ -1208,6 +1910,7 @@ class GameDatabase:
                 SET owner = CASE WHEN owner != '' THEN owner ELSE ? END,
                     planet_name = CASE WHEN planet_name != '' THEN planet_name ELSE ? END,
                     is_spacia = ?,
+                    has_debris = ?,
                     points = COALESCE(?, points),
                     pig_iron = ?,
                     metal = ?,
@@ -1217,13 +1920,20 @@ class GameDatabase:
                     defense_json = ?,
                     dug_in = ?,
                     last_scanned_ts = ?,
-                    last_spied_ts = ?
+                    last_spied_ts = ?,
+                    blocked_until_ts = ?,
+                    block_reason = ?,
+                    bash_hits = ?,
+                    last_blocked_ts = ?,
+                    uninhabited_fields = COALESCE(?, uninhabited_fields),
+                    spy_count = ?
                 WHERE coords = ?
                 """,
                 (
                     best_owner,
                     best_pname,
                     best_spacia,
+                    best_debris,
                     best_points,
                     best["pig_iron"],
                     best["metal"],
@@ -1234,25 +1944,45 @@ class GameDatabase:
                     best["dug_in"],
                     max_scanned,
                     best["last_spied_ts"],
+                    max_blocked_until,
+                    _sanitize_text(best_block_reason),
+                    _sql_int(sum_bash_hits, 0),
+                    max_last_blocked,
+                    _sql_optional_int(best_uninhabited_fields),
+                    _sql_int(sum_spy_count, 0),
                     norm_coords,
                 ),
             )
             for lr in legacy_rows:
-                self._conn.execute("DELETE FROM spy_targets WHERE coords = ?", (lr["coords"],))
+                self._conn.execute(
+                    "UPDATE spy_targets SET merged_into = ? WHERE coords = ?",
+                    (norm_coords, lr["coords"]),
+                )
         else:
             keep_coords = best["coords"]
             for lr in legacy_rows:
                 if lr["coords"] != keep_coords:
-                    self._conn.execute("DELETE FROM spy_targets WHERE coords = ?", (lr["coords"],))
+                    self._conn.execute(
+                        "UPDATE spy_targets SET merged_into = ? WHERE coords = ?",
+                        (norm_coords, lr["coords"]),
+                    )
             self._conn.execute(
                 """
                 UPDATE spy_targets
                 SET coords = ?,
+                    merged_into = '',
                     owner = CASE WHEN owner != '' THEN owner ELSE ? END,
                     planet_name = CASE WHEN planet_name != '' THEN planet_name ELSE ? END,
                     is_spacia = ?,
+                    has_debris = ?,
                     points = COALESCE(points, ?),
-                    last_scanned_ts = ?
+                    last_scanned_ts = ?,
+                    blocked_until_ts = ?,
+                    block_reason = ?,
+                    bash_hits = ?,
+                    last_blocked_ts = ?,
+                    uninhabited_fields = COALESCE(uninhabited_fields, ?),
+                    spy_count = ?
                 WHERE coords = ?
                 """,
                 (
@@ -1260,8 +1990,15 @@ class GameDatabase:
                     best_owner,
                     best_pname,
                     best_spacia,
+                    best_debris,
                     best_points,
                     max_scanned,
+                    max_blocked_until,
+                    _sanitize_text(best_block_reason),
+                    _sql_int(sum_bash_hits, 0),
+                    max_last_blocked,
+                    _sql_optional_int(best_uninhabited_fields),
+                    _sql_int(sum_spy_count, 0),
                     keep_coords,
                 ),
             )
@@ -1281,6 +2018,33 @@ class GameDatabase:
         explicit_status = status_color is not None or bool(is_inactive) or bool(report.is_spacia)
         insert_inactive = bool(is_inactive or report.is_spacia or status_color == "yellow")
         insert_color = status_color or ("yellow" if insert_inactive else "light_red")
+        pig_i = _sql_int(report.resources.pig_iron, 0)
+        met_i = _sql_int(report.resources.metal, 0)
+        kry_i = _sql_int(report.resources.kryptonite, 0)
+        spi_i = _sql_int(report.resources.spice, 0)
+        loot_sp_eq = round(
+            _safe_float(
+                game_data.spice_equivalent(
+                    {
+                        "pig_iron": max(0, pig_i),
+                        "metal": max(0, met_i),
+                        "kryptonite": max(0, kry_i),
+                        "spice": max(0, spi_i),
+                    }
+                ),
+                0.0,
+            ),
+            3,
+        )
+        buildings_j = _json_dumps(dict(getattr(report, "buildings", None) or {}))
+        fleet_j = _json_dumps(dict(report.fleet))
+        defense_j = _json_dumps(dict(report.defense))
+        researches_j = _json_dumps(dict(getattr(report, "researches", None) or {}))
+        pname = _sanitize_text(getattr(report, "planet_name", "") or "")
+        s_msg_id = _sanitize_text(getattr(report, "server_msg_id", "") or "")
+        m_date = _sanitize_text(getattr(report, "msg_date_text", "") or "")
+        raw_txt = _sanitize_text(getattr(report, "raw_text", "") or "")[:4000]
+        uninhabited_f = _sql_optional_int(getattr(report, "uninhabited_fields", None))
         with self._lock:
             self._coalesce_legacy_spy_target_locked(norm_coords, raw_coords)
             self._conn.execute(
@@ -1288,10 +2052,13 @@ class GameDatabase:
                 INSERT INTO spy_targets(
                     coords, owner, planet_name, status_color, is_inactive, is_spacia, points,
                     pig_iron, metal, kryptonite, spice,
-                    fleet_json, defense_json, dug_in, last_scanned_ts, last_spied_ts
-                ) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    fleet_json, defense_json, dug_in, last_scanned_ts, last_spied_ts,
+                    uninhabited_fields, spy_count, merged_into
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '')
                 ON CONFLICT(coords) DO UPDATE SET
+                    merged_into = '',
                     owner = CASE WHEN excluded.owner != '' THEN excluded.owner ELSE spy_targets.owner END,
+                    planet_name = CASE WHEN excluded.planet_name != '' THEN excluded.planet_name ELSE spy_targets.planet_name END,
                     status_color = CASE WHEN ? = 1 THEN excluded.status_color ELSE spy_targets.status_color END,
                     is_inactive = CASE WHEN ? = 1 THEN excluded.is_inactive ELSE spy_targets.is_inactive END,
                     is_spacia = CASE WHEN excluded.is_spacia = 1 THEN 1 ELSE spy_targets.is_spacia END,
@@ -1304,29 +2071,147 @@ class GameDatabase:
                     defense_json = excluded.defense_json,
                     dug_in = excluded.dug_in,
                     last_scanned_ts = MAX(spy_targets.last_scanned_ts, excluded.last_scanned_ts),
-                    last_spied_ts = excluded.last_spied_ts
+                    last_spied_ts = excluded.last_spied_ts,
+                    uninhabited_fields = COALESCE(excluded.uninhabited_fields, spy_targets.uninhabited_fields),
+                    spy_count = spy_targets.spy_count + 1
                 """,
                 (
                     norm_coords,
                     _sanitize_text(report.owner),
+                    pname,
                     insert_color,
                     1 if insert_inactive else 0,
                     1 if report.is_spacia else 0,
                     _sql_optional_int(points),
-                    _sql_int(report.resources.pig_iron, 0),
-                    _sql_int(report.resources.metal, 0),
-                    _sql_int(report.resources.kryptonite, 0),
-                    _sql_int(report.resources.spice, 0),
-                    _json_dumps(dict(report.fleet)),
-                    _json_dumps(dict(report.defense)),
+                    pig_i,
+                    met_i,
+                    kry_i,
+                    spi_i,
+                    fleet_j,
+                    defense_j,
                     1 if report.dug_in else 0,
                     now_ts,
                     now_ts,
+                    uninhabited_f,
                     1 if explicit_status else 0,
                     1 if explicit_status else 0,
                 ),
             )
+            self._conn.execute(
+                """
+                INSERT INTO spy_reports(
+                    ts, target_coords, owner, planet_name, is_spacia,
+                    pig_iron, metal, kryptonite, spice, loot_spice_eq,
+                    buildings_json, fleet_json, defense_json, researches_json,
+                    dug_in, uninhabited_fields, server_msg_id, msg_date_text, raw_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now_ts,
+                    norm_coords,
+                    _sanitize_text(report.owner),
+                    pname,
+                    1 if report.is_spacia else 0,
+                    pig_i,
+                    met_i,
+                    kry_i,
+                    spi_i,
+                    loot_sp_eq,
+                    buildings_j,
+                    fleet_j,
+                    defense_j,
+                    researches_j,
+                    (1 if report.dug_in else 0) if report.dug_in is not None else None,
+                    uninhabited_f,
+                    s_msg_id,
+                    m_date,
+                    raw_txt,
+                ),
+            )
             self._conn.commit()
+
+    def _upsert_galaxy_slot_locked(
+        self,
+        slot: GalaxySlot,
+        now_ts: float,
+        *,
+        append_history: bool = True,
+    ) -> None:
+        raw_slot_coords = _raw_text(getattr(slot, "coords", ""), "").strip()
+        norm_slot_coords = normalize_coords(raw_slot_coords)
+        if not norm_slot_coords:
+            return
+        parts = [p.strip() for p in norm_slot_coords.split(":")]
+        gal_i = _sql_int(parts[0], 0) if len(parts) >= 1 and parts[0].isdigit() else 0
+        sys_i = _sql_int(parts[1], 0) if len(parts) >= 2 and parts[1].isdigit() else 0
+        pos_fallback = _sql_int(getattr(slot, "position", 0), 0)
+        pos_i = (
+            _sql_int(parts[2], pos_fallback)
+            if len(parts) >= 3 and parts[2].isdigit()
+            else pos_fallback
+        )
+        scolor = _sanitize_text(getattr(slot, "status_color", "free") or "free")
+        is_spacia = 1 if bool(getattr(slot, "is_spacia", False)) else 0
+        is_inactive = 1 if (scolor == "yellow" or is_spacia) else 0
+        has_debris = 1 if bool(getattr(slot, "has_debris", False)) else 0
+        has_asteroid = 1 if bool(getattr(slot, "has_asteroid", False)) else 0
+        pname_s = _sanitize_text(getattr(slot, "name", ""))
+        owner_s = _sanitize_text(getattr(slot, "owner", ""))
+        self._conn.execute(
+            """
+            INSERT INTO galaxy_slots(
+                coords, galaxy, system, position, planet_name, owner,
+                status_color, is_inactive, is_spacia, has_debris, last_scanned_ts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(coords) DO UPDATE SET
+                galaxy = excluded.galaxy,
+                system = excluded.system,
+                position = excluded.position,
+                planet_name = excluded.planet_name,
+                owner = excluded.owner,
+                status_color = excluded.status_color,
+                is_inactive = excluded.is_inactive,
+                is_spacia = excluded.is_spacia,
+                has_debris = excluded.has_debris,
+                last_scanned_ts = excluded.last_scanned_ts
+            """,
+            (
+                norm_slot_coords,
+                gal_i,
+                sys_i,
+                pos_i,
+                pname_s,
+                owner_s,
+                scolor,
+                is_inactive,
+                is_spacia,
+                has_debris,
+                now_ts,
+            ),
+        )
+        if append_history:
+            self._conn.execute(
+                """
+                INSERT INTO galaxy_slot_history(
+                    ts, coords, galaxy, system, position, planet_name, owner,
+                    status_color, is_inactive, is_spacia, has_debris, has_asteroid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now_ts,
+                    norm_slot_coords,
+                    gal_i,
+                    sys_i,
+                    pos_i,
+                    pname_s,
+                    owner_s,
+                    scolor,
+                    is_inactive,
+                    is_spacia,
+                    has_debris,
+                    has_asteroid,
+                ),
+            )
 
     def record_galaxy_slots(
         self,
@@ -1336,9 +2221,22 @@ class GameDatabase:
     ) -> int:
         now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
         saved = 0
+        sig_coords = tuple(
+            normalize_coords(_raw_text(getattr(s, "coords", ""), "").strip())
+            for s in slots
+        )
         with self._lock:
+            append_hist = (
+                self._last_slot_history_sig is None
+                or abs(now_ts - self._last_slot_history_sig[0]) > 1.0
+                or self._last_slot_history_sig[1] != sig_coords
+            )
+            if slots and append_hist:
+                self._last_slot_history_sig = (now_ts, sig_coords)
             for slot in slots:
-                if slot.status_color == "free":
+                self._upsert_galaxy_slot_locked(slot, now_ts, append_history=append_hist)
+                has_debris = 1 if bool(getattr(slot, "has_debris", False)) else 0
+                if slot.status_color == "free" and not has_debris:
                     continue
                 is_inactive = 1 if (slot.status_color == "yellow" or slot.is_spacia) else 0
                 raw_slot_coords = _raw_text(slot.coords, "").strip()
@@ -1349,14 +2247,16 @@ class GameDatabase:
                 self._conn.execute(
                     """
                     INSERT INTO spy_targets(
-                        coords, owner, planet_name, status_color, is_inactive, is_spacia, last_scanned_ts
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        coords, owner, planet_name, status_color, is_inactive, is_spacia, has_debris, last_scanned_ts, merged_into
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '')
                     ON CONFLICT(coords) DO UPDATE SET
+                        merged_into = '',
                         owner = excluded.owner,
                         planet_name = excluded.planet_name,
                         status_color = excluded.status_color,
                         is_inactive = excluded.is_inactive,
                         is_spacia = excluded.is_spacia,
+                        has_debris = excluded.has_debris,
                         last_scanned_ts = excluded.last_scanned_ts
                     """,
                     (
@@ -1366,6 +2266,7 @@ class GameDatabase:
                         _sanitize_text(slot.status_color),
                         is_inactive,
                         1 if slot.is_spacia else 0,
+                        has_debris,
                         now_ts,
                     ),
                 )
@@ -1389,7 +2290,22 @@ class GameDatabase:
             if getattr(s, "status_color", "") == "yellow" or bool(getattr(s, "is_spacia", False))
         )
         free_count = sum(1 for s in slots if getattr(s, "status_color", "free") == "free")
+        debris_count = sum(1 for s in slots if bool(getattr(s, "has_debris", False)))
+        asteroid_count = sum(1 for s in slots if bool(getattr(s, "has_asteroid", False)))
+        sig_coords = tuple(
+            normalize_coords(_raw_text(getattr(s, "coords", ""), "").strip())
+            for s in slots
+        )
         with self._lock:
+            append_hist = (
+                self._last_slot_history_sig is None
+                or abs(now_ts - self._last_slot_history_sig[0]) > 1.0
+                or self._last_slot_history_sig[1] != sig_coords
+            )
+            if slots and append_hist:
+                self._last_slot_history_sig = (now_ts, sig_coords)
+            for slot in slots:
+                self._upsert_galaxy_slot_locked(slot, now_ts, append_history=append_hist)
             self._conn.execute(
                 """
                 INSERT INTO galaxy_scans(
@@ -1410,7 +2326,76 @@ class GameDatabase:
                     _sql_int(free_count, 0),
                 ),
             )
+            self._conn.execute(
+                """
+                INSERT INTO galaxy_scan_history(
+                    ts, galaxy, system, occupied_count, target_count, free_count, debris_count, asteroid_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now_ts,
+                    _sql_int(galaxy, 0),
+                    _sql_int(system, 0),
+                    _sql_int(occupied_count, 0),
+                    _sql_int(target_count, 0),
+                    _sql_int(free_count, 0),
+                    _sql_int(debris_count, 0),
+                    _sql_int(asteroid_count, 0),
+                ),
+            )
             self._conn.commit()
+
+    def get_galaxy_slots(
+        self,
+        *,
+        galaxy: Optional[int] = None,
+        system: Optional[int] = None,
+        status_color: Optional[str] = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if galaxy is not None:
+            clauses.append("galaxy = ?")
+            params.append(_sql_int(galaxy, 0))
+        if system is not None:
+            clauses.append("system = ?")
+            params.append(_sql_int(system, 0))
+        if status_color is not None:
+            clauses.append("status_color = ?")
+            params.append(_sanitize_text(status_color).strip())
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(max(1, _sql_int(limit, 500)))
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT coords, galaxy, system, position, planet_name, owner,
+                       status_color, is_inactive, is_spacia, has_debris, last_scanned_ts
+                FROM galaxy_slots
+                {where_sql}
+                ORDER BY galaxy ASC, system ASC, position ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [
+            _sanitize_obj(
+                {
+                    "coords": normalize_coords(_raw_text(r["coords"], "")),
+                    "galaxy": game_data.cap_json_int(_safe_int(r["galaxy"], 0)),
+                    "system": game_data.cap_json_int(_safe_int(r["system"], 0)),
+                    "position": game_data.cap_json_int(_safe_int(r["position"], 0)),
+                    "planet_name": _sanitize_text(r["planet_name"]) if r["planet_name"] is not None else "",
+                    "owner": _sanitize_text(r["owner"]) if r["owner"] is not None else "",
+                    "status_color": _sanitize_text(r["status_color"]) if r["status_color"] is not None else "free",
+                    "is_inactive": bool(r["is_inactive"]),
+                    "is_spacia": bool(r["is_spacia"]),
+                    "has_debris": bool(r["has_debris"]),
+                    "last_scanned_ts": _safe_float(r["last_scanned_ts"], 0.0),
+                }
+            )
+            for r in rows
+        ]
 
     def get_galaxy_scans(
         self,
@@ -1481,6 +2466,18 @@ class GameDatabase:
         raw_c = _raw_text(r["coords"], "").strip()
         norm_c = normalize_coords(raw_c) if raw_c else ""
         pts = _safe_optional_int(r["points"])
+        row_keys = set(r.keys())
+        has_debris = bool(r["has_debris"]) if "has_debris" in row_keys else False
+        blocked_until = _safe_float(r["blocked_until_ts"], 0.0) if "blocked_until_ts" in row_keys else 0.0
+        block_reason = _sanitize_text(r["block_reason"]) if ("block_reason" in row_keys and r["block_reason"] is not None) else ""
+        bash_hits = game_data.cap_json_int(max(0, _safe_int(r["bash_hits"], 0))) if "bash_hits" in row_keys else 0
+        last_blocked_ts = _safe_float(r["last_blocked_ts"], 0.0) if "last_blocked_ts" in row_keys else 0.0
+        uninhabited_fields = (
+            game_data.cap_json_int(_safe_int(r["uninhabited_fields"], 0))
+            if ("uninhabited_fields" in row_keys and r["uninhabited_fields"] is not None)
+            else None
+        )
+        spy_count = game_data.cap_json_int(max(0, _safe_int(r["spy_count"], 0))) if "spy_count" in row_keys else 0
         return _sanitize_obj(
             {
                 "coords": _sanitize_text(norm_c) if norm_c else "",
@@ -1489,6 +2486,7 @@ class GameDatabase:
                 "status_color": _sanitize_text(r["status_color"]) if r["status_color"] is not None else None,
                 "is_inactive": bool(r["is_inactive"]),
                 "is_spacia": bool(r["is_spacia"]),
+                "has_debris": has_debris,
                 "points": game_data.cap_json_int(pts) if pts is not None else None,
                 "resources": {
                     "pig_iron": game_data.cap_json_int(max(0, _safe_int(r["pig_iron"], 0))),
@@ -1502,6 +2500,12 @@ class GameDatabase:
                 "last_scanned_ts": _safe_float(r["last_scanned_ts"], 0.0),
                 "last_spied_ts": spied_ts,
                 "has_spy_intel": spied_ts > 0.0,
+                "blocked_until_ts": blocked_until,
+                "block_reason": block_reason if blocked_until > 0.0 else "",
+                "bash_hits": bash_hits,
+                "last_blocked_ts": last_blocked_ts,
+                "uninhabited_fields": uninhabited_fields,
+                "spy_count": spy_count,
             }
         )
 
@@ -1513,11 +2517,13 @@ class GameDatabase:
             placeholders = ", ".join("?" for _ in cands)
             row = self._conn.execute(
                 f"""
-                SELECT coords, owner, planet_name, status_color, is_inactive, is_spacia,
+                SELECT coords, owner, planet_name, status_color, is_inactive, is_spacia, has_debris,
                        points, pig_iron, metal, kryptonite, spice,
-                       fleet_json, defense_json, dug_in, last_scanned_ts, last_spied_ts
+                       fleet_json, defense_json, dug_in, last_scanned_ts, last_spied_ts,
+                       blocked_until_ts, block_reason, bash_hits, last_blocked_ts,
+                       uninhabited_fields, spy_count
                 FROM spy_targets
-                WHERE coords IN ({placeholders})
+                WHERE coords IN ({placeholders}) AND merged_into = '' AND is_own_planet = 0
                 ORDER BY (last_spied_ts > 0) DESC, last_scanned_ts DESC
                 LIMIT 1
                 """,
@@ -1526,10 +2532,13 @@ class GameDatabase:
             if row is None:
                 all_rows = self._conn.execute(
                     """
-                    SELECT coords, owner, planet_name, status_color, is_inactive, is_spacia,
+                    SELECT coords, owner, planet_name, status_color, is_inactive, is_spacia, has_debris,
                            points, pig_iron, metal, kryptonite, spice,
-                           fleet_json, defense_json, dug_in, last_scanned_ts, last_spied_ts
+                           fleet_json, defense_json, dug_in, last_scanned_ts, last_spied_ts,
+                           blocked_until_ts, block_reason, bash_hits, last_blocked_ts,
+                           uninhabited_fields, spy_count
                     FROM spy_targets
+                    WHERE merged_into = '' AND is_own_planet = 0
                     ORDER BY (last_spied_ts > 0) DESC, last_scanned_ts DESC
                     """
                 ).fetchall()
@@ -1543,20 +2552,857 @@ class GameDatabase:
                 )
         return self._row_to_spy_target_dict(row) if row is not None else None
 
-    def get_spy_targets(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def get_spy_targets(
+        self,
+        *,
+        limit: int = 50,
+        include_own: bool = False,
+    ) -> list[dict[str, Any]]:
+        own_clause = "" if include_own else "AND is_own_planet = 0"
         with self._lock:
             rows = self._conn.execute(
-                """
-                SELECT coords, owner, planet_name, status_color, is_inactive, is_spacia,
+                f"""
+                SELECT coords, owner, planet_name, status_color, is_inactive, is_spacia, has_debris,
                        points, pig_iron, metal, kryptonite, spice,
-                       fleet_json, defense_json, dug_in, last_scanned_ts, last_spied_ts
+                       fleet_json, defense_json, dug_in, last_scanned_ts, last_spied_ts,
+                       blocked_until_ts, block_reason, bash_hits, last_blocked_ts,
+                       uninhabited_fields, spy_count
                 FROM spy_targets
-                ORDER BY (is_inactive + is_spacia) DESC, (last_spied_ts > 0) DESC, last_scanned_ts DESC
+                WHERE merged_into = '' {own_clause}
+                ORDER BY (is_inactive + is_spacia + has_debris) DESC, (last_spied_ts > 0) DESC, last_scanned_ts DESC
                 LIMIT ?
                 """,
                 (max(1, _sql_int(limit, 50)),),
             ).fetchall()
         return [self._row_to_spy_target_dict(r) for r in rows]
+
+    def get_spy_reports(
+        self,
+        *,
+        target_coords: Optional[str] = None,
+        coords: Optional[str] = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        eff_coords = target_coords if target_coords is not None else coords
+        lim = max(1, _sql_int(limit, 200))
+        with self._lock:
+            if eff_coords is not None:
+                norm_c = normalize_coords(_raw_text(eff_coords, "").strip())
+                rows = self._conn.execute(
+                    """
+                    SELECT id, ts, target_coords, owner, planet_name, is_spacia,
+                           pig_iron, metal, kryptonite, spice, loot_spice_eq,
+                           buildings_json, fleet_json, defense_json, researches_json,
+                           dug_in, uninhabited_fields, server_msg_id, msg_date_text, raw_text
+                    FROM spy_reports
+                    WHERE target_coords = ?
+                    ORDER BY ts DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (norm_c, lim),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, ts, target_coords, owner, planet_name, is_spacia,
+                           pig_iron, metal, kryptonite, spice, loot_spice_eq,
+                           buildings_json, fleet_json, defense_json, researches_json,
+                           dug_in, uninhabited_fields, server_msg_id, msg_date_text, raw_text
+                    FROM spy_reports
+                    ORDER BY ts DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (lim,),
+                ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            uf = _safe_optional_int(r["uninhabited_fields"])
+            dug = _safe_optional_int(r["dug_in"])
+            norm_tc = normalize_coords(_raw_text(r["target_coords"], ""))
+            out.append(
+                _sanitize_obj(
+                    {
+                        "id": game_data.cap_json_int(_safe_int(r["id"], 0)),
+                        "ts": _safe_float(r["ts"], 0.0),
+                        "coords": norm_tc,
+                        "target_coords": norm_tc,
+                        "owner": _sanitize_text(r["owner"]) if r["owner"] is not None else "",
+                        "planet_name": _sanitize_text(r["planet_name"]) if r["planet_name"] is not None else "",
+                        "is_spacia": bool(r["is_spacia"]),
+                        "resources": {
+                            "pig_iron": game_data.cap_json_int(max(0, _safe_int(r["pig_iron"], 0))),
+                            "metal": game_data.cap_json_int(max(0, _safe_int(r["metal"], 0))),
+                            "kryptonite": game_data.cap_json_int(max(0, _safe_int(r["kryptonite"], 0))),
+                            "spice": game_data.cap_json_int(max(0, _safe_int(r["spice"], 0))),
+                        },
+                        "loot_spice_eq": _safe_float(r["loot_spice_eq"], 0.0),
+                        "buildings": _safe_json_dict(r["buildings_json"]),
+                        "fleet": _safe_json_dict(r["fleet_json"]),
+                        "defense": _safe_json_dict(r["defense_json"]),
+                        "researches": _safe_json_dict(r["researches_json"]),
+                        "dug_in": bool(dug) if dug is not None else None,
+                        "uninhabited_fields": game_data.cap_json_int(uf) if uf is not None else None,
+                        "server_msg_id": _sanitize_text(r["server_msg_id"]) if r["server_msg_id"] is not None else "",
+                        "msg_date_text": _sanitize_text(r["msg_date_text"]) if r["msg_date_text"] is not None else "",
+                        "raw_text": _sanitize_text(r["raw_text"]) if r["raw_text"] is not None else "",
+                    }
+                )
+            )
+        return out
+
+    def record_game_messages(
+        self,
+        messages: Sequence[InboxMessage],
+        *,
+        ts: Optional[float] = None,
+    ) -> tuple[list[str], list[InboxMessage]]:
+        """Persist every inbox message into append-only `game_messages`.
+
+        Returns `(persisted_uids, newly_inserted_messages)` so callers only process
+        spy/battle/recycle side effects once per unique message while safely confirming
+        that every `persisted_uid` is durably stored in SQLite before deleting in-game.
+        """
+        if not messages:
+            return ([], [])
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        persisted_uids: list[str] = []
+        newly_inserted: list[InboxMessage] = []
+        with self._lock:
+            for msg in messages:
+                uid = _sanitize_text(getattr(msg, "msg_uid", "") or "").strip()[:120]
+                if not uid or uid.lower().startswith("id:msg-"):
+                    continue
+                body_s = _sanitize_text(getattr(msg, "body_text", "") or "")[:16000]
+                subj_s = _sanitize_text(getattr(msg, "subject", "") or "")[:300]
+                if not body_s and not subj_s:
+                    continue
+                if re.fullmatch(r"\d[\d.]*\s*/\s*\d[\d.]*", body_s.strip()):
+                    continue
+                exists = self._conn.execute(
+                    "SELECT id, LENGTH(body_text) AS body_len FROM game_messages WHERE msg_uid = ? LIMIT 1",
+                    (uid,),
+                ).fetchone()
+                prev_body_len = _safe_int(exists["body_len"], 0) if exists is not None else 0
+                raw_coords = _raw_text(getattr(msg, "coords", "") or "", "").strip()
+                norm_c = normalize_coords(raw_coords) if raw_coords else ""
+                cat_s = _sanitize_text(getattr(msg, "category", "other") or "other")[:64]
+                srv_id_s = _sanitize_text(getattr(msg, "server_msg_id", "") or "")[:64]
+                dt_s = _sanitize_text(getattr(msg, "msg_date_text", "") or "")[:64]
+                pdata = dict(getattr(msg, "parsed_data", None) or {})
+                self._conn.execute(
+                    """
+                    INSERT INTO game_messages(
+                        ingested_ts, msg_uid, server_msg_id, folder_type, category,
+                        msg_date_text, sender, subject, coords, body_text, raw_html, parsed_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(msg_uid) DO UPDATE SET
+                        server_msg_id = CASE WHEN game_messages.server_msg_id != '' THEN game_messages.server_msg_id ELSE excluded.server_msg_id END,
+                        category = CASE WHEN game_messages.category = 'other' AND excluded.category != 'other' THEN excluded.category ELSE game_messages.category END,
+                        coords = CASE WHEN game_messages.coords != '' THEN game_messages.coords ELSE excluded.coords END,
+                        body_text = CASE WHEN LENGTH(excluded.body_text) > LENGTH(game_messages.body_text) THEN excluded.body_text ELSE game_messages.body_text END,
+                        raw_html = CASE WHEN LENGTH(excluded.raw_html) > LENGTH(game_messages.raw_html) THEN excluded.raw_html ELSE game_messages.raw_html END,
+                        parsed_json = CASE WHEN LENGTH(excluded.body_text) >= LENGTH(game_messages.body_text) AND excluded.parsed_json != '{}' THEN excluded.parsed_json ELSE game_messages.parsed_json END
+                    """,
+                    (
+                        now_ts,
+                        uid,
+                        srv_id_s,
+                        _sanitize_text(getattr(msg, "folder_type", "") or "")[:64],
+                        cat_s,
+                        dt_s,
+                        _sanitize_text(getattr(msg, "sender", "") or "")[:160],
+                        subj_s,
+                        norm_c,
+                        body_s,
+                        _sanitize_text(getattr(msg, "raw_html", "") or "")[:32000],
+                        _json_dumps(pdata),
+                    ),
+                )
+                if cat_s == "battle_report":
+                    loot_obj = pdata.get("loot") if isinstance(pdata.get("loot"), Mapping) else (
+                        pdata.get("resources_mentioned") if isinstance(pdata.get("resources_mentioned"), Mapping) else {}
+                    )
+                    deb_obj = pdata.get("debris") if isinstance(pdata.get("debris"), Mapping) else {}
+                    b_pig = max(0, _sql_int(loot_obj.get("pig_iron"), 0))
+                    b_met = max(0, _sql_int(loot_obj.get("metal"), 0))
+                    b_kry = max(0, _sql_int(loot_obj.get("kryptonite"), 0))
+                    b_spi = max(0, _sql_int(loot_obj.get("spice"), 0))
+                    b_seq = _safe_float(
+                        pdata.get("loot_spice_eq"),
+                        round(b_pig / 6.0 + b_met / 2.5 + b_kry / 3.0 + float(b_spi), 2),
+                    )
+                    d_pig = max(0, _sql_int(deb_obj.get("pig_iron"), 0))
+                    d_met = max(0, _sql_int(deb_obj.get("metal"), 0))
+                    d_seq = _safe_float(pdata.get("debris_spice_eq"), round(d_pig / 6.0 + d_met / 2.5, 2))
+                    self._conn.execute(
+                        """
+                        INSERT INTO battle_reports(
+                            ts, msg_uid, server_msg_id, battle_id, msg_date_text,
+                            target_coords, attacker, defender, outcome, rounds,
+                            pig_iron, metal, kryptonite, spice, loot_spice_eq,
+                            attacker_lost_spice, defender_lost_spice,
+                            debris_pig_iron, debris_metal, debris_spice_eq, raw_text
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(msg_uid) DO UPDATE SET
+                            battle_id = CASE WHEN excluded.battle_id != '' THEN excluded.battle_id ELSE battle_reports.battle_id END,
+                            attacker = CASE WHEN excluded.attacker != '' THEN excluded.attacker ELSE battle_reports.attacker END,
+                            defender = CASE WHEN excluded.defender != '' THEN excluded.defender ELSE battle_reports.defender END,
+                            outcome = excluded.outcome,
+                            rounds = MAX(battle_reports.rounds, excluded.rounds),
+                            pig_iron = MAX(battle_reports.pig_iron, excluded.pig_iron),
+                            metal = MAX(battle_reports.metal, excluded.metal),
+                            kryptonite = MAX(battle_reports.kryptonite, excluded.kryptonite),
+                            spice = MAX(battle_reports.spice, excluded.spice),
+                            loot_spice_eq = MAX(battle_reports.loot_spice_eq, excluded.loot_spice_eq),
+                            attacker_lost_spice = MAX(battle_reports.attacker_lost_spice, excluded.attacker_lost_spice),
+                            defender_lost_spice = MAX(battle_reports.defender_lost_spice, excluded.defender_lost_spice),
+                            debris_pig_iron = MAX(battle_reports.debris_pig_iron, excluded.debris_pig_iron),
+                            debris_metal = MAX(battle_reports.debris_metal, excluded.debris_metal),
+                            debris_spice_eq = MAX(battle_reports.debris_spice_eq, excluded.debris_spice_eq),
+                            raw_text = CASE WHEN LENGTH(excluded.raw_text) > LENGTH(battle_reports.raw_text) THEN excluded.raw_text ELSE battle_reports.raw_text END
+                        """,
+                        (
+                            now_ts,
+                            uid,
+                            srv_id_s,
+                            _sanitize_text(pdata.get("battle_id") or "")[:64],
+                            dt_s,
+                            norm_c,
+                            _sanitize_text(pdata.get("attacker") or "")[:120],
+                            _sanitize_text(pdata.get("defender") or "")[:120],
+                            _sanitize_text(pdata.get("outcome") or "win")[:32],
+                            max(0, _sql_int(pdata.get("rounds"), 0)),
+                            b_pig,
+                            b_met,
+                            b_kry,
+                            b_spi,
+                            b_seq,
+                            max(0, _sql_int(pdata.get("attacker_lost_spice"), 0)),
+                            max(0, _sql_int(pdata.get("defender_lost_spice"), 0)),
+                            d_pig,
+                            d_met,
+                            d_seq,
+                            body_s[:8000],
+                        ),
+                    )
+                elif cat_s == "recycle_report":
+                    harv_obj = pdata.get("harvested") if isinstance(pdata.get("harvested"), Mapping) else {}
+                    avail_obj = pdata.get("debris_available") if isinstance(pdata.get("debris_available"), Mapping) else {}
+                    h_pig = max(0, _sql_int(harv_obj.get("pig_iron"), 0))
+                    h_met = max(0, _sql_int(harv_obj.get("metal"), 0))
+                    h_kry = max(0, _sql_int(harv_obj.get("kryptonite"), 0))
+                    h_spi = max(0, _sql_int(harv_obj.get("spice"), 0))
+                    h_seq = _safe_float(
+                        pdata.get("harvested_spice_eq"),
+                        round(h_pig / 6.0 + h_met / 2.5 + h_kry / 3.0 + float(h_spi), 2),
+                    )
+                    self._conn.execute(
+                        """
+                        INSERT INTO recycle_reports(
+                            ts, msg_uid, server_msg_id, msg_date_text, coords,
+                            recycler_count, cargo_capacity, debris_avail_pig, debris_avail_metal,
+                            harvested_pig_iron, harvested_metal, harvested_kryptonite, harvested_spice,
+                            harvested_spice_eq, raw_text
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(msg_uid) DO UPDATE SET
+                            coords = CASE WHEN excluded.coords != '' THEN excluded.coords ELSE recycle_reports.coords END,
+                            recycler_count = MAX(recycle_reports.recycler_count, excluded.recycler_count),
+                            cargo_capacity = MAX(recycle_reports.cargo_capacity, excluded.cargo_capacity),
+                            debris_avail_pig = MAX(recycle_reports.debris_avail_pig, excluded.debris_avail_pig),
+                            debris_avail_metal = MAX(recycle_reports.debris_avail_metal, excluded.debris_avail_metal),
+                            harvested_pig_iron = MAX(recycle_reports.harvested_pig_iron, excluded.harvested_pig_iron),
+                            harvested_metal = MAX(recycle_reports.harvested_metal, excluded.harvested_metal),
+                            harvested_kryptonite = MAX(recycle_reports.harvested_kryptonite, excluded.harvested_kryptonite),
+                            harvested_spice = MAX(recycle_reports.harvested_spice, excluded.harvested_spice),
+                            harvested_spice_eq = MAX(recycle_reports.harvested_spice_eq, excluded.harvested_spice_eq),
+                            raw_text = CASE WHEN LENGTH(excluded.raw_text) > LENGTH(recycle_reports.raw_text) THEN excluded.raw_text ELSE recycle_reports.raw_text END
+                        """,
+                        (
+                            now_ts,
+                            uid,
+                            srv_id_s,
+                            dt_s,
+                            norm_c,
+                            max(0, _sql_int(pdata.get("recycler_count"), 0)),
+                            max(0, _sql_int(pdata.get("cargo_capacity"), 0)),
+                            max(0, _sql_int(avail_obj.get("pig_iron"), 0)),
+                            max(0, _sql_int(avail_obj.get("metal"), 0)),
+                            h_pig,
+                            h_met,
+                            h_kry,
+                            h_spi,
+                            h_seq,
+                            body_s[:8000],
+                        ),
+                    )
+                persisted_uids.append(uid)
+                if exists is None or len(body_s) > prev_body_len:
+                    newly_inserted.append(msg)
+            self._conn.commit()
+        return (persisted_uids, newly_inserted)
+
+    def mark_game_messages_deleted(
+        self,
+        msg_uids: Sequence[str],
+        *,
+        ts: Optional[float] = None,
+    ) -> int:
+        """Record in SQLite that `msg_uids` were deleted from the in-game server inbox (never deletes DB rows)."""
+        clean_uids = [
+            _sanitize_text(u).strip()[:120]
+            for u in (msg_uids or ())
+            if _sanitize_text(u).strip()
+        ]
+        if not clean_uids:
+            return 0
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        placeholders = ", ".join("?" for _ in clean_uids)
+        with self._lock:
+            cur = self._conn.execute(
+                f"""
+                UPDATE game_messages
+                SET deleted_in_game = 1,
+                    deleted_ts = COALESCE(deleted_ts, ?)
+                WHERE msg_uid IN ({placeholders})
+                """,
+                [now_ts, *clean_uids],
+            )
+            self._conn.commit()
+            return int(cur.rowcount or 0)
+
+    def get_game_messages(
+        self,
+        *,
+        category: Optional[str] = None,
+        exclude_categories: Sequence[str] = (),
+        coords: Optional[str] = None,
+        folder_type: Optional[str] = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = ["msg_uid NOT LIKE 'id:msg-%'"]
+        params: list[Any] = []
+        if category is not None:
+            cat_clean = _sanitize_text(category).strip()
+            if cat_clean == "general":
+                clauses.append("category IN ('general', 'player', 'system', 'other')")
+            else:
+                clauses.append("category = ?")
+                params.append(cat_clean)
+        if exclude_categories:
+            excl_clean = [_sanitize_text(c).strip() for c in exclude_categories if _sanitize_text(c).strip()]
+            if excl_clean:
+                placeholders = ", ".join("?" for _ in excl_clean)
+                clauses.append(f"category NOT IN ({placeholders})")
+                params.extend(excl_clean)
+        if coords is not None:
+            clauses.append("coords = ?")
+            params.append(normalize_coords(_raw_text(coords, "").strip()))
+        if folder_type is not None:
+            clauses.append("folder_type = ?")
+            params.append(_sanitize_text(folder_type).strip())
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(max(1, _sql_int(limit, 200)))
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, ingested_ts, msg_uid, server_msg_id, folder_type, category,
+                       msg_date_text, sender, subject, coords, body_text, raw_html,
+                       parsed_json, deleted_in_game, deleted_ts
+                FROM game_messages
+                {where_sql}
+                ORDER BY ingested_ts DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            btxt = _sanitize_text(r["body_text"])
+            if re.fullmatch(r"\d[\d.]*\s*/\s*\d[\d.]*", btxt.strip()):
+                continue
+            out.append(
+                _sanitize_obj(
+                    {
+                        "id": game_data.cap_json_int(_safe_int(r["id"], 0)),
+                        "ingested_ts": _safe_float(r["ingested_ts"], 0.0),
+                        "msg_uid": _sanitize_text(r["msg_uid"]),
+                        "server_msg_id": _sanitize_text(r["server_msg_id"]),
+                        "folder_type": _sanitize_text(r["folder_type"]),
+                        "category": _sanitize_text(r["category"]),
+                        "msg_date_text": _sanitize_text(r["msg_date_text"]),
+                        "sender": _sanitize_text(r["sender"]),
+                        "subject": _sanitize_text(r["subject"]),
+                        "coords": _sanitize_text(r["coords"]),
+                        "body_text": btxt,
+                        "raw_html": _sanitize_text(r["raw_html"]),
+                        "parsed": _safe_json_dict(r["parsed_json"]),
+                        "deleted_in_game": bool(r["deleted_in_game"]),
+                        "deleted_ts": _safe_optional_float(r["deleted_ts"]),
+                    }
+                )
+            )
+        return out
+
+    def get_battle_reports(
+        self,
+        *,
+        target_coords: Optional[str] = None,
+        coords: Optional[str] = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        eff_coords = target_coords if target_coords is not None else coords
+        lim = max(1, _sql_int(limit, 200))
+        with self._lock:
+            if eff_coords is not None:
+                norm_c = normalize_coords(_raw_text(eff_coords, "").strip())
+                rows = self._conn.execute(
+                    """
+                    SELECT id, ts, msg_uid, server_msg_id, battle_id, msg_date_text,
+                           target_coords, attacker, defender, outcome, rounds,
+                           pig_iron, metal, kryptonite, spice, loot_spice_eq,
+                           attacker_lost_spice, defender_lost_spice,
+                           debris_pig_iron, debris_metal, debris_spice_eq, raw_text
+                    FROM battle_reports
+                    WHERE target_coords = ?
+                    ORDER BY ts DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (norm_c, lim),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, ts, msg_uid, server_msg_id, battle_id, msg_date_text,
+                           target_coords, attacker, defender, outcome, rounds,
+                           pig_iron, metal, kryptonite, spice, loot_spice_eq,
+                           attacker_lost_spice, defender_lost_spice,
+                           debris_pig_iron, debris_metal, debris_spice_eq, raw_text
+                    FROM battle_reports
+                    ORDER BY ts DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (lim,),
+                ).fetchall()
+        out_b: list[dict[str, Any]] = []
+        for r in rows:
+            norm_tc = normalize_coords(_raw_text(r["target_coords"], ""))
+            att_s = _sanitize_text(r["attacker"])
+            def_s = _sanitize_text(r["defender"])
+            loot_sp = _safe_float(r["loot_spice_eq"], 0.0)
+            att_lost = game_data.cap_json_int(max(0, _safe_int(r["attacker_lost_spice"], 0)))
+            def_lost = game_data.cap_json_int(max(0, _safe_int(r["defender_lost_spice"], 0)))
+            out_b.append(
+                _sanitize_obj(
+                    {
+                        "id": game_data.cap_json_int(_safe_int(r["id"], 0)),
+                        "ts": _safe_float(r["ts"], 0.0),
+                        "msg_uid": _sanitize_text(r["msg_uid"]),
+                        "server_msg_id": _sanitize_text(r["server_msg_id"]),
+                        "battle_id": _sanitize_text(r["battle_id"]),
+                        "msg_date_text": _sanitize_text(r["msg_date_text"]),
+                        "target_coords": norm_tc,
+                        "coords": norm_tc,
+                        "attacker": att_s,
+                        "attacker_name": att_s,
+                        "defender": def_s,
+                        "defender_name": def_s,
+                        "outcome": _sanitize_text(r["outcome"]),
+                        "rounds": game_data.cap_json_int(_safe_int(r["rounds"], 0)),
+                        "loot": {
+                            "pig_iron": game_data.cap_json_int(max(0, _safe_int(r["pig_iron"], 0))),
+                            "metal": game_data.cap_json_int(max(0, _safe_int(r["metal"], 0))),
+                            "kryptonite": game_data.cap_json_int(max(0, _safe_int(r["kryptonite"], 0))),
+                            "spice": game_data.cap_json_int(max(0, _safe_int(r["spice"], 0))),
+                            "spice_eq": loot_sp,
+                        },
+                        "loot_spice_eq": loot_sp,
+                        "attacker_lost_spice": att_lost,
+                        "defender_lost_spice": def_lost,
+                        "attacker_losses": {"spice_eq": att_lost},
+                        "defender_losses": {"spice_eq": def_lost},
+                        "debris": {
+                            "pig_iron": game_data.cap_json_int(max(0, _safe_int(r["debris_pig_iron"], 0))),
+                            "metal": game_data.cap_json_int(max(0, _safe_int(r["debris_metal"], 0))),
+                        },
+                        "debris_spice_eq": _safe_float(r["debris_spice_eq"], 0.0),
+                        "raw_text": _sanitize_text(r["raw_text"]),
+                    }
+                )
+            )
+        return out_b
+
+    def get_recycle_reports(
+        self,
+        *,
+        coords: Optional[str] = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        lim = max(1, _sql_int(limit, 200))
+        with self._lock:
+            if coords is not None:
+                norm_c = normalize_coords(_raw_text(coords, "").strip())
+                rows = self._conn.execute(
+                    """
+                    SELECT id, ts, msg_uid, server_msg_id, msg_date_text, coords,
+                           recycler_count, cargo_capacity, debris_avail_pig, debris_avail_metal,
+                           harvested_pig_iron, harvested_metal, harvested_kryptonite, harvested_spice,
+                           harvested_spice_eq, raw_text
+                    FROM recycle_reports
+                    WHERE coords = ?
+                    ORDER BY ts DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (norm_c, lim),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, ts, msg_uid, server_msg_id, msg_date_text, coords,
+                           recycler_count, cargo_capacity, debris_avail_pig, debris_avail_metal,
+                           harvested_pig_iron, harvested_metal, harvested_kryptonite, harvested_spice,
+                           harvested_spice_eq, raw_text
+                    FROM recycle_reports
+                    ORDER BY ts DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (lim,),
+                ).fetchall()
+        out_r: list[dict[str, Any]] = []
+        for r in rows:
+            hpig = game_data.cap_json_int(max(0, _safe_int(r["harvested_pig_iron"], 0)))
+            hmet = game_data.cap_json_int(max(0, _safe_int(r["harvested_metal"], 0)))
+            hkry = game_data.cap_json_int(max(0, _safe_int(r["harvested_kryptonite"], 0)))
+            hspi = game_data.cap_json_int(max(0, _safe_int(r["harvested_spice"], 0)))
+            fpig = game_data.cap_json_int(max(0, _safe_int(r["debris_avail_pig"], 0)))
+            fmet = game_data.cap_json_int(max(0, _safe_int(r["debris_avail_metal"], 0)))
+            hseq = _safe_float(r["harvested_spice_eq"], round(hpig / 6.0 + hmet / 2.5 + hkry / 3.0 + float(hspi), 2))
+            out_r.append(
+                _sanitize_obj(
+                    {
+                        "id": game_data.cap_json_int(_safe_int(r["id"], 0)),
+                        "ts": _safe_float(r["ts"], 0.0),
+                        "msg_uid": _sanitize_text(r["msg_uid"]),
+                        "server_msg_id": _sanitize_text(r["server_msg_id"]),
+                        "msg_date_text": _sanitize_text(r["msg_date_text"]),
+                        "coords": normalize_coords(_raw_text(r["coords"], "")),
+                        "recycler_count": game_data.cap_json_int(max(0, _safe_int(r["recycler_count"], 0))),
+                        "cargo_capacity": game_data.cap_json_int(max(0, _safe_int(r["cargo_capacity"], 0))),
+                        "field_pig_iron": fpig,
+                        "field_metal": fmet,
+                        "debris_available": {
+                            "pig_iron": fpig,
+                            "metal": fmet,
+                        },
+                        "harvested_pig_iron": hpig,
+                        "harvested_metal": hmet,
+                        "harvested_kryptonite": hkry,
+                        "harvested_spice": hspi,
+                        "harvested": {
+                            "pig_iron": hpig,
+                            "metal": hmet,
+                            "kryptonite": hkry,
+                            "spice": hspi,
+                        },
+                        "harvested_spice_eq": hseq,
+                        "spice_eq": hseq,
+                        "raw_text": _sanitize_text(r["raw_text"]),
+                    }
+                )
+            )
+        return out_r
+
+    def get_colony_candidates(
+        self,
+        *,
+        origin_coords: str = "",
+        min_colony_fields: int = 300,
+        min_fields_target: Optional[int] = None,
+        own_coords: Iterable[str] = (),
+        exclude_coords: Optional[Iterable[str]] = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        eff_own = exclude_coords if exclude_coords is not None else own_coords
+        eff_min = min_fields_target if min_fields_target is not None else min_colony_fields
+        own_norm = {normalize_coords(c) for c in (eff_own or ()) if normalize_coords(c)}
+        norm_origin = normalize_coords(origin_coords) if origin_coords else ""
+        min_tgt = max(50, min(600, _safe_int(eff_min, 300)))
+        with self._lock:
+            free_rows = self._conn.execute(
+                """
+                SELECT coords, last_scanned_ts
+                FROM galaxy_slots
+                WHERE status_color = 'free'
+                ORDER BY galaxy ASC, system ASC, position ASC
+                """
+            ).fetchall()
+            spy_free_rows = self._conn.execute(
+                """
+                SELECT coords, uninhabited_fields, last_spied_ts, last_scanned_ts, spy_count
+                FROM spy_targets
+                WHERE merged_into = '' AND is_own_planet = 0
+                  AND (status_color = 'free' OR (uninhabited_fields IS NOT NULL AND owner = '' AND is_spacia = 0))
+                """
+            ).fetchall()
+            rep_free_rows = self._conn.execute(
+                """
+                SELECT target_coords, MAX(uninhabited_fields) AS max_fields, MAX(ts) AS last_ts, COUNT(*) AS rep_cnt
+                FROM spy_reports
+                WHERE uninhabited_fields IS NOT NULL AND owner = '' AND is_spacia = 0
+                GROUP BY target_coords
+                """
+            ).fetchall()
+
+        merged: dict[str, dict[str, Any]] = {}
+        for r in free_rows:
+            nc = normalize_coords(_raw_text(r["coords"], ""))
+            if not nc or nc in own_norm:
+                continue
+            merged[nc] = {
+                "coords": nc,
+                "uninhabited_fields": None,
+                "last_spied_ts": 0.0,
+                "last_scanned_ts": _safe_float(r["last_scanned_ts"], 0.0),
+                "spy_count": 0,
+            }
+        for sr in spy_free_rows:
+            nc = normalize_coords(_raw_text(sr["coords"], ""))
+            if not nc or nc in own_norm:
+                continue
+            entry = merged.setdefault(
+                nc,
+                {
+                    "coords": nc,
+                    "uninhabited_fields": None,
+                    "last_spied_ts": 0.0,
+                    "last_scanned_ts": 0.0,
+                    "spy_count": 0,
+                },
+            )
+            uf = _safe_optional_int(sr["uninhabited_fields"])
+            if uf is not None:
+                entry["uninhabited_fields"] = uf
+            entry["last_spied_ts"] = max(entry["last_spied_ts"], _safe_float(sr["last_spied_ts"], 0.0))
+            entry["last_scanned_ts"] = max(entry["last_scanned_ts"], _safe_float(sr["last_scanned_ts"], 0.0))
+            entry["spy_count"] = max(entry["spy_count"], _safe_int(sr["spy_count"], 0))
+        for rr in rep_free_rows:
+            nc = normalize_coords(_raw_text(rr["target_coords"], ""))
+            if not nc or nc in own_norm:
+                continue
+            entry = merged.setdefault(
+                nc,
+                {
+                    "coords": nc,
+                    "uninhabited_fields": None,
+                    "last_spied_ts": 0.0,
+                    "last_scanned_ts": 0.0,
+                    "spy_count": 0,
+                },
+            )
+            uf = _safe_optional_int(rr["max_fields"])
+            if uf is not None:
+                entry["uninhabited_fields"] = uf
+            entry["last_spied_ts"] = max(entry["last_spied_ts"], _safe_float(rr["last_ts"], 0.0))
+            entry["spy_count"] = max(entry["spy_count"], _safe_int(rr["rep_cnt"], 0))
+
+        graded: list[dict[str, Any]] = []
+        for nc, info in merged.items():
+            g = grade_colony_candidate(
+                norm_origin or nc,
+                nc,
+                uninhabited_fields=info["uninhabited_fields"],
+                spied=info["uninhabited_fields"] is not None,
+                min_fields_target=min_tgt,
+                last_spied_ts=info["last_spied_ts"],
+                last_scanned_ts=info["last_scanned_ts"],
+            )
+            g["spy_count"] = int(info["spy_count"])
+            graded.append(_sanitize_obj(g))
+
+        def _sort_key(item: dict[str, Any]) -> tuple[int, float, float, str]:
+            if item["meets_target"]:
+                tier = 0
+                primary = -float(item["uninhabited_fields"] or 0)
+            elif not item["spied"] and 7 <= int(item["position"]) <= 12:
+                tier = 1
+                primary = float(item["distance"])
+            elif not item["spied"]:
+                tier = 2
+                primary = -float(item["score"])
+            else:
+                tier = 3
+                primary = -float(item["uninhabited_fields"] or 0)
+            return (tier, primary, float(item["distance"]), str(item["coords"]))
+
+        graded.sort(key=_sort_key)
+        return graded[: max(1, _safe_int(limit, 200))]
+
+    def get_galaxy_slot_history(
+        self,
+        *,
+        coords: Optional[str] = None,
+        galaxy: Optional[int] = None,
+        system: Optional[int] = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if coords is not None:
+            clauses.append("coords = ?")
+            params.append(normalize_coords(_raw_text(coords, "").strip()))
+        if galaxy is not None:
+            clauses.append("galaxy = ?")
+            params.append(_sql_int(galaxy, 0))
+        if system is not None:
+            clauses.append("system = ?")
+            params.append(_sql_int(system, 0))
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(max(1, _sql_int(limit, 500)))
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, ts, coords, galaxy, system, position, planet_name, owner,
+                       status_color, is_inactive, is_spacia, has_debris, has_asteroid
+                FROM galaxy_slot_history
+                {where_sql}
+                ORDER BY ts DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [
+            _sanitize_obj(
+                {
+                    "id": game_data.cap_json_int(_safe_int(r["id"], 0)),
+                    "ts": _safe_float(r["ts"], 0.0),
+                    "coords": normalize_coords(_raw_text(r["coords"], "")),
+                    "galaxy": game_data.cap_json_int(_safe_int(r["galaxy"], 0)),
+                    "system": game_data.cap_json_int(_safe_int(r["system"], 0)),
+                    "position": game_data.cap_json_int(_safe_int(r["position"], 0)),
+                    "planet_name": _sanitize_text(r["planet_name"]),
+                    "owner": _sanitize_text(r["owner"]),
+                    "status_color": _sanitize_text(r["status_color"]),
+                    "is_inactive": bool(r["is_inactive"]),
+                    "is_spacia": bool(r["is_spacia"]),
+                    "has_debris": bool(r["has_debris"]),
+                    "has_asteroid": bool(r["has_asteroid"]),
+                }
+            )
+            for r in rows
+        ]
+
+    def get_galaxy_scan_history(
+        self,
+        *,
+        galaxy: Optional[int] = None,
+        system: Optional[int] = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if galaxy is not None:
+            clauses.append("galaxy = ?")
+            params.append(_sql_int(galaxy, 0))
+        if system is not None:
+            clauses.append("system = ?")
+            params.append(_sql_int(system, 0))
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(max(1, _sql_int(limit, 200)))
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, ts, galaxy, system, occupied_count, target_count,
+                       free_count, debris_count, asteroid_count
+                FROM galaxy_scan_history
+                {where_sql}
+                ORDER BY ts DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [_sanitize_obj(dict(r)) for r in rows]
+
+    def set_target_debris(self, target_coords: str, has_debris: bool) -> None:
+        raw_c = _raw_text(target_coords, "").strip()
+        norm_c = normalize_coords(raw_c)
+        if not norm_c:
+            return
+        flag = 1 if has_debris else 0
+        with self._lock:
+            self._coalesce_legacy_spy_target_locked(norm_c, raw_c)
+            self._conn.execute(
+                "UPDATE spy_targets SET has_debris = ? WHERE coords = ?",
+                (flag, norm_c),
+            )
+            self._conn.execute(
+                "UPDATE galaxy_slots SET has_debris = ? WHERE coords = ?",
+                (flag, norm_c),
+            )
+            self._conn.commit()
+
+    def record_target_block(
+        self,
+        target_coords: str,
+        *,
+        blocked_until_ts: float,
+        reason: str = "",
+        is_bash: bool = False,
+        blocked_ts: Optional[float] = None,
+        ts: Optional[float] = None,
+    ) -> None:
+        raw_c = _raw_text(target_coords, "").strip()
+        norm_c = normalize_coords(raw_c)
+        if not norm_c:
+            return
+        eff_ts = blocked_ts if blocked_ts is not None else ts
+        now_val = _safe_float(eff_ts, time.time()) if eff_ts is not None else time.time()
+        until_val = _safe_float(blocked_until_ts, now_val + 3600.0)
+        if until_val <= now_val:
+            until_val = now_val + 60.0
+        cooldown_s = round(max(0.0, until_val - now_val), 3)
+        clean_reason = _sanitize_text(reason)[:400]
+        is_spacia_hint = 1 if "spacia" in clean_reason.lower() else 0
+        with self._lock:
+            self._coalesce_legacy_spy_target_locked(norm_c, raw_c)
+            self._conn.execute(
+                """
+                INSERT INTO spy_targets(
+                    coords, owner, planet_name, status_color, is_inactive, is_spacia,
+                    last_scanned_ts, blocked_until_ts, block_reason, bash_hits, last_blocked_ts
+                ) VALUES (?, '', '', 'yellow', ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(coords) DO UPDATE SET
+                    blocked_until_ts = MAX(spy_targets.blocked_until_ts, excluded.blocked_until_ts),
+                    block_reason = CASE WHEN excluded.block_reason != '' THEN excluded.block_reason ELSE spy_targets.block_reason END,
+                    bash_hits = spy_targets.bash_hits + excluded.bash_hits,
+                    last_blocked_ts = MAX(spy_targets.last_blocked_ts, excluded.last_blocked_ts)
+                """,
+                (
+                    norm_c,
+                    is_spacia_hint,
+                    is_spacia_hint,
+                    round(now_val, 3),
+                    round(until_val, 3),
+                    clean_reason,
+                    1 if is_bash else 0,
+                    round(now_val, 3),
+                ),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO bash_blocks(
+                    target_coords, blocked_ts, blocked_until_ts, cooldown_seconds, is_bash, reason
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    norm_c,
+                    round(now_val, 3),
+                    round(until_val, 3),
+                    cooldown_s,
+                    1 if is_bash else 0,
+                    clean_reason,
+                ),
+            )
+            self._conn.commit()
+            self._sync_attack_history_file_locked()
 
     def record_raid(
         self,
@@ -1584,6 +3430,14 @@ class GameDatabase:
                     clean_outcome,
                     _json_dumps(norm_loot),
                 ),
+            )
+            self._conn.execute(
+                """
+                UPDATE spy_targets
+                SET blocked_until_ts = 0.0, block_reason = ''
+                WHERE coords = ? AND blocked_until_ts > 0.0 AND blocked_until_ts <= ?
+                """,
+                (norm_coords, round(ts_val, 3)),
             )
             self._conn.commit()
             self._sync_attack_history_file_locked()
@@ -1768,9 +3622,12 @@ class GameDatabase:
             "total_known_resources_spice_eq": total_known_res_sp,
         }
 
-        # 3. Galaxy scans count
+        # 3. Galaxy scans & historical spy reports counts
         gal_scans_count = int(
             self._conn.execute("SELECT COUNT(*) FROM galaxy_scans").fetchone()[0]
+        )
+        spy_reports_count = int(
+            self._conn.execute("SELECT COUNT(*) FROM spy_reports").fetchone()[0]
         )
 
         # 4. Planet snapshots summary
@@ -1980,6 +3837,7 @@ class GameDatabase:
                 "planet_snapshots_count": p_count,
                 "action_history_count": act_total,
                 "spy_targets_count": spy_count,
+                "spy_reports_count": spy_reports_count,
                 "galaxy_scans_count": gal_scans_count,
                 "points_delta": round(points_delta_val, 3),
                 "points_trend": round(points_delta_val, 3),
@@ -2034,12 +3892,57 @@ class GameDatabase:
             t_agg["last_loot_spice_eq"] = t_last["loot_spice_eq"]
             per_target[coords] = t_agg
 
+        bash_block_rows = self._conn.execute(
+            """
+            SELECT id, target_coords, blocked_ts, blocked_until_ts, cooldown_seconds, is_bash, reason
+            FROM bash_blocks
+            ORDER BY blocked_ts ASC, id ASC
+            """
+        ).fetchall()
+        bash_blocks_list = [
+            {
+                "id": game_data.cap_json_int(_safe_int(br["id"], 0)),
+                "target_coords": normalize_coords(_raw_text(br["target_coords"], "")),
+                "blocked_ts": _safe_float(br["blocked_ts"], 0.0),
+                "blocked_until_ts": _safe_float(br["blocked_until_ts"], 0.0),
+                "cooldown_seconds": _safe_float(br["cooldown_seconds"], 0.0),
+                "is_bash": bool(br["is_bash"]),
+                "reason": _sanitize_text(_raw_text(br["reason"], "")),
+            }
+            for br in bash_block_rows
+        ]
+        active_now = _safe_float(now, time.time()) if now is not None else time.time()
+        blocked_spy_rows = self._conn.execute(
+            """
+            SELECT coords, blocked_until_ts, block_reason, bash_hits, last_blocked_ts
+            FROM spy_targets
+            WHERE blocked_until_ts > ?
+            ORDER BY blocked_until_ts DESC
+            """,
+            (active_now,),
+        ).fetchall()
+        blocked_targets: dict[str, dict[str, Any]] = {}
+        for sr in blocked_spy_rows:
+            bc = normalize_coords(_raw_text(sr["coords"], ""))
+            if not bc:
+                continue
+            b_until = _safe_float(sr["blocked_until_ts"], 0.0)
+            blocked_targets[bc] = {
+                "blocked_until_ts": b_until,
+                "remaining_seconds": round(max(0.0, b_until - active_now), 1),
+                "reason": _sanitize_text(_raw_text(sr["block_reason"], "")),
+                "bash_hits": game_data.cap_json_int(max(0, _safe_int(sr["bash_hits"], 0))),
+                "last_blocked_ts": _safe_float(sr["last_blocked_ts"], 0.0),
+            }
+
         telemetry_summary = self._get_full_history_summary_locked()
         return _sanitize_obj(
             {
                 "overall": overall,
                 "per_target": per_target,
                 "history": norm_rows,
+                "bash_blocks": bash_blocks_list,
+                "blocked_targets": blocked_targets,
                 "telemetry_summary": telemetry_summary,
             }
         )
@@ -2071,6 +3974,8 @@ class GameDatabase:
                 "overall": stats["overall"],
                 "per_target": stats["per_target"],
                 "history": stats["history"],
+                "bash_blocks": stats["bash_blocks"],
+                "blocked_targets": stats["blocked_targets"],
                 "telemetry_summary": stats["telemetry_summary"],
             }
         )
@@ -2106,6 +4011,7 @@ class GameDatabase:
     def load_bash_tracker(self, *, now: Optional[float] = None) -> BashTracker:
         ref = _safe_float(now, time.time()) if now is not None else time.time()
         cutoff = ref - 24 * 3600
+        skew_max = ref + 60.0
         with self._lock:
             rows = self._conn.execute(
                 """
@@ -2114,15 +4020,33 @@ class GameDatabase:
                 """,
                 (cutoff,),
             ).fetchall()
+            blocked_rows = self._conn.execute(
+                """
+                SELECT coords, blocked_until_ts, block_reason, last_blocked_ts
+                FROM spy_targets WHERE blocked_until_ts > ?
+                """,
+                (ref,),
+            ).fetchall()
         tracker = BashTracker()
         for r in rows:
             if not bool(r["is_exempt"]):
                 ts_val = _safe_float(r["attacked_ts"], 0.0)
-                if ts_val >= cutoff:
+                if cutoff <= ts_val <= skew_max:
                     tracker.record_attack(
                         normalize_coords(_raw_text(r["target_coords"], "")),
                         timestamp=ts_val,
                     )
+        for br in blocked_rows:
+            last_b_ts = _safe_float(br["last_blocked_ts"], 0.0)
+            if last_b_ts > 0.0 and last_b_ts > skew_max:
+                continue
+            until_val = _safe_float(br["blocked_until_ts"], 0.0)
+            if until_val > ref:
+                tracker.record_block(
+                    normalize_coords(_raw_text(br["coords"], "")),
+                    until_val,
+                    reason=_sanitize_text(_raw_text(br["block_reason"], "")),
+                )
         return tracker
 
     def get_recent_actions(self, *, limit: int = 25) -> list[dict[str, Any]]:
@@ -2183,6 +4107,553 @@ class GameDatabase:
             out.append(_sanitize_obj(item))
         return out
 
+    # ------------------------------------------------------------------
+    # Manual Command Queue (append-only / status-versioned, zero DELETEs)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_queue_priority(raw: Any, default: str = "P1") -> str:
+        s = _sanitize_text(raw if raw is not None else default).strip().upper()
+        return s if s in ("P0", "P1", "P2", "P3") else default
+
+    @staticmethod
+    def _row_to_manual_queue_dict(r: sqlite3.Row) -> dict[str, Any]:
+        tid = _safe_optional_int(r["target_id"])
+        tlvl = _safe_optional_int(r["target_level"])
+        comp_ts = _safe_optional_float(r["completed_ts"])
+        canc_ts = _safe_optional_float(r["canceled_ts"])
+        raw_tc = _raw_text(r["target_coords"], "").strip()
+        norm_tc = normalize_coords(raw_tc) if raw_tc else ""
+        if not norm_tc and raw_tc:
+            norm_tc = _sanitize_text(raw_tc)[:32]
+        raw_pc = _raw_text(r["planet_coords"], "").strip()
+        norm_pc = normalize_coords(raw_pc) if raw_pc else ""
+        return _sanitize_obj(
+            {
+                "id": game_data.cap_json_int(_safe_int(r["id"], 0)),
+                "created_ts": _safe_float(r["created_ts"], 0.0),
+                "updated_ts": _safe_float(r["updated_ts"], 0.0),
+                "status": _sanitize_text(r["status"] or "pending"),
+                "priority": GameDatabase._normalize_queue_priority(r["priority"], "P1"),
+                "sort_rank": game_data.cap_json_int(_safe_int(r["sort_rank"], 1000)),
+                "kind": _sanitize_text(r["kind"] or "").upper(),
+                "planet_id": game_data.cap_json_int(max(0, _safe_int(r["planet_id"], 0))),
+                "planet_coords": norm_pc,
+                "target_id": game_data.cap_json_int(tid) if tid is not None else None,
+                "target_name": _sanitize_text(r["target_name"] or ""),
+                "target_coords": norm_tc,
+                "target_level": game_data.cap_json_int(tlvl) if tlvl is not None else None,
+                "note": _sanitize_text(r["note"] or ""),
+                "completed_ts": comp_ts,
+                "canceled_ts": canc_ts,
+                "result_message": _sanitize_text(r["result_message"] or ""),
+            }
+        )
+
+    def _record_manual_queue_event_locked(
+        self,
+        queue_id: int,
+        event_type: str,
+        details: Mapping[str, Any],
+        now_ts: float,
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO manual_queue_events(ts, queue_id, event_type, details_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                now_ts,
+                _sql_int(queue_id, 0),
+                _sanitize_text(event_type)[:40],
+                _json_dumps(dict(details)),
+            ),
+        )
+
+    def _ordered_pending_queue_rows_locked(self) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            """
+            SELECT *
+            FROM manual_queue
+            WHERE status = 'pending'
+            ORDER BY
+                CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END ASC,
+                sort_rank ASC,
+                id ASC
+            """
+        ).fetchall()
+
+    def get_manual_queue(
+        self,
+        *,
+        status: Optional[str] = "pending",
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        lim = max(1, min(1000, _sql_int(limit, 200)))
+        norm_status = _sanitize_text(status).strip().lower() if isinstance(status, str) and status.strip() else None
+        with self._lock:
+            if norm_status == "pending":
+                rows = self._conn.execute(
+                    """
+                    SELECT *
+                    FROM manual_queue
+                    WHERE status = 'pending'
+                    ORDER BY
+                        CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END ASC,
+                        sort_rank ASC,
+                        id ASC
+                    LIMIT ?
+                    """,
+                    (lim,),
+                ).fetchall()
+            elif norm_status and norm_status != "all":
+                rows = self._conn.execute(
+                    """
+                    SELECT *
+                    FROM manual_queue
+                    WHERE status = ?
+                    ORDER BY updated_ts DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (norm_status, lim),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT *
+                    FROM manual_queue
+                    ORDER BY
+                        CASE WHEN status = 'pending' THEN 0 ELSE 1 END ASC,
+                        CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END ASC,
+                        sort_rank ASC,
+                        updated_ts DESC,
+                        id DESC
+                    LIMIT ?
+                    """,
+                    (lim,),
+                ).fetchall()
+        return [self._row_to_manual_queue_dict(r) for r in rows]
+
+    def enqueue_manual_command(
+        self,
+        *,
+        kind: str,
+        priority: str = "P1",
+        position: str = "top",
+        planet_id: int = 0,
+        planet_coords: str = "",
+        target_id: Optional[int] = None,
+        target_name: str = "",
+        target_coords: str = "",
+        target_level: Optional[int] = None,
+        note: str = "",
+        deduplicate_pending: bool = False,
+        ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        norm_kind = _sanitize_text(kind).strip().upper()[:40]
+        norm_prio = self._normalize_queue_priority(priority, "P1")
+        norm_pos = _sanitize_text(position).strip().lower()
+        pid_i = max(0, _sql_int(planet_id, 0))
+        norm_pc = normalize_coords(_raw_text(planet_coords, "").strip()) if planet_coords else ""
+        tid_i = _sql_optional_int(target_id)
+        tlvl_i = _sql_optional_int(target_level)
+        raw_tc = _raw_text(target_coords, "").strip()
+        norm_tc = normalize_coords(raw_tc) if raw_tc else ""
+        if not norm_tc and raw_tc:
+            norm_tc = _sanitize_text(raw_tc)[:32]
+        tname_s = _sanitize_text(target_name).strip()[:160]
+        note_s = _sanitize_text(note).strip()[:300]
+
+        with self._lock:
+            if deduplicate_pending:
+                dup = self._conn.execute(
+                    """
+                    SELECT *
+                    FROM manual_queue
+                    WHERE status = 'pending'
+                      AND kind = ?
+                      AND planet_id = ?
+                      AND COALESCE(target_id, -1) = COALESCE(?, -1)
+                      AND target_coords = ?
+                      AND COALESCE(target_level, -1) = COALESCE(?, -1)
+                    ORDER BY id ASC
+                    LIMIT 1
+                    """,
+                    (norm_kind, pid_i, tid_i, norm_tc, tlvl_i),
+                ).fetchone()
+                if dup is not None:
+                    dup_id = int(dup["id"])
+                    band_ranks = self._conn.execute(
+                        "SELECT MIN(sort_rank) AS min_r, MAX(sort_rank) AS max_r FROM manual_queue WHERE status = 'pending' AND priority = ? AND id != ?",
+                        (norm_prio, dup_id),
+                    ).fetchone()
+                    if norm_pos == "bottom":
+                        new_rank = (_safe_int(band_ranks["max_r"], 1000) + 10) if band_ranks and band_ranks["max_r"] is not None else 1000
+                    else:
+                        new_rank = (_safe_int(band_ranks["min_r"], 1000) - 10) if band_ranks and band_ranks["min_r"] is not None else 1000
+                    self._conn.execute(
+                        """
+                        UPDATE manual_queue
+                        SET updated_ts = ?, priority = ?, sort_rank = ?,
+                            note = CASE WHEN ? != '' THEN ? ELSE note END
+                        WHERE id = ?
+                        """,
+                        (now_ts, norm_prio, new_rank, note_s, note_s, dup_id),
+                    )
+                    self._record_manual_queue_event_locked(
+                        dup_id,
+                        "reprioritized",
+                        {"priority": norm_prio, "sort_rank": new_rank, "position": norm_pos or "top"},
+                        now_ts,
+                    )
+                    self._conn.commit()
+                    updated_row = self._conn.execute("SELECT * FROM manual_queue WHERE id = ?", (dup_id,)).fetchone()
+                    return self._row_to_manual_queue_dict(updated_row)
+
+            band_ranks = self._conn.execute(
+                "SELECT MIN(sort_rank) AS min_r, MAX(sort_rank) AS max_r FROM manual_queue WHERE status = 'pending' AND priority = ?",
+                (norm_prio,),
+            ).fetchone()
+            if norm_pos == "bottom":
+                sort_rank = (_safe_int(band_ranks["max_r"], 1000) + 10) if band_ranks and band_ranks["max_r"] is not None else 1000
+            else:
+                sort_rank = (_safe_int(band_ranks["min_r"], 1000) - 10) if band_ranks and band_ranks["min_r"] is not None else 1000
+
+            cur = self._conn.execute(
+                """
+                INSERT INTO manual_queue(
+                    created_ts, updated_ts, status, priority, sort_rank,
+                    kind, planet_id, planet_coords, target_id, target_name,
+                    target_coords, target_level, note
+                ) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now_ts,
+                    now_ts,
+                    norm_prio,
+                    sort_rank,
+                    norm_kind,
+                    pid_i,
+                    norm_pc,
+                    tid_i,
+                    tname_s,
+                    norm_tc,
+                    tlvl_i,
+                    note_s,
+                ),
+            )
+            qid = int(cur.lastrowid or 0)
+            self._record_manual_queue_event_locked(
+                qid,
+                "enqueued",
+                {
+                    "kind": norm_kind,
+                    "priority": norm_prio,
+                    "sort_rank": sort_rank,
+                    "planet_id": pid_i,
+                    "target_id": tid_i,
+                    "target_name": tname_s,
+                    "target_coords": norm_tc,
+                    "target_level": tlvl_i,
+                },
+                now_ts,
+            )
+            self._conn.commit()
+            row = self._conn.execute("SELECT * FROM manual_queue WHERE id = ?", (qid,)).fetchone()
+            return self._row_to_manual_queue_dict(row)
+
+    def update_manual_queue_item(
+        self,
+        queue_id: int,
+        *,
+        priority: Optional[str] = None,
+        move: Optional[str] = None,
+        sort_rank: Optional[int] = None,
+        target_level: Any = ...,
+        note: Optional[str] = None,
+        ts: Optional[float] = None,
+    ) -> Optional[dict[str, Any]]:
+        qid = _sql_int(queue_id, 0)
+        if qid <= 0:
+            return None
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM manual_queue WHERE id = ? LIMIT 1",
+                (qid,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            new_prio = (
+                self._normalize_queue_priority(priority, _raw_text(row["priority"], "P1"))
+                if priority is not None
+                else self._normalize_queue_priority(row["priority"], "P1")
+            )
+            new_tlvl = (
+                _sql_optional_int(row["target_level"])
+                if target_level is ...
+                else _sql_optional_int(target_level)
+            )
+            new_note = _sanitize_text(note)[:300] if note is not None else _sanitize_text(row["note"] or "")
+
+            if priority is not None or target_level is not ... or note is not None or sort_rank is not None:
+                explicit_rank = (
+                    _sql_int(sort_rank, _safe_int(row["sort_rank"], 1000))
+                    if sort_rank is not None
+                    else _safe_int(row["sort_rank"], 1000)
+                )
+                self._conn.execute(
+                    """
+                    UPDATE manual_queue
+                    SET updated_ts = ?, priority = ?, sort_rank = ?, target_level = ?, note = ?
+                    WHERE id = ?
+                    """,
+                    (now_ts, new_prio, explicit_rank, new_tlvl, new_note, qid),
+                )
+
+            move_s = _sanitize_text(move).strip().lower() if isinstance(move, str) and move.strip() else ""
+            if move_s in ("top", "bottom", "up", "down") and _raw_text(row["status"], "") == "pending":
+                pending_rows = self._ordered_pending_queue_rows_locked()
+                ordered_ids = [int(r["id"]) for r in pending_rows]
+                prio_by_id = {int(r["id"]): self._normalize_queue_priority(r["priority"], "P1") for r in pending_rows}
+                if qid in ordered_ids:
+                    idx = ordered_ids.index(qid)
+                    cur_p = prio_by_id[qid]
+                    if move_s == "top":
+                        band_indices = [i for i, mid in enumerate(ordered_ids) if prio_by_id[mid] == cur_p]
+                        first_idx = band_indices[0] if band_indices else 0
+                        ordered_ids.pop(idx)
+                        ordered_ids.insert(first_idx, qid)
+                    elif move_s == "bottom":
+                        band_indices = [i for i, mid in enumerate(ordered_ids) if prio_by_id[mid] == cur_p]
+                        last_idx = band_indices[-1] if band_indices else len(ordered_ids) - 1
+                        ordered_ids.pop(idx)
+                        ordered_ids.insert(last_idx, qid)
+                    elif move_s == "up" and idx > 0:
+                        neighbor_id = ordered_ids[idx - 1]
+                        prio_by_id[qid] = prio_by_id[neighbor_id]
+                        ordered_ids[idx - 1], ordered_ids[idx] = ordered_ids[idx], ordered_ids[idx - 1]
+                    elif move_s == "down" and idx < len(ordered_ids) - 1:
+                        neighbor_id = ordered_ids[idx + 1]
+                        prio_by_id[qid] = prio_by_id[neighbor_id]
+                        ordered_ids[idx + 1], ordered_ids[idx] = ordered_ids[idx], ordered_ids[idx + 1]
+
+                    for pos_i, mid in enumerate(ordered_ids):
+                        self._conn.execute(
+                            "UPDATE manual_queue SET updated_ts = ?, priority = ?, sort_rank = ? WHERE id = ?",
+                            (now_ts, prio_by_id[mid], (pos_i + 1) * 10, mid),
+                        )
+
+            updated_row = self._conn.execute(
+                "SELECT * FROM manual_queue WHERE id = ?",
+                (qid,),
+            ).fetchone()
+            self._record_manual_queue_event_locked(
+                qid,
+                "reordered" if move_s else "updated",
+                {
+                    "priority": updated_row["priority"],
+                    "sort_rank": updated_row["sort_rank"],
+                    "move": move_s or None,
+                    "target_level": updated_row["target_level"],
+                },
+                now_ts,
+            )
+            self._conn.commit()
+            return self._row_to_manual_queue_dict(updated_row)
+
+    def cancel_manual_queue_item(
+        self,
+        queue_id: int,
+        *,
+        reason: str = "Canceled by operator",
+        ts: Optional[float] = None,
+    ) -> bool:
+        qid = _sql_int(queue_id, 0)
+        if qid <= 0:
+            return False
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        rsn_s = _sanitize_text(reason)[:240]
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                UPDATE manual_queue
+                SET status = 'canceled', updated_ts = ?, canceled_ts = ?, result_message = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (now_ts, now_ts, rsn_s, qid),
+            )
+            if (cur.rowcount or 0) <= 0:
+                return False
+            self._record_manual_queue_event_locked(qid, "canceled", {"reason": rsn_s}, now_ts)
+            self._conn.commit()
+            return True
+
+    def clear_manual_queue(
+        self,
+        *,
+        reason: str = "Cleared by operator",
+        ts: Optional[float] = None,
+    ) -> int:
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        rsn_s = _sanitize_text(reason)[:240]
+        with self._lock:
+            pending_rows = self._conn.execute(
+                "SELECT id FROM manual_queue WHERE status = 'pending'"
+            ).fetchall()
+            if not pending_rows:
+                return 0
+            self._conn.execute(
+                """
+                UPDATE manual_queue
+                SET status = 'canceled', updated_ts = ?, canceled_ts = ?, result_message = ?
+                WHERE status = 'pending'
+                """,
+                (now_ts, now_ts, rsn_s),
+            )
+            for r in pending_rows:
+                self._record_manual_queue_event_locked(int(r["id"]), "canceled", {"reason": rsn_s}, now_ts)
+            self._conn.commit()
+            return len(pending_rows)
+
+    def complete_manual_queue_item(
+        self,
+        queue_id: int,
+        *,
+        message: str = "",
+        ts: Optional[float] = None,
+    ) -> bool:
+        qid = _sql_int(queue_id, 0)
+        if qid <= 0:
+            return False
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        msg_s = _sanitize_text(message)[:300]
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                UPDATE manual_queue
+                SET status = 'completed', updated_ts = ?, completed_ts = ?, result_message = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (now_ts, now_ts, msg_s, qid),
+            )
+            if (cur.rowcount or 0) <= 0:
+                return False
+            self._record_manual_queue_event_locked(qid, "completed", {"message": msg_s}, now_ts)
+            self._conn.commit()
+            return True
+
+    def complete_matching_manual_command(
+        self,
+        *,
+        kind: str,
+        planet_id: Optional[int] = None,
+        target_id: Optional[int] = None,
+        target_coords: str = "",
+        executed_level: Optional[int] = None,
+        executed_qty: Optional[int] = None,
+        message: str = "",
+        ts: Optional[float] = None,
+    ) -> Optional[int]:
+        norm_kind = _sanitize_text(kind).strip().upper()
+        if not norm_kind:
+            return None
+        pid_i = max(0, _sql_int(planet_id, 0)) if planet_id is not None else 0
+        tid_i = _sql_optional_int(target_id)
+        raw_tc = _raw_text(target_coords, "").strip()
+        norm_tc = normalize_coords(raw_tc) if raw_tc else ""
+        if not norm_tc and raw_tc:
+            norm_tc = _sanitize_text(raw_tc)[:32]
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        msg_s = _sanitize_text(message)[:300]
+
+        with self._lock:
+            pending_rows = self._ordered_pending_queue_rows_locked()
+            matched: Optional[sqlite3.Row] = None
+            for r in pending_rows:
+                if _raw_text(r["kind"], "").upper() != norm_kind:
+                    continue
+                r_pid = _safe_int(r["planet_id"], 0)
+                if norm_kind != "RESEARCH" and r_pid > 0 and pid_i > 0 and r_pid != pid_i:
+                    continue
+                r_tid = _safe_optional_int(r["target_id"])
+                r_tc = _raw_text(r["target_coords"], "").strip()
+                norm_r_tc = normalize_coords(r_tc) if r_tc else r_tc
+                if norm_kind in ("BUILD", "DEMOLISH_BUILDING", "RESEARCH", "BUILD_SHIP", "THROTTLE_BUILDING"):
+                    if tid_i is not None and r_tid != tid_i:
+                        continue
+                elif norm_kind in ("SPY", "ATTACK", "RECYCLE", "COLONIZE"):
+                    if norm_tc and norm_r_tc != norm_tc:
+                        continue
+                elif norm_kind == "SCAN_GALAXY":
+                    if norm_tc and norm_r_tc and not norm_r_tc.startswith(norm_tc[:6]) and not norm_tc.startswith(norm_r_tc[:6]):
+                        continue
+                matched = r
+                break
+
+            if matched is None:
+                return None
+
+            qid = int(matched["id"])
+            goal_lvl = _safe_optional_int(matched["target_level"])
+            if norm_kind in ("BUILD", "RESEARCH") and goal_lvl is not None and executed_level is not None:
+                if int(executed_level) < int(goal_lvl):
+                    self._conn.execute(
+                        "UPDATE manual_queue SET updated_ts = ?, result_message = ? WHERE id = ?",
+                        (now_ts, f"Progressed L{int(executed_level)}/{int(goal_lvl)}: {msg_s}"[:300], qid),
+                    )
+                    self._record_manual_queue_event_locked(
+                        qid,
+                        "progressed",
+                        {"executed_level": int(executed_level), "target_level": int(goal_lvl)},
+                        now_ts,
+                    )
+                    self._conn.commit()
+                    return qid
+            elif norm_kind == "DEMOLISH_BUILDING" and goal_lvl is not None and executed_level is not None:
+                if int(executed_level) > int(goal_lvl):
+                    self._conn.execute(
+                        "UPDATE manual_queue SET updated_ts = ?, result_message = ? WHERE id = ?",
+                        (now_ts, f"Demolished to L{int(executed_level)} (goal L{int(goal_lvl)}): {msg_s}"[:300], qid),
+                    )
+                    self._record_manual_queue_event_locked(
+                        qid,
+                        "progressed",
+                        {"executed_level": int(executed_level), "target_level": int(goal_lvl)},
+                        now_ts,
+                    )
+                    self._conn.commit()
+                    return qid
+            elif norm_kind == "BUILD_SHIP" and goal_lvl is not None and executed_qty is not None and int(executed_qty) > 0:
+                rem = int(goal_lvl) - int(executed_qty)
+                if rem > 0:
+                    self._conn.execute(
+                        "UPDATE manual_queue SET updated_ts = ?, target_level = ?, result_message = ? WHERE id = ?",
+                        (now_ts, rem, f"Ordered {int(executed_qty)}x ({rem}x remaining): {msg_s}"[:300], qid),
+                    )
+                    self._record_manual_queue_event_locked(
+                        qid,
+                        "progressed",
+                        {"ordered": int(executed_qty), "remaining": rem},
+                        now_ts,
+                    )
+                    self._conn.commit()
+                    return qid
+
+            self._conn.execute(
+                """
+                UPDATE manual_queue
+                SET status = 'completed', updated_ts = ?, completed_ts = ?, result_message = ?
+                WHERE id = ?
+                """,
+                (now_ts, now_ts, msg_s, qid),
+            )
+            self._record_manual_queue_event_locked(qid, "completed", {"message": msg_s}, now_ts)
+            self._conn.commit()
+            return qid
+
     def summary(self) -> dict[str, Any]:
         tables = (
             "rank_snapshots",
@@ -2191,8 +4662,19 @@ class GameDatabase:
             "tutorial_progress",
             "action_history",
             "spy_targets",
+            "spy_reports",
+            "game_messages",
             "galaxy_scans",
+            "galaxy_scan_history",
+            "galaxy_slots",
+            "galaxy_slot_history",
+            "config_history",
             "raid_history",
+            "bash_blocks",
+            "battle_reports",
+            "recycle_reports",
+            "manual_queue",
+            "manual_queue_events",
         )
         counts: dict[str, int] = {}
         with self._lock:
@@ -2200,6 +4682,16 @@ class GameDatabase:
                 counts[tbl] = int(
                     self._conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
                 )
+            meta_keys = {
+                _sanitize_text(_raw_text(r["key"], ""))
+                for r in self._conn.execute("SELECT key FROM meta").fetchall()
+            }
+            msg_cats = {
+                _sanitize_text(_raw_text(r["category"], "general")): int(r["cnt"])
+                for r in self._conn.execute(
+                    "SELECT category, COUNT(*) AS cnt FROM game_messages WHERE msg_uid NOT LIKE 'id:msg-%' AND TRIM(body_text) NOT GLOB '[0-9]* / [0-9]*' GROUP BY category"
+                ).fetchall()
+            }
         tut_rows = self.get_tutorial_history()
         recent_actions = self.get_recent_actions(limit=12)
         spy_targets = self.get_spy_targets(limit=25)
@@ -2213,6 +4705,8 @@ class GameDatabase:
                 "db_path": ":memory:" if self._is_memory else _sanitize_text(self.db_path),
                 "size_bytes": size_bytes,
                 "counts": counts,
+                "message_categories": msg_cats,
+                "persisted_meta_keys": sorted(k for k in meta_keys if k),
                 "tutorial_history": tut_rows,
                 "recent_actions": recent_actions,
                 "spy_targets": spy_targets,

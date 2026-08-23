@@ -434,14 +434,17 @@ class StrategyConfig:
     allow_raids: bool = False
     allow_pvp_in_az: bool = False
     allow_colonize: bool = False
+    forbid_planetary_solar: bool = False
     storage_warn_ratio: float = 0.85
     blast_pig_iron_max_share: float = 0.70
     combat_safety_margin: float = 1.4
     raid_min_loot_spice_eq: float = 1500.0
     fleet_save_fuel_reserve_spice: int = 500
+    action_batch_interval_seconds: int = 120
     max_actions_per_hour: int = 60
     hot_planet_solar_temp_threshold: int = 40
     min_free_fields_warning: int = 20
+    min_colony_fields: int = 300
     planner_mode: str = "priority"  # "priority" | "ga_nn"
     ga_population_size: int = 24
     ga_generations: int = 12
@@ -1104,14 +1107,17 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         allow_raids=_safe_cfg_bool(data.get("allow_raids"), False),
         allow_pvp_in_az=_safe_cfg_bool(data.get("allow_pvp_in_az"), False),
         allow_colonize=_safe_cfg_bool(data.get("allow_colonize"), False),
+        forbid_planetary_solar=_safe_cfg_bool(data.get("forbid_planetary_solar"), False),
         storage_warn_ratio=max(0.1, min(0.99, _safe_cfg_float(data.get("storage_warn_ratio"), 0.85))),
         blast_pig_iron_max_share=max(0.1, min(1.0, _safe_cfg_float(data.get("blast_pig_iron_max_share"), 0.70))),
         combat_safety_margin=max(1.0, _safe_cfg_float(data.get("combat_safety_margin"), 1.4)),
         raid_min_loot_spice_eq=max(0.0, _safe_cfg_float(data.get("raid_min_loot_spice_eq"), 1500.0)),
         fleet_save_fuel_reserve_spice=max(0, _safe_cfg_int(data.get("fleet_save_fuel_reserve_spice"), 500)),
+        action_batch_interval_seconds=max(5, min(86400, _safe_cfg_int(data.get("action_batch_interval_seconds"), 120))),
         max_actions_per_hour=max(1, _safe_cfg_int(data.get("max_actions_per_hour"), 60)),
         hot_planet_solar_temp_threshold=_safe_cfg_int(data.get("hot_planet_solar_temp_threshold"), 40),
         min_free_fields_warning=max(1, _safe_cfg_int(data.get("min_free_fields_warning"), 20)),
+        min_colony_fields=max(50, min(600, _safe_cfg_int(data.get("min_colony_fields"), 300))),
         planner_mode=normalize_planner_mode(raw_mode),
         ga_population_size=max(4, min(200, _safe_cfg_int(data.get("ga_population_size"), 24))),
         ga_generations=max(1, min(200, _safe_cfg_int(data.get("ga_generations"), 12))),
@@ -1184,9 +1190,11 @@ def save_strategy_config(cfg: StrategyConfig, path: Path = Path("config.yaml")) 
     combat_margin = max(1.0, _safe_cfg_float(cfg.combat_safety_margin, 1.4))
     raid_min_loot = max(0.0, _safe_cfg_float(cfg.raid_min_loot_spice_eq, 1500.0))
     fleet_reserve = max(0, _safe_cfg_int(cfg.fleet_save_fuel_reserve_spice, 500))
+    batch_interval = max(5, min(86400, _safe_cfg_int(cfg.action_batch_interval_seconds, 120)))
     max_actions = max(1, _safe_cfg_int(cfg.max_actions_per_hour, 60))
     hot_temp = _safe_cfg_int(cfg.hot_planet_solar_temp_threshold, 40)
     min_fields = max(1, _safe_cfg_int(cfg.min_free_fields_warning, 20))
+    min_colony = max(50, min(600, _safe_cfg_int(cfg.min_colony_fields, 300)))
     planner_mode = normalize_planner_mode(cfg.planner_mode)
     ga_pop = max(4, min(200, _safe_cfg_int(cfg.ga_population_size, 24)))
     ga_gen = max(1, min(200, _safe_cfg_int(cfg.ga_generations, 12)))
@@ -1223,14 +1231,17 @@ def save_strategy_config(cfg: StrategyConfig, path: Path = Path("config.yaml")) 
         f"allow_raids: {'true' if _safe_cfg_bool(cfg.allow_raids, False) else 'false'}",
         f"allow_pvp_in_az: {'true' if _safe_cfg_bool(cfg.allow_pvp_in_az, False) else 'false'}",
         f"allow_colonize: {'true' if _safe_cfg_bool(cfg.allow_colonize, False) else 'false'}",
+        f"forbid_planetary_solar: {'true' if _safe_cfg_bool(cfg.forbid_planetary_solar, False) else 'false'}",
         f"storage_warn_ratio: {storage_warn_ratio}",
         f"blast_pig_iron_max_share: {blast_share}",
         f"combat_safety_margin: {combat_margin}",
         f"raid_min_loot_spice_eq: {raid_min_loot}",
         f"fleet_save_fuel_reserve_spice: {fleet_reserve}",
+        f"action_batch_interval_seconds: {batch_interval}",
         f"max_actions_per_hour: {max_actions}",
         f"hot_planet_solar_temp_threshold: {hot_temp}",
         f"min_free_fields_warning: {min_fields}",
+        f"min_colony_fields: {min_colony}",
         f"planner_mode: {planner_mode}",
         f"ga_population_size: {ga_pop}",
         f"ga_generations: {ga_gen}",

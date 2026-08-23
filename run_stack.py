@@ -47,8 +47,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Chrome debug port (default: {DEFAULT_DEBUG_PORT}).",
     )
     parser.add_argument("--live", action="store_true", help="Enable live execution in Commander.")
-    parser.add_argument("--interval", type=float, default=20.0, help="Commander tick interval (s).")
-    parser.add_argument("--max-actions", type=int, default=1, help="Max commander actions per tick.")
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        help="Min commander batch interval in seconds (0 or omitted = use config.action_batch_interval_seconds).",
+    )
+    parser.add_argument(
+        "--max-actions",
+        type=int,
+        default=10,
+        help="Max accumulated actions sent per commander batch (default: 10).",
+    )
     parser.add_argument("--env-file", type=Path, default=Path(".env"), help="Path to .env file.")
     parser.add_argument("--account", default="default", help="Account profile in .env.")
     return parser
@@ -203,7 +213,16 @@ def main(argv: list[str] | None = None) -> int:
         args.account,
         "--reload",
     ]
-    safe_interval = _safe_interval(args.interval, 20.0)
+    raw_iv = args.interval
+    if raw_iv is None or (
+        isinstance(raw_iv, (int, float))
+        and not isinstance(raw_iv, bool)
+        and math.isfinite(raw_iv)
+        and raw_iv <= 0.0
+    ):
+        safe_interval = 0.0
+    else:
+        safe_interval = _safe_interval(raw_iv, 20.0)
     cmd_cmd = [
         sys.executable,
         str(base_dir / "commander.py"),
@@ -248,6 +267,13 @@ def main(argv: list[str] | None = None) -> int:
                 break
         rc_api = api_proc.poll()
         rc_cmd = cmd_proc.poll()
+        if rc_cmd == 2:
+            print(
+                "[STACK] Stopped because a CAPTCHA / anti-bot challenge was detected. "
+                "Complete verification in Chrome (port 9222 stays open), then restart.",
+                file=sys.stderr,
+            )
+            return 2
         if (rc_api is not None and rc_api != 0) or (rc_cmd is not None and rc_cmd != 0):
             return 1
         return 0

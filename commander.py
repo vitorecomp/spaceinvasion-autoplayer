@@ -138,9 +138,19 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--live", action="store_true", help="Send live commands (default is dry-run).")
     parser.add_argument("--once", action="store_true", help="Run one tick and exit.")
     parser.add_argument("--loop", action="store_true", help="Run continuously.")
-    parser.add_argument("--interval", type=float, default=20.0, help="Seconds between ticks.")
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=0.0,
+        help="Min seconds between batch wakeups (0 = use config.action_batch_interval_seconds).",
+    )
     parser.add_argument("--max-ticks", type=int, default=0, help="Max ticks in loop mode (0=unlimited).")
-    parser.add_argument("--max-actions", type=int, default=1, help="Max commands per tick.")
+    parser.add_argument(
+        "--max-actions",
+        type=int,
+        default=None,
+        help="Max accumulated ready actions sent per tick (default: 10 in --loop mode, 1 in --once mode).",
+    )
     parser.add_argument(
         "--config",
         type=Path,
@@ -276,6 +286,13 @@ def _action_to_command_payload(action: PlannedAction, *, dry_run: bool) -> dict:
             "planet_id": pid,
             "dry_run": dry_run,
         }
+    if action.kind == "DEMOLISH_BUILDING" and action.target_id is not None:
+        return {
+            "command": "demolish_building",
+            "building_id": _safe_cmd_opt_int(action.target_id) or 6,
+            "planet_id": pid,
+            "dry_run": dry_run,
+        }
     if action.kind == "RESEARCH" and action.target_id is not None:
         return {
             "command": "research",
@@ -333,6 +350,25 @@ def _action_to_command_payload(action: PlannedAction, *, dry_run: bool) -> dict:
             "planet_id": pid,
             "dry_run": dry_run,
         }
+    if action.kind == "RECYCLE":
+        t_name = _safe_cmd_str(action.target_name)
+        m = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", t_name, re.ASCII)
+        return {
+            "command": "recycle",
+            "target_coords": m.group(1) if m else t_name,
+            "quantity": max(1, _safe_cmd_int(action.target_level, 1)),
+            "planet_id": pid,
+            "dry_run": dry_run,
+        }
+    if action.kind == "COLONIZE":
+        t_name = _safe_cmd_str(action.target_name)
+        m = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", t_name, re.ASCII)
+        return {
+            "command": "colonize",
+            "target_coords": m.group(1) if m else t_name,
+            "planet_id": pid,
+            "dry_run": dry_run,
+        }
     if action.kind == "ATTACK":
         t_name = _safe_cmd_str(action.target_name)
         m = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", t_name, re.ASCII)
@@ -370,7 +406,7 @@ def _hold_busy_fleet_slots(
     changed = False
     out: list[PlannedAction] = []
     for act in actions:
-        if act.kind in ("ATTACK", "SPY", "ESCAPE_FLIGHT") and act.planet_id in busy_pids:
+        if act.kind in ("ATTACK", "SPY", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE") and act.planet_id in busy_pids:
             cur_reason = _safe_cmd_str(act.reason)
             new_reason = (
                 cur_reason
@@ -425,7 +461,11 @@ def run_commander_tick(
             economy_sync_timestamps.get(str(active_for_econ.planet_id), 0.0),
         )
         last_econ_ts = _safe_finite_float(raw_ts) or 0.0
-        if (not has_r2) or (include_buildings and (time.time() - last_econ_ts) >= 300.0):
+        econ_refresh_ttl = max(
+            3600.0,
+            float(_safe_cmd_int(getattr(cfg, "action_batch_interval_seconds", 120), 120)) * 10.0,
+        )
+        if (not has_r2) or (last_econ_ts <= 0.0) or (include_buildings and (time.time() - last_econ_ts) >= econ_refresh_ttl):
             try:
                 sync_res = api.send_command(
                     {"command": "sync_economy", "planet_id": active_for_econ.planet_id}
@@ -497,10 +537,34 @@ def run_commander_tick(
         print(f"[CMD][P0 ALERT] {redact_sensitive(_safe_cmd_str(alert.reason))}")
 
     acted = 0
+    attempted_keys: set[tuple[str, int, Optional[int], Optional[int], str]] = set()
     while acted < max_actions:
-        ready = next((a for a in actions if a.executable_now), None)
+        ready = next(
+            (
+                a
+                for a in actions
+                if a.executable_now
+                and (
+                    a.kind,
+                    _safe_cmd_int(a.planet_id, 0),
+                    _safe_cmd_opt_int(a.target_id),
+                    _safe_cmd_opt_int(a.target_level),
+                    _safe_cmd_str(a.target_name),
+                )
+                not in attempted_keys
+            ),
+            None,
+        )
         if ready is None:
             break
+        act_key = (
+            ready.kind,
+            _safe_cmd_int(ready.planet_id, 0),
+            _safe_cmd_opt_int(ready.target_id),
+            _safe_cmd_opt_int(ready.target_level),
+            _safe_cmd_str(ready.target_name),
+        )
+        attempted_keys.add(act_key)
         actual_action = ready
         payload = _action_to_command_payload(ready, dry_run=not live)
         res = api.send_command(payload)
@@ -512,13 +576,28 @@ def run_commander_tick(
         actual_result = res_dict
         outcomes.append(res_dict)
         acted += 1
-        if not live or not res_dict.get("executed"):
+        if not live:
+            break
+        if not res_dict.get("executed"):
+            if isinstance(res_dict.get("state"), Mapping):
+                state = game_state_from_dict(res_dict["state"])
+                actions = _hold_busy_fleet_slots(
+                    plan_actions(
+                        state,
+                        config=cfg,
+                        scanned_systems=scanned_systems,
+                        throttle_cooldowns=throttle_cooldowns,
+                    ),
+                    fleet_slot_cooldowns,
+                    re_sort_priority=not is_ga_nn,
+                )
+                continue
             break
         after_live = True
         if isinstance(res_dict.get("state"), Mapping):
             state = game_state_from_dict(res_dict["state"])
         elif acted < max_actions:
-            state = api.get_state(include_buildings=True)
+            state = api.get_state(include_buildings=False)
         actions = _hold_busy_fleet_slots(
             plan_actions(
                 state,
@@ -547,6 +626,106 @@ def run_commander_tick(
     return state, actual_action, actual_result, next_action, outcomes
 
 
+_QUEUE_HMS_RE = re.compile(r"\b(\d{1,3}):(\d{2}):(\d{2})\b", re.ASCII)
+_QUEUE_UNIT_RE = re.compile(
+    r"(?:(\d+)\s*h\s*)?(?:(\d+)\s*m(?:in)?\s*)?(\d+)\s*s\b",
+    re.IGNORECASE | re.ASCII,
+)
+
+
+def _parse_queue_timer_seconds(text: str) -> Optional[float]:
+    if not text:
+        return None
+    m_hms = _QUEUE_HMS_RE.search(text)
+    if m_hms:
+        return float(int(m_hms.group(1)) * 3600 + int(m_hms.group(2)) * 60 + int(m_hms.group(3)))
+    m_u = _QUEUE_UNIT_RE.search(text)
+    if m_u:
+        h = int(m_u.group(1) or 0)
+        m = int(m_u.group(2) or 0)
+        s = int(m_u.group(3) or 0)
+        tot = float(h * 3600 + m * 60 + s)
+        return tot if tot > 0.0 else None
+    return None
+
+
+def compute_next_wakeup_seconds(
+    state: Optional[GameState],
+    next_action: Optional[PlannedAction],
+    outcomes: list[dict] | tuple[dict, ...] = (),
+    *,
+    min_interval_s: float = 120.0,
+    max_idle_s: float = 900.0,
+) -> tuple[float, str]:
+    """Compute exact seconds until next batch wakeup so pages are only visited when ready to act."""
+    floor_s = max(0.01, float(min_interval_s))
+    cap_s = max(floor_s, float(max_idle_s))
+
+    for out in outcomes or ():
+        if not isinstance(out, Mapping) or not bool(out.get("executed")):
+            continue
+        cmd_s = _safe_cmd_str(out.get("command")).lower()
+        act_m = out.get("action")
+        kind_s = _safe_cmd_str(act_m.get("kind") if isinstance(act_m, Mapping) else "").upper()
+        if cmd_s == "spy" or kind_s == "SPY":
+            return floor_s, "awaiting spy report & next batch"
+
+    cand_waits: list[tuple[float, str]] = []
+    if next_action is not None:
+        t_lbl = _safe_cmd_str(next_action.target_name, next_action.kind)
+        if next_action.executable_now:
+            cand_waits.append((floor_s, f"next batch ({next_action.kind}: {t_lbl})"))
+        else:
+            w_sec = _safe_finite_float(getattr(next_action, "wait_seconds", None))
+            if w_sec is not None and w_sec > 0.0:
+                cand_waits.append((w_sec + 2.0, f"build/resource timer for {t_lbl}"))
+
+    if state is not None:
+        queues = getattr(state, "active_queues", ()) or ()
+        b_q_cnt = sum(1 for q in queues if getattr(q, "category", "") == "building")
+        for q in queues:
+            q_cat = _safe_cmd_str(getattr(q, "category", "")).lower()
+            if q_cat not in ("fleet", "research") and not (q_cat == "building" and b_q_cnt >= 5):
+                continue
+            q_rem = _parse_queue_timer_seconds(
+                f"{getattr(q, 'remaining_text', '') or ''} {getattr(q, 'name', '') or ''}"
+            )
+            if q_rem is not None and q_rem > 0.0:
+                cand_waits.append(
+                    (q_rem + 2.0, f"{q_cat} queue completion ({_safe_cmd_str(getattr(q, 'name', q_cat))})")
+                )
+
+    if cand_waits:
+        best_s, best_reason = min(cand_waits, key=lambda item: item[0])
+        return min(max(floor_s, best_s), cap_s), best_reason
+    return floor_s, "batch interval"
+
+
+_CAPTCHA_STOP_MARKERS = (
+    "antibot",
+    "anti-bot",
+    "captcha",
+    "turnstile",
+    "sicherheitsprüfung",
+    "sicherheitspruefung",
+    "kein bot",
+    "not a bot",
+    "cloudflare gate",
+)
+
+
+def is_captcha_error(
+    error_text: Any = "",
+    *,
+    bot_ctrl: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """Return True when an error message or `/bot_status` payload indicates a CAPTCHA / anti-bot challenge."""
+    if isinstance(bot_ctrl, Mapping) and bool(bot_ctrl.get("captcha_blocked")):
+        return True
+    low = _safe_cmd_str(error_text).lower()
+    return any(marker in low for marker in _CAPTCHA_STOP_MARKERS)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -571,7 +750,8 @@ def main(argv: list[str] | None = None) -> int:
     api = GameApiClient(base_url=args.api_url)
     run_loop = args.loop and not args.once
     iv_f = _safe_finite_float(args.interval)
-    interval_s = max(0.01, min(86400.0, iv_f if (iv_f is not None and iv_f > 0.0) else 20.0))
+    has_cli_interval = iv_f is not None and iv_f > 0.0
+    cli_interval_s = max(0.01, min(86400.0, iv_f)) if has_cli_interval else 0.0
 
     try:
         tick = 0
@@ -584,6 +764,19 @@ def main(argv: list[str] | None = None) -> int:
             loop_sleep: Optional[float] = None
             try:
                 strategy_cfg = load_strategy_config(args.config)
+                cfg_batch_s = max(
+                    5.0,
+                    min(
+                        86400.0,
+                        float(_safe_cmd_int(getattr(strategy_cfg, "action_batch_interval_seconds", 120), 120)),
+                    ),
+                )
+                eff_min_interval_s = cli_interval_s if has_cli_interval else cfg_batch_s
+                eff_max_idle_s = (
+                    eff_min_interval_s
+                    if (has_cli_interval and cli_interval_s < 5.0)
+                    else max(eff_min_interval_s, 900.0)
+                )
                 effective_live = args.live
                 scanned_systems: Optional[dict[str, float]] = None
                 throttle_cooldowns: Optional[dict[int, float]] = None
@@ -596,10 +789,20 @@ def main(argv: list[str] | None = None) -> int:
                         raise GameApiError(
                             f"Expected JSON object from /bot_status, got {type(bot_ctrl).__name__}"
                         )
+                    if is_captcha_error(bot_ctrl.get("captcha_message"), bot_ctrl=bot_ctrl):
+                        cap_msg = _safe_cmd_str(
+                            bot_ctrl.get("captcha_message"),
+                            "CAPTCHA / anti-bot challenge active",
+                        )
+                        print(
+                            f"[CMD][STOP] CAPTCHA / anti-bot challenge detected ({redact_sensitive(cap_msg)}) — "
+                            "stopping automation immediately. Complete verification in Chrome before restarting."
+                        )
+                        return 2
                     if run_loop and bot_ctrl.get("paused"):
                         print(f"[CMD tick {game_data.fmt_compact_int(tick)}] Paused via control UI; waiting.")
                         paused_via_ui = True
-                        loop_sleep = max(3.0, min(8.0, interval_s))
+                        loop_sleep = max(3.0, min(8.0, eff_min_interval_s))
                     else:
                         override = bot_ctrl.get("mode_override")
                         if override in ("live", "dry-run"):
@@ -668,10 +871,14 @@ def main(argv: list[str] | None = None) -> int:
                     )
 
                     eff_label = "LIVE" if effective_live else "DRY-RUN"
+                    effective_max_actions = max(
+                        1,
+                        args.max_actions if args.max_actions is not None else (10 if run_loop else 1),
+                    )
                     state, actual_action, actual_result, next_action, outcomes = run_commander_tick(
                         api,
                         live=effective_live,
-                        max_actions=max(1, args.max_actions),
+                        max_actions=effective_max_actions,
                         config=strategy_cfg,
                         include_buildings=need_buildings,
                         scanned_systems=scanned_systems,
@@ -728,9 +935,25 @@ def main(argv: list[str] | None = None) -> int:
                             ),
                         )
                         metal_tag = f" | MetalProd={'ON' if b2_pct > 0 else 'OFF'}({b2_pct}%)"
-                    print(f"[CMD tick {game_data.fmt_compact_int(tick)} | {eff_label}] {coords_txt} | {res_str}{metal_tag}")
+                    executed_count = sum(
+                        1 for o in outcomes if isinstance(o, Mapping) and bool(o.get("executed"))
+                    )
+                    batch_tag = f" | BatchExec={executed_count}" if executed_count > 1 else ""
+                    print(f"[CMD tick {game_data.fmt_compact_int(tick)} | {eff_label}] {coords_txt} | {res_str}{metal_tag}{batch_tag}")
                     print(f"  Actual: {format_action_summary(actual_action)} => {msg}")
                     print(f"  Next:   {format_action_summary(next_action)}")
+                    if run_loop:
+                        wake_s, wake_reason = compute_next_wakeup_seconds(
+                            state,
+                            next_action,
+                            outcomes,
+                            min_interval_s=eff_min_interval_s,
+                            max_idle_s=eff_max_idle_s,
+                        )
+                        jitter_s = random.uniform(0.5, 2.5) if wake_s >= 5.0 else 0.0
+                        loop_sleep = wake_s + jitter_s
+                        if loop_sleep >= 5.0:
+                            print(f"  Wake:   in {loop_sleep:.0f}s ({redact_sensitive(wake_reason)})")
                     if args.log_dir:
                         append_tick_logs(
                             args.log_dir,
@@ -746,6 +969,16 @@ def main(argv: list[str] | None = None) -> int:
             except (requests.RequestException, GameApiError) as exc:
                 exc_txt = _safe_cmd_str(exc)
                 tick_s = game_data.fmt_compact_int(tick)
+                if is_captcha_error(exc_txt):
+                    try:
+                        api.send_command({"command": "bot_control", "paused": True})
+                    except Exception:
+                        pass
+                    print(
+                        f"[CMD][STOP] CAPTCHA / anti-bot challenge detected ({redact_sensitive(exc_txt)}) — "
+                        "stopping automation immediately. Complete verification in Chrome before restarting."
+                    )
+                    return 2
                 print(f"[CMD tick {tick_s}] API unavailable ({redact_sensitive(exc_txt)}); retrying shortly.")
                 if not run_loop:
                     return 1
@@ -782,11 +1015,18 @@ def main(argv: list[str] | None = None) -> int:
                         loop_sleep = 1.0
                     except (requests.RequestException, GameApiError) as rec_exc:
                         rec_txt = _safe_cmd_str(rec_exc)
+                        if is_captcha_error(rec_txt):
+                            try:
+                                api.send_command({"command": "bot_control", "paused": True})
+                            except Exception:
+                                pass
+                            print(
+                                f"[CMD][STOP] CAPTCHA / anti-bot challenge detected ({redact_sensitive(rec_txt)}) — "
+                                "stopping automation immediately. Complete verification in Chrome before restarting."
+                            )
+                            return 2
                         print(f"[CMD tick {tick_s}] Session recovery pending: {redact_sensitive(rec_txt)}")
-                        if any(
-                            gate in rec_txt.lower()
-                            for gate in ("captcha", "turnstile", "anti-bot", "2-factor", "2fa")
-                        ):
+                        if any(gate in rec_txt.lower() for gate in ("2-factor", "2fa")):
                             loop_sleep = 15.0
                         else:
                             loop_sleep = 3.0
@@ -798,7 +1038,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.max_ticks > 0 and tick >= args.max_ticks:
                 break
             if loop_sleep is None:
-                loop_sleep = max(5.0, interval_s + random.uniform(-2.0, 4.0))
+                jitter_f = random.uniform(0.5, 2.5) if eff_min_interval_s >= 5.0 else 0.0
+                loop_sleep = max(0.01, eff_min_interval_s + jitter_f)
             time.sleep(loop_sleep)
         return 0
     except KeyboardInterrupt:

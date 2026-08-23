@@ -941,6 +941,302 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual(edge_slots[7].status_color, "green")
         self.assertEqual(edge_slots[9].status_color, "white")
 
+    def test_bash_protection_banner_parser_block_override_and_german_sicherheitspruefung(self) -> None:
+        from spaceinvasion.auth import AntiBotChallengeError, detect_antibot_challenge
+        from spaceinvasion.fleet import BashTracker, parse_send_fleet_mission_block
+
+        bash_html = """
+        <html><body>
+          <div class="info-box">
+            Attack-Bash-Regulations: 3 attacks in 24 hours on this planet
+            ( currently: 3 &bull; Reset in 16:31:50 )
+          </div>
+          <div class="error-box">
+            Attack (forbidden): Player was attacked too often by you (bash protection)
+          </div>
+          <div class="error-box">
+            Transport (forbidden): the target is inactive
+          </div>
+          <form id="fleet" action="indexInternal.es?action=internalSendFleetFinish">
+            <input name="todo" type="radio" value="SAVE" /> Escape flight
+          </form>
+        </body></html>
+        """
+        blk = parse_send_fleet_mission_block(bash_html, "ATTACK")
+        self.assertIsNotNone(blk)
+        assert blk is not None
+        reason, cooldown_s, is_bash = blk
+        self.assertIn("bash protection", reason.lower())
+        self.assertTrue(is_bash)
+        self.assertAlmostEqual(cooldown_s, 16 * 3600 + 31 * 60 + 50 + 30.0, places=1)
+
+        # Benign Transport (forbidden) on yellow inactives must NOT block ATTACK, SPY, or RECYCLE
+        benign_inactive_html = """
+        <html><body>
+          <div class="error-box">Transport (forbidden): the target is inactive</div>
+          <form id="fleet" action="indexInternal.es?action=internalSendFleetFinish">
+            <input name="todo" type="radio" value="ATTACK" /> Attack
+            <input name="todo" type="radio" value="RECYCLE" /> Recycle
+          </form>
+        </body></html>
+        """
+        self.assertIsNone(parse_send_fleet_mission_block(benign_inactive_html, "ATTACK"))
+        self.assertIsNone(parse_send_fleet_mission_block(benign_inactive_html, "SPY"))
+        self.assertIsNone(parse_send_fleet_mission_block(benign_inactive_html, "RECYCLE"))
+
+        # Server-enforced block overrides is_spacia / is_inactive until blocked_until_ts expires
+        bt = BashTracker()
+        bt.record_block("02:383:02", 2000.0, reason=reason)
+        self.assertFalse(bt.can_attack("02:383:02", is_inactive=True, is_spacia=True, timestamp=1500.0))
+        self.assertAlmostEqual(bt.blocked_until("02:383:02", timestamp=1500.0), 2000.0, places=2)
+        self.assertTrue(bt.can_attack("02:383:02", is_inactive=True, is_spacia=True, timestamp=2001.0))
+        self.assertEqual(bt.blocked_until("02:383:02", timestamp=2001.0), 0.0)
+
+        # German Cloudflare modal ("Sicherheitsprüfung") is detected by auth.py and raises in client.py
+        from unittest.mock import MagicMock
+        from spaceinvasion.client import GameBrowserClient
+
+        modal_html = """
+        <div class="modal">
+          <h2>⚠️ Sicherheitsprüfung</h2>
+          <p>Bitte kurz bestätigen, dass du kein Bot bist, um fortzufahren.</p>
+        </div>
+        """
+        diag = detect_antibot_challenge(200, modal_html)
+        self.assertIsNotNone(diag)
+        self.assertIn("Anti-bot or CAPTCHA challenge detected", str(diag))
+
+        browser_client = GameBrowserClient(MagicMock(), detach_on_close=False)
+        with self.assertRaises(AntiBotChallengeError):
+            browser_client._check_page_guards(modal_html)
+
+    def test_own_planet_header_stripping_and_multirow_checkbox_inbox_parser(self) -> None:
+        from spaceinvasion.fleet import (
+            extract_message_folder_links,
+            parse_inbox_messages_html,
+            parse_spy_messages_html,
+        )
+
+        own_header_only_html = """
+        <html><body>
+          <div id="planet-list">02:380:12 Colony</div>
+          <span id="planet-coords">[02:380:12]</span>
+          <form id="ress">
+            <span id="roheisen">Pig iron: 269.575</span>
+            <span id="metall">Metal: 7.044</span>
+            <span id="kryptonit">Kryptonite: 400.432</span>
+            <span id="spice">Spice: 157.956</span>
+          </form>
+          <div class="unread-banner">
+            <a href="indexInternal.es?action=internalMessages&sid=SECRET123">You have 13 unread Messages!</a>
+          </div>
+          <table>
+            <tr><td><a href="indexInternal.es?action=internalMessages&type=spio&sid=SECRET123">Espionage</a></td><td>(3 / 8)</td></tr>
+            <tr><td><a href="indexInternal.es?action=internalMessages&type=battle&sid=SECRET123">Battle reports</a></td><td>(2 / 5)</td></tr>
+          </table>
+        </body></html>
+        """
+        self.assertEqual(parse_spy_messages_html(own_header_only_html), ())
+        self.assertEqual(parse_inbox_messages_html(own_header_only_html), ())
+
+        folders = {f[0]: f for f in extract_message_folder_links(own_header_only_html)}
+        self.assertEqual(folders["spio"][2:], (3, 8))
+        self.assertEqual(folders["battle"][2:], (2, 5))
+        self.assertNotIn("SECRET123", folders["spio"][1])
+
+        multirow_inbox_html = """
+        <html><body>
+          <span id="planet-coords">[02:380:12]</span>
+          <form id="ress">
+            <span id="roheisen">Pig iron: 269.575</span>
+            <span id="metall">Metal: 7.044</span>
+            <span id="kryptonit">Kryptonite: 400.432</span>
+            <span id="spice">Spice: 157.956</span>
+          </form>
+          <form action="indexInternal.es?action=internalMessages&sid=SECRET999" method="post">
+            <table>
+              <tr>
+                <td><input type="checkbox" name="checkall" onclick="checkAll(this)" /></td>
+                <th>Date</th><th>Sender</th><th>Subject</th>
+              </tr>
+              <tr>
+                <td><input type="checkbox" name="del[501]" value="501" /></td>
+                <td>2026-11-16 16:01:12</td>
+                <td>Fleet Command</td>
+                <td>Espionage report on ColdVault [02:381:07]</td>
+              </tr>
+              <tr>
+                <td colspan="4">
+                  Player: StarMiner | Pig iron: 88.000 Metal: 44.000 Kryptonite: 21.000 Spice: 12.000
+                  Pig iron mine: 14 Fusion plant: 12 Energy technology: 5
+                  Small transporter: 6 Mortar: 2 Defenses are not dug-in
+                </td>
+              </tr>
+              <tr>
+                <td><input type="checkbox" name="del[502]" value="502" /></td>
+                <td>2026-11-16 16:02:45</td>
+                <td>Fleet Command</td>
+                <td>Battle report [02:382:04]</td>
+              </tr>
+              <tr>
+                <td colspan="4">
+                  Attacker won the battle! Plundered Pig iron: 10.000 Metal: 5.000.
+                  Debris field created: Pig iron: 18.000 Metal: 9.000
+                </td>
+              </tr>
+              <tr>
+                <td><input type="checkbox" name="del[503]" value="503" /></td>
+                <td>2026-11-16 16:05:10</td>
+                <td>Recycler Fleet</td>
+                <td>Recycling report [02:380:04]</td>
+              </tr>
+              <tr>
+                <td colspan="4">
+                  Your Recycler fleet harvested Pig iron: 15.000 Metal: 7.500 at [02:380:04].
+                </td>
+              </tr>
+              <tr>
+                <td colspan="4">
+                  <select name="deltype"><option value="marked">Delete marked</option></select>
+                  <input type="submit" name="delbtn" value="OK" />
+                </td>
+              </tr>
+            </table>
+          </form>
+        </body></html>
+        """
+        spy_only = parse_spy_messages_html(multirow_inbox_html, exclude_coords=("02:380:12",))
+        self.assertEqual(len(spy_only), 1)
+        self.assertEqual(spy_only[0].target_coords, "02:381:07")
+        self.assertEqual(spy_only[0].server_msg_id, "501")
+        self.assertEqual(spy_only[0].resources.pig_iron, 88_000)
+        self.assertEqual(spy_only[0].buildings.get("b1"), 14)
+        self.assertEqual(spy_only[0].buildings.get("b5"), 12)
+        self.assertEqual(spy_only[0].researches.get("r2"), 5)
+
+        inbox_msgs = parse_inbox_messages_html(
+            multirow_inbox_html,
+            folder_type="inbox",
+            exclude_coords=("02:380:12",),
+        )
+        self.assertEqual([m.category for m in inbox_msgs], ["spy_report", "battle_report", "recycle_report"])
+        self.assertEqual([m.server_msg_id for m in inbox_msgs], ["501", "502", "503"])
+        self.assertTrue(inbox_msgs[1].parsed_data["has_debris"])
+        self.assertEqual(inbox_msgs[2].coords, "02:380:04")
+        for m in inbox_msgs:
+            self.assertNotIn("SECRET999", m.raw_html)
+
+    def test_real_retro_recycle_4res_fleet_return_battle_dot_thousands_embedded_spy_json_and_colony_grades(self) -> None:
+        from spaceinvasion.fleet import (
+            grade_colony_candidate,
+            parse_inbox_messages_html,
+            parse_spy_report_html,
+        )
+
+        retro_inbox_html = """
+        <html><body>
+          <table>
+            <tr>
+              <td><input type="checkbox" id="check_38" name="check_38" value="38" /></td>
+              <td>2026-11-16 14:44:40</td>
+              <td>System</td>
+              <td>
+                Space rubble [02:383:14] recycling report
+                <div class="si-expanded-body" data-si-expanded="1">
+                  02:380:12 Colony [02:380:12] Colony Pig iron 86.812 11% Metal 11.813 12% Kryptonite 386.451 48% Spice 201.549 50%
+                  You receive the following resources: 10000 Pig iron, 10000 Metal, 10000 Kryptonite, 10000 Spice ? Total: 8 / 10
+                  Message from System: Space rubble [02:383:14] recycling report Your fleet (5 Recycler) from planet Colony [02:380:12]
+                  reached its goal Spacia Planet [02:383:14] and processed 17036 Pig iron, 12036 Metal, 14310 Kryptonite, 18098 Spice pieces of rubble there.
+                  ' Fleet reports&#9733; Favourites Received on: From: Subject:
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" id="check_35" name="check_35" value="35" /></td>
+              <td>2026-11-16 14:35:00</td>
+              <td>System</td>
+              <td>
+                Colony [02:380:12] fleet return
+                <div class="si-expanded-body" data-si-expanded="1">
+                  Message from System: Colony [02:380:12] fleet return One of your fleets (1 Recycler) is returning from duty
+                  from Spacia Planet [02:380:05] to its home planet Colony [02:380:12]. The assignment was to: Recycle.
+                  6250 Pig iron, 6250 Metal, 6250 Kryptonite, 6250 Spice were unloaded.
+                  &#9733; Favourites
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" id="check_32" name="check_32" value="32" /></td>
+              <td>2026-11-16 13:20:00</td>
+              <td>Fleet Command</td>
+              <td>
+                <span data-bsum="16254211">Looted 5.842 &#8644; [02:383:02] Spacia</span>
+                <div class="si-expanded-body" data-si-expanded="1" data-battle-json='{"ok":true,"rounds":1,"winner":1,"attacker":{"name":"ventkx86","lost":"0"},"defender":{"name":"Spacia","lost":"0"},"stolen":[{"r":1,"v":"3.075"},{"r":2,"v":"3.075"},{"r":3,"v":"3.075"},{"r":4,"v":"3.075"}],"rubble":[{"r":1,"v":"1.200"},{"r":2,"v":"600"}]}'>
+                  Battle report #16254211 | Rounds: 1 | Winner: 1 | Attacker: ventkx86 (Lost: 0) | Defender: Spacia (Lost: 0) | Plundered Pig iron: 3.075 Metal: 3.075 Kryptonite: 3.075 Spice: 3.075
+                </div>
+              </td>
+            </tr>
+          </table>
+        </body></html>
+        """
+        msgs = parse_inbox_messages_html(retro_inbox_html, folder_type="fleet", exclude_coords=("02:380:12",))
+        by_id = {m.server_msg_id: m for m in msgs}
+        self.assertEqual(set(by_id.keys()), {"38", "35", "32"})
+
+        rec = by_id["38"]
+        self.assertEqual(rec.category, "recycle_report")
+        self.assertEqual(rec.coords, "02:383:14")
+        self.assertNotIn("86.812", rec.body_text)
+        self.assertEqual(rec.parsed_data["recycler_count"], 5)
+        self.assertEqual(
+            rec.parsed_data["harvested"],
+            {"pig_iron": 17036, "metal": 12036, "kryptonite": 14310, "spice": 18098},
+        )
+        self.assertAlmostEqual(rec.parsed_data["harvested_spice_eq"], 30521.73, places=2)
+
+        ret = by_id["35"]
+        self.assertEqual(ret.category, "fleet_return")
+        self.assertEqual(ret.parsed_data["unloaded"]["pig_iron"], 6250)
+
+        bat = by_id["32"]
+        self.assertEqual(bat.category, "battle_report")
+        self.assertEqual(bat.coords, "02:383:02")
+        self.assertEqual(bat.parsed_data["battle_id"], "16254211")
+        self.assertEqual(bat.parsed_data["attacker"], "ventkx86")
+        self.assertEqual(bat.parsed_data["defender"], "Spacia")
+        self.assertEqual(
+            bat.parsed_data["loot"],
+            {"pig_iron": 3075, "metal": 3075, "kryptonite": 3075, "spice": 3075},
+        )
+        self.assertAlmostEqual(bat.parsed_data["loot_spice_eq"], 5842.5, places=2)
+        self.assertEqual(bat.parsed_data["debris"], {"pig_iron": 1200, "metal": 600})
+
+        spy_json_html = """
+        <div>
+          Spaceinvasion { "info": { "si": "classic", "v": 1, "type": "spy-report" }, "reportID": 24850463,
+          "planet": { "id": 12514, "coords": "02:383:02", "type": "PLANET", "name": "Spacia Planet",
+          "resources": [ 17020, 65030, 76151, 40501 ], "energy": 2630399,
+          "buildings": { "b1": { "name": "Pig iron mine", "level": 31 }, "b4": { "name": "Spice mine", "level": 28 } },
+          "ships": false, "defense": false, "researches": false } }
+          Pig ironMetalKryptoniteSpiceEnergy17.02065.03076.15140.5012.630.399
+        </div>
+        """
+        srep = parse_spy_report_html(spy_json_html)
+        self.assertEqual(srep.target_coords, "02:383:02")
+        self.assertEqual(srep.planet_name, "Spacia Planet")
+        self.assertTrue(srep.is_spacia)
+        self.assertEqual((srep.resources.pig_iron, srep.resources.metal, srep.resources.kryptonite, srep.resources.spice), (17020, 65030, 76151, 40501))
+        self.assertEqual(srep.buildings, {"b1": 31, "b4": 28})
+
+        g_s = grade_colony_candidate("02:380:12", "02:381:09", uninhabited_fields=320, min_fields_target=300)
+        self.assertEqual((g_s["grade"], g_s["meets_target"], g_s["probed"], g_s["system_distance"]), ("S", True, True, 1))
+        self.assertIn("Pos 7-12", g_s["orbital_band"])
+        g_opt = grade_colony_candidate("02:382:08", origin_coords="02:380:12", uninhabited_fields=302, min_fields_target=300)
+        self.assertEqual((g_opt["grade"], g_opt["meets_target"], g_opt["system_distance"]), ("A+", True, 2))
+        g_strat = grade_colony_candidate(coords="02:380:10", position=10, uninhabited_fields=None, origin_coords="02:380:12", min_fields_target=300)
+        self.assertEqual((g_strat["grade"], g_strat["probed"]), ("?", False))
+        self.assertIn("Prime Large-Field Belt", g_strat["orbital_zone"])
+
 
 if __name__ == "__main__":
     unittest.main()

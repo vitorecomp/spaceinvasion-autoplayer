@@ -531,12 +531,22 @@ class PlanetState:
     economy_rates: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.resources, Resources):
+            object.__setattr__(self, "resources", Resources())
+        if not isinstance(self.storage, Resources):
+            object.__setattr__(self, "storage", Resources())
+        if not isinstance(self.energy, EnergyBalance):
+            object.__setattr__(self, "energy", EnergyBalance())
         f_used = max(0, _safe_state_int(self.fields_used, 0))
         if f_used != self.fields_used or type(self.fields_used) is bool:
             object.__setattr__(self, "fields_used", f_used)
         f_max = max(0, _safe_state_int(self.fields_max, 0))
         if f_max != self.fields_max or type(self.fields_max) is bool:
             object.__setattr__(self, "fields_max", f_max)
+        for sname in ("building_offers", "ship_offers", "defense_offers"):
+            sval = getattr(self, sname)
+            if type(sval) is not tuple:
+                object.__setattr__(self, sname, _safe_state_seq(sval))
         for fname in ("buildings", "building_names", "ships", "defense", "economy_rates"):
             val = getattr(self, fname)
             if not isinstance(val, dict):
@@ -1546,6 +1556,20 @@ def parse_menu_status(html: str) -> tuple[dict[str, int], Optional[int], Optiona
         if m_stat.group(2):
             rank = parse_si_int(m_stat.group(2))
     return counts, points, rank
+
+
+_UNREAD_BANNER_RE = re.compile(
+    r"(?:You\s+have|Du\s+hast)\s+(\d+)\s+(?:unread\s+Messages?|ungelesene\s+Nachrichten?)",
+    re.IGNORECASE,
+)
+
+
+def parse_unread_banner_count(html: str) -> int:
+    """Extract unread message count from `F_Hauptframe` top banner (`You have N unread Messages!`)."""
+    if not html:
+        return 0
+    m = _UNREAD_BANNER_RE.search(html)
+    return _parse_bounded_int(m.group(1), 0) if m else 0
 
 
 def parse_economy_rates(html: str) -> dict[str, int]:

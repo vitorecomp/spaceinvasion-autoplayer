@@ -23,6 +23,10 @@ from urllib.parse import parse_qs, urlparse
 from bs4 import BeautifulSoup
 
 from spaceinvasion import game_data
+from spaceinvasion.action_graph import (
+    build_action_graph,
+    merge_strategy_config_overrides,
+)
 from spaceinvasion.auth import AntiBotChallengeError, SpaceInvasionAuthError, load_credentials
 from spaceinvasion.browser import (
     DEFAULT_DEBUG_PORT,
@@ -41,10 +45,13 @@ from spaceinvasion.config import (
 from spaceinvasion.executor import ActionExecutor
 from spaceinvasion.fleet import (
     SHIP_SLUG_BY_KEY,
+    InboxMessage,
     SpyReport,
     extract_galaxy_system_coords,
+    extract_message_folder_links,
     normalize_coords,
     parse_galaxy_system_html,
+    parse_inbox_messages_html,
     parse_spy_messages_html,
     plan_escape_flight,
     simulate_raid_outcome,
@@ -58,7 +65,7 @@ from spaceinvasion.logging_utils import (
     is_secret_dict_key,
     redact_sensitive,
 )
-from spaceinvasion.optimizer import get_last_optimizer_summary
+from spaceinvasion.optimizer import get_last_optimizer_summary, run_optimizer
 from spaceinvasion.ranking import (
     attach_action_etas,
     build_buildings_eta,
@@ -77,9 +84,10 @@ from spaceinvasion.state import (
     parse_economy_rates,
     parse_home_metadata,
     parse_tutorial_from_home,
+    parse_unread_banner_count,
 )
 from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import PlannedAction, plan_actions
+from spaceinvasion.strategy import PlannedAction, _tutorial_colonize_task, plan_actions
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 MAX_REQUEST_BYTES = 1_048_576
@@ -341,10 +349,13 @@ def _parse_command_int(
         txt = val.strip()
         if not txt or not txt.isascii():
             raise ApiRequestError(f"Command parameter {name!r} must be an integer.")
-        try:
-            parsed = int(txt)
-        except ValueError as exc:
-            raise ApiRequestError(f"Command parameter {name!r} must be an integer.") from exc
+        digits = txt[1:] if txt[0] in ("+", "-") else txt
+        if not digits or not digits.isdigit():
+            raise ApiRequestError(f"Command parameter {name!r} must be an integer.")
+        trimmed = digits.lstrip("0") or "0"
+        if len(trimmed) > 4000:
+            raise ApiRequestError(f"Command parameter {name!r} integer is out of range.")
+        parsed = -int(trimmed) if txt[0] == "-" else int(trimmed)
     else:
         raise ApiRequestError(f"Command parameter {name!r} must be an integer.")
     if min_val is not None and parsed < min_val:
@@ -376,10 +387,13 @@ def _validate_strict_int(
         txt = val.strip()
         if not txt or not txt.isascii():
             raise ApiRequestError(f"Config field {name!r} must be an integer.")
-        try:
-            parsed = int(txt)
-        except ValueError as exc:
-            raise ApiRequestError(f"Config field {name!r} must be an integer.") from exc
+        digits = txt[1:] if txt[0] in ("+", "-") else txt
+        if not digits or not digits.isdigit():
+            raise ApiRequestError(f"Config field {name!r} must be an integer.")
+        trimmed = digits.lstrip("0") or "0"
+        if len(trimmed) > 4000:
+            raise ApiRequestError(f"Config field {name!r} integer is out of range.")
+        parsed = -int(trimmed) if txt[0] == "-" else int(trimmed)
     else:
         raise ApiRequestError(f"Config field {name!r} must be an integer.")
 
@@ -413,7 +427,7 @@ def _validate_strict_float(
         raise ApiRequestError(f"Config field {name!r} must be a finite number.")
     if isinstance(val, str):
         txt = val.strip()
-        if not txt or not txt.isascii():
+        if not txt or not txt.isascii() or "_" in txt:
             raise ApiRequestError(f"Config field {name!r} must be a finite number.")
         val = txt
     try:
@@ -429,7 +443,7 @@ def _validate_strict_float(
     return parsed
 
 
-def _validate_config_patch(raw_cfg: Mapping[str, Any]) -> None:
+def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = True) -> None:
     if "planner_mode" in raw_cfg:
         raw_mode = raw_cfg["planner_mode"]
         if not isinstance(raw_mode, str) or not raw_mode.strip():
@@ -451,8 +465,10 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any]) -> None:
         "ga_generations": (1, 200, False),
         "ga_horizon_steps": (1, 24, False),
         "ga_seed": (-2_147_483_648, 2_147_483_647, True),
+        "action_batch_interval_seconds": (5, 86400, False),
         "max_actions_per_hour": (1, 100_000, False),
         "min_free_fields_warning": (1, 1000, False),
+        "min_colony_fields": (50, 600, False),
         "hot_planet_solar_temp_threshold": (-273, 1000, False),
         "fleet_save_fuel_reserve_spice": (0, 1_000_000_000_000, False),
     }
@@ -471,6 +487,43 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any]) -> None:
     for key, (lo, hi) in float_specs.items():
         if key in raw_cfg:
             _validate_strict_float(key, raw_cfg[key], min_val=lo, max_val=hi)
+
+    bool_keys: tuple[str, ...] = (
+        "merchant_mode",
+        "auto_throttle_blast_furnace",
+        "allow_research",
+        "allow_shipyard",
+        "allow_multi_planet",
+        "allow_fleetsave",
+        "allow_galaxy_scan",
+        "allow_raids",
+        "allow_pvp_in_az",
+        "allow_colonize",
+        "forbid_planetary_solar",
+    )
+    if strict_bools:
+        for key in bool_keys:
+            if key in raw_cfg and not isinstance(raw_cfg[key], bool):
+                raise ApiRequestError(f"Config field {key!r} must be a boolean.")
+
+    if "shipyard_targets" in raw_cfg:
+        raw_targets = raw_cfg["shipyard_targets"]
+        if not isinstance(raw_targets, Mapping):
+            raise ApiRequestError(
+                "Config field 'shipyard_targets' must be a mapping of ship keys to integer counts."
+            )
+        for sk, sv in raw_targets.items():
+            if not isinstance(sk, str) or not sk.strip():
+                raise ApiRequestError(
+                    "Config field 'shipyard_targets' keys must be non-empty strings."
+                )
+            _validate_strict_int(
+                f"shipyard_targets.{sk.strip()}",
+                sv,
+                min_val=0,
+                max_val=1_000_000_000,
+                allow_none=False,
+            )
 
 
 def _parse_sim_count_map(field_name: str, raw: Any, *, max_val: int = 1_000_000_000) -> dict[str, int]:
@@ -758,6 +811,187 @@ def _sanitize_optimizer_summary(raw: Optional[Mapping[str, Any]]) -> Optional[di
     return clean
 
 
+def _redact_action_graph_strings(graph: dict[str, Any]) -> dict[str, Any]:
+    for lane in graph.get("lanes", ()):
+        if isinstance(lane, dict):
+            for k in ("label", "coords"):
+                if isinstance(lane.get(k), str) and lane[k]:
+                    lane[k] = _scrub_api_str(lane[k])
+    for node in graph.get("nodes", ()):
+        if isinstance(node, dict):
+            for k in (
+                "planet_coords",
+                "planet_name",
+                "target_name",
+                "reason",
+                "wait_eta",
+                "duration_text",
+                "total_eta",
+                "eta_bottleneck",
+            ):
+                if isinstance(node.get(k), str) and node[k]:
+                    node[k] = _scrub_api_str(node[k])
+    for edge in graph.get("edges", ()):
+        if isinstance(edge, dict) and isinstance(edge.get("label"), str) and edge["label"]:
+            edge["label"] = _scrub_api_str(edge["label"])
+    summary = graph.get("summary")
+    if isinstance(summary, dict):
+        for k in ("critical_path_eta", "primary_bottleneck"):
+            if isinstance(summary.get(k), str) and summary[k]:
+                summary[k] = _scrub_api_str(summary[k])
+    if graph.get("ga_summary") is not None:
+        graph["ga_summary"] = _redact_api_payload(graph["ga_summary"])
+    return graph
+
+
+def _safe_sig_eq(a: Any, b: Any) -> bool:
+    if a is b:
+        return True
+    if a is None or b is None:
+        return False
+    try:
+        return bool(a == b)
+    except Exception:
+        return False
+
+
+def _summary_without_elapsed(summary: Any) -> Any:
+    if isinstance(summary, Mapping):
+        return {k: v for k, v in summary.items() if k != "elapsed_ms"}
+    return summary
+
+
+def _freeze_sig_tree(
+    val: Any,
+    _depth: int = 0,
+    _seen: Optional[set[int]] = None,
+) -> Any:
+    tv = type(val)
+    if val is None or tv is int or tv is str or tv is bytes:
+        return val
+    if tv is bool:
+        return ("__bool__", val)
+    if tv is float or isinstance(val, float):
+        fval = float(val)
+        if math.isnan(fval):
+            return ("__nan__",)
+        if math.isinf(fval):
+            return ("__inf__", 1 if fval > 0 else -1)
+        return fval
+    if _depth >= 32:
+        return repr(val)
+    if tv is dict or isinstance(val, Mapping):
+        seen = _seen if _seen is not None else set()
+        vid = id(val)
+        if vid in seen:
+            return ("__cycle__",)
+        seen.add(vid)
+        try:
+            return tuple(
+                sorted(
+                    (
+                        (
+                            k if type(k) is str else f"{type(k).__name__}:{k}",
+                            _freeze_sig_tree(v, _depth + 1, seen),
+                        )
+                        for k, v in val.items()
+                    ),
+                    key=lambda kv: kv[0],
+                )
+            )
+        finally:
+            seen.discard(vid)
+    if tv is list or tv is tuple or isinstance(val, (list, tuple)):
+        seen = _seen if _seen is not None else set()
+        vid = id(val)
+        if vid in seen:
+            return ("__cycle__",)
+        seen.add(vid)
+        try:
+            return tuple(_freeze_sig_tree(x, _depth + 1, seen) for x in val)
+        finally:
+            seen.discard(vid)
+    if isinstance(val, (set, frozenset)):
+        seen = _seen if _seen is not None else set()
+        vid = id(val)
+        if vid in seen:
+            return ("__cycle__",)
+        seen.add(vid)
+        try:
+            return (
+                "__set__",
+                tuple(_freeze_sig_tree(x, _depth + 1, seen) for x in sorted(val, key=repr)),
+            )
+        finally:
+            seen.discard(vid)
+    return val
+
+
+def _dashboard_state_sig(
+    last_state: Optional[GameState],
+    dash_state: Optional[GameState],
+    rank_samples: Sequence[Any],
+) -> Any:
+    if rank_samples:
+        first_map = next((s for s in rank_samples if isinstance(s, Mapping)), None)
+        rank_sig: Any = (
+            len(rank_samples),
+            _freeze_sig_tree(rank_samples[0]),
+            _freeze_sig_tree(first_map) if first_map is not rank_samples[0] else None,
+            _freeze_sig_tree(rank_samples[-20:]),
+        )
+    else:
+        rank_sig = (0,)
+    if dash_state is None:
+        return (None, rank_sig)
+    return (
+        id(last_state),
+        dash_state.universe_id,
+        dash_state.user_id,
+        dash_state.nickname,
+        _freeze_sig_tree(dash_state.timestamp),
+        dash_state.active_planet_id,
+        _freeze_sig_tree(dash_state.researches),
+        _freeze_sig_tree(dash_state.research_names),
+        _freeze_sig_tree(dash_state.specs),
+        _freeze_sig_tree(dash_state.unread_messages),
+        dash_state.tutorial,
+        dash_state.active_queues,
+        dash_state.fleet_alerts,
+        dash_state.research_offers,
+        _freeze_sig_tree(dash_state.speedup_factor),
+        dash_state.newbie_protection,
+        _freeze_sig_tree(dash_state.account_points),
+        dash_state.account_rank,
+        _freeze_sig_tree(dash_state.raid_targets or ()),
+        _freeze_sig_tree(dash_state.raid_stats),
+        tuple(
+            (
+                p.planet_id,
+                p.name,
+                p.coords,
+                p.planet_type,
+                p.temperature,
+                p.fields_used,
+                p.fields_max,
+                p.resources,
+                p.storage,
+                p.energy,
+                _freeze_sig_tree(p.buildings),
+                _freeze_sig_tree(p.building_names),
+                _freeze_sig_tree(p.ships),
+                _freeze_sig_tree(p.defense),
+                p.building_offers,
+                p.ship_offers,
+                p.defense_offers,
+                _freeze_sig_tree(p.economy_rates),
+            )
+            for p in (dash_state.planets or ())
+        ),
+        rank_sig,
+    )
+
+
 def ensure_debug_browser_ready(
     *,
     debug_port: int = DEFAULT_DEBUG_PORT,
@@ -904,11 +1138,20 @@ class GameApiBridge:
         self._last_shipyard_sync_at: float = 0.0
         self._last_shipyard_sync_sig: Optional[tuple[int, int, tuple[tuple[str, int], ...]]] = None
         self._last_spio_sync_at: float = 0.0
+        self._pending_spy_sync: bool = False
+        self._last_spy_dispatched_at: float = 0.0
+        self._last_synced_unread_total: int = 0
         self._economy_rates: dict[int, dict[str, int]] = {}
         self._economy_sync_timestamps: dict[int, float] = {}
         self._scanned_systems: dict[str, float] = {}
         self._throttle_timestamps: dict[int, float] = {}
         self._fleet_slot_cooldown_until: dict[int, float] = {}
+        self._target_blocks: dict[str, tuple[float, str]] = {}
+        self._dash_cache_state_ref: Optional[GameState] = None
+        self._dash_static_cache_key: Optional[Any] = None
+        self._dash_static_cache_json: Optional[str] = None
+        self._dash_ag_cache_key: Optional[Any] = None
+        self._dash_ag_cache_json: Optional[str] = None
         self._rank_history_path: Optional[Path] = (
             (log_dir.parent / "state" / "rank_history.json") if log_dir is not None else None
         )
@@ -933,7 +1176,14 @@ class GameApiBridge:
         else:
             self._rank_samples = load_rank_history(self._rank_history_path)
             self._raid_targets = ()
-        self._bot_control: dict[str, Any] = {"paused": False, "mode_override": None}
+        self._bot_control: dict[str, Any] = {
+            "paused": False,
+            "mode_override": None,
+            "captcha_blocked": False,
+            "captcha_message": None,
+        }
+        self._hydrate_persisted_bridge_state()
+        enforce_hourly = max_actions_per_hour is not None
         raw_budget = (
             max_actions_per_hour
             if max_actions_per_hour is not None
@@ -943,16 +1193,20 @@ class GameApiBridge:
         self._live_executor = ActionExecutor(
             dry_run=False,
             max_actions_per_hour=budget,
+            enforce_hourly_cap=enforce_hourly,
             allow_fleetsave=self.strategy_config.allow_fleetsave,
             allow_raids=self.strategy_config.allow_raids,
+            allow_colonize=self.strategy_config.allow_colonize,
             page_limiter=self._page_limiter,
             max_limiter_wait=self._executor_max_limiter_wait,
         )
         self._dry_executor = ActionExecutor(
             dry_run=True,
             max_actions_per_hour=budget,
+            enforce_hourly_cap=enforce_hourly,
             allow_fleetsave=self.strategy_config.allow_fleetsave,
             allow_raids=self.strategy_config.allow_raids,
+            allow_colonize=self.strategy_config.allow_colonize,
             page_limiter=self._page_limiter,
             max_limiter_wait=self._executor_max_limiter_wait,
         )
@@ -1018,6 +1272,142 @@ class GameApiBridge:
             setattr(err, "_recorded_limiter_id", id(self._page_limiter))
             raise err
 
+    def _hydrate_persisted_bridge_state(self) -> None:
+        if self._db is None:
+            return
+        load_cfg_fn = getattr(self._db, "load_strategy_config_snapshot", None)
+        save_cfg_fn = getattr(self._db, "save_strategy_config_snapshot", None)
+        if not self.config_path.exists() and callable(load_cfg_fn):
+            saved_cfg = load_cfg_fn()
+            if isinstance(saved_cfg, Mapping) and saved_cfg:
+                try:
+                    self.strategy_config = strategy_config_from_dict(dict(saved_cfg))
+                except Exception:
+                    pass
+        if callable(save_cfg_fn):
+            save_cfg_fn(asdict(self.strategy_config))
+
+        load_rt_fn = getattr(self._db, "load_runtime_state", None)
+        rt = load_rt_fn() if callable(load_rt_fn) else {}
+        if isinstance(rt, Mapping) and rt:
+            bc = rt.get("bot_control")
+            if isinstance(bc, Mapping):
+                self._bot_control["paused"] = bool(bc.get("paused", False))
+                raw_mo = bc.get("mode_override")
+                self._bot_control["mode_override"] = (
+                    raw_mo if raw_mo in (None, "live", "dry-run") else None
+                )
+                self._bot_control["captcha_blocked"] = bool(bc.get("captcha_blocked", False))
+                raw_cm = bc.get("captcha_message")
+                self._bot_control["captcha_message"] = (
+                    _bounded_api_str(raw_cm, default="") if raw_cm else None
+                )
+            econ_ts = rt.get("economy_sync_timestamps")
+            if isinstance(econ_ts, Mapping):
+                for raw_pid, raw_ts in econ_ts.items():
+                    pid_i = _safe_api_int(raw_pid, 0)
+                    ts_f = _safe_api_float(raw_ts, 0.0)
+                    if pid_i > 0 and ts_f > 0.0:
+                        self._economy_sync_timestamps[pid_i] = ts_f
+            self._last_synced_unread_total = max(
+                0, _safe_api_int(rt.get("last_synced_unread_total", 0), 0)
+            )
+            self._pending_spy_sync = bool(rt.get("pending_spy_sync", False))
+            if isinstance(rt.get("last_url"), str) and rt["last_url"]:
+                self._last_url = _bounded_api_str(rt["last_url"], default="")
+            if isinstance(rt.get("last_optimizer_summary"), Mapping):
+                self._last_optimizer_summary = dict(rt["last_optimizer_summary"])
+
+            now_wall = time.time()
+            now_mono = time.monotonic()
+            fsc_wall = rt.get("fleet_slot_cooldown_until_wall")
+            if isinstance(fsc_wall, Mapping):
+                for raw_pid, raw_until in fsc_wall.items():
+                    pid_i = _safe_api_int(raw_pid, 0)
+                    until_w = _safe_api_float(raw_until, 0.0)
+                    rem = until_w - now_wall
+                    if pid_i > 0 and 0.0 < rem <= 86400.0:
+                        self._fleet_slot_cooldown_until[pid_i] = now_mono + rem
+
+            def _wall_to_mono(wall_key: str) -> float:
+                wv = _safe_api_float(rt.get(wall_key, 0.0), 0.0)
+                if wv <= 0.0:
+                    return 0.0
+                age = now_wall - wv
+                if 0.0 <= age <= 86400.0:
+                    return max(0.001, now_mono - age)
+                return 0.0
+
+            self._last_spio_sync_at = _wall_to_mono("spio_sync_at_wall")
+            self._last_research_sync_at = _wall_to_mono("research_sync_at_wall")
+            self._last_shipyard_sync_at = _wall_to_mono("shipyard_sync_at_wall")
+            self._last_spy_dispatched_at = _wall_to_mono("spy_dispatched_at_wall")
+
+        load_gs_fn = getattr(self._db, "load_latest_game_state", None)
+        if callable(load_gs_fn):
+            persisted_gs = load_gs_fn()
+            if isinstance(persisted_gs, GameState):
+                self._last_state = self._merge_economy_rates(persisted_gs)
+                self._last_recorded_state_obj = self._last_state
+                self._last_snapshot_at = -1e9
+                self._active_planet_confirmed = False
+                self._last_home_fetched = False
+                ap0 = self._last_state.active_planet()
+                self._last_buildings_fetched = bool(ap0 is not None and ap0.building_offers)
+
+    def _persist_runtime_state(self) -> None:
+        if self._db is None:
+            return
+        save_rt_fn = getattr(self._db, "save_runtime_state", None)
+        if not callable(save_rt_fn):
+            return
+        now_wall = time.time()
+        now_mono = time.monotonic()
+
+        def _mono_to_wall(mono_val: float) -> float:
+            if not isinstance(mono_val, (int, float)) or not math.isfinite(mono_val) or mono_val <= 0.0:
+                return 0.0
+            age = max(0.0, now_mono - float(mono_val))
+            return round(now_wall - age, 3)
+
+        fsc_wall: dict[str, float] = {}
+        for pid, until_m in list(self._fleet_slot_cooldown_until.items()):
+            if isinstance(until_m, (int, float)) and math.isfinite(until_m):
+                rem = float(until_m) - now_mono
+                if rem > 0.0:
+                    fsc_wall[str(int(pid))] = round(now_wall + rem, 3)
+
+        payload: dict[str, Any] = {
+            "bot_control": dict(self._bot_control),
+            "economy_sync_timestamps": {
+                str(int(k)): round(float(v), 3)
+                for k, v in self._economy_sync_timestamps.items()
+                if isinstance(v, (int, float)) and math.isfinite(v) and v > 0.0
+            },
+            "fleet_slot_cooldown_until_wall": fsc_wall,
+            "last_synced_unread_total": max(0, int(self._last_synced_unread_total)),
+            "pending_spy_sync": bool(self._pending_spy_sync),
+            "spio_sync_at_wall": _mono_to_wall(self._last_spio_sync_at),
+            "research_sync_at_wall": _mono_to_wall(self._last_research_sync_at),
+            "shipyard_sync_at_wall": _mono_to_wall(self._last_shipyard_sync_at),
+            "spy_dispatched_at_wall": _mono_to_wall(self._last_spy_dispatched_at),
+            "last_url": _bounded_api_str(self._last_url, default="") if self._last_url else None,
+            "last_optimizer_summary": self._last_optimizer_summary,
+        }
+        save_rt_fn(payload, ts=now_wall)
+
+    def _record_antibot_pause(self, exc: BaseException) -> None:
+        msg = _bounded_api_str(exc, default="CAPTCHA / anti-bot challenge detected.")
+        if not any(
+            tok in msg.lower()
+            for tok in ("captcha", "anti-bot", "antibot", "turnstile", "sicherheitspr")
+        ):
+            msg = f"CAPTCHA / anti-bot challenge: {msg}" if msg else "CAPTCHA / anti-bot challenge detected."
+        self._bot_control["paused"] = True
+        self._bot_control["captcha_blocked"] = True
+        self._bot_control["captcha_message"] = msg
+        self._persist_runtime_state()
+
     def _get_scanned_systems(self) -> dict[str, float]:
         if self._db is not None:
             return self._db.get_galaxy_scans()
@@ -1059,7 +1449,7 @@ class GameApiBridge:
         changed = False
         out: list[PlannedAction] = []
         for act in actions:
-            if act.kind in ("ATTACK", "SPY", "ESCAPE_FLIGHT") and act.planet_id in busy_pids:
+            if act.kind in ("ATTACK", "SPY", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE") and act.planet_id in busy_pids:
                 cur_reason = str(act.reason or "")
                 new_reason = (
                     cur_reason
@@ -1092,6 +1482,13 @@ class GameApiBridge:
             return replace(state, raid_stats=dict(stats))
         return state
 
+    def _invalidate_dashboard_cache(self) -> None:
+        self._dash_cache_state_ref = None
+        self._dash_static_cache_key = None
+        self._dash_static_cache_json = None
+        self._dash_ag_cache_key = None
+        self._dash_ag_cache_json = None
+
     def _serialize_action(
         self,
         action: PlannedAction,
@@ -1103,18 +1500,97 @@ class GameApiBridge:
             val = raw.get(key)
             if isinstance(val, float) and not math.isfinite(val):
                 raw[key] = None if key.startswith(("wait_", "total_")) else 0.0
-        return _sanitize_finite_json(_redact_api_payload(raw))
+        return _sanitize_finite_json(raw)
 
     def _plan_with_summary(
         self,
         state: GameState,
         *,
         config: Optional[StrategyConfig] = None,
+        record_summary: bool = True,
+        _already_enriched: bool = False,
     ) -> tuple[list[PlannedAction], Optional[dict[str, Any]]]:
         cfg = config or self.strategy_config
-        enriched_state = self._attach_raid_stats(state)
+        enriched_state = state if _already_enriched else self._attach_raid_stats(state)
+        if self._db is not None and (
+            bool(getattr(cfg, "allow_colonize", False))
+            or _tutorial_colonize_task(enriched_state) is not None
+        ):
+            get_col_fn = getattr(self._db, "get_colony_candidates", None)
+            if callable(get_col_fn):
+                ap = enriched_state.active_planet()
+                origin_c = ap.coords if ap is not None else ""
+                min_f = max(50, _safe_api_int(getattr(cfg, "min_colony_fields", 300), 300))
+                col_cands = get_col_fn(
+                    origin_coords=origin_c,
+                    min_fields_target=min_f,
+                    exclude_coords=self._own_planet_coords(enriched_state),
+                    limit=120,
+                )
+                if col_cands:
+                    existing_rt = list(getattr(enriched_state, "raid_targets", ()) or ())
+                    by_c: dict[str, dict[str, Any]] = {}
+                    ordered_rt: list[dict[str, Any]] = []
+                    for r_item in existing_rt:
+                        if not isinstance(r_item, Mapping):
+                            continue
+                        d_item = dict(r_item)
+                        nc = normalize_coords(d_item.get("coords") or d_item.get("target_coords") or "")
+                        if nc:
+                            by_c[nc] = d_item
+                        ordered_rt.append(d_item)
+                    added_any = False
+                    for cand in col_cands:
+                        if not isinstance(cand, Mapping):
+                            continue
+                        nc = normalize_coords(cand.get("coords") or "")
+                        if not nc:
+                            continue
+                        if nc in by_c:
+                            cur_entry = by_c[nc]
+                            uf = cand.get("uninhabited_fields")
+                            if uf is not None and cur_entry.get("uninhabited_fields") is None:
+                                cur_entry["uninhabited_fields"] = _safe_api_int(uf, 0)
+                                added_any = True
+                            continue
+                        free_entry = {
+                            "coords": nc,
+                            "owner": "",
+                            "planet_name": "",
+                            "status_color": "free",
+                            "is_inactive": False,
+                            "is_spacia": False,
+                            "has_debris": False,
+                            "points": None,
+                            "uninhabited_fields": cand.get("uninhabited_fields"),
+                            "last_scanned_ts": _safe_api_float(cand.get("last_scanned_ts", 0.0)),
+                            "last_spied_ts": _safe_api_float(cand.get("last_spied_ts", 0.0)),
+                            "has_spy_intel": bool(cand.get("probed", False)),
+                        }
+                        by_c[nc] = free_entry
+                        ordered_rt.append(free_entry)
+                        added_any = True
+                    if added_any:
+                        enriched_state = replace(enriched_state, raid_targets=tuple(ordered_rt))
         eff_mode = normalize_planner_mode(getattr(cfg, "planner_mode", "priority"))
         if eff_mode == "ga_nn":
+            if not record_summary:
+                raid_stats_kw: dict[str, Any] = {}
+                state_raid_stats = getattr(enriched_state, "raid_stats", None)
+                if isinstance(state_raid_stats, Mapping) and state_raid_stats:
+                    raid_stats_kw["raid_stats"] = state_raid_stats
+                opt_res = run_optimizer(
+                    enriched_state,
+                    storage_warn_ratio=cfg.storage_warn_ratio,
+                    config=cfg,
+                    scanned_systems=self._get_scanned_systems(),
+                    throttle_cooldowns=self._get_throttle_cooldowns(),
+                    record_global_summary=False,
+                    **raid_stats_kw,
+                )
+                actions = attach_action_etas(enriched_state, list(opt_res.actions))
+                summary = _sanitize_optimizer_summary(opt_res.to_dict())
+                return self._apply_fleet_slot_cooldowns(actions, re_sort_priority=False), summary
             with _GLOBAL_OPTIMIZER_LOCK:
                 actions = plan_actions(
                     enriched_state,
@@ -1125,7 +1601,13 @@ class GameApiBridge:
                 raw_summary = get_last_optimizer_summary()
             summary = _sanitize_optimizer_summary(raw_summary)
             if config is None or normalize_planner_mode(self.strategy_config.planner_mode) == "ga_nn":
-                self._last_optimizer_summary = summary
+                if _summary_without_elapsed(summary) != _summary_without_elapsed(
+                    self._last_optimizer_summary
+                ):
+                    self._last_optimizer_summary = summary
+                    self._persist_runtime_state()
+                else:
+                    self._last_optimizer_summary = summary
             return self._apply_fleet_slot_cooldowns(actions, re_sort_priority=False), summary
         actions = plan_actions(
             enriched_state,
@@ -1230,12 +1712,18 @@ class GameApiBridge:
                         except RateLimitError as exc:
                             self._record_server_rate_limit(exc)
                             in_game = port_open
+                        except AntiBotChallengeError as exc:
+                            self._record_antibot_pause(exc)
+                            in_game = False
                         except SpaceInvasionAuthError:
                             in_game = False
                         current_url = str(getattr(client.driver, "current_url", "") or "")
                 except RateLimitError as exc:
                     self._record_server_rate_limit(exc)
                     in_game = port_open
+                except AntiBotChallengeError as exc:
+                    self._record_antibot_pause(exc)
+                    in_game = False
                 except SpaceInvasionAuthError:
                     in_game = False
             elif port_open and rate_rem > 0.0:
@@ -1255,6 +1743,7 @@ class GameApiBridge:
                         "page_view_limit_per_minute": self._page_limiter.max_views_per_minute,
                         "rate_limit_hits": self._page_limiter.rate_limit_hits,
                         "url": current_url if current_url else None,
+                        "action_batch_interval_seconds": self.strategy_config.action_batch_interval_seconds,
                         "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
                         "bot_control": dict(self._bot_control),
                     }
@@ -1427,6 +1916,16 @@ class GameApiBridge:
                 continue
             item = dict(raw)
             coords = normalize_coords(item.get("coords") or item.get("target_coords") or "")
+            if coords and coords in self._target_blocks:
+                mem_until, mem_reason = self._target_blocks[coords]
+                if mem_until > _safe_api_float(item.get("blocked_until_ts", 0.0)):
+                    item["blocked_until_ts"] = round(float(mem_until), 3)
+                    item["block_reason"] = _bounded_api_str(mem_reason, default="")
+            item["has_debris"] = bool(item.get("has_debris", False))
+            item["blocked_until_ts"] = _safe_api_float(item.get("blocked_until_ts", 0.0))
+            item["block_reason"] = _bounded_api_str(item.get("block_reason") or "", default="")
+            item["bash_hits"] = game_data.cap_json_int(_safe_api_int(item.get("bash_hits", 0)))
+            item["last_blocked_ts"] = _safe_api_float(item.get("last_blocked_ts", 0.0))
             pt = per_target.get(coords) if coords else None
             if isinstance(pt, Mapping) and _safe_api_int(pt.get("attempts", 0)) > 0:
                 item.update(
@@ -1476,7 +1975,8 @@ class GameApiBridge:
         return tuple(enriched)
 
     def _merge_economy_rates(self, state: GameState) -> GameState:
-        for pid, rates in getattr(self._live_executor, "last_economy_rates", {}).items():
+        live_exec = getattr(self, "_live_executor", None)
+        for pid, rates in getattr(live_exec, "last_economy_rates", {}).items():
             if rates:
                 self._economy_rates[int(pid)] = dict(rates)
 
@@ -1622,6 +2122,7 @@ class GameApiBridge:
         merged = self._merge_economy_rates(self._merge_cached_offers(state))
         self._last_state = merged
         self._last_recorded_state_obj = merged
+        self._invalidate_dashboard_cache()
         if update_snapshot_ts:
             self._last_snapshot_at = now
         if fetched_buildings:
@@ -1646,6 +2147,7 @@ class GameApiBridge:
             self._last_shipyard_sync_sig = (pid_sig, b9_lvl, res_sig)
         if self._db is not None:
             self._rank_samples = self._db.record_state_snapshot(merged)
+            self._persist_runtime_state()
         else:
             self._rank_samples = record_rank_snapshot(self._rank_history_path, merged)
         return merged
@@ -1657,7 +2159,7 @@ class GameApiBridge:
             rate_rem = self._page_limiter.rate_limit_remaining()
             in_game = port_open and (self._last_state is not None or rate_rem > 0.0)
             current_url = self._last_url
-            if port_open and rate_rem <= 0.0 and (refresh or self._last_state is None):
+            if port_open and rate_rem <= 0.0 and (refresh or self._last_state is None or self._last_snapshot_at < 0.0):
                 try:
                     with self._client_factory(self.debug_port) as client:
                         snap = self._read_snapshot(
@@ -1683,6 +2185,9 @@ class GameApiBridge:
                 except RateLimitError as exc:
                     self._record_server_rate_limit(exc)
                     in_game = port_open
+                except AntiBotChallengeError as exc:
+                    self._record_antibot_pause(exc)
+                    in_game = False
                 except SpaceInvasionAuthError:
                     in_game = False
 
@@ -1693,34 +2198,95 @@ class GameApiBridge:
             )
             eff_mode = normalize_planner_mode(self.strategy_config.planner_mode)
             if dash_state is not None:
-                actions, opt_summary = self._plan_with_summary(dash_state)
+                actions, opt_summary = self._plan_with_summary(dash_state, _already_enriched=True)
             else:
                 actions = []
                 opt_summary = self._last_optimizer_summary if eff_mode == "ga_nn" else None
-            ranking = (
-                build_ranking_evolution(dash_state, self._rank_samples)
-                if dash_state is not None
-                else None
+
+            dash_sig = _dashboard_state_sig(self._last_state, dash_state, self._rank_samples)
+            cfg_raw = asdict(self.strategy_config)
+            cfg_sig = _freeze_sig_tree(cfg_raw)
+            static_key = (
+                dash_sig,
+                cfg_sig,
+                build_ranking_evolution,
+                build_buildings_eta,
+                build_combat_overview,
             )
-            buildings_eta = (
-                build_buildings_eta(dash_state)
-                if dash_state is not None
-                else None
-            )
-            combat = (
-                build_combat_overview(
-                    dash_state,
-                    safety_margin=self.strategy_config.combat_safety_margin,
+            if self._dash_static_cache_json is None or not _safe_sig_eq(
+                self._dash_static_cache_key, static_key
+            ):
+                ranking = (
+                    build_ranking_evolution(dash_state, self._rank_samples)
+                    if dash_state is not None
+                    else None
                 )
-                if dash_state is not None
-                else None
+                buildings_eta = (
+                    build_buildings_eta(dash_state)
+                    if dash_state is not None
+                    else None
+                )
+                combat = (
+                    build_combat_overview(
+                        dash_state,
+                        safety_margin=self.strategy_config.combat_safety_margin,
+                    )
+                    if dash_state is not None
+                    else None
+                )
+                static_clean = _sanitize_finite_json(
+                    {
+                        "config": cfg_raw,
+                        "state": asdict(dash_state) if dash_state else None,
+                        "buildings_eta": buildings_eta,
+                        "combat": combat,
+                        "ranking": ranking,
+                    }
+                )
+                self._dash_cache_state_ref = self._last_state
+                self._dash_static_cache_key = static_key
+                self._dash_static_cache_json = json.dumps(static_clean, allow_nan=False)
+            static_val = json.loads(self._dash_static_cache_json)
+
+            ag_opt = opt_summary if eff_mode == "ga_nn" else None
+            ag_opt_sig = _freeze_sig_tree(_summary_without_elapsed(ag_opt))
+            ag_key = (
+                dash_sig,
+                cfg_sig,
+                eff_mode,
+                ag_opt_sig,
+                tuple(actions),
+                build_action_graph,
             )
+            if self._dash_ag_cache_json is None or not _safe_sig_eq(
+                self._dash_ag_cache_key, ag_key
+            ):
+                plan_json = [self._serialize_action(a) for a in actions]
+                raw_ag = build_action_graph(
+                    dash_state,
+                    actions,
+                    effective_config=self.strategy_config,
+                    active_config=self.strategy_config,
+                    simulated=False,
+                    optimizer_summary=ag_opt,
+                    sanitize=False,
+                )
+                ag_json = _sanitize_finite_json(_redact_action_graph_strings(raw_ag))
+                ag_clean = {
+                    "plan": plan_json,
+                    "action_graph": ag_json,
+                }
+                self._dash_cache_state_ref = self._last_state
+                self._dash_ag_cache_key = ag_key
+                self._dash_ag_cache_json = json.dumps(ag_clean, allow_nan=False)
+            ag_val = json.loads(self._dash_ag_cache_json)
+
             rate_rem = self._page_limiter.rate_limit_remaining()
-            return _sanitize_finite_json(
+            ui_assets_clean = _sanitize_finite_json(compute_ui_assets_state())
+            envelope = _sanitize_finite_json(
                 {
                     "ok": True,
                     "server_boot_id": _SERVER_BOOT_ID,
-                    **compute_ui_assets_state(),
                     "health": {
                         "ok": port_open,
                         "debug_port": self.debug_port,
@@ -1732,17 +2298,12 @@ class GameApiBridge:
                         "page_view_limit_per_minute": self._page_limiter.max_views_per_minute,
                         "rate_limit_hits": self._page_limiter.rate_limit_hits,
                         "url": current_url if current_url else None,
+                        "action_batch_interval_seconds": self.strategy_config.action_batch_interval_seconds,
                         "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
                     },
                     "bot_control": dict(self._bot_control),
                     "planner_mode": eff_mode,
-                    "config": asdict(self.strategy_config),
-                    "state": asdict(dash_state) if dash_state else None,
-                    "plan": [self._serialize_action(a) for a in actions],
-                    "optimizer_summary": opt_summary if eff_mode == "ga_nn" else None,
-                    "buildings_eta": buildings_eta,
-                    "combat": combat,
-                    "ranking": ranking,
+                    "optimizer_summary": ag_opt,
                     "db_summary": self._db.summary() if self._db is not None else None,
                     "logs": {
                         "commander": self._read_log_tail("commander.log"),
@@ -1750,6 +2311,33 @@ class GameApiBridge:
                     },
                 }
             )
+            env_opt = envelope.get("optimizer_summary")
+            ag_obj = ag_val.get("action_graph")
+            if (
+                isinstance(env_opt, dict)
+                and "elapsed_ms" in env_opt
+                and isinstance(ag_obj, dict)
+                and isinstance(ag_obj.get("ga_summary"), dict)
+            ):
+                ag_obj["ga_summary"]["elapsed_ms"] = env_opt["elapsed_ms"]
+            return {
+                "ok": envelope["ok"],
+                "server_boot_id": envelope["server_boot_id"],
+                **(ui_assets_clean if isinstance(ui_assets_clean, dict) else {}),
+                "health": envelope["health"],
+                "bot_control": envelope["bot_control"],
+                "planner_mode": envelope["planner_mode"],
+                "config": static_val["config"],
+                "state": static_val["state"],
+                "plan": ag_val["plan"],
+                "action_graph": ag_val["action_graph"],
+                "optimizer_summary": envelope["optimizer_summary"],
+                "buildings_eta": static_val["buildings_eta"],
+                "combat": static_val["combat"],
+                "ranking": static_val["ranking"],
+                "db_summary": envelope["db_summary"],
+                "logs": envelope["logs"],
+            }
 
     get_dashboard = dashboard
 
@@ -1773,10 +2361,32 @@ class GameApiBridge:
                 cached = self._refresh_cached_economy(self._last_state)
                 return _sanitize_finite_json(_redact_api_payload(asdict(self._attach_raid_stats(cached))))
 
-            research_due = self._last_research_sync_at <= 0.0 or (now - self._last_research_sync_at) >= self.RESEARCH_SYNC_TTL_S
-            shipyard_due = self._last_shipyard_sync_at <= 0.0 or (now - self._last_shipyard_sync_at) >= self.SHIPYARD_SYNC_TTL_S
-            need_research = bool(include_buildings and (self._last_state is None or research_due))
-            need_shipyard = bool(include_buildings and (self._last_state is None or shipyard_due))
+            batch_iv = max(5.0, float(self.strategy_config.action_batch_interval_seconds))
+            has_cached_res = bool(self._last_state is not None and self._last_state.research_offers)
+            has_cached_ships = bool(
+                self._last_state is not None
+                and self._last_state.active_planet() is not None
+                and self._last_state.active_planet().ship_offers
+            )
+            eff_res_ttl = max(self.RESEARCH_SYNC_TTL_S, batch_iv * 3.0) if has_cached_res else self.RESEARCH_SYNC_TTL_S
+            eff_ship_ttl = max(self.SHIPYARD_SYNC_TTL_S, batch_iv * 3.0) if has_cached_ships else self.SHIPYARD_SYNC_TTL_S
+            research_due = self._last_research_sync_at <= 0.0 or (now - self._last_research_sync_at) >= eff_res_ttl
+            shipyard_due = self._last_shipyard_sync_at <= 0.0 or (now - self._last_shipyard_sync_at) >= eff_ship_ttl
+            cold_boot = self._last_state is None or self._last_snapshot_at < 0.0
+            need_research = bool(
+                include_buildings
+                and (
+                    (cold_boot and not has_cached_res)
+                    or (self.strategy_config.allow_research and research_due)
+                )
+            )
+            need_shipyard = bool(
+                include_buildings
+                and (
+                    (cold_boot and not has_cached_ships)
+                    or (self.strategy_config.allow_shipyard and shipyard_due)
+                )
+            )
             if self._last_state is not None and include_buildings:
                 prev_active = self._last_state.active_planet()
                 cur_pid = _safe_api_int(prev_active.planet_id) if prev_active is not None else 0
@@ -1786,6 +2396,10 @@ class GameApiBridge:
                     sorted((game_data.safe_key(k), _safe_api_int(v)) for k, v in (self._last_state.researches or {}).items())
                 )
                 cur_res_busy = any(q.category == "research" for q in self._last_state.active_queues)
+                if cur_b8 <= 0 or cur_res_busy:
+                    need_research = False
+                if cur_b9 <= 0:
+                    need_shipyard = False
                 if (
                     prev_active is not None
                     and cur_b9 > 0
@@ -1821,6 +2435,16 @@ class GameApiBridge:
                         fetched_home=True,
                         observed_active_planet=obs_active,
                     )
+                    if self._sync_spio_if_unread(client, merged, priority="normal") > 0:
+                        merged = self._record_state(
+                            merged,
+                            fetched_buildings=include_buildings,
+                            fetched_research=need_research,
+                            fetched_shipyard=need_shipyard,
+                            fetched_home=False,
+                            observed_active_planet=False,
+                            update_snapshot_ts=False,
+                        )
             except RateLimitError as exc:
                 self._record_server_rate_limit(exc)
                 if self.log_dir is not None:
@@ -1830,7 +2454,16 @@ class GameApiBridge:
                         error=exc,
                     )
                 raise
-            except (SpaceInvasionAuthError, AntiBotChallengeError, Exception) as exc:
+            except AntiBotChallengeError as exc:
+                self._record_antibot_pause(exc)
+                if self.log_dir is not None:
+                    append_crash_debug_log(
+                        component="api_server.get_state",
+                        event="antibot_challenge",
+                        error=exc,
+                    )
+                raise
+            except (SpaceInvasionAuthError, Exception) as exc:
                 if self.log_dir is not None and not isinstance(exc, ApiRequestError):
                     append_crash_debug_log(
                         component="api_server.get_state",
@@ -2329,7 +2962,12 @@ class GameApiBridge:
         now_ts = round(time.time(), 3)
         saved = 0
         for s in slots:
-            if getattr(s, "status_color", "free") == "free" and not getattr(s, "is_spacia", False):
+            has_debris = bool(getattr(s, "has_debris", False))
+            if (
+                getattr(s, "status_color", "free") == "free"
+                and not getattr(s, "is_spacia", False)
+                and not has_debris
+            ):
                 continue
             status_color = _bounded_api_str(getattr(s, "status_color", "yellow") or "yellow", default="yellow")
             is_spacia = bool(getattr(s, "is_spacia", False))
@@ -2342,6 +2980,7 @@ class GameApiBridge:
                 "status_color": status_color,
                 "is_inactive": bool(status_color == "yellow" or is_spacia),
                 "is_spacia": is_spacia,
+                "has_debris": has_debris,
                 "points": prev.get("points"),
                 "resources": prev.get("resources") or {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0},
                 "fleet": prev.get("fleet") or {},
@@ -2350,26 +2989,70 @@ class GameApiBridge:
                 "last_scanned_ts": now_ts,
                 "last_spied_ts": prev.get("last_spied_ts", 0.0),
                 "has_spy_intel": bool(prev.get("has_spy_intel", False)),
+                "blocked_until_ts": _safe_api_float(prev.get("blocked_until_ts", 0.0)),
+                "block_reason": _bounded_api_str(prev.get("block_reason") or "", default=""),
+                "bash_hits": _safe_api_int(prev.get("bash_hits", 0)),
+                "last_blocked_ts": _safe_api_float(prev.get("last_blocked_ts", 0.0)),
             }
             saved += 1
         self._raid_targets = self._enrich_raid_targets(list(by_coords.values())[:100])
         return saved
 
-    def _persist_spy_reports(self, reports: tuple[SpyReport, ...] | list[SpyReport]) -> int:
+    @staticmethod
+    def _is_real_client_method(client: Any, attr_name: str) -> bool:
+        if client is None:
+            return False
+        fn = getattr(client, attr_name, None)
+        if not callable(fn):
+            return False
+        if "unittest.mock" in type(client).__module__:
+            inst_dict = getattr(client, "__dict__", {})
+            if attr_name in inst_dict:
+                return True
+            wraps = getattr(client, "_mock_wraps", None)
+            return wraps is not None and callable(getattr(wraps, attr_name, None))
+        return True
+
+    def _own_planet_coords(self, state: Optional[GameState] = None) -> set[str]:
+        coords: set[str] = set()
+        for src in (state, self._last_state):
+            if src is None:
+                continue
+            for p in src.planets:
+                nc = normalize_coords(getattr(p, "coords", "") or "")
+                if nc:
+                    coords.add(nc)
+        return coords
+
+    def _persist_spy_reports(
+        self,
+        reports: tuple[SpyReport, ...] | list[SpyReport],
+        *,
+        exclude_coords: Optional[set[str]] = None,
+    ) -> int:
         if not reports:
+            return 0
+        excl = exclude_coords if exclude_coords is not None else self._own_planet_coords()
+        filtered = [
+            rep
+            for rep in reports
+            if normalize_coords(rep.target_coords)
+            and normalize_coords(rep.target_coords) not in excl
+        ]
+        if not filtered:
             return 0
         now_ts = round(time.time(), 3)
         if self._db is not None:
-            for rep in reports:
+            for rep in filtered:
                 self._db.record_spy_report(rep, ts=now_ts)
             self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
-            return len(reports)
+            return len(filtered)
         by_coords: dict[str, dict[str, Any]] = {
             normalize_coords(r.get("coords") or r.get("target_coords") or ""): dict(r)
             for r in self._raid_targets
             if (r.get("coords") or r.get("target_coords"))
         }
-        for rep in reports:
+        for rep in filtered:
             norm_tc = normalize_coords(rep.target_coords)
             prev = by_coords.get(norm_tc, {})
             is_spacia = bool(rep.is_spacia or prev.get("is_spacia", False))
@@ -2377,10 +3060,11 @@ class GameApiBridge:
             by_coords[norm_tc] = {
                 "coords": norm_tc,
                 "owner": rep.owner or prev.get("owner", ""),
-                "planet_name": prev.get("planet_name", ""),
+                "planet_name": getattr(rep, "planet_name", "") or prev.get("planet_name", ""),
                 "status_color": status_color,
                 "is_inactive": bool(prev.get("is_inactive", False) or is_spacia or status_color == "yellow"),
                 "is_spacia": is_spacia,
+                "has_debris": bool(prev.get("has_debris", False)),
                 "points": prev.get("points"),
                 "resources": asdict(rep.resources),
                 "fleet": dict(rep.fleet),
@@ -2389,9 +3073,142 @@ class GameApiBridge:
                 "last_scanned_ts": max(float(prev.get("last_scanned_ts") or 0.0), now_ts),
                 "last_spied_ts": now_ts,
                 "has_spy_intel": True,
+                "blocked_until_ts": _safe_api_float(prev.get("blocked_until_ts", 0.0)),
+                "block_reason": _bounded_api_str(prev.get("block_reason") or "", default=""),
+                "bash_hits": _safe_api_int(prev.get("bash_hits", 0)),
+                "last_blocked_ts": _safe_api_float(prev.get("last_blocked_ts", 0.0)),
             }
         self._raid_targets = self._enrich_raid_targets(list(by_coords.values())[:100])
-        return len(reports)
+        return len(filtered)
+
+    def _ingest_and_delete_page_messages(
+        self,
+        client: Any,
+        html: Any,
+        *,
+        folder_type: str = "",
+        own_coords: Optional[set[str]] = None,
+        priority: str = "normal",
+        always_persist_spy: bool = False,
+        delete_after_persist: bool = True,
+    ) -> tuple[list[SpyReport], int, bool, str]:
+        if not isinstance(html, str) or not html.strip():
+            return ([], 0, False, "")
+        excl = own_coords if own_coords is not None else self._own_planet_coords()
+
+        if self._is_real_client_method(client, "expand_collapsed_messages_on_page"):
+            try:
+                expanded_html = client.expand_collapsed_messages_on_page()
+                if isinstance(expanded_html, str) and expanded_html.strip():
+                    html = expanded_html
+            except (RateLimitError, AntiBotChallengeError):
+                raise
+            except Exception:
+                pass
+
+        messages = parse_inbox_messages_html(
+            html,
+            folder_type=folder_type,
+            exclude_coords=excl,
+        )
+        page_spy_reports = list(
+            parse_spy_messages_html(html, exclude_coords=excl)
+        )
+        seen_spy_keys = {
+            (normalize_coords(r.target_coords) or r.target_coords, r.server_msg_id)
+            for r in page_spy_reports
+        }
+        for msg in messages:
+            if msg.spy_report is not None:
+                rk = (
+                    normalize_coords(msg.spy_report.target_coords) or msg.spy_report.target_coords,
+                    msg.spy_report.server_msg_id,
+                )
+                if rk not in seen_spy_keys:
+                    seen_spy_keys.add(rk)
+                    page_spy_reports.append(msg.spy_report)
+
+        persisted_uids: list[str] = []
+        newly_inserted: list[InboxMessage] = list(messages)
+        if self._db is not None and messages:
+            persisted_uids, newly_inserted = self._db.record_game_messages(messages)
+
+        if self._db is not None and not always_persist_spy and messages:
+            reports_to_persist: list[SpyReport] = []
+            seen_new_spy: set[tuple[str, str]] = set()
+            for msg in newly_inserted:
+                if msg.spy_report is not None:
+                    rk = (
+                        normalize_coords(msg.spy_report.target_coords) or msg.spy_report.target_coords,
+                        msg.spy_report.server_msg_id,
+                    )
+                    if rk not in seen_new_spy:
+                        seen_new_spy.add(rk)
+                        reports_to_persist.append(msg.spy_report)
+            if not any(m.spy_report is not None for m in messages) and page_spy_reports:
+                reports_to_persist = page_spy_reports
+        else:
+            reports_to_persist = page_spy_reports
+
+        if reports_to_persist:
+            self._persist_spy_reports(reports_to_persist, exclude_coords=excl)
+
+        debris_changed = False
+        if self._db is not None:
+            for msg in newly_inserted:
+                mc = normalize_coords(msg.coords or "")
+                if not mc or mc in excl:
+                    continue
+                if msg.category == "battle_report" and bool((msg.parsed_data or {}).get("has_debris")):
+                    self._db.set_target_debris(mc, True)
+                    debris_changed = True
+                elif msg.category == "recycle_report":
+                    self._db.set_target_debris(mc, False)
+                    debris_changed = True
+            if debris_changed:
+                self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
+
+        complete_msgs = [m for m in messages if bool(getattr(m, "body_complete", True))]
+        all_complete = len(complete_msgs) == len(messages)
+        deleted = False
+        post_html = html
+        can_delete = (
+            delete_after_persist
+            and bool(complete_msgs)
+            and (
+                self._db is None
+                or (all_complete and len(persisted_uids) == len(messages))
+                or (not all_complete and len(persisted_uids) >= len(complete_msgs))
+            )
+            and self._is_real_client_method(client, "delete_messages_on_current_page")
+        )
+        if can_delete:
+            server_ids = [m.server_msg_id for m in complete_msgs if m.server_msg_id]
+            if all_complete or server_ids:
+                try:
+                    del_ok, after_html = self._call_with_optional_priority(
+                        client.delete_messages_on_current_page,
+                        server_ids,
+                        all_on_page_persisted=all_complete,
+                        priority=priority,
+                    )
+                    deleted = bool(del_ok)
+                    if isinstance(after_html, str) and after_html:
+                        post_html = after_html
+                except (RateLimitError, AntiBotChallengeError):
+                    raise
+                except Exception:
+                    deleted = False
+                if deleted and self._db is not None and persisted_uids:
+                    if all_complete:
+                        self._db.mark_game_messages_deleted(persisted_uids)
+                    else:
+                        complete_uids = [m.msg_uid for m in complete_msgs if m.msg_uid]
+                        if complete_uids:
+                            self._db.mark_game_messages_deleted(complete_uids)
+
+        ingested_count = max(len(reports_to_persist), len(newly_inserted))
+        return (page_spy_reports, ingested_count, deleted, post_html)
 
     def _sync_spio_if_unread(
         self,
@@ -2402,17 +3219,24 @@ class GameApiBridge:
         get_client: Optional[Callable[[], Any]] = None,
         ignore_auth_error: bool = False,
     ) -> int:
-        if _safe_api_int((state.unread_messages or {}).get("spio", 0)) <= 0:
+        unread_map = state.unread_messages or {}
+        unread_spio = _safe_api_int(unread_map.get("spio", 0))
+        unread_total = _safe_api_int(unread_map.get("total", 0))
+        now = time.monotonic()
+        pending_ready = self._pending_spy_sync and (now - self._last_spy_dispatched_at) >= 8.0
+        new_inbox_unread = unread_total > self._last_synced_unread_total
+        if unread_spio <= 0 and not pending_ready and not new_inbox_unread:
+            if unread_total < self._last_synced_unread_total:
+                self._last_synced_unread_total = max(0, unread_total)
             return 0
         if self.rate_limit_remaining() > 0.0:
             return 0
-        now = time.monotonic()
         if (now - self._last_spio_sync_at) < self.SPIO_SYNC_TTL_S:
             return 0
         if client is None and get_client is not None:
             try:
                 client = get_client()
-            except RateLimitError:
+            except (RateLimitError, AntiBotChallengeError):
                 raise
             except SpaceInvasionAuthError:
                 if ignore_auth_error:
@@ -2422,16 +3246,114 @@ class GameApiBridge:
         if not callable(open_msg):
             return 0
         self._last_spio_sync_at = now
+        own_coords = self._own_planet_coords(state)
+        total_ingested = 0
+        any_deleted = False
+        last_post_html = ""
+
         try:
             html = self._call_with_optional_priority(open_msg, "spio", priority=priority)
-        except RateLimitError:
+        except (RateLimitError, AntiBotChallengeError):
             raise
         except Exception:
             return 0
-        if not isinstance(html, str):
-            return 0
-        reports = parse_spy_messages_html(html)
-        return self._persist_spy_reports(reports)
+
+        spio_reports, spio_ingested, spio_del, spio_post = self._ingest_and_delete_page_messages(
+            client,
+            html,
+            folder_type="spio",
+            own_coords=own_coords,
+            priority=priority,
+        )
+        total_ingested += spio_ingested
+        if spio_del:
+            any_deleted = True
+            last_post_html = spio_post
+
+        spio_folder_links = [
+            (ftype, unread_cnt)
+            for ftype, _href, unread_cnt, _tot in extract_message_folder_links(spio_post or html)
+            if ftype and ftype != "spio" and unread_cnt > 0
+        ]
+        if spio_folder_links:
+            try:
+                for ftype, _ucnt in spio_folder_links[:3]:
+                    if self.rate_limit_remaining() > 0.0:
+                        break
+                    f_html = self._call_with_optional_priority(open_msg, ftype, priority=priority)
+                    if isinstance(f_html, str):
+                        _, f_ing, f_del, f_post = self._ingest_and_delete_page_messages(
+                            client,
+                            f_html,
+                            folder_type=ftype,
+                            own_coords=own_coords,
+                            priority=priority,
+                        )
+                        total_ingested += f_ing
+                        if f_del:
+                            any_deleted = True
+                            last_post_html = f_post
+            except (RateLimitError, AntiBotChallengeError):
+                raise
+            except Exception:
+                pass
+        elif (
+            not spio_reports
+            and spio_ingested == 0
+            and unread_spio <= 0
+            and (unread_total > 0 or pending_ready)
+        ):
+            try:
+                inbox_html = self._call_with_optional_priority(open_msg, "", priority=priority)
+                if isinstance(inbox_html, str):
+                    _, inb_ingested, inb_del, inb_post = self._ingest_and_delete_page_messages(
+                        client,
+                        inbox_html,
+                        folder_type="inbox",
+                        own_coords=own_coords,
+                        priority=priority,
+                    )
+                    total_ingested += inb_ingested
+                    if inb_del:
+                        any_deleted = True
+                        last_post_html = inb_post
+                    if inb_ingested == 0:
+                        folder_links = [
+                            (ftype, unread_cnt)
+                            for ftype, _href, unread_cnt, _tot in extract_message_folder_links(inbox_html)
+                            if ftype and ftype != "spio" and unread_cnt > 0
+                        ]
+                        for ftype, _ucnt in folder_links[:3]:
+                            if self.rate_limit_remaining() > 0.0:
+                                break
+                            f_html = self._call_with_optional_priority(open_msg, ftype, priority=priority)
+                            if isinstance(f_html, str):
+                                _, f_ing, f_del, f_post = self._ingest_and_delete_page_messages(
+                                    client,
+                                    f_html,
+                                    folder_type=ftype,
+                                    own_coords=own_coords,
+                                    priority=priority,
+                                )
+                                total_ingested += f_ing
+                                if f_del:
+                                    any_deleted = True
+                                    last_post_html = f_post
+            except (RateLimitError, AntiBotChallengeError):
+                raise
+            except Exception:
+                pass
+
+        self._pending_spy_sync = False
+        if any_deleted:
+            # Reset synced counter so any remaining unread pages are archived & deleted on subsequent ticks
+            self._last_synced_unread_total = 0
+            if last_post_html:
+                _ = parse_unread_banner_count(last_post_html)
+        else:
+            self._last_synced_unread_total = max(0, unread_total)
+        self._persist_runtime_state()
+        return total_ingested
 
     def _execute_and_summarize(
         self,
@@ -2498,7 +3420,7 @@ class GameApiBridge:
             if res.executed and res.action.kind == "THROTTLE_BUILDING":
                 pid_i = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
                 self._throttle_timestamps[pid_i] = time.time()
-            if res.action.kind in ("ATTACK", "SPY", "ESCAPE_FLIGHT"):
+            if res.action.kind in ("ATTACK", "SPY", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE"):
                 pid_f = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
                 if pid_f > 0:
                     if res.executed:
@@ -2509,6 +3431,51 @@ class GameApiBridge:
                             self._fleet_slot_cooldown_until[pid_f] = (
                                 time.monotonic() + self.FLEET_SLOT_COOLDOWN_S
                             )
+                tname_f = (
+                    game_data.safe_key(res.action.target_name)
+                    if res.action.target_name is not None
+                    else ""
+                )
+                m_fcoords = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", tname_f, re.ASCII)
+                f_coords = normalize_coords(m_fcoords.group(1)) if m_fcoords else ""
+                raw_cd_s = getattr(res, "target_cooldown_seconds", None)
+                if f_coords and raw_cd_s is not None:
+                    cd_s = _safe_api_float(raw_cd_s, 0.0)
+                    if cd_s > 0.0:
+                        now_wall = time.time()
+                        until_ts = round(now_wall + cd_s, 3)
+                        b_reason = _bounded_api_str(
+                            getattr(res, "target_block_reason", None) or res.message,
+                            default="Mission blocked by server protection",
+                        )
+                        self._target_blocks[f_coords] = (until_ts, b_reason)
+                        if self._db is not None:
+                            self._db.record_target_block(
+                                f_coords,
+                                blocked_until_ts=until_ts,
+                                reason=b_reason,
+                                is_bash=bool(getattr(res, "target_is_bash_block", False)),
+                                ts=now_wall,
+                            )
+                            self._raid_targets = self._enrich_raid_targets(
+                                self._db.get_spy_targets(limit=100)
+                            )
+                        else:
+                            self._raid_targets = self._enrich_raid_targets(self._raid_targets)
+                if f_coords and bool(getattr(res, "clear_target_debris", False)):
+                    if self._db is not None:
+                        self._db.set_target_debris(f_coords, False)
+                        self._raid_targets = self._enrich_raid_targets(
+                            self._db.get_spy_targets(limit=100)
+                        )
+                    else:
+                        updated_rt: list[dict[str, Any]] = []
+                        for r_item in self._raid_targets:
+                            c_item = dict(r_item)
+                            if normalize_coords(c_item.get("coords") or c_item.get("target_coords") or "") == f_coords:
+                                c_item["has_debris"] = False
+                            updated_rt.append(c_item)
+                        self._raid_targets = tuple(updated_rt)
             if res.executed and res.action.kind == "ATTACK" and self._db is not None:
                 tname_s = (
                     game_data.safe_key(res.action.target_name)
@@ -2571,6 +3538,8 @@ class GameApiBridge:
                 dry_run=res.dry_run,
                 message=res.message,
             )
+            if not dry_run:
+                self._persist_runtime_state()
 
         after_state: Optional[GameState] = None
         res_updated = getattr(res, "updated_state", None)
@@ -2615,7 +3584,7 @@ class GameApiBridge:
                 state_to_record = replace(state_to_record, research_offers=())
             after_state = self._record_state(
                 state_to_record,
-                fetched_buildings=(res.action.kind == "BUILD"),
+                fetched_buildings=(res.action.kind in ("BUILD", "DEMOLISH_BUILDING")),
                 fetched_research=(res.action.kind == "RESEARCH"),
                 fetched_shipyard=(res.action.kind == "BUILD_SHIP"),
                 fetched_home=(res.action.kind == "CLAIM_TUTORIAL"),
@@ -2625,6 +3594,8 @@ class GameApiBridge:
                 self._active_planet_confirmed = False
             after_plan = self._plan_with_context(after_state)
         elif res.executed and res.action.kind == "SPY":
+            self._pending_spy_sync = True
+            self._last_spy_dispatched_at = time.monotonic()
             state_to_record = state
             obs_flag = False
             if obs_conf_bool is True:
@@ -2660,7 +3631,7 @@ class GameApiBridge:
             elif res.action.kind == "BUILD" and res.action.target_id == 8:
                 self._last_research_sync_at = 0.0
                 self._last_research_sync_sig = None
-            inc_b = res.action.kind in ("BUILD", "CLAIM_TUTORIAL")
+            inc_b = res.action.kind in ("BUILD", "DEMOLISH_BUILDING", "CLAIM_TUTORIAL")
             inc_r = res.action.kind == "RESEARCH"
             inc_h = res.action.kind == "CLAIM_TUTORIAL"
             snap = self._read_snapshot(
@@ -2815,15 +3786,336 @@ class GameApiBridge:
                     }
                 )
 
+        if cmd == "game_messages":
+            limit = _parse_command_int(
+                "limit",
+                payload.get("limit", 100),
+                min_val=1,
+                max_val=1000,
+            )
+            cat = payload.get("category")
+            cat_str = str(cat).strip() if isinstance(cat, str) and cat.strip() else None
+            coords_raw = payload.get("coords")
+            coords_str = str(coords_raw).strip() if isinstance(coords_raw, str) and coords_raw.strip() else None
+            with self._lock:
+                msgs = (
+                    self._db.get_game_messages(
+                        category=cat_str,
+                        coords=coords_str,
+                        limit=int(limit or 100),
+                    )
+                    if self._db is not None
+                    else []
+                )
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "count": len(msgs),
+                        "messages": _redact_api_payload(msgs),
+                    }
+                )
+
+        if cmd == "espionage_intel":
+            limit = _parse_command_int(
+                "limit",
+                payload.get("limit", 150),
+                min_val=1,
+                max_val=1000,
+            ) or 150
+            coords_raw = payload.get("coords")
+            coords_str = str(coords_raw).strip() if isinstance(coords_raw, str) and coords_raw.strip() else None
+            with self._lock:
+                raw_targets = (
+                    self._enrich_raid_targets(
+                        self._db.get_spy_targets(limit=int(limit), include_own=False)
+                    )
+                    if self._db is not None
+                    else list(self._raid_targets)
+                )
+                targets: list[dict[str, Any]] = []
+                for t in raw_targets:
+                    td = dict(t)
+                    res_d = td.get("resources") if isinstance(td.get("resources"), Mapping) else {}
+                    pig = _safe_api_float(res_d.get("pig_iron", 0.0))
+                    met = _safe_api_float(res_d.get("metal", 0.0))
+                    kryp = _safe_api_float(res_d.get("kryptonite", 0.0))
+                    spc = _safe_api_float(res_d.get("spice", 0.0))
+                    td["spice_eq"] = round(pig / 6.0 + met / 2.5 + kryp / 3.0 + spc, 1)
+                    targets.append(td)
+                raw_reports = (
+                    self._db.get_spy_reports(coords=coords_str, limit=int(limit))
+                    if self._db is not None
+                    else []
+                )
+                reports: list[dict[str, Any]] = []
+                for rep in raw_reports:
+                    rd = dict(rep)
+                    res_d = rd.get("resources") if isinstance(rd.get("resources"), Mapping) else {}
+                    pig = _safe_api_float(res_d.get("pig_iron", 0.0))
+                    met = _safe_api_float(res_d.get("metal", 0.0))
+                    kryp = _safe_api_float(res_d.get("kryptonite", 0.0))
+                    spc = _safe_api_float(res_d.get("spice", 0.0))
+                    rd["spice_eq"] = round(pig / 6.0 + met / 2.5 + kryp / 3.0 + spc, 1)
+                    reports.append(rd)
+                spied_targets_cnt = sum(
+                    1
+                    for t in targets
+                    if bool(t.get("has_spy_intel")) or _safe_api_float(t.get("last_spied_ts", 0.0)) > 0.0
+                )
+                summary = {
+                    "total_targets": len(targets),
+                    "spied_targets": spied_targets_cnt,
+                    "total_reports": len(reports),
+                    "spacia_count": sum(1 for t in targets if bool(t.get("is_spacia"))),
+                    "inactive_count": sum(1 for t in targets if bool(t.get("is_inactive"))),
+                    "debris_count": sum(1 for t in targets if bool(t.get("has_debris"))),
+                }
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "summary": summary,
+                            "targets": targets,
+                            "reports": reports,
+                        }
+                    )
+                )
+
+        if cmd == "colony_candidates":
+            limit = _parse_command_int(
+                "limit",
+                payload.get("limit", 200),
+                min_val=1,
+                max_val=1000,
+            ) or 200
+            with self._lock:
+                ap = self._last_state.active_planet() if self._last_state is not None else None
+                origin_coords = ap.coords if ap is not None else ""
+                min_fields = max(50, _safe_api_int(self.strategy_config.min_colony_fields, 300))
+                candidates = (
+                    self._db.get_colony_candidates(
+                        origin_coords=origin_coords,
+                        min_fields_target=min_fields,
+                        exclude_coords=self._own_planet_coords(),
+                        limit=int(limit),
+                    )
+                    if self._db is not None
+                    else []
+                )
+                grade_counts: dict[str, int] = {"S": 0, "A+": 0, "A": 0, "B": 0, "C": 0, "D": 0, "?": 0}
+                for c in candidates:
+                    g = str(c.get("grade") or "?")
+                    grade_counts[g] = grade_counts.get(g, 0) + 1
+                probed_count = sum(1 for c in candidates if bool(c.get("probed")))
+                unprobed_count = len(candidates) - probed_count
+                qualified_count = sum(1 for c in candidates if bool(c.get("meets_target")))
+                colony_ships = 0
+                spy_probes = 0
+                planet_count = 0
+                if self._last_state is not None:
+                    planet_count = len(self._last_state.planets)
+                    for p in self._last_state.planets:
+                        colony_ships += max(0, _safe_api_int(p.ships.get("s8", 0)))
+                        spy_probes += max(0, _safe_api_int(p.ships.get("s10", 0)))
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "origin_coords": origin_coords,
+                            "min_colony_fields": min_fields,
+                            "allow_colonize": bool(self.strategy_config.allow_colonize),
+                            "allow_galaxy_scan": bool(self.strategy_config.allow_galaxy_scan),
+                            "colony_ships": colony_ships,
+                            "spy_probes": spy_probes,
+                            "planet_count": planet_count,
+                            "grade_counts": grade_counts,
+                            "probed_count": probed_count,
+                            "unprobed_count": unprobed_count,
+                            "qualified_count": qualified_count,
+                            "candidates": candidates,
+                        }
+                    )
+                )
+
+        if cmd == "attack_results":
+            limit = _parse_command_int(
+                "limit",
+                payload.get("limit", 150),
+                min_val=1,
+                max_val=1000,
+            ) or 150
+            coords_raw = payload.get("coords")
+            coords_str = str(coords_raw).strip() if isinstance(coords_raw, str) and coords_raw.strip() else None
+            with self._lock:
+                battles = (
+                    self._db.get_battle_reports(coords=coords_str, limit=int(limit))
+                    if self._db is not None
+                    else []
+                )
+                raid_stats = dict(self._db.get_raid_stats() if self._db is not None else {})
+                now_ts = time.time()
+                hist_24h = raid_stats.get("history")
+                if isinstance(hist_24h, Sequence) and not isinstance(hist_24h, (str, bytes)):
+                    raid_stats["total_24h"] = sum(
+                        1
+                        for h in hist_24h
+                        if isinstance(h, Mapping)
+                        and _safe_api_float(h.get("attacked_ts", 0.0)) >= (now_ts - 86400.0)
+                    )
+                else:
+                    raid_stats["total_24h"] = 0
+                raw_targets = (
+                    self._enrich_raid_targets(
+                        self._db.get_spy_targets(limit=300, include_own=False)
+                    )
+                    if self._db is not None
+                    else list(self._raid_targets)
+                )
+                blocked_targets: list[dict[str, Any]] = []
+                for t in raw_targets:
+                    b_until = _safe_api_float(t.get("blocked_until_ts", 0.0))
+                    b_hits = _safe_api_int(t.get("bash_hits", 0))
+                    if b_until > now_ts or b_hits > 0:
+                        bt = dict(t)
+                        bt["remaining_seconds"] = max(0.0, round(b_until - now_ts, 1))
+                        bt["active_block"] = b_until > now_ts
+                        blocked_targets.append(bt)
+                blocked_targets.sort(
+                    key=lambda x: (
+                        0 if x.get("active_block") else 1,
+                        -_safe_api_float(x.get("remaining_seconds", 0.0)),
+                        -_safe_api_int(x.get("bash_hits", 0)),
+                    )
+                )
+                wins = sum(1 for b in battles if b.get("outcome") == "win")
+                losses = sum(1 for b in battles if b.get("outcome") == "loss")
+                draws = sum(1 for b in battles if b.get("outcome") not in ("win", "loss"))
+                total_loot_sp = round(
+                    sum(_safe_api_float((b.get("loot") or {}).get("spice_eq", 0.0)) for b in battles),
+                    1,
+                )
+                total_loss_sp = round(
+                    sum(
+                        _safe_api_float((b.get("attacker_losses") or {}).get("spice_eq", 0.0))
+                        for b in battles
+                    ),
+                    1,
+                )
+                summary = {
+                    "total_battles": len(battles),
+                    "wins": wins,
+                    "losses": losses,
+                    "draws": draws,
+                    "total_loot_spice_eq": total_loot_sp,
+                    "total_losses_spice_eq": total_loss_sp,
+                    "active_blocks_count": sum(1 for bt in blocked_targets if bt.get("active_block")),
+                }
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "summary": summary,
+                            "raid_stats": raid_stats,
+                            "battles": battles,
+                            "blocked_targets": blocked_targets,
+                        }
+                    )
+                )
+
+        if cmd == "recycler_results":
+            limit = _parse_command_int(
+                "limit",
+                payload.get("limit", 150),
+                min_val=1,
+                max_val=1000,
+            ) or 150
+            cat_raw = payload.get("category")
+            cat_str = (
+                str(cat_raw).strip()
+                if isinstance(cat_raw, str) and cat_raw.strip() and str(cat_raw).strip().lower() != "all"
+                else None
+            )
+            with self._lock:
+                recycles = (
+                    self._db.get_recycle_reports(limit=int(limit))
+                    if self._db is not None
+                    else []
+                )
+                raw_targets = (
+                    self._enrich_raid_targets(
+                        self._db.get_spy_targets(limit=200, include_own=False)
+                    )
+                    if self._db is not None
+                    else list(self._raid_targets)
+                )
+                debris_targets = [dict(t) for t in raw_targets if bool(t.get("has_debris"))]
+                other_emails = (
+                    self._db.get_game_messages(
+                        category=cat_str,
+                        exclude_categories=("spy_report", "battle_report", "recycle_report") if not cat_str else (),
+                        limit=int(limit),
+                    )
+                    if self._db is not None
+                    else []
+                )
+                db_sum = self._db.summary() if self._db is not None else {}
+                cat_counts = dict(db_sum.get("message_categories") or {})
+                cat_counts["general"] = sum(
+                    _safe_api_int(cat_counts.get(k, 0))
+                    for k in ("general", "player", "system", "other")
+                )
+                recyclers_owned = 0
+                if self._last_state is not None:
+                    for p in self._last_state.planets:
+                        recyclers_owned += max(0, _safe_api_int(p.ships.get("s11", 0)))
+                tot_pig = sum(_safe_api_int(r.get("harvested_pig_iron", 0)) for r in recycles)
+                tot_met = sum(_safe_api_int(r.get("harvested_metal", 0)) for r in recycles)
+                tot_kry = sum(_safe_api_int(r.get("harvested_kryptonite", 0)) for r in recycles)
+                tot_spi = sum(_safe_api_int(r.get("harvested_spice", 0)) for r in recycles)
+                tot_sp = round(sum(_safe_api_float(r.get("spice_eq", 0.0)) for r in recycles), 1)
+                summary = {
+                    "total_runs": len(recycles),
+                    "total_pig_iron": tot_pig,
+                    "total_metal": tot_met,
+                    "total_kryptonite": tot_kry,
+                    "total_spice": tot_spi,
+                    "total_spice_eq": tot_sp,
+                    "active_debris_count": len(debris_targets),
+                    "other_email_count": len(other_emails),
+                    "recyclers_owned": recyclers_owned,
+                    "category_counts": cat_counts,
+                }
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "summary": summary,
+                            "recycles": recycles,
+                            "debris_targets": debris_targets,
+                            "other_emails": other_emails,
+                        }
+                    )
+                )
+
         if cmd == "bot_control":
             with self._lock:
                 if "paused" in payload:
-                    self._bot_control["paused"] = bool(payload["paused"])
+                    paused_flag = bool(payload["paused"])
+                    self._bot_control["paused"] = paused_flag
+                    if not paused_flag:
+                        self._bot_control["captcha_blocked"] = False
+                        self._bot_control["captcha_message"] = None
                 if "mode_override" in payload:
                     raw_mode = payload["mode_override"]
                     if raw_mode not in (None, "live", "dry-run"):
                         raise ApiRequestError("mode_override must be null, 'live', or 'dry-run'.")
                     self._bot_control["mode_override"] = raw_mode
+                self._persist_runtime_state()
                 return _sanitize_finite_json(
                     _redact_api_payload(
                         {"ok": True, "command": cmd, "bot_control": dict(self._bot_control)}
@@ -2834,13 +4126,35 @@ class GameApiBridge:
             raw_cfg = payload.get("config")
             if not isinstance(raw_cfg, Mapping):
                 raise ApiRequestError("'update_config' requires a 'config' dictionary.")
-            _validate_config_patch(raw_cfg)
+            _validate_config_patch(raw_cfg, strict_bools=False)
+            inc_ag = False
+            if "include_action_graph" in payload and payload["include_action_graph"] is not None:
+                if not isinstance(payload["include_action_graph"], bool):
+                    raise ApiRequestError("'update_config' field 'include_action_graph' must be a boolean.")
+                inc_ag = bool(payload["include_action_graph"])
+            upd_pid = _parse_command_int(
+                "planet_id",
+                payload.get("planet_id"),
+                allow_none=True,
+                min_val=1,
+                max_val=2**63 - 1,
+            )
             with self._lock:
                 prev_cfg = self.strategy_config
                 merged = {**asdict(prev_cfg), **raw_cfg}
+                if isinstance(raw_cfg.get("shipyard_targets"), Mapping):
+                    merged["shipyard_targets"] = {
+                        **dict(prev_cfg.shipyard_targets or {}),
+                        **dict(raw_cfg["shipyard_targets"]),
+                    }
                 new_cfg = strategy_config_from_dict(merged)
                 save_strategy_config(new_cfg, self.config_path)
                 self.strategy_config = new_cfg
+                if self._db is not None:
+                    save_cfg_fn = getattr(self._db, "save_strategy_config_snapshot", None)
+                    if callable(save_cfg_fn):
+                        save_cfg_fn(asdict(new_cfg))
+                self._invalidate_dashboard_cache()
                 ga_params_changed = any(
                     getattr(new_cfg, k) != getattr(prev_cfg, k)
                     for k in (
@@ -2854,19 +4168,127 @@ class GameApiBridge:
                 )
                 if normalize_planner_mode(new_cfg.planner_mode) != "ga_nn" or ga_params_changed:
                     self._last_optimizer_summary = None
+                self._persist_runtime_state()
                 for ex in (self._live_executor, self._dry_executor):
                     ex.allow_fleetsave = new_cfg.allow_fleetsave
                     ex.allow_raids = new_cfg.allow_raids
+                    ex.allow_colonize = new_cfg.allow_colonize
                     ex.max_actions_per_hour = _safe_hourly_budget(new_cfg.max_actions_per_hour, 60)
-                return _sanitize_finite_json(
-                    _redact_api_payload(
+                    if "max_actions_per_hour" in raw_cfg:
+                        ex.enforce_hourly_cap = True
+                upd_resp: dict[str, Any] = {
+                    "ok": True,
+                    "command": cmd,
+                    "config": asdict(new_cfg),
+                }
+                if inc_ag:
+                    ag_state = (
+                        self._attach_raid_stats(self._last_state)
+                        if self._last_state is not None
+                        else None
+                    )
+                    if ag_state is not None and upd_pid is not None:
+                        self._resolve_planet(ag_state, upd_pid)
+                    if ag_state is not None:
+                        ag_actions, ag_opt = self._plan_with_summary(
+                            ag_state,
+                            config=new_cfg,
+                            record_summary=True,
+                            _already_enriched=True,
+                        )
+                    else:
+                        ag_actions, ag_opt = [], None
+                    upd_resp["action_graph"] = _redact_action_graph_strings(
+                        build_action_graph(
+                            ag_state,
+                            ag_actions,
+                            effective_config=new_cfg,
+                            active_config=new_cfg,
+                            simulated=False,
+                            optimizer_summary=ag_opt,
+                            planet_filter=upd_pid,
+                            sanitize=False,
+                        )
+                    )
+                return _sanitize_finite_json(upd_resp)
+
+        if cmd == "action_graph":
+            raw_ag_cfg = payload.get("config")
+            if raw_ag_cfg is not None:
+                if not isinstance(raw_ag_cfg, Mapping):
+                    raise ApiRequestError("'action_graph' field 'config' must be a dictionary.")
+                _validate_config_patch(raw_ag_cfg)
+            ag_req_mode: Optional[str] = None
+            if "planner_mode" in payload and payload["planner_mode"] is not None:
+                raw_ag_mode = payload["planner_mode"]
+                if not isinstance(raw_ag_mode, str) or not raw_ag_mode.strip():
+                    raise ApiRequestError(
+                        "'planner_mode' override must be a non-empty string ('priority' or 'ga_nn')."
+                    )
+                try:
+                    ag_req_mode = normalize_planner_mode(raw_ag_mode, strict=True)
+                except ValueError as exc:
+                    raise ApiRequestError(_redact_api_payload(exc)) from exc
+            has_ag_overrides = bool(raw_ag_cfg) or (ag_req_mode is not None)
+            if "simulated" in payload and payload["simulated"] is not None:
+                if not isinstance(payload["simulated"], bool):
+                    raise ApiRequestError("'action_graph' field 'simulated' must be a boolean.")
+                ag_simulated = bool(payload["simulated"])
+            else:
+                ag_simulated = has_ag_overrides
+            ag_pid = _parse_command_int(
+                "planet_id",
+                payload.get("planet_id"),
+                allow_none=True,
+                min_val=1,
+                max_val=2**63 - 1,
+            )
+            ag_refresh_raw = payload.get("refresh", False)
+            if ag_refresh_raw is not None and not isinstance(ag_refresh_raw, bool):
+                raise ApiRequestError("'action_graph' field 'refresh' must be a boolean.")
+            ag_force_refresh = bool(ag_refresh_raw)
+            if not ag_force_refresh:
+                with self._lock:
+                    effective_ag_cfg, _ = merge_strategy_config_overrides(
+                        self.strategy_config,
+                        raw_ag_cfg,
+                        planner_mode_override=ag_req_mode,
+                    )
+                    ag_state = (
+                        self._attach_raid_stats(self._last_state)
+                        if self._last_state is not None
+                        else None
+                    )
+                    if ag_state is not None and ag_pid is not None:
+                        self._resolve_planet(ag_state, ag_pid)
+                    if ag_state is not None:
+                        ag_actions, ag_opt_summary = self._plan_with_summary(
+                            ag_state,
+                            config=effective_ag_cfg,
+                            record_summary=(not ag_simulated and not has_ag_overrides),
+                            _already_enriched=True,
+                        )
+                    else:
+                        ag_actions, ag_opt_summary = [], None
+                    graph_obj = _redact_action_graph_strings(
+                        build_action_graph(
+                            ag_state,
+                            ag_actions,
+                            effective_config=effective_ag_cfg,
+                            active_config=self.strategy_config,
+                            simulated=ag_simulated,
+                            optimizer_summary=ag_opt_summary,
+                            planet_filter=ag_pid,
+                            sanitize=False,
+                        )
+                    )
+                    return _sanitize_finite_json(
                         {
                             "ok": True,
                             "command": cmd,
-                            "config": asdict(new_cfg),
+                            "action_graph": graph_obj,
                         }
                     )
-                )
 
         if cmd == "simulate_combat":
             with self._lock:
@@ -2995,6 +4417,8 @@ class GameApiBridge:
                             return None
                         if planned.kind == "ESCAPE_FLIGHT" and not self._live_executor.allow_fleetsave:
                             return None
+                        if planned.kind == "COLONIZE" and not self._live_executor.allow_colonize:
+                            return None
                         return _get_client()
 
                     def _cached_or_fetch(
@@ -3059,7 +4483,7 @@ class GameApiBridge:
                                 include_home=False,
                                 priority="interactive",
                             )
-                        if self._last_state is not None:
+                        if self._last_state is not None and self._last_snapshot_at >= 0.0:
                             is_warm = (now_mono - self._last_snapshot_at) <= 15.0
                             is_cross_planet = (
                                 target_pid is not None
@@ -3249,6 +4673,44 @@ class GameApiBridge:
                             )
                         )
 
+                    if cmd == "action_graph":
+                        effective_ag_cfg, _ = merge_strategy_config_overrides(
+                            self.strategy_config,
+                            raw_ag_cfg,
+                            planner_mode_override=ag_req_mode,
+                        )
+                        state = _cached_or_fetch(
+                            include_buildings=True,
+                            include_research=False,
+                            include_shipyard=False,
+                            priority="normal",
+                        )
+                        if ag_pid is not None:
+                            self._resolve_planet(state, ag_pid)
+                        actions, ag_opt_summary = self._plan_with_summary(
+                            state,
+                            config=effective_ag_cfg,
+                            record_summary=(not ag_simulated and not has_ag_overrides),
+                        )
+                        graph_obj = build_action_graph(
+                            state,
+                            actions,
+                            effective_config=effective_ag_cfg,
+                            active_config=self.strategy_config,
+                            simulated=ag_simulated,
+                            optimizer_summary=ag_opt_summary,
+                            planet_filter=ag_pid,
+                        )
+                        return _sanitize_finite_json(
+                            _redact_api_payload(
+                                {
+                                    "ok": True,
+                                    "command": cmd,
+                                    "action_graph": graph_obj,
+                                }
+                            )
+                        )
+
                     if cmd == "buildings_eta":
                         state = _cached_or_fetch(
                             include_buildings=True,
@@ -3429,6 +4891,25 @@ class GameApiBridge:
                                 system=sys_int,
                                 priority="interactive",
                             )
+                        elif action == "internalMessages" and isinstance(payload.get("message_type"), str):
+                            html = self._call_with_optional_priority(
+                                client.open_messages,
+                                payload["message_type"].strip(),
+                                priority="interactive",
+                            )
+                        elif action == "internalBuildings" and payload.get("building_detail_id") is not None:
+                            b_det_id = _parse_command_int(
+                                "building_detail_id",
+                                payload.get("building_detail_id"),
+                                min_val=1,
+                                max_val=99,
+                            )
+                            assert b_det_id is not None
+                            html = self._call_with_optional_priority(
+                                client.open_building_detail,
+                                b_det_id,
+                                priority="interactive",
+                            )
                         else:
                             html = self._call_with_optional_priority(
                                 client.navigate_menu,
@@ -3577,7 +5058,7 @@ class GameApiBridge:
                             min_val=1,
                             max_val=2**63 - 1,
                         )
-                        if self._last_state is not None and not force_refresh:
+                        if self._last_state is not None and self._last_snapshot_at >= 0.0 and not force_refresh:
                             state = self._last_state
                         else:
                             live_client = _get_client()
@@ -3636,23 +5117,141 @@ class GameApiBridge:
                         )
                         return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
-                    if cmd == "sync_spy_reports":
+                    if cmd in ("sync_spy_reports", "sync_messages"):
                         client = _get_client()
                         self._call_with_optional_priority(client.ensure_in_game, priority="interactive")
+                        own_coords = self._own_planet_coords()
                         html = self._call_with_optional_priority(
                             client.open_messages,
                             "spio",
                             priority="interactive",
                         )
-                        reports = parse_spy_messages_html(html)
-                        synced = self._persist_spy_reports(reports)
+                        reports, ingested_cnt, del_ok, spio_post = self._ingest_and_delete_page_messages(
+                            client,
+                            html,
+                            folder_type="spio",
+                            own_coords=own_coords,
+                            priority="interactive",
+                            always_persist_spy=True,
+                        )
+                        folder_links = extract_message_folder_links(spio_post or html)
+                        folder_counts: dict[str, dict[str, int]] = {
+                            ftype: {"unread": int(ucnt), "total": int(tot)}
+                            for ftype, _href, ucnt, tot in folder_links
+                            if ftype
+                        }
+                        if cmd == "sync_messages":
+                            spio_rem = folder_counts.get("spio", {}).get("total", 0)
+                            if del_ok and spio_rem > 0 and self.rate_limit_remaining() <= 0.0:
+                                spio2_html = self._call_with_optional_priority(
+                                    client.open_messages,
+                                    "spio",
+                                    priority="interactive",
+                                )
+                                rep2, ing2, del2, spio_post2 = self._ingest_and_delete_page_messages(
+                                    client,
+                                    spio2_html,
+                                    folder_type="spio",
+                                    own_coords=own_coords,
+                                    priority="interactive",
+                                    always_persist_spy=True,
+                                )
+                                if rep2:
+                                    reports.extend(rep2)
+                                ingested_cnt += ing2
+                                del_ok = del_ok or del2
+                                for ft2, _h2, u2, t2 in extract_message_folder_links(spio_post2 or spio2_html):
+                                    if ft2:
+                                        folder_counts[ft2] = {"unread": int(u2), "total": int(t2)}
+                            if not folder_links and not reports and ingested_cnt == 0:
+                                inbox_html = self._call_with_optional_priority(
+                                    client.open_messages,
+                                    "",
+                                    priority="interactive",
+                                )
+                                inb_reports, inb_cnt, inb_del, inb_post = self._ingest_and_delete_page_messages(
+                                    client,
+                                    inbox_html,
+                                    folder_type="inbox",
+                                    own_coords=own_coords,
+                                    priority="interactive",
+                                    always_persist_spy=True,
+                                )
+                                if inb_reports:
+                                    reports.extend(inb_reports)
+                                ingested_cnt += inb_cnt
+                                del_ok = del_ok or inb_del
+                                for ft_i, _hi, ui, ti in extract_message_folder_links(inb_post or inbox_html):
+                                    if ft_i:
+                                        folder_counts[ft_i] = {"unread": int(ui), "total": int(ti)}
+                            for ftype in ("battle", "fleet", "normal", "alliance", "admin"):
+                                ft_tot = folder_counts.get(ftype, {}).get("total", 0)
+                                if ft_tot <= 0 or self.rate_limit_remaining() > 0.0:
+                                    continue
+                                for _pass in range(2 if ft_tot > 12 else 1):
+                                    if self.rate_limit_remaining() > 0.0:
+                                        break
+                                    f_html = self._call_with_optional_priority(
+                                        client.open_messages,
+                                        ftype,
+                                        priority="interactive",
+                                    )
+                                    f_rep, f_ing, f_del, f_post = self._ingest_and_delete_page_messages(
+                                        client,
+                                        f_html,
+                                        folder_type=ftype,
+                                        own_coords=own_coords,
+                                        priority="interactive",
+                                        always_persist_spy=True,
+                                    )
+                                    if f_rep:
+                                        reports.extend(f_rep)
+                                    ingested_cnt += f_ing
+                                    del_ok = del_ok or f_del
+                                    for ftu, _hu, uu, tu in extract_message_folder_links(f_post or f_html):
+                                        if ftu == ftype:
+                                            folder_counts[ftype] = {"unread": int(uu), "total": int(tu)}
+                                    if not f_del or folder_counts.get(ftype, {}).get("total", 0) <= 0:
+                                        break
+                        else:
+                            last_unread = (
+                                (self._last_state.unread_messages or {})
+                                if self._last_state is not None
+                                else {}
+                            )
+                            should_check_inbox = (
+                                _safe_api_int(last_unread.get("spio", 0)) <= 0
+                                and _safe_api_int(last_unread.get("total", 0)) > 0
+                            )
+                            if not reports and ingested_cnt == 0 and should_check_inbox:
+                                inbox_html = self._call_with_optional_priority(
+                                    client.open_messages,
+                                    "",
+                                    priority="interactive",
+                                )
+                                inb_reports, inb_cnt, inb_del, _ = self._ingest_and_delete_page_messages(
+                                    client,
+                                    inbox_html,
+                                    folder_type="inbox",
+                                    own_coords=own_coords,
+                                    priority="interactive",
+                                    always_persist_spy=True,
+                                )
+                                reports = inb_reports
+                                ingested_cnt += inb_cnt
+                                del_ok = del_ok or inb_del
+                        if del_ok:
+                            self._last_synced_unread_total = 0
                         if self._last_state is not None:
                             self._refresh_cached_economy(self._last_state)
                         return _sanitize_finite_json(
                             {
                                 "ok": True,
                                 "command": cmd,
-                                "synced_reports": synced,
+                                "synced_reports": len(reports),
+                                "archived_messages": ingested_cnt,
+                                "deleted_in_game": del_ok,
+                                "folder_counts": folder_counts,
                                 "reports": _redact_api_payload([asdict(r) for r in reports]),
                             }
                         )
@@ -3729,6 +5328,119 @@ class GameApiBridge:
                             reason="API spy command",
                             executable_now=True,
                         )
+                        return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
+
+                    if cmd == "recycle":
+                        raw_target_coords = payload.get("target_coords")
+                        if not isinstance(raw_target_coords, str):
+                            raise ApiRequestError(
+                                "'recycle' command requires 'target_coords' formatted as GG:SSS:PP."
+                            )
+                        target_coords = raw_target_coords.strip()
+                        m_rec = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", target_coords, re.ASCII)
+                        if not m_rec:
+                            raise ApiRequestError(
+                                "'recycle' command requires 'target_coords' formatted as GG:SSS:PP."
+                            )
+                        norm_target = normalize_coords(m_rec.group(1))
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
+                        state = _resolve_fleet_command_state(pid, is_spy=True)
+                        if pid is None:
+                            rec_p = next(
+                                (p for p in state.planets if _safe_api_int(p.ships.get("s11", 0)) > 0),
+                                None,
+                            )
+                            planet = rec_p or self._resolve_planet(state, None)
+                        else:
+                            planet = self._resolve_planet(state, pid)
+                        default_rec_qty = max(1, _safe_api_int(planet.ships.get("s11", 0), 1))
+                        qty_parsed = _parse_command_int(
+                            "quantity",
+                            payload.get("quantity", default_rec_qty),
+                            min_val=1,
+                            max_val=1_000_000_000,
+                        )
+                        assert qty_parsed is not None
+                        planned = PlannedAction(
+                            priority="P2",
+                            kind="RECYCLE",
+                            planet_id=planet.planet_id,
+                            planet_coords=planet.coords,
+                            target_id=11,
+                            target_level=qty_parsed,
+                            target_name=f"Rubble -> {norm_target}",
+                            reason="API recycle command",
+                            executable_now=True,
+                        )
+                        return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
+
+                    if cmd == "colonize":
+                        raw_target_coords = payload.get("target_coords")
+                        if not isinstance(raw_target_coords, str):
+                            raise ApiRequestError(
+                                "'colonize' command requires 'target_coords' formatted as GG:SSS:PP."
+                            )
+                        target_coords = raw_target_coords.strip()
+                        m_col = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", target_coords, re.ASCII)
+                        if not m_col:
+                            raise ApiRequestError(
+                                "'colonize' command requires 'target_coords' formatted as GG:SSS:PP."
+                            )
+                        norm_target = normalize_coords(m_col.group(1))
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
+                        state = _resolve_fleet_command_state(pid, is_spy=True)
+                        if pid is None:
+                            col_p = next(
+                                (p for p in state.planets if _safe_api_int(p.ships.get("s8", 0)) > 0),
+                                None,
+                            )
+                            planet = col_p or self._resolve_planet(state, None)
+                        else:
+                            planet = self._resolve_planet(state, pid)
+                        planned = PlannedAction(
+                            priority="P2",
+                            kind="COLONIZE",
+                            planet_id=planet.planet_id,
+                            planet_coords=planet.coords,
+                            target_id=8,
+                            target_level=1,
+                            target_name=f"Colonize -> {norm_target}",
+                            reason="API colonize command",
+                            executable_now=True,
+                        )
+                        if not dry_run and not self._live_executor.allow_colonize:
+                            return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
+                        if any(normalize_coords(p.coords) == norm_target for p in state.planets):
+                            planned_own = replace(
+                                planned,
+                                reason="Own colony safety check",
+                                executable_now=False,
+                            )
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "dry_run": dry_run,
+                                        "message": f"Aborted: {norm_target} is already one of your own planets.",
+                                        "action": self._serialize_action(planned_own, state),
+                                        "next_action": None,
+                                    }
+                                )
+                            )
                         return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
                     if cmd == "attack":
@@ -3838,6 +5550,9 @@ class GameApiBridge:
                                 is_inactive=is_inactive,
                                 is_spacia=is_spacia,
                             ):
+                                until_cd = bash.blocked_until(norm_target)
+                                rem_cd = max(0.0, until_cd - time.time()) if until_cd > 0.0 else 0.0
+                                cd_note = f" ({rem_cd:.0f}s cooldown remaining)" if rem_cd > 0.0 else ""
                                 return _sanitize_finite_json(
                                     _redact_api_payload(
                                         {
@@ -3845,7 +5560,24 @@ class GameApiBridge:
                                             "command": cmd,
                                             "executed": False,
                                             "dry_run": dry_run,
-                                            "message": f"Aborted: BashTracker 3/24h limit reached for {norm_target}.",
+                                            "message": f"Aborted: BashTracker 3/24h limit reached for {norm_target}{cd_note}.",
+                                            "action": self._serialize_action(planned, state),
+                                            "next_action": None,
+                                        }
+                                    )
+                                )
+                        elif norm_target in self._target_blocks:
+                            mem_until, _ = self._target_blocks[norm_target]
+                            rem_cd = mem_until - time.time()
+                            if rem_cd > 0.0:
+                                return _sanitize_finite_json(
+                                    _redact_api_payload(
+                                        {
+                                            "ok": True,
+                                            "command": cmd,
+                                            "executed": False,
+                                            "dry_run": dry_run,
+                                            "message": f"Aborted: BashTracker 3/24h limit reached for {norm_target} ({rem_cd:.0f}s cooldown remaining).",
                                             "action": self._serialize_action(planned, state),
                                             "next_action": None,
                                         }
@@ -3946,6 +5678,128 @@ class GameApiBridge:
                             bid,
                             pid,
                             allow_live_verify=not dry_run,
+                        )
+                        return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
+
+                    if cmd == "demolish_building":
+                        raw_bid = payload.get("building_id", 6)
+                        bid = _parse_command_int(
+                            "building_id", raw_bid, min_val=1, max_val=2**31 - 1
+                        )
+                        assert bid is not None
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
+                        state = _cached_or_fetch(
+                            include_buildings=bool(force_refresh or (dry_run and self._last_state is None)),
+                            include_research=False,
+                            include_shipyard=False,
+                            include_home=False,
+                            priority="interactive",
+                        )
+                        planet = self._resolve_planet(state, pid)
+                        binfo = game_data.BUILDING_BY_ID.get(bid)
+                        bname = (
+                            str(binfo.get("name") or f"Building {bid}")
+                            if isinstance(binfo, Mapping)
+                            else f"Building {bid}"
+                        )
+                        cur_lvl = planet.building_level(bid)
+                        ptype_norm = normalize_planet_type(planet)
+                        active_p = state.active_planet()
+                        is_active_p = active_p is not None and planet.planet_id == active_p.planet_id
+                        specs_map = state.specs if isinstance(state.specs, Mapping) else {}
+                        default_slots = (
+                            1
+                            if ptype_norm == "asteroid"
+                            else (6 if _safe_api_int(specs_map.get("construction_commander", 0), 0) > 0 else 5)
+                        )
+                        max_slots = max(
+                            1,
+                            _safe_api_int(specs_map.get("max_build_slots", default_slots), default_slots),
+                        )
+                        planet_b_jobs = [
+                            q
+                            for q in (state.active_queues or ())
+                            if getattr(q, "category", None) == "building"
+                            and (
+                                (q_pid == planet.planet_id)
+                                if (q_pid := game_data.safe_optional_int(getattr(q, "planet_id", None), None))
+                                is not None
+                                else is_active_p
+                            )
+                        ]
+                        q_busy = len(planet_b_jobs) >= max_slots
+                        b_in_queue = any(
+                            game_data.safe_optional_int(getattr(q, "building_id", None), None) == bid
+                            or bname.lower() in str(getattr(q, "name", "") or "").lower()
+                            or (bid == 6 and "thermal" in str(getattr(q, "name", "") or "").lower())
+                            for q in planet_b_jobs
+                        )
+                        can_dem = True
+                        if cur_lvl < 1:
+                            can_dem = False
+                            reason = f"{bname} is already at Level 0"
+                        elif ptype_norm in ("asteroid", "raid"):
+                            can_dem = False
+                            reason = f"Building demolition unavailable on {ptype_norm}"
+                        elif q_busy or b_in_queue:
+                            can_dem = False
+                            reason = "Building queue busy"
+                        else:
+                            reason = f"Demolish {bname} L{cur_lvl} -> L{cur_lvl - 1} to reclaim 1 field"
+                            raw_loss = max(0, game_data.building_energy_delta(bid, cur_lvl))
+                            if raw_loss > 0:
+                                r2 = max(
+                                    0,
+                                    min(
+                                        200,
+                                        _safe_api_int(
+                                            (
+                                                state.researches
+                                                if isinstance(state.researches, Mapping)
+                                                else {}
+                                            ).get("r2", 0),
+                                            0,
+                                        ),
+                                    ),
+                                )
+                                safe_loss = int(math.ceil(raw_loss * (1.0 + 0.01 * r2)))
+                                throttled_res = 0
+                                econ_map = planet.economy_rates if isinstance(planet.economy_rates, Mapping) else {}
+                                for mbid, rkey in (
+                                    (1, "resource1"),
+                                    (2, "resource2"),
+                                    (3, "resource3"),
+                                    (4, "resource4"),
+                                ):
+                                    mlvl = planet.building_level(mbid)
+                                    if mlvl <= 0:
+                                        continue
+                                    mpct = max(0, min(100, _safe_api_int(econ_map.get(rkey, 100), 100)))
+                                    if mpct < 100:
+                                        full_e = game_data.mine_energy_needed(mbid, mlvl)
+                                        throttled_res += max(0, int(math.ceil(full_e * (100 - mpct) / 100.0)))
+                                if _safe_api_int(planet.energy.net, 0) - throttled_res - safe_loss < 0:
+                                    can_dem = False
+                                    reason = (
+                                        f"Insufficient spare energy to demolish {bname} safely "
+                                        f"(upgrade Fusion plant first)"
+                                    )
+                        planned = PlannedAction(
+                            priority="P1",
+                            kind="DEMOLISH_BUILDING",
+                            planet_id=planet.planet_id,
+                            planet_coords=planet.coords,
+                            target_id=bid,
+                            target_name=bname,
+                            target_level=max(0, cur_lvl - 1),
+                            reason=reason,
+                            executable_now=can_dem,
                         )
                         return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
@@ -4309,7 +6163,17 @@ class GameApiBridge:
                         details={"command": cmd, "payload": payload},
                     )
                 raise
-            except (SpaceInvasionAuthError, AntiBotChallengeError, Exception) as exc:
+            except AntiBotChallengeError as exc:
+                self._record_antibot_pause(exc)
+                if self.log_dir is not None:
+                    append_crash_debug_log(
+                        component="api_server.handle_command",
+                        event=f"antibot_challenge:{cmd}",
+                        error=exc,
+                        details={"command": cmd, "payload": payload},
+                    )
+                raise
+            except (SpaceInvasionAuthError, Exception) as exc:
                 if self.log_dir is not None and not isinstance(exc, ApiRequestError):
                     append_crash_debug_log(
                         component="api_server.handle_command",
@@ -4373,6 +6237,30 @@ def create_api_server(
         }
         headers = {"Retry-After": str(max(1, int(math.ceil(rem))))}
         return body, headers
+
+    def _build_antibot_response(exc: AntiBotChallengeError) -> dict[str, Any]:
+        rec_fn = getattr(bridge, "_record_antibot_pause", None)
+        if callable(rec_fn):
+            try:
+                rec_fn(exc)
+            except Exception:
+                pass
+        err_txt = str(_redact_api_payload(exc)).strip()
+        if not any(
+            tok in err_txt.lower()
+            for tok in ("captcha", "anti-bot", "antibot", "turnstile", "sicherheitspr")
+        ):
+            err_txt = (
+                f"CAPTCHA / anti-bot challenge: {err_txt}"
+                if err_txt
+                else "CAPTCHA / anti-bot challenge detected."
+            )
+        return {
+            "ok": False,
+            "captcha_detected": True,
+            "paused": True,
+            "error": _redact_api_payload(err_txt),
+        }
 
     class Handler(BaseHTTPRequestHandler):
         def _send_json(
@@ -4457,6 +6345,8 @@ def create_api_server(
                     body,
                     extra_headers=headers,
                 )
+            except AntiBotChallengeError as exc:
+                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, _build_antibot_response(exc))
             except SpaceInvasionAuthError as exc:
                 self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": _redact_api_payload(exc)})
             except Exception as exc:
@@ -4499,6 +6389,9 @@ def create_api_server(
             except RateLimitError as exc:
                 body, extra_headers = _build_rate_limit_response(exc)
                 status_code = HTTPStatus.TOO_MANY_REQUESTS
+            except AntiBotChallengeError as exc:
+                status_code = HTTPStatus.SERVICE_UNAVAILABLE
+                body = _build_antibot_response(exc)
             except SpaceInvasionAuthError as exc:
                 status_code = HTTPStatus.SERVICE_UNAVAILABLE
                 body = {"ok": False, "error": _redact_api_payload(exc)}

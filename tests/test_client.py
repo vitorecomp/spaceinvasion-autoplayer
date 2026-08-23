@@ -2498,6 +2498,48 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             )
         _ = asdict(p_not_full)
 
+    def test_resolve_sid_query_returns_empty_without_sid_and_never_wraps_urls(self) -> None:
+        driver = _FakeDriver()
+        driver.current_url = "https://spaceinvasion.bitmeup.com/indexGame.es"
+        driver.frames["F_Navi"].si_sid = ""
+        driver.frames["F_Navi"].href = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalMenu"
+        driver.frames["F_Navi"].links = []
+        driver.frames["F_Hauptframe"].href = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome"
+        driver.frames["F_Hauptframe"].links = []
+
+        client = GameBrowserClient(driver, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        self.assertEqual(client._resolve_sid_query(), "")
+
+        driver.frames["F_Hauptframe"].href = "about:blank"
+        self.assertEqual(client._resolve_sid_query(), "")
+
+        # Even if a custom driver returns a raw URL from F_Hauptframe JS, never wrap it into "sid=https://..."
+        custom_drv = MagicMock()
+        custom_drv.current_url = "https://spaceinvasion.bitmeup.com/indexGame.es"
+        custom_drv.find_elements.return_value = []
+        custom_drv.execute_script.side_effect = [
+            "",
+            "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalMenu",
+            "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome",
+        ]
+        custom_cli = GameBrowserClient(custom_drv, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        self.assertEqual(custom_cli._resolve_sid_query(), "")
+
+        # Valid token or sid= link inside F_Hauptframe is still extracted cleanly
+        custom_drv.execute_script.side_effect = [
+            "",
+            "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalMenu",
+            "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome&sid=hfToken99",
+        ]
+        self.assertEqual(custom_cli._resolve_sid_query(), "sid=hfToken99")
+
+        custom_drv.execute_script.side_effect = [
+            "",
+            "about:blank",
+            "rawWindowSid42",
+        ]
+        self.assertEqual(custom_cli._resolve_sid_query(), "sid=rawWindowSid42")
+
 
 if __name__ == "__main__":
     unittest.main()

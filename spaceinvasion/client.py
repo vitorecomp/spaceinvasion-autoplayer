@@ -12,7 +12,7 @@ import re
 import secrets
 import threading
 import time
-from typing import Any, Callable, Deque, Optional
+from typing import Any, Callable, Deque, Optional, Sequence
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
@@ -49,6 +49,7 @@ from spaceinvasion.state import (
     parse_ticker_rates,
     parse_tutorial_from_home,
     parse_unit_factory_page,
+    parse_unread_banner_count,
 )
 
 DEFAULT_MIN_NAV_DELAY: tuple[float, float] = (0.9, 1.8)
@@ -822,10 +823,16 @@ class GameBrowserClient:
 
             in_planets_frame = False
             frame_html = ""
+            top_shell_html = ""
             missing_exc: Optional[NoSuchElementException] = None
             dom_epoch_seen = getattr(self, "_dom_healthy_epoch", 0)
             with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
                 self.driver.switch_to.default_content()
+                try:
+                    top_src = getattr(self.driver, "page_source", "")
+                    top_shell_html = top_src if isinstance(top_src, str) else ""
+                except Exception:
+                    top_shell_html = ""
                 try:
                     f_planets = self.driver.find_element(By.ID, "F_planets")
                     self.driver.find_element(By.ID, "F_Hauptframe")
@@ -842,6 +849,21 @@ class GameBrowserClient:
                         frame_html = str(getattr(self.driver, "page_source", "") or "")
                     except Exception:
                         frame_html = ""
+
+            if top_shell_html:
+                top_issue = detect_antibot_challenge(200, top_shell_html)
+                if top_issue:
+                    err_top_ab = AntiBotChallengeError(
+                        f"{top_issue}. Stopping automation; handle verification in Chrome."
+                    )
+                    if self.detach_on_close and getattr(self.driver, "__class__", object).__module__.startswith("selenium"):
+                        append_crash_debug_log(
+                            component="client.ensure_in_game",
+                            event="antibot_challenge",
+                            error=err_top_ab,
+                            details=self._capture_dom_diag(top_shell_html),
+                        )
+                    raise err_top_ab
 
             if missing_exc is None:
                 self.page_limiter.clear_throttle_recovery()
@@ -1135,6 +1157,29 @@ class GameBrowserClient:
             m_top = _SID_TOKEN_RE.search(top_url)
             if m_top:
                 return f"sid={m_top.group(1)}"
+        except Exception:
+            pass
+
+        try:
+            self._switch_frame("F_Hauptframe")
+            hf_sid = self.driver.execute_script(
+                "if (window.sid) return String(window.sid);"
+                "if (window.SI_TPL && SI_TPL.galaxyMap && SI_TPL.galaxyMap.sid) return String(SI_TPL.galaxyMap.sid);"
+                "var a = document.querySelector('a[href*=\"sid=\"]');"
+                "if (a && a.href) return String(a.href);"
+                "var oc = document.querySelector('[onclick*=\"sid=\"]');"
+                "if (oc) return String(oc.getAttribute('onclick') || '');"
+                "return '';"
+            )
+            if isinstance(hf_sid, str) and hf_sid.strip():
+                hf_clean = hf_sid.strip().lstrip("?&")
+                m_hf = _SID_TOKEN_RE.search(hf_clean)
+                if m_hf:
+                    return f"sid={m_hf.group(1)}"
+                if re.fullmatch(r"(?:sid=)?[0-9a-zA-Z_-]+", hf_clean, flags=re.IGNORECASE):
+                    norm_hf = _normalize_sid_query(hf_clean)
+                    if norm_hf:
+                        return norm_hf
         except Exception:
             pass
 
@@ -1450,15 +1495,19 @@ class GameBrowserClient:
         *,
         priority: str = "interactive",
     ) -> str:
-        """Open `internalMessages` (e.g. `type=spio` espionage reports) in `F_Hauptframe`."""
-        clean_type = re.sub(r"[^a-zA-Z0-9_-]", "", str(msg_type or "spio")) or "spio"
+        """Open `internalMessages` (e.g. `type=spio` espionage reports or main inbox) in `F_Hauptframe`."""
+        raw_type = str(msg_type) if msg_type is not None else "spio"
+        clean_type = re.sub(r"[^a-zA-Z0-9_-]", "", raw_type.strip())
         self._pace(priority=priority)
         sid_query = self._resolve_sid_query()
         if sid_query:
-            target_url = self._build_internal_url(
-                f"action=internalMessages&type={clean_type}&{sid_query}"
-            )
+            if clean_type and clean_type.lower() != "all":
+                q_str = f"action=internalMessages&type={clean_type}&{sid_query}"
+            else:
+                q_str = f"action=internalMessages&{sid_query}"
+            target_url = self._build_internal_url(q_str)
             nav_token = self._mark_frame_navigation("F_Hauptframe")
+            self._switch_frame("F_Hauptframe")
             self.driver.execute_script("location.href = arguments[0];", target_url)
             return self._wait_frame_ready(
                 "F_Hauptframe",
@@ -1469,10 +1518,15 @@ class GameBrowserClient:
         nav_token = self._mark_frame_navigation("F_Hauptframe")
         self._switch_frame("F_Navi")
         link = None
-        for css in (
-            f'a[href*="action=internalMessages"][href*="type={clean_type}"]',
-            'a[href*="action=internalMessages"]',
-        ):
+        selectors = (
+            (
+                f'a[href*="action=internalMessages"][href*="type={clean_type}"]',
+                'a[href*="action=internalMessages"]',
+            )
+            if (clean_type and clean_type.lower() != "all")
+            else ('a[href*="action=internalMessages"]',)
+        )
+        for css in selectors:
             try:
                 els = self.driver.find_elements(By.CSS_SELECTOR, css)
                 if els:
@@ -1487,11 +1541,681 @@ class GameBrowserClient:
             link.click()
         except ElementClickInterceptedException:
             self.driver.execute_script("arguments[0].click();", link)
-        return self._wait_frame_ready(
+        html = self._wait_frame_ready(
             "F_Hauptframe",
             expected_action="internalMessages",
             nav_token=nav_token,
         )
+        if clean_type and clean_type.lower() != "all":
+            try:
+                self._switch_frame("F_Hauptframe")
+                cur_loc = str(self.driver.execute_script("return String(location.href || '');") or "")
+                if f"type={clean_type}" not in cur_loc:
+                    sub_el = None
+                    for sub_css in (
+                        f'[onclick*="action=internalMessages"][onclick*="type={clean_type}"]',
+                        f'a[href*="action=internalMessages"][href*="type={clean_type}"]',
+                    ):
+                        els = self.driver.find_elements(By.CSS_SELECTOR, sub_css)
+                        if els:
+                            sub_el = els[0]
+                            break
+                    if sub_el is not None:
+                        sub_tok = self._mark_frame_navigation("F_Hauptframe")
+                        try:
+                            sub_el.click()
+                        except ElementClickInterceptedException:
+                            self.driver.execute_script("arguments[0].click();", sub_el)
+                        html = self._wait_frame_ready(
+                            "F_Hauptframe",
+                            expected_action="internalMessages",
+                            nav_token=sub_tok,
+                        )
+            except Exception:
+                pass
+        return html
+
+    def open_building_detail(
+        self,
+        building_id: int,
+        *,
+        priority: str = "interactive",
+    ) -> str:
+        """Open `internalDetail&type=building&id=<building_id>` in `F_Hauptframe`."""
+        bid = max(1, game_data.cap_json_int(game_data.safe_int(building_id, 1)))
+        self._pace(priority=priority)
+        sid_query = self._resolve_sid_query()
+        if sid_query:
+            target_url = self._build_internal_url(f"action=internalDetail&type=building&id={bid}&{sid_query}")
+            nav_token = self._mark_frame_navigation("F_Hauptframe")
+            self._switch_frame("F_Hauptframe")
+            self.driver.execute_script("location.href = arguments[0];", target_url)
+            return self._wait_frame_ready(
+                "F_Hauptframe",
+                expected_action="internalDetail",
+                nav_token=nav_token,
+            )
+        self.navigate_menu("internalBuildings", priority=priority)
+        nav_token = self._mark_frame_navigation("F_Hauptframe")
+        self._switch_frame("F_Hauptframe")
+        link = self.driver.find_element(
+            By.CSS_SELECTOR,
+            f'a[href*="action=internalDetail"][href*="id={bid}"]',
+        )
+        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link)
+        try:
+            link.click()
+        except ElementClickInterceptedException:
+            self.driver.execute_script("arguments[0].click();", link)
+        return self._wait_frame_ready(
+            "F_Hauptframe",
+            expected_action="internalDetail",
+            nav_token=nav_token,
+        )
+
+    def expand_collapsed_messages_on_page(self, *, max_fetches: int = 12) -> Optional[str]:
+        """Expand collapsed AJAX/sub-report message rows on `internalMessages` (`spio`, `battle`, `fleet`, etc.)."""
+        drv_lock = getattr(self, "_driver_lock", None)
+        expanded = 0
+        fetches = 0
+        sid_query = ""
+        with contextlib.suppress(Exception):
+            sid_query = self._resolve_sid_query()
+        cap_fetches = max(1, min(25, game_data.safe_int(max_fetches, 12)))
+
+        # Limit sub-fetches to available rolling page-view headroom so we never trip server rate limits
+        limiter = getattr(self, "_page_limiter", None)
+        if limiter is not None:
+            with contextlib.suppress(Exception):
+                with limiter._lock:
+                    now_m = limiter._clock()
+                    cutoff = now_m - limiter.window_seconds
+                    while limiter._views and limiter._views[0] <= cutoff:
+                        limiter._views.popleft()
+                    avail = max(
+                        1,
+                        limiter.max_views_per_minute
+                        - limiter.reserved_interactive_views
+                        - len(limiter._views)
+                        - 2,
+                    )
+                    cap_fetches = max(1, min(cap_fetches, avail))
+
+        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+            try:
+                self._switch_frame("F_Hauptframe")
+                res = self.driver.execute_script(
+                    """
+                    var triggers = document.querySelectorAll(
+                        '[onclick*="showMessage"], [onclick*="openMessage"], ' +
+                        '[onclick*="toggleMessage"], [onclick*="readMessage"], ' +
+                        '[onclick*="loadMessage"], .msg-header:not(.open), .message-header:not(.open)'
+                    );
+                    var count = 0;
+                    for (var i = 0; i < triggers.length && count < 25; i++) {
+                        var el = triggers[i];
+                        if (el.tagName === 'INPUT' || el.tagName === 'SELECT') continue;
+                        var oc = (el.getAttribute('onclick') || '').toLowerCase();
+                        if (oc.indexOf('del') !== -1) continue;
+                        try { el.click(); count++; } catch (e) {}
+                    }
+                    return count;
+                    """
+                )
+                if isinstance(res, int) and not isinstance(res, bool) and res > 0:
+                    expanded += res
+            except Exception:
+                return None
+
+            async_fn = getattr(self.driver, "execute_async_script", None)
+            if callable(async_fn):
+                with contextlib.suppress(Exception):
+                    self.driver.set_script_timeout(30)
+                try:
+                    ares = async_fn(
+                        """
+                        var sidQuery = String(arguments[0] || '');
+                        var maxFetches = Number(arguments[1] || 12);
+                        var done = arguments[arguments.length - 1];
+                        var tasks = [];
+                        var rows = Array.prototype.slice.call(document.querySelectorAll('tr'));
+
+                        for (var i = 0; i < rows.length; i++) {
+                            var tr = rows[i];
+                            if (tr.getAttribute('data-si-expanded') === '1') continue;
+                            if (tr.querySelector('.si-expanded-body')) {
+                                tr.setAttribute('data-si-expanded', '1');
+                                continue;
+                            }
+                            var spioEl = tr.querySelector('[onclick*="showSpionageReport"]');
+                            if (spioEl) {
+                                var oc = String(spioEl.getAttribute('onclick') || '');
+                                var mSp = oc.match(/showSpionageReport\\s*\\(\\s*['"]?(\\d+)['"]?/i);
+                                if (mSp) {
+                                    tasks.push({
+                                        tr: tr,
+                                        kind: 'spio',
+                                        prio: 0,
+                                        url: 'indexInternal.es?action=internalSpionageReport&reportID=' + mSp[1] + (sidQuery ? '&' + sidQuery : '')
+                                    });
+                                    continue;
+                                }
+                            }
+                            var bsumCell = tr.querySelector('[data-bsum]') || (tr.getAttribute('data-bsum') ? tr : null);
+                            var bsumOc = tr.querySelector('[onclick*="showBattleReport"]');
+                            var bid = '';
+                            if (bsumCell) bid = String(bsumCell.getAttribute('data-bsum') || '').trim();
+                            if (!bid && bsumOc) {
+                                var mBt = String(bsumOc.getAttribute('onclick') || '').match(/showBattleReport\\s*\\(\\s*['"]?(\\d+)['"]?/i);
+                                if (mBt) bid = mBt[1];
+                            }
+                            if (bid && /^\\d+$/.test(bid)) {
+                                tasks.push({
+                                    tr: tr,
+                                    kind: 'battle',
+                                    prio: 0,
+                                    bid: bid,
+                                    url: '/indexGame.es?battle=' + bid + (sidQuery ? '&' + sidQuery : '')
+                                });
+                                continue;
+                            }
+                            var readLink = tr.querySelector('a[href*="action=internalMessages"][href*="read="]');
+                            if (readLink) {
+                                var href = String(readLink.getAttribute('href') || '').trim();
+                                var rtxt = String(tr.textContent || '').toLowerCase();
+                                var isRoutineReturn = (
+                                    (rtxt.indexOf('fleet return') !== -1 || rtxt.indexOf('zurückgekehrt') !== -1 || rtxt.indexOf('zurueckgekehrt') !== -1) &&
+                                    rtxt.indexOf('recycl') === -1 &&
+                                    rtxt.indexOf('rubble') === -1 &&
+                                    rtxt.indexOf('coloniz') === -1 &&
+                                    rtxt.indexOf('transport') === -1
+                                );
+                                if (href) {
+                                    tasks.push({
+                                        tr: tr,
+                                        kind: 'read',
+                                        prio: isRoutineReturn ? 1 : 0,
+                                        url: href
+                                    });
+                                }
+                            }
+                        }
+
+                        tasks.sort(function(a, b) { return a.prio - b.prio; });
+                        if (tasks.length === 0 || typeof window.fetch !== 'function') {
+                            done({expanded: 0, fetches: 0});
+                            return;
+                        }
+
+                        var idx = 0;
+                        var expCount = 0;
+                        var fetchCount = 0;
+                        var resNames = {1: 'Pig iron', 2: 'Metal', 3: 'Kryptonite', 4: 'Spice'};
+
+                        function isRateLimitedHtml(raw) {
+                            var low = String(raw || '').toLowerCase();
+                            if (low.indexOf('made more than') === -1 || low.indexOf('page views') === -1) return false;
+                            if (/id=["']pageview-amount["'][^>]*>\\s*<\\/span>/i.test(raw)) return false;
+                            return true;
+                        }
+
+                        function attachDiv(tr, text, extraAttrName, extraAttrVal) {
+                            var cells = tr.querySelectorAll('td');
+                            var host = cells.length > 0 ? cells[cells.length - 1] : tr;
+                            var div = document.createElement('div');
+                            div.className = 'si-expanded-body';
+                            div.setAttribute('data-si-expanded', '1');
+                            div.style.display = 'none';
+                            div.textContent = ' ' + text + ' ';
+                            host.appendChild(div);
+                            if (extraAttrName && extraAttrVal) {
+                                tr.setAttribute(extraAttrName, extraAttrVal);
+                            }
+                            tr.setAttribute('data-si-expanded', '1');
+                        }
+
+                        function step() {
+                            if (idx >= tasks.length || fetchCount >= maxFetches) {
+                                done({expanded: expCount, fetches: fetchCount});
+                                return;
+                            }
+                            var t = tasks[idx++];
+                            fetchCount++;
+                            window.fetch(t.url, {credentials: 'same-origin'})
+                                .then(function(resp) { return resp.text(); })
+                                .then(function(raw) {
+                                    if (!raw || isRateLimitedHtml(raw)) {
+                                        fetchCount = maxFetches;
+                                        return;
+                                    }
+                                    if (t.kind === 'battle') {
+                                        try {
+                                            var bj = JSON.parse(raw);
+                                            if (bj && bj.ok) {
+                                                var parts = ['Battle report #' + t.bid];
+                                                if (bj.rounds !== undefined) parts.push('Rounds: ' + bj.rounds);
+                                                if (bj.winner !== undefined) parts.push('Winner: ' + bj.winner);
+                                                if (bj.attacker && bj.attacker.name) {
+                                                    parts.push('Attacker: ' + bj.attacker.name + ' (Lost: ' + (bj.attacker.lost || 0) + ')');
+                                                }
+                                                if (bj.defender && bj.defender.name) {
+                                                    parts.push('Defender: ' + bj.defender.name + ' (Lost: ' + (bj.defender.lost || 0) + ')');
+                                                }
+                                                if (Array.isArray(bj.stolen) && bj.stolen.length > 0) {
+                                                    var sp = [];
+                                                    for (var s = 0; s < bj.stolen.length; s++) {
+                                                        var si = bj.stolen[s] || {};
+                                                        var rn = resNames[si.r] || si.n || ('R' + si.r);
+                                                        sp.push(rn + ': ' + (si.v || 0));
+                                                    }
+                                                    parts.push('Plundered ' + sp.join(' '));
+                                                }
+                                                if (Array.isArray(bj.rubble) && bj.rubble.length > 0) {
+                                                    var rp = [];
+                                                    for (var r = 0; r < bj.rubble.length; r++) {
+                                                        var ri = bj.rubble[r] || {};
+                                                        var rrn = resNames[ri.r] || ri.n || ('R' + ri.r);
+                                                        rp.push(rrn + ': ' + (ri.v || 0));
+                                                    }
+                                                    parts.push('Debris field ' + rp.join(' '));
+                                                }
+                                                attachDiv(t.tr, parts.join(' | '), 'data-battle-json', raw.slice(0, 8000));
+                                                expCount++;
+                                            }
+                                        } catch (e) {}
+                                        return;
+                                    }
+                                    var parser = new DOMParser();
+                                    var doc = parser.parseFromString(raw, 'text/html');
+                                    var junk = doc.querySelectorAll(
+                                        'script, style, #planet-coords, #planet-list, form#ress, #ress, ' +
+                                        '#roheisen, #metall, #kryptonit, #spice, #tutorial, .tutorial, #speedup, .speedup, ' +
+                                        'select[name="planet"], .messagebox, div[id^="msg-"], form[name="messages"]'
+                                    );
+                                    for (var j = 0; j < junk.length; j++) {
+                                        if (t.kind === 'read' && junk[j].tagName === 'FORM') continue;
+                                        if (junk[j].parentNode) junk[j].parentNode.removeChild(junk[j]);
+                                    }
+                                    var bodyEl = doc.body || doc.documentElement;
+                                    if (t.kind === 'read') {
+                                        var formEl = doc.querySelector('form[name="messages"]');
+                                        if (formEl) {
+                                            var cbs = formEl.querySelectorAll('input[type="checkbox"], select[name="todo"]');
+                                            for (var k = 0; k < cbs.length; k++) {
+                                                var rowP = cbs[k].closest ? cbs[k].closest('tr') : null;
+                                                if (rowP && rowP.parentNode && !rowP.querySelector('.nachricht')) {
+                                                    rowP.parentNode.removeChild(rowP);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    var cleanTxt = String((bodyEl && bodyEl.textContent) || '').replace(/\\s+/g, ' ').trim();
+                                    if (cleanTxt.length > 4) {
+                                        attachDiv(t.tr, cleanTxt.slice(0, 6000), '', '');
+                                        expCount++;
+                                    }
+                                })
+                                .catch(function() {})
+                                .then(function() {
+                                    if (idx < tasks.length && fetchCount < maxFetches) {
+                                        setTimeout(step, 140);
+                                    } else {
+                                        done({expanded: expCount, fetches: fetchCount});
+                                    }
+                                });
+                        }
+                        step();
+                        """,
+                        sid_query,
+                        cap_fetches,
+                    )
+                    if isinstance(ares, dict):
+                        expanded += game_data.safe_int(ares.get("expanded"), 0)
+                        fetches += game_data.safe_int(ares.get("fetches"), 0)
+                except Exception:
+                    pass
+
+        if fetches > 0 and limiter is not None:
+            with contextlib.suppress(Exception):
+                with limiter._lock:
+                    now_m = limiter._clock()
+                    for _ in range(fetches):
+                        limiter._views.append(now_m)
+                    limiter._last_view_at = now_m
+
+        if expanded <= 0:
+            return None
+        if fetches <= 0:
+            time.sleep(0.25)
+        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+            try:
+                self._switch_frame("F_Hauptframe")
+                return str(self.driver.page_source or "")
+            except Exception:
+                return None
+
+    def delete_messages_on_current_page(
+        self,
+        server_msg_ids: Sequence[str] = (),
+        *,
+        all_on_page_persisted: bool = False,
+        priority: str = "normal",
+    ) -> tuple[bool, str]:
+        """Delete already-persisted messages on `internalMessages` inside `F_Hauptframe`.
+
+        Probes the live DOM before pacing so pages without delete controls incur zero extra views.
+        """
+        clean_ids = [
+            str(mid).strip()
+            for mid in (server_msg_ids or ())
+            if str(mid).strip() and str(mid).strip().isascii()
+        ]
+        if not clean_ids and not all_on_page_persisted:
+            return (False, "")
+
+        probe_js = """
+        var targetIds = arguments[0] || [];
+        var allowAll = Boolean(arguments[1]);
+        var idSet = {};
+        for (var i = 0; i < targetIds.length; i++) idSet[String(targetIds[i])] = true;
+
+        function isSelectAll(cb) {
+            var nm = String(cb.name || '').trim().toLowerCase();
+            var cid = String(cb.id || '').trim().toLowerCase();
+            if (nm === 'check' || cid === 'check') return true;
+            var blob = [
+                nm, cid, cb.className || '',
+                cb.getAttribute('onclick') || '', cb.getAttribute('onchange') || ''
+            ].join(' ').toLowerCase();
+            return (
+                blob.indexOf('allmessages') !== -1 ||
+                blob.indexOf('checkall') !== -1 ||
+                blob.indexOf('selectall') !== -1 ||
+                blob.indexOf('markall') !== -1 ||
+                blob.indexOf('toggleall') !== -1 ||
+                blob.indexOf('setall') !== -1
+            );
+        }
+
+        function matchCbId(cb) {
+            var v = String(cb.value || '').trim();
+            if (v && idSet[v]) return true;
+            var nm = String(cb.name || '');
+            var cid = String(cb.id || '');
+            for (var k in idSet) {
+                if (!Object.prototype.hasOwnProperty.call(idSet, k)) continue;
+                if (
+                    nm.indexOf('[' + k + ']') !== -1 ||
+                    nm === 'check_' + k || nm === 'check-' + k ||
+                    nm === 'del_' + k || nm === 'msg_' + k ||
+                    cid === 'check_' + k || cid === 'msg_' + k || cid === 'del_' + k || cid === k
+                ) return true;
+            }
+            var row = cb.closest ? cb.closest('tr, div.message, div.msg, [data-msg-id], [data-id]') : null;
+            if (row) {
+                var dm = String(row.getAttribute('data-msg-id') || row.getAttribute('data-id') || row.getAttribute('data-bsum') || '');
+                var rid = String(row.id || '').replace(/^(?:msg|message|row|tr_msg)[_-]?/i, '');
+                if ((dm && idSet[dm]) || (rid && idSet[rid])) return true;
+                var mfav = row.querySelector ? row.querySelector('[data-mfav], [data-bsum]') : null;
+                if (mfav) {
+                    var mf = String(mfav.getAttribute('data-mfav') || mfav.getAttribute('data-bsum') || '');
+                    if (mf && idSet[mf]) return true;
+                }
+            }
+            return false;
+        }
+
+        var cbs = Array.prototype.slice.call(document.querySelectorAll('input[type="checkbox"]'));
+        var msgCbs = cbs.filter(function(cb) { return !isSelectAll(cb); });
+        var matchedCbs = msgCbs.filter(matchCbId);
+        if (matchedCbs.length === 0 && allowAll && msgCbs.length > 0) {
+            matchedCbs = msgCbs;
+        }
+        if (matchedCbs.length > 0) {
+            var form = matchedCbs[0].form || document.querySelector('form[action*="internalMessages"], form');
+            if (form) return 'checkbox_form';
+        }
+
+        var links = Array.prototype.slice.call(
+            document.querySelectorAll('a[href*="del"], a[onclick*="del"], button[onclick*="del"], input[onclick*="del"]')
+        );
+        for (var j = 0; j < links.length; j++) {
+            var el = links[j];
+            var h = String(el.getAttribute('href') || '') + ' ' + String(el.getAttribute('onclick') || '');
+            for (var idKey in idSet) {
+                if (Object.prototype.hasOwnProperty.call(idSet, idKey) && h.indexOf(idKey) !== -1) {
+                    return 'direct_link';
+                }
+            }
+        }
+        if (allowAll) {
+            for (var m = 0; m < links.length; m++) {
+                var hl = (String(links[m].getAttribute('href') || '') + ' ' + String(links[m].textContent || '')).toLowerCase();
+                if (hl.indexOf('delete all') !== -1 || hl.indexOf('alle l') !== -1 || hl.indexOf('del=all') !== -1 || hl.indexOf('deleteall') !== -1) {
+                    return 'delete_all_link';
+                }
+            }
+        }
+        return '';
+        """
+
+        exec_delete_js = """
+        var targetIds = arguments[0] || [];
+        var allowAll = Boolean(arguments[1]);
+        var mode = String(arguments[2] || '');
+        var idSet = {};
+        for (var i = 0; i < targetIds.length; i++) idSet[String(targetIds[i])] = true;
+
+        function isSelectAll(cb) {
+            var nm = String(cb.name || '').trim().toLowerCase();
+            var cid = String(cb.id || '').trim().toLowerCase();
+            if (nm === 'check' || cid === 'check') return true;
+            var blob = [
+                nm, cid, cb.className || '',
+                cb.getAttribute('onclick') || '', cb.getAttribute('onchange') || ''
+            ].join(' ').toLowerCase();
+            return (
+                blob.indexOf('allmessages') !== -1 ||
+                blob.indexOf('checkall') !== -1 ||
+                blob.indexOf('selectall') !== -1 ||
+                blob.indexOf('markall') !== -1 ||
+                blob.indexOf('toggleall') !== -1 ||
+                blob.indexOf('setall') !== -1
+            );
+        }
+
+        function matchCbId(cb) {
+            var v = String(cb.value || '').trim();
+            if (v && idSet[v]) return true;
+            var nm = String(cb.name || '');
+            var cid = String(cb.id || '');
+            for (var k in idSet) {
+                if (!Object.prototype.hasOwnProperty.call(idSet, k)) continue;
+                if (
+                    nm.indexOf('[' + k + ']') !== -1 ||
+                    nm === 'check_' + k || nm === 'check-' + k ||
+                    nm === 'del_' + k || nm === 'msg_' + k ||
+                    cid === 'check_' + k || cid === 'msg_' + k || cid === 'del_' + k || cid === k
+                ) return true;
+            }
+            var row = cb.closest ? cb.closest('tr, div.message, div.msg, [data-msg-id], [data-id]') : null;
+            if (row) {
+                var dm = String(row.getAttribute('data-msg-id') || row.getAttribute('data-id') || row.getAttribute('data-bsum') || '');
+                var rid = String(row.id || '').replace(/^(?:msg|message|row|tr_msg)[_-]?/i, '');
+                if ((dm && idSet[dm]) || (rid && idSet[rid])) return true;
+                var mfav = row.querySelector ? row.querySelector('[data-mfav], [data-bsum]') : null;
+                if (mfav) {
+                    var mf = String(mfav.getAttribute('data-mfav') || mfav.getAttribute('data-bsum') || '');
+                    if (mf && idSet[mf]) return true;
+                }
+            }
+            return false;
+        }
+
+        if (mode === 'checkbox_form') {
+            var cbs = Array.prototype.slice.call(document.querySelectorAll('input[type="checkbox"]'));
+            var msgCbs = cbs.filter(function(cb) { return !isSelectAll(cb); });
+            var matched = msgCbs.filter(matchCbId);
+            if (matched.length === 0 && allowAll) matched = msgCbs;
+            if (matched.length === 0) return false;
+            for (var c = 0; c < matched.length; c++) {
+                matched[c].checked = true;
+            }
+            var form = matched[0].form || document.querySelector('form[action*="internalMessages"], form');
+            if (!form) return false;
+            var selects = form.querySelectorAll('select');
+            for (var s = 0; s < selects.length; s++) {
+                var sel = selects[s];
+                if ((sel.name || '').toLowerCase() === 'planet') continue;
+                var pickedIdx = -1;
+                for (var o = 0; o < sel.options.length; o++) {
+                    var rawVal = String(sel.options[o].value || '').trim().toLowerCase();
+                    var ov = (rawVal + ' ' + String(sel.options[o].text || '')).toLowerCase();
+                    if (rawVal === 'deleted') {
+                        pickedIdx = o;
+                        break;
+                    }
+                    if (
+                        (ov.indexOf('marked') !== -1 || ov.indexOf('selected') !== -1 || ov.indexOf('markiert') !== -1 || ov.indexOf('ausgew') !== -1) &&
+                        (ov.indexOf('del') !== -1 || ov.indexOf('lösch') !== -1 || ov.indexOf('loesch') !== -1 || ov.indexOf('remove') !== -1)
+                    ) {
+                        pickedIdx = o;
+                        break;
+                    }
+                }
+                if (pickedIdx < 0) {
+                    for (var o2 = 0; o2 < sel.options.length; o2++) {
+                        var rv2 = String(sel.options[o2].value || '').trim().toLowerCase();
+                        var ov2 = (rv2 + ' ' + String(sel.options[o2].text || '')).toLowerCase();
+                        if (
+                            (ov2.indexOf('del') !== -1 || ov2.indexOf('lösch') !== -1 || ov2.indexOf('loesch') !== -1) &&
+                            ov2.indexOf('all') === -1 && ov2.indexOf('alle') === -1
+                        ) {
+                            pickedIdx = o2;
+                            break;
+                        }
+                    }
+                }
+                if (pickedIdx < 0) {
+                    for (var o3 = 0; o3 < sel.options.length; o3++) {
+                        var ov3 = (sel.options[o3].value + ' ' + sel.options[o3].text).toLowerCase();
+                        if (ov3.indexOf('marked') !== -1 || ov3.indexOf('selected') !== -1 || ov3.indexOf('markiert') !== -1 || ov3.indexOf('ausgew') !== -1) {
+                            pickedIdx = o3;
+                            break;
+                        }
+                    }
+                }
+                if (pickedIdx >= 0) sel.selectedIndex = pickedIdx;
+            }
+            var cands = Array.prototype.slice.call(
+                form.querySelectorAll('input[type="submit"], button[type="submit"], input[type="button"], button')
+            );
+            var delBtn = null;
+            for (var b = 0; b < cands.length; b++) {
+                var bt = cands[b];
+                var btxt = [
+                    bt.name || '', bt.id || '', bt.value || '',
+                    bt.getAttribute('onclick') || '', bt.textContent || ''
+                ].join(' ').toLowerCase();
+                if (
+                    btxt.indexOf('del') !== -1 ||
+                    btxt.indexOf('lösch') !== -1 ||
+                    btxt.indexOf('loesch') !== -1 ||
+                    btxt.indexOf('remove') !== -1 ||
+                    btxt.indexOf('trash') !== -1
+                ) {
+                    delBtn = bt;
+                    break;
+                }
+            }
+            if (delBtn) { delBtn.click(); return true; }
+            var nonReadSubmits = cands.filter(function(bt) {
+                var tp = (bt.type || '').toLowerCase();
+                if (tp !== 'submit') return false;
+                var btxt = [bt.name || '', bt.value || '', bt.textContent || ''].join(' ').toLowerCase();
+                return btxt.indexOf('read') === -1 && btxt.indexOf('gelesen') === -1 && btxt.indexOf('ungelesen') === -1;
+            });
+            if (nonReadSubmits.length > 0) { nonReadSubmits[0].click(); return true; }
+            form.submit();
+            return true;
+        }
+
+        var links = Array.prototype.slice.call(
+            document.querySelectorAll('a[href*="del"], a[onclick*="del"], button[onclick*="del"], input[onclick*="del"]')
+        );
+        if (mode === 'direct_link') {
+            for (var j = 0; j < links.length; j++) {
+                var h = String(links[j].getAttribute('href') || '') + ' ' + String(links[j].getAttribute('onclick') || '');
+                for (var idKey in idSet) {
+                    if (Object.prototype.hasOwnProperty.call(idSet, idKey) && h.indexOf(idKey) !== -1) {
+                        links[j].click();
+                        return true;
+                    }
+                }
+            }
+        }
+        if (mode === 'delete_all_link' && allowAll) {
+            for (var m = 0; m < links.length; m++) {
+                var hl = (String(links[m].getAttribute('href') || '') + ' ' + String(links[m].textContent || '')).toLowerCase();
+                if (hl.indexOf('delete all') !== -1 || hl.indexOf('alle l') !== -1 || hl.indexOf('del=all') !== -1 || hl.indexOf('deleteall') !== -1) {
+                    links[m].click();
+                    return true;
+                }
+            }
+        }
+        return false;
+        """
+
+        drv_lock = getattr(self, "_driver_lock", None)
+        mode_found = ""
+        current_html = ""
+        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+            try:
+                self._switch_frame("F_Hauptframe")
+                current_html = str(self.driver.page_source or "")
+                res_mode = self.driver.execute_script(probe_js, clean_ids, bool(all_on_page_persisted))
+                if isinstance(res_mode, str):
+                    mode_found = res_mode
+            except Exception:
+                return (False, current_html)
+
+        if not mode_found:
+            return (False, current_html)
+
+        self._pace(priority=priority)
+        nav_token = self._mark_frame_navigation("F_Hauptframe")
+        triggered = False
+        with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+            try:
+                self._switch_frame("F_Hauptframe")
+                triggered = bool(
+                    self.driver.execute_script(
+                        exec_delete_js,
+                        clean_ids,
+                        bool(all_on_page_persisted),
+                        mode_found,
+                    )
+                )
+            except Exception:
+                triggered = False
+        if not triggered:
+            return (False, current_html)
+        try:
+            new_html = self._wait_frame_ready(
+                "F_Hauptframe",
+                expected_action="internalMessages",
+                nav_token=nav_token,
+            )
+            return (True, new_html)
+        except (RateLimitError, AntiBotChallengeError):
+            raise
+        except Exception:
+            with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+                try:
+                    self._switch_frame("F_Hauptframe")
+                    return (True, str(self.driver.page_source or ""))
+                except Exception:
+                    return (True, current_html)
 
     def read_planets_overview(self, *, refresh: bool = False, priority: str = "normal") -> GameState:
         """Read `#json-container` from `F_planets`, optionally reloading the iframe first."""
@@ -1726,7 +2450,16 @@ class GameBrowserClient:
 
         b_html = ""
         if include_buildings and planets and active_idx is not None:
-            b_html = self.navigate_menu("internalBuildings", priority=priority)
+            can_reuse_b = (
+                not include_home
+                and getattr(self.driver, "__class__", object).__module__.startswith("selenium")
+                and "action=internalBuildings" in main_url
+                and "internalbuilditem" not in main_url.lower()
+                and bool(raw_main_html.strip())
+                and not is_server_rate_limit_html(raw_main_html)
+                and not has_portal_redirect
+            )
+            b_html = raw_main_html if can_reuse_b else self.navigate_menu("internalBuildings", priority=priority)
             if active_pid is None:
                 sel_pid = self._extract_selected_planet_id(b_html, "internalBuildings")
                 if sel_pid is not None:
@@ -1859,6 +2592,11 @@ class GameBrowserClient:
 
         if return_home and (include_buildings or include_research or include_shipyard or include_economy):
             self.navigate_menu("internalHome", priority=priority)
+
+        banner_unread = parse_unread_banner_count(b_html or home_html or raw_main_html)
+        if banner_unread > 0:
+            unread = dict(unread)
+            unread["total"] = max(unread.get("total", 0), banner_unread)
 
         self.last_snapshot_observed_active_planet = active_pid is not None
         with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
