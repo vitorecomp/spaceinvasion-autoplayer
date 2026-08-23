@@ -840,6 +840,14 @@ class GameApiBridge:
     RESEARCH_SYNC_TTL_S = 60.0
     SHIPYARD_SYNC_TTL_S = 120.0
     SPIO_SYNC_TTL_S = 30.0
+    FLEET_SLOT_COOLDOWN_S = 180.0
+    _FLEET_SLOT_BUSY_MARKERS: tuple[str, ...] = (
+        "no ship input fields found on internalfleet",
+        "no free fleet slot",
+        "too many fleets",
+        "fleeterr.toomanyfleets",
+        "fleeterr.nofreeslot",
+    )
 
     def __init__(
         self,
@@ -900,6 +908,7 @@ class GameApiBridge:
         self._economy_sync_timestamps: dict[int, float] = {}
         self._scanned_systems: dict[str, float] = {}
         self._throttle_timestamps: dict[int, float] = {}
+        self._fleet_slot_cooldown_until: dict[int, float] = {}
         self._rank_history_path: Optional[Path] = (
             (log_dir.parent / "state" / "rank_history.json") if log_dir is not None else None
         )
@@ -1019,6 +1028,59 @@ class GameApiBridge:
             return self._db.get_last_throttle_timestamps()
         return dict(self._throttle_timestamps)
 
+    def _get_fleet_slot_cooldowns(self) -> dict[str, float]:
+        now_m = time.monotonic()
+        active: dict[str, float] = {}
+        expired: list[int] = []
+        for pid, until_m in list(self._fleet_slot_cooldown_until.items()):
+            if not isinstance(until_m, (int, float)) or not math.isfinite(until_m):
+                expired.append(pid)
+                continue
+            rem = float(until_m) - now_m
+            if rem > 0.0:
+                active[str(int(pid))] = round(rem, 2)
+            else:
+                expired.append(pid)
+        for pid in expired:
+            self._fleet_slot_cooldown_until.pop(pid, None)
+        return active
+
+    def _apply_fleet_slot_cooldowns(
+        self,
+        actions: list[PlannedAction],
+        *,
+        re_sort_priority: bool = False,
+    ) -> list[PlannedAction]:
+        active_cd = self._get_fleet_slot_cooldowns()
+        if not active_cd or not actions:
+            return actions
+        busy_pids = {int(k) for k in active_cd}
+        hold_suffix = " [Hold: fleet slots busy / returning]"
+        changed = False
+        out: list[PlannedAction] = []
+        for act in actions:
+            if act.kind in ("ATTACK", "SPY", "ESCAPE_FLIGHT") and act.planet_id in busy_pids:
+                cur_reason = str(act.reason or "")
+                new_reason = (
+                    cur_reason
+                    if "[Hold: fleet slots busy / returning]" in cur_reason
+                    else f"{cur_reason}{hold_suffix}"
+                )
+                if act.executable_now or new_reason != cur_reason:
+                    changed = True
+                    out.append(replace(act, executable_now=False, reason=new_reason))
+                    continue
+            out.append(act)
+        if changed and re_sort_priority:
+            prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+            out.sort(
+                key=lambda a: (
+                    prio_rank.get(a.priority, 9),
+                    -1 if a.kind == "ALERT_HOSTILE" else (0 if a.executable_now else 1),
+                )
+            )
+        return out
+
     def _attach_raid_stats(self, state: GameState) -> GameState:
         if self._db is None:
             return state
@@ -1064,14 +1126,14 @@ class GameApiBridge:
             summary = _sanitize_optimizer_summary(raw_summary)
             if config is None or normalize_planner_mode(self.strategy_config.planner_mode) == "ga_nn":
                 self._last_optimizer_summary = summary
-            return actions, summary
+            return self._apply_fleet_slot_cooldowns(actions, re_sort_priority=False), summary
         actions = plan_actions(
             enriched_state,
             config=cfg,
             scanned_systems=self._get_scanned_systems(),
             throttle_cooldowns=self._get_throttle_cooldowns(),
         )
-        return actions, None
+        return self._apply_fleet_slot_cooldowns(actions, re_sort_priority=True), None
 
     def _plan_with_context(
         self,
@@ -1213,6 +1275,7 @@ class GameApiBridge:
                         **dict(self._bot_control),
                         "scanned_systems": self._get_scanned_systems(),
                         "throttle_cooldowns": self._get_throttle_cooldowns(),
+                        "fleet_slot_cooldowns": self._get_fleet_slot_cooldowns(),
                         "economy_sync_timestamps": dict(self._economy_sync_timestamps),
                         "metal_production_by_planet": metal_prod,
                     }
@@ -1687,6 +1750,8 @@ class GameApiBridge:
                     },
                 }
             )
+
+    get_dashboard = dashboard
 
     def get_state(self, *, include_buildings: bool = True) -> dict[str, Any]:
         with self._lock:
@@ -2433,6 +2498,17 @@ class GameApiBridge:
             if res.executed and res.action.kind == "THROTTLE_BUILDING":
                 pid_i = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
                 self._throttle_timestamps[pid_i] = time.time()
+            if res.action.kind in ("ATTACK", "SPY", "ESCAPE_FLIGHT"):
+                pid_f = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
+                if pid_f > 0:
+                    if res.executed:
+                        self._fleet_slot_cooldown_until.pop(pid_f, None)
+                    else:
+                        msg_l = _bounded_api_str(res.message, default="").lower()
+                        if any(marker in msg_l for marker in self._FLEET_SLOT_BUSY_MARKERS):
+                            self._fleet_slot_cooldown_until[pid_f] = (
+                                time.monotonic() + self.FLEET_SLOT_COOLDOWN_S
+                            )
             if res.executed and res.action.kind == "ATTACK" and self._db is not None:
                 tname_s = (
                     game_data.safe_key(res.action.target_name)
@@ -2656,13 +2732,42 @@ class GameApiBridge:
         if (
             return_home
             and res.executed
+            and client is not None
             and not (res.action.kind == "CLAIM_TUTORIAL" and isinstance(res_updated, GameState))
         ):
-            self._call_with_optional_priority(
+            ret_html = self._call_with_optional_priority(
                 client.navigate_menu,
                 "internalHome",
                 priority="interactive",
             )
+            if (
+                isinstance(ret_html, str)
+                and ret_html
+                and after_state is not None
+                and not is_server_rate_limit_html(ret_html)
+                and "bitmeup-login" not in ret_html.lower()
+                and "sip-tab-universe" not in ret_html.lower()
+            ):
+                home_pid, h_spd, h_newbie, h_q, h_al = parse_home_metadata(ret_html)
+                tut_home = parse_tutorial_from_home(ret_html)
+                p_ids = {p.planet_id for p in after_state.planets}
+                upd_kw: dict[str, Any] = {
+                    "tutorial": tut_home if tut_home is not None else after_state.tutorial,
+                    "active_queues": h_q,
+                    "fleet_alerts": h_al,
+                    "newbie_protection": bool(h_newbie),
+                }
+                if h_spd is not None:
+                    upd_kw["speedup_factor"] = h_spd
+                if home_pid is not None and home_pid in p_ids:
+                    upd_kw["active_planet_id"] = home_pid
+                after_state = self._record_state(
+                    replace(after_state, **upd_kw),
+                    fetched_buildings=self._last_buildings_fetched,
+                    fetched_home=True,
+                    observed_active_planet=(home_pid is not None and home_pid in p_ids),
+                )
+                after_plan = self._plan_with_context(after_state)
 
         next_action = self._serialize_action(after_plan[0]) if after_plan else None
         summary: dict[str, Any] = {
@@ -2888,6 +2993,8 @@ class GameApiBridge:
                             return None
                         if planned.kind == "ATTACK" and not self._live_executor.allow_raids:
                             return None
+                        if planned.kind == "ESCAPE_FLIGHT" and not self._live_executor.allow_fleetsave:
+                            return None
                         return _get_client()
 
                     def _cached_or_fetch(
@@ -3046,7 +3153,7 @@ class GameApiBridge:
                                 if "action=internalHome" in cur_url and cur_html:
                                     low_h = cur_html.lower()
                                     if (
-                                        "made more than" not in low_h
+                                        not is_server_rate_limit_html(cur_html)
                                         and "bitmeup-login" not in low_h
                                         and "sip-tab-universe" not in low_h
                                     ):
@@ -4070,6 +4177,85 @@ class GameApiBridge:
                         )
                         return _sanitize_finite_json(
                             {"ok": True, "command": cmd, "escape_plan": _redact_api_payload(asdict(escape))}
+                        )
+
+                    if cmd == "escape_flight":
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
+                        raw_tc = payload.get("target_coords")
+                        if raw_tc is not None and not isinstance(raw_tc, str):
+                            raise ApiRequestError(
+                                "'escape_flight' field 'target_coords' must be a string."
+                            )
+                        raw_tn = payload.get("target_name")
+                        if raw_tn is not None and not isinstance(raw_tn, str):
+                            raise ApiRequestError(
+                                "'escape_flight' field 'target_name' must be a string."
+                            )
+                        raw_reason = payload.get("reason")
+                        if raw_reason is not None and not isinstance(raw_reason, str):
+                            raise ApiRequestError(
+                                "'escape_flight' field 'reason' must be a string."
+                            )
+
+                        state = _resolve_fleet_command_state(pid, is_spy=False)
+                        planet = self._resolve_planet(state, pid)
+
+                        t_coords = ""
+                        tc_str = raw_tc.strip() if isinstance(raw_tc, str) else ""
+                        tn_str = raw_tn.strip() if isinstance(raw_tn, str) else ""
+                        if tc_str:
+                            m_tc = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", tc_str, re.ASCII)
+                            if not m_tc:
+                                raise ApiRequestError(
+                                    "'escape_flight' field 'target_coords' must contain GG:SSS:PP."
+                                )
+                            t_coords = normalize_coords(m_tc.group(0))
+                        elif tn_str:
+                            m_tn = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", tn_str, re.ASCII)
+                            if m_tn:
+                                t_coords = normalize_coords(m_tn.group(0))
+
+                        if not t_coords:
+                            m_origin = re.search(
+                                r"(\d{1,2}):(\d{1,3}):(\d{1,2})",
+                                str(planet.coords or ""),
+                                re.ASCII,
+                            )
+                            if m_origin:
+                                gal_o = int(m_origin.group(1))
+                                sys_o = int(m_origin.group(2))
+                                pos_o = int(m_origin.group(3))
+                                t_coords = f"{gal_o:02d}:{sys_o:03d}:{(pos_o % 16) + 1:02d}"
+                            else:
+                                t_coords = "01:001:02"
+
+                        esc_reason = (
+                            _bounded_api_str(raw_reason.strip(), default="API escape_flight command")
+                            if isinstance(raw_reason, str) and raw_reason.strip()
+                            else "API escape_flight command"
+                        )
+                        planned = PlannedAction(
+                            priority="P2",
+                            kind="ESCAPE_FLIGHT",
+                            planet_id=planet.planet_id,
+                            planet_coords=planet.coords,
+                            target_name=f"Save -> {t_coords}",
+                            reason=esc_reason,
+                            executable_now=bool(self.strategy_config.allow_fleetsave),
+                        )
+                        return self._execute_and_summarize(
+                            _exec_client(planned),
+                            state,
+                            cmd,
+                            planned,
+                            dry_run,
+                            return_home=True,
                         )
 
                     if cmd == "claim_tutorial":

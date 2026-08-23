@@ -3244,6 +3244,224 @@ class TestApiAndCommander(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_escape_flight_command_payload_and_fleet_slot_busy_cooldown(self) -> None:
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+        import commander
+        from spaceinvasion import api_server as api_mod
+        from spaceinvasion.executor import ExecutionResult
+        from spaceinvasion.state import (
+            EnergyBalance,
+            FleetAlert,
+            GameState,
+            PlanetState,
+            Resources,
+        )
+        from spaceinvasion.strategy import PlannedAction
+
+        # 1. Commander `_action_to_command_payload` maps ESCAPE_FLIGHT -> `escape_flight`
+        esc_act = PlannedAction(
+            priority="P2",
+            kind="ESCAPE_FLIGHT",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_name="Save -> 02:380:13",
+            reason="Tutorial 7/11: Make an escape flight",
+            executable_now=True,
+        )
+        cmd_payload = commander._action_to_command_payload(esc_act, dry_run=False)
+        self.assertEqual(
+            cmd_payload,
+            {
+                "command": "escape_flight",
+                "planet_id": 12476,
+                "target_coords": "02:380:13",
+                "reason": "Tutorial 7/11: Make an escape flight",
+                "dry_run": False,
+            },
+        )
+        no_coord_act = PlannedAction(
+            priority="P2",
+            kind="ESCAPE_FLIGHT",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_name="Escape flight",
+            reason="Survival save",
+            executable_now=True,
+        )
+        self.assertIsNone(commander._action_to_command_payload(no_coord_act, dry_run=True)["target_coords"])
+
+        # 2. `escape_flight` API command validation, adjacent-slot fallback (incl. pos 16 -> 01),
+        #    `fleetsave_plan` untouched, and `return_home=True` home refresh
+        p_16 = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:16",
+            planet_type="normal",
+            temperature=31,
+            fields_used=50,
+            fields_max=230,
+            resources=Resources(50_000, 25_000, 50_000, 40_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(3000, 2000),
+            buildings={"b1": 18, "b2": 18, "b5": 20, "b9": 2, "b10": 2},
+            ships={"s1": 4, "s4": 10, "s10": 2},
+        )
+        st_esc = GameState(
+            31,
+            1,
+            "u",
+            1000.0,
+            (p_16,),
+            active_planet_id=12476,
+            fleet_alerts=(FleetAlert("attack", True, "Hostile attack inbound on 02:380:16"),),
+            raid_targets=({"coords": "02:380:04", "owner": "Idle", "status_color": "yellow", "is_inactive": True, "last_scanned_ts": 995.0},),
+            speedup_factor=20.0,
+        )
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value = fake_client
+        fake_client.__exit__.return_value = False
+        fake_client.navigate_menu.return_value = (
+            "<script>SI_TPL={planetID:12476};</script>"
+            '<div>Tutorial 7 / 11</div><div id="tutorial.text">'
+            '<form action="indexInternal.es?action=internalHome">'
+            '<input type="hidden" name="tutorialComplete" value="1"/><input type="submit" value="Claim"/>'
+            "</form></div>"
+        )
+        fake_client.read_full_snapshot.return_value = st_esc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "cfg.yaml"
+            cfg_path.write_text("allow_fleetsave: false\nallow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            bridge = api_mod.GameApiBridge(
+                db_path=Path(tmp) / "esc.db",
+                config_path=cfg_path,
+                log_dir=Path(tmp) / "logs",
+                client_factory=lambda _p: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                bridge._record_state(st_esc, fetched_buildings=True, fetched_home=True)
+
+                # `fleetsave_plan` remains intact
+                fs_plan = bridge.handle_command({"command": "fleetsave_plan", "planet_id": 12476})
+                self.assertTrue(fs_plan["ok"])
+                self.assertIn("escape_plan", fs_plan)
+
+                # Validation errors on bad fields
+                for bad_payload in (
+                    {"command": "escape_flight", "target_coords": 123},
+                    {"command": "escape_flight", "target_coords": "not-coords"},
+                    {"command": "escape_flight", "target_name": 123},
+                    {"command": "escape_flight", "reason": ["bad"]},
+                ):
+                    with self.assertRaises(api_mod.ApiRequestError):
+                        bridge.handle_command(bad_payload)
+
+                # With allow_fleetsave=false: executable_now=False, adjacent wraparound 16 -> 01
+                res_guarded = bridge.handle_command({"command": "escape_flight", "planet_id": 12476})
+                self.assertFalse(res_guarded["executed"])
+                self.assertFalse(res_guarded["action"]["executable_now"])
+                self.assertEqual(res_guarded["action"]["target_name"], "Save -> 02:380:01")
+
+                # Enable allow_fleetsave=true; simulate fleet-slot busy failure ("no ship input fields found on internalFleet")
+                bridge.handle_command({"command": "update_config", "config": {"allow_fleetsave": True}})
+                mono_now = [5000.0]
+                with (
+                    patch("spaceinvasion.api_server.time.monotonic", side_effect=lambda: mono_now[0]),
+                    patch("spaceinvasion.api_server.is_debug_port_open", return_value=True),
+                ):
+                    bridge._last_snapshot_at = 5000.0
+                    bridge._last_home_at = 5000.0
+                    with patch.object(
+                        bridge._live_executor,
+                        "execute_action",
+                        side_effect=lambda _c, _s, act, **_kw: ExecutionResult(
+                            executed=False,
+                            dry_run=False,
+                            action=act,
+                            message="Aborted: no ship input fields found on internalFleet.",
+                        ),
+                    ):
+                        res_busy = bridge.handle_command(
+                            {
+                                "command": "escape_flight",
+                                "planet_id": 12476,
+                                "target_name": "Save -> 02:380:05",
+                                "reason": "Tutorial 7/11: Make an escape flight",
+                            }
+                        )
+                    self.assertFalse(res_busy["executed"])
+                    self.assertEqual(res_busy["action"]["target_name"], "Save -> 02:380:05")
+
+                    # `/bot_status` exposes 180s `fleet_slot_cooldowns`
+                    mono_now[0] = 5010.0
+                    bot_st = bridge.get_bot_control()
+                    self.assertAlmostEqual(bot_st["fleet_slot_cooldowns"]["12476"], 170.0, places=1)
+
+                    # `plan` & `get_dashboard` hold ESCAPE_FLIGHT / SPY / ATTACK with `[Hold: fleet slots busy / returning]`
+                    plan_held = bridge.handle_command({"command": "plan"})["actions"]
+                    esc_held = [a for a in plan_held if a["kind"] == "ESCAPE_FLIGHT"]
+                    self.assertTrue(esc_held)
+                    self.assertFalse(esc_held[0]["executable_now"])
+                    self.assertIn("[Hold: fleet slots busy / returning]", esc_held[0]["reason"])
+                    for a in plan_held:
+                        if a["kind"] in ("ATTACK", "SPY", "ESCAPE_FLIGHT") and a["planet_id"] == 12476:
+                            self.assertFalse(a["executable_now"])
+                            self.assertIn("[Hold: fleet slots busy / returning]", a["reason"])
+
+                    dash_held = bridge.get_dashboard()
+                    dash_esc = next(a for a in dash_held["plan"] if a["kind"] == "ESCAPE_FLIGHT")
+                    self.assertFalse(dash_esc["executable_now"])
+                    self.assertIn("[Hold: fleet slots busy / returning]", dash_esc["reason"])
+
+                    # Commander also holds fleet actions when `fleet_slot_cooldowns` is active
+                    cmd_api = MagicMock()
+                    cmd_api.get_state.return_value = st_esc
+                    _, cmd_act, cmd_res, _, _ = commander.run_commander_tick(
+                        cmd_api,
+                        live=True,
+                        max_actions=1,
+                        config=bridge.strategy_config,
+                        include_buildings=True,
+                        fleet_slot_cooldowns={12476: 170.0},
+                    )
+                    self.assertFalse(cmd_res["executed"])
+                    cmd_api.send_command.assert_not_called()
+
+                    # After 180s cooldown expires, ESCAPE_FLIGHT unlocks and `escape_flight` returns home & parses tutorialComplete
+                    mono_now[0] = 5185.0
+                    self.assertEqual(bridge.get_bot_control()["fleet_slot_cooldowns"], {})
+                    plan_unlocked = bridge.handle_command({"command": "plan"})["actions"]
+                    esc_unlocked = next(a for a in plan_unlocked if a["kind"] == "ESCAPE_FLIGHT")
+                    self.assertTrue(esc_unlocked["executable_now"])
+                    self.assertNotIn("[Hold: fleet slots busy / returning]", esc_unlocked["reason"])
+
+                    with patch.object(
+                        bridge._live_executor,
+                        "execute_action",
+                        side_effect=lambda _c, s, act, **_kw: ExecutionResult(
+                            executed=True,
+                            dry_run=False,
+                            action=act,
+                            message="Dispatched escape flight (1x s1) to [02:380:01].",
+                            updated_state=s,
+                        ),
+                    ):
+                        res_ok = bridge.handle_command(
+                            {
+                                "command": "escape_flight",
+                                "planet_id": 12476,
+                                "reason": "Tutorial 7/11: Make an escape flight",
+                            }
+                        )
+                    self.assertTrue(res_ok["executed"])
+                    fake_client.navigate_menu.assert_any_call("internalHome", priority="interactive")
+                    self.assertTrue(res_ok["state"]["tutorial"]["can_complete"])
+                    self.assertEqual(res_ok["next_action"]["kind"], "CLAIM_TUTORIAL")
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()
