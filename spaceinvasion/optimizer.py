@@ -1338,6 +1338,20 @@ def _parse_coords_tuple(coords: str) -> Optional[tuple[int, int, int]]:
     return int(m.group(1)), int(m.group(2)), int(m.group(3))
 
 
+def _resolve_raid_target_status_color(raw: Optional[Mapping[str, Any]]) -> str:
+    """Resolve raid target status color, honoring explicit `is_inactive=False` when color is omitted."""
+    if not raw:
+        return "yellow"
+    explicit = str(raw.get("status_color") or "").strip().lower()
+    if explicit:
+        return explicit
+    if raw.get("is_spacia"):
+        return "purple"
+    if raw.get("is_inactive") is False:
+        return "light_red"
+    return "yellow"
+
+
 def _parse_gal_sys(coords: str) -> tuple[int, int]:
     m = _GAL_SYS_RE.search(str(coords or ""))
     if not m:
@@ -1539,6 +1553,7 @@ class _SimFleetJob:
     finish_t: float
     won: bool = True
     outcome: str = "win"
+    is_repeat: bool = False
 
 
 class _SimPlanet:
@@ -1841,6 +1856,7 @@ class _SimState:
         "raid_target_res",
         "depleted_targets",
         "raids_loot_spice_eq",
+        "unique_raids_loot_spice_eq",
         "raid_risk_penalty",
         "attack_history_stats",
         "scanned_systems",
@@ -1875,6 +1891,7 @@ class _SimState:
         raid_target_res: dict[str, Resources],
         depleted_targets: Optional[set[str]] = None,
         raids_loot_spice_eq: float,
+        unique_raids_loot_spice_eq: float = 0.0,
         raid_risk_penalty: float,
         attack_history_stats: dict[str, Any],
         scanned_systems: set[tuple[int, int]],
@@ -1906,6 +1923,7 @@ class _SimState:
         self.raid_target_res = raid_target_res
         self.depleted_targets = depleted_targets if depleted_targets is not None else set()
         self.raids_loot_spice_eq = raids_loot_spice_eq
+        self.unique_raids_loot_spice_eq = unique_raids_loot_spice_eq
         self.raid_risk_penalty = raid_risk_penalty
         self.attack_history_stats = attack_history_stats
         self.scanned_systems = scanned_systems
@@ -2055,9 +2073,7 @@ class _SimState:
                 "owner": str(raw.get("owner") or ""),
                 "planet_name": str(raw.get("planet_name") or ""),
                 "is_spacia": bool(raw.get("is_spacia", False)),
-                "status_color": str(
-                    raw.get("status_color") or ("purple" if raw.get("is_spacia") else "yellow")
-                ).lower(),
+                "status_color": _resolve_raid_target_status_color(raw),
                 "fleet": {str(k): max(0, _safe_int(v, 0)) for k, v in (raw.get("fleet") or {}).items()},
                 "defense": {str(k): max(0, _safe_int(v, 0)) for k, v in (raw.get("defense") or {}).items()},
                 "dug_in": raw.get("dug_in"),
@@ -2087,6 +2103,7 @@ class _SimState:
             raid_target_res=raid_target_res,
             depleted_targets=set(),
             raids_loot_spice_eq=0.0,
+            unique_raids_loot_spice_eq=0.0,
             raid_risk_penalty=0.0,
             attack_history_stats=attack_stats,
             scanned_systems=set(),
@@ -2131,6 +2148,7 @@ class _SimState:
                 fj.finish_t,
                 fj.won,
                 fj.outcome,
+                fj.is_repeat,
             )
             for fj in self.fleet_jobs
         ]
@@ -2152,6 +2170,7 @@ class _SimState:
             raid_target_res=dict(self.raid_target_res),
             depleted_targets=set(self.depleted_targets),
             raids_loot_spice_eq=self.raids_loot_spice_eq,
+            unique_raids_loot_spice_eq=self.unique_raids_loot_spice_eq,
             raid_risk_penalty=self.raid_risk_penalty,
             attack_history_stats=self.attack_history_stats,
             scanned_systems=set(self.scanned_systems),
@@ -2565,6 +2584,8 @@ def _complete_fleet_job(sim: _SimState, fj: _SimFleetJob) -> None:
         p.res_f["kryptonite"] += float(fj.loot.kryptonite)
         p.res_f["spice"] += float(fj.loot.spice)
     sim.raids_loot_spice_eq += float(fj.loot_spice_eq)
+    if not fj.is_repeat:
+        sim.unique_raids_loot_spice_eq += float(fj.loot_spice_eq)
 
 
 def _next_queue_finish_t(sim: _SimState) -> Optional[float]:
@@ -3484,6 +3505,7 @@ def _execute_sim_step(
         finish_t = start_t + round_trip_s
         wait_s = start_t - entry_clock
 
+        is_repeat = t_coords in sim.target_raid_cooldown_until
         sim.fleet_busy_until[planet.planet_id] = finish_t
         sim.target_raid_cooldown_until[t_coords] = finish_t + _TARGET_RAID_COOLDOWN_S
         sim.fleet_jobs.append(
@@ -3496,6 +3518,7 @@ def _execute_sim_step(
                 finish_t=finish_t,
                 won=eff_win_prob >= 0.5,
                 outcome="win" if eff_win_prob >= 0.5 else "risky",
+                is_repeat=is_repeat,
             )
         )
         raw_taken = combat.expected_loot
@@ -3596,11 +3619,17 @@ def _compute_composite_growth(
 
     d_pts = m1.points - m0.points
     d_inc = m1.hourly_spice_eq - m0.hourly_spice_eq
+    spd = max(1.0, _safe_float_any(getattr(sim, "speedup_factor", 1.0), 1.0))
+    loot_scale = max(1.0, math.sqrt(spd / 2.0))
+    pot_delta = max(0.0, m1.potential_raid_spice_eq - m0.potential_raid_spice_eq)
+    unique_loot = min(m1.simulated_raid_loot_spice_eq, max(0.0, sim.unique_raids_loot_spice_eq))
+    repeat_loot = max(0.0, m1.simulated_raid_loot_spice_eq - unique_loot)
+    eff_raid_loot = unique_loot + 0.25 * repeat_loot
     d_raid_fleet = (
-        (m1.simulated_raid_loot_spice_eq / 1000.0)
-        + 0.4 * ((m1.potential_raid_spice_eq - m0.potential_raid_spice_eq) / 1000.0)
+        (eff_raid_loot * loot_scale / 280.0)
+        + 0.4 * (pot_delta / 1000.0)
         + 0.02 * (m1.fleet_power - m0.fleet_power)
-        + 0.005 * (m1.fleet_cargo_capacity - m0.fleet_cargo_capacity)
+        + 0.0005 * (m1.fleet_cargo_capacity - m0.fleet_cargo_capacity)
     )
     tel_bonus = 0.25 * (act_sr - 0.5) if _safe_int(telemetry.get("action_count", 0), 0) > 0 else 0.0
     penalties = (
@@ -4914,6 +4943,95 @@ def _make_baseline_warehouse_or_attack(base_sim: _SimState, cfg: StrategyConfig,
     return tuple(seq)
 
 
+def _attack_candidate_sort_key(
+    sim: _SimState,
+    cand: SimAction,
+    cfg: StrategyConfig,
+) -> tuple[float, float, str]:
+    p = sim.planet_by_id.get(cand.planet_id)
+    t_coords = str(cand.target_coords or "").strip()
+    meta = sim.raid_targets_info.get(t_coords)
+    if p is None or meta is None:
+        return (0.0, 0.0, t_coords)
+    atk_ships = {
+        k: int(p.ships.get(k, 0) or 0)
+        for k in _COMBAT_AND_RAID_SHIP_KEYS
+        if int(p.ships.get(k, 0) or 0) > 0
+    }
+    if not atk_ships:
+        return (0.0, 0.0, t_coords)
+    rep = SpyReport(
+        target_coords=t_coords,
+        owner=meta["owner"],
+        resources=sim.raid_target_res.get(t_coords, Resources()),
+        fleet=meta["fleet"],
+        defense=meta["defense"],
+        dug_in=meta["dug_in"],
+        is_spacia=bool(meta["is_spacia"]),
+    )
+    combat = simulate_raid_outcome(
+        atk_ships,
+        rep,
+        attacker_researches=sim.researches,
+        safety_margin=cfg.combat_safety_margin,
+    )
+    if not combat.safe_to_attack or combat.loot_spice_equivalent <= 0.0:
+        return (0.0, 0.0, t_coords)
+    exp_sp, eff_p, _ = _compute_effective_raid_expectation(
+        combat.loot_spice_equivalent,
+        combat.cargo_capacity,
+        t_coords,
+        sim.attack_history_stats,
+        target_depleted=(t_coords in sim.depleted_targets),
+    )
+    return (-round(exp_sp, 3), -round(eff_p, 6), t_coords)
+
+
+def _make_baseline_raid_and_economy(
+    base_sim: _SimState,
+    cfg: StrategyConfig,
+    horizon_steps: int,
+) -> tuple[SimAction, ...]:
+    sim = base_sim.clone()
+    seq: list[SimAction] = []
+    raided_coords: set[str] = set()
+    for idx in range(horizon_steps):
+        cands = _legal_candidates(sim, cfg)
+        if not cands:
+            break
+        atk_cands = [
+            a
+            for a in cands
+            if a.kind == "ATTACK" and str(a.target_coords or "") not in raided_coords
+        ]
+        if atk_cands:
+            atk_cands.sort(key=lambda a: _attack_candidate_sort_key(sim, a, cfg))
+            chosen = atk_cands[0]
+            raided_coords.add(str(chosen.target_coords or ""))
+        else:
+            non_b2_builds = [
+                a
+                for a in cands
+                if a.kind == "BUILD" and _parse_building_target_id(a.target_id, 0) != 2
+            ]
+            if non_b2_builds:
+                pool = non_b2_builds
+            else:
+                non_throttle = [a for a in cands if a.kind != "THROTTLE_BUILDING"]
+                pool = non_throttle if non_throttle else cands
+            pool.sort(
+                key=lambda a: (
+                    _candidate_cost_spice_eq(sim, a),
+                    a.kind,
+                    str(a.target_id or ""),
+                )
+            )
+            chosen = pool[0]
+        seq.append(chosen)
+        _execute_sim_step(sim, idx, chosen, cfg, max_clock_s=_DEFAULT_MAX_WAIT_S)
+    return tuple(seq)
+
+
 def _make_random_rollout(
     base_sim: _SimState,
     cfg: StrategyConfig,
@@ -4993,10 +5111,18 @@ def _evolve_sequences(
     )
     base_metrics = _compute_sim_metrics(base_sim, cfg, warn_ratio)
 
-    # Gen 0: 2 simple myopic baselines + (pop_size - 2) seeded random rollouts
+    # Gen 0: 2 simple myopic baselines (raid+economy when raids enabled & scorable) + (pop_size - 2) seeded random rollouts
+    use_raid_seed = bool(cfg.allow_raids) and any(
+        c.kind == "ATTACK" for c in _legal_candidates(base_sim, cfg)
+    )
+    second_baseline = (
+        _make_baseline_raid_and_economy(base_sim, cfg, horizon_steps)
+        if use_raid_seed
+        else _make_baseline_warehouse_or_attack(base_sim, cfg, horizon_steps)
+    )
     raw_pop: list[tuple[SimAction, ...]] = [
         _make_baseline_cheapest(base_sim, cfg, horizon_steps),
-        _make_baseline_warehouse_or_attack(base_sim, cfg, horizon_steps),
+        second_baseline,
     ]
     while len(raw_pop) < pop_size:
         raw_pop.append(_make_random_rollout(base_sim, cfg, horizon_steps, rng))
@@ -5606,7 +5732,7 @@ def _materialize_planned_actions(
             owner = str((meta or {}).get("owner") or "")
             pname = str((meta or {}).get("planet_name") or "")
             is_spacia = bool((meta or {}).get("is_spacia", False))
-            scolor = str((meta or {}).get("status_color") or ("purple" if is_spacia else "yellow")).lower()
+            scolor = _resolve_raid_target_status_color(meta)
             is_inact = scolor == "yellow"
             tag = "Spacia" if is_spacia else ("Inactive" if is_inact else scolor.title())
             target_label = f"{coords} ({owner or pname or tag})"
@@ -5942,7 +6068,7 @@ def _materialize_planned_actions(
             if not t_coords or t_coords in own_coords:
                 continue
             is_spacia = bool(raw.get("is_spacia", False))
-            scolor = str(raw.get("status_color") or ("purple" if is_spacia else "yellow")).lower()
+            scolor = _resolve_raid_target_status_color(raw)
             is_inact = scolor == "yellow"
             if not (is_inact or is_spacia or (bool(cfg.allow_pvp_in_az) and scolor == "light_red")):
                 continue

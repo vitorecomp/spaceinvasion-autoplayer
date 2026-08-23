@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import re
 import time
-from typing import Mapping, Optional
+from typing import Any, Mapping, Optional
 
 from spaceinvasion import game_data
-from spaceinvasion.config import StrategyConfig
+from spaceinvasion.config import StrategyConfig, normalize_planner_mode
 from spaceinvasion.fleet import (
     SHIP_SLUG_BY_KEY,
     GalaxySlot,
@@ -16,6 +16,7 @@ from spaceinvasion.fleet import (
     plan_escape_flight,
     score_raid_target,
 )
+from spaceinvasion.ranking import attach_action_etas
 from spaceinvasion.state import (
     BuildingOffer,
     EnergyBalance,
@@ -80,6 +81,15 @@ class PlannedAction:
     missing: Resources = Resources()
     executable_now: bool = False
     action_href: Optional[str] = None
+    wait_hours: Optional[float] = 0.0
+    wait_seconds: Optional[float] = 0.0
+    wait_eta: str = "Ready"
+    duration_seconds: float = 0.0
+    duration_text: str = "Instant"
+    total_hours: Optional[float] = 0.0
+    total_seconds: Optional[float] = 0.0
+    total_eta: str = "Ready"
+    eta_bottleneck: Optional[str] = None
 
 
 def _resources_from_dict(raw: dict[str, int]) -> Resources:
@@ -1855,10 +1865,27 @@ def plan_actions(
     scanned_systems: Optional[Mapping[str, float]] = None,
     throttle_cooldowns: Optional[Mapping[int, float]] = None,
     now_ts: Optional[float] = None,
+    raid_stats: Optional[Mapping[str, Any]] = None,
 ) -> list[PlannedAction]:
-    """Generate a priority-sorted action plan across the empire."""
+    """Generate an ETA-annotated action plan via the configured planner (`priority` or `ga_nn`)."""
     cfg = config or StrategyConfig()
     warn_ratio = cfg.storage_warn_ratio if storage_warn_ratio is None else storage_warn_ratio
+
+    if normalize_planner_mode(getattr(cfg, "planner_mode", "priority")) == "ga_nn":
+        from spaceinvasion.optimizer import optimize_plan_actions
+
+        opt_kwargs: dict[str, Any] = {
+            "storage_warn_ratio": warn_ratio,
+            "config": cfg,
+        }
+        if raid_stats is not None:
+            opt_kwargs["raid_stats"] = raid_stats
+        else:
+            state_raid_stats = getattr(state, "raid_stats", None)
+            if isinstance(state_raid_stats, Mapping) and state_raid_stats:
+                opt_kwargs["raid_stats"] = state_raid_stats
+        ga_actions = optimize_plan_actions(state, **opt_kwargs)
+        return attach_action_etas(state, ga_actions)
 
     plan, planets_to_check = _build_pre_throttle_plan(
         state,
@@ -1869,7 +1896,7 @@ def plan_actions(
         include_combat=True,
     )
     if not planets_to_check:
-        return plan
+        return attach_action_etas(state, plan)
 
     # Bucket: Blast furnace (b2) 0% / 100% auto-throttling to protect Pig iron flow
     if cfg.auto_throttle_blast_furnace and not cfg.merchant_mode:
@@ -1902,4 +1929,4 @@ def plan_actions(
         if key not in seen_keys:
             seen_keys.add(key)
             deduped.append(act)
-    return deduped
+    return attach_action_etas(state, deduped)

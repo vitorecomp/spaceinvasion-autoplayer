@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, replace
 import unittest
+from unittest import mock
 
 from spaceinvasion.config import StrategyConfig
+from spaceinvasion.ranking import compute_action_eta
 from spaceinvasion.state import (
     BuildingOffer,
     EnergyBalance,
@@ -28,6 +31,7 @@ from spaceinvasion.strategy import (
     SPICE_MINE,
     THERMOSOLAR_PLANT,
     WEAPONS_FACTORY,
+    PlannedAction,
     plan_actions,
 )
 
@@ -599,8 +603,191 @@ class TestStrategyPlanner(unittest.TestCase):
         actions = plan_actions(st, config=StrategyConfig(allow_shipyard=True))
         kinds = {a.kind for a in actions}
         self.assertIn("BUILD_SHIP", kinds)
-        self.assertIn("TUTORIAL_TASK", kinds)
+        self.assertIn("SCAN_GALAXY", kinds)
         self.assertIn("BUILD", kinds)
+
+        # Once a yellow inactive target is scanned into state.raid_targets, ATTACK replaces SCAN_GALAXY
+        st_with_target = GameState(
+            31,
+            1,
+            "u",
+            0.0,
+            (
+                PlanetState(
+                    planet_id=p.planet_id,
+                    name=p.name,
+                    coords=p.coords,
+                    planet_type=p.planet_type,
+                    temperature=p.temperature,
+                    fields_used=p.fields_used,
+                    fields_max=p.fields_max,
+                    resources=p.resources,
+                    storage=p.storage,
+                    energy=p.energy,
+                    buildings=p.buildings,
+                    ships={"s1": 2},
+                    building_offers=p.building_offers,
+                    ship_offers=p.ship_offers,
+                ),
+            ),
+            tutorial=tut,
+            raid_targets=(
+                {
+                    "target_coords": "02:380:04",
+                    "owner": "SleepyTarget",
+                    "planet_name": "InactivePlanet",
+                    "status_color": "yellow",
+                    "pig_iron": 0,
+                    "metal": 0,
+                    "kryptonite": 0,
+                    "spice": 0,
+                    "fleet": {},
+                    "defense": {},
+                    "is_spacia": False,
+                },
+            ),
+        )
+        guarded_atk = [a for a in plan_actions(st_with_target, config=StrategyConfig(allow_raids=False)) if a.kind == "ATTACK"]
+        self.assertEqual(len(guarded_atk), 1)
+        self.assertFalse(guarded_atk[0].executable_now)
+
+        live_atk = [a for a in plan_actions(st_with_target, config=StrategyConfig(allow_raids=True)) if a.kind == "ATTACK"]
+        self.assertEqual(len(live_atk), 1)
+        self.assertTrue(live_atk[0].executable_now)
+
+    def test_unaffordable_shipyard_targets_appear_in_planned_actions(self) -> None:
+        # SpaceInvasion omits <input name="ship[...]"> when unaffordable -> can_build=False.
+        # Fleet build targets must still show as non-executable BUILD_SHIP items with missing resources.
+        p = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=40,
+            fields_max=230,
+            resources=Resources(400, 100, 200, 50),
+            storage=Resources(100000, 100000, 100000, 100000),
+            energy=EnergyBalance(500, 300),
+            buildings={"b1": 10, "b2": 8, "b3": 9, "b4": 6, "b5": 11, "b9": 2},
+            ships={"s1": 1},
+            ship_offers=(
+                UnitOffer("ship", 1, "Small transport", 1, Resources(0, 3000, 3000, 0), False, None, "Affordable: no"),
+                UnitOffer("ship", 4, "Small fighter", 0, Resources(1500, 0, 500, 0), False, None, "Affordable: no"),
+            ),
+        )
+        st = GameState(31, 1, "u", 0.0, (p,))
+        actions = plan_actions(st, config=StrategyConfig(allow_shipyard=True))
+        ships = [a for a in actions if a.kind == "BUILD_SHIP"]
+        self.assertTrue(ships)
+        self.assertTrue(all(not a.executable_now for a in ships))
+        ship_names = {a.target_name for a in ships}
+        self.assertIn("Small fighter", ship_names)
+        self.assertIn("Small transport", ship_names)
+        sf = next(a for a in ships if a.target_name == "Small fighter")
+        self.assertEqual(sf.missing.pig_iron, 1100)
+        self.assertEqual(sf.missing.kryptonite, 300)
+
+    def test_planned_action_6arg_positional_compat_and_eta_defaults(self) -> None:
+        act = PlannedAction("P2", "BUILD", 12476, "02:380:12", "Pig iron mine", "legacy 6-arg")
+        self.assertEqual(act.wait_hours, 0.0)
+        self.assertEqual(act.wait_seconds, 0.0)
+        self.assertEqual(act.wait_eta, "Ready")
+        self.assertEqual(act.duration_seconds, 0.0)
+        self.assertEqual(act.duration_text, "Instant")
+        self.assertEqual(act.total_hours, 0.0)
+        self.assertEqual(act.total_seconds, 0.0)
+        self.assertEqual(act.total_eta, "Ready")
+        self.assertIsNone(act.eta_bottleneck)
+
+        cloned = replace(act, wait_eta="12m", eta_bottleneck="pig_iron")
+        self.assertEqual(cloned.wait_eta, "12m")
+        self.assertEqual(asdict(cloned)["eta_bottleneck"], "pig_iron")
+
+    def test_priority_plan_actions_attaches_etas_and_preserves_empty_planets(self) -> None:
+        empty_st = GameState(31, 1, "u", 0.0, (), active_planet_id=None)
+        self.assertEqual(plan_actions(empty_st, config=StrategyConfig()), [])
+
+        p_blocked = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=40,
+            fields_max=230,
+            resources=Resources(500, 0, 2000, 100),
+            storage=Resources(100000, 100000, 100000, 100000),
+            energy=EnergyBalance(500, 200),
+            buildings={"b1": 10, "b2": 8, "b3": 9, "b4": 5, "b5": 11, "b7": 3},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 10, 11, Resources(2000, 0, 800, 0), False, "Not enough resources"),
+                BuildingOffer(7, "Development center", 3, 4, Resources(0, 4800, 2400, 1600), False, "Not enough resources"),
+            ),
+            economy_rates={"resource1": 100, "resource2": 0, "resource3": 100, "resource4": 100},
+        )
+        st = GameState(31, 1, "u", 0.0, (p_blocked,), speedup_factor=2.0)
+        acts = plan_actions(st, config=StrategyConfig(planner_mode="priority"))
+        self.assertGreater(len(acts), 0)
+        for act in acts:
+            expected = compute_action_eta(st, act)
+            self.assertEqual(act.wait_eta, expected["wait_eta"])
+            self.assertEqual(act.duration_text, expected["duration_text"])
+            self.assertEqual(act.total_eta, expected["total_eta"])
+            self.assertEqual(act.eta_bottleneck, expected["eta_bottleneck"])
+        met_blocked = [a for a in acts if a.cost.metal > 0 and a.missing.metal > 0]
+        self.assertTrue(met_blocked)
+        self.assertEqual(met_blocked[0].wait_eta, "—")
+        self.assertEqual(met_blocked[0].eta_bottleneck, "metal")
+
+    def test_plan_actions_routes_ga_nn_normalizes_and_attaches_etas(self) -> None:
+        empty_st = GameState(31, 1, "u", 0.0, (), active_planet_id=None)
+        self.assertEqual(plan_actions(empty_st, config=StrategyConfig(planner_mode="ga_nn", ga_seed=42)), [])
+
+        p = _sample_planet(
+            resources=Resources(10_000, 8_000, 6_000, 3_000),
+            energy=EnergyBalance(400, 150),
+            buildings={"b1": 5, "b2": 4, "b3": 4, "b4": 2, "b5": 8, "b7": 2, "b8": 2},
+            offers=(
+                BuildingOffer(1, "Pig iron mine", 5, 6, Resources(600, 0, 200, 0), True, "Build level 6", "h1"),
+                BuildingOffer(3, "Kryptonite mine", 4, 5, Resources(500, 0, 300, 0), True, "Build level 5", "h3"),
+            ),
+        )
+        st = GameState(31, 1, "u", 1_700_000_000.0, (p,), researches={"r2": 1}, speedup_factor=5.0)
+        acts_ga = plan_actions(st, config=StrategyConfig(planner_mode="ga_nn", ga_seed=42, ga_generations=4, ga_population_size=8))
+        acts_ws = plan_actions(st, config=StrategyConfig(planner_mode=" GA_NN ", ga_seed=42, ga_generations=4, ga_population_size=8))
+        self.assertGreater(len(acts_ga), 0)
+        self.assertEqual(acts_ga, acts_ws)
+        for act in acts_ga:
+            expected = compute_action_eta(st, act)
+            self.assertEqual(act.wait_eta, expected["wait_eta"])
+            self.assertEqual(act.duration_text, expected["duration_text"])
+            self.assertEqual(act.total_eta, expected["total_eta"])
+            self.assertEqual(act.eta_bottleneck, expected["eta_bottleneck"])
+
+        # Unknown planner_mode falls back cleanly to priority mode
+        acts_unk = plan_actions(st, config=StrategyConfig(planner_mode="unknown_mode"))
+        acts_pri = plan_actions(st, config=StrategyConfig(planner_mode="priority"))
+        self.assertEqual(acts_unk, acts_pri)
+
+    def test_plan_actions_ga_nn_does_not_suppress_layer4_when_state_raid_stats_empty(self) -> None:
+        p = _sample_planet(buildings={"b1": 4, "b2": 3, "b3": 4, "b5": 7})
+        st_empty = GameState(31, 1, "u", 1_700_000_000.0, (p,), raid_stats={})
+        cfg = StrategyConfig(planner_mode="ga_nn", ga_seed=42)
+
+        with mock.patch("spaceinvasion.optimizer.optimize_plan_actions", return_value=[]) as mocked_opt:
+            plan_actions(st_empty, config=cfg)
+            mocked_opt.assert_called_once()
+            self.assertNotIn("raid_stats", mocked_opt.call_args.kwargs)
+
+            non_empty = {"overall": {"attempts": 3, "wins": 3, "success_rate": 1.0}}
+            st_pop = GameState(31, 1, "u", 1_700_000_000.0, (p,), raid_stats=non_empty)
+            plan_actions(st_pop, config=cfg)
+            self.assertEqual(mocked_opt.call_args.kwargs.get("raid_stats"), non_empty)
+
+            explicit_supp = {}
+            plan_actions(st_pop, config=cfg, raid_stats=explicit_supp)
+            self.assertIs(mocked_opt.call_args.kwargs.get("raid_stats"), explicit_supp)
 
 
 if __name__ == "__main__":

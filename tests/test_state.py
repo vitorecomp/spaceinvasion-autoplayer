@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, fields as dataclass_fields
 import json
 import unittest
 
 from spaceinvasion.state import (
+    GameState,
     game_state_from_dict,
     parse_building_queue,
     parse_buildings_page,
@@ -329,6 +331,55 @@ class TestStateParsers(unittest.TestCase):
         self.assertEqual((tut.tasks[0].current, tut.tasks[0].target), (1, 2))
         self.assertEqual(tut.tasks[1].category, "milestone")
         self.assertEqual((tut.tasks[1].current, tut.tasks[1].target), (0, 1))
+
+    def test_game_state_raid_stats_default_roundtrip_and_corrupt_fallbacks(self) -> None:
+        self.assertFalse(hasattr(GameState, "raid_stats"))
+        self.assertIn("raid_stats", {f.name for f in dataclass_fields(GameState)})
+
+        gs1 = parse_planets_overview_json(SAMPLE_JSON_CONTAINER)
+        gs2 = GameState(31, 1, "u", 0.0, gs1.planets)
+        self.assertEqual(gs1.raid_stats, {})
+        self.assertEqual(gs2.raid_stats, {})
+        self.assertIsNot(gs1.raid_stats, gs2.raid_stats)
+
+        sample_stats = {
+            "overall": {"attempts": 4, "wins": 3, "losses": 1, "success_rate": 0.75},
+            "per_target": {"02:380:04": {"attempts": 4, "wins": 3, "success_rate": 0.75}},
+            "history": [{"target_coords": "02:380:04", "attacked_ts": 1000.0, "outcome": "win"}],
+            "telemetry_summary": {"rank_snapshots_count": 2},
+        }
+        gs_with_stats = GameState(
+            universe_id=31,
+            user_id=103603,
+            nickname="ventkx86",
+            timestamp=1_700_000_000.0,
+            planets=gs1.planets,
+            active_planet_id=12476,
+            raid_targets=({"coords": "02:380:04", "status_color": "yellow"},),
+            raid_stats=sample_stats,
+        )
+        raw = asdict(gs_with_stats)
+        rebuilt = game_state_from_dict(raw)
+        self.assertEqual(rebuilt, gs_with_stats)
+        self.assertIsNot(rebuilt.raid_stats, raw["raid_stats"])
+        self.assertIsNot(rebuilt.raid_stats["overall"], raw["raid_stats"]["overall"])
+        self.assertIsNot(rebuilt.raid_stats["per_target"], raw["raid_stats"]["per_target"])
+        self.assertIsNot(rebuilt.raid_stats["history"], raw["raid_stats"]["history"])
+
+        rebuilt.raid_stats["overall"]["attempts"] = 999
+        rebuilt.raid_stats["per_target"]["02:380:04"]["wins"] = 99
+        rebuilt.raid_stats["history"].append({"target_coords": "02:380:99"})
+        self.assertEqual(raw["raid_stats"]["overall"]["attempts"], 4)
+        self.assertEqual(raw["raid_stats"]["per_target"]["02:380:04"]["wins"], 3)
+        self.assertEqual(len(raw["raid_stats"]["history"]), 1)
+
+        for bad_val in (None, [], "corrupt", 42):
+            bad_dict = {**raw, "raid_stats": bad_val}
+            recovered = game_state_from_dict(bad_dict)
+            self.assertEqual(recovered.raid_stats, {})
+        omitted = dict(raw)
+        omitted.pop("raid_stats", None)
+        self.assertEqual(game_state_from_dict(omitted).raid_stats, {})
 
 
 if __name__ == "__main__":

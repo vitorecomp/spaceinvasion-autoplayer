@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 import json
 import re
@@ -273,6 +274,8 @@ class GameState:
     newbie_protection: bool = False
     account_points: Optional[int] = None
     account_rank: Optional[int] = None
+    raid_targets: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    raid_stats: dict[str, Any] = field(default_factory=dict)
 
     def active_planet(self) -> Optional[PlanetState]:
         if not self.planets:
@@ -1025,6 +1028,13 @@ def game_state_from_dict(data: dict[str, Any]) -> GameState:
         for r in data.get("research_offers", [])
     )
 
+    raw_raid_stats = data.get("raid_stats")
+    raid_stats = (
+        copy.deepcopy({str(k): v for k, v in raw_raid_stats.items()})
+        if isinstance(raw_raid_stats, dict)
+        else {}
+    )
+
     return GameState(
         universe_id=int(data.get("universe_id", 0)),
         user_id=int(data.get("user_id", 0)),
@@ -1044,4 +1054,6 @@ def game_state_from_dict(data: dict[str, Any]) -> GameState:
         newbie_protection=bool(data.get("newbie_protection", False)),
         account_points=data.get("account_points"),
         account_rank=data.get("account_rank"),
+        raid_targets=tuple(t for t in (data.get("raid_targets") or ()) if isinstance(t, dict)),
+        raid_stats=raid_stats,
     )

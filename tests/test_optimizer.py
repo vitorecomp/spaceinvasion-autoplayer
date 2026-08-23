@@ -1872,6 +1872,242 @@ class TestIteration3Wave2Regressions(unittest.TestCase):
         self.assertEqual(merged["overall"]["wins"], 8)
         self.assertEqual(merged["overall"]["success_rate"], 1.0)
 
+    def test_m3_raids_plus_shipyard_emits_executable_attack_and_state_raid_stats_fallback(self) -> None:
+        # Mirrors test_r1_a3_t4: allow_raids=True + allow_shipyard=True must emit executable ATTACK & beat no-raids
+        p = _make_planet(
+            resources=Resources(10_000, 10_000, 8_000, 4_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b1": 5, "b2": 4, "b3": 5, "b4": 3, "b5": 8, "b7": 3, "b9": 4},
+            ships={"s4": 15, "s1": 5},
+            ship_offers=(
+                UnitOffer("ship", 4, "Small fighter", 15, Resources(1500, 0, 500, 0), True, "ship[4]"),
+                UnitOffer("ship", 1, "Small transport", 5, Resources(0, 3000, 3000, 0), True, "ship[1]"),
+            ),
+        )
+        raid_target = {
+            "coords": "01:010:04",
+            "owner": "SleepyOne",
+            "planet_name": "IdleLoot",
+            "status_color": "yellow",
+            "is_inactive": True,
+            "is_spacia": False,
+            "resources": {"pig_iron": 50_000, "metal": 50_000, "kryptonite": 20_000, "spice": 10_000},
+            "fleet": {},
+            "defense": {},
+        }
+        st = GameState(
+            31,
+            1,
+            "u",
+            1_700_000_000.0,
+            (p,),
+            researches={"r2": 4, "r3": 4, "r4": 4},
+            raid_targets=(raid_target,),
+        )
+        cfg_raids = StrategyConfig(
+            planner_mode="ga_nn",
+            playstyle="fleeter",
+            allow_raids=True,
+            allow_shipyard=True,
+            ga_seed=42,
+            ga_generations=10,
+            ga_population_size=24,
+        )
+        cfg_no_raids = StrategyConfig(
+            planner_mode="ga_nn",
+            playstyle="fleeter",
+            allow_raids=False,
+            allow_shipyard=True,
+            ga_seed=42,
+            ga_generations=10,
+            ga_population_size=24,
+        )
+        s_raids = run_optimizer(st, config=cfg_raids, attack_history_path="")
+        s_no_raids = run_optimizer(st, config=cfg_no_raids, attack_history_path="")
+        self.assertTrue(any(a.kind == "ATTACK" and a.executable_now for a in s_raids.actions))
+        self.assertFalse(any(a.kind == "ATTACK" and a.executable_now for a in s_no_raids.actions))
+        self.assertGreater(s_raids.final_best_fitness, s_no_raids.final_best_fitness)
+
+        # state.raid_stats populates Layer 2 without suppressing Layer 4 when empty
+        with tempfile.TemporaryDirectory() as tmp:
+            disk = Path(tmp) / "attack_history.json"
+            disk.write_text(
+                json.dumps(
+                    {
+                        "overall": {"attempts": 7, "wins": 7, "losses": 0, "success_rate": 1.0, "avg_loot_spice_eq": 9000.0},
+                        "per_target": {"01:010:04": {"attempts": 7, "wins": 7, "losses": 0, "success_rate": 1.0, "last_loot_spice_eq": 9500.0}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch("spaceinvasion.optimizer.DEFAULT_ATTACK_HISTORY_PATH", disk):
+                st_empty_stats = GameState(31, 1, "u", 1_700_000_000.0, (p,), raid_stats={})
+                summ_l4 = run_optimizer(st_empty_stats, config=cfg_no_raids, population_size=6, generations=1)
+                self.assertEqual(summ_l4.attack_history_stats["overall"]["attempts"], 7)
+
+                summ_supp = run_optimizer(st_empty_stats, config=cfg_no_raids, population_size=6, generations=1, raid_stats={})
+                self.assertEqual(summ_supp.attack_history_stats["overall"]["attempts"], 0)
+
+                st_l2 = GameState(
+                    31,
+                    1,
+                    "u",
+                    1_700_000_000.0,
+                    (p,),
+                    raid_stats={"overall": {"attempts": 3, "wins": 2, "losses": 1, "success_rate": 0.6667}},
+                )
+                summ_l2 = run_optimizer(st_l2, config=cfg_no_raids, population_size=6, generations=1)
+                self.assertEqual(summ_l2.attack_history_stats["overall"]["attempts"], 3)
+
+    def test_m3_raids_plus_shipyard_aligned_across_miner_10x_speedup_and_target_ordering(self) -> None:
+        from spaceinvasion.optimizer import _make_baseline_raid_and_economy, _SimState
+
+        res_prereqs = {"r2": 4, "r3": 4, "r4": 4}
+        p = _make_planet(
+            temperature=31,
+            energy=EnergyBalance(244, 134),
+            buildings={"b1": 5, "b2": 4, "b3": 5, "b4": 3, "b5": 8, "b7": 3, "b9": 4},
+            ships={"s4": 15, "s1": 5},
+            resources=Resources(10_000, 10_000, 8_000, 4_000),
+            ship_offers=(
+                UnitOffer("ship", 4, "Small fighter", 15, Resources(0, 4000, 2000, 100), True, "ship[4]"),
+                UnitOffer("ship", 1, "Small transport", 5, Resources(0, 3000, 3000, 0), True, "ship[1]"),
+            ),
+        )
+        raid_target = {
+            "coords": "01:010:04",
+            "owner": "SleepyOne",
+            "planet_name": "IdleLoot",
+            "status_color": "yellow",
+            "is_inactive": True,
+            "is_spacia": False,
+            "resources": {"pig_iron": 50_000, "metal": 50_000, "kryptonite": 20_000, "spice": 10_000},
+            "fleet": {},
+            "defense": {},
+        }
+        # Challenger 2 counterexample seeds on miner (pop=8 seed=77, pop=12 seed=19, pop=24 seed=42)
+        st_1x = GameState(
+            31,
+            1,
+            "u",
+            1_700_000_000.0,
+            (p,),
+            researches=res_prereqs,
+            raid_targets=(raid_target,),
+            speedup_factor=1.0,
+        )
+        for pop, seed in ((8, 77), (12, 19), (24, 42)):
+            cr = StrategyConfig(
+                planner_mode="ga_nn",
+                playstyle="miner",
+                allow_raids=True,
+                allow_shipyard=True,
+                ga_seed=seed,
+                ga_generations=10,
+                ga_population_size=pop,
+            )
+            cn = StrategyConfig(
+                planner_mode="ga_nn",
+                playstyle="miner",
+                allow_raids=False,
+                allow_shipyard=True,
+                ga_seed=seed,
+                ga_generations=10,
+                ga_population_size=pop,
+            )
+            sr = run_optimizer(st_1x, config=cr, attack_history_path="")
+            sn = run_optimizer(st_1x, config=cn, attack_history_path="")
+            self.assertTrue(any(a.kind == "ATTACK" and a.executable_now for a in sr.actions))
+            self.assertGreater(sr.final_best_fitness, sn.final_best_fitness)
+
+        # 10x speedup across all 3 playstyles emits executable ATTACK & beats allow_raids=False
+        st_10x = GameState(
+            31,
+            1,
+            "u",
+            1_700_000_000.0,
+            (p,),
+            researches=res_prereqs,
+            raid_targets=(raid_target,),
+            speedup_factor=10.0,
+        )
+        for ps in ("fleeter", "hybrid", "miner"):
+            cr = StrategyConfig(
+                planner_mode="ga_nn",
+                playstyle=ps,
+                allow_raids=True,
+                allow_shipyard=True,
+                ga_seed=42,
+                ga_generations=10,
+                ga_population_size=24,
+            )
+            cn = StrategyConfig(
+                planner_mode="ga_nn",
+                playstyle=ps,
+                allow_raids=False,
+                allow_shipyard=True,
+                ga_seed=42,
+                ga_generations=10,
+                ga_population_size=24,
+            )
+            sr = run_optimizer(st_10x, config=cr, attack_history_path="")
+            sn = run_optimizer(st_10x, config=cn, attack_history_path="")
+            self.assertTrue(any(a.kind == "ATTACK" and a.executable_now for a in sr.actions))
+            self.assertGreater(sr.final_best_fitness, sn.final_best_fitness)
+
+        # Baseline raid+economy orders richer targets ahead of poorer ones even when listed second
+        poor_t = {
+            "coords": "01:010:03",
+            "owner": "PoorIdle",
+            "status_color": "yellow",
+            "is_inactive": True,
+            "resources": {"pig_iron": 2_000, "metal": 1_000, "kryptonite": 0, "spice": 0},
+            "fleet": {},
+            "defense": {},
+        }
+        st_order = GameState(
+            31,
+            1,
+            "u",
+            1_700_000_000.0,
+            (p,),
+            researches=res_prereqs,
+            raid_targets=(poor_t, raid_target),
+        )
+        base_seq = _make_baseline_raid_and_economy(
+            _SimState.from_game_state(st_order, attack_history_path=""),
+            StrategyConfig(allow_raids=True),
+            3,
+        )
+        self.assertEqual(base_seq[0].kind, "ATTACK")
+        self.assertEqual(base_seq[0].target_coords, "01:010:04")
+
+        # Explicit is_inactive=False with omitted status_color stays active (light_red), blocked when allow_pvp_in_az=False
+        ambig_active = {
+            "coords": "01:010:09",
+            "owner": "ActiveNoColor",
+            "is_inactive": False,
+            "is_spacia": False,
+            "resources": {"pig_iron": 50_000, "metal": 50_000, "kryptonite": 20_000, "spice": 10_000},
+            "fleet": {},
+            "defense": {},
+        }
+        st_active = GameState(
+            31,
+            1,
+            "u",
+            1_700_000_000.0,
+            (p,),
+            researches=res_prereqs,
+            raid_targets=(ambig_active,),
+        )
+        acts_no_pvp = optimize_plan_actions(
+            st_active,
+            config=StrategyConfig(allow_raids=True, allow_pvp_in_az=False, ga_seed=42, ga_generations=4, ga_population_size=8),
+            attack_history_path="",
+        )
+        self.assertFalse(any(a.kind == "ATTACK" and a.executable_now for a in acts_no_pvp))
+
 
 if __name__ == "__main__":
     unittest.main()
