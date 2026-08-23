@@ -482,6 +482,395 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual(by_pos[12].status_color, "green")
         self.assertEqual(by_pos[13].status_color, "purple")
 
+    def test_clock_timestamps_not_misparsed_coord_normalization_and_combat_none_guards(self) -> None:
+        from spaceinvasion.fleet import _extract_spy_coords, extract_galaxy_system_coords, parse_spy_messages_html
+
+        msg_html = """
+        <div class="msg">
+          <div>Report time: 14:35:12 (23:59:59) Target [02:380:04]</div>
+          <div>Pig iron: 10000 Metal: 5000 Kryptonite: 2500 Spice: 1000</div>
+        </div>
+        """
+        self.assertEqual(extract_galaxy_system_coords("System (14:35:12) View [2:380]"), (2, 380))
+        self.assertEqual(
+            extract_galaxy_system_coords(
+                '<a href="indexInternal.es?action=internalGalaxy&gal=2&sun=380">Jump (14:35:12)</a>',
+                url="https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&gal=2&sun=380",
+            ),
+            (2, 380),
+        )
+        self.assertEqual(
+            _extract_spy_coords("Report (12:05:12 - Server) Planet 2:380:4 Pig iron: 1000"),
+            "2:380:4",
+        )
+        spy_msgs = parse_spy_messages_html(msg_html)
+        self.assertEqual(len(spy_msgs), 1)
+        self.assertEqual(spy_msgs[0].target_coords, "02:380:04")
+
+        tracker = BashTracker()
+        for offset in (10.0, 20.0, 30.0):
+            tracker.record_attack("2:380:4", timestamp=900.0 + offset)
+        self.assertEqual(tracker.attacks_last_24h("02:380:04", timestamp=1000.0), 3)
+        self.assertFalse(tracker.can_attack("02:380:04", is_inactive=False, is_spacia=False, timestamp=1000.0))
+
+        rep = SpyReport(
+            target_coords="02:380:04",
+            owner="Idle",
+            resources=Resources(10_000, 5_000, 2_000, 1_000),
+            fleet={"s4": None},  # type: ignore[dict-item]
+            defense={"d1": "bad"},  # type: ignore[dict-item]
+        )
+        res = simulate_raid_outcome(
+            {"s4": 10, "s1": 5},
+            rep,
+            attacker_researches={"r8": None, "r9": "bad", "r10": None},  # type: ignore[dict-item]
+        )
+        self.assertGreater(res.attacker_power, 0.0)
+        for bad_ratio in (float("nan"), float("inf"), float("-inf"), -0.5):
+            r_bad = simulate_raid_outcome({"s4": 10, "s1": 5}, rep, plunder_ratio=bad_ratio)
+            self.assertEqual(r_bad.loot_spice_equivalent, 0.0)
+            self.assertTrue(r_bad.expected_loot.is_zero())
+        r_over = simulate_raid_outcome({"s4": 10, "s1": 50}, rep, plunder_ratio=2.0)
+        self.assertEqual(r_over.expected_loot.pig_iron, 10_000)
+
+    def test_spy_and_galaxy_extractors_exclude_clock_timestamps(self) -> None:
+        from spaceinvasion.fleet import _extract_spy_coords, normalize_coords
+
+        self.assertEqual(_extract_spy_coords("Report at [12:05:12] Pig iron: 5000"), "")
+        self.assertEqual(_extract_spy_coords("Report at 12:05:12 Pig iron: 5000"), "")
+        self.assertEqual(_extract_spy_coords("Report [12:05:12] target [02:380:04] Pig iron: 5000"), "02:380:04")
+        self.assertEqual(_extract_spy_coords("Report [14:35:12] target 2:380:4 Pig iron: 5000"), "2:380:4")
+        self.assertEqual(_extract_spy_coords("Report 12:05:12 target 02:380:04 Pig iron: 5000"), "02:380:04")
+        rep_norm = parse_spy_report_html("<html><body><div>[14:35:12] target 2:380:4</div><div>Pig iron 1000</div></body></html>")
+        self.assertEqual(normalize_coords(rep_norm.target_coords), "02:380:04")
+        self.assertEqual(
+            extract_galaxy_system_coords("<div>Server time [12:05:12]</div>", default=(9, 99)),
+            (9, 99),
+        )
+        self.assertEqual(
+            extract_galaxy_system_coords("<div>[14:35:12] Target [02:380:04]</div>", default=(1, 1)),
+            (2, 380),
+        )
+        parsed = parse_spy_report_html("<html><body><div>[12:05:12]</div><div>Pig iron 1000</div></body></html>")
+        self.assertEqual(parsed.target_coords, "")
+
+    def test_huge_int_ships_and_research_avoid_overflow_in_combat_cargo_and_escape(self) -> None:
+        import math
+        from spaceinvasion.fleet import fleet_cargo_capacity
+
+        cap = fleet_cargo_capacity({"s1": 10**400}, miner_spec_level=10**400)
+        self.assertGreater(cap, 0)
+
+        sim = simulate_raid_outcome(
+            {"s4": 10**1_000_000},
+            SpyReport(
+                target_coords="02:380:05",
+                fleet={"s4": 10**400},
+                defense={"d1": 10**400},
+                resources=Resources(50_000, 20_000, 10_000, 5_000),
+            ),
+            attacker_researches={"r4": 10**400, "r5": 10**400, "r6": 10**400, "r8": 10**400},
+        )
+        self.assertTrue(math.isfinite(sim.attacker_power))
+        self.assertTrue(math.isfinite(sim.defender_power))
+        self.assertTrue(math.isfinite(sim.loot_spice_equivalent))
+
+        p_huge = PlanetState(
+            planet_id=1,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=20,
+            fields_max=230,
+            resources=Resources(pig_iron=50000, metal=10000, kryptonite=15000, spice=5000),
+            storage=Resources(200000, 200000, 200000, 200000),
+            energy=EnergyBalance(200, 150),
+            ships={"s1": 10**1_000_000},
+        )
+        esc = plan_escape_flight(p_huge, target_coords="02:380:13", fuel_reserve_spice=500)
+        self.assertTrue(esc.feasible)
+        self.assertIn("~1e", esc.reason)
+
+    def test_gap05_non_0m_clocks_excluded_while_coord_context_and_02_38_04_preserved(self) -> None:
+        from spaceinvasion.fleet import _extract_spy_coords
+
+        self.assertEqual(extract_galaxy_system_coords("<div>[14:15:12]</div>", default=(7, 77)), (7, 77))
+        self.assertEqual(
+            extract_galaxy_system_coords(
+                "<table><tr><td>14:15:12</td></tr><tr><td>14:15:12</td></tr></table>",
+                default=(7, 77),
+            ),
+            (7, 77),
+        )
+        self.assertEqual(
+            extract_galaxy_system_coords(
+                "<div>[14:15:12]</div><div>[14:15:12]</div>",
+                default=(9, 99),
+            ),
+            (9, 99),
+        )
+        self.assertEqual(extract_galaxy_system_coords("<div>[14:15]</div>", default=(9, 99)), (9, 99))
+        self.assertEqual(
+            extract_galaxy_system_coords("<div>[14:15:12] System [02:38:04]</div>", default=(7, 77)),
+            (2, 38),
+        )
+        self.assertEqual(
+            extract_galaxy_system_coords("<div>System [02:38:04]</div>", default=(9, 99)),
+            (2, 38),
+        )
+        self.assertEqual(
+            extract_galaxy_system_coords(
+                "<table><tr><td>02:38:01</td></tr><tr><td>02:38:04</td></tr></table>",
+                default=(2, 380),
+            ),
+            (2, 38),
+        )
+        self.assertEqual(
+            extract_galaxy_system_coords(
+                "<table><tr><td><a href='#'>02:38:04</a></td></tr></table>",
+                default=(2, 380),
+            ),
+            (2, 38),
+        )
+
+        self.assertEqual(_extract_spy_coords("[14:15:12] Spy report Pig iron 500"), "")
+        self.assertEqual(_extract_spy_coords("14:15:12 Spy report Pig iron 500"), "")
+        self.assertEqual(_extract_spy_coords("[14:15:12] Fleet arrived without coordinates"), "")
+        self.assertEqual(_extract_spy_coords("14:15:12 Fleet arrived without coordinates"), "")
+        self.assertEqual(_extract_spy_coords("Spy report at [14:15:12]"), "")
+        self.assertEqual(_extract_spy_coords("[14:15:12] Spy report for Planet [02:38:04]"), "02:38:04")
+        self.assertEqual(_extract_spy_coords("Report [12:15:12] target 02:38:04 Pig iron: 5000"), "02:38:04")
+        self.assertEqual(_extract_spy_coords("Planet [12:15:08] Pig iron: 5000"), "12:15:08")
+        self.assertEqual(_extract_spy_coords("Target: 12:15:08 Pig iron: 5000"), "12:15:08")
+        self.assertEqual(_extract_spy_coords("Planet [02:05:04] Pig iron: 5000"), "02:05:04")
+        self.assertEqual(parse_spy_messages_html("<div>[12:15:12] Pig iron: 5000</div>"), ())
+
+    def test_r8_normalize_coords_and_galaxy_parsers_reject_arabic_indic_digits(self) -> None:
+        from spaceinvasion.fleet import _parse_coords_distance, normalize_coords
+
+        arabic_coords = "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"
+        self.assertEqual(normalize_coords(arabic_coords), arabic_coords)
+        self.assertEqual(normalize_coords("2:380:4"), "02:380:04")
+        self.assertEqual(_parse_coords_distance(arabic_coords, "01:001:01"), 100.0)
+        self.assertEqual(
+            extract_galaxy_system_coords(
+                "<div>Galaxy [\u0660\u0662:\u0663\u0668\u0660]</div>",
+                default=(5, 55),
+            ),
+            (5, 55),
+        )
+
+    def test_r9_simulate_raid_outcome_defender_researches_and_arabic_indic_parsers(self) -> None:
+        rep = SpyReport(
+            target_coords="02:380:04",
+            owner="Teched",
+            resources=Resources(10_000, 10_000, 5_000, 2_000),
+            fleet={"s4": 10},
+            defense={"d1": 5},
+            dug_in=False,
+        )
+        c0 = simulate_raid_outcome({"s4": 30}, rep, defender_researches={"r8": 0, "r9": 0, "r10": 0})
+        c15 = simulate_raid_outcome({"s4": 30}, rep, defender_researches={"r8": 15, "r9": 15, "r10": 15})
+        self.assertAlmostEqual(c15.defender_power, c0.defender_power * 2.5, places=6)
+        self.assertLess(c15.power_ratio, c0.power_ratio)
+
+        # Arabic-Indic rejection in <input>, <select>, url=, and spy report fields
+        self.assertEqual(
+            extract_galaxy_system_coords(
+                '<input name="galaxy" value="\u0662"><input name="system" value="\u0663\u0668\u0660">',
+                default=(7, 77),
+            ),
+            (7, 77),
+        )
+        self.assertEqual(
+            extract_galaxy_system_coords(
+                '<select name="galaxy"><option selected value="\u0662">2</option></select>'
+                '<select name="system"><option selected value="\u0663\u0668\u0660">380</option></select>',
+                default=(7, 77),
+            ),
+            (7, 77),
+        )
+        slots = parse_galaxy_system_html(
+            '<table><tr><td class="pos">1</td><td>Planet</td></tr></table>',
+            url="?galaxy=\u0662&system=\u0663\u0668\u0660",
+        )
+        self.assertEqual(slots[0].coords, "01:001:01")
+        ar_coords = "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"
+        spy_ar = parse_spy_report_html(
+            f"<div>Target [{ar_coords}] Pig iron: \u0665\u0660\u0660 Metal: \u0661.\u0662\u0660\u0660 Small fighter: \u0665 Mortar: \u0663</div>"
+        )
+        self.assertEqual(spy_ar.target_coords, "")
+        self.assertEqual(spy_ar.resources, Resources())
+        self.assertEqual(spy_ar.fleet, {})
+        self.assertEqual(spy_ar.defense, {})
+
+    def test_r10_normalize_coords_bytes_and_frozenset_safe_key(self) -> None:
+        from spaceinvasion import fleet
+        from spaceinvasion.fleet import SpyReport, fleet_cargo_capacity, normalize_coords, simulate_raid_outcome
+        from spaceinvasion.state import Resources
+
+        self.assertEqual(normalize_coords(b"2:380:4"), "02:380:04")  # type: ignore[arg-type]
+        norm_huge = normalize_coords(10**5000)  # type: ignore[arg-type]
+        self.assertIsInstance(norm_huge, str)
+        self.assertLessEqual(len(norm_huge), 250)
+        self.assertIsInstance(normalize_coords((10**5000, "x")), str)  # type: ignore[arg-type]
+        self.assertEqual(fleet._safe_fleet_int(b"25"), 25)
+        self.assertEqual(fleet._safe_fleet_int(frozenset({1})), 0)
+        self.assertFalse(fleet._valid_gal(frozenset({1})))
+        self.assertFalse(fleet._valid_sys(frozenset({1})))
+
+        cap = fleet_cargo_capacity({10**5000: 5, "s2": 2})  # type: ignore[dict-item]
+        self.assertGreater(cap, 0)
+        rep = SpyReport(
+            target_coords="02:380:04",
+            owner="target",
+            resources=Resources(100, 100, 100, 100),
+            fleet={10**5000: 1},  # type: ignore[dict-item]
+            defense={frozenset({10**5000}): 1},  # type: ignore[dict-item]
+        )
+        sim = simulate_raid_outcome({"s4": 10, 10**5000: 2}, rep)  # type: ignore[dict-item]
+        self.assertTrue(sim.safe_to_attack)
+
+    def test_r12_normalize_coords_resists_broken_fspath_and_raise_str_obj(self) -> None:
+        from pathlib import Path
+        from spaceinvasion import fleet as flt
+
+        class _RaiseFspath:
+            def __fspath__(self) -> str:
+                raise RuntimeError("fspath boom")
+
+        class _IntPath:
+            def __fspath__(self) -> int:
+                return 10**5000
+
+        class _RaiseStrRepr:
+            def __str__(self) -> str:
+                raise RuntimeError("str boom")
+
+            def __repr__(self) -> str:
+                raise RuntimeError("repr boom")
+
+        self.assertIsInstance(flt.normalize_coords(_RaiseFspath()), str)
+        self.assertIsInstance(flt.normalize_coords(_IntPath()), str)
+        self.assertIsInstance(flt.normalize_coords(_RaiseStrRepr()), str)
+        self.assertEqual(flt.normalize_coords(Path("2:380:12")), "02:380:12")
+        self.assertFalse(flt._valid_gal(_RaiseFspath()))
+        self.assertFalse(flt._valid_gal(_IntPath()))
+        self.assertFalse(flt._valid_sys(_RaiseFspath()))
+        self.assertFalse(flt._valid_sys(_IntPath()))
+
+        planet = PlanetState(
+            planet_id=1,
+            name="P",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=20,
+            fields_used=10,
+            fields_max=200,
+            resources=Resources(1000, 1000, 1000, 1000),
+            storage=Resources(50_000, 50_000, 50_000, 50_000),
+            energy=EnergyBalance(50, 10),
+            ships={"s1": 1},
+        )
+        ep = plan_escape_flight(
+            planet,
+            target_coords=_RaiseFspath(),  # type: ignore[arg-type]
+            fuel_reserve_spice=_RaiseFspath(),  # type: ignore[arg-type]
+            duration_hint=_RaiseFspath(),  # type: ignore[arg-type]
+        )
+        self.assertTrue(ep.feasible)
+        self.assertIsInstance(ep.target_coords, str)
+        self.assertIsInstance(ep.duration_hint, str)
+        ep_empty = plan_escape_flight(
+            PlanetState(
+                planet_id=2,
+                name="P2",
+                coords="02:380:13",
+                planet_type="normal",
+                temperature=20,
+                fields_used=1,
+                fields_max=200,
+                resources=Resources(1000, 1000, 1000, 1000),
+                storage=Resources(50_000, 50_000, 50_000, 50_000),
+                energy=EnergyBalance(50, 10),
+                ships={},
+            ),
+            target_coords=_RaiseFspath(),  # type: ignore[arg-type]
+            fuel_reserve_spice=_RaiseFspath(),  # type: ignore[arg-type]
+            duration_hint=_RaiseFspath(),  # type: ignore[arg-type]
+        )
+        self.assertFalse(ep_empty.feasible)
+        self.assertIsInstance(ep_empty.target_coords, str)
+        self.assertIsInstance(ep_empty.duration_hint, str)
+
+        sim = simulate_raid_outcome(
+            {_RaiseFspath(): 5, "s4": 10},  # type: ignore[dict-item]
+            SpyReport(target_coords="02:381:05", resources=Resources(1000, 1000, 1000, 1000), is_spacia=True),
+        )
+        self.assertTrue(sim.safe_to_attack)
+
+        bt = BashTracker()
+        bt.record_attack(_RaiseFspath(), timestamp=_RaiseFspath())  # type: ignore[arg-type]
+        self.assertTrue(bt.can_attack(_RaiseFspath(), timestamp=_IntPath()))  # type: ignore[arg-type]
+
+    def test_r13_extract_spy_link_coords_excludes_clock_triples(self) -> None:
+        self.assertEqual(
+            parse_spy_report_html(
+                '<div>Pig iron: 1000 <a href="internalGalaxy.php?gal=2&sun=150">12:05:12</a></div>'
+            ).target_coords,
+            "",
+        )
+        self.assertEqual(
+            parse_spy_report_html(
+                '<div>Pig iron: 1000 <a href="internalFleet.php?gal=2&sun=150">[14:35:12]</a></div>'
+            ).target_coords,
+            "",
+        )
+        self.assertEqual(
+            parse_spy_report_html(
+                '<div>Pig iron: 1000 <a href="internalGalaxy.php?gal=2&sun=150">04:05:12</a></div>'
+            ).target_coords,
+            "",
+        )
+        self.assertEqual(
+            parse_spy_report_html(
+                '<div>Pig iron: 1000 <a href="internalGalaxy.php?gal=2&sun=150">2:150:8</a></div>'
+            ).target_coords,
+            "2:150:8",
+        )
+        self.assertEqual(
+            parse_spy_report_html(
+                '<div>Pig iron: 1000 <a href="internalGalaxy.php?gal=2&sun=380">Target: 12:15:08</a></div>'
+            ).target_coords,
+            "12:15:08",
+        )
+        self.assertEqual(
+            parse_spy_report_html(
+                '<div>Planet <a href="internalGalaxy.php?gal=2&sun=38">02:38:04</a> Pig iron: 1000</div>'
+            ).target_coords,
+            "02:38:04",
+        )
+
+    def test_r14_parse_galaxy_system_html_resists_huge_10e5000_coords(self) -> None:
+        from spaceinvasion.fleet import parse_galaxy_system_html
+
+        html = '<table><tr><td>1</td><td>Planet</td><td>User</td><td></td></tr></table>'
+        huge = 10**5000
+        entries_huge = parse_galaxy_system_html(html, galaxy=huge, system=huge)  # type: ignore[arg-type]
+        self.assertIsInstance(entries_huge, tuple)
+        if entries_huge:
+            self.assertRegex(entries_huge[0].coords, r"^\d{2}:\d{3}:\d{2}$")
+
+        class _Boom:
+            def __int__(self) -> int:
+                raise RuntimeError("boom")
+
+        entries_bad = parse_galaxy_system_html(html, galaxy=_Boom(), system=_Boom())  # type: ignore[arg-type]
+        self.assertIsInstance(entries_bad, tuple)
+        if entries_bad:
+            self.assertEqual(entries_bad[0].coords, "01:001:01")
+
 
 if __name__ == "__main__":
     unittest.main()

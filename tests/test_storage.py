@@ -416,6 +416,676 @@ class TestGameDatabase(unittest.TestCase):
             finally:
                 db2.close()
 
+    def test_memory_uris_no_disk_ddl_close_on_error_and_corrupt_cells(self) -> None:
+        import os
+        import sqlite3
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory(prefix="si_mem_") as tmp:
+            tmp_root = Path(tmp)
+            cwd_dir = tmp_root / "cwd_isolated"
+            cwd_dir.mkdir()
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(cwd_dir)
+                for mem_uri in (":memory:", "file::memory:?cache=shared"):
+                    db = GameDatabase(mem_uri)
+                    try:
+                        self.assertTrue(db._is_memory)
+                        self.assertIsNone(db.attack_history_path)
+                        db.record_raid(
+                            "2:380:4",
+                            attacked_ts=float("inf"),
+                            is_exempt=False,
+                            outcome="Victory",
+                            loot={"pig_iron": 1e400, "metal": float("inf"), "kryptonite": float("nan"), "spice": 150},
+                        )
+                        stats = db.get_raid_stats()
+                        json.dumps(stats, allow_nan=False)
+                        self.assertIn("02:380:04", stats["per_target"])
+                        self.assertEqual(stats["per_target"]["02:380:04"]["last_loot"]["spice"], 150)
+                        tracker = db.load_bash_tracker()
+                        self.assertEqual(
+                            tracker.attacks_last_24h("02:380:04", timestamp=stats["history"][0]["attacked_ts"] + 60.0),
+                            1,
+                        )
+                    finally:
+                        db.close()
+                self.assertEqual(list(cwd_dir.iterdir()), [])
+            finally:
+                os.chdir(old_cwd)
+
+            # Corrupt cells & null JSON values in tables degrade safely
+            db_c = GameDatabase(tmp_root / "corrupt.db", attack_history_path="")
+            try:
+                db_c._conn.execute(
+                    "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(1, '01:001:01', 'null', 10.0)"
+                )
+                db_c._conn.execute(
+                    "INSERT INTO spy_targets(coords, owner, fleet_json, defense_json, last_scanned_ts) VALUES('01:001:02', 'X', '{bad', 'null', 10.0)"
+                )
+                db_c._conn.execute(
+                    "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
+                    "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
+                    "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
+                    "economy_rates_json, researches_json) "
+                    "VALUES(10.0, 31, 1, '01:001:01', 'P', 'normal', 20, 10, 200, 0, 0, 0, 0, 0, 0, "
+                    "'[]', '{bad', 'null', 'null', '{bad')"
+                )
+                db_c._conn.execute(
+                    "INSERT INTO tutorial_progress(step, total_steps, tasks_json, reward_text, can_complete, first_seen_ts, last_seen_ts) "
+                    "VALUES(1, 5, '{bad', 'Reward', 0, 10.0, 10.0)"
+                )
+                db_c._conn.commit()
+                self.assertEqual(db_c.get_all_economy_rates(), {})
+                self.assertEqual(len(db_c.get_spy_targets()), 1)
+                self.assertEqual(len(db_c.get_planet_history(planet_id=1)), 1)
+                self.assertEqual(len(db_c.get_tutorial_history()), 1)
+                self.assertIsInstance(db_c.get_full_history_summary(), dict)
+            finally:
+                db_c.close()
+
+            # DDL error after connect closes _conn without leaking ResourceWarning
+            real_conn = sqlite3.connect(":memory:")
+            closed_flags: list[bool] = []
+
+            class _ProxyConn:
+                def __init__(self, conn: sqlite3.Connection) -> None:
+                    object.__setattr__(self, "_c", conn)
+
+                def __getattr__(self, name: str):
+                    return getattr(object.__getattribute__(self, "_c"), name)
+
+                def __setattr__(self, name: str, value) -> None:
+                    setattr(object.__getattribute__(self, "_c"), name, value)
+
+                def executescript(self, _sql: str):
+                    raise sqlite3.OperationalError("boom")
+
+                def close(self) -> None:
+                    closed_flags.append(True)
+                    object.__getattribute__(self, "_c").close()
+
+            with patch("spaceinvasion.storage.sqlite3.connect", return_value=_ProxyConn(real_conn)):
+                with self.assertRaises(sqlite3.OperationalError):
+                    GameDatabase(tmp_root / "broken_ddl.db", attack_history_path="")
+            self.assertEqual(closed_flags, [True])
+
+    def test_corrupt_numeric_cells_in_readers_and_spy_report_coord_normalization(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="si_stor_adv_") as tmp:
+            db = GameDatabase(Path(tmp) / "adv.db", attack_history_path="")
+            try:
+                # 1. Corrupt non-numeric cells in rank_snapshots, galaxy_scans, action_history, planet_snapshots
+                db._conn.execute(
+                    "INSERT INTO rank_snapshots(ts, universe_id, nickname, server_points, server_rank, "
+                    "estimated_points, pts_per_hr, spice_value, planets) "
+                    "VALUES('bad_ts', 31, 'u', 'bad_pts', 'bad_rank', 'bad_est', 'bad_pph', 'bad_sp', 'bad_pl')"
+                )
+                db._conn.execute(
+                    "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES('bad_g', 10, 100.0)"
+                )
+                db._conn.execute(
+                    "INSERT INTO galaxy_scans(galaxy, system, last_scanned_ts) VALUES(2, 380, 'bad_ts')"
+                )
+                db._conn.execute(
+                    "INSERT INTO action_history(ts, source, command, kind, planet_id, target_id, executed, dry_run) "
+                    "VALUES('bad_ts', 'api', 'throttle', 'THROTTLE_BUILDING', 'bad_pid', 2, 1, 0)"
+                )
+                db._conn.execute(
+                    "INSERT INTO action_history(ts, source, command, kind, planet_id, target_id, executed, dry_run) "
+                    "VALUES('bad_ts', 'api', 'throttle', 'THROTTLE_BUILDING', 101, 2, 1, 0)"
+                )
+                db._conn.execute(
+                    "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
+                    "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
+                    "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
+                    "economy_rates_json, researches_json) "
+                    "VALUES('bad_ts', 31, 1, '01:001:01', 'P', 'normal', 20, 10, 200, 0, 0, 0, 0, 0, 0, "
+                    "'{}', '{}', '{}', '{}', '{}')"
+                )
+                db._conn.commit()
+
+                rk = db.get_rank_samples()
+                self.assertEqual(len(rk), 1)
+                self.assertEqual(rk[0]["ts"], 0.0)
+                self.assertIsNone(rk[0]["server_points"])
+                self.assertIsNone(rk[0]["server_rank"])
+
+                scans = db.get_galaxy_scans()
+                self.assertNotIn("bad_g", str(scans))
+                self.assertEqual(scans.get("02:380"), 0.0)
+
+                throttles = db.get_last_throttle_timestamps()
+                self.assertEqual(throttles, {101: 0.0})
+
+                full_sum = db.get_full_history_summary()
+                self.assertEqual(full_sum["planet_snapshots"]["first_ts"], 0.0)
+                self.assertEqual(full_sum["planet_snapshots"]["latest_ts"], 0.0)
+
+                # 2. record_spy_report normalizes coords and merges legacy unnormalized row
+                db._conn.execute(
+                    "INSERT INTO spy_targets(coords, owner, status_color, is_inactive, last_scanned_ts) "
+                    "VALUES('2:380:4', 'LegacyYellow', 'yellow', 1, 500.0)"
+                )
+                db._conn.commit()
+                db.record_spy_report(
+                    SpyReport(
+                        target_coords="2:380:4",
+                        owner="",
+                        resources=Resources(12000, 6000, 3000, 1000),
+                    ),
+                    ts=1000.0,
+                )
+                targets = db.get_spy_targets()
+                matching = [t for t in targets if t["coords"] == "02:380:04"]
+                self.assertEqual(len(matching), 1)
+                self.assertEqual(matching[0]["owner"], "LegacyYellow")
+                self.assertEqual(matching[0]["resources"]["pig_iron"], 12000)
+                raw_rows = db._conn.execute("SELECT coords FROM spy_targets").fetchall()
+                self.assertEqual([r[0] for r in raw_rows], ["02:380:04"])
+            finally:
+                db.close()
+
+    def test_spy_target_direct_lookup_galaxy_coalescing_and_corrupt_snapshot_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = GameDatabase(Path(tmp) / "gap01_04.db")
+            try:
+                # Pre-existing legacy unnormalized row with detailed spy intel
+                db._conn.execute(
+                    "INSERT INTO spy_targets("
+                    "coords, owner, status_color, is_inactive, pig_iron, metal, kryptonite, spice, last_spied_ts, last_scanned_ts"
+                    ") VALUES('2:380:4', 'LegacyOwner', 'white', 0, 9999, 111, 0, 0, 800.0, 500.0)"
+                )
+                db._conn.commit()
+
+                direct_unnorm = db.get_spy_target_by_coords("2:380:4")
+                self.assertIsNotNone(direct_unnorm)
+                self.assertEqual(direct_unnorm["coords"], "02:380:04")
+                self.assertEqual(direct_unnorm["resources"]["pig_iron"], 9999)
+                self.assertIsNone(db.get_spy_target_by_coords("99:999:99"))
+
+                # GAP-04: record_galaxy_slots with ALREADY normalized slot.coords coalesces legacy '2:380:4'
+                db.record_galaxy_slots(
+                    [GalaxySlot("02:380:04", 4, "IdlePlanet", "NewOwner", "yellow")],
+                    ts=1000.0,
+                )
+                raw_rows = db._conn.execute("SELECT coords FROM spy_targets").fetchall()
+                self.assertEqual([r[0] for r in raw_rows], ["02:380:04"])
+                merged = db.get_spy_target_by_coords("2:380:4")
+                self.assertIsNotNone(merged)
+                self.assertEqual(merged["status_color"], "yellow")
+                self.assertTrue(merged["is_inactive"])
+                self.assertEqual(merged["owner"], "NewOwner")
+                self.assertEqual(merged["resources"]["pig_iron"], 9999)
+                self.assertEqual(merged["last_spied_ts"], 800.0)
+
+                # Caveat: pre-existing corrupt non-numeric snapshot timestamps/points do not crash record_state_snapshot
+                db._conn.execute(
+                    "INSERT INTO rank_snapshots(ts, universe_id, estimated_points, pts_per_hr, spice_value, planets) "
+                    "VALUES('bad_ts', 31, 'bad_pts', 0.0, 0.0, 1)"
+                )
+                db._conn.execute(
+                    "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, "
+                    "temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, "
+                    "energy_produced, energy_used, buildings_json, ships_json, defense_json, "
+                    "economy_rates_json, researches_json) "
+                    "VALUES('bad_ts', 31, 12476, '02:380:12', 'Colony', 'normal', 31, 55, 230, 0, 0, 0, 0, 0, 0, "
+                    "'{}', '{}', '{}', '{}', '{}')"
+                )
+                db._conn.commit()
+                db.record_state_snapshot(_sample_db_state(ts=2000.0))
+            finally:
+                db.close()
+
+    def test_blank_attack_history_path_disables_mirror_on_record_raid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for idx, blank in enumerate(("", "   ", Path(""))):
+                db = GameDatabase(Path(tmp) / f"blank_{idx}.db", attack_history_path=blank)
+                try:
+                    self.assertIsNone(db.attack_history_path)
+                    db.record_raid(
+                        "02:380:04",
+                        attacked_ts=1_700_000_000.0,
+                        is_exempt=True,
+                        outcome="Victory",
+                        loot={"pig_iron": 10**5000, "spice": 100},
+                    )
+                    self.assertIsNone(db.sync_attack_history_file())
+                    stats_json = json.dumps(db.get_raid_stats(), allow_nan=False)
+                    stats = json.loads(stats_json)
+                    self.assertIn("per_target", stats)
+                    huge_planet = PlanetState(
+                        planet_id=10**5000,
+                        name="Huge",
+                        coords="02:380:12",
+                        planet_type="normal",
+                        temperature=31,
+                        fields_used=10**5000,
+                        fields_max=10**5000,
+                        resources=Resources(10**5000, 100, 100, 100),
+                        storage=Resources(100000, 100000, 100000, 100000),
+                        energy=EnergyBalance(10**5000, 100),
+                        buildings={"b1": 10},
+                    )
+                    huge_state = GameState(
+                        universe_id=10**5000,
+                        user_id=10**5000,
+                        nickname="u",
+                        timestamp=1_700_000_000.0,
+                        planets=(huge_planet,),
+                        active_planet_id=10**5000,
+                        account_points=10**5000,
+                        account_rank=10**5000,
+                    )
+                    db.record_state_snapshot(huge_state)
+                finally:
+                    db.close()
+
+    def test_r7_storage_queries_guard_huge_limits_and_nonfinite_float_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = GameDatabase(Path(tmp) / "r7_queries.db", attack_history_path=None)
+            try:
+                db.record_raid(
+                    "02:380:04",
+                    attacked_ts=1_700_000_000.0,
+                    is_exempt=True,
+                    outcome="Victory",
+                    loot={"pig_iron": 1000},
+                )
+                db.record_galaxy_scan(2, 380, ts=1_700_000_000.0)
+
+                self.assertEqual(db.get_rank_samples(limit=10**5000), [])
+                self.assertEqual(db.get_spy_targets(limit=10**5000), [])
+                self.assertEqual(db.get_last_throttle_timestamps(building_id=10**5000), {})
+
+                for bad_f in (10**400, float("nan"), float("inf")):
+                    scans = db.get_galaxy_scans(max_age_seconds=bad_f, now=bad_f)  # type: ignore[arg-type]
+                    self.assertIn("02:380", scans)
+                    stats = db.get_raid_stats(window_seconds=bad_f, now=bad_f)  # type: ignore[arg-type]
+                    self.assertEqual(stats["overall"]["attempts"], 1)
+            finally:
+                db.close()
+
+    def test_r9_coord_candidates_arabic_indic_and_direct_summary_sid_redaction(self) -> None:
+        from spaceinvasion.storage import _coord_query_candidates
+
+        ar = "\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664"
+        norm, cands, like_pat = _coord_query_candidates(ar)
+        self.assertEqual(norm, ar)
+        self.assertEqual(cands, [ar])
+        self.assertIsNone(like_pat)
+
+        secret = "DIRECT_DB_SECRET_SID_42"
+        with tempfile.TemporaryDirectory() as tmp:
+            db = GameDatabase(Path(tmp) / "r9_redact.db", attack_history_path="")
+            try:
+                db._conn.execute(
+                    "INSERT INTO action_history(ts, source, command, priority, kind, planet_coords, target_name, executed, dry_run, message) "
+                    "VALUES(1000.0, 'api', 'build', 'P2', 'BUILD', '01:001:01', ?, 1, 0, ?)",
+                    (f"Mine ?sid={secret}", f"Done ?sid={secret}"),
+                )
+                db._conn.execute(
+                    "INSERT INTO spy_targets(coords, owner, planet_name, status_color, last_scanned_ts) VALUES('02:380:04', ?, ?, 'yellow', 1000.0)",
+                    (f"Owner ?sid={secret}", f"Planet ?sid={secret}"),
+                )
+                db._conn.execute(
+                    "INSERT INTO tutorial_progress(step, total_steps, tasks_json, reward_text, can_complete, first_seen_ts, last_seen_ts) "
+                    "VALUES(1, 5, ?, ?, 0, 1000.0, 1000.0)",
+                    (json.dumps([{"description": f"Step ?sid={secret}"}], allow_nan=False), f"Reward ?sid={secret}"),
+                )
+                db._conn.commit()
+
+                recent = db.get_recent_actions()
+                self.assertEqual(len(recent), 1)
+                self.assertNotIn(secret, json.dumps(recent, allow_nan=False))
+                self.assertIn("REDACTED", recent[0]["target_name"])
+                self.assertIn("REDACTED", recent[0]["message"])
+
+                summary = db.summary()
+                dumped = json.dumps(summary, allow_nan=False)
+                self.assertNotIn(secret, dumped)
+                self.assertIn("REDACTED", dumped)
+            finally:
+                db.close()
+
+    def test_r10_blob_sid_redaction_literal_sid_json_and_planet_history(self) -> None:
+        from spaceinvasion.storage import _sanitize_obj
+
+        s1 = "BLOB_SECRET_11"
+        s2 = "JSON_SID_22"
+        pw = "PW_SECRET_33"
+        san_obj = _sanitize_obj(
+            {
+                (10**5000, "x"): frozenset({b"?sid=" + s1.encode("utf-8")}),
+                "sid": s2,
+                "password": b"PW_SECRET_33",
+                "path": Path(f"https://x/?sid={s1}"),
+            }
+        )
+        san_dumped = json.dumps(san_obj, allow_nan=False)
+        for sec in (s1, s2, pw):
+            self.assertNotIn(sec, san_dumped)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = GameDatabase(Path(tmp) / "r10.db", attack_history_path="")
+            try:
+                blob_url = f"https://x/?sid={s1}".encode("utf-8")
+                fleet_json = json.dumps({"sid": s2, "password": pw, "s4": 3}, allow_nan=False)
+                huge_num_s = "1" + ("0" * 5000)
+                db._conn.execute(
+                    "INSERT INTO planet_snapshots(ts, universe_id, planet_id, coords, name, planet_type, temperature, fields_used, fields_max, pig_iron, metal, kryptonite, spice, energy_produced, energy_used, buildings_json, ships_json, defense_json, economy_rates_json, researches_json) "
+                    "VALUES('nan', 31, 42, ?, ?, 'normal', 20, 10, 200, ?, 1, 1, 1, 50, 10, ?, ?, '{}', ?, '{}')",
+                    (
+                        b"01:001:01",
+                        blob_url,
+                        huge_num_s,
+                        fleet_json,
+                        '{"b1": 100}',
+                        json.dumps({"sid": s2, "resource1": 100}, allow_nan=False),
+                    ),
+                )
+                db._conn.execute(
+                    "INSERT INTO spy_targets(coords, owner, planet_name, status_color, points, pig_iron, fleet_json, defense_json, last_scanned_ts) "
+                    "VALUES(?, ?, ?, 'yellow', ?, 'nan', ?, ?, 1000.0)",
+                    (b"02:380:04", blob_url, blob_url, huge_num_s, fleet_json, fleet_json),
+                )
+                db._conn.execute(
+                    "INSERT INTO rank_snapshots(ts, server_points, server_rank, estimated_points, pts_per_hr, spice_value, planets) "
+                    "VALUES(1000.0, ?, 10, 'nan', 1.0, 2.0, ?)",
+                    (huge_num_s, huge_num_s),
+                )
+                db._conn.execute(
+                    "INSERT INTO economy_rates_cache(planet_id, coords, rates_json, updated_ts) VALUES(?, '01:001:01', ?, 1000.0)",
+                    (42, json.dumps({f"?sid={s1}": 80, "resource1": 90}, allow_nan=False)),
+                )
+                db._conn.execute(
+                    "INSERT INTO raid_history(target_coords, attacked_ts, is_exempt, outcome, loot_json) VALUES(?, 1000.0, 0, ?, ?)",
+                    (b"02:380:04", blob_url, fleet_json),
+                )
+                db._conn.commit()
+
+                ph = db.get_planet_history(42)
+                rs = db.get_rank_samples()
+                er = db.get_all_economy_rates()
+                st_list = db.get_spy_targets()
+                st_one = db.get_spy_target_by_coords(b"2:380:4")  # type: ignore[arg-type]
+                bash = db.load_bash_tracker(now=1000.0)
+                full_sum = db.get_full_history_summary()
+                tot_sum = db.summary()
+
+                self.assertEqual(len(ph), 1)
+                self.assertIsNotNone(st_one)
+                self.assertEqual(bash.attacks_last_24h("02:380:04", timestamp=1000.0), 1)
+                for label, payload in (
+                    ("planet_history", ph),
+                    ("rank_samples", rs),
+                    ("economy_rates", er),
+                    ("spy_targets", st_list),
+                    ("spy_target_one", st_one),
+                    ("full_summary", full_sum),
+                    ("summary", tot_sum),
+                ):
+                    dumped = json.dumps(payload, allow_nan=False)
+                    for sec in (s1, s2, pw):
+                        self.assertNotIn(sec, dumped, f"{label} leaked {sec}")
+            finally:
+                db.close()
+
+    def test_r11_normalized_planet_type_plannedaction_class_mapping_path_and_complex(self) -> None:
+        from types import MappingProxyType
+        from spaceinvasion.storage import _is_win_outcome, _json_dumps, _sanitize_obj
+
+        class _BytesPath:
+            def __fspath__(self) -> bytes:
+                return b"/tmp/?sid=ST_BPATH_SEC"
+
+        dumped_path = _json_dumps(Path("/tmp/x?sid=ST_PATH_SEC"))
+        self.assertNotIn("ST_PATH_SEC", dumped_path)
+        dumped_bpath = _json_dumps(_BytesPath())
+        self.assertNotIn("ST_BPATH_SEC", dumped_bpath)
+        dumped_cplx = _json_dumps(complex(1, 2))
+        self.assertIsInstance(json.loads(dumped_cplx), str)
+        dumped_err = _json_dumps({"err": RuntimeError("bad ?sid=ST_ERR_SEC"), "obj": object()})
+        self.assertNotIn("ST_ERR_SEC", dumped_err)
+        self.assertIsInstance(_sanitize_obj(complex(3, 4)), str)
+        self.assertTrue(_is_win_outcome(b"victory", 0.0))  # type: ignore[arg-type]
+        self.assertFalse(_is_win_outcome(10**5000, 0.0))  # type: ignore[arg-type]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = GameDatabase(Path(tmp) / "r11.db", attack_history_path="")
+            try:
+                st = _sample_db_state(ts=2000.0)
+                ast_p = PlanetState(
+                    planet_id=77,
+                    name="Ast",
+                    coords="01:001:05",
+                    planet_type=" Asteroid ",
+                    temperature=10,
+                    fields_used=5,
+                    fields_max=20,
+                    resources=Resources(1000, 1000, 1000, 1000),
+                    storage=Resources(50_000, 50_000, 50_000, 50_000),
+                    energy=EnergyBalance(50, 10),
+                )
+                st_ast = GameState(
+                    universe_id=st.universe_id,
+                    user_id=st.user_id,
+                    nickname=st.nickname,
+                    timestamp=2000.0,
+                    planets=(ast_p,),
+                    active_planet_id=77,
+                )
+                db.record_state_snapshot(st_ast)
+                row = db._conn.execute(
+                    "SELECT planet_type FROM planet_snapshots WHERE planet_id = 77 ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                self.assertEqual(row["planet_type"], "asteroid")
+                full_sum = db.get_full_history_summary()
+                self.assertEqual(
+                    full_sum["planet_snapshots"]["latest_by_planet"]["77"]["planet_type"],
+                    "asteroid",
+                )
+
+                # PlannedAction class object (is_dataclass(cls) is True) + MappingProxyType + Path/huge int
+                db.record_action(
+                    source="test",
+                    command="plan",
+                    action=PlannedAction,
+                    executed=False,
+                    dry_run=True,
+                    message="class check",
+                )
+                db.record_action(
+                    source=b"test_src",  # type: ignore[arg-type]
+                    command=Path("cmd?sid=ACT_CMD_SEC"),  # type: ignore[arg-type]
+                    action=MappingProxyType(
+                        {
+                            "priority": 10**5000,
+                            "kind": b"BUILD",
+                            "planet_id": 77,
+                            "planet_coords": "01:001:05",
+                            "target_id": 7,
+                            "target_name": Path("Dev?sid=ACT_NAME_SEC"),
+                            "reason": RuntimeError("?sid=ACT_REASON_SEC"),
+                        }
+                    ),
+                    executed=False,
+                    dry_run=True,
+                    message=RuntimeError("?sid=ACT_MSG_SEC"),  # type: ignore[arg-type]
+                )
+                recent = db.get_recent_actions(limit=5)
+                recent_dump = json.dumps(recent, allow_nan=False)
+                for sec in ("ACT_CMD_SEC", "ACT_NAME_SEC", "ACT_REASON_SEC", "ACT_MSG_SEC"):
+                    self.assertNotIn(sec, recent_dump)
+            finally:
+                db.close()
+
+    def test_r12_storage_redacts_authorization_json_pw_exceptions_and_broken_pathlike(self) -> None:
+        from types import MappingProxyType
+        from spaceinvasion.storage import _json_dumps
+
+        class _RaiseFspath:
+            def __fspath__(self) -> str:
+                raise RuntimeError("fspath boom ?password=ST_FSPATH_PW")
+
+        class _IntPath:
+            def __fspath__(self) -> int:
+                return 10**5000
+
+        class _RaiseStrRepr:
+            def __str__(self) -> str:
+                raise RuntimeError("str boom")
+
+            def __repr__(self) -> str:
+                raise RuntimeError("repr boom")
+
+        deep_key: object = Path("?password=ST_DP5_PW")
+        for _ in range(5):
+            deep_key = (deep_key,)
+        dumped = _json_dumps(
+            {
+                "auth_header": "Authorization: Bearer ST_BEARER_SEC",
+                "json_blob": '{"password": "ST_JSON_PW_SEC", "api_key": "ST_JSON_KEY_SEC"}',
+                "authorization": "ST_DICT_AUTH_SEC",
+                "long_s": "\u017fid=ST_LONGS_SEC",
+                "exc": RuntimeError(10**5000, "?password=ST_EXC_PW"),
+                "bad_fspath": _RaiseFspath(),
+                "int_path": _IntPath(),
+                "bad_repr": _RaiseStrRepr(),
+                deep_key: "ok",
+                "mixed_keys": MappingProxyType({1: "a", "b": 2, _RaiseStrRepr(): "c"}),
+            }
+        )
+        json.loads(dumped, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
+        for sec in (
+            "ST_FSPATH_PW",
+            "ST_DP5_PW",
+            "ST_BEARER_SEC",
+            "ST_JSON_PW_SEC",
+            "ST_JSON_KEY_SEC",
+            "ST_DICT_AUTH_SEC",
+            "ST_LONGS_SEC",
+            "ST_EXC_PW",
+        ):
+            self.assertNotIn(sec, dumped)
+        self.assertIn("authorization: bearer redacted", dumped.lower())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = GameDatabase(Path(tmp) / "r12.db", attack_history_path="")
+            try:
+                db.record_action(
+                    source=_RaiseFspath(),  # type: ignore[arg-type]
+                    command=_RaiseStrRepr(),  # type: ignore[arg-type]
+                    action={"kind": "BUILD", "reason": "Authorization: Bearer ST_DB_SEC", "target_name": _IntPath()},
+                    executed=False,
+                    dry_run=True,
+                    message=RuntimeError(10**5000, "?password=ST_DB_PW"),  # type: ignore[arg-type]
+                )
+                recent = json.dumps(db.get_recent_actions(limit=5), allow_nan=False)
+                self.assertNotIn("ST_DB_SEC", recent)
+                self.assertNotIn("ST_DB_PW", recent)
+            finally:
+                db.close()
+
+    def test_r13_storage_redacts_compound_secrets_unicode_fastpath_and_quoted_bearer(self) -> None:
+        from spaceinvasion.storage import _json_dumps, _raw_text, _sanitize_text
+
+        cyc = RuntimeError("cyc")
+        cyc.args = (10**5000, cyc)
+        self.assertIsInstance(_raw_text(cyc), str)
+
+        self.assertEqual(_sanitize_text('Authorization: Bearer "SECRET"'), 'Authorization: Bearer "REDACTED"')
+        self.assertEqual(_sanitize_text("Authorization: Bearer [SECRET]"), "Authorization: Bearer [REDACTED]")
+        self.assertEqual(_sanitize_text("Bearer <SECRET>"), "Bearer <REDACTED>")
+        self.assertEqual(_sanitize_text('Authorization: Bearer ""'), 'Authorization: Bearer ""')
+        self.assertEqual(
+            _sanitize_text("?s\u0130d=ST_I1&?s\u0131d=ST_I2&?cook\u0130e=ST_CK&?ap\u0131_key=ST_AK"),
+            "?s\u0130d=REDACTED&?s\u0131d=REDACTED&?cook\u0130e=REDACTED&?ap\u0131_key=REDACTED",
+        )
+        benign = "has_sid=false&has_password=true&no_secret=false&cookie_path=/tmp/c&bsid=123"
+        self.assertEqual(_sanitize_text(benign), benign)
+
+        dumped = _json_dumps(
+            {
+                "client_secret": "ST_CSEC",
+                "user_password": "ST_UPW",
+                "bot_api_key": "ST_BKEY",
+                "session_cookie": "ST_SCK",
+                "session_sid": "ST_SSID",
+                "has_sid": "false",
+                "has_password": "true",
+                "cookie_path": "/tmp/c.json",
+                "kv": "client_secret=KV_CSEC&session_sid=KV_SSID&has_sid=false",
+            }
+        )
+        for sec in ("ST_CSEC", "ST_UPW", "ST_BKEY", "ST_SCK", "ST_SSID", "KV_CSEC", "KV_SSID"):
+            self.assertNotIn(sec, dumped)
+        parsed = json.loads(dumped)
+        self.assertEqual(parsed["has_sid"], "false")
+        self.assertEqual(parsed["has_password"], "true")
+        self.assertEqual(parsed["cookie_path"], "/tmp/c.json")
+        self.assertIn("has_sid=false", parsed["kv"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = GameDatabase(Path(tmp) / "r13.db", attack_history_path="")
+            try:
+                db.record_action(
+                    source="test",
+                    command="plan",
+                    action={
+                        "kind": "BUILD",
+                        "reason": 'Authorization: Bearer "DB_Q_BEAR" ?s\u0130d=DB_TURK_SID',
+                        "target_name": "Mine",
+                    },
+                    executed=False,
+                    dry_run=True,
+                    message="client_secret=DB_ACT_CSEC",
+                )
+                recent = json.dumps(db.get_recent_actions(limit=5), allow_nan=False)
+                for sec in ("DB_Q_BEAR", "DB_TURK_SID", "DB_ACT_CSEC"):
+                    self.assertNotIn(sec, recent)
+            finally:
+                db.close()
+
+    def test_r14_storage_sid_delim_url_json_cycle_and_dag20_safety(self) -> None:
+        import time
+        from spaceinvasion import storage as st_mod
+
+        vectors = (
+            '%22password%22%3A%22ST_UE_PW%22',
+            '%22Bearer%20ST_UE_BR%22',
+            '\\"password\\":\\"ST_ESC_PW\\"',
+            '\\\\"password\\\\":\\\\"ST_DESC_PW\\\\"',
+            'Bearer [MY ST SECRET]',
+            'Bearer <MY ST ANG>',
+            'Bearer "UNCLOSED_ST_Q',
+            'Bearer ST_SCHEMELESS_BR',
+            '?s\u0130d=ST_TR_I1&?sid=ST_REG_SID',
+        )
+        for v in vectors:
+            red = st_mod._sanitize_text(v)
+            for marker in ("ST_UE_PW", "ST_UE_BR", "ST_ESC_PW", "ST_DESC_PW", "MY ST SECRET", "MY ST ANG", "UNCLOSED_ST_Q", "ST_SCHEMELESS_BR", "ST_TR_I1", "ST_REG_SID"):
+                self.assertNotIn(marker, red, f"Leaked {marker} in {red!r}")
+
+        redos_s = 'password=' + ('\\' * 5000) + '"'
+        t0 = time.perf_counter()
+        _ = st_mod._sanitize_text(redos_s)
+        self.assertLess((time.perf_counter() - t0) * 1000.0, 250.0)
+
+        cyc: list[object] = []
+        cyc.append(cyc)
+        self.assertEqual(st_mod._sanitize_obj(cyc), ["[Cycle]"])
+        self.assertIsInstance(st_mod._raw_text(cyc), str)
+
+        dag_exc: BaseException = RuntimeError("Bearer ST_DAG_SEC")
+        for _ in range(20):
+            dag_exc = RuntimeError(dag_exc, dag_exc, dag_exc, dag_exc)
+        t1 = time.perf_counter()
+        s_dag = st_mod._sanitize_text(st_mod._raw_text(dag_exc))
+        _ = st_mod._stringify_keys({dag_exc: "ok"})
+        self.assertNotIn("ST_DAG_SEC", s_dag)
+        self.assertLess((time.perf_counter() - t1) * 1000.0, 50.0)
+
 
 if __name__ == "__main__":
     unittest.main()

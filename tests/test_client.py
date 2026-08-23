@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 from selenium.common.exceptions import ElementClickInterceptedException, NoSuchElementException
 from selenium.webdriver.common.by import By
 
-from spaceinvasion.auth import AntiBotChallengeError
+from spaceinvasion.auth import AntiBotChallengeError, SpaceInvasionAuthError
 from spaceinvasion.client import (
     GameBrowserClient,
     PageViewLimiter,
@@ -2015,6 +2015,326 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             th.join(timeout=3.0)
         self.assertEqual(res_4e, ["RateLimitError:True"])
         self.assertEqual(lim_e.rate_limit_hits, 1)
+
+    def test_adv_ensure_in_game_concurrency_4f_tab_switch(self) -> None:
+        planets_json = _sample_planets_json()
+        now = [600.0]
+        lim_f = PageViewLimiter(
+            min_delay_range=(0.0, 0.0),
+            clock=lambda: now[0],
+            sleeper=lambda s: now.__setitem__(0, now[0] + s),
+        )
+        drv_f = _FakeDriver()
+        drv_f.frames["F_Navi"].si_sid = "sid=conc4f"
+        orig_find = drv_f.find_element
+
+        def _missing_f_planets(by: str, value: str):
+            if drv_f.active_frame is None and value == "F_planets":
+                raise NoSuchElementException("missing F_planets")
+            return orig_find(by, value)
+
+        drv_f.top_html = "<div>You've made more than 30 page views at last minute!</div>"
+        drv_f.find_element = _missing_f_planets
+
+        def _restore_4f(_url: str = "") -> None:
+            drv_f.find_element = _FakeDriver.find_element.__get__(drv_f, _FakeDriver)
+            drv_f.top_html = "<html><body>shell</body></html>"
+            planets_fr = drv_f.frames["F_planets"]
+            planets_fr.html = "<html><body><script id='json-container'></script></body></html>"
+            planets_fr.elements_by_id["json-container"] = _FakeElement(tag="script", text=planets_json)
+
+        c_4f = GameBrowserClient(drv_f, page_limiter=lim_f, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        epoch_before = c_4f._dom_healthy_epoch
+
+        t1_ready = threading.Event()
+        allow_t1 = threading.Event()
+        call_lock = threading.Lock()
+        rem_calls = [0]
+        orig_rem = lim_f.rate_limit_remaining
+
+        def _gated_rem(*args, **kwargs):
+            res = orig_rem(*args, **kwargs)
+            with call_lock:
+                rem_calls[0] += 1
+                first = rem_calls[0] == 1
+            if first:
+                t1_ready.set()
+                assert allow_t1.wait(timeout=3.0)
+            return res
+
+        def _switch_tab_recover(_drv) -> bool:
+            _restore_4f()
+            return True
+
+        res_4f: list[str] = []
+        with patch.object(lim_f, "rate_limit_remaining", side_effect=_gated_rem), patch(
+            "spaceinvasion.client.find_and_switch_game_tab",
+            side_effect=_switch_tab_recover,
+        ):
+            def _run_t1() -> None:
+                try:
+                    c_4f.ensure_in_game(priority="interactive")
+                    res_4f.append("t1:ok")
+                except Exception as exc:
+                    res_4f.append(f"t1:{type(exc).__name__}")
+
+            th = threading.Thread(target=_run_t1)
+            th.start()
+            self.assertTrue(t1_ready.wait(timeout=2.0))
+            drv_f.top_html = "<html><body>wrong tab</body></html>"
+            c_4f.ensure_in_game(priority="interactive")
+            res_4f.append("t0:ok")
+            allow_t1.set()
+            th.join(timeout=3.0)
+
+        self.assertEqual(sorted(res_4f), ["t0:ok", "t1:ok"])
+        self.assertEqual(lim_f.rate_limit_hits, 0)
+        self.assertEqual(lim_f.rate_limit_remaining(), 0.0)
+        self.assertGreater(c_4f._dom_healthy_epoch, epoch_before)
+
+    def test_nan_inf_cooldown_clamping_and_page_guards_when_include_home_false(self) -> None:
+        err_nan = RateLimitError("throttled", retry_after=float("nan"))
+        self.assertTrue(1.0 <= err_nan.retry_after <= 3600.0)
+        err_inf = RateLimitError("throttled", retry_after=float("inf"))
+        self.assertTrue(1.0 <= err_inf.retry_after <= 3600.0)
+
+        t_now = [100.0]
+        lim = PageViewLimiter(default_cooldown_seconds=60.0, clock=lambda: t_now[0])
+        rem = lim.record_rate_limit(float("nan"))
+        self.assertEqual(rem, 60.0)
+        t_now[0] += 61.0
+        ok, rem2 = lim.record_rate_limit_if_generation(lim.recovery_generation(), float("inf"))
+        self.assertTrue(ok)
+        self.assertEqual(rem2, 60.0)
+
+        from selenium.common.exceptions import NoSuchElementException
+
+        drv = MagicMock()
+        planets_el = MagicMock()
+        planets_el.get_attribute.return_value = "indexInternal.es?action=internalPlanetsOverview"
+
+        def _find_el(by, val):
+            if val == "F_planets":
+                return planets_el
+            raise NoSuchElementException(val)
+
+        drv.find_element.side_effect = _find_el
+        drv.execute_script.return_value = "https://uni/indexInternal.es?action=internalPlanetsOverview"
+        drv.page_source = "<html><body>You've made more than 30 page views at last minute!</body></html>"
+        t_now[0] += 61.0
+        c = GameBrowserClient(drv, page_limiter=lim, min_nav_delay=(0.0, 0.0))
+        with self.assertRaises(RateLimitError):
+            c.read_full_snapshot(include_home=False, include_buildings=False)
+
+        # Off-internalHome F_Hauptframe redirecting to BitMeUp login or universe picker raises SpaceInvasionAuthError
+        from spaceinvasion.state import GameState
+
+        haupt_el = MagicMock()
+        haupt_el.get_attribute.return_value = "indexInternal.es?action=internalBuildings"
+
+        def _find_el_portal(by, val):
+            if val == "F_Hauptframe":
+                return haupt_el
+            if val == "F_planets":
+                return planets_el
+            raise NoSuchElementException(val)
+
+        for marker_html in (
+            '<html><body><div id="bitmeup-login" class="bitmeup-login">Login</div></body></html>',
+            '<html><body><div id="sip-tab-universe" class="sip-tab-universe">Choose Universe</div></body></html>',
+        ):
+            drv_portal = MagicMock()
+            drv_portal.find_element.side_effect = _find_el_portal
+            drv_portal.execute_script.return_value = "https://uni/indexInternal.es?action=internalBuildings"
+            drv_portal.page_source = marker_html
+            c_portal = GameBrowserClient(drv_portal, page_limiter=lim, min_nav_delay=(0.0, 0.0))
+            with patch.object(c_portal, "ensure_in_game", return_value=None), patch.object(
+                c_portal,
+                "read_planets_overview",
+                return_value=GameState(
+                    universe_id=1,
+                    user_id=1,
+                    nickname="Test",
+                    timestamp=100.0,
+                    planets=(),
+                    researches={},
+                ),
+            ), patch.object(c_portal, "read_menu_status", return_value=({}, None, None)):
+                with self.assertRaises(SpaceInvasionAuthError):
+                    c_portal.read_full_snapshot(
+                        include_home=False,
+                        include_buildings=False,
+                        include_research=False,
+                        include_shipyard=False,
+                    )
+
+    def test_wait_frame_ready_raises_on_portal_html_even_with_expected_action_in_href(self) -> None:
+        lim = PageViewLimiter(max_views_per_minute=60)
+        haupt_el = MagicMock()
+        for marker_html in (
+            '<html><body><div id="bitmeup-login" class="bitmeup-login">Login</div></body></html>',
+            '<html><body><div id="sip-tab-universe" class="sip-tab-universe">Choose Universe</div></body></html>',
+        ):
+            drv = MagicMock()
+            drv.find_element.return_value = haupt_el
+            drv.execute_script.return_value = "https://uni/indexInternal.es?action=internalBuildings"
+            drv.page_source = marker_html
+            client = GameBrowserClient(drv, page_limiter=lim, min_nav_delay=(0.0, 0.0), timeout=0.5)
+            with self.assertRaises(SpaceInvasionAuthError):
+                client._wait_frame_ready("F_Hauptframe", expected_action="internalBuildings")
+            with self.assertRaises(SpaceInvasionAuthError):
+                client._wait_frame_ready("F_Hauptframe", expected_action=None)
+            drv_ov = MagicMock()
+            planets_frame = MagicMock()
+            planets_frame.get_attribute.return_value = "indexInternal.es?action=internalPlanetsOverview"
+
+            def _ov_find(by, val):
+                if val == "F_planets":
+                    return planets_frame
+                raise NoSuchElementException(val)
+
+            drv_ov.find_element.side_effect = _ov_find
+            drv_ov.page_source = marker_html
+            drv_ov.execute_script.side_effect = [
+                "https://uni/indexInternal.es?action=internalPlanetsOverview",
+                None,
+                False,
+                "complete",
+                False,
+            ]
+            client_ov = GameBrowserClient(drv_ov, page_limiter=lim, min_nav_delay=(0.0, 0.0), timeout=0.5)
+            with patch.object(client_ov, "ensure_in_game", return_value=None):
+                with self.assertRaises(SpaceInvasionAuthError):
+                    client_ov.read_planets_overview(refresh=True)
+
+    def test_extract_selected_planet_id_ignores_huge_5000_digit_values(self) -> None:
+        huge = "9" * 5000
+        html_huge = (
+            f'<select name="planet">'
+            f'<option selected="selected" value="indexInternal.es?action=internalHome&newplanet={huge}">Huge</option>'
+            f"</select>"
+        )
+        self.assertIsNone(GameBrowserClient._extract_selected_planet_id(html_huge, "https://uni/indexInternal.es?action=internalHome"))
+
+        html_ok = (
+            '<select name="planet">'
+            '<option selected="selected" value="indexInternal.es?action=internalHome&newplanet=12476">Ok</option>'
+            "</select>"
+        )
+        self.assertEqual(GameBrowserClient._extract_selected_planet_id(html_ok, "https://uni/indexInternal.es?action=internalHome"), 12476)
+
+    def test_r7_client_and_limiter_clamp_nan_inf_waits_without_overflow_error(self) -> None:
+        import math
+        import threading
+
+        lim = PageViewLimiter(
+            max_views_per_minute=2,
+            window_seconds=float("nan"),
+            default_cooldown_seconds=float("inf"),
+            min_delay_range=(float("nan"), float("inf")),
+            clock=lambda: 100.0,
+            sleeper=lambda _s: None,
+        )
+        self.assertTrue(math.isfinite(lim.window_seconds))
+        self.assertTrue(math.isfinite(lim.default_cooldown_seconds))
+        self.assertLessEqual(lim.default_cooldown_seconds, 3600.0)
+        waited = lim.acquire(max_wait=float("inf"), delay_range=(float("nan"), float("inf")))
+        self.assertTrue(math.isfinite(waited))
+
+        # Trigger Condition.wait() while a concurrent recovery is in flight with wait_timeout=inf / nan
+        lim._throttle_recovery_in_flight = True
+        lim._throttle_recovery_generation = 1
+
+        def _finish_soon() -> None:
+            with lim._recovery_cond:
+                lim._throttle_recovery_in_flight = False
+                lim._throttle_recovery_generation = 2
+                lim._recovery_cond.notify_all()
+
+        t = threading.Timer(0.02, _finish_soon)
+        t.start()
+        try:
+            self.assertEqual(lim.wait_if_throttle_recovery_in_flight(wait_timeout=float("inf")), "waited")
+            lim._throttle_recovery_in_flight = True
+            t2 = threading.Timer(0.02, _finish_soon)
+            t2.start()
+            try:
+                status, _ = lim.begin_or_wait_throttle_recovery(wait_timeout=float("nan"))
+                self.assertEqual(status, "waited")
+            finally:
+                t2.join(timeout=2.0)
+        finally:
+            t.join(timeout=2.0)
+
+        drv = MagicMock()
+        client = GameBrowserClient(
+            drv,
+            page_limiter=lim,
+            timeout=float("inf"),
+            max_limiter_wait=float("nan"),
+        )
+        self.assertTrue(math.isfinite(client.timeout) and client.timeout <= 300.0)
+        self.assertTrue(client.max_limiter_wait is not None and math.isfinite(client.max_limiter_wait))
+        client.timeout = float("nan")
+        drv.execute_script.side_effect = [{"ready": "complete", "href": "https://uni/indexInternal.es", "token": "t"}]
+        drv.page_source = "<html>ok</html>"
+        self.assertEqual(client._wait_frame_ready("F_Hauptframe"), "<html>ok</html>")
+
+    def test_r8_limiter_sanitizes_nan_inf_huge_max_views_reserve_count_and_cost(self) -> None:
+        lim_nan = PageViewLimiter(
+            max_views_per_minute=float("nan"),  # type: ignore[arg-type]
+            reserved_interactive_views=float("inf"),  # type: ignore[arg-type]
+            min_delay_range=(0.0, 0.0),
+            clock=lambda: 100.0,
+            sleeper=lambda _s: None,
+        )
+        self.assertEqual(lim_nan.max_views_per_minute, 24)
+        self.assertEqual(lim_nan.reserved_interactive_views, 6)
+        lim_nan.record_view(float("nan"))  # type: ignore[arg-type]
+        self.assertEqual(lim_nan.views_last_60s(), 1)
+        self.assertEqual(lim_nan.acquire(cost=float("nan")), 0.0)  # type: ignore[arg-type]
+        self.assertEqual(lim_nan.acquire(cost=float("inf")), 0.0)  # type: ignore[arg-type]
+        self.assertEqual(lim_nan.acquire(cost=True), 0.0)  # type: ignore[arg-type]
+
+        lim_huge = PageViewLimiter(
+            max_views_per_minute=10**400,
+            reserved_interactive_views=10**400,
+            min_delay_range=(0.0, 0.0),
+            clock=lambda: 100.0,
+            sleeper=lambda _s: None,
+        )
+        self.assertLessEqual(lim_huge.max_views_per_minute, 100_000)
+        self.assertLessEqual(lim_huge.reserved_interactive_views, 100_000)
+        lim_huge.record_view(10**400)
+        self.assertLessEqual(lim_huge.views_last_60s(), 10_000)
+
+    def test_r10_bytes_nonascii_bounds_and_commander_client_timeout(self) -> None:
+        from spaceinvasion.client import GameBrowserClient
+        from spaceinvasion.commander_client import GameApiClient, _safe_api_timeout
+
+        lim = PageViewLimiter(
+            max_views_per_minute=b"30",  # type: ignore[arg-type]
+            reserved_interactive_views="\u0665",  # type: ignore[arg-type]
+            min_delay_range=(b"0.0", "\u0661"),  # type: ignore[arg-type]
+            default_cooldown_seconds="\u0661\u0660",  # type: ignore[arg-type]
+            clock=lambda: 100.0,
+            sleeper=lambda _s: None,
+        )
+        self.assertEqual(lim.max_views_per_minute, 30)
+        self.assertEqual(lim.reserved_interactive_views, 6)
+        self.assertIsNone(GameBrowserClient._extract_selected_planet_id('<option selected value="\u0661\u0662\u0663">P</option>'))
+        cli = GameBrowserClient(MagicMock(), timeout=b"25.0")  # type: ignore[arg-type]
+        self.assertEqual(cli.timeout, 25.0)
+        cli2 = GameBrowserClient(MagicMock(), timeout="\u0662\u0665")  # type: ignore[arg-type]
+        self.assertEqual(cli2.timeout, 20.0)
+
+        self.assertEqual(_safe_api_timeout(10**5000), 30.0)
+        self.assertEqual(_safe_api_timeout(10**6), 3600.0)
+        self.assertEqual(_safe_api_timeout(b"3.5"), 3.5)
+        self.assertEqual(_safe_api_timeout("\u0665"), 30.0)
+        self.assertEqual(_safe_api_timeout(frozenset({1})), 30.0)
+        api_cli = GameApiClient("http://127.0.0.1:8787", timeout=10**5000)  # type: ignore[arg-type]
+        self.assertEqual(api_cli.timeout, 30.0)
 
 
 if __name__ == "__main__":

@@ -1332,6 +1332,666 @@ class TestOperatorControlUi(unittest.TestCase):
             server.server_close()
             self._tmp.cleanup()
 
+    @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
+    def test_adv_ui_gacalc_refcount_fmt_neg_zero_finite_num_and_responsive_css(self) -> None:
+        _, server, base_url = self._start_server(planner_mode="ga_nn")
+        try:
+            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                css_txt = re.sub(
+                    r"/\*.*?\*/",
+                    "",
+                    requests.get(f"{base_url}/styles.css", timeout=5).text,
+                    flags=re.DOTALL,
+                )
+            self.assertRegex(css_txt, r"\.nav-title\s*\{[^}]*font-size\s*:\s*0\.86rem")
+            self.assertRegex(css_txt, r"\.eta-pill\s*\{[^}]*font-size\s*:\s*0\.86rem")
+            m_1100 = re.search(
+                r"@media\s*\(\s*max-width\s*:\s*1100px\s*\)\s*\{((?:[^{}]|\{[^{}]*\})*)\}",
+                css_txt,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            self.assertIsNotNone(m_1100)
+            m_logs = re.search(r"#logs-pre\s*\{[^}]*min-height\s*:\s*(\d+)px", m_1100.group(1))
+            self.assertIsNotNone(m_logs)
+            self.assertGreaterEqual(int(m_logs.group(1)), 200)
+
+            patch_concurrent = (
+                "async (url, opts, fullUrl, nativeFetch) => { "
+                "if (url === '/command' && opts && opts.body) { "
+                "  const b = JSON.parse(String(opts.body)); "
+                "  if (b.command === 'plan') { "
+                "    return new Promise((resolve) => { "
+                "      globalThis.__resolveSlowPlan = async () => resolve(await nativeFetch(fullUrl, opts)); "
+                "    }); "
+                "  } "
+                "} }"
+            )
+            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                res = _run_node_ui(
+                    base_url,
+                    """
+                    await __waitUntil(() => state.dashboard !== null);
+                    const negZero = fmtImprovementPct(-0.01, 100, 99.99);
+                    const fnArr = finiteNum([], 'FB');
+                    const fnObj = finiteNum({}, 'FB');
+                    const fnBlank = finiteNum('   ', 'FB');
+
+                    document.getElementById('btn-gann-recalc').click();
+                    await __sleep(10);
+                    document.getElementById('btn-sync').click();
+                    await __waitUntil(() => document.getElementById('feedback-banner').textContent.includes('Synced') && !state.inFlightDashboard);
+                    await __sleep(10);
+                    const runningAfterSyncSettled = state.gaCalcRunning;
+                    const countAfterSyncSettled = state.gaCalcCount;
+                    const hudHasCalculating = document.getElementById('gann-calc-hud').classList.contains('is-calculating');
+
+                    globalThis.__resolveSlowPlan();
+                    await __waitUntil(() => !state.gaCalcRunning);
+                    const runningAfterRecalcSettled = state.gaCalcRunning;
+                    const countAfterRecalcSettled = state.gaCalcCount;
+                    return {
+                      negZero,
+                      fnArr,
+                      fnObj,
+                      fnBlank,
+                      runningAfterSyncSettled,
+                      countAfterSyncSettled,
+                      hudHasCalculating,
+                      runningAfterRecalcSettled,
+                      countAfterRecalcSettled,
+                    };
+                    """,
+                    fetch_patch_js=patch_concurrent,
+                )
+            self.assertEqual(res["errors"], [])
+            sc = res["scenario"]
+            self.assertEqual(sc["negZero"], "+0.0%")
+            self.assertEqual(sc["fnArr"], "FB")
+            self.assertEqual(sc["fnObj"], "FB")
+            self.assertEqual(sc["fnBlank"], "FB")
+            self.assertTrue(sc["runningAfterSyncSettled"])
+            self.assertEqual(sc["countAfterSyncSettled"], 1)
+            self.assertTrue(sc["hudHasCalculating"])
+            self.assertFalse(sc["runningAfterRecalcSettled"])
+            self.assertEqual(sc["countAfterRecalcSettled"], 0)
+        finally:
+            server.shutdown()
+            server.server_close()
+            self._tmp.cleanup()
+
+    def test_ui_1e400_nan_payload_and_non_json_error_no_nan_or_infinity(self) -> None:
+        bridge, server, base_url = self._start_server()
+        try:
+            chaos_patch = (
+                "async (url, opts, fullUrl, nativeFetch) => { "
+                "if (url.startsWith('/dashboard')) { "
+                "  const r = await nativeFetch(fullUrl, opts); "
+                "  const d = await r.json(); "
+                "  d.state.planets[0].energy = { produced: 1e400, used: 1e400 }; "
+                "  d.state.planets[0].fields_used = 1e400; "
+                "  d.state.planets[0].fields_max = 1e400; "
+                "  d.state.planets[0].resources.pig_iron = 1e400; "
+                "  d.state.planets[0].storage.pig_iron = 1e400; "
+                "  d.ranking = { "
+                "    current: { estimated_points: 1e400, buildings_points: 1e400, research_points: 0, baseline_points: 1e400, server_rank: 1e400, server_points: 1e400, spice_value: 1e400, attack_zone: { label: 'AZ 1', range_text: '0-500' } }, "
+                "    rates: { pts_per_hr_steady: 1e400, net_resources_per_hr: 1e400, spice_eq_per_hr: 1e400, speedup_factor: 1 }, "
+                "    horizons: [{ label: '24h', steady_points: NaN, steady_delta: Infinity, steady_az: 'AZ 1', compound_points: 100, compound_delta: 10, compound_az: 'AZ 1' }], "
+                "    milestones: [], "
+                "    observed_trend: { sample_count: 2, delta_points: NaN, observed_pts_per_hr: Infinity, elapsed_hours: NaN, samples: [{ estimated_points: NaN }, { estimated_points: Infinity }] } "
+                "  }; "
+                "  return { ok: true, status: 200, json: async () => d }; "
+                "} "
+                "if (url === '/command') { "
+                "  return { ok: false, status: 502, text: async () => '<html><body>502 Bad Gateway</body></html>' }; "
+                "} }"
+            )
+            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                res = _run_node_ui(
+                    base_url,
+                    """
+                    await __waitUntil(() => state.dashboard !== null);
+                    setActivePage('ranking');
+                    await __sleep(20);
+                    const valEnergy = document.getElementById('val-energy').textContent;
+                    const energyRatio = document.getElementById('energy-ratio').textContent;
+                    const planetSpecs = document.getElementById('planet-specs').textContent;
+                    const valPig = document.getElementById('val-pig').textContent;
+                    const capPig = document.getElementById('cap-pig').textContent;
+                    const rnkBreakdown = document.getElementById('rnk-breakdown').textContent;
+                    const rnkServerPos = document.getElementById('rnk-server-pos').textContent;
+                    const rnkChartHtml = document.getElementById('rnk-chart').textContent;
+                    const horizonsText = document.getElementById('rnk-horizons-tbody').textContent;
+                    const observedRate = document.getElementById('rnk-observed-rate').textContent;
+
+                    document.getElementById('btn-tick-now').click();
+                    await __waitUntil(() => document.getElementById('feedback-banner').textContent.includes('Tick failed'));
+                    const bannerText = document.getElementById('feedback-banner').textContent;
+                    return {
+                      valEnergy,
+                      energyRatio,
+                      planetSpecs,
+                      valPig,
+                      capPig,
+                      rnkBreakdown,
+                      rnkServerPos,
+                      rnkChartHtml,
+                      horizonsText,
+                      observedRate,
+                      bannerText,
+                    };
+                    """,
+                    fetch_patch_js=chaos_patch,
+                )
+            self.assertEqual(res["errors"], [])
+            sc = res["scenario"]
+            for field_name, txt in sc.items():
+                self.assertNotIn("NaN", txt, f"Found NaN in {field_name}: {txt!r}")
+                self.assertNotIn("∞", txt, f"Found ∞ in {field_name}: {txt!r}")
+                self.assertNotIn("Infinity", txt, f"Found Infinity in {field_name}: {txt!r}")
+            self.assertIn("HTTP 502", sc["bannerText"])
+            self.assertNotIn("Unexpected token", sc["bannerText"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            self._tmp.cleanup()
+
+    def test_bug03_non_dict_json_responses_and_negative_zero_formatting_in_node(self) -> None:
+        bridge, server, base_url = self._start_server()
+        try:
+            scenario_js = r"""
+const cases = [
+  { status: 200, ok: true, body: "null" },
+  { status: 500, ok: false, body: "null" },
+  { status: 200, ok: true, body: "[]" },
+  { status: 502, ok: false, body: '["bad"]' },
+  { status: 429, ok: false, body: '["rate"]' },
+  { status: 200, ok: true, body: '"bad"' },
+  { status: 200, ok: true, body: "123" },
+];
+const parseResults = [];
+for (const c of cases) {
+  const mockRes = {
+    ok: c.ok,
+    status: c.status,
+    async text() { return c.body; },
+  };
+  try {
+    await parseResponseJson(mockRes);
+    parseResults.push({ status: c.status, threw: false });
+  } catch (e) {
+    parseResults.push({ status: c.status, threw: true, isTypeErr: e instanceof TypeError, msg: String(e.message || e) });
+  }
+}
+
+// .json()-only mock responses without .text()
+const jsonOnlyResults = [];
+for (const payload of [null, [], "bad", 42]) {
+  const mockRes = { ok: true, status: 200, async json() { return payload; } };
+  try {
+    await parseResponseJson(mockRes);
+    jsonOnlyResults.push({ threw: false });
+  } catch (e) {
+    jsonOnlyResults.push({ threw: true, isTypeErr: e instanceof TypeError, msg: String(e.message || e) });
+  }
+}
+
+// apiGet & apiCommand on 502 ["bad"], 500 null, 200 null, 429 ["rate"], plus .json()-only mocks
+const apiResults = [];
+const mockPayloads = [
+  { ok: false, status: 502, body: '["bad"]' },
+  { ok: false, status: 500, body: "null" },
+  { ok: true, status: 200, body: "null" },
+  { ok: false, status: 429, body: '["rate"]' },
+  { ok: true, status: 200, jsonOnly: true, jsonVal: null },
+  { ok: false, status: 500, jsonOnly: true, jsonVal: [] },
+];
+for (const mp of mockPayloads) {
+  globalThis.__bug03Mock = mp;
+  let getErr = null;
+  try {
+    await apiGet("/state");
+  } catch (e) {
+    getErr = { status: e.status, rateLimited: Boolean(e.rateLimited), msg: String(e.message || e), isTypeErr: e instanceof TypeError };
+  }
+  let cmdErr = null;
+  try {
+    await apiCommand({ command: "plan" });
+  } catch (e) {
+    cmdErr = { status: e.status, rateLimited: Boolean(e.rateLimited), msg: String(e.message || e), isTypeErr: e instanceof TypeError };
+  }
+  apiResults.push({ expectedStatus: mp.status, getErr, cmdErr });
+}
+globalThis.__bug03Mock = null;
+
+// Exercise 429 warn banner vs error banner
+const err429 = new Error("HTTP 429");
+err429.status = 429;
+err429.rateLimited = true;
+showFeedback(err429.message, feedbackKindForError(err429));
+const warnClass = el("feedback-banner").className;
+
+// Numeric -0 / -0.1 / negative steady rate formatting checks
+renderResourceBar("pig", 0, 1000, -0.1);
+const tinyNegRateText = el("rate-pig").textContent;
+const tinyNegRateClass = el("rate-pig").className;
+
+renderResourceBar("metal", 0, 1000, -1.0);
+const negRateText = el("rate-metal").textContent;
+const negRateClass = el("rate-metal").className;
+
+renderRanking({ ranking: { current: { estimated_points: 10 }, rates: { pts_per_hr_steady: -1.5, net_resources_per_hr: -0.1, speedup_factor: 1 }, observed_trend: {} } });
+const steadyText = el("rnk-rate-hr").textContent;
+
+renderRanking({ ranking: { current: { estimated_points: 10 }, rates: { pts_per_hr_steady: -0.001, net_resources_per_hr: 0, speedup_factor: 1 }, observed_trend: {} } });
+const zeroSteadyText = el("rnk-rate-hr").textContent;
+
+return {
+  parseResults,
+  jsonOnlyResults,
+  apiResults,
+  warnClass,
+  fmtIntNegZero: fmtInt(-0),
+  fmtRateNegZero: fmtRate(-0),
+  fmtRateTinyNeg: fmtRate(-0.1),
+  tinyNegRateText,
+  tinyNegRateClass,
+  negRateText,
+  negRateClass,
+  steadyText,
+  zeroSteadyText,
+};
+"""
+            fetch_patch_js = """
+async (url) => {
+  const mp = globalThis.__bug03Mock;
+  if (!mp || (url !== "/state" && url !== "/command")) return undefined;
+  if (mp.jsonOnly) {
+    return { ok: mp.ok, status: mp.status, async json() { return mp.jsonVal; } };
+  }
+  return { ok: mp.ok, status: mp.status, async text() { return mp.body; } };
+}
+"""
+            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                res = _run_node_ui(base_url, scenario_js, fetch_patch_js=fetch_patch_js)
+            sc = res["scenario"]
+            for item in sc["parseResults"]:
+                self.assertTrue(item["threw"])
+                self.assertFalse(item["isTypeErr"])
+                self.assertNotIn("Cannot read properties of null", item["msg"])
+            for item in sc["jsonOnlyResults"]:
+                self.assertTrue(item["threw"])
+                self.assertFalse(item["isTypeErr"])
+            for item in sc["apiResults"]:
+                for key in ("getErr", "cmdErr"):
+                    err = item[key]
+                    self.assertIsNotNone(err)
+                    self.assertFalse(err["isTypeErr"])
+                    self.assertNotIn("Cannot read properties of null", err["msg"])
+                    if item["expectedStatus"] == 429:
+                        self.assertTrue(err["rateLimited"])
+            self.assertIn("is-warn", sc["warnClass"])
+            self.assertEqual(sc["fmtIntNegZero"], "0")
+            self.assertEqual(sc["fmtRateNegZero"], "0/h")
+            self.assertEqual(sc["fmtRateTinyNeg"], "0/h")
+            self.assertEqual(sc["tinyNegRateText"], "0/h")
+            self.assertNotIn("is-neg", sc["tinyNegRateClass"])
+            self.assertEqual(sc["negRateText"], "-1/h")
+            self.assertIn("is-neg", sc["negRateClass"])
+            self.assertEqual(sc["steadyText"], "-1.50 pts/hr")
+            self.assertEqual(sc["zeroSteadyText"], "+0.00 pts/hr")
+        finally:
+            bridge.close()
+            server.shutdown()
+            server.server_close()
+            self._tmp.cleanup()
+
+    def test_r7_ui_corrupt_bf_pct_subthreshold_neg_zero_ranking_signs_and_impr_pct_undefined(self) -> None:
+        self.assertIsNotNone(shutil.which("node"), "Node.js is required")
+        bridge, server, base_url = self._start_server(planner_mode="ga_nn")
+        try:
+            scenario_js = r"""
+await __waitUntil(() => state.dashboard !== null);
+
+const fmtSmallNeg = fmtInt(-0.0001);
+const fmtPointOne = fmtInt(-0.1);
+const fmtRatePointOne = fmtRate(-0.1);
+const imprUndef = fmtImprovementPct(null, undefined, undefined);
+const imprTinyNeg = fmtImprovementPct(-0.01, 100, 99.99);
+
+const bfFallback = getSelectedBlastFurnacePct({
+  state: { planets: [{ planet_id: 1, economy_rates: { resource2: "bad" } }] },
+  buildings_eta: { planet: { planet_id: 1 }, planet_economy: { blast_furnace_pct: 0 } },
+});
+
+renderTelemetry({
+  state: state.dashboard.state,
+  buildings_eta: state.dashboard.buildings_eta,
+  ranking: { current: { estimated_points: 10 }, rates: { pts_per_hr_steady: -0.0049, spice_eq_per_hr: 10 } },
+  health: state.dashboard.health,
+});
+const dashSteadyText = el("dash-pts-hr").textContent;
+
+renderBuildingsView({
+  state: state.dashboard.state,
+  buildings_eta: {
+    planet: { coords: "01:001:01", building_time_divisor: "bad" },
+    planet_economy: { blast_furnace_pct: "bad" },
+    buildings: [
+      {
+        key: undefined,
+        name: "Blast furnace",
+        economy_rate_pct: "bad",
+        current_level: 4,
+        next_level: 5,
+        missing_total: 0,
+        build_time_text: "1m",
+        wait_eta: "Ready",
+        reach_eta: "1m",
+        wait_hours: 0,
+      },
+    ],
+    researches: [],
+  },
+});
+const bldMeta = el("bld-planet-meta").textContent;
+const bldRowText = el("eta-table-tbody").textContent;
+const pauseDisBad = el("btn-b2-pause").disabled;
+const resumeDisBad = el("btn-b2-resume").disabled;
+
+renderBuildingsView({
+  state: state.dashboard.state,
+  buildings_eta: {
+    planet: { coords: "01:001:01", building_time_divisor: 2 },
+    planet_economy: { blast_furnace_pct: 0 },
+    buildings: [],
+    researches: [],
+  },
+});
+const pauseDisZero = el("btn-b2-pause").disabled;
+const resumeDisZero = el("btn-b2-resume").disabled;
+
+renderGaNnHud({
+  config: { planner_mode: "ga_nn" },
+  optimizer_summary: { elapsed_ms: -5, nn_final_loss: -1e-6, population_size: 8, nn_backend: "python" },
+});
+const hudMeta = el("gann-meta-line").textContent;
+const hudNnSub = el("gann-nn-sub").textContent;
+
+renderRanking({
+  ranking: {
+    current: { estimated_points: -0.01, attack_zone: { label: "AZ 1" } },
+    rates: { pts_per_hr_steady: -0.001, net_resources_per_hr: 0, speedup_factor: 1 },
+    horizons: [
+      {
+        label: "+24 Hours",
+        steady_points: 90,
+        steady_delta: -10,
+        steady_az: "AZ 1",
+        compound_points: 85,
+        compound_delta: -15,
+        compound_az: "AZ 1",
+      },
+    ],
+    milestones: [],
+    observed_trend: {
+      sample_count: 2,
+      delta_points: 0,
+      observed_pts_per_hr: -0.5,
+      elapsed_hours: 1,
+      rank_climbed: -0,
+      samples: [{ estimated_points: 10 }, { estimated_points: 10 }],
+    },
+  },
+});
+const rnkEstPts = el("rnk-est-pts").textContent;
+const rnkObsRate = el("rnk-observed-rate").textContent;
+const rnkObsSummary = el("rnk-observed-summary").textContent;
+const rnkHorizons = el("rnk-horizons-tbody").textContent;
+
+return {
+  fmtSmallNeg,
+  fmtPointOne,
+  fmtRatePointOne,
+  imprUndef,
+  imprTinyNeg,
+  bfFallback,
+  dashSteadyText,
+  bldMeta,
+  bldRowText,
+  pauseDisBad,
+  resumeDisBad,
+  pauseDisZero,
+  resumeDisZero,
+  hudMeta,
+  hudNnSub,
+  rnkEstPts,
+  rnkObsRate,
+  rnkObsSummary,
+  rnkHorizons,
+};
+"""
+            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                res = _run_node_ui(base_url, scenario_js)
+            self.assertEqual(res["errors"], [])
+            sc = res["scenario"]
+            self.assertEqual(sc["fmtSmallNeg"], "0")
+            self.assertEqual(sc["fmtPointOne"], "-0.1")
+            self.assertEqual(sc["fmtRatePointOne"], "0/h")
+            self.assertEqual(sc["imprUndef"], "—")
+            self.assertEqual(sc["imprTinyNeg"], "+0.0%")
+            self.assertEqual(sc["bfFallback"], 0)
+            self.assertEqual(sc["dashSteadyText"], "+0.00/h")
+            self.assertNotIn("Div xbad", sc["bldMeta"])
+            self.assertIn("Div x1", sc["bldMeta"])
+            self.assertNotIn("(undefined)", sc["bldRowText"])
+            self.assertNotIn("bad%", sc["bldRowText"])
+            self.assertFalse(sc["pauseDisBad"])
+            self.assertTrue(sc["resumeDisBad"])
+            self.assertTrue(sc["pauseDisZero"])
+            self.assertFalse(sc["resumeDisZero"])
+            self.assertIn("0ms", sc["hudMeta"])
+            self.assertNotIn("-5ms", sc["hudMeta"])
+            self.assertIn("MSE Loss 0.0000", sc["hudNnSub"])
+            self.assertNotIn("-0.0000", sc["hudNnSub"])
+            self.assertTrue(sc["rnkEstPts"].startswith("~0.0"))
+            self.assertEqual(sc["rnkObsRate"], "-0.5 pts/hr observed")
+            self.assertNotIn("+-", sc["rnkObsSummary"])
+            self.assertNotIn("climbed +0", sc["rnkObsSummary"])
+            self.assertIn("(-10)", sc["rnkHorizons"])
+            self.assertIn("(-15)", sc["rnkHorizons"])
+            self.assertNotIn("(+-", sc["rnkHorizons"])
+        finally:
+            bridge.close()
+            server.shutdown()
+            server.server_close()
+            self._tmp.cleanup()
+
+    def test_r7_ui_save_config_race_seed_validation_and_immediate_config_sync(self) -> None:
+        self.assertIsNotNone(shutil.which("node"), "Node.js is required")
+        bridge, server, base_url = self._start_server(planner_mode="priority")
+        try:
+            race_patch = """
+async (url, opts, fullUrl, nativeFetch) => {
+  if (globalThis.__dashMode === 'hold_priority' && url.startsWith('/dashboard')) {
+    globalThis.__dashMode = 'normal';
+    const r = await nativeFetch(fullUrl, opts);
+    const d = await r.json();
+    d.config = { ...(d.config || {}), planner_mode: 'priority', ga_seed: 42 };
+    d.planner_mode = 'priority';
+    return new Promise((resolve) => {
+      globalThis.__resolveHeldDash = () => resolve({ ok: true, status: 200, json: async () => d });
+    });
+  }
+  if (globalThis.__dashMode === 'fail_503' && url.startsWith('/dashboard')) {
+    return { ok: false, status: 503, json: async () => ({ ok: false, error: 'transient 503' }) };
+  }
+}
+"""
+            scenario_js = r"""
+await __waitUntil(() => state.dashboard !== null);
+
+// 1. Invalid ga_seed="abc" must NOT coerce to null; server must reject with 400
+el("cfg-ga_seed").value = "abc";
+el("btn-save-config").click();
+await __waitUntil(() => fetchLog.some((f) => f.url === "/command" && f.body?.command === "update_config" && f.body?.config?.ga_seed === "abc"));
+await __waitUntil(() => el("feedback-banner").textContent.includes("Failed saving config"));
+const badBanner = el("feedback-banner").textContent;
+
+// 2. Race: slow pre-click dashboard resolving after save click + post-save refresh 503
+el("cfg-planner_mode").value = "ga_nn";
+el("cfg-ga_seed").value = "99";
+globalThis.__dashMode = "hold_priority";
+const heldPromise = loadDashboard({ refresh: false, preserveConfig: true, force: true });
+await __waitUntil(() => typeof globalThis.__resolveHeldDash === "function");
+
+globalThis.__dashMode = "fail_503";
+el("btn-save-config").click();
+await __sleep(20);
+globalThis.__resolveHeldDash();
+await heldPromise;
+
+await __waitUntil(() => el("dash-planner-mode-badge").textContent === "MODE: GA+NN" && state.dashboard?.config?.ga_seed === 99);
+await __sleep(50);
+
+return {
+  badBanner,
+  dashMode: state.dashboard?.planner_mode,
+  cfgMode: state.dashboard?.config?.planner_mode,
+  cfgSeed: state.dashboard?.config?.ga_seed,
+  domMode: el("cfg-planner_mode").value,
+  domSeed: el("cfg-ga_seed").value,
+  badgeText: el("dash-planner-mode-badge").textContent,
+};
+"""
+            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                res = _run_node_ui(base_url, scenario_js, fetch_patch_js=race_patch)
+            self.assertEqual(res["errors"], [])
+            sc = res["scenario"]
+            self.assertIn("Failed saving config", sc["badBanner"])
+            self.assertEqual(sc["dashMode"], "ga_nn")
+            self.assertEqual(sc["cfgMode"], "ga_nn")
+            self.assertEqual(sc["cfgSeed"], 99)
+            self.assertEqual(sc["domMode"], "ga_nn")
+            self.assertEqual(sc["domSeed"], "99")
+            self.assertEqual(sc["badgeText"], "MODE: GA+NN")
+        finally:
+            bridge.close()
+            server.shutdown()
+            server.server_close()
+            self._tmp.cleanup()
+
+    def test_r8_ui_whitespace_bottleneck_and_mid_save_dirtyless_poll_guard(self) -> None:
+        self.assertIsNotNone(shutil.which("node"), "Node.js is required")
+        bridge, server, base_url = self._start_server(planner_mode="priority")
+        try:
+            poll_patch = """
+async (url, opts, fullUrl, nativeFetch) => {
+  if (url === '/command' && opts?.body) {
+    const parsed = JSON.parse(opts.body);
+    if (parsed.command === 'update_config' && globalThis.__r8SaveMode === 'hold_and_fail') {
+      return new Promise((resolve) => {
+        globalThis.__resolveR8SaveFail = () => resolve({
+          ok: false,
+          status: 500,
+          json: async () => ({ ok: false, error: 'mid-save transient 500' }),
+        });
+      });
+    }
+  }
+  if (url.startsWith('/dashboard') && globalThis.__r8DashPrio) {
+    const r = await nativeFetch(fullUrl, opts);
+    const d = await r.json();
+    d.config = { ...(d.config || {}), planner_mode: 'priority' };
+    d.planner_mode = 'priority';
+    return { ok: true, status: 200, json: async () => d };
+  }
+}
+"""
+            scenario_js = r"""
+await __waitUntil(() => state.dashboard !== null);
+
+// 1. Whitespace bottleneck in buildings_eta must NOT render "Ready ()"
+const wsDash = {
+  ...state.dashboard,
+  buildings_eta: {
+    ...(state.dashboard.buildings_eta || {}),
+    planet: state.dashboard.buildings_eta?.planet || { planet_id: 12476 },
+    planet_economy: state.dashboard.buildings_eta?.planet_economy || {},
+    buildings: [
+      {
+        building_id: 1,
+        key: "b1",
+        name: "Pig iron mine",
+        category: "mines",
+        current_level: 1,
+        next_level: 2,
+        missing_total: 0,
+        build_time_text: "10s",
+        wait_eta: "Ready",
+        reach_eta: "10s",
+        wait_hours: 0,
+        bottleneck: "   ",
+        can_build_live: false,
+        offer_visible: true,
+        unmet_prerequisites: [],
+      },
+    ],
+    researches: [],
+  },
+};
+renderBuildingsView(wsDash);
+const bldWsText = el("eta-table-tbody").textContent;
+
+// 2. Programmatic dirty-less change + mid-save loadDashboard poll must NOT overwrite form before save failure
+el("cfg-planner_mode").value = "ga_nn";
+state.configDirty = false;
+globalThis.__r8SaveMode = "hold_and_fail";
+globalThis.__r8DashPrio = true;
+
+el("btn-save-config").click();
+await __waitUntil(() => typeof globalThis.__resolveR8SaveFail === "function");
+
+// Trigger concurrent loadDashboard mid-save returning priority
+const midOk = await loadDashboard({ refresh: false, preserveConfig: true, force: true });
+const domMid = el("cfg-planner_mode").value;
+
+// Reject update_config and confirm form still keeps "ga_nn"
+globalThis.__resolveR8SaveFail();
+await __waitUntil(() => state.configSaving === 0 && el("feedback-banner").textContent.includes("Failed saving config"));
+const domAfterFail = el("cfg-planner_mode").value;
+
+// Now let update_config succeed normally and confirm saved config applies cleanly
+globalThis.__r8SaveMode = "normal";
+globalThis.__r8DashPrio = false;
+el("btn-save-config").click();
+await __waitUntil(() => state.configSaving === 0 && state.dashboard?.config?.planner_mode === "ga_nn");
+
+return {
+  bldWsText,
+  midOk,
+  domMid,
+  domAfterFail,
+  domAfterSave: el("cfg-planner_mode").value,
+  finalMode: state.dashboard?.config?.planner_mode,
+};
+"""
+            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                res = _run_node_ui(base_url, scenario_js, fetch_patch_js=poll_patch)
+            self.assertEqual(res["errors"], [])
+            sc = res["scenario"]
+            self.assertNotIn("()", sc["bldWsText"])
+            self.assertIn("Ready", sc["bldWsText"])
+            self.assertTrue(sc["midOk"])
+            self.assertEqual(sc["domMid"], "ga_nn")
+            self.assertEqual(sc["domAfterFail"], "ga_nn")
+            self.assertEqual(sc["domAfterSave"], "ga_nn")
+            self.assertEqual(sc["finalMode"], "ga_nn")
+        finally:
+            bridge.close()
+            server.shutdown()
+            server.server_close()
+            self._tmp.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

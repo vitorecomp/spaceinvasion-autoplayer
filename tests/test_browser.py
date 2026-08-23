@@ -451,6 +451,390 @@ class TestBrowserLogin(unittest.TestCase):
                 driver.visited_urls,
             )
 
+    def test_adv_browser_reaps_sigign_child_across_all_cleanup_paths_no_resource_warning(self) -> None:
+        import gc
+        import subprocess
+        import sys
+        import time
+        from spaceinvasion import browser
+
+        def _spawn_sigign(flag_path: Path) -> subprocess.Popen:
+            code = (
+                "import signal, time; "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                f"open({str(flag_path)!r}, 'w', encoding='utf-8').write('1'); "
+                "time.sleep(60)"
+            )
+            proc = subprocess.Popen(
+                [sys.executable, "-c", code],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            deadline = time.monotonic() + 5.0
+            while not flag_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(flag_path.exists())
+            return proc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            # 1. close_or_detach_driver(keep_running=False) kills SIG_IGN child
+            p1 = _spawn_sigign(tp / "f1.flag")
+            try:
+                browser.close_or_detach_driver(MagicMock(), p1, keep_running=False)
+                self.assertIsNotNone(p1.poll())
+            finally:
+                if p1.poll() is None:
+                    p1.kill()
+                p1.wait(timeout=5.0)
+            del p1
+            gc.collect()
+
+            # 2. open_browser_session cleanup when attach_chrome_driver raises
+            p2 = _spawn_sigign(tp / "f2.flag")
+            try:
+                cfg = BrowserConfig(profile_dir=tp / "prof2", debug_port=19998)
+                with (
+                    unittest.mock.patch("spaceinvasion.browser.is_debug_port_open", return_value=False),
+                    unittest.mock.patch("spaceinvasion.browser.launch_chrome_with_debug_port", return_value=p2),
+                    unittest.mock.patch("spaceinvasion.browser.attach_chrome_driver", side_effect=RuntimeError("attach boom")),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        browser.open_browser_session(cfg)
+                self.assertIsNotNone(p2.poll())
+            finally:
+                if p2.poll() is None:
+                    p2.kill()
+                p2.wait(timeout=5.0)
+            del p2
+            gc.collect()
+
+            # 3. launch_chrome_with_debug_port timeout cleanup reaps SIG_IGN child
+            p3 = _spawn_sigign(tp / "f3.flag")
+            try:
+                cfg3 = BrowserConfig(profile_dir=tp / "prof3", debug_port=19997, timeout=0.1)
+                with (
+                    unittest.mock.patch("spaceinvasion.browser.find_chrome_binary", return_value="/usr/bin/true"),
+                    unittest.mock.patch("spaceinvasion.browser.is_debug_port_open", return_value=False),
+                    unittest.mock.patch("spaceinvasion.browser.subprocess.Popen", return_value=p3),
+                    unittest.mock.patch("spaceinvasion.browser.time.monotonic", side_effect=[0.0, 0.0, 20.0]),
+                ):
+                    with self.assertRaises(SpaceInvasionAuthError):
+                        browser.launch_chrome_with_debug_port(cfg3, 19997)
+                self.assertIsNotNone(p3.poll())
+            finally:
+                if p3.poll() is None:
+                    p3.kill()
+                p3.wait(timeout=5.0)
+            del p3
+            gc.collect()
+
+    def test_r7_sync_browser_cookies_closes_http_session_and_clamps_nan_inf_timeouts(self) -> None:
+        from spaceinvasion import browser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            closed_flags: list[bool] = []
+
+            class _TrackedSession:
+                def __init__(self) -> None:
+                    import requests
+
+                    self._inner = requests.Session()
+                    self.cookies = self._inner.cookies
+                    self.closed = False
+
+                def __enter__(self) -> "_TrackedSession":
+                    return self
+
+                def __exit__(self, *_exc: object) -> None:
+                    self.close()
+
+                def close(self) -> None:
+                    self.closed = True
+                    closed_flags.append(True)
+                    self._inner.close()
+
+            drv = FakeDriver(scenario="already_logged_in")
+            creds = Credentials(email="pilot@example.com", password="secret")
+            with unittest.mock.patch("spaceinvasion.browser.build_http_session", side_effect=_TrackedSession):
+                cpath, cnames = browser._sync_browser_cookies(
+                    drv, tp / ".sessions", creds, "https://spaceinvasion.bitmeup.com/"
+                )
+            self.assertTrue(cpath.exists())
+            self.assertIn("bitmeup_id", cnames)
+            self.assertEqual(closed_flags, [True])
+
+            seen_urlopen_timeouts: list[object] = []
+
+            def _fake_urlopen(url: str, timeout: object = None):
+                seen_urlopen_timeouts.append(timeout)
+                resp = MagicMock()
+                resp.status = 200
+                resp.__enter__.return_value = resp
+                resp.__exit__.return_value = None
+                return resp
+
+            with unittest.mock.patch("spaceinvasion.browser.urllib.request.urlopen", side_effect=_fake_urlopen):
+                self.assertTrue(browser.is_debug_port_open(9222, timeout=float("nan")))
+                self.assertTrue(browser.is_debug_port_open(9222, timeout=float("inf")))
+                self.assertTrue(browser.is_debug_port_open(9222, timeout=1e9))
+            self.assertEqual(seen_urlopen_timeouts, [0.8, 0.8, 60.0])
+
+            for bad_t in (float("nan"), float("inf"), float("-inf")):
+                self.assertEqual(
+                    browser._finite_bounded_timeout(bad_t, default=25.0, min_val=10.0, max_val=300.0),
+                    25.0,
+                )
+
+
+class TestLoginCli(unittest.TestCase):
+    def test_login_cli_help_verify_http_browser_redaction_and_raw_dataclass_preserved(self) -> None:
+        import io
+        import json
+        import os
+        from unittest.mock import patch
+        import login as login_cli
+        from spaceinvasion.auth import LoginResult, UniverseOption
+        from spaceinvasion.browser import BrowserLoginResult
+
+        with patch.dict(os.environ, {"SPACEINVASION_NO_REEXEC": "1"}):
+            with patch("sys.stdout", new_callable=io.StringIO):
+                with self.assertRaises(SystemExit) as cm:
+                    login_cli.main(["--help"])
+                self.assertEqual(cm.exception.code, 0)
+
+            secret_sid = "SECRET_SID_LOGIN_777"
+            raw_url = f"https://uni31.bitmeup.com/indexGame.es?sid={secret_sid}"
+            raw_uni = UniverseOption(
+                label="Retro",
+                url=raw_url,
+                universe_id=31,
+                speed=float("inf"),
+                flight_speed=float("nan"),
+                has_account=True,
+            )
+            # In-memory dataclasses must keep raw URLs untouched
+            self.assertEqual(raw_uni.url, raw_url)
+
+            # --verify-session active & expired + strict JSON + sid= redaction
+            for ok_flag, exp_rc in ((True, 0), (False, 1)):
+                out = io.StringIO()
+                with (
+                    patch.object(login_cli, "verify_saved_session", return_value=(ok_flag, raw_url, f"Title ?sid={secret_sid}")),
+                    patch("sys.stdout", out),
+                ):
+                    rc = login_cli.main(["--verify-session", "--json"])
+                self.assertEqual(rc, exp_rc)
+                txt = out.getvalue()
+                self.assertNotIn(secret_sid, txt)
+                parsed = json.loads(txt, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
+                self.assertEqual(parsed["authenticated"], ok_flag)
+
+            creds = Credentials(email="pilot@example.com", password="secret", universe="Retro")
+            http_res = LoginResult(
+                account_name="default",
+                email=f"pilot+sid={secret_sid}@example.com",
+                landing_url="https://spaceinvasion.bitmeup.com/",
+                final_url=raw_url,
+                page_title="Game",
+                cookie_path=Path("/tmp/cookies.json"),
+                cookie_names=("PHPSESSID",),
+                universes=(raw_uni,),
+            )
+            self.assertEqual(http_res.final_url, raw_url)
+            out_http = io.StringIO()
+            with (
+                patch.object(login_cli, "load_credentials", return_value=creds),
+                patch.object(login_cli, "login", return_value=http_res),
+                patch("sys.stdout", out_http),
+            ):
+                rc_http = login_cli.main(["--mode", "http", "--json"])
+            self.assertEqual(rc_http, 0)
+            self.assertNotIn(secret_sid, out_http.getvalue())
+            json.loads(out_http.getvalue(), parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
+
+            br_res = BrowserLoginResult(
+                account_name="default",
+                email="pilot@example.com",
+                final_url=raw_url,
+                page_title="Game",
+                profile_dir=Path("/tmp/prof"),
+                cookie_path=Path("/tmp/cookies.json"),
+                cookie_names=("PHPSESSID",),
+                already_logged_in=True,
+                universes=(raw_uni,),
+                entered_universe=f"Retro ?sid={secret_sid}",
+            )
+            self.assertEqual(br_res.final_url, raw_url)
+            out_br = io.StringIO()
+            with (
+                patch.object(login_cli, "load_credentials", return_value=creds),
+                patch.object(login_cli, "login_with_browser", return_value=br_res),
+                patch("sys.stdout", out_br),
+            ):
+                rc_br = login_cli.main(["--mode", "browser", "--headless"])
+            self.assertEqual(rc_br, 0)
+            self.assertNotIn(secret_sid, out_br.getvalue())
+
+            err_buf = io.StringIO()
+            with (
+                patch.object(login_cli, "load_credentials", side_effect=SpaceInvasionAuthError(f"boom ?sid={secret_sid}")),
+                patch("sys.stderr", err_buf),
+            ):
+                rc_err = login_cli.main(["--mode", "http"])
+            self.assertEqual(rc_err, 1)
+            self.assertNotIn(secret_sid, err_buf.getvalue())
+            self.assertIn("REDACTED", err_buf.getvalue())
+
+            huge_uni = UniverseOption(
+                label="Extreme ?sid=CLI_SECRET_999",
+                url=raw_url,
+                universe_id=10**5000,
+                speed=10**400,
+                flight_speed=10**400,
+                has_account=True,
+            )
+            uni_out = io.StringIO()
+            with patch("sys.stdout", uni_out):
+                login_cli._print_universes((huge_uni,))
+            printed = uni_out.getvalue()
+            self.assertIn("id=~1e5000", printed)
+            self.assertIn("?", printed)
+            self.assertNotIn("CLI_SECRET_999", printed)
+            self.assertEqual(huge_uni.url, raw_url)
+
+    def test_r10_browser_port_bool_bounds_and_timeout_bytes(self) -> None:
+        from spaceinvasion.browser import _finite_bounded_timeout, is_debug_port_open
+
+        for bad_port in (True, False, 0, -1, 65536, 10**5000):
+            self.assertFalse(is_debug_port_open(bad_port))  # type: ignore[arg-type]
+
+        self.assertEqual(_finite_bounded_timeout(b"12.5", default=15.0), 12.5)
+        self.assertEqual(_finite_bounded_timeout("\u0661\u0662", default=15.0), 15.0)
+        self.assertEqual(_finite_bounded_timeout({1: 2}, default=15.0), 15.0)
+        self.assertEqual(_finite_bounded_timeout(frozenset({1}), default=15.0), 15.0)
+
+    def test_r12_login_cli_redacts_password_auth_and_emits_json_error_when_json_flag_set(self) -> None:
+        import io
+        import json
+        from unittest.mock import patch
+        import login as login_cli
+        from spaceinvasion.auth import LoginResult
+        from spaceinvasion.browser import _safe_browser_err
+
+        out_json = io.StringIO()
+        err_json = io.StringIO()
+        with (
+            patch.object(
+                login_cli,
+                "load_credentials",
+                side_effect=SpaceInvasionAuthError("Authorization: Bearer CLI_BEAR_SEC ?password=CLI_PW_SEC"),
+            ),
+            patch("sys.stdout", out_json),
+            patch("sys.stderr", err_json),
+        ):
+            rc_json = login_cli.main(["--json"])
+        self.assertEqual(rc_json, 1)
+        parsed = json.loads(out_json.getvalue())
+        self.assertIn("error", parsed)
+        combined = out_json.getvalue() + err_json.getvalue()
+        self.assertNotIn("CLI_BEAR_SEC", combined)
+        self.assertNotIn("CLI_PW_SEC", combined)
+        self.assertIn("authorization: bearer redacted", combined.lower())
+
+        out_http_err = io.StringIO()
+        err_http_err = io.StringIO()
+        creds = Credentials(
+            account_name="default",
+            email="u@example.com",
+            password="pw",
+            universe="RETRO",
+        )
+        with (
+            patch.object(login_cli, "load_credentials", return_value=creds),
+            patch.object(
+                login_cli,
+                "login",
+                side_effect=SpaceInvasionAuthError(
+                    10**5000,
+                    "http err ?sid=HTTP_ERR_SID&password=HTTP_ERR_PW Authorization: Bearer HTTP_ERR_BEAR",
+                ),
+            ),
+            patch("sys.stdout", out_http_err),
+            patch("sys.stderr", err_http_err),
+        ):
+            rc_http_err = login_cli.main(["--mode", "http", "--json"])
+        self.assertEqual(rc_http_err, 1)
+        parsed_http_err = json.loads(out_http_err.getvalue())
+        self.assertFalse(parsed_http_err.get("ok"))
+        self.assertIn("error", parsed_http_err)
+        comb_http_err = out_http_err.getvalue() + err_http_err.getvalue()
+        for sec in ("HTTP_ERR_SID", "HTTP_ERR_PW", "HTTP_ERR_BEAR"):
+            self.assertNotIn(sec, comb_http_err)
+
+        out_http_ok = io.StringIO()
+        h_res = LoginResult(
+            account_name="default",
+            email="u@example.com",
+            landing_url="https://example.com/?password=RAW_LAND_PW",
+            final_url="https://example.com/?password=RAW_HTTP_PW&sid=RAW_HTTP_SID",
+            page_title="Title?password=RAW_TITLE_PW",
+            cookie_path=Path("/tmp/?password=RAW_COOK_PW/cookies.json"),
+            cookie_names=("CK",),
+            universes=(),
+        )
+        with (
+            patch.object(login_cli, "load_credentials", return_value=creds),
+            patch.object(login_cli, "login", return_value=h_res),
+            patch("sys.stdout", out_http_ok),
+        ):
+            rc_http_ok = login_cli.main(["--mode", "http", "--json"])
+        self.assertEqual(rc_http_ok, 0)
+        for sec in ("RAW_LAND_PW", "RAW_HTTP_PW", "RAW_HTTP_SID", "RAW_TITLE_PW", "RAW_COOK_PW"):
+            self.assertNotIn(sec, out_http_ok.getvalue())
+
+        err_plain = io.StringIO()
+        with (
+            patch.object(
+                login_cli,
+                "load_credentials",
+                side_effect=SpaceInvasionAuthError("?password=PLAIN_PW_SEC"),
+            ),
+            patch("sys.stderr", err_plain),
+        ):
+            rc_plain = login_cli.main([])
+        self.assertEqual(rc_plain, 1)
+        self.assertNotIn("PLAIN_PW_SEC", err_plain.getvalue())
+        self.assertIn("REDACTED", err_plain.getvalue())
+
+        br_err = _safe_browser_err(RuntimeError(10**5000, "Authorization: Bearer BR_BEAR_SEC"))
+        self.assertNotIn("BR_BEAR_SEC", br_err)
+        self.assertIn("authorization: bearer redacted", br_err.lower())
+
+    def test_r13_login_cli_nested_exc_redacts_before_truncation(self) -> None:
+        import time
+        import login as login_cli
+
+        exc_300 = RuntimeError(10**5000, {"password": "LEAK300_" + ("X" * 300)})
+        out_300 = login_cli._safe_cli_str(exc_300)
+        self.assertNotIn("LEAK300_", out_300)
+        self.assertIn("REDACTED", out_300)
+
+        cyc = RuntimeError("cyc")
+        cyc.args = (10**5000, cyc)
+        self.assertIsInstance(login_cli._safe_cli_str(cyc), str)
+
+        # 8-way diamond DAG does not hang
+        node: BaseException = RuntimeError(10**5000, "?password=DAG_PW_SEC")
+        for _ in range(18):
+            node = RuntimeError(10**5000, node, node, node, node, node, node, node)
+        t0 = time.perf_counter()
+        dag_out = login_cli._safe_cli_str(node)
+        self.assertLess((time.perf_counter() - t0) * 1000.0, 200.0)
+        self.assertNotIn("DAG_PW_SEC", dag_out)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import inspect
+import math
+import os
 import random
 import re
 import time
@@ -13,17 +16,21 @@ from typing import Any, Callable, Deque, Optional
 from bs4 import BeautifulSoup, NavigableString, Tag
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
+    ElementNotInteractableException,
     NoSuchElementException,
     StaleElementReferenceException,
+    WebDriverException,
 )
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 
+from spaceinvasion import game_data
 from spaceinvasion.client import GameBrowserClient, PageViewLimiter
 from spaceinvasion.fleet import GalaxySlot, parse_galaxy_system_html
 from spaceinvasion.state import (
     GameState,
     QueueJob,
+    normalize_planet_type,
     parse_building_queue,
     parse_buildings_page,
     parse_economy_rates,
@@ -64,6 +71,98 @@ def _call_with_optional_priority(
     return fn(*args, **call_kwargs)
 
 
+def _safe_optional_wait_limit(raw: Any, default: float = 60.0) -> Optional[float]:
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        if raw.bit_length() > 128:
+            return 3600.0 if raw > 0 else 0.0
+        val = float(raw)
+    else:
+        val = float(raw)
+    if not math.isfinite(val):
+        return default
+    return max(0.0, min(3600.0, val))
+
+
+def _safe_str(
+    val: Any,
+    *,
+    _depth: int = 0,
+    _seen: Optional[set[int]] = None,
+    _budget: Optional[list[int]] = None,
+) -> str:
+    if val is None:
+        return ""
+    if isinstance(val, os.PathLike):
+        try:
+            val = os.fspath(val)
+        except Exception:
+            return f"<{type(val).__name__}>"
+        if val is None:
+            return ""
+        if isinstance(val, os.PathLike):
+            return f"<{type(val).__name__}>"
+    if isinstance(val, str):
+        return val
+    if isinstance(val, (bytes, bytearray)):
+        return bytes(val).decode("utf-8", errors="replace")
+    if isinstance(val, int) and not isinstance(val, bool):
+        return game_data.fmt_compact_int(val) if abs(val).bit_length() >= 12_000 else str(val)
+    if isinstance(val, BaseException):
+        str_fn = getattr(type(val), "__str__", BaseException.__str__)
+        if str_fn not in (BaseException.__str__, KeyError.__str__):
+            try:
+                return str(val)[:4096]
+            except Exception:
+                pass
+        args = getattr(val, "args", ())
+        if not isinstance(args, (tuple, list)) or not args:
+            return "" if str_fn is BaseException.__str__ else type(val).__name__
+        seen = _seen if _seen is not None else set()
+        budget = _budget if _budget is not None else [256]
+        vid = id(val)
+        if vid in seen or _depth >= 16 or budget[0] <= 0:
+            return f"<{type(val).__name__}>"
+        budget[0] -= 1
+        seen.add(vid)
+        try:
+            if len(args) == 1:
+                a0 = args[0]
+                if isinstance(a0, str):
+                    return (repr(a0) if isinstance(val, KeyError) else a0)[:4096]
+                return _safe_str(a0, _depth=_depth + 1, _seen=seen, _budget=budget)[:4096]
+            parts: list[str] = []
+            for a in args[:8]:
+                if budget[0] <= 0:
+                    parts.append("...")
+                    break
+                if isinstance(a, str):
+                    parts.append(repr(a))
+                else:
+                    parts.append(_safe_str(a, _depth=_depth + 1, _seen=seen, _budget=budget))
+            if len(args) > 8:
+                parts.append(f"...+{len(args) - 8}")
+            res = "(" + ", ".join(parts) + ")"
+            return res[:4096]
+        finally:
+            seen.discard(vid)
+    if isinstance(val, (tuple, list, set, frozenset, Mapping)):
+        try:
+            return game_data.safe_key(val)
+        except Exception:
+            return f"<{type(val).__name__}>"
+    try:
+        return str(val)
+    except Exception:
+        return f"<{type(val).__name__}>"
+
+
+def _safe_hourly_cap(raw: Any, default: int = 30) -> int:
+    cap = game_data.safe_int(raw, default)
+    return max(0, min(1_000_000, cap))
+
+
 @dataclass(frozen=True)
 class ExecutionResult:
     """Outcome of attempting one planned action."""
@@ -92,16 +191,12 @@ class ActionExecutor:
         max_limiter_wait: Optional[float] = None,
     ) -> None:
         self.dry_run = dry_run
-        self.max_actions_per_hour = max_actions_per_hour
+        self.max_actions_per_hour = _safe_hourly_cap(max_actions_per_hour, 30)
         self.action_delay_range = action_delay_range
         self.allow_fleetsave = allow_fleetsave
         self.allow_raids = allow_raids
         self.page_limiter = page_limiter
-        self.max_limiter_wait: Optional[float] = (
-            float(max_limiter_wait)
-            if isinstance(max_limiter_wait, (int, float)) and not isinstance(max_limiter_wait, bool)
-            else None
-        )
+        self.max_limiter_wait: Optional[float] = _safe_optional_wait_limit(max_limiter_wait)
         self._recent_timestamps: Deque[float] = deque()
         self.last_economy_rates: dict[int, dict[str, int]] = {}
         self.last_galaxy_slots: list[GalaxySlot] = []
@@ -153,13 +248,9 @@ class ActionExecutor:
         return None
 
     def _pace_action(self, client: GameBrowserClient, *, priority: str = "interactive") -> None:
-        wait_limit: Optional[float] = None
-        if isinstance(self.max_limiter_wait, (int, float)) and not isinstance(self.max_limiter_wait, bool):
-            wait_limit = float(self.max_limiter_wait)
-        else:
-            client_wait = getattr(client, "max_limiter_wait", None)
-            if isinstance(client_wait, (int, float)) and not isinstance(client_wait, bool):
-                wait_limit = float(client_wait)
+        wait_limit = _safe_optional_wait_limit(self.max_limiter_wait)
+        if wait_limit is None:
+            wait_limit = _safe_optional_wait_limit(getattr(client, "max_limiter_wait", None))
 
         if self.page_limiter is not None:
             self.page_limiter.acquire(priority=priority, max_wait=wait_limit)
@@ -193,13 +284,16 @@ class ActionExecutor:
     @staticmethod
     def _find_newplanet_switch_target(html: str, planet_id: int) -> tuple[bool, Optional[str]]:
         """Inspect `<select name='planet'>` in `html` via BS4; return `(needs_switch, target_value)`."""
+        pid = game_data.safe_optional_int(planet_id, None)
+        if pid is None or pid < 0 or pid > game_data.MAX_JSON_SAFE_INT:
+            return False, None
         if not html or "newplanet=" not in html.lower():
             return False, None
         soup = BeautifulSoup(html, "html.parser")
         select_el = soup.find("select", attrs={"name": "planet"})
         if select_el is None:
             return False, None
-        target_re = re.compile(rf"newplanet={int(planet_id)}(?!\d)", re.IGNORECASE)
+        target_re = re.compile(rf"newplanet={pid}(?!\d)", re.IGNORECASE | re.ASCII)
         target_value: Optional[str] = None
         selected_value: Optional[str] = None
         has_newplanet = False
@@ -230,9 +324,12 @@ class ActionExecutor:
             if "action=internalfleet" in val.lower():
                 return None
             if opt.has_attr("selected"):
-                m = re.search(r"newplanet=(\d+)", val, re.IGNORECASE)
+                m = re.search(r"newplanet=(\d+)", val, re.IGNORECASE | re.ASCII)
                 if m:
-                    return int(m.group(1))
+                    pid_s = m.group(1)
+                    if pid_s.isascii() and pid_s.isdigit() and len(pid_s) <= 18:
+                        return int(pid_s)
+                    return None
         return None
 
     def _build_updated_state(
@@ -373,6 +470,7 @@ class ActionExecutor:
             account_points=account_points,
             account_rank=account_rank,
             raid_targets=prev_state.raid_targets if prev_state is not None else updated_overview.raid_targets,
+            raid_stats=prev_state.raid_stats if prev_state is not None else updated_overview.raid_stats,
         )
 
     def _prune_hour_window(self, now: float) -> None:
@@ -383,7 +481,8 @@ class ActionExecutor:
     def remaining_hourly_budget(self) -> int:
         now = time.monotonic()
         self._prune_hour_window(now)
-        return max(0, self.max_actions_per_hour - len(self._recent_timestamps))
+        cap = _safe_hourly_cap(self.max_actions_per_hour, 0)
+        return max(0, cap - len(self._recent_timestamps))
 
     def _select_planet_if_needed(
         self,
@@ -397,67 +496,126 @@ class ActionExecutor:
         obs_html_pid = self._extract_selected_planet_id(html)
         if obs_html_pid is not None:
             self._record_observed_planet(obs_html_pid, confirmed=True)
-        needs_switch, target_value = self._find_newplanet_switch_target(html, planet_id)
+        pid = game_data.safe_optional_int(planet_id, None)
+        if pid is None or pid < 0 or pid > game_data.MAX_JSON_SAFE_INT:
+            return False, None
+        needs_switch, target_value = self._find_newplanet_switch_target(html, pid)
         if html and not needs_switch and target_value is None:
             return False, None
 
         client._switch_frame("F_Hauptframe")
-        try:
-            select_el = client.driver.find_element(By.CSS_SELECTOR, 'select[name="planet"]')
-        except NoSuchElementException:
-            return False, None
-
-        target_re = re.compile(rf"newplanet={int(planet_id)}(?!\d)", re.IGNORECASE)
-        any_np_re = re.compile(r"newplanet=(\d+)", re.IGNORECASE)
-        chosen_val = target_value
-        chosen_opt = None
-        dom_selected_pid: Optional[int] = None
-        dom_has_newplanet = False
-        for opt in select_el.find_elements(By.TAG_NAME, "option"):
-            val = str(opt.get_attribute("value") or "")
-            if "newplanet=" in val.lower():
-                dom_has_newplanet = True
-            try:
-                raw_sel = opt.is_selected()
-                is_sel = isinstance(raw_sel, (bool, int)) and bool(raw_sel)
-            except Exception:
-                is_sel = False
-            if is_sel:
-                m_dom = any_np_re.search(val)
-                if m_dom:
-                    dom_selected_pid = int(m_dom.group(1))
-            if target_re.search(val):
-                if is_sel:
-                    self._record_observed_planet(int(planet_id), confirmed=True)
-                    return False, None
-                chosen_val = val
-                chosen_opt = opt
-        if dom_selected_pid is not None:
-            self._record_observed_planet(dom_selected_pid, confirmed=True)
-        if chosen_val is None and chosen_opt is None:
-            return False, None
-        if dom_has_newplanet and chosen_opt is None:
-            return False, None
-        if chosen_opt is None and dom_selected_pid is not None and dom_selected_pid == int(planet_id):
-            return False, None
-
-        self._pace_action(client, priority="interactive")
-        self._record_observed_planet(None, confirmed=False)
-        nav_token = self._mark_frame_nav(client)
+        target_re = re.compile(rf"newplanet={pid}(?!\d)", re.IGNORECASE | re.ASCII)
+        any_np_re = re.compile(r"newplanet=(\d+)", re.IGNORECASE | re.ASCII)
+        paced = False
+        nav_token: Optional[str] = None
         switched = False
-        if chosen_val is not None:
+        dom_selected_pid: Optional[int] = None
+
+        for attempt in range(2):
+            client._switch_frame("F_Hauptframe")
             try:
-                Select(select_el).select_by_value(chosen_val)
-                switched = True
-            except Exception:
-                switched = False
-        if not switched and chosen_opt is not None:
-            self._safe_click(client, chosen_opt)
-            switched = True
+                select_el = client.driver.find_element(By.CSS_SELECTOR, 'select[name="planet"]')
+            except NoSuchElementException:
+                return False, None
+            except (StaleElementReferenceException, ElementNotInteractableException, WebDriverException) as exc:
+                if isinstance(exc, StaleElementReferenceException) and attempt == 0:
+                    continue
+                fallback_pid = dom_selected_pid if dom_selected_pid is not None else obs_html_pid
+                if fallback_pid is not None:
+                    self._record_observed_planet(fallback_pid, confirmed=True)
+                return False, None
+
+            chosen_val = target_value
+            chosen_opt = None
+            dom_selected_pid = None
+            dom_has_newplanet = False
+            try:
+                for opt in select_el.find_elements(By.TAG_NAME, "option"):
+                    val = str(opt.get_attribute("value") or "")
+                    if "newplanet=" in val.lower():
+                        dom_has_newplanet = True
+                    try:
+                        raw_sel = opt.is_selected()
+                        is_sel = isinstance(raw_sel, (bool, int)) and bool(raw_sel)
+                    except StaleElementReferenceException:
+                        raise
+                    except Exception:
+                        is_sel = False
+                    if is_sel:
+                        m_dom = any_np_re.search(val)
+                        if m_dom:
+                            pid_s = m_dom.group(1)
+                            if pid_s.isascii() and pid_s.isdigit() and len(pid_s) <= 18:
+                                dom_selected_pid = int(pid_s)
+                    if target_re.search(val):
+                        if is_sel:
+                            self._record_observed_planet(pid, confirmed=True)
+                            return False, None
+                        chosen_val = val
+                        chosen_opt = opt
+            except (StaleElementReferenceException, ElementNotInteractableException, WebDriverException) as exc:
+                if isinstance(exc, StaleElementReferenceException) and attempt == 0:
+                    continue
+                fallback_pid = dom_selected_pid if dom_selected_pid is not None else obs_html_pid
+                if fallback_pid is not None:
+                    self._record_observed_planet(fallback_pid, confirmed=True)
+                return False, None
+
+            if dom_selected_pid is not None:
+                self._record_observed_planet(dom_selected_pid, confirmed=True)
+            if chosen_val is None and chosen_opt is None:
+                return False, None
+            if dom_has_newplanet and chosen_opt is None:
+                return False, None
+            if chosen_opt is None and dom_selected_pid is not None and dom_selected_pid == pid:
+                return False, None
+
+            if not paced:
+                self._pace_action(client, priority="interactive")
+                self._record_observed_planet(None, confirmed=False)
+                nav_token = self._mark_frame_nav(client)
+                paced = True
+
+            switched = False
+            stale_during_switch = False
+            if chosen_val is not None:
+                try:
+                    Select(select_el).select_by_value(chosen_val)
+                    switched = True
+                except StaleElementReferenceException:
+                    switched = False
+                    stale_during_switch = True
+                except Exception:
+                    switched = False
+            if not switched and chosen_opt is not None:
+                try:
+                    self._safe_click(client, chosen_opt)
+                    switched = True
+                    stale_during_switch = False
+                except (
+                    StaleElementReferenceException,
+                    NoSuchElementException,
+                    ElementNotInteractableException,
+                    WebDriverException,
+                ) as exc:
+                    switched = False
+                    stale_during_switch = isinstance(exc, StaleElementReferenceException)
+            if switched:
+                break
+            if stale_during_switch and attempt == 0:
+                continue
+            break
+
         updated_html: Optional[str] = None
         if switched:
             updated_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token)
-            self._record_observed_planet(int(planet_id), confirmed=True)
+            obs_after = self._extract_selected_planet_id(updated_html or "")
+            if obs_after is not None:
+                self._record_observed_planet(obs_after, confirmed=True)
+                if obs_after != pid:
+                    switched = False
+            else:
+                self._record_observed_planet(pid, confirmed=True)
         else:
             fallback_pid = dom_selected_pid if dom_selected_pid is not None else obs_html_pid
             if fallback_pid is not None:
@@ -488,13 +646,14 @@ class ActionExecutor:
                 obs_pid = self._extract_selected_planet_id(b_html_str, "internalBuildings")
                 if obs_pid is not None:
                     self._record_observed_planet(obs_pid, confirmed=True)
-                self._select_planet_if_needed(
+                b_needs_switch, _ = self._find_newplanet_switch_target(b_html_str, planet_id)
+                switched, _ = self._select_planet_if_needed(
                     client,
                     planet_id,
                     html=b_html_str,
                     require_confirm=True,
                 )
-                if self._confirmed_planet_mismatch(planet_id) is not None:
+                if self._confirmed_planet_mismatch(planet_id) is not None or (b_needs_switch and not switched):
                     return ""
             return _call_with_optional_priority(
                 client.navigate_menu,
@@ -512,11 +671,12 @@ class ActionExecutor:
         if obs_pid is not None:
             self._record_observed_planet(obs_pid, confirmed=True)
         needs_switch, _ = self._find_newplanet_switch_target(html_str, planet_id)
+        switched = False
         if needs_switch or (state.active_planet_id != planet_id and "newplanet=" in html_str.lower()):
             switched, updated_html = self._select_planet_if_needed(client, planet_id, html=html_str)
             if switched and updated_html:
                 html = updated_html
-        if self._confirmed_planet_mismatch(planet_id) is not None:
+        if self._confirmed_planet_mismatch(planet_id) is not None or (needs_switch and not switched):
             return ""
         return html
 
@@ -529,6 +689,7 @@ class ActionExecutor:
         is_ready_fn: Callable[[str], bool],
     ) -> tuple[Optional[str], Optional[ExecutionResult]]:
         """Verify offer availability and click `selector`, retrying once on countdown reload."""
+        tname_s = _safe_str(action.target_name)
         html = initial_html
         for attempt in range(2):
             if not is_ready_fn(html):
@@ -536,7 +697,7 @@ class ActionExecutor:
                     executed=False,
                     dry_run=False,
                     action=action,
-                    message=f"Aborted: {action.target_name} is no longer actionable on page.",
+                    message=f"Aborted: {tname_s} is no longer actionable on page.",
                 )
             try:
                 client._switch_frame("F_Hauptframe")
@@ -550,20 +711,32 @@ class ActionExecutor:
                 return after_html, None
             except StaleElementReferenceException:
                 if attempt == 1:
-                    raise
+                    return None, ExecutionResult(
+                        executed=False,
+                        dry_run=False,
+                        action=action,
+                        message=f"Aborted: action button for {tname_s} became stale.",
+                    )
                 html = client._wait_frame_ready("F_Hauptframe")
             except NoSuchElementException:
                 return None, ExecutionResult(
                     executed=False,
                     dry_run=False,
                     action=action,
-                    message=f"Aborted: action button for {action.target_name} not found in DOM.",
+                    message=f"Aborted: action button for {tname_s} not found in DOM.",
+                )
+            except (ElementNotInteractableException, WebDriverException) as exc:
+                return None, ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: action button for {tname_s} not interactable ({type(exc).__name__}).",
                 )
         return None, ExecutionResult(
             executed=False,
             dry_run=False,
             action=action,
-            message=f"Aborted: failed to click {action.target_name}.",
+            message=f"Aborted: failed to click {tname_s}.",
         )
 
     def _execute_claim_tutorial(
@@ -581,22 +754,52 @@ class ActionExecutor:
                 self._record_observed_planet(home_pid, confirmed=True)
         client._switch_frame("F_Hauptframe")
 
-        tut_div = client.driver.find_element(By.ID, "tutorial.text")
-        if not tut_div.is_displayed():
-            try:
-                self._safe_click(client, client.driver.find_element(By.ID, "tutorial.show"))
-                time.sleep(0.3)
-            except NoSuchElementException:
-                client.driver.execute_script("arguments[0].style.display='block';", tut_div)
-
-        submit_btn = client.driver.find_element(
-            By.CSS_SELECTOR,
-            'form[action*="internalHome"] input[name="tutorialComplete"] ~ input[type="submit"]',
-        )
-        self._pace_action(client, priority="interactive")
         nav_token = self._mark_frame_nav(client)
-        time.sleep(random.uniform(*self.action_delay_range))
-        self._safe_click(client, submit_btn)
+        paced = False
+        for attempt in range(2):
+            try:
+                tut_div = client.driver.find_element(By.ID, "tutorial.text")
+                if not tut_div.is_displayed():
+                    try:
+                        self._safe_click(client, client.driver.find_element(By.ID, "tutorial.show"))
+                        time.sleep(0.3)
+                    except (NoSuchElementException, ElementNotInteractableException, WebDriverException):
+                        client.driver.execute_script("arguments[0].style.display='block';", tut_div)
+
+                submit_btn = client.driver.find_element(
+                    By.CSS_SELECTOR,
+                    'form[action*="internalHome"] input[name="tutorialComplete"] ~ input[type="submit"]',
+                )
+                if not paced:
+                    self._pace_action(client, priority="interactive")
+                    nav_token = self._mark_frame_nav(client)
+                    time.sleep(random.uniform(*self.action_delay_range))
+                    paced = True
+                self._safe_click(client, submit_btn)
+                break
+            except StaleElementReferenceException:
+                if attempt == 0:
+                    continue
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message="Aborted: tutorial completion DOM controls became stale.",
+                )
+            except NoSuchElementException:
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message="Aborted: tutorial completion DOM controls not found.",
+                )
+            except (ElementNotInteractableException, WebDriverException) as exc:
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: tutorial completion DOM controls not interactable ({type(exc).__name__}).",
+                )
         after_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token)
         if isinstance(after_html, str) and after_html:
             after_pid, *_ = parse_home_metadata(after_html)
@@ -620,7 +823,7 @@ class ActionExecutor:
             executed=True,
             dry_run=False,
             action=action,
-            message=f"Claimed {action.target_name}.",
+            message=f"Claimed {_safe_str(action.target_name)}.",
             updated_state=updated_state,
         )
 
@@ -639,7 +842,7 @@ class ActionExecutor:
                 action=action,
                 message=(
                     f"Aborted: active planet is {mismatch_pid}, "
-                    f"not requested planet {action.planet_id}."
+                    f"not requested planet {game_data.fmt_compact_int(action.planet_id)}."
                 ),
                 observed_active_planet_id=mismatch_pid,
                 observed_active_planet_confirmed=True,
@@ -648,7 +851,8 @@ class ActionExecutor:
             (p.buildings for p in state.planets if p.planet_id == action.planet_id),
             None,
         )
-        selector = f'a.bau[href*="internalBuildItem"][href*="buildingID={action.target_id}"]'
+        tid = game_data.cap_json_int(game_data.safe_int(action.target_id, 0))
+        selector = f'a.bau[href*="internalBuildItem"][href*="buildingID={tid}"]'
 
         def _ready(page_html: str) -> bool:
             offers = parse_buildings_page(page_html, planet_map)
@@ -669,17 +873,24 @@ class ActionExecutor:
             (p for p in updated.planets if p.planet_id == action.planet_id),
             updated.active_planet(),
         )
-        new_lvl = after_planet.building_level(int(action.target_id or 0)) if after_planet else None
+        new_lvl = after_planet.building_level(game_data.safe_int(action.target_id, 0)) if after_planet else None
         after_lower = after_html.lower()
+        tgt_lvl_opt = game_data.safe_optional_int(action.target_level, None)
         in_queue = (
             "construction queue" in after_lower
             or "abort" in after_lower
             or "cancel" in after_lower
-            or (new_lvl is not None and action.target_level is not None and new_lvl >= action.target_level)
+            or (new_lvl is not None and tgt_lvl_opt is not None and new_lvl >= tgt_lvl_opt)
         )
+        tgt_txt = (
+            game_data.fmt_compact_int(tgt_lvl_opt)
+            if tgt_lvl_opt is not None
+            else "None"
+        )
+        new_lvl_txt = game_data.fmt_compact_int(new_lvl) if new_lvl is not None else "None"
         detail = (
-            f"Built/queued {action.target_name} -> L{action.target_level} "
-            f"(verified={'ok' if in_queue else 'submitted'}, current_lvl={new_lvl})."
+            f"Built/queued {_safe_str(action.target_name)} -> L{tgt_txt} "
+            f"(verified={'ok' if in_queue else 'submitted'}, current_lvl={new_lvl_txt})."
         )
         updated_state = self._build_updated_state(
             client,
@@ -712,12 +923,13 @@ class ActionExecutor:
                 action=action,
                 message=(
                     f"Aborted: active planet is {mismatch_pid}, "
-                    f"not requested planet {action.planet_id}."
+                    f"not requested planet {game_data.fmt_compact_int(action.planet_id)}."
                 ),
                 observed_active_planet_id=mismatch_pid,
                 observed_active_planet_confirmed=True,
             )
-        selector = f'a.bau[href*="internalBuildItem"][href*="researchID={action.target_id}"]'
+        tid = game_data.cap_json_int(game_data.safe_int(action.target_id, 0))
+        selector = f'a.bau[href*="internalBuildItem"][href*="researchID={tid}"]'
 
         def _ready(page_html: str) -> bool:
             offers = parse_research_page(page_html, state.researches)
@@ -734,16 +946,28 @@ class ActionExecutor:
             refresh=True,
             priority="interactive",
         )
-        new_lvl = int(updated.researches.get(f"r{action.target_id}", 0))
+        new_lvl = game_data.safe_int(
+            updated.researches.get(
+                f"r{game_data.cap_json_int(game_data.safe_int(action.target_id, 0))}",
+                0,
+            ),
+            0,
+        )
         after_lower = after_html.lower()
+        tgt_lvl_opt = game_data.safe_optional_int(action.target_level, None)
         verified = (
             "cancel" in after_lower
             or "abort" in after_lower
-            or (action.target_level is not None and new_lvl >= action.target_level)
+            or (tgt_lvl_opt is not None and new_lvl >= tgt_lvl_opt)
+        )
+        tgt_txt = (
+            game_data.fmt_compact_int(tgt_lvl_opt)
+            if tgt_lvl_opt is not None
+            else "None"
         )
         detail = (
-            f"Started research {action.target_name} -> L{action.target_level} "
-            f"(verified={'ok' if verified else 'submitted'}, current_lvl={new_lvl})."
+            f"Started research {_safe_str(action.target_name)} -> L{tgt_txt} "
+            f"(verified={'ok' if verified else 'submitted'}, current_lvl={game_data.fmt_compact_int(new_lvl)})."
         )
         updated_state = self._build_updated_state(
             client,
@@ -776,7 +1000,7 @@ class ActionExecutor:
                 action=action,
                 message=(
                     f"Aborted: active planet is {mismatch_pid}, "
-                    f"not requested planet {action.planet_id}."
+                    f"not requested planet {game_data.fmt_compact_int(action.planet_id)}."
                 ),
                 observed_active_planet_id=mismatch_pid,
                 observed_active_planet_confirmed=True,
@@ -787,34 +1011,58 @@ class ActionExecutor:
             unit_type="ship",
             owned_counts=planet.ships if planet else None,
         )
+        tname_s = _safe_str(action.target_name)
+        coords_s = _safe_str(action.planet_coords)
         matching = next((o for o in offers if o.unit_id == action.target_id), None)
         if matching is None or not matching.can_build or not matching.input_name:
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
                 action=action,
-                message=f"Aborted: ship {action.target_name} input unavailable in Weapons factory.",
+                message=f"Aborted: ship {tname_s} input unavailable in Weapons factory.",
             )
 
-        qty = max(1, int(action.target_level or 1))
+        qty = max(1, game_data.cap_json_int(game_data.safe_int(action.target_level, 1)))
         client._switch_frame("F_Hauptframe")
-        try:
-            qty_input = client.driver.find_element(By.NAME, matching.input_name)
-            qty_input.clear()
-            qty_input.send_keys(str(qty))
-            form = client.driver.find_element(By.CSS_SELECTOR, 'form[action*="buildShip=1"]')
-            self._pace_action(client, priority="interactive")
-            nav_token = self._mark_frame_nav(client)
-            time.sleep(random.uniform(*self.action_delay_range))
-            submit_btn = form.find_element(By.CSS_SELECTOR, 'input[type="submit"], button[type="submit"]')
-            self._safe_click(client, submit_btn)
-        except NoSuchElementException:
-            return ExecutionResult(
-                executed=False,
-                dry_run=False,
-                action=action,
-                message=f"Aborted: shipyard form controls for {action.target_name} not found.",
-            )
+        nav_token = self._mark_frame_nav(client)
+        paced = False
+        for attempt in range(2):
+            try:
+                qty_input = client.driver.find_element(By.NAME, matching.input_name)
+                qty_input.clear()
+                qty_input.send_keys(str(qty))
+                form = client.driver.find_element(By.CSS_SELECTOR, 'form[action*="buildShip=1"]')
+                if not paced:
+                    self._pace_action(client, priority="interactive")
+                    nav_token = self._mark_frame_nav(client)
+                    time.sleep(random.uniform(*self.action_delay_range))
+                    paced = True
+                submit_btn = form.find_element(By.CSS_SELECTOR, 'input[type="submit"], button[type="submit"]')
+                self._safe_click(client, submit_btn)
+                break
+            except StaleElementReferenceException:
+                if attempt == 0:
+                    continue
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: shipyard form controls for {tname_s} became stale.",
+                )
+            except NoSuchElementException:
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: shipyard form controls for {tname_s} not found.",
+                )
+            except (ElementNotInteractableException, WebDriverException) as exc:
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: shipyard form controls for {tname_s} not interactable ({type(exc).__name__}).",
+                )
 
         after_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token)
         self._recent_timestamps.append(time.monotonic())
@@ -835,7 +1083,7 @@ class ActionExecutor:
             executed=True,
             dry_run=False,
             action=action,
-            message=f"Ordered {qty}x {action.target_name} on [{action.planet_coords}].",
+            message=f"Ordered {game_data.fmt_compact_int(qty)}x {tname_s} on [{coords_s}].",
             updated_state=updated_state,
         )
 
@@ -845,17 +1093,34 @@ class ActionExecutor:
         state: GameState,
         action: PlannedAction,
     ) -> ExecutionResult:
-        bid = int(action.target_id or 2)
+        planet_obj = next(
+            (
+                p
+                for p in getattr(state, "planets", ())
+                if getattr(p, "planet_id", None) == action.planet_id
+            ),
+            None,
+        )
+        if planet_obj is not None:
+            ptype_norm = normalize_planet_type(planet_obj)
+            if ptype_norm in ("asteroid", "raid"):
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: internalEconomy throttling is not supported on {ptype_norm} planets.",
+                )
+        bid = 2 if action.target_id is None else game_data.safe_int(action.target_id, -1)
         if bid not in (1, 2, 3, 4, 5, 6):
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
                 action=action,
-                message=f"Aborted: building b{bid} does not support internalEconomy rate control.",
+                message=f"Aborted: building b{game_data.fmt_compact_int(bid)} does not support internalEconomy rate control.",
             )
 
         field_name = f"resource{bid}" if bid <= 4 else "resource5"
-        raw_pct = 0 if action.target_level is None else int(action.target_level)
+        raw_pct = 0 if action.target_level is None else game_data.safe_int(action.target_level, 0)
         target_pct = max(0, min(100, (raw_pct // 10) * 10))
 
         html = self._navigate_and_select_planet(client, state, "internalEconomy", action.planet_id)
@@ -867,11 +1132,20 @@ class ActionExecutor:
                 action=action,
                 message=(
                     f"Aborted: active planet is {mismatch_pid}, "
-                    f"not requested planet {action.planet_id}."
+                    f"not requested planet {game_data.fmt_compact_int(action.planet_id)}."
                 ),
                 observed_active_planet_id=mismatch_pid,
                 observed_active_planet_confirmed=True,
             )
+        if not str(html or "").strip():
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: failed to load internalEconomy for planet {game_data.fmt_compact_int(action.planet_id)}.",
+            )
+        tname_s = _safe_str(action.target_name)
+        coords_s = _safe_str(action.planet_coords)
         cur_rates = parse_economy_rates(html)
         if cur_rates:
             self.last_economy_rates[action.planet_id] = dict(cur_rates)
@@ -880,28 +1154,50 @@ class ActionExecutor:
                 executed=False,
                 dry_run=False,
                 action=action,
-                message=f"No-op: {action.target_name} ({field_name}) is already at {target_pct}% on [{action.planet_coords}].",
+                message=f"No-op: {tname_s} ({field_name}) is already at {target_pct}% on [{coords_s}].",
             )
 
         client._switch_frame("F_Hauptframe")
-        try:
-            select_el = client.driver.find_element(By.NAME, field_name)
-            Select(select_el).select_by_value(str(target_pct))
-            submit_btn = client.driver.find_element(
-                By.CSS_SELECTOR,
-                'form#ress input[type="submit"], form[action*="internalEconomy"] input[type="submit"], form input[type="submit"]',
-            )
-            self._pace_action(client, priority="interactive")
-            nav_token = self._mark_frame_nav(client)
-            time.sleep(random.uniform(*self.action_delay_range))
-            self._safe_click(client, submit_btn)
-        except NoSuchElementException:
-            return ExecutionResult(
-                executed=False,
-                dry_run=False,
-                action=action,
-                message=f"Aborted: internalEconomy control {field_name} not found.",
-            )
+        nav_token = self._mark_frame_nav(client)
+        paced = False
+        for attempt in range(2):
+            try:
+                select_el = client.driver.find_element(By.NAME, field_name)
+                Select(select_el).select_by_value(str(target_pct))
+                submit_btn = client.driver.find_element(
+                    By.CSS_SELECTOR,
+                    'form#ress input[type="submit"], form[action*="internalEconomy"] input[type="submit"], form input[type="submit"]',
+                )
+                if not paced:
+                    self._pace_action(client, priority="interactive")
+                    nav_token = self._mark_frame_nav(client)
+                    time.sleep(random.uniform(*self.action_delay_range))
+                    paced = True
+                self._safe_click(client, submit_btn)
+                break
+            except StaleElementReferenceException:
+                if attempt == 0:
+                    continue
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: internalEconomy control {field_name} became stale.",
+                )
+            except NoSuchElementException:
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: internalEconomy control {field_name} not found.",
+                )
+            except (ElementNotInteractableException, WebDriverException) as exc:
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: internalEconomy control {field_name} not interactable ({type(exc).__name__}).",
+                )
 
         updated_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token)
         updated_rates = parse_economy_rates(updated_html)
@@ -927,7 +1223,7 @@ class ActionExecutor:
             executed=True,
             dry_run=False,
             action=action,
-            message=f"Set {action.target_name} ({field_name}) to {target_pct}% on [{action.planet_coords}].",
+            message=f"Set {tname_s} ({field_name}) to {target_pct}% on [{coords_s}].",
             updated_state=updated_state,
         )
 
@@ -937,8 +1233,10 @@ class ActionExecutor:
         state: GameState,
         action: PlannedAction,
     ) -> ExecutionResult:
-        m = re.search(r"(\d{1,2}):(\d{1,3})", action.target_name) or re.search(
-            r"(\d{1,2}):(\d{1,3})", action.planet_coords
+        tname_s = _safe_str(action.target_name)
+        coords_s = _safe_str(action.planet_coords)
+        m = re.search(r"(\d{1,2}):(\d{1,3})", tname_s, re.ASCII) or re.search(
+            r"(\d{1,2}):(\d{1,3})", coords_s, re.ASCII
         )
         gal, sys_num = (int(m.group(1)), int(m.group(2))) if m else (1, 1)
         _call_with_optional_priority(client.ensure_in_game, priority="interactive")
@@ -1067,14 +1365,14 @@ class ActionExecutor:
     )
     _TR_OPTION_TOKEN_RE = re.compile(
         r"(?:(?<!\d)\d{1,3}\s*%(?!\w)"
-        r"|\b(?:attack|angriff|raid|spy(?:ing)?|spio(?:nage)?|espionage"
-        r"|transport|station(?:ing|ieren)?|deploy|colonize|kolonisier(?:en)?"
-        r"|recycl(?:e|ing)|harvest|escape(?:\s+flight)?|flucht|expedition"
-        r"|explore|erkund(?:ung|en)?|hold|halt|direct|direkt|detour|umweg)\b)",
-        re.IGNORECASE,
+        r"|\b(?:attack|angriff|angreif(?:en)?|raid|spy(?:ing)?|spio(?:nage|nier(?:en)?)?|espionage"
+        r"|transport(?:ier(?:en)?)?|station(?:ing|ieren)?|deploy|colonize|kolonisier(?:en)?"
+        r"|recycl(?:e|ing)|abbau(?:en)?|harvest|escape(?:\s+flight)?|flucht|expedition"
+        r"|explore|erkund(?:ung|en)?|hold|halt(?:en)?|escort|defend|direct|direkt|detour|umweg)\b)",
+        re.IGNORECASE | re.ASCII,
     )
     _TR_UTILITY_CELL_RE = re.compile(
-        r"^(?:help|hilfe|info|hint|hinweis|note|send|submit|absenden|ok|cancel|abort|abbrechen|back|zur[uü]ck|close|schlie[sß]en|\?)$",
+        r"^(?:help|hilfe|info|hint|hinweis|note|send|submit|absenden|ok|cancel|abort|abbrechen|back|zur[uü]ck|close|schlie[sß]en)\b|^\?$",
         re.IGNORECASE,
     )
 
@@ -1345,7 +1643,11 @@ class ActionExecutor:
                                 lbl_parts.append(sib_txt)
                 radio_labels.append((rval, rid, rname, " ".join(lbl_parts).lower()))
 
-        want_tokens = ("attack", "angriff") if mission_kind == "ATTACK" else ("spy", "spio", "espionage")
+        want_tokens = (
+            ("attack", "angriff", "angreif")
+            if mission_kind == "ATTACK"
+            else ("spy", "spio", "spionier", "espionage")
+        )
 
         def _is_speed_or_route(r_name: str, lbl: str) -> bool:
             return (
@@ -1398,17 +1700,37 @@ class ActionExecutor:
         if mission_kind == "ATTACK":
             other_missions = (
                 "transport",
+                "transportier",
                 "station",
+                "stationier",
                 "spy",
                 "spio",
+                "spionier",
                 "espionage",
                 "colonize",
+                "kolonisier",
                 "recycle",
+                "recycl",
+                "harvest",
+                "sammeln",
+                "sammel",
+                "abbau",
                 "escape",
+                "flucht",
+                "halt",
+                "hold",
+                "defend",
+                "verteidig",
+                "escort",
+                "eskort",
+                "deploy",
+                "expedition",
+                "explore",
+                "erkund",
             )
             for r, r_val, r_id, r_name, label_txt in candidates:
                 if (r_val == "1" or ("mission" in r_name and r_val == "1")) and not any(
-                    m in label_txt for m in other_missions
+                    m in label_txt or m in r_id for m in other_missions
                 ):
                     return r
         return None
@@ -1449,16 +1771,20 @@ class ActionExecutor:
         mission_kind: str,
         active_planet_confirmed: bool = True,
     ) -> ExecutionResult:
-        m = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", action.target_name)
+        tname_s = _safe_str(action.target_name)
+        reason_s = _safe_str(action.reason)
+        coords_s = _safe_str(action.planet_coords)
+        m = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", tname_s, re.ASCII)
         if not m:
+            bad_tname = None if action.target_name is None else tname_s
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
                 action=action,
-                message=f"Aborted: could not parse target coordinates from {action.target_name!r}.",
+                message=f"Aborted: could not parse target coordinates from {bad_tname!r}.",
             )
         t_gal, t_sys, t_pos = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        is_asteroid = bool(re.search(r"\[\s*a\s*\]|\basteroid\b", f"{action.target_name} {action.reason}", re.IGNORECASE))
+        is_asteroid = bool(re.search(r"\[\s*a\s*\]|\basteroid\b", f"{tname_s} {reason_s}", re.IGNORECASE))
 
         fleet_html = self._navigate_and_select_planet(
             client,
@@ -1475,7 +1801,7 @@ class ActionExecutor:
                 action=action,
                 message=(
                     f"Aborted: active planet is {mismatch_pid}, "
-                    f"not requested origin {action.planet_id}."
+                    f"not requested origin {game_data.fmt_compact_int(action.planet_id)}."
                 ),
                 observed_active_planet_id=mismatch_pid,
                 observed_active_planet_confirmed=True,
@@ -1532,69 +1858,84 @@ class ActionExecutor:
             return inp_css if fleet_soup.select_one(inp_css) is not None else f'{step1_form_css} [name="{esc_fn}"]'
 
         client._switch_frame("F_Hauptframe")
-        filled_any = False
         nav_token1: Optional[str] = None
-        try:
-            for skey, qty in ships_to_send.items():
-                num = skey[1:]
-                candidates = (f"ship_{num}", f"ship[{num}]", f"s{num}", f"ship{num}")
-                matched_in_html = next((c for c in candidates if c in soup_input_names), None)
-                if matched_in_html is not None:
-                    if _field_needs_scoping(matched_in_html):
-                        els = client.driver.find_elements(By.CSS_SELECTOR, _scoped_field_css(matched_in_html))
+        paced1 = False
+        for attempt in range(2):
+            try:
+                filled_any = False
+                for skey, qty in ships_to_send.items():
+                    num = skey[1:]
+                    candidates = (f"ship_{num}", f"ship[{num}]", f"s{num}", f"ship{num}")
+                    matched_in_html = next((c for c in candidates if c in soup_input_names), None)
+                    if matched_in_html is not None:
+                        if _field_needs_scoping(matched_in_html):
+                            els = client.driver.find_elements(By.CSS_SELECTOR, _scoped_field_css(matched_in_html))
+                        else:
+                            els = client.driver.find_elements(By.NAME, matched_in_html)
                     else:
-                        els = client.driver.find_elements(By.NAME, matched_in_html)
-                else:
-                    els = []
-                    for cname in candidates:
-                        els = client.driver.find_elements(By.NAME, cname)
-                        if els:
-                            break
-                if els:
-                    els[0].clear()
-                    els[0].send_keys(str(qty))
-                    filled_any = True
-            if not filled_any:
+                        els = []
+                        for cname in candidates:
+                            els = client.driver.find_elements(By.NAME, cname)
+                            if els:
+                                break
+                    if els:
+                        els[0].clear()
+                        qty_safe = max(1, game_data.cap_json_int(game_data.safe_int(qty, 1)))
+                        els[0].send_keys(str(qty_safe))
+                        filled_any = True
+                if not filled_any:
+                    return ExecutionResult(
+                        executed=False,
+                        dry_run=False,
+                        action=action,
+                        message="Aborted: no ship input fields found on internalFleet.",
+                    )
+                for fname, fval in (("gal", str(t_gal)), ("sun", str(t_sys)), ("pla", str(t_pos))):
+                    if _field_needs_scoping(fname):
+                        coord_inp = client.driver.find_element(By.CSS_SELECTOR, _scoped_field_css(fname))
+                    else:
+                        coord_inp = client.driver.find_element(By.NAME, fname)
+                    coord_inp.clear()
+                    coord_inp.send_keys(fval)
+                if is_asteroid and "astro" in soup_input_names:
+                    if _field_needs_scoping("astro"):
+                        astro_cb = client.driver.find_element(By.CSS_SELECTOR, _scoped_field_css("astro"))
+                    else:
+                        astro_cb = client.driver.find_element(By.NAME, "astro")
+                    if not astro_cb.is_selected():
+                        self._safe_click(client, astro_cb)
+
+                cont_btn = client.driver.find_element(By.CSS_SELECTOR, step1_submit_css)
+                if not paced1:
+                    self._pace_action(client, priority="interactive")
+                    nav_token1 = self._mark_frame_nav(client)
+                    time.sleep(random.uniform(*self.action_delay_range))
+                    paced1 = True
+                self._safe_click(client, cont_btn)
+                break
+            except StaleElementReferenceException:
+                if attempt == 1:
+                    return ExecutionResult(
+                        executed=False,
+                        dry_run=False,
+                        action=action,
+                        message="Aborted: internalFleet form controls became stale.",
+                    )
+                client._switch_frame("F_Hauptframe")
+            except NoSuchElementException:
                 return ExecutionResult(
                     executed=False,
                     dry_run=False,
                     action=action,
-                    message="Aborted: no ship input fields found on internalFleet.",
+                    message="Aborted: internalFleet target or submit controls not found.",
                 )
-            for fname, fval in (("gal", str(t_gal)), ("sun", str(t_sys)), ("pla", str(t_pos))):
-                if _field_needs_scoping(fname):
-                    coord_inp = client.driver.find_element(By.CSS_SELECTOR, _scoped_field_css(fname))
-                else:
-                    coord_inp = client.driver.find_element(By.NAME, fname)
-                coord_inp.clear()
-                coord_inp.send_keys(fval)
-            if is_asteroid and "astro" in soup_input_names:
-                if _field_needs_scoping("astro"):
-                    astro_cb = client.driver.find_element(By.CSS_SELECTOR, _scoped_field_css("astro"))
-                else:
-                    astro_cb = client.driver.find_element(By.NAME, "astro")
-                if not astro_cb.is_selected():
-                    self._safe_click(client, astro_cb)
-
-            for attempt in range(2):
-                try:
-                    cont_btn = client.driver.find_element(By.CSS_SELECTOR, step1_submit_css)
-                    self._pace_action(client, priority="interactive")
-                    nav_token1 = self._mark_frame_nav(client)
-                    time.sleep(random.uniform(*self.action_delay_range))
-                    self._safe_click(client, cont_btn)
-                    break
-                except StaleElementReferenceException:
-                    if attempt == 1:
-                        raise
-                    client._switch_frame("F_Hauptframe")
-        except NoSuchElementException:
-            return ExecutionResult(
-                executed=False,
-                dry_run=False,
-                action=action,
-                message="Aborted: internalFleet target or submit controls not found.",
-            )
+            except (ElementNotInteractableException, WebDriverException) as exc:
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: internalFleet form controls not interactable ({type(exc).__name__}).",
+                )
 
         send_html = client._wait_frame_ready(
             "F_Hauptframe",
@@ -1605,47 +1946,62 @@ class ActionExecutor:
         form_css = self._pick_send_fleet_form_css(send_soup)
 
         client._switch_frame("F_Hauptframe")
-        radios = client.driver.find_elements(By.CSS_SELECTOR, f'{form_css} input[type="radio"]')
-        mission_radio = self._match_mission_radio(send_soup, form_css, radios, mission_kind)
-        if mission_radio is None:
-            return ExecutionResult(
-                executed=False,
-                dry_run=False,
-                action=action,
-                message=(
-                    f"Aborted: {mission_kind.title()} mission radio button not confirmed on internalSendFleet "
-                    f"(page bytes={len(send_html)})."
-                ),
-            )
-
         nav_token2: Optional[str] = None
         launch_css = f'{form_css} input[type="submit"], {form_css} button[type="submit"]'
-        try:
-            for attempt in range(2):
-                try:
-                    if not mission_radio.is_selected():
-                        self._safe_click(client, mission_radio)
-                    launch_btn = client.driver.find_element(By.CSS_SELECTOR, launch_css)
+        paced2 = False
+        for attempt in range(2):
+            try:
+                radios = client.driver.find_elements(By.CSS_SELECTOR, f'{form_css} input[type="radio"]')
+                mission_radio = self._match_mission_radio(send_soup, form_css, radios, mission_kind)
+                if mission_radio is None:
+                    return ExecutionResult(
+                        executed=False,
+                        dry_run=False,
+                        action=action,
+                        message=(
+                            f"Aborted: {mission_kind.title()} mission radio button not confirmed on internalSendFleet "
+                            f"(page bytes={len(send_html)})."
+                        ),
+                    )
+                if not mission_radio.is_selected():
+                    self._safe_click(client, mission_radio)
+                launch_btn = client.driver.find_element(By.CSS_SELECTOR, launch_css)
+                if not paced2:
                     self._pace_action(client, priority="interactive")
                     nav_token2 = self._mark_frame_nav(client)
                     time.sleep(random.uniform(*self.action_delay_range))
-                    self._safe_click(client, launch_btn)
-                    break
-                except StaleElementReferenceException:
-                    if attempt == 1:
-                        raise
-                    client._switch_frame("F_Hauptframe")
-                    radios = client.driver.find_elements(By.CSS_SELECTOR, f'{form_css} input[type="radio"]')
-                    mission_radio = self._match_mission_radio(send_soup, form_css, radios, mission_kind)
-                    if mission_radio is None:
-                        raise NoSuchElementException("Mission radio lost after page refresh")
-        except NoSuchElementException:
-            return ExecutionResult(
-                executed=False,
-                dry_run=False,
-                action=action,
-                message=f"Aborted: {mission_kind.title()} mission launch button not found on internalSendFleet.",
-            )
+                    paced2 = True
+                self._safe_click(client, launch_btn)
+                break
+            except StaleElementReferenceException:
+                if attempt == 1:
+                    return ExecutionResult(
+                        executed=False,
+                        dry_run=False,
+                        action=action,
+                        message=f"Aborted: {mission_kind.title()} mission controls became stale on internalSendFleet.",
+                    )
+                client._switch_frame("F_Hauptframe")
+                refreshed_html = str(getattr(client.driver, "page_source", "") or "")
+                if refreshed_html.strip():
+                    send_html = refreshed_html
+                    send_soup = BeautifulSoup(send_html, "html.parser")
+                    form_css = self._pick_send_fleet_form_css(send_soup)
+                    launch_css = f'{form_css} input[type="submit"], {form_css} button[type="submit"]'
+            except NoSuchElementException:
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: {mission_kind.title()} mission launch button not found on internalSendFleet.",
+                )
+            except (ElementNotInteractableException, WebDriverException) as exc:
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: {mission_kind.title()} mission controls not interactable on internalSendFleet ({type(exc).__name__}).",
+                )
 
         confirm_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token2)
         server_err = self._extract_fleet_server_error(confirm_html)
@@ -1670,7 +2026,9 @@ class ActionExecutor:
             updated,
             is_fleet=True,
         )
-        ship_desc = ", ".join(f"{qty}x {k}" for k, qty in ships_to_send.items())
+        ship_desc = ", ".join(
+            f"{game_data.fmt_compact_int(qty)}x {k}" for k, qty in ships_to_send.items()
+        )
         verb = "spy probe" if mission_kind == "SPY" else "attack"
         return ExecutionResult(
             executed=True,
@@ -1678,7 +2036,7 @@ class ActionExecutor:
             action=action,
             message=(
                 f"Dispatched {verb} ({ship_desc}) to [{t_gal:02d}:{t_sys:03d}:{t_pos:02d}] "
-                f"from [{action.planet_coords}]."
+                f"from [{coords_s}]."
             ),
             updated_state=updated_state,
         )
@@ -1695,9 +2053,9 @@ class ActionExecutor:
         attack_keys = ("s4", "s5", "s6", "s7", "s13", "s14", "s15", "s16", "s1", "s2", "s3")
         ships_to_send = (
             {
-                k: int(planet.ships.get(k, 0) or 0)
+                k: qty
                 for k in attack_keys
-                if int(planet.ships.get(k, 0) or 0) > 0
+                if (qty := game_data.cap_json_int(game_data.safe_int(planet.ships.get(k, 0), 0))) > 0
             }
             if planet is not None
             else {}
@@ -1707,7 +2065,7 @@ class ActionExecutor:
                 executed=False,
                 dry_run=False,
                 action=action,
-                message=f"Aborted: no stationed combat or transport ships on [{action.planet_coords}].",
+                message=f"Aborted: no stationed combat or transport ships on [{_safe_str(action.planet_coords)}].",
             )
         return self._dispatch_fleet_mission(
             client,
@@ -1727,15 +2085,15 @@ class ActionExecutor:
         active_planet_confirmed: bool = True,
     ) -> ExecutionResult:
         planet = next((p for p in state.planets if p.planet_id == action.planet_id), None) or state.active_planet()
-        avail = int(planet.ships.get("s10", 0) or 0) if planet is not None else 0
+        avail = game_data.cap_json_int(game_data.safe_int(planet.ships.get("s10", 0), 0)) if planet is not None else 0
         if avail <= 0:
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
                 action=action,
-                message=f"Aborted: no spy probes (s10) stationed on [{action.planet_coords}].",
+                message=f"Aborted: no spy probes (s10) stationed on [{_safe_str(action.planet_coords)}].",
             )
-        probe_count = min(avail, max(1, int(action.target_level or 1)))
+        probe_count = min(avail, max(1, game_data.cap_json_int(game_data.safe_int(action.target_level, 1))))
         return self._dispatch_fleet_mission(
             client,
             state,
@@ -1794,19 +2152,20 @@ class ActionExecutor:
 
         if self.dry_run:
             suffix = ""
-            if action.kind == "THROTTLE_BUILDING" and action.target_level is not None:
-                suffix = f" -> {action.target_level}%"
-            elif action.kind == "BUILD_SHIP" and action.target_level:
-                suffix = f" x{action.target_level}"
+            tgt_lvl_opt = game_data.safe_optional_int(action.target_level, None)
+            if action.kind == "THROTTLE_BUILDING" and tgt_lvl_opt is not None:
+                suffix = f" -> {game_data.fmt_compact_int(tgt_lvl_opt)}%"
+            elif action.kind == "BUILD_SHIP" and tgt_lvl_opt:
+                suffix = f" x{game_data.fmt_compact_int(tgt_lvl_opt)}"
             elif action.kind == "SPY":
-                suffix = f" ({max(1, int(action.target_level or 1))}x s10)"
-            elif action.target_level:
-                suffix = f" -> L{action.target_level}"
+                suffix = f" ({max(1, game_data.cap_json_int(game_data.safe_int(action.target_level, 1)))}x s10)"
+            elif tgt_lvl_opt:
+                suffix = f" -> L{game_data.fmt_compact_int(tgt_lvl_opt)}"
             return ExecutionResult(
                 executed=False,
                 dry_run=True,
                 action=action,
-                message=f"[DRY-RUN] Would execute {action.kind}: {action.target_name}{suffix} on [{action.planet_coords}].",
+                message=f"[DRY-RUN] Would execute {action.kind}: {_safe_str(action.target_name)}{suffix} on [{_safe_str(action.planet_coords)}].",
             )
 
         if action.kind == "ESCAPE_FLIGHT" and not self.allow_fleetsave:
@@ -1864,6 +2223,6 @@ class ActionExecutor:
                 executed=False,
                 dry_run=False,
                 action=action,
-                message=f"Escape flight planned ({action.reason}); inspect internalFleet before dispatch.",
+                message=f"Escape flight planned ({_safe_str(action.reason)}); inspect internalFleet before dispatch.",
             )
         return self._attach_observed_planet(res)

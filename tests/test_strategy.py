@@ -789,6 +789,924 @@ class TestStrategyPlanner(unittest.TestCase):
             plan_actions(st_pop, config=cfg, raid_stats=explicit_supp)
             self.assertIs(mocked_opt.call_args.kwargs.get("raid_stats"), explicit_supp)
 
+            plan_actions(
+                st_pop,
+                config=cfg,
+                now_ts=1234.0,
+                scanned_systems={"02:380": 1200.0},
+                throttle_cooldowns={1: 1210.0},
+            )
+            self.assertEqual(mocked_opt.call_args.kwargs.get("now_ts"), 1234.0)
+            self.assertEqual(mocked_opt.call_args.kwargs.get("scanned_systems"), {"02:380": 1200.0})
+            self.assertEqual(mocked_opt.call_args.kwargs.get("throttle_cooldowns"), {1: 1210.0})
+
+    def test_status_color_omitted_active_asteroid_vs_commander_slots_and_non_finite_fields(self) -> None:
+        from spaceinvasion.strategy import _max_build_slots
+
+        p_ast = PlanetState(
+            planet_id=1,
+            name="Ast",
+            coords="02:380:01",
+            planet_type="asteroid",
+            temperature=0,
+            fields_used=1,
+            fields_max=10,
+            resources=Resources(),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(0, 0),
+            buildings={"b1": 1},
+        )
+        st_norm = GameState(31, 1, "u", 1_700_000_000.0, (p_ast,))
+        self.assertEqual(_max_build_slots(p_ast, st_norm), 1)
+        p_norm = _sample_planet(buildings={"b1": 4})
+        st_cmd = GameState(
+            31,
+            1,
+            "u",
+            1_700_000_000.0,
+            (p_norm,),
+            specs={"construction_commander": 1},
+            raid_targets=(
+                {
+                    "coords": "02:380:09",
+                    "owner": "ActivePlayer",
+                    "is_inactive": False,
+                    "is_spacia": False,
+                    "resources": {"pig_iron": 50_000, "metal": 20_000, "kryptonite": 10_000, "spice": 5_000},
+                },
+            ),
+        )
+        self.assertEqual(_max_build_slots(p_norm, st_cmd), 6)
+        p_norm_ships = PlanetState(
+            planet_id=p_norm.planet_id,
+            name=p_norm.name,
+            coords=p_norm.coords,
+            planet_type=p_norm.planet_type,
+            temperature=p_norm.temperature,
+            fields_used=p_norm.fields_used,
+            fields_max=p_norm.fields_max,
+            buildings=p_norm.buildings,
+            ships={"s1": 10, "s4": 30},
+            resources=p_norm.resources,
+            storage=p_norm.storage,
+            energy=p_norm.energy,
+            building_offers=p_norm.building_offers,
+            economy_rates={"resource1": "bad", "resource2": float("nan")},  # type: ignore[dict-item]
+        )
+        st_no_pvp = GameState(
+            31,
+            1,
+            "u",
+            1_700_000_000.0,
+            (p_norm_ships,),
+            researches={"r1": 1},
+            raid_targets=st_cmd.raid_targets,
+        )
+        acts = plan_actions(st_no_pvp, config=StrategyConfig(allow_raids=True, allow_pvp_in_az=False))
+        self.assertFalse(any(a.kind == "ATTACK" and a.executable_now for a in acts))
+
+    def test_priority_mode_guards_nan_storage_warn_ratio_and_corrupt_raid_targets_and_scans(self) -> None:
+        p_full = PlanetState(
+            planet_id=101,
+            name="NearFull",
+            coords="01:010:01",
+            planet_type="normal",
+            temperature=20,
+            fields_used=20,
+            fields_max=220,
+            resources=Resources(95_000, 1_000, 1_000, 1_000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b1": 5, "b11": 1},
+            ships={"s1": 5, "s4": 10},
+        )
+        corrupt_target = {
+            "coords": "01:010:09",
+            "owner": "CorruptIdle",
+            "status_color": "yellow",
+            "is_inactive": True,
+            "last_scanned_ts": "bad",
+            "last_spied_ts": float("nan"),
+            "resources": {"pig_iron": "bad", "metal": None, "kryptonite": float("inf")},
+            "fleet": {"s4": "bad"},
+            "defense": {"d1": "bad"},
+        }
+        st = GameState(
+            31,
+            1,
+            "u",
+            1_700_000_000.0,
+            (p_full,),
+            active_planet_id=101,
+            raid_targets=(corrupt_target,),
+        )
+        for bad_ratio in (float("nan"), float("inf")):
+            acts = plan_actions(
+                st,
+                config=StrategyConfig(planner_mode="priority", allow_raids=True),
+                storage_warn_ratio=bad_ratio,
+                scanned_systems={"01:010": "bad"},  # type: ignore[dict-item]
+            )
+            self.assertTrue(
+                any(a.priority == "P1" and a.target_id == 11 for a in acts),
+                f"Expected P1 warehouse guard with storage_warn_ratio={bad_ratio}: {acts}",
+            )
+
+    def test_huge_metal_blast_furnace_and_huge_energy_strings_safe(self) -> None:
+        p_paused = PlanetState(
+            planet_id=101,
+            name="P1",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=30,
+            fields_used=20,
+            fields_max=200,
+            resources=Resources(pig_iron=10**400, metal=10**400, kryptonite=1000, spice=500),
+            storage=Resources(10**400, 10**400, 100000, 100000),
+            energy=EnergyBalance(0, 10**5000),
+            buildings={"b1": 5, "b2": 5, "b3": 5, "b4": 5, "b5": 5},
+            building_offers=(
+                BuildingOffer(FUSION_PLANT, "Fusion plant", 5, 6, Resources(10, 0, 10, 0), True, "Build"),
+            ),
+            economy_rates={"resource1": 100, "resource2": 0, "resource3": 100, "resource4": 100},
+        )
+        p_active = replace(
+            p_paused,
+            planet_id=102,
+            economy_rates={"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
+        )
+        for pl in (p_paused, p_active):
+            st = GameState(
+                31,
+                1,
+                "u",
+                1_700_000_000.0,
+                (pl,),
+                active_planet_id=pl.planet_id,
+                tutorial=TutorialStatus(
+                    step=10**5000,
+                    total_steps=11,
+                    can_complete=True,
+                    tasks=(TutorialTask("Build", "Build", building_id=1, current=0, target=10**5000),),
+                ),
+            )
+            acts = plan_actions(st, config=StrategyConfig(planner_mode="priority"))
+            self.assertTrue(len(acts) > 0)
+            seen = set()
+            for a in acts:
+                self.assertIsInstance(a.reason, str)
+                self.assertIsInstance(a.target_name, str)
+                key = (a.kind, a.planet_id, a.target_id, a.target_name)
+                self.assertNotIn(key, seen)
+                seen.add(key)
+
+    def test_huge_10e400_and_million_digit_resources_trigger_p1_warehouse_in_priority_and_ga_nn(self) -> None:
+        for huge in (10**400, 10**1_000_000):
+            planet = _sample_planet(
+                resources=Resources(huge, 1000, 1000, 1000),
+                storage=Resources(100000, 100000, 100000, 100000),
+                energy=EnergyBalance(500, 100),
+                buildings={"b1": 5, "b5": 5, "b11": 1},
+                offers=(
+                    BuildingOffer(
+                        building_id=PIG_IRON_WAREHOUSE,
+                        name="Pig iron warehouse",
+                        current_level=1,
+                        target_level=2,
+                        cost=Resources(1000, 0, 0, 0),
+                        can_build=True,
+                        status_text="Build level 2",
+                        build_href="indexInternal.es?action=internalBuildItem&buildingID=11",
+                    ),
+                ),
+            )
+            state = GameState(
+                universe_id=31,
+                user_id=103603,
+                nickname="ventkx86",
+                timestamp=1700000000.0,
+                planets=(planet,),
+                active_planet_id=planet.planet_id,
+            )
+            for mode in ("priority", "ga_nn"):
+                acts = plan_actions(
+                    state,
+                    config=StrategyConfig(planner_mode=mode, ga_population_size=4, ga_generations=2, ga_horizon_steps=2, ga_seed=1),
+                )
+                p1_wh = [a for a in acts if a.priority == "P1" and a.kind == "BUILD" and a.target_id == PIG_IRON_WAREHOUSE]
+                self.assertTrue(p1_wh, f"Expected P1 warehouse action for mode={mode}, huge={huge.bit_length()}b")
+
+    def test_r8_plan_actions_allow_raids_survives_non_ascii_superscript_coords(self) -> None:
+        from spaceinvasion.state import game_state_from_dict
+
+        gs = game_state_from_dict(
+            {
+                "planets": [
+                    {
+                        "planet_id": 1,
+                        "name": "H",
+                        "coords": "1:²:3",
+                        "resources": {"pig_iron": 10000, "metal": 5000, "kryptonite": 5000, "spice": 2000},
+                        "storage": {"pig_iron": 100000, "metal": 100000, "kryptonite": 100000, "spice": 100000},
+                        "energy": {"produced": 200, "used": 50},
+                        "ships": {"s4": 10, "s1": 5},
+                    }
+                ],
+                "raid_targets": [
+                    {
+                        "coords": "1:³:4",
+                        "name": "T",
+                        "is_inactive": True,
+                        "resources": {"pig_iron": 5000, "metal": 2000, "kryptonite": 1000, "spice": 500},
+                    }
+                ],
+            }
+        )
+        acts = plan_actions(gs, config=StrategyConfig(allow_raids=True), now_ts=1700000000.0)
+        self.assertIsInstance(acts, list)
+
+    def test_r9_priority_enforces_asteroid_rules_and_zero_free_fields(self) -> None:
+        # 1) Asteroid must never schedule ground mines, power plants, or warehouses in priority mode
+        ast_planet = PlanetState(
+            planet_id=99,
+            name="Ast",
+            coords="01:001:01",
+            planet_type="asteroid",
+            temperature=-50,
+            fields_used=5,
+            fields_max=20,
+            resources=Resources(99_999, 99_999, 99_999, 99_999),
+            storage=Resources(1_000, 1_000, 1_000, 1_000),
+            energy=EnergyBalance(0, 10),
+            buildings={"b19": 1},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 0, 1, Resources(78, 0, 25, 0), True, "Build"),
+                BuildingOffer(5, "Fusion plant", 0, 1, Resources(80, 0, 35, 0), True, "Build"),
+                BuildingOffer(11, "Pig iron warehouse", 0, 1, Resources(2000, 800, 0, 0), True, "Build"),
+            ),
+        )
+        # 2) Full-field normal planet (fields_used == fields_max > 0) must emit no executable BUILD
+        full_home = PlanetState(
+            planet_id=1,
+            name="Home",
+            coords="01:001:01",
+            planet_type="normal",
+            temperature=20,
+            fields_used=200,
+            fields_max=200,
+            resources=Resources(500_000, 500_000, 500_000, 500_000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(100, 200),
+            buildings={"b1": 10, "b2": 8, "b3": 8, "b4": 7, "b5": 10, "b7": 3, "b8": 3, "b9": 3},
+            building_offers=(
+                BuildingOffer(5, "Fusion plant", 10, 11, Resources(1000, 1000, 500, 0), True, "Build", "h5"),
+                BuildingOffer(11, "Pig iron warehouse", 1, 2, Resources(1000, 500, 0, 0), True, "Build", "h11"),
+            ),
+        )
+        st = GameState(31, 1, "u", 1_700_000_000.0, (full_home, ast_planet), active_planet_id=1)
+        acts = plan_actions(st, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True))
+        ast_forbidden = [
+            a
+            for a in acts
+            if a.planet_id == 99 and a.target_id in {1, 2, 3, 4, 5, 6, 8, 11, 12, 13, 14}
+        ]
+        self.assertEqual(ast_forbidden, [])
+        home_builds = [a for a in acts if a.planet_id == 1 and a.kind == "BUILD"]
+        self.assertEqual(home_builds, [])
+        self.assertEqual([a for a in acts if a.kind == "BUILD" and a.executable_now], [])
+
+        # Full-field planet with Weapons factory and Solar cells offer prefers 0-field Solar cells
+        full_with_s9 = PlanetState(
+            planet_id=full_home.planet_id,
+            name=full_home.name,
+            coords=full_home.coords,
+            planet_type=full_home.planet_type,
+            temperature=full_home.temperature,
+            fields_used=200,
+            fields_max=200,
+            resources=full_home.resources,
+            storage=full_home.storage,
+            energy=full_home.energy,
+            buildings=full_home.buildings,
+            building_offers=full_home.building_offers,
+            ship_offers=(UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),),
+        )
+        acts_s9 = plan_actions(
+            GameState(31, 1, "u", 1_700_000_000.0, (full_with_s9,), active_planet_id=1),
+            config=StrategyConfig(planner_mode="priority", allow_shipyard=True),
+        )
+        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == SOLAR_CELLS_ID and a.executable_now for a in acts_s9))
+        self.assertEqual([a for a in acts_s9 if a.kind == "BUILD"], [])
+
+    def test_r10_zero_free_fields_blocks_power_even_with_deficit_and_raid_case_normalization(self) -> None:
+        from spaceinvasion import strategy as strat
+        from spaceinvasion.state import TutorialStatus, TutorialTask
+
+        self.assertEqual(strat._safe_strategy_int(b"77"), 77)
+        self.assertEqual(strat._safe_strategy_int("\u0667\u0667"), 0)
+        self.assertEqual(strat._safe_strategy_float(b"1.5"), 1.5)
+        self.assertEqual(strat._safe_strategy_float("\u0661.\u0665"), 0.0)
+
+        # 1. Zero free fields + severe energy deficit + tutorial b5 task must NOT emit BUILD
+        full_tutorial_p = PlanetState(
+            planet_id=101,
+            name="FullDeficit",
+            coords="01:001:01",
+            planet_type="normal",
+            temperature=40,
+            fields_used=200,
+            fields_max=200,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(10, 160),
+            buildings={"b1": 10, "b2": 10, "b9": 1},
+            building_offers=(
+                BuildingOffer(5, "Fusion plant", 0, 1, Resources(100, 100, 100, 100), True, "?b=5"),
+                BuildingOffer(6, "Thermal power plant", 0, 1, Resources(100, 100, 100, 100), True, "?b=6"),
+            ),
+            ship_offers=(
+                UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),
+            ),
+        )
+        tut_st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="u",
+            timestamp=1_700_000_000.0,
+            planets=(full_tutorial_p,),
+            active_planet_id=101,
+            tutorial=TutorialStatus(
+                step=1,
+                total_steps=5,
+                tasks=(TutorialTask("Build Fusion plant level 1", building_name="Fusion plant", building_id=5, current=0, target=1),),
+                can_complete=False,
+            ),
+        )
+        acts_full = plan_actions(tut_st, config=StrategyConfig(planner_mode="priority", allow_shipyard=True))
+        self.assertEqual([a for a in acts_full if a.kind == "BUILD"], [])
+        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == SOLAR_CELLS_ID and a.executable_now for a in acts_full))
+
+        # 2. Hot tight-field planet (0 < fields_rem <= min_free_fields_warning) prefers Solar cells over b6
+        hot_tight_p = PlanetState(
+            planet_id=102,
+            name="HotTight",
+            coords="01:001:02",
+            planet_type="normal",
+            temperature=80,
+            fields_used=196,
+            fields_max=200,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(15, 14),
+            buildings={"b1": 6, "b2": 5, "b3": 5, "b9": 1},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 6, 7, Resources(500, 200, 0, 0), True, "?b=1"),
+                BuildingOffer(6, "Thermal power plant", 0, 1, Resources(200, 100, 100, 0), True, "?b=6"),
+            ),
+            ship_offers=(
+                UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),
+            ),
+        )
+        acts_tight = plan_actions(
+            GameState(31, 1, "u", 1_700_000_000.0, (hot_tight_p,), active_planet_id=102),
+            config=StrategyConfig(planner_mode="priority", allow_shipyard=True, hot_planet_solar_temp_threshold=60, min_free_fields_warning=5),
+        )
+        self.assertEqual([a for a in acts_tight if a.kind == "BUILD" and a.target_id == 6], [])
+        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == SOLAR_CELLS_ID for a in acts_tight))
+
+        # 3. Mixed-case Raid colony emits zero BUILD/BUILD_SHIP/THROTTLE actions
+        raid_case_p = PlanetState(
+            planet_id=103,
+            name="RaidMixed",
+            coords="01:001:03",
+            planet_type=" Raid ",
+            temperature=20,
+            fields_used=5,
+            fields_max=20,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(10, 100),
+            buildings={"b1": 5, "b2": 3},
+            building_offers=(BuildingOffer(1, "Pig iron mine", 5, 6, Resources(100, 50, 0, 0), True, "?b=1"),),
+            ship_offers=(UnitOffer("ship", SOLAR_CELLS_ID, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),),
+        )
+        self.assertEqual(strat._norm_planet_type(raid_case_p), "raid")
+        self.assertFalse(strat._is_building_allowed_on_planet(raid_case_p, 1, raid_case_p.building_offers))
+        raid_st = GameState(31, 1, "u", 1_700_000_000.0, (raid_case_p,), active_planet_id=103)
+        ast_case_p = PlanetState(
+            planet_id=104,
+            name="AstMixed",
+            coords="01:001:04",
+            planet_type=" ASTEROID ",
+            temperature=10,
+            fields_used=2,
+            fields_max=20,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(50, 10),
+        )
+        self.assertEqual(strat._norm_planet_type(ast_case_p), "asteroid")
+        self.assertEqual(strat._max_build_slots(ast_case_p, raid_st), 1)
+        acts_rc = plan_actions(
+            raid_st,
+            config=StrategyConfig(planner_mode="priority", allow_shipyard=True),
+        )
+        self.assertEqual([a for a in acts_rc if a.kind in ("BUILD", "BUILD_SHIP", "THROTTLE_BUILDING")], [])
+
+    def test_r11_research_offer_map_bytes_huge_and_tuple_offers_b8_asteroid(self) -> None:
+        import json
+        import spaceinvasion.strategy as strat
+
+        ast_p = PlanetState(
+            planet_id=204,
+            name="AstTuple",
+            coords="01:001:04",
+            planet_type=" ASTEROID ",
+            temperature=10,
+            fields_used=2,
+            fields_max=20,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(50, 10),
+        )
+        norm_p = PlanetState(
+            planet_id=205,
+            name="Norm",
+            coords="01:001:05",
+            planet_type="normal",
+            temperature=20,
+            fields_used=2,
+            fields_max=200,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(50, 10),
+        )
+        st = GameState(
+            31,
+            1,
+            "u",
+            1_700_000_000.0,
+            (ast_p, norm_p),
+            active_planet_id=204,
+            research_offers=(
+                ResearchOffer(1, 10**5000, "Huge", 0, 1, Resources(100, 0, 0, 0), True, "ok", "?r=1"),  # type: ignore[arg-type]
+                ResearchOffer(2, b"r2", "Energy technology", 0, 1, Resources(0, 400, 800, 400), True, "ok", "?r=2"),  # type: ignore[arg-type]
+            ),
+        )
+        rmap = strat._research_offer_map(st)
+        self.assertIn("r2", rmap)
+        json.dumps({k: v.name for k, v in rmap.items()}, allow_nan=False)
+
+        b8_offer = BuildingOffer(8, "Research lab", 0, 1, Resources(0, 800, 0, 300), True, "?b=8")
+        self.assertTrue(strat._is_building_allowed_on_planet(ast_p, 8, (b8_offer,)))
+        self.assertFalse(strat._is_building_allowed_on_planet(ast_p, 8, ()))
+        self.assertFalse(strat._is_building_allowed_on_planet(ast_p, 1, ()))
+        self.assertTrue(strat._is_building_allowed_on_planet(ast_p, 19, ()))
+        self.assertFalse(strat._is_building_allowed_on_planet(norm_p, 19, ()))
+        b1_offer = BuildingOffer(1, "Pig iron mine", 0, 1, Resources(78, 0, 25, 0), True, "?b=1")
+        forged_act = strat._make_build_action("P2", ast_p, 1, "Pig iron mine", "Mine", {1: b1_offer})
+        self.assertFalse(forged_act.executable_now)
+        self.assertIsNone(forged_act.action_href)
+        self.assertIn("not permitted on asteroid", forged_act.reason)
+
+    def test_r12_priority_raid_colony_blocks_tutorial_research_ships_and_huge_reward_text(self) -> None:
+        from spaceinvasion import strategy as strat
+
+        class _RaiseFspath:
+            def __fspath__(self) -> str:
+                raise RuntimeError("fspath boom")
+
+        class _RaiseStrRepr:
+            def __str__(self) -> str:
+                raise RuntimeError("str boom")
+
+            def __repr__(self) -> str:
+                raise RuntimeError("repr boom")
+
+        raid_p = PlanetState(
+            planet_id=501,
+            name="RaidCol",
+            coords="02:380:15",
+            planet_type=" Raid ",
+            temperature=20,
+            fields_used=1,
+            fields_max=10,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b7": 1, "b9": 1},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 0, 1, Resources(60, 15, 0, 0), True, "Build", "?b=1"),
+                BuildingOffer(7, "Development center", 1, 2, Resources(400, 120, 200, 0), True, "Build", "?b=7"),
+            ),
+            ship_offers=(
+                UnitOffer("ship", 4, "Small fighter", 0, Resources(3000, 1000, 0, 0), True, "ship[4]"),
+            ),
+        )
+        tut_mix = TutorialStatus(
+            step=4,
+            total_steps=11,
+            tasks=(
+                TutorialTask("Upgrade your Mining technology 0 / 1", "Mining technology", None, 0, 1, "research", "r1"),
+                TutorialTask("Build a Small fighter 0 / 1", "Small fighter", 4, 0, 1, "ship"),
+                TutorialTask("Increase your Pig iron mine level 0 / 3", "Pig iron mine", 1, 0, 3),
+            ),
+            reward_text=10**5000,  # type: ignore[arg-type]
+            can_complete=False,
+        )
+        r_offer = ResearchOffer(
+            research_id=1,
+            research_key="r1",
+            name="Mining technology",
+            current_level=0,
+            target_level=1,
+            cost=Resources(200, 100, 100, 0),
+            can_research=True,
+            status_text="Research level 1",
+            research_href="?r=1",
+        )
+        st_raid = GameState(
+            31,
+            1,
+            "u",
+            0.0,
+            (raid_p,),
+            active_planet_id=501,
+            tutorial=tut_mix,
+            research_offers=(r_offer,),
+        )
+        cfg = StrategyConfig(allow_research=True, allow_shipyard=True, allow_multi_planet=False)
+        tut_acts = plan_actions(st_raid, config=cfg)
+        fleet_acts = strat._plan_tutorial_fleet_milestones(st_raid, raid_p, cfg)
+        self.assertFalse(any(a.kind == "RESEARCH" for a in tut_acts))
+        self.assertFalse(any(a.kind == "BUILD" and a.target_id == 1 for a in tut_acts))
+        self.assertFalse(any(a.kind == "BUILD_SHIP" and a.planet_id == 501 for a in tut_acts))
+        self.assertEqual(fleet_acts, [])
+
+        forged_r_raid = strat._make_research_action(
+            "P2", raid_p, st_raid, "r1", "Mining technology", {"r1": r_offer}, False, allow_live=True
+        )
+        self.assertFalse(forged_r_raid.executable_now)
+        self.assertIsNone(forged_r_raid.action_href)
+
+        ast_no_lab = PlanetState(
+            planet_id=502,
+            name="AstNoLab",
+            coords="02:380:16",
+            planet_type="asteroid",
+            temperature=10,
+            fields_used=1,
+            fields_max=20,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b7": 1},
+        )
+        st_ast = GameState(
+            31,
+            1,
+            "u",
+            0.0,
+            (ast_no_lab,),
+            active_planet_id=502,
+            tutorial=tut_mix,
+            research_offers=(r_offer,),
+        )
+        forged_r_ast = strat._make_research_action(
+            "P2", ast_no_lab, st_ast, "r1", "Mining technology", {"r1": r_offer}, False, allow_live=True
+        )
+        self.assertFalse(forged_r_ast.executable_now)
+        self.assertIsNone(forged_r_ast.action_href)
+        self.assertFalse(
+            any(a.kind == "RESEARCH" and a.executable_now for a in plan_actions(st_ast, config=cfg))
+        )
+
+        for bad_rew in (10**5000, _RaiseFspath(), _RaiseStrRepr()):
+            st_claim = GameState(
+                31,
+                1,
+                "u",
+                0.0,
+                (_sample_planet(),),
+                tutorial=TutorialStatus(
+                    step=1,
+                    total_steps=11,
+                    tasks=(TutorialTask(_RaiseStrRepr(), _RaiseFspath(), 1, 1, 1),),  # type: ignore[arg-type]
+                    reward_text=bad_rew,  # type: ignore[arg-type]
+                    can_complete=True,
+                ),
+            )
+            claim_acts = plan_actions(st_claim, config=StrategyConfig())
+            self.assertEqual(claim_acts[0].kind, "CLAIM_TUTORIAL")
+            self.assertIsInstance(claim_acts[0].reason, str)
+
+    def test_r13_research_ship_b8_b9_exec_gates_and_raid_asteroid_tutorial_parity(self) -> None:
+        from spaceinvasion.state import QueueJob
+
+        # 1. Normal planet with b8=0 + stale ResearchOffer must NOT mark RESEARCH executable_now=True
+        p_no_b8_b9 = PlanetState(
+            planet_id=701,
+            name="NoLabYard",
+            coords="02:380:11",
+            planet_type="normal",
+            temperature=30,
+            fields_used=10,
+            fields_max=200,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b1": 5, "b5": 5, "b7": 3, "b8": 0, "b9": 0},
+            ship_offers=(
+                UnitOffer("ship", 4, "Small fighter", 0, Resources(3000, 1000, 0, 0), True, "ship[4]"),
+                UnitOffer("ship", 9, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),
+            ),
+        )
+        r2_offer = ResearchOffer(2, "r2", "Energy technology", 0, 1, Resources(0, 400, 800, 400), True, "Research", "?r=2")
+        r1_offer = ResearchOffer(1, "r1", "Mining technology", 0, 1, Resources(200, 100, 100, 0), True, "Research", "?r=1")
+        tut_r2 = TutorialStatus(4, 11, (TutorialTask("Upgrade Energy technology 0/1", "Energy technology", None, 0, 1, "research", "r2"),))
+        st_r2 = GameState(31, 1, "u", 1000.0, (p_no_b8_b9,), active_planet_id=701, tutorial=tut_r2, research_offers=(r2_offer,))
+        acts_r2 = plan_actions(st_r2, config=StrategyConfig(allow_research=True))
+        res_acts = [a for a in acts_r2 if a.kind == "RESEARCH"]
+        self.assertTrue(res_acts)
+        self.assertFalse(any(a.executable_now for a in res_acts))
+        self.assertTrue(all(a.action_href is None for a in res_acts))
+
+        # 2. b8=1, r2=0 + stale ResearchOffer for r1 (requires r2>=4, b8>=2) -> executable_now=False
+        p_b8_1 = PlanetState(
+            planet_id=702,
+            name="Lab1",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=30,
+            fields_used=12,
+            fields_max=200,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b1": 5, "b5": 5, "b7": 3, "b8": 1, "b9": 0},
+        )
+        tut_r1 = TutorialStatus(4, 11, (TutorialTask("Upgrade Mining technology 0/1", "Mining technology", None, 0, 1, "research", "r1"),))
+        st_r1 = GameState(31, 1, "u", 1000.0, (p_b8_1,), active_planet_id=702, researches={"r2": 0}, tutorial=tut_r1, research_offers=(r1_offer,))
+        acts_r1 = plan_actions(st_r1, config=StrategyConfig(allow_research=True))
+        self.assertFalse(any(a.kind == "RESEARCH" and a.executable_now for a in acts_r1))
+
+        # 3. b9=0 and queued b9 + stale ship_offers in tutorial, shipyard_targets, and hot planet prefer_s9
+        tut_ship = TutorialStatus(6, 11, (TutorialTask("Build a Small fighter 0/1", "Small fighter", 4, 0, 1, "ship"),))
+        st_ship_q = GameState(
+            31,
+            1,
+            "u",
+            1000.0,
+            (p_no_b8_b9,),
+            active_planet_id=701,
+            tutorial=tut_ship,
+            active_queues=(QueueJob("building", "Weapons factory", 9, 1, "5m"),),
+        )
+        acts_ship_q = plan_actions(st_ship_q, config=StrategyConfig(allow_shipyard=True))
+        self.assertFalse(any(a.kind == "BUILD_SHIP" and a.executable_now for a in acts_ship_q))
+
+        p_hot_nob9 = PlanetState(
+            planet_id=703,
+            name="HotNoYard",
+            coords="02:380:13",
+            planet_type="normal",
+            temperature=65,
+            fields_used=195,
+            fields_max=200,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(100, 100),
+            buildings={"b1": 5, "b5": 5, "b7": 3, "b9": 0},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 5, 6, Resources(600, 200, 0, 0), True, "Build", "?b=1"),
+                BuildingOffer(5, "Fusion plant", 5, 6, Resources(500, 200, 100, 0), True, "Build", "?b=5"),
+            ),
+            ship_offers=(
+                UnitOffer("ship", 9, "Solar cells", 0, Resources(0, 2000, 200, 400), True, "ship[9]"),
+                UnitOffer("ship", 4, "Small fighter", 0, Resources(3000, 1000, 0, 0), True, "ship[4]"),
+            ),
+        )
+        st_hot = GameState(
+            31,
+            1,
+            "u",
+            1000.0,
+            (p_hot_nob9,),
+            active_planet_id=703,
+            active_queues=(QueueJob("building", "Weapons factory", 9, 1, "5m"),),
+        )
+        acts_hot = plan_actions(st_hot, config=StrategyConfig(allow_shipyard=True))
+        self.assertFalse(any(a.kind == "BUILD_SHIP" and a.executable_now for a in acts_hot))
+
+        # 4. Raid single-planet tutorial returns [] (ga_nn parity), Asteroid b8=0 falls through to b10/b7,
+        #    and Raid active + Normal colony delegates tutorial cleanly when allow_multi_planet=True
+        raid_p = PlanetState(
+            planet_id=704,
+            name="RaidSolo",
+            coords="02:380:14",
+            planet_type=" Raid ",
+            temperature=20,
+            fields_used=2,
+            fields_max=10,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b7": 1, "b9": 1},
+        )
+        tut_bld_res = TutorialStatus(
+            3,
+            11,
+            (
+                TutorialTask("Build Research lab 0/1", "Research lab", 8, 0, 1, "building"),
+                TutorialTask("Upgrade Energy technology 0/1", "Energy technology", None, 0, 1, "research", "r2"),
+            ),
+        )
+        st_raid_solo = GameState(31, 1, "u", 1000.0, (raid_p,), active_planet_id=704, tutorial=tut_bld_res, research_offers=(r2_offer,))
+        self.assertEqual(plan_actions(st_raid_solo, config=StrategyConfig(planner_mode="priority", allow_multi_planet=False)), [])
+
+        ast_p = PlanetState(
+            planet_id=705,
+            name="AstSolo",
+            coords="02:380:15",
+            planet_type=" Asteroid ",
+            temperature=10,
+            fields_used=2,
+            fields_max=20,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b7": 1},
+        )
+        st_ast_solo = GameState(31, 1, "u", 1000.0, (ast_p,), active_planet_id=705, tutorial=tut_bld_res, research_offers=(r2_offer,))
+        ast_prio = plan_actions(st_ast_solo, config=StrategyConfig(planner_mode="priority", allow_multi_planet=False))
+        self.assertEqual(ast_prio, [])
+        tut_ast_mix = TutorialStatus(
+            3,
+            11,
+            (
+                TutorialTask("Build Research lab 0/1", "Research lab", 8, 0, 1, "building"),
+                TutorialTask("Upgrade Energy technology 0/1", "Energy technology", None, 0, 1, "research", "r2"),
+                TutorialTask("Upgrade Development center 1/2", "Development center", 7, 1, 2, "building"),
+            ),
+        )
+        ast_b7_prio = plan_actions(
+            GameState(31, 1, "u", 1000.0, (ast_p,), active_planet_id=705, tutorial=tut_ast_mix, research_offers=(r2_offer,)),
+            config=StrategyConfig(planner_mode="priority", allow_multi_planet=False),
+        )
+        self.assertEqual([(a.kind, a.target_id) for a in ast_b7_prio], [("WAIT_RESOURCES", 7)])
+
+        norm_col = PlanetState(
+            planet_id=706,
+            name="NormCol",
+            coords="02:380:16",
+            planet_type="normal",
+            temperature=25,
+            fields_used=5,
+            fields_max=200,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b7": 2},
+        )
+        st_multi = GameState(
+            31,
+            1,
+            "u",
+            1000.0,
+            (raid_p, norm_col),
+            active_planet_id=704,
+            tutorial=tut_bld_res,
+            research_offers=(r2_offer,),
+        )
+        multi_acts = plan_actions(st_multi, config=StrategyConfig(planner_mode="priority", allow_multi_planet=True, allow_research=True))
+        self.assertTrue(any(a.planet_id == 706 and a.kind == "BUILD" and a.target_id == 8 and a.executable_now for a in multi_acts))
+        self.assertFalse(any(a.kind == "RESEARCH" and a.executable_now for a in multi_acts))
+
+    def test_r14_stale_queued_forged_build_offers_tutorial_ship_delegation_and_shipyard_aliases(self) -> None:
+        from spaceinvasion.state import (
+            BuildingOffer,
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+            TutorialStatus,
+            TutorialTask,
+            UnitOffer,
+        )
+        from spaceinvasion.strategy import _make_build_action
+
+        # 1. Stale offer_tgt != nxt_lvl (e.g. queued building card shows +1 level) falls back to nxt_lvl WAIT_RESOURCES non-executable
+        home_p = PlanetState(
+            planet_id=710,
+            name="Home",
+            coords="02:380:10",
+            planet_type="normal",
+            temperature=25,
+            fields_used=15,
+            fields_max=200,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b1": 4, "b7": 2},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 5, 6, Resources(100, 100, 0, 0), True, "Build", "?b=1"),
+                BuildingOffer(9, "Weapons factory", 0, 1, Resources(500, 500, 500, 0), True, "Build", "?b=9"),
+            ),
+        )
+        offers_map = {o.building_id: o for o in home_p.building_offers}
+        stale_act = _make_build_action("P2", home_p, 1, "Pig iron mine", "stale test", offers_map)
+        self.assertEqual(stale_act.kind, "WAIT_RESOURCES")
+        self.assertEqual(stale_act.target_level, 5)
+        self.assertFalse(stale_act.executable_now)
+        self.assertIsNone(stale_act.action_href)
+
+        # 2. Forged offer with missing prerequisites (Weapons factory b9 requires b7>=3 & r2>=1, currently b7=2) blocked even with live offer
+        forged_act = _make_build_action("P2", home_p, 9, "Weapons factory", "forged prereq", offers_map)
+        self.assertEqual(forged_act.kind, "WAIT_RESOURCES")
+        self.assertFalse(forged_act.executable_now)
+
+        # 3. Tutorial fleet milestone delegates from raid / wf=0 home to ready normal colony, skipping raid
+        raid_p = PlanetState(
+            planet_id=711,
+            name="Raid",
+            coords="02:380:11",
+            planet_type="raid",
+            temperature=10,
+            fields_used=0,
+            fields_max=100,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b9": 5},
+            ship_offers=(UnitOffer("ship", 4, "Small fighter", 0, Resources(3000, 1000, 0, 0), True, "ship[4]"),),
+        )
+        home_nowf = PlanetState(
+            planet_id=712,
+            name="NoYard",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=25,
+            fields_used=5,
+            fields_max=200,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b7": 4},
+        )
+        col_ready = PlanetState(
+            planet_id=713,
+            name="ColYard",
+            coords="02:380:13",
+            planet_type="normal",
+            temperature=25,
+            fields_used=10,
+            fields_max=200,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b7": 4, "b9": 3},
+            ship_offers=(UnitOffer("ship", 4, "Small fighter", 0, Resources(3000, 1000, 0, 0), True, "ship[4]"),),
+        )
+        tut_ship = TutorialStatus(
+            5,
+            11,
+            (TutorialTask("Build 1 Small fighter", "Small fighter", 4, 0, 1, "ship", "small_fighter"),),
+        )
+        st_del = GameState(
+            31,
+            1,
+            "u",
+            1000.0,
+            (raid_p, home_nowf, col_ready),
+            active_planet_id=712,
+            researches={f"r{i}": 6 for i in range(1, 10)},
+            tutorial=tut_ship,
+        )
+        del_acts = plan_actions(
+            st_del,
+            config=StrategyConfig(planner_mode="priority", allow_multi_planet=True, allow_shipyard=True),
+        )
+        self.assertTrue(any(a.planet_id == 713 and a.kind == "BUILD_SHIP" and a.target_id == 4 and a.executable_now for a in del_acts))
+        self.assertFalse(any(a.planet_id == 711 and a.executable_now for a in del_acts))
+
+        # 4. Alias normalization in strategy.shipyard_targets (last-wins; bare digits skipped)
+        cfg_alias = StrategyConfig(planner_mode="priority", allow_shipyard=True, shipyard_targets={"s4": 0, "Small fighter": 2, "1": 99})
+        st_alias = GameState(
+            31,
+            1,
+            "u",
+            1000.0,
+            (col_ready,),
+            active_planet_id=713,
+            researches={f"r{i}": 6 for i in range(1, 10)},
+        )
+        alias_acts = plan_actions(st_alias, config=cfg_alias)
+        ship4 = [a for a in alias_acts if a.kind == "BUILD_SHIP" and a.target_id == 4]
+        self.assertTrue(ship4 and "0/2" in ship4[0].reason)
+        cfg_zero = StrategyConfig(planner_mode="priority", allow_shipyard=True, shipyard_targets={"Small fighter": 2, "s4": 0})
+        zero_acts = plan_actions(st_alias, config=cfg_zero)
+        self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 4 for a in zero_acts))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -381,6 +381,542 @@ class TestStateParsers(unittest.TestCase):
         omitted.pop("raid_stats", None)
         self.assertEqual(game_state_from_dict(omitted).raid_stats, {})
 
+    def test_mapping_proxy_normalization_deepcopy_and_numeric_guards(self) -> None:
+        import copy
+        from dataclasses import asdict
+        from types import MappingProxyType
+
+        raw = {
+            "universe_id": 31,
+            "user_id": 10,
+            "nickname": "u",
+            "timestamp": 100.0,
+            "active_planet_id": 1,
+            "planets": [
+                MappingProxyType(
+                    {
+                        "planet_id": 1,
+                        "name": "Home",
+                        "coords": "01:001:01",
+                        "buildings": MappingProxyType({"b1": 4, "b2": "bad", "b3": None, "b4": float("nan")}),
+                        "economy_rates": MappingProxyType({"resource1": 100}),
+                    }
+                )
+            ],
+            "raid_targets": [MappingProxyType({"coords": "01:001:02", "resources": MappingProxyType({"spice": 50})})],
+            "raid_stats": MappingProxyType({"overall": MappingProxyType({"attempts": 1})}),
+        }
+        gs = game_state_from_dict(raw)
+        self.assertIsInstance(gs.raid_stats, dict)
+        self.assertIsInstance(gs.raid_stats["overall"], dict)
+        self.assertEqual(gs.planets[0].building_level(1), 4)
+        self.assertEqual(gs.planets[0].building_level(2), 0)
+        self.assertEqual(gs.planets[0].building_level(3), 0)
+        self.assertEqual(gs.planets[0].building_level(4), 0)
+        gs_copy = copy.deepcopy(gs)
+        gs_dict = asdict(gs_copy)
+        self.assertEqual(gs_dict["raid_targets"][0]["resources"]["spice"], 50)
+
+        nested_res = {"pig_iron": 123}
+        raw_mut = {
+            "universe_id": 31,
+            "user_id": 10,
+            "nickname": "u",
+            "timestamp": 100.0,
+            "active_planet_id": 1,
+            "planets": [],
+            "raid_targets": [{"coords": "01:001:02", "resources": nested_res}],
+        }
+        gs_mut = game_state_from_dict(raw_mut)
+        nested_res["pig_iron"] = 999_999
+        self.assertEqual(gs_mut.raid_targets[0]["resources"]["pig_iron"], 123)
+
+    def test_game_state_from_dict_accepts_partial_offer_dicts(self) -> None:
+        gs_partial = game_state_from_dict(
+            {
+                "universe_id": 31,
+                "user_id": 1,
+                "nickname": "u",
+                "timestamp": 100.0,
+                "planets": [
+                    {
+                        "planet_id": 1,
+                        "name": "P",
+                        "coords": "01:010:01",
+                        "building_offers": [{"building_id": 1, "name": "Mine"}],
+                        "ship_offers": [{"unit_id": 4, "name": "Small fighter"}],
+                        "defense_offers": [{"unit_id": 1, "name": "Mortar"}],
+                    }
+                ],
+                "research_offers": [{"research_id": 2, "name": "Energy technology"}],
+            }
+        )
+        self.assertEqual(len(gs_partial.planets), 1)
+        b_off = gs_partial.planets[0].building_offers[0]
+        self.assertEqual(b_off.building_id, 1)
+        self.assertEqual(b_off.current_level, 0)
+        self.assertEqual(b_off.target_level, 1)
+        self.assertFalse(b_off.can_build)
+        s_off = gs_partial.planets[0].ship_offers[0]
+        self.assertEqual(s_off.unit_type, "ship")
+        self.assertFalse(s_off.can_build)
+        d_off = gs_partial.planets[0].defense_offers[0]
+        self.assertEqual(d_off.unit_type, "defense")
+        self.assertFalse(d_off.can_build)
+        r_off = gs_partial.research_offers[0]
+        self.assertEqual(r_off.research_key, "r2")
+        self.assertEqual(r_off.target_level, 1)
+        self.assertFalse(r_off.can_research)
+
+    def test_game_state_from_dict_coerces_corrupt_queues_and_scalars_safely(self) -> None:
+        from spaceinvasion.config import StrategyConfig
+        from spaceinvasion.state import Resources
+        from spaceinvasion.strategy import plan_actions
+
+        corrupt_dict = {
+            "universe_id": "31",
+            "user_id": "101",
+            "username": "u",
+            "timestamp": "1000.0",
+            "active_planet_id": "bad",
+            "speedup_factor": "bad",
+            "account_points": "bad",
+            "account_rank": "bad",
+            "specs": "not_a_dict",
+            "planets": [
+                {
+                    "planet_id": 101,
+                    "name": "Home",
+                    "coords": "02:380:12",
+                    "planet_type": "normal",
+                    "temperature": 25,
+                    "fields_used": 10,
+                    "fields_max": 200,
+                    "resources": {"pig_iron": 2000, "metal": 1000, "kryptonite": 1000, "spice": 500},
+                    "storage": {"pig_iron": 100_000, "metal": 100_000, "kryptonite": 100_000, "spice": 100_000},
+                    "energy": {"produced": 200, "used": 100},
+                    "buildings": {"b1": 2},
+                    "building_offers": "bad",
+                    "ship_offers": 123,
+                    "defense_offers": None,
+                }
+            ],
+            "active_queues": [
+                {
+                    "planet_id": "bad",
+                    "queue_type": "building",
+                    "building_id": "bad",
+                    "name": "Mine",
+                    "target_level": "bad",
+                }
+            ],
+            "fleet_alerts": "bad",
+            "research_offers": 99,
+            "raid_targets": "bad",
+            "tutorial": {
+                "completed": False,
+                "current_step": "bad",
+                "tasks": [{"step": 1, "title": "Build", "building_id": "bad", "completed": False}],
+            },
+        }
+        gs = game_state_from_dict(corrupt_dict)
+        self.assertIsNone(gs.active_planet_id)
+        self.assertIsNone(gs.speedup_factor)
+        self.assertIsNone(gs.account_points)
+        self.assertIsNone(gs.active_queues[0].building_id)
+        self.assertIsNone(gs.active_queues[0].target_level)
+        self.assertIsNone(gs.tutorial.tasks[0].building_id)
+        p_acts = plan_actions(gs, config=StrategyConfig(planner_mode="priority"))
+        self.assertIsInstance(p_acts, list)
+        ga_acts = plan_actions(gs, config=StrategyConfig(planner_mode="ga_nn", ga_population_size=4, ga_generations=1))
+        self.assertIsInstance(ga_acts, list)
+
+        gs_scalar_containers = game_state_from_dict(
+            {
+                "planets": 123,
+                "active_queues": "bad",
+                "fleet_alerts": 456,
+                "tutorial": {"tasks": 789},
+            }
+        )
+        self.assertEqual(gs_scalar_containers.planets, ())
+        self.assertEqual(gs_scalar_containers.active_queues, ())
+        self.assertEqual(gs_scalar_containers.fleet_alerts, ())
+        self.assertEqual(gs_scalar_containers.tutorial.tasks, ())
+
+        huge_short = Resources(pig_iron=10**1_000_000).format_short()
+        self.assertIn("~1e", huge_short)
+
+        from spaceinvasion.state import EnergyBalance, PlanetState
+
+        corrupt_res = Resources(
+            pig_iron=-(10**5000),  # type: ignore[arg-type]
+            metal="bad",  # type: ignore[arg-type]
+            kryptonite=float("nan"),  # type: ignore[arg-type]
+            spice=10**400,
+        )
+        corrupt_short = corrupt_res.format_short()
+        self.assertIsInstance(corrupt_short, str)
+        self.assertIn("~1e", corrupt_short)
+        bad_planet = PlanetState(
+            planet_id=1,
+            name="P",
+            coords="01:001:01",
+            planet_type="normal",
+            temperature="bad",  # type: ignore[arg-type]
+            fields_used=0,
+            fields_max=100,
+            resources=corrupt_res,
+            storage=Resources(1000, 1000, 1000, 1000),
+            energy=EnergyBalance("bad", float("nan")),  # type: ignore[arg-type]
+            buildings={"b1": "bad", "b2": 10**5000},  # type: ignore[dict-item]
+        )
+        self.assertEqual(bad_planet.building_level(1), 0)
+        self.assertEqual(bad_planet.building_level(2), 10**5000)
+
+    def test_storage_fill_ratios_handles_huge_and_degenerate_values(self) -> None:
+        import math
+        from spaceinvasion.state import EnergyBalance, PlanetState, Resources
+
+        for huge in (10**308, 10**400, 10**1_000_000):
+            planet = PlanetState(
+                planet_id=101,
+                name="Colony",
+                coords="01:001:01",
+                planet_type="normal",
+                temperature=20,
+                fields_used=1,
+                fields_max=200,
+                resources=Resources(huge, huge, huge, huge),
+                storage=Resources(100000, 100000, 100000, 100000),
+                energy=EnergyBalance(100, 50),
+            )
+            ratios = planet.storage_fill_ratios()
+            for key in ("pig_iron", "metal", "kryptonite", "spice"):
+                self.assertTrue(math.isfinite(ratios[key]))
+                self.assertGreater(ratios[key], 1.0)
+
+        zero_storage = PlanetState(
+            planet_id=102,
+            name="Zero",
+            coords="01:001:02",
+            planet_type="normal",
+            temperature=20,
+            fields_used=1,
+            fields_max=200,
+            resources=Resources(10**400, 0, 500, 100),
+            storage=Resources(0, 0, -5, float("nan")),  # type: ignore[arg-type]
+            energy=EnergyBalance(0, 0),
+        )
+        zr = zero_storage.storage_fill_ratios()
+        self.assertEqual(zr, {"pig_iron": 0.0, "metal": 0.0, "kryptonite": 0.0, "spice": 0.0})
+
+        equal_huge = PlanetState(
+            planet_id=103,
+            name="EqualHuge",
+            coords="01:001:03",
+            planet_type="normal",
+            temperature=20,
+            fields_used=1,
+            fields_max=200,
+            resources=Resources(10**400, 10**400, 10**400, 10**400),
+            storage=Resources(10**400, 10**400, 10**400, 10**400),
+            energy=EnergyBalance(0, 0),
+        )
+        er = equal_huge.storage_fill_ratios()
+        self.assertEqual(er, {"pig_iron": 1.0, "metal": 1.0, "kryptonite": 1.0, "spice": 1.0})
+
+    def test_html_parsers_and_from_dict_resist_5000_digit_and_malformed_numbers(self) -> None:
+        huge = "9" * 5000
+        q_html = (
+            f"<table><tr><th>Construction queue ( 1 Elements )</th></tr>"
+            f"<tr><td>Pig iron mine (Level {huge})</td><td>{huge}:01:02</td></tr></table>"
+        )
+        q_jobs = parse_building_queue(q_html)
+        self.assertEqual(len(q_jobs), 1)
+        self.assertEqual(q_jobs[0].building_id, 1)
+        self.assertEqual(q_jobs[0].target_level, 10**200)
+
+        b_html = (
+            f'<div class="build-card b-{huge}"><span class="title">Mine (Level {huge})</span></div>'
+            f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=building&id={huge}">Mine</a></td>'
+            f'<td>Required: 100 Pig iron</td>'
+            f'<td><a class="bau" href="indexInternal.es?action=internalBuildItem&buildingID={huge}#{huge}">Build level {huge}</a></td>'
+            f"</tr></table>"
+        )
+        b_offers = parse_buildings_page(b_html, {})
+        self.assertIsInstance(b_offers, tuple)
+        self.assertTrue(all(o.building_id <= 10**200 for o in b_offers))
+
+        r_html = (
+            f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=research&id={huge}">Mining</a></td>'
+            f'<td><a class="bau" href="indexInternal.es?action=internalResearch&researchID={huge}">Research level {huge}</a></td>'
+            f"</tr></table>"
+        )
+        r_offers = parse_research_page(r_html, {})
+        self.assertIsInstance(r_offers, tuple)
+        self.assertTrue(all(o.research_id <= 10**200 for o in r_offers))
+
+        u_html = (
+            f'<table><tr><td><a href="indexInternal.es?action=internalDetail&type=ship&id={huge}">Ship</a></td>'
+            f'<td><form><input name="shipID" value="{huge}"/><input name="count" value="{huge}"/></form></td>'
+            f"</tr></table>"
+        )
+        u_offers = parse_unit_factory_page(u_html, unit_type="ship")
+        self.assertIsInstance(u_offers, tuple)
+        self.assertTrue(all(o.unit_id <= 10**200 for o in u_offers))
+
+        t_html = (
+            f'<div>Tutorial {huge} / {huge}</div>'
+            f'<div id="tutorial.text">Increase your Pig iron mine level {huge} / {huge}'
+            f'<form><input name="tutorialComplete" value="{huge}"/></form></div>'
+        )
+        tut = parse_tutorial_from_home(t_html)
+        self.assertIsNotNone(tut)
+
+        _, spd_bad, _, _, _ = parse_home_metadata(
+            f"<script>SI_TPL.headerLoad={{planetID:{huge}}};</script>"
+            f"<div>Up to {huge} points,no attacks</div><div>active factor: x1.2.3</div>"
+        )
+        self.assertIsNone(spd_bad)
+
+        _, spd_inf, _, _, _ = parse_home_metadata(f"<div>active factor: x{'9' * 500}</div>")
+        self.assertIsNone(spd_inf)
+
+        counts, pts, rank = parse_menu_status(f'<a href="x">User ({huge})</a> Points {huge} # {huge}')
+        self.assertIsInstance(counts, dict)
+        self.assertIsInstance(pts, int)
+        self.assertIsInstance(rank, int)
+
+        st = game_state_from_dict({"research_offers": [{"research_id": 10**5000, "name": "Bad"}]})
+        self.assertIsInstance(st, GameState)
+
+    def test_r9_rejects_arabic_indic_parsers_and_clamps_negative_json_levels(self) -> None:
+        self.assertEqual(parse_si_int("2.000"), 2000)
+        self.assertEqual(parse_si_int("\u0662.\u0660\u0660\u0660"), 0)
+        self.assertEqual(
+            parse_economy_rates(
+                '<select name="resource\u0662"><option selected value="80">80%</option></select>'
+                '<select name="resource1"><option selected value="\u0668\u0660">80%</option></select>'
+            ),
+            {"resource1": 0},
+        )
+        gs_neg = parse_planets_overview_json(
+            json.dumps(
+                {
+                    "planets": [
+                        {
+                            "id": 1,
+                            "name": "P",
+                            "coords": "1:2:3",
+                            "fields": -20,
+                            "buildings": {"b1": {"level": -10}, "b2": {"level": -5}},
+                            "ships": {"s4": {"level": -3}},
+                            "defense": {"d1": {"level": -2}},
+                        }
+                    ],
+                    "researches": {"r1": {"level": -4}},
+                }
+            )
+        )
+        pl = gs_neg.active_planet()
+        self.assertIsNotNone(pl)
+        assert pl is not None
+        self.assertEqual(pl.fields_used, 0)
+        self.assertEqual(pl.fields_max, 0)
+        self.assertEqual(pl.fields_remaining, 0)
+        self.assertEqual(pl.buildings["b1"], 0)
+        self.assertEqual(pl.ships["s4"], 0)
+        self.assertEqual(pl.defense["d1"], 0)
+        self.assertEqual(gs_neg.researches["r1"], 0)
+
+    def test_r10_negative_clamping_bytes_safe_key_and_signed_preservations(self) -> None:
+        from spaceinvasion import state as st_mod
+        from spaceinvasion.state import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+            game_state_from_dict,
+            parse_buildings_page,
+        )
+
+        # Resources.from_list clamps negatives; direct Resources(...) stays signed; EnergyBalance.net stays signed
+        self.assertEqual(Resources.from_list([-10, -5, -2, -1]), Resources(0, 0, 0, 0))
+        self.assertEqual(Resources(-10, -5, -2, -1).pig_iron, -10)
+        self.assertEqual(EnergyBalance(10, 50).net, -40)
+
+        p = PlanetState(
+            planet_id=1,
+            name="ColdSpice",
+            coords="1:2:3",
+            planet_type="normal",
+            temperature=-110,
+            fields_used=-5,
+            fields_max=-10,
+            resources=Resources(100, 100, 100, 100),
+            storage=Resources(1000, 1000, 1000, 1000),
+            energy=EnergyBalance(10, 50),
+            buildings={"b1": -3, (10**5000, "x"): 2},  # type: ignore[dict-item]
+            ships={"s4": -7},
+            defense={"d1": -4},
+        )
+        self.assertEqual(p.temperature, -110)
+        self.assertEqual(p.fields_used, 0)
+        self.assertEqual(p.fields_max, 0)
+        self.assertEqual(p.fields_remaining, 0)
+        self.assertEqual(p.buildings["b1"], 0)
+        self.assertEqual(p.building_level(-1), 0)
+        self.assertEqual(p.ships["s4"], 0)
+        self.assertEqual(p.defense["d1"], 0)
+        self.assertEqual(p.energy.net, -40)
+
+        huge_p = PlanetState(
+            planet_id=2,
+            name="Huge",
+            coords="1:2:4",
+            planet_type="normal",
+            temperature=20,
+            fields_used=10**5000,
+            fields_max=10**10000,
+            resources=Resources(0, 0, 0, 0),
+            storage=Resources(1000, 1000, 1000, 1000),
+            energy=EnergyBalance(0, 0),
+            buildings={"b2": 10**5000},
+        )
+        self.assertEqual(huge_p.fields_used, 10**5000)
+        self.assertEqual(huge_p.buildings["b2"], 10**5000)
+
+        self.assertEqual(st_mod._safe_state_int(b"42"), 42)
+        self.assertEqual(st_mod._safe_state_int("\u0664\u0662"), 0)
+        self.assertEqual(st_mod._safe_state_float(b"2.5"), 2.5)
+        self.assertEqual(st_mod._safe_state_float("\u0662.\u0665"), 0.0)
+
+        gs = game_state_from_dict(
+            {
+                "universe_id": 31,
+                "user_id": 1,
+                "nickname": "u",
+                "timestamp": b"1000.5",
+                "researches": {"r1": -8, (10**5000, "r"): 2},
+                "planets": [
+                    {
+                        "planet_id": 1,
+                        "name": "P",
+                        "coords": "1:2:3",
+                        "temperature": -110,
+                        "fields_used": -4,
+                        "fields_max": -9,
+                        "energy": {"produced": 5, "used": 20},
+                        "buildings": {b"b1": -2},
+                    }
+                ],
+            }
+        )
+        self.assertEqual(gs.researches["r1"], 0)
+        self.assertEqual(gs.planets[0].temperature, -110)
+        self.assertEqual(gs.planets[0].fields_used, 0)
+        self.assertEqual(gs.planets[0].energy.net, -15)
+        offers = parse_buildings_page("", current_levels={"b1": -5})
+        self.assertEqual(offers, ())
+
+    def test_r12_normalize_planet_type_blank_path_fallback_and_broken_pathlike(self) -> None:
+        from pathlib import Path
+        from spaceinvasion import state as st_mod
+
+        class _RaiseFspath:
+            def __fspath__(self) -> str:
+                raise RuntimeError("fspath boom")
+
+        class _IntPath:
+            def __fspath__(self) -> int:
+                return 10**5000
+
+        class _BytesPath:
+            def __init__(self, raw: bytes) -> None:
+                self._raw = raw
+
+            def __fspath__(self) -> bytes:
+                return self._raw
+
+        class _RaiseStrRepr:
+            def __str__(self) -> str:
+                raise RuntimeError("str boom")
+
+            def __repr__(self) -> str:
+                raise RuntimeError("repr boom")
+
+        self.assertEqual(
+            st_mod.normalize_planet_type({"planet_type": Path("   "), "type": " Asteroid "}),
+            "asteroid",
+        )
+        self.assertEqual(
+            st_mod.normalize_planet_type({"planet_type": _BytesPath(b"   "), "type": "Raid"}),
+            "raid",
+        )
+        self.assertEqual(
+            st_mod.normalize_planet_type({"planet_type": _RaiseFspath(), "type": "Asteroid"}),
+            "asteroid",
+        )
+        self.assertEqual(
+            st_mod.normalize_planet_type({"planet_type": _IntPath(), "type": " Raid "}),
+            "raid",
+        )
+        self.assertEqual(st_mod.normalize_planet_type(_IntPath()), "normal")
+        self.assertIsInstance(st_mod.normalize_planet_type(_RaiseStrRepr()), str)
+
+        gs = st_mod.game_state_from_dict(
+            {
+                "planets": [
+                    {
+                        "planet_id": 1,
+                        "name": _RaiseFspath(),
+                        "coords": "01:001:01",
+                        "planet_type": Path("  "),
+                        "type": " Asteroid ",
+                    }
+                ]
+            }
+        )
+        self.assertEqual(gs.planets[0].planet_type, "asteroid")
+        self.assertIsInstance(gs.planets[0].name, str)
+        self.assertEqual(st_mod.parse_si_int(_RaiseFspath()), 0)
+        self.assertIsInstance(st_mod._safe_state_str(_RaiseStrRepr()), str)
+        self.assertIsInstance(st_mod._safe_state_str(_RaiseFspath()), str)
+        self.assertIsNotNone(st_mod._safe_optional_state_str(_IntPath()))
+        self.assertIsNotNone(st_mod._safe_optional_state_str(_RaiseFspath()))
+        self.assertEqual(st_mod._parse_cost_from_text(_RaiseFspath()), st_mod.Resources())
+        self.assertEqual(st_mod._parse_cost_from_text(_IntPath()), st_mod.Resources())
+
+    def test_r14_deep_plain_value_and_non_dict_mapping_resist_cycles_and_dag20(self) -> None:
+        import time
+        from types import MappingProxyType
+        from spaceinvasion import state as st_mod
+
+        cyc_list: list[object] = []
+        cyc_list.append(cyc_list)
+        cyc_dict: dict[str, object] = {}
+        cyc_dict["self"] = cyc_dict
+
+        self.assertFalse(st_mod._contains_non_dict_mapping(cyc_list))
+        self.assertFalse(st_mod._contains_non_dict_mapping(cyc_dict))
+
+        plain_list = st_mod._deep_plain_value(cyc_list)
+        plain_dict = st_mod._deep_plain_value(cyc_dict)
+        self.assertEqual(plain_list, ["[Cycle]"])
+        self.assertEqual(plain_dict, {"self": "[Cycle]"})
+
+        dag: object = [1, MappingProxyType({"k": 2})]
+        for _ in range(20):
+            dag = [dag, dag, dag]
+        t0 = time.perf_counter()
+        has_nd = st_mod._contains_non_dict_mapping(dag)
+        plain_dag = st_mod._deep_plain_value(dag)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self.assertTrue(has_nd)
+        self.assertIsNotNone(plain_dag)
+        self.assertLess(elapsed_ms, 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()

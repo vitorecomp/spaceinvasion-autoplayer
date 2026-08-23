@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import math
 import os
 from pathlib import Path
 import re
-from typing import Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 from dotenv import dotenv_values
 import requests
+
+from spaceinvasion import game_data
 
 BASE_URL = "https://spaceinvasion.bitmeup.com"
 DEFAULT_USER_AGENT = (
@@ -40,7 +43,8 @@ _ANTIBOT_PATTERNS = (
 )
 
 _PORTAL_FIELDS_RE = re.compile(
-    r"bitmeup\.initPortalClient\(\s*\d+\s*,\s*(['\"])([^'\"]+)\1\.split\(\s*['\"]\|['\"]\s*\)"
+    r"bitmeup\.initPortalClient\(\s*\d+\s*,\s*(['\"])([^'\"]+)\1\.split\(\s*['\"]\|['\"]\s*\)",
+    re.ASCII,
 )
 _SID_RE = re.compile(r"bitmeup\.sid\s*=\s*(['\"])(?:sid=)?([^'\"]+)\1")
 
@@ -276,28 +280,77 @@ def _extract_balanced_block(text: str, start_idx: int, open_ch: str, close_ch: s
     return None
 
 
+def _safe_portal_speed(raw: object) -> Optional[float]:
+    if raw is None:
+        return None
+    if isinstance(raw, (bool, Mapping, list, tuple, set, frozenset)):
+        return 1.0
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        txt = raw.strip()
+        if not txt or not txt.isascii():
+            return 1.0
+        raw = txt
+    try:
+        val = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return 1.0
+    return val if math.isfinite(val) else 1.0
+
+
+def _safe_portal_label(raw_name: object) -> str:
+    if isinstance(raw_name, int) and not isinstance(raw_name, bool):
+        if abs(raw_name).bit_length() >= 12000:
+            sign = "-" if raw_name < 0 else ""
+            digits = int(abs(raw_name).bit_length() * 0.30103)
+            return f"{sign}~1e{digits}"
+        return str(raw_name)
+    return game_data.safe_key(raw_name)
+
+
 def universes_from_portal_data(
     sid: str,
     instances: list[Mapping[str, object]],
     base_url: str,
 ) -> tuple[UniverseOption, ...]:
     """Build `UniverseOption` entries from runtime or parsed `SI_TPL.startPortal` data."""
-    clean_sid = str(sid or "").strip()
+    if instances is None or isinstance(instances, (str, bytes, bytearray, Mapping)):
+        return ()
+    try:
+        iter_items = iter(instances)
+    except TypeError:
+        return ()
+
+    clean_sid = game_data.safe_key(sid).strip() if sid is not None else ""
     if clean_sid.startswith("sid="):
         clean_sid = clean_sid[4:]
 
     options: list[UniverseOption] = []
-    for item in instances:
+    for item in iter_items:
+        if not isinstance(item, Mapping):
+            continue
         raw_id = item.get("id")
         raw_name = item.get("name")
-        if raw_id is None or not raw_name:
+        if raw_id is None or isinstance(raw_id, (bool, Mapping, list, tuple, set, frozenset)) or not raw_name:
             continue
+        if isinstance(raw_id, float) and not math.isfinite(raw_id):
+            continue
+        if isinstance(raw_id, (bytes, bytearray)):
+            raw_id = bytes(raw_id).decode("utf-8", errors="replace")
+        if isinstance(raw_id, str):
+            txt_id = raw_id.strip()
+            if not txt_id or not txt_id.isascii():
+                continue
+            raw_id = txt_id
         try:
             uid = int(raw_id)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if uid < 0 or uid.bit_length() > 1000:
             continue
         acc_val = item.get("acc")
-        if isinstance(acc_val, dict):
+        if isinstance(acc_val, Mapping):
             has_acc = bool(acc_val)
         elif isinstance(acc_val, str):
             has_acc = bool(acc_val.strip())
@@ -309,12 +362,12 @@ def universes_from_portal_data(
         raw_fspd = item.get("flightSpeed")
         options.append(
             UniverseOption(
-                label=str(raw_name),
+                label=_safe_portal_label(raw_name),
                 url=launch_url,
                 universe_id=uid,
                 is_si2=bool(item.get("si2")),
-                speed=float(raw_spd) if raw_spd is not None else None,  # type: ignore[arg-type]
-                flight_speed=float(raw_fspd) if raw_fspd is not None else None,  # type: ignore[arg-type]
+                speed=_safe_portal_speed(raw_spd),
+                flight_speed=_safe_portal_speed(raw_fspd),
                 has_account=has_acc,
             )
         )
@@ -334,11 +387,16 @@ def extract_universes(html: str, base_url: str) -> tuple[UniverseOption, ...]:
             raw_items = _split_js_object_array(inst_body)
             portal_options: list[UniverseOption] = []
             for item in raw_items:
-                id_m = re.search(r"\bid\s*:\s*(\d+)", item)
+                id_m = re.search(r"\bid\s*:\s*(\d+)", item, re.ASCII)
                 name_m = re.search(r"\bname\s*:\s*(['\"])([^'\"]+)\1", item)
                 if not id_m or not name_m:
                     continue
-                uid = int(id_m.group(1))
+                try:
+                    uid = int(id_m.group(1))
+                except (ValueError, OverflowError):
+                    continue
+                if uid < 0 or uid.bit_length() > 1000:
+                    continue
                 name = name_m.group(2)
                 si2_m = re.search(r"\bsi2\s*:\s*(true|false)", item)
                 spd_m = re.search(r"\bspeed\s*:\s*([0-9.]+)", item)
@@ -357,8 +415,8 @@ def extract_universes(html: str, base_url: str) -> tuple[UniverseOption, ...]:
                         url=launch_url,
                         universe_id=uid,
                         is_si2=bool(si2_m and si2_m.group(1) == "true"),
-                        speed=float(spd_m.group(1)) if spd_m else None,
-                        flight_speed=float(fspd_m.group(1)) if fspd_m else None,
+                        speed=_safe_portal_speed(spd_m.group(1)) if spd_m else None,
+                        flight_speed=_safe_portal_speed(fspd_m.group(1)) if fspd_m else None,
                         has_account=has_acc,
                     )
                 )
@@ -389,6 +447,16 @@ def extract_universes(html: str, base_url: str) -> tuple[UniverseOption, ...]:
     return tuple(options)
 
 
+def _safe_cookie_expires(value: object) -> Optional[int | float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return None if value.bit_length() > 128 else value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return None
+
+
 def save_session_cookies(
     session: requests.Session,
     cookie_path: Path,
@@ -404,16 +472,16 @@ def save_session_cookies(
             "value": c.value,
             "domain": c.domain,
             "path": c.path,
-            "secure": c.secure,
-            "expires": c.expires,
+            "secure": bool(c.secure),
+            "expires": _safe_cookie_expires(c.expires),
         }
         for c in session.cookies
     ]
     payload = {
-        "metadata": dict(metadata or {}),
+        "metadata": {game_data.safe_key(k): game_data.safe_key(v) for k, v in (metadata or {}).items()},
         "cookies": serialized_cookies,
     }
-    cookie_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    cookie_path.write_text(json.dumps(payload, indent=2, allow_nan=False), encoding="utf-8")
     os.chmod(cookie_path, 0o600)
 
 
@@ -425,24 +493,96 @@ def load_session_cookies(
     if not cookie_path.exists():
         raise ConfigurationError(f"Saved session file not found: {cookie_path}")
 
-    raw = json.loads(cookie_path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(cookie_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise ConfigurationError(
+            f"Failed to read session cookie file {cookie_path}: {type(exc).__name__}"
+        ) from exc
+    if not isinstance(raw, Mapping):
+        raise ConfigurationError(f"Invalid session cookie format in {cookie_path}")
     sess = session or build_http_session()
-    for item in raw.get("cookies", []):
-        sess.cookies.set(
-            name=item["name"],
-            value=item["value"],
-            domain=item.get("domain") or "",
-            path=item.get("path") or "/",
-            secure=bool(item.get("secure", False)),
-            expires=item.get("expires"),
+    try:
+        raw_cookies = raw.get("cookies", [])
+        if isinstance(raw_cookies, list):
+            for item in raw_cookies:
+                if not isinstance(item, Mapping):
+                    continue
+                name = item.get("name")
+                value = item.get("value")
+                if not name or value is None:
+                    continue
+                sess.cookies.set(
+                    name=str(name),
+                    value=str(value),
+                    domain=str(item.get("domain") or ""),
+                    path=str(item.get("path") or "/"),
+                    secure=bool(item.get("secure", False)),
+                    expires=_safe_cookie_expires(item.get("expires")),
+                )
+        raw_meta = raw.get("metadata", {})
+        metadata = (
+            {str(k): str(v) for k, v in raw_meta.items()}
+            if isinstance(raw_meta, Mapping)
+            else {}
         )
-    metadata = {str(k): str(v) for k, v in raw.get("metadata", {}).items()}
-    return sess, metadata
+        return sess, metadata
+    except Exception:
+        if session is None:
+            _close_http_session(sess)
+        raise
+
+
+def _enable_pool_dispose(pm: Any) -> None:
+    if pm is None or isinstance(pm, type):
+        return
+    pools = getattr(pm, "pools", None)
+    if pools is None:
+        return
+    try:
+        dispose = getattr(pools, "dispose_func", ...)
+    except Exception:
+        return
+    if dispose is None:
+        try:
+            pools.dispose_func = lambda p: p.close()
+        except Exception:
+            pass
+
+
+def _configure_http_session_pools(sess: Any) -> None:
+    adapters = getattr(sess, "adapters", None)
+    if not isinstance(adapters, Mapping):
+        return
+    for adapter in list(adapters.values()):
+        _enable_pool_dispose(getattr(adapter, "poolmanager", None))
+        proxy_mgr = getattr(adapter, "proxy_manager", None)
+        if isinstance(proxy_mgr, Mapping):
+            for pm in list(proxy_mgr.values()):
+                _enable_pool_dispose(pm)
+
+
+def _close_http_session(sess: Any) -> None:
+    if sess is None:
+        return
+    _configure_http_session_pools(sess)
+    close_fn = getattr(sess, "close", None)
+    if callable(close_fn):
+        close_fn()
+
+
+def _close_http_response(resp: Any) -> None:
+    if resp is None:
+        return
+    close_fn = getattr(resp, "close", None)
+    if callable(close_fn):
+        close_fn()
 
 
 def build_http_session() -> requests.Session:
     """Create a `requests.Session` configured with browser-like headers."""
     session = requests.Session()
+    _configure_http_session_pools(session)
     session.headers.update(
         {
             "User-Agent": DEFAULT_USER_AGENT,
@@ -496,22 +636,25 @@ def _submit_login_post(
         },
         timeout=timeout,
     )
-    _assert_no_antibot(response)
-    response.raise_for_status()
-
     try:
-        parsed = response.json()
-    except ValueError as exc:
-        snippet = " ".join(response.text.split())[:200]
-        raise SpaceInvasionAuthError(
-            f"Expected JSON login response from /index.php, got: {snippet}"
-        ) from exc
+        _assert_no_antibot(response)
+        response.raise_for_status()
 
-    if not isinstance(parsed, dict) or not isinstance(parsed.get("result"), dict):
-        raise SpaceInvasionAuthError(
-            f"Unexpected JSON structure from /index.php: {list(parsed) if isinstance(parsed, dict) else type(parsed).__name__}"
-        )
-    return parsed["result"]
+        try:
+            parsed = response.json()
+        except ValueError as exc:
+            snippet = " ".join(response.text.split())[:200]
+            raise SpaceInvasionAuthError(
+                f"Expected JSON login response from /index.php, got: {snippet}"
+            ) from exc
+
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("result"), dict):
+            raise SpaceInvasionAuthError(
+                f"Unexpected JSON structure from /index.php: {list(parsed) if isinstance(parsed, dict) else type(parsed).__name__}"
+            )
+        return parsed["result"]
+    finally:
+        _close_http_response(response)
 
 
 def login(
@@ -539,79 +682,92 @@ def login(
     """
     normalized_base = base_url.rstrip("/")
     landing_url = f"{normalized_base}/?locale={creds.locale}"
-    sess = session or build_http_session()
+    owns_session = session is None
+    sess = session if session is not None else build_http_session()
 
-    landing_resp = sess.get(landing_url, timeout=timeout)
-    _assert_no_antibot(landing_resp)
-    landing_resp.raise_for_status()
+    try:
+        landing_resp = sess.get(landing_url, timeout=timeout)
+        try:
+            _assert_no_antibot(landing_resp)
+            landing_resp.raise_for_status()
+            tokens = parse_login_tokens(landing_resp.text)
+        finally:
+            _close_http_response(landing_resp)
 
-    tokens = parse_login_tokens(landing_resp.text)
+        # Mirror bitmeup.initPortalClient template bootstrap so session state matches browser.
+        tpl_resp = sess.get(
+            f"{normalized_base}/bitmeup.php?get=tpl",
+            headers={"Referer": landing_url},
+            timeout=timeout,
+        )
+        try:
+            _assert_no_antibot(tpl_resp)
+        finally:
+            _close_http_response(tpl_resp)
 
-    # Mirror bitmeup.initPortalClient template bootstrap so session state matches browser.
-    tpl_resp = sess.get(
-        f"{normalized_base}/bitmeup.php?get=tpl",
-        headers={"Referer": landing_url},
-        timeout=timeout,
-    )
-    _assert_no_antibot(tpl_resp)
-
-    code = creds.two_factor_code
-    result_obj = _submit_login_post(
-        sess, normalized_base, landing_url, tokens, creds, code, timeout
-    )
-
-    if result_obj.get("result") == "2fa":
-        if not code and two_factor_provider is not None:
-            code = two_factor_provider().strip()
-        if not code:
-            raise TwoFactorRequiredError(
-                "Account requires a 2FA code. Pass --2fa <code> or set SPACEINVASION_2FA_CODE."
-            )
+        code = creds.two_factor_code
         result_obj = _submit_login_post(
             sess, normalized_base, landing_url, tokens, creds, code, timeout
         )
 
-    status = result_obj.get("result")
-    if status != "ok":
-        err_key = str(result_obj.get("error") or "unknown")
-        friendly = LOGIN_ERROR_MESSAGES.get(err_key, f"Login failed ({err_key}).")
-        raise LoginRejectedError(f"{friendly} [code: {err_key}]")
+        if result_obj.get("result") == "2fa":
+            if not code and two_factor_provider is not None:
+                code = two_factor_provider().strip()
+            if not code:
+                raise TwoFactorRequiredError(
+                    "Account requires a 2FA code. Pass --2fa <code> or set SPACEINVASION_2FA_CODE."
+                )
+            result_obj = _submit_login_post(
+                sess, normalized_base, landing_url, tokens, creds, code, timeout
+            )
 
-    redirect_url = result_obj.get("login")
-    if not redirect_url or not isinstance(redirect_url, str):
-        raise SpaceInvasionAuthError("Login succeeded but no redirect URL was returned.")
+        status = result_obj.get("result")
+        if status != "ok":
+            err_key = str(result_obj.get("error") or "unknown")
+            friendly = LOGIN_ERROR_MESSAGES.get(err_key, f"Login failed ({err_key}).")
+            raise LoginRejectedError(f"{friendly} [code: {err_key}]")
 
-    abs_redirect = urljoin(f"{normalized_base}/", redirect_url)
-    portal_resp = sess.get(abs_redirect, allow_redirects=True, timeout=timeout)
-    _assert_no_antibot(portal_resp)
-    portal_resp.raise_for_status()
+        redirect_url = result_obj.get("login")
+        if not redirect_url or not isinstance(redirect_url, str):
+            raise SpaceInvasionAuthError("Login succeeded but no redirect URL was returned.")
 
-    soup = BeautifulSoup(portal_resp.text, "html.parser")
-    page_title = soup.title.get_text(strip=True) if soup.title else ""
-    universes = extract_universes(portal_resp.text, portal_resp.url)
+        abs_redirect = urljoin(f"{normalized_base}/", redirect_url)
+        portal_resp = sess.get(abs_redirect, allow_redirects=True, timeout=timeout)
+        try:
+            _assert_no_antibot(portal_resp)
+            portal_resp.raise_for_status()
 
-    cookie_path = session_dir / f"{creds.account_name}.json"
-    save_session_cookies(
-        sess,
-        cookie_path,
-        metadata={
-            "account": creds.account_name,
-            "email": creds.email,
-            "last_url": portal_resp.url,
-            "locale": creds.locale,
-        },
-    )
+            soup = BeautifulSoup(portal_resp.text, "html.parser")
+            page_title = soup.title.get_text(strip=True) if soup.title else ""
+            universes = extract_universes(portal_resp.text, portal_resp.url)
 
-    return LoginResult(
-        account_name=creds.account_name,
-        email=creds.email,
-        landing_url=landing_url,
-        final_url=portal_resp.url,
-        page_title=page_title,
-        cookie_path=cookie_path,
-        cookie_names=tuple(sorted({c.name for c in sess.cookies})),
-        universes=universes,
-    )
+            cookie_path = session_dir / f"{creds.account_name}.json"
+            save_session_cookies(
+                sess,
+                cookie_path,
+                metadata={
+                    "account": creds.account_name,
+                    "email": creds.email,
+                    "last_url": portal_resp.url,
+                    "locale": creds.locale,
+                },
+            )
+
+            return LoginResult(
+                account_name=creds.account_name,
+                email=creds.email,
+                landing_url=landing_url,
+                final_url=portal_resp.url,
+                page_title=page_title,
+                cookie_path=cookie_path,
+                cookie_names=tuple(sorted({c.name for c in sess.cookies})),
+                universes=universes,
+            )
+        finally:
+            _close_http_response(portal_resp)
+    finally:
+        if owns_session:
+            _close_http_session(sess)
 
 
 def verify_saved_session(
@@ -627,15 +783,21 @@ def verify_saved_session(
     tag = _normalize_account_tag(account).lower()
     cookie_path = session_dir / f"{tag}.json"
     sess, metadata = load_session_cookies(cookie_path)
-    check_url = metadata.get("last_url") or f"{base_url.rstrip('/')}/?locale={metadata.get('locale', 'en')}"
+    try:
+        check_url = metadata.get("last_url") or f"{base_url.rstrip('/')}/?locale={metadata.get('locale', 'en')}"
 
-    resp = sess.get(check_url, allow_redirects=True, timeout=timeout)
-    _assert_no_antibot(resp)
-    resp.raise_for_status()
+        resp = sess.get(check_url, allow_redirects=True, timeout=timeout)
+        try:
+            _assert_no_antibot(resp)
+            resp.raise_for_status()
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    title = soup.title.get_text(strip=True) if soup.title else ""
-    has_login_box = soup.find(id="bitmeup-login") is not None
-    has_init_client = "bitmeup.initPortalClient(" in resp.text and "bitmeup-login" in resp.text
-    is_authenticated = not (has_login_box or has_init_client)
-    return is_authenticated, resp.url, title
+            soup = BeautifulSoup(resp.text, "html.parser")
+            title = soup.title.get_text(strip=True) if soup.title else ""
+            has_login_box = soup.find(id="bitmeup-login") is not None
+            has_init_client = "bitmeup.initPortalClient(" in resp.text and "bitmeup-login" in resp.text
+            is_authenticated = not (has_login_box or has_init_client)
+            return is_authenticated, resp.url, title
+        finally:
+            _close_http_response(resp)
+    finally:
+        _close_http_session(sess)

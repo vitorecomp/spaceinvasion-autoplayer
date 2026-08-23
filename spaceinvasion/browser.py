@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import os
 from pathlib import Path
 import random
@@ -14,6 +15,7 @@ import urllib.request
 
 from bs4 import BeautifulSoup
 
+from spaceinvasion import game_data
 from spaceinvasion.auth import (
     BASE_URL,
     AntiBotChallengeError,
@@ -110,17 +112,69 @@ def _prepare_profile_dir(profile_dir: Path) -> None:
         os.chmod(profile_dir.parent, 0o700)
 
 
+def _finite_bounded_timeout(
+    raw: object,
+    *,
+    default: float,
+    min_val: float = 0.05,
+    max_val: float = 300.0,
+) -> float:
+    if raw is None or isinstance(raw, (bool, dict, list, tuple, set, frozenset)):
+        return default
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s or not s.isascii():
+            return default
+        raw = s
+    try:
+        val = float(raw)  # type: ignore[arg-type]
+    except Exception:
+        return default
+    if not math.isfinite(val):
+        return default
+    return max(min_val, min(max_val, val))
+
+
 def is_debug_port_open(
     port: int,
     host: str = "127.0.0.1",
     timeout: float = 0.8,
 ) -> bool:
     """Return True if a Chrome DevTools debugging endpoint responds on `host:port`."""
+    if isinstance(port, bool) or not isinstance(port, int) or port <= 0 or port > 65535:
+        return False
+    safe_timeout = _finite_bounded_timeout(timeout, default=0.8, min_val=0.05, max_val=60.0)
     try:
-        with urllib.request.urlopen(f"http://{host}:{port}/json/version", timeout=timeout) as resp:
+        with urllib.request.urlopen(f"http://{host}:{port}/json/version", timeout=safe_timeout) as resp:
             return resp.status == 200
     except Exception:
         return False
+
+
+def _terminate_or_kill_process(proc: Optional[subprocess.Popen]) -> None:
+    """Terminate a child process and escalate to SIGKILL + wait so no orphan/ResourceWarning leaks."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=5.0)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    except OSError:
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=0.5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
 
 
 def launch_chrome_with_debug_port(config: BrowserConfig, port: int) -> subprocess.Popen:
@@ -151,20 +205,35 @@ def launch_chrome_with_debug_port(config: BrowserConfig, port: int) -> subproces
         start_new_session=config.detach,
     )
 
-    deadline = time.monotonic() + max(config.timeout, 10.0)
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            raise SpaceInvasionAuthError(
-                f"Chrome exited early with code {proc.returncode} while opening debug port {port}."
-            )
-        if is_debug_port_open(port, config.debug_host):
-            return proc
-        time.sleep(0.2)
+    deadline = time.monotonic() + _finite_bounded_timeout(
+        config.timeout, default=25.0, min_val=10.0, max_val=300.0
+    )
+    try:
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                raise SpaceInvasionAuthError(
+                    f"Chrome exited early with code {proc.returncode} while opening debug port {port}."
+                )
+            if is_debug_port_open(port, config.debug_host):
+                return proc
+            time.sleep(0.2)
+    except BaseException:
+        _terminate_or_kill_process(proc)
+        raise
 
-    proc.terminate()
+    _terminate_or_kill_process(proc)
     raise SpaceInvasionAuthError(
         f"Timed out waiting for Chrome debug port {config.debug_host}:{port}."
     )
+
+
+def _safe_browser_err(exc: BaseException) -> str:
+    from spaceinvasion.logging_utils import redact_sensitive
+
+    res = redact_sensitive(exc)
+    if isinstance(res, str):
+        return res
+    return f"<{type(exc).__name__}>"
 
 
 def attach_chrome_driver(
@@ -180,9 +249,11 @@ def attach_chrome_driver(
         driver = webdriver.Chrome(options=options)
     except WebDriverException as exc:
         raise SpaceInvasionAuthError(
-            f"Failed to attach Selenium to Chrome at {host}:{port}: {exc}"
+            f"Failed to attach Selenium to Chrome at {host}:{port}: {_safe_browser_err(exc)}"
         ) from exc
-    driver.set_page_load_timeout(max(timeout, 15.0))
+    driver.set_page_load_timeout(
+        _finite_bounded_timeout(timeout, default=25.0, min_val=15.0, max_val=300.0)
+    )
     return driver
 
 
@@ -206,9 +277,11 @@ def create_chrome_driver(config: BrowserConfig):
     try:
         driver = webdriver.Chrome(options=options)
     except WebDriverException as exc:
-        raise SpaceInvasionAuthError(f"Failed to start Chrome via Selenium: {exc}") from exc
+        raise SpaceInvasionAuthError(f"Failed to start Chrome via Selenium: {_safe_browser_err(exc)}") from exc
 
-    driver.set_page_load_timeout(max(config.timeout, 15.0))
+    driver.set_page_load_timeout(
+        _finite_bounded_timeout(config.timeout, default=25.0, min_val=15.0, max_val=300.0)
+    )
     return driver
 
 
@@ -238,8 +311,8 @@ def open_browser_session(
         proc = launch_chrome_with_debug_port(config, config.debug_port)
         try:
             driver = attach_chrome_driver(config.debug_port, config.timeout, config.debug_host)
-        except Exception:
-            proc.terminate()
+        except BaseException:
+            _terminate_or_kill_process(proc)
             raise
         return driver, proc, False
 
@@ -266,12 +339,7 @@ def close_or_detach_driver(
         driver.quit()
     except Exception:
         pass
-    if launched_proc is not None and launched_proc.poll() is None:
-        try:
-            launched_proc.terminate()
-            launched_proc.wait(timeout=5)
-        except Exception:
-            pass
+    _terminate_or_kill_process(launched_proc)
 
 
 def _type_naturally(element, text: str, delay_range: tuple[float, float]) -> None:
@@ -331,29 +399,29 @@ def _sync_browser_cookies(
     last_url: str,
 ) -> tuple[Path, tuple[str, ...]]:
     """Persist Selenium browser cookies into `.sessions/<account>.json` (`0o600`)."""
-    sess = build_http_session()
-    for cookie in driver.get_cookies():
-        sess.cookies.set(
-            name=cookie["name"],
-            value=cookie["value"],
-            domain=cookie.get("domain") or "",
-            path=cookie.get("path") or "/",
-            secure=bool(cookie.get("secure", False)),
-            expires=cookie.get("expiry"),
+    with build_http_session() as sess:
+        for cookie in driver.get_cookies():
+            sess.cookies.set(
+                name=cookie["name"],
+                value=cookie["value"],
+                domain=cookie.get("domain") or "",
+                path=cookie.get("path") or "/",
+                secure=bool(cookie.get("secure", False)),
+                expires=cookie.get("expiry"),
+            )
+        cookie_path = session_dir / f"{creds.account_name}.json"
+        save_session_cookies(
+            sess,
+            cookie_path,
+            metadata={
+                "account": creds.account_name,
+                "email": creds.email,
+                "last_url": last_url,
+                "locale": creds.locale,
+                "source": "selenium",
+            },
         )
-    cookie_path = session_dir / f"{creds.account_name}.json"
-    save_session_cookies(
-        sess,
-        cookie_path,
-        metadata={
-            "account": creds.account_name,
-            "email": creds.email,
-            "last_url": last_url,
-            "locale": creds.locale,
-            "source": "selenium",
-        },
-    )
-    return cookie_path, tuple(sorted({c.name for c in sess.cookies}))
+        return cookie_path, tuple(sorted({c.name for c in sess.cookies}))
 
 
 def _resolve_universe_choice(
@@ -363,7 +431,7 @@ def _resolve_universe_choice(
     """Match a configured universe name or numeric ID case-insensitively."""
     needle = target.strip().lower()
     for uni in universes:
-        if uni.universe_id is not None and str(uni.universe_id) == needle:
+        if uni.universe_id is not None and game_data.fmt_compact_int(uni.universe_id) == needle:
             return uni
         if uni.label.strip().lower() == needle:
             return uni
@@ -428,7 +496,9 @@ def _wait_for_landing_ready(
 
     Returns `True` if already authenticated, `False` if login form is ready.
     """
-    deadline = time.monotonic() + config.timeout
+    deadline = time.monotonic() + _finite_bounded_timeout(
+        config.timeout, default=25.0, min_val=0.05, max_val=300.0
+    )
     while time.monotonic() < deadline:
         _handle_antibot_or_raise(driver, config, wait_for_manual_gate)
         if _is_portal_authenticated(driver):
@@ -454,7 +524,10 @@ def _wait_for_login_outcome(
 ) -> None:
     """Wait for login completion, handling optional 2FA or server error messages."""
     tfa_submitted = False
-    deadline = time.monotonic() + config.timeout
+    wait_secs = _finite_bounded_timeout(
+        config.timeout, default=25.0, min_val=0.05, max_val=300.0
+    )
+    deadline = time.monotonic() + wait_secs
     while time.monotonic() < deadline:
         _handle_antibot_or_raise(driver, config, wait_for_manual_gate)
         if _is_portal_authenticated(driver):
@@ -469,7 +542,7 @@ def _wait_for_login_outcome(
         if not tfa_submitted:
             if _submit_two_factor_if_requested(driver, creds, two_factor_provider, config):
                 tfa_submitted = True
-                deadline = time.monotonic() + config.timeout
+                deadline = time.monotonic() + wait_secs
 
         time.sleep(0.25)
 
@@ -598,7 +671,9 @@ def _select_spaceinvasion_tab(driver, *, allow_new_tab: bool = True) -> None:
 
 def _extract_portal_universes(driver, wait_seconds: float = 2.5) -> tuple[UniverseOption, ...]:
     """Read portal universes from live `window.SI_TPL.startPortal` JS or HTML."""
-    deadline = time.monotonic() + max(0.0, wait_seconds)
+    deadline = time.monotonic() + _finite_bounded_timeout(
+        wait_seconds, default=2.5, min_val=0.0, max_val=60.0
+    )
     while True:
         try:
             js_data = driver.execute_script(
@@ -610,10 +685,11 @@ def _extract_portal_universes(driver, wait_seconds: float = 2.5) -> tuple[Univer
             js_data = None
 
         cur_url = getattr(driver, "current_url", "") or BASE_URL
-        if isinstance(js_data, dict) and js_data.get("instances"):
+        raw_instances = js_data.get("instances") if isinstance(js_data, dict) else None
+        if isinstance(raw_instances, (list, tuple)) and raw_instances:
             parsed = universes_from_portal_data(
-                str(js_data.get("sid") or ""),
-                list(js_data.get("instances") or []),
+                game_data.safe_key(js_data.get("sid") or ""),
+                list(raw_instances),
                 cur_url,
             )
             if parsed:
@@ -701,7 +777,9 @@ def _wait_for_universe_entry(
     previous_handles: Optional[list[str]] = None,
 ) -> bool:
     """Wait until universe navigation settles on `indexGame.es` (across open tabs)."""
-    deadline = time.monotonic() + min(config.timeout, 15.0)
+    deadline = time.monotonic() + _finite_bounded_timeout(
+        config.timeout, default=15.0, min_val=0.05, max_val=15.0
+    )
     prev_set = set(previous_handles or [])
     while time.monotonic() < deadline:
         _handle_antibot_or_raise(driver, config, wait_for_manual_gate)

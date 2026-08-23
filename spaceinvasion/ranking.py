@@ -7,7 +7,9 @@ from dataclasses import dataclass, fields as dataclass_fields, is_dataclass, rep
 from decimal import Decimal, InvalidOperation
 import json
 import math
+import os
 from pathlib import Path
+import re
 import time
 from typing import Any, Optional
 
@@ -19,7 +21,7 @@ from spaceinvasion.fleet import (
     plan_escape_flight,
     simulate_raid_outcome,
 )
-from spaceinvasion.state import GameState, PlanetState, Resources
+from spaceinvasion.state import GameState, PlanetState, Resources, normalize_planet_type
 
 NEWBIE_PROTECTION_POINTS = 10_000
 POINTS_PER_RESOURCE_DIVISOR = 1_000.0
@@ -70,7 +72,7 @@ ATTACK_ZONES: tuple[AttackZoneBand, ...] = (
 
 def attack_zone_for_points(points: float) -> dict[str, Any]:
     """Return current and next Attack Zone metadata for `points`."""
-    pts = max(0.0, float(points))
+    pts = max(0.0, _safe_finite_float(points, 0.0))
     chosen = ATTACK_ZONES[-1]
     next_band: Optional[AttackZoneBand] = None
     for idx, band in enumerate(ATTACK_ZONES):
@@ -93,7 +95,7 @@ def attack_zone_for_points(points: float) -> dict[str, Any]:
 
 def _sum_cost_resources(cost: dict[str, Any], totals: dict[str, int]) -> None:
     for res_key in ("pig_iron", "metal", "kryptonite", "spice"):
-        totals[res_key] += int(cost.get(res_key, 0) or 0)
+        totals[res_key] += _safe_nonneg_int(cost.get(res_key, 0), 0)
 
 
 def estimate_account_points(state: GameState) -> dict[str, Any]:
@@ -103,79 +105,204 @@ def estimate_account_points(state: GameState) -> dict[str, Any]:
     res_res = {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0}
 
     for planet in state.planets:
-        for bkey, lvl in (planet.buildings or {}).items():
-            try:
-                bid = int(str(bkey).lstrip("b"))
-            except ValueError:
+        b_map = planet.buildings if isinstance(planet.buildings, Mapping) else {}
+        for bkey, lvl in b_map.items():
+            bkey_s = _safe_eta_str(bkey).strip()
+            if bkey_s.startswith("b"):
+                bkey_s = bkey_s[1:]
+            if not (bkey_s.isascii() and bkey_s.isdigit() and len(bkey_s) <= 6):
                 continue
-            for l in range(1, max(0, int(lvl)) + 1):
+            bid = int(bkey_s)
+            lvl_i = min(1000, _safe_nonneg_int(lvl, 0))
+            for l in range(1, lvl_i + 1):
                 _sum_cost_resources(game_data.building_cost(bid, l), bld_res)
 
-        for skey, qty in (planet.ships or {}).items():
-            count = max(0, int(qty or 0))
+        s_map = planet.ships if isinstance(planet.ships, Mapping) else {}
+        for skey, qty in s_map.items():
+            count = _safe_nonneg_int(qty, 0)
             if count <= 0:
                 continue
             slug = SHIP_SLUG_BY_KEY.get(skey)
             unit = game_data.SHIPS.get(slug or "") if slug else None
             base_cost = (unit or {}).get("base_cost") or {}
             for rk in flt_res:
-                flt_res[rk] += int(base_cost.get(rk, 0) or 0) * count
+                flt_res[rk] += _safe_nonneg_int(base_cost.get(rk, 0), 0) * count
 
-        for dkey, qty in (planet.defense or {}).items():
-            count = max(0, int(qty or 0))
+        d_map = planet.defense if isinstance(planet.defense, Mapping) else {}
+        for dkey, qty in d_map.items():
+            count = _safe_nonneg_int(qty, 0)
             if count <= 0:
                 continue
             slug = DEFENSE_SLUG_BY_KEY.get(dkey)
             unit = game_data.DEFENSES.get(slug or "") if slug else None
             base_cost = (unit or {}).get("base_cost") or {}
             for rk in flt_res:
-                flt_res[rk] += int(base_cost.get(rk, 0) or 0) * count
+                flt_res[rk] += _safe_nonneg_int(base_cost.get(rk, 0), 0) * count
 
-    for rkey, lvl in (state.researches or {}).items():
+    r_map = state.researches if isinstance(state.researches, Mapping) else {}
+    for rkey, lvl in r_map.items():
         info = game_data.resolve_unit("research", rkey)
         levels = (info or {}).get("levels") or {}
-        for l in range(1, max(0, int(lvl)) + 1):
+        lvl_i = min(1000, _safe_nonneg_int(lvl, 0))
+        for l in range(1, lvl_i + 1):
             row = levels.get(l) or {}
             _sum_cost_resources(row.get("cost") or {}, res_res)
 
-    bld_pts = sum(bld_res.values()) / POINTS_PER_RESOURCE_DIVISOR
-    res_pts = sum(res_res.values()) / POINTS_PER_RESOURCE_DIVISOR
-    flt_pts = sum(flt_res.values()) / POINTS_PER_RESOURCE_DIVISOR
-    total_pts = bld_pts + res_pts + flt_pts
+    bld_pts = _cap_eta_float(_safe_big_mul_div(sum(bld_res.values()), 1.0, POINTS_PER_RESOURCE_DIVISOR))
+    res_pts = _cap_eta_float(_safe_big_mul_div(sum(res_res.values()), 1.0, POINTS_PER_RESOURCE_DIVISOR))
+    flt_pts = _cap_eta_float(_safe_big_mul_div(sum(flt_res.values()), 1.0, POINTS_PER_RESOURCE_DIVISOR))
+    total_pts = _cap_eta_float(bld_pts + res_pts + flt_pts)
 
     combined = {k: bld_res[k] + res_res[k] + flt_res[k] for k in bld_res}
     for planet in state.planets:
-        combined["pig_iron"] += int(planet.resources.pig_iron)
-        combined["metal"] += int(planet.resources.metal)
-        combined["kryptonite"] += int(planet.resources.kryptonite)
-        combined["spice"] += int(planet.resources.spice)
+        combined["pig_iron"] += _safe_nonneg_int(planet.resources.pig_iron, 0)
+        combined["metal"] += _safe_nonneg_int(planet.resources.metal, 0)
+        combined["kryptonite"] += _safe_nonneg_int(planet.resources.kryptonite, 0)
+        combined["spice"] += _safe_nonneg_int(planet.resources.spice, 0)
 
     return {
         "estimated_points": round(total_pts, 1),
         "buildings_points": round(bld_pts, 1),
         "research_points": round(res_pts, 1),
         "fleet_defense_points": round(flt_pts, 1),
-        "spice_value": round(game_data.spice_equivalent(combined), 1),
+        "spice_value": round(_cap_eta_float(game_data.spice_equivalent(combined)), 1),
     }
 
 
 _MAX_ETA_FLOAT: float = 1e200
+_MAX_ETA_INT: int = 10**5000
+_MAX_JSON_SAFE_INT: int = game_data.MAX_JSON_SAFE_INT
+
+
+def _cap_json_int(value: Any) -> int:
+    return game_data.cap_json_int(value, limit=_MAX_JSON_SAFE_INT)
+
+
+def _cap_eta_float(
+    value: float,
+    *,
+    default: float = 0.0,
+    allow_negative: bool = False,
+) -> float:
+    if not math.isfinite(value):
+        if math.isnan(value):
+            return default
+        if value > 0.0:
+            return _MAX_ETA_FLOAT
+        return -_MAX_ETA_FLOAT if allow_negative else 0.0
+    if value > _MAX_ETA_FLOAT:
+        return _MAX_ETA_FLOAT
+    if value < 0.0:
+        return max(-_MAX_ETA_FLOAT, value) if allow_negative else 0.0
+    return value
+
+
+def _safe_eta_str(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return game_data.fmt_compact_int(raw) if abs(raw).bit_length() >= 12_000 else str(raw)
+    return game_data.safe_key(raw)
+
+
+def _safe_finite_float(raw: Any, default: float = 0.0) -> float:
+    if raw is None or isinstance(raw, (bool, Mapping, list, tuple, set, frozenset, BaseException)):
+        return default
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s or not s.isascii():
+            return default
+        raw = s
+    try:
+        val = float(raw)
+    except Exception:
+        return default
+    return val if math.isfinite(val) else default
+
+
+def _safe_optional_finite_float(raw: Any) -> Optional[float]:
+    if raw is None or isinstance(raw, (bool, Mapping, list, tuple, set, frozenset)):
+        return None
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s or not s.isascii():
+            return None
+        raw = s
+    try:
+        val = float(raw)
+    except Exception:
+        return None
+    return val if math.isfinite(val) else None
+
+
+def _safe_optional_finite_int(raw: Any) -> Optional[int]:
+    if raw is None or isinstance(raw, (bool, Mapping, list, tuple, set, frozenset)):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s or not s.isascii():
+            return None
+        try:
+            return int(s)
+        except Exception:
+            raw = s
+    val = _safe_optional_finite_float(raw)
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except Exception:
+        return None
 
 
 def _safe_speedup_factor(raw_speedup: Any) -> float:
-    if raw_speedup is None or isinstance(raw_speedup, bool):
+    if raw_speedup is None or isinstance(raw_speedup, (bool, Mapping, list, tuple, set, frozenset)):
         return 1.0
+    if isinstance(raw_speedup, (bytes, bytearray)):
+        raw_speedup = bytes(raw_speedup).decode("utf-8", errors="replace")
+    if isinstance(raw_speedup, str):
+        s = raw_speedup.strip()
+        if not s or not s.isascii():
+            return 1.0
+        raw_speedup = s
     try:
         speedup = float(raw_speedup)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         return 1.0
     if not math.isfinite(speedup) or speedup <= 0.0:
         return 1.0
     return speedup
 
 
+def _safe_big_float(raw: Any, cap: float = _MAX_ETA_FLOAT) -> float:
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        if raw <= 0:
+            return 0.0
+        if raw.bit_length() > 666:
+            return cap
+        try:
+            f = float(raw)
+            return min(cap, f) if math.isfinite(f) else cap
+        except OverflowError:
+            return cap
+    f = _safe_finite_float(raw, 0.0)
+    if f <= 0.0:
+        return 0.0
+    return min(cap, f)
+
+
 def _safe_nonneg_int(raw: Any, default: int = 0) -> int:
-    if raw is None or isinstance(raw, bool):
+    if raw is None or isinstance(raw, (bool, Mapping, list, tuple, set, frozenset, BaseException)):
         return default
     if isinstance(raw, int):
         return max(0, raw)
@@ -183,16 +310,27 @@ def _safe_nonneg_int(raw: Any, default: int = 0) -> int:
         if not math.isfinite(raw):
             return default
         return max(0, int(raw))
-    try:
-        val = float(str(raw).strip())
-    except (TypeError, ValueError, OverflowError):
-        return default
-    if not math.isfinite(val):
-        return default
-    try:
-        return max(0, int(val))
-    except (OverflowError, ValueError):
-        return default
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s or not s.isascii():
+            return default
+        try:
+            return max(0, int(s))
+        except Exception:
+            pass
+        try:
+            val = float(s)
+        except Exception:
+            return default
+        if not math.isfinite(val):
+            return default
+        try:
+            return max(0, int(val))
+        except Exception:
+            return default
+    return default
 
 
 def _safe_big_mul_div(qty: int | float, scale: float, divisor: float) -> float:
@@ -205,6 +343,9 @@ def _safe_big_mul_div(qty: int | float, scale: float, divisor: float) -> float:
         if qty.bit_length() <= 900:
             val = (float(qty) * scale) / divisor
             return min(_MAX_ETA_FLOAT, val) if math.isfinite(val) else _MAX_ETA_FLOAT
+        min_log2 = (qty.bit_length() - 1) + (math.log2(scale) - math.log2(divisor))
+        if min_log2 > 666.0:
+            return _MAX_ETA_FLOAT
         try:
             d_val = (Decimal(qty) * Decimal(str(scale))) / Decimal(str(divisor))
         except (InvalidOperation, ValueError, ArithmeticError):
@@ -229,8 +370,10 @@ def estimate_planet_hourly_economy(state: GameState, planet: PlanetState) -> dic
     speedup = _safe_speedup_factor(getattr(state, "speedup_factor", None))
 
     prod_ratio = 1.0
-    if planet.energy.used > 0 and planet.energy.produced < planet.energy.used:
-        prod_ratio = max(0.0, planet.energy.produced / planet.energy.used)
+    e_prod = _safe_nonneg_int(getattr(planet.energy, "produced", 0), 0)
+    e_used = _safe_nonneg_int(getattr(planet.energy, "used", 0), 0)
+    if e_used > 0 and e_prod < e_used:
+        prod_ratio = game_data.safe_big_ratio(e_prod, e_used, cap=1.0)
 
     rates_raw = getattr(planet, "economy_rates", None)
     if not isinstance(rates_raw, Mapping):
@@ -238,7 +381,7 @@ def estimate_planet_hourly_economy(state: GameState, planet: PlanetState) -> dic
 
     def _rate_pct(key: str) -> int:
         val = rates_raw.get(key, 100)
-        if val is None or isinstance(val, bool):
+        if val is None or isinstance(val, (bool, Mapping, list, tuple, set, frozenset)):
             return 100
         if isinstance(val, int):
             return max(0, min(100, val))
@@ -246,9 +389,16 @@ def estimate_planet_hourly_economy(state: GameState, planet: PlanetState) -> dic
             if not math.isfinite(val):
                 return 100
             return max(0, min(100, int(val)))
+        if isinstance(val, (bytes, bytearray)):
+            val = bytes(val).decode("utf-8", errors="replace")
+        if isinstance(val, str):
+            s = val.strip()
+            if not s or not s.isascii():
+                return 100
+            val = s
         try:
-            parsed = float(str(val).strip())
-        except (TypeError, ValueError, OverflowError):
+            parsed = float(val)
+        except Exception:
             return 100
         if not math.isfinite(parsed):
             return 100
@@ -265,33 +415,42 @@ def estimate_planet_hourly_economy(state: GameState, planet: PlanetState) -> dic
     b3 = planet.building_level(3)
     b4 = planet.building_level(4)
 
-    p_pig = (
+    raw_p_pig = (
         game_data.mine_production_per_hour(
             1, b1, temperature=planet.temperature, mining_tech_level=mining_tech
         )
         * factor
         * (pct1 / 100.0)
     )
-    p_met = game_data.mine_production_per_hour(2, b2) * factor * (pct2 / 100.0)
-    used_pig = game_data.blast_furnace_pig_iron_used(b2) * factor * (pct2 / 100.0)
-    p_kryp = (
+    raw_p_met = game_data.mine_production_per_hour(2, b2) * factor * (pct2 / 100.0)
+    raw_used_pig = game_data.blast_furnace_pig_iron_used(b2) * factor * (pct2 / 100.0)
+    raw_p_kryp = (
         game_data.mine_production_per_hour(
             3, b3, temperature=planet.temperature, mining_tech_level=mining_tech
         )
         * factor
         * (pct3 / 100.0)
     )
-    p_spice = (
+    raw_p_spice = (
         game_data.mine_production_per_hour(
             4, b4, temperature=planet.temperature, mining_tech_level=mining_tech
         )
         * factor
         * (pct4 / 100.0)
     )
+    # Subtract before clamping so (inf - inf -> nan -> 0.0) preserves test_ranking.py:698-705
+    # and (inf - finite -> +inf -> +_MAX_ETA_FLOAT) preserves positive sign at 1e306.
+    raw_net_pig = raw_p_pig - raw_used_pig
+    p_pig = _cap_eta_float(raw_p_pig)
+    used_pig = _cap_eta_float(raw_used_pig)
+    net_pig = _cap_eta_float(raw_net_pig, allow_negative=True)
+    p_met = _cap_eta_float(raw_p_met)
+    p_kryp = _cap_eta_float(raw_p_kryp)
+    p_spice = _cap_eta_float(raw_p_spice)
 
     return {
-        "planet_id": planet.planet_id,
-        "planet_coords": planet.coords,
+        "planet_id": _cap_json_int(_safe_eta_int(getattr(planet, "planet_id", 0), 0)),
+        "planet_coords": _safe_eta_str(planet.coords),
         "speedup_factor": speedup,
         "prod_ratio": round(prod_ratio, 4),
         "rates_pct": {
@@ -303,7 +462,7 @@ def estimate_planet_hourly_economy(state: GameState, planet: PlanetState) -> dic
         "blast_furnace_pct": pct2,
         "pig_iron_gross_per_hr": round(p_pig, 1),
         "blast_furnace_pig_used_per_hr": round(used_pig, 1),
-        "pig_iron_per_hr": round(p_pig - used_pig, 1),
+        "pig_iron_per_hr": round(net_pig, 1),
         "metal_per_hr": round(p_met, 1),
         "kryptonite_per_hr": round(p_kryp, 1),
         "spice_per_hr": round(p_spice, 1),
@@ -326,15 +485,23 @@ def estimate_hourly_economy(state: GameState) -> dict[str, float]:
         net_kryp += float(p_econ["kryptonite_per_hr"])
         net_spice += float(p_econ["spice_per_hr"])
 
-    net_total_res = max(0.0, net_pig) + max(0.0, net_met) + max(0.0, net_kryp) + max(0.0, net_spice)
-    pts_per_hr = net_total_res / POINTS_PER_RESOURCE_DIVISOR
-    spice_hr = game_data.spice_equivalent(
-        {
-            "pig_iron": max(0.0, net_pig),
-            "metal": max(0.0, net_met),
-            "kryptonite": max(0.0, net_kryp),
-            "spice": max(0.0, net_spice),
-        }
+    net_pig = _cap_eta_float(net_pig, allow_negative=True)
+    net_met = _cap_eta_float(net_met)
+    net_kryp = _cap_eta_float(net_kryp)
+    net_spice = _cap_eta_float(net_spice)
+    net_total_res = _cap_eta_float(
+        max(0.0, net_pig) + max(0.0, net_met) + max(0.0, net_kryp) + max(0.0, net_spice)
+    )
+    pts_per_hr = _cap_eta_float(net_total_res / POINTS_PER_RESOURCE_DIVISOR)
+    spice_hr = _cap_eta_float(
+        game_data.spice_equivalent(
+            {
+                "pig_iron": max(0.0, net_pig),
+                "metal": max(0.0, net_met),
+                "kryptonite": max(0.0, net_kryp),
+                "spice": max(0.0, net_spice),
+            }
+        )
     )
 
     return {
@@ -351,19 +518,21 @@ def estimate_hourly_economy(state: GameState) -> dict[str, float]:
 
 def _simulate_compound_points(start_pts: float, steady_rate_hr: float, total_hours: int) -> float:
     """Estimate cumulative score with continuous mine reinvestment attenuated by `1.51x` upgrade scaling."""
-    pts = max(0.0, start_pts)
-    rate = max(0.0, steady_rate_hr)
+    pts = _cap_eta_float(max(0.0, start_pts))
+    rate = _cap_eta_float(max(0.0, steady_rate_hr))
     for _ in range(max(0, total_hours)):
         pts += rate
+        if not math.isfinite(pts) or pts >= _MAX_ETA_FLOAT:
+            return _MAX_ETA_FLOAT
         if rate > 0:
             # Diminishing marginal ROI as account scale expands across build tiers
             reinvest_boost = min(0.045, 30.0 / max(180.0, pts))
-            rate *= 1.0 + reinvest_boost
-    return pts
+            rate = _cap_eta_float(rate * (1.0 + reinvest_boost))
+    return _cap_eta_float(pts)
 
 
 def _format_eta(hours: Optional[float], *, zero_label: str = "Reached") -> str:
-    if hours is None:
+    if hours is None or not math.isfinite(hours):
         return "—"
     if hours <= 0:
         return zero_label
@@ -379,16 +548,16 @@ def _solve_compound_eta_hours(
 ) -> Optional[float]:
     if start_pts >= target_pts:
         return 0.0
-    if steady_rate_hr <= 0:
+    if not math.isfinite(steady_rate_hr) or steady_rate_hr <= 0:
         return None
-    pts = start_pts
-    rate = steady_rate_hr
+    pts = _cap_eta_float(max(0.0, start_pts))
+    rate = _cap_eta_float(steady_rate_hr)
     for h in range(1, max_hours + 1):
         pts += rate
-        if pts >= target_pts:
+        if not math.isfinite(pts) or pts >= target_pts:
             return float(h)
         reinvest_boost = min(0.045, 30.0 / max(180.0, pts))
-        rate *= 1.0 + reinvest_boost
+        rate = _cap_eta_float(rate * (1.0 + reinvest_boost))
     return None
 
 
@@ -402,7 +571,11 @@ def load_rank_history(history_path: Optional[Path]) -> list[dict[str, Any]]:
         return []
     if not isinstance(raw, list):
         return []
-    return [item for item in raw if isinstance(item, dict)]
+    return [
+        game_data.sanitize_json_tree(item, max_int=_MAX_JSON_SAFE_INT, nonfinite_float=None)
+        for item in raw
+        if isinstance(item, Mapping)
+    ]
 
 
 def record_rank_snapshot(
@@ -416,14 +589,20 @@ def record_rank_snapshot(
     samples = load_rank_history(history_path)
     est = estimate_account_points(state)
     econ = estimate_hourly_economy(state)
-    now_ts = float(state.timestamp or time.time())
+    now_ts = _safe_finite_float(state.timestamp, 0.0)
     if now_ts <= 0:
         now_ts = time.time()
 
+    srv_pts = _safe_nonneg_int(state.account_points, 0) if state.account_points is not None else None
+    if srv_pts is not None and srv_pts > _MAX_JSON_SAFE_INT:
+        srv_pts = _MAX_JSON_SAFE_INT
+    srv_rank = _safe_optional_finite_int(state.account_rank)
+    if srv_rank is not None:
+        srv_rank = max(0, min(_MAX_JSON_SAFE_INT, srv_rank))
     entry = {
         "ts": round(now_ts, 3),
-        "server_points": state.account_points,
-        "server_rank": state.account_rank,
+        "server_points": srv_pts,
+        "server_rank": srv_rank,
         "estimated_points": est["estimated_points"],
         "pts_per_hr": econ["pts_per_hr_steady"],
         "spice_value": est["spice_value"],
@@ -435,16 +614,19 @@ def record_rank_snapshot(
         should_append = True
     else:
         last = samples[-1]
-        elapsed = abs(entry["ts"] - float(last.get("ts", 0.0)))
-        changed_server = (
-            (entry["server_points"] is not None and entry["server_points"] != last.get("server_points"))
-            or (entry["server_rank"] is not None and entry["server_rank"] != last.get("server_rank"))
-        )
-        changed_est = int(round(entry["estimated_points"])) != int(
-            round(float(last.get("estimated_points", 0.0)))
-        )
-        if changed_server or changed_est or elapsed >= min_interval_seconds:
+        last_ts = _safe_optional_finite_float(last.get("ts"))
+        last_est = _safe_optional_finite_float(last.get("estimated_points"))
+        if last_ts is None or last_est is None:
             should_append = True
+        else:
+            elapsed = abs(entry["ts"] - last_ts)
+            changed_server = (
+                (entry["server_points"] is not None and entry["server_points"] != last.get("server_points"))
+                or (entry["server_rank"] is not None and entry["server_rank"] != last.get("server_rank"))
+            )
+            changed_est = int(round(entry["estimated_points"])) != int(round(last_est))
+            if changed_server or changed_est or elapsed >= min_interval_seconds:
+                should_append = True
 
     if should_append:
         samples.append(entry)
@@ -452,7 +634,12 @@ def record_rank_snapshot(
             samples = samples[-max_entries:]
         if history_path is not None:
             history_path.parent.mkdir(parents=True, exist_ok=True)
-            history_path.write_text(json.dumps(samples, indent=2), encoding="utf-8")
+            safe_samples = game_data.sanitize_json_tree(
+                samples, max_int=_MAX_JSON_SAFE_INT, nonfinite_float=None
+            )
+            history_path.write_text(
+                json.dumps(safe_samples, indent=2, allow_nan=False), encoding="utf-8"
+            )
 
     return samples
 
@@ -464,13 +651,20 @@ def build_ranking_evolution(
     """Build current rank metrics, Attack Zone progress, forecasts, and observed trend."""
     est = estimate_account_points(state)
     econ = estimate_hourly_economy(state)
-    est_pts = float(est["estimated_points"])
-    server_pts = state.account_points
-    baseline_pts = max(float(server_pts or 0), est_pts)
+    est_pts = _safe_big_float(est["estimated_points"])
+    server_pts = (
+        min(_MAX_JSON_SAFE_INT, _safe_nonneg_int(state.account_points, 0))
+        if state.account_points is not None
+        else None
+    )
+    server_rank = _safe_optional_finite_int(state.account_rank)
+    if server_rank is not None:
+        server_rank = max(0, min(_MAX_JSON_SAFE_INT, server_rank))
+    baseline_pts = _cap_eta_float(max(_safe_big_float(server_pts or 0), est_pts))
 
     az = attack_zone_for_points(baseline_pts)
-    rate_hr = float(econ["pts_per_hr_steady"])
-    newbie_rem = max(0.0, NEWBIE_PROTECTION_POINTS - baseline_pts)
+    rate_hr = _cap_eta_float(_safe_finite_float(econ["pts_per_hr_steady"], 0.0))
+    newbie_rem = _cap_eta_float(max(0.0, NEWBIE_PROTECTION_POINTS - baseline_pts))
 
     horizon_defs = (
         ("1h", "+1 Hour", 1),
@@ -481,18 +675,18 @@ def build_ranking_evolution(
     )
     horizons: list[dict[str, Any]] = []
     for key, label, hours in horizon_defs:
-        steady_total = round(baseline_pts + rate_hr * hours, 1)
-        compound_total = round(_simulate_compound_points(baseline_pts, rate_hr, hours), 1)
+        steady_total = round(_cap_eta_float(baseline_pts + rate_hr * hours), 1)
+        compound_total = round(_cap_eta_float(_simulate_compound_points(baseline_pts, rate_hr, hours)), 1)
         horizons.append(
             {
                 "key": key,
                 "label": label,
                 "hours": hours,
                 "steady_points": steady_total,
-                "steady_delta": round(steady_total - baseline_pts, 1),
+                "steady_delta": round(_cap_eta_float(steady_total - baseline_pts, allow_negative=True), 1),
                 "steady_az": attack_zone_for_points(steady_total)["label"],
                 "compound_points": compound_total,
-                "compound_delta": round(compound_total - baseline_pts, 1),
+                "compound_delta": round(_cap_eta_float(compound_total - baseline_pts, allow_negative=True), 1),
                 "compound_az": attack_zone_for_points(compound_total)["label"],
             }
         )
@@ -516,8 +710,8 @@ def build_ranking_evolution(
 
     milestones: list[dict[str, Any]] = []
     for name, target in upcoming[:4]:
-        missing_pts = round(max(0.0, target - baseline_pts), 1)
-        steady_h = (missing_pts / rate_hr) if rate_hr > 0 else None
+        missing_pts = round(_cap_eta_float(max(0.0, target - baseline_pts)), 1)
+        steady_h = _cap_eta_float(missing_pts / rate_hr) if rate_hr > 0 else None
         comp_h = _solve_compound_eta_hours(baseline_pts, rate_hr, float(target))
         milestones.append(
             {
@@ -529,7 +723,11 @@ def build_ranking_evolution(
             }
         )
 
-    samples = list(history or [])
+    samples = [
+        game_data.sanitize_json_tree(s, max_int=_MAX_JSON_SAFE_INT, nonfinite_float=None)
+        for s in (history or [])
+        if isinstance(s, Mapping)
+    ]
     recent_samples = samples[-20:]
     observed_delta_pts: Optional[float] = None
     observed_delta_rank: Optional[int] = None
@@ -537,35 +735,40 @@ def build_ranking_evolution(
     elapsed_hours = 0.0
     if len(samples) >= 2:
         first, last = samples[0], samples[-1]
-        dt_sec = float(last.get("ts", 0.0)) - float(first.get("ts", 0.0))
-        elapsed_hours = max(0.0, dt_sec / 3600.0)
-        p0 = first.get("server_points")
-        p1 = last.get("server_points")
+        dt_sec = _cap_eta_float(
+            _safe_finite_float(last.get("ts", 0.0), 0.0)
+            - _safe_finite_float(first.get("ts", 0.0), 0.0),
+            allow_negative=True,
+        )
+        elapsed_hours = _cap_eta_float(max(0.0, dt_sec / 3600.0))
+        p0 = _safe_optional_finite_float(first.get("server_points"))
+        p1 = _safe_optional_finite_float(last.get("server_points"))
         if p0 is not None and p1 is not None and p1 != p0:
-            observed_delta_pts = round(float(p1) - float(p0), 1)
+            raw_delta = p1 - p0
         else:
-            observed_delta_pts = round(
-                float(last.get("estimated_points", 0.0)) - float(first.get("estimated_points", 0.0)),
-                1,
+            raw_delta = _safe_finite_float(last.get("estimated_points", 0.0), 0.0) - _safe_finite_float(
+                first.get("estimated_points", 0.0), 0.0
             )
-        if elapsed_hours >= 0.05 and observed_delta_pts is not None:
-            observed_rate_hr = round(observed_delta_pts / elapsed_hours, 2)
-        r0 = first.get("server_rank")
-        r1 = last.get("server_rank")
+        observed_delta_pts = round(_cap_eta_float(raw_delta, allow_negative=True), 1)
+        if elapsed_hours >= 0.05 and observed_delta_pts is not None and math.isfinite(observed_delta_pts):
+            rate_val = observed_delta_pts / elapsed_hours
+            observed_rate_hr = round(_cap_eta_float(rate_val, allow_negative=True), 2) if math.isfinite(rate_val) else None
+        r0 = _safe_optional_finite_int(first.get("server_rank"))
+        r1 = _safe_optional_finite_int(last.get("server_rank"))
         if r0 is not None and r1 is not None:
             # Negative means rank number dropped (e.g. #420 -> #393 = climbed +27 spots)
-            observed_delta_rank = int(r0) - int(r1)
+            observed_delta_rank = max(-_MAX_JSON_SAFE_INT, min(_MAX_JSON_SAFE_INT, r0 - r1))
 
     return {
         "current": {
             "server_points": server_pts,
-            "server_rank": state.account_rank,
+            "server_rank": server_rank,
             "baseline_points": round(baseline_pts, 1),
             **est,
             "attack_zone": az,
             "newbie_protected": baseline_pts < NEWBIE_PROTECTION_POINTS,
             "newbie_remaining_pts": round(newbie_rem, 1),
-            "newbie_eta_steady": _format_eta((newbie_rem / rate_hr) if rate_hr > 0 else None),
+            "newbie_eta_steady": _format_eta(_cap_eta_float(newbie_rem / rate_hr) if rate_hr > 0 else None),
             "newbie_eta_compound": _format_eta(
                 _solve_compound_eta_hours(baseline_pts, rate_hr, float(NEWBIE_PROTECTION_POINTS))
             ),
@@ -575,7 +778,7 @@ def build_ranking_evolution(
         "milestones": milestones,
         "observed_trend": {
             "sample_count": len(samples),
-            "elapsed_hours": round(elapsed_hours, 2),
+            "elapsed_hours": round(_cap_eta_float(elapsed_hours), 2),
             "delta_points": observed_delta_pts,
             "rank_climbed": observed_delta_rank,
             "observed_pts_per_hr": observed_rate_hr,
@@ -586,10 +789,10 @@ def build_ranking_evolution(
 
 def _res_dict(res: Resources) -> dict[str, int]:
     return {
-        "pig_iron": int(res.pig_iron),
-        "metal": int(res.metal),
-        "kryptonite": int(res.kryptonite),
-        "spice": int(res.spice),
+        "pig_iron": _cap_json_int(max(0, _safe_eta_int(getattr(res, "pig_iron", 0), 0))),
+        "metal": _cap_json_int(max(0, _safe_eta_int(getattr(res, "metal", 0), 0))),
+        "kryptonite": _cap_json_int(max(0, _safe_eta_int(getattr(res, "kryptonite", 0), 0))),
+        "spice": _cap_json_int(max(0, _safe_eta_int(getattr(res, "spice", 0), 0))),
     }
 
 
@@ -606,8 +809,10 @@ def _building_category(building_id: int) -> str:
 
 
 def _format_duration(seconds: Optional[float]) -> str:
-    if seconds is None:
+    if seconds is None or not math.isfinite(seconds):
         return "—"
+    if 0.0 < seconds <= 0.5:
+        return "1s"
     sec = max(0, int(round(seconds)))
     if sec < 60:
         return f"{sec}s"
@@ -626,7 +831,11 @@ def _compute_resource_eta(
     rates_hr: dict[str, float],
 ) -> tuple[Optional[float], Optional[str]]:
     """Return `(wait_hours, bottleneck_resource)` to accumulate `missing` resources."""
-    need_keys = [rk for rk in ("pig_iron", "metal", "kryptonite", "spice") if int(missing.get(rk, 0) or 0) > 0]
+    need_keys = [
+        rk
+        for rk in ("pig_iron", "metal", "kryptonite", "spice")
+        if _safe_eta_int(missing.get(rk, 0), 0, pos_inf_value=_MAX_ETA_INT) > 0
+    ]
     if not need_keys:
         return 0.0, None
 
@@ -636,11 +845,12 @@ def _compute_resource_eta(
         raw_rate = rates_hr.get(rk, 0.0)
         try:
             rate = float(0.0 if raw_rate is None else raw_rate)
-        except (TypeError, ValueError, OverflowError):
+        except Exception:
             return None, rk
         if not math.isfinite(rate) or rate <= 0.0:
             return None, rk
-        hrs = _safe_big_mul_div(int(missing[rk]), 1.0, rate)
+        need_val = _safe_eta_int(missing.get(rk, 0), 0, pos_inf_value=_MAX_ETA_INT)
+        hrs = _safe_big_mul_div(need_val, 1.0, rate)
         if bottleneck is None or hrs > max_hours:
             max_hours = hrs
             bottleneck = rk
@@ -660,7 +870,7 @@ def _research_level_stats(info: dict[str, Any], level: int) -> dict[str, Any]:
         base_cost = base_row.get("cost") or {}
         return {
             "cost": {
-                rk: int(round(float(base_cost.get(rk, 0) or 0) * scale))
+                rk: game_data.safe_scale_round_int(base_cost.get(rk, 0), scale)
                 for rk in ("pig_iron", "metal", "kryptonite", "spice")
             },
             "base_time_s": min(_MAX_ETA_FLOAT, float(base_row.get("base_time_s", 0.0) or 0.0) * scale),
@@ -684,6 +894,7 @@ def build_buildings_eta(
             "researches": [],
         }
 
+    safe_horizon = min(100, max(0, _safe_nonneg_int(horizon_count, 4)))
     p_econ = estimate_planet_hourly_economy(state, target)
     rates_hr = {
         "pig_iron": float(p_econ["pig_iron_per_hr"]),
@@ -693,21 +904,31 @@ def build_buildings_eta(
     }
     res_have = _res_dict(target.resources)
     speedup = float(p_econ["speedup_factor"])
-    dev_lvl = target.building_level(7)
-    lab_lvl = target.building_level(8)
-    micro_lvl = target.building_level(17)
-    b_divisor = max(1.0, float(dev_lvl + 1) * (2**micro_lvl) * speedup)
-    r_divisor = max(1.0, float(lab_lvl + 1) * speedup)
+    dev_lvl = max(0, target.building_level(7))
+    lab_lvl = max(0, target.building_level(8))
+    micro_lvl = max(0, target.building_level(17))
+    b_divisor = max(1.0, float(min(dev_lvl, 1_000_000) + 1) * float(2 ** min(micro_lvl, 60)) * speedup)
+    r_divisor = max(1.0, float(min(lab_lvl, 1_000_000) + 1) * speedup)
 
     is_active = target.planet_id == state.active_planet_id
     queued_bids: dict[int, int] = {}
     if is_active:
         for q in state.active_queues:
-            if q.category == "building" and q.building_id is not None:
-                queued_bids[int(q.building_id)] = queued_bids.get(int(q.building_id), 0) + 1
+            if getattr(q, "category", None) == "building" and getattr(q, "building_id", None) is not None:
+                q_bid = game_data.safe_optional_int(q.building_id, None)
+                if q_bid is not None:
+                    queued_bids[q_bid] = queued_bids.get(q_bid, 0) + 1
 
-    b_offers = {int(o.building_id): o for o in (target.building_offers or ())}
-    r_offers = {str(o.research_key): o for o in (state.research_offers or ())}
+    b_offers: dict[int, Any] = {}
+    for o in target.building_offers or ():
+        o_bid = game_data.safe_optional_int(getattr(o, "building_id", None), None)
+        if o_bid is not None:
+            b_offers[o_bid] = o
+    r_offers = {
+        rk: o
+        for o in (state.research_offers or ())
+        if (rk := game_data.safe_key(getattr(o, "research_key", "") or ""))
+    }
 
     buildings_rows: list[dict[str, Any]] = []
     for bid in sorted(game_data.BUILDING_BY_ID.keys()):
@@ -718,17 +939,26 @@ def build_buildings_eta(
         stats_next = game_data.building_level_stats(bid, nxt_lvl)
         raw_cost = (
             _res_dict(offer.cost)
-            if (offer is not None and not offer.cost.is_zero() and offer.target_level == nxt_lvl)
+            if (
+                offer is not None
+                and not offer.cost.is_zero()
+                and _safe_eta_int(getattr(offer, "target_level", None), -1) == nxt_lvl
+            )
             else (stats_next.get("cost") or game_data.building_cost(bid, nxt_lvl))
         )
-        cost = {rk: int(raw_cost.get(rk, 0) or 0) for rk in ("pig_iron", "metal", "kryptonite", "spice")}
+        cost = {
+            rk: _safe_nonneg_int(raw_cost.get(rk, 0), 0)
+            for rk in ("pig_iron", "metal", "kryptonite", "spice")
+        }
         missing = {rk: max(0, cost[rk] - int(res_have.get(rk, 0) or 0)) for rk in cost}
         missing_total = sum(missing.values())
         can_afford = missing_total == 0
         wait_h, bottleneck = _compute_resource_eta(missing, rates_hr)
-        base_time_s = float(stats_next.get("base_time_s", 0.0) or 0.0)
-        build_s = base_time_s / b_divisor
-        reach_h = (wait_h + build_s / 3600.0) if wait_h is not None else None
+        if wait_h is not None:
+            wait_h = _cap_eta_float(wait_h)
+        base_time_s = _safe_finite_float(stats_next.get("base_time_s", 0.0), 0.0)
+        build_s = _cap_eta_float(base_time_s / b_divisor)
+        reach_h = _cap_eta_float(wait_h + build_s / 3600.0) if wait_h is not None else None
         unmet = game_data.missing_prerequisites(
             "buildings",
             bid,
@@ -742,7 +972,7 @@ def build_buildings_eta(
         cum_build_s = 0.0
         sim_dev = dev_lvl
         sim_micro = micro_lvl
-        for step_idx in range(horizon_count):
+        for step_idx in range(safe_horizon):
             step_lvl = nxt_lvl + step_idx
             step_stats = game_data.building_level_stats(bid, step_lvl)
             step_raw_cost = (
@@ -751,22 +981,28 @@ def build_buildings_eta(
                 else (step_stats.get("cost") or game_data.building_cost(bid, step_lvl))
             )
             for rk in cum_cost:
-                cum_cost[rk] += int(step_raw_cost.get(rk, 0) or 0)
+                cum_cost[rk] += _safe_nonneg_int(step_raw_cost.get(rk, 0), 0)
             cum_missing = {rk: max(0, cum_cost[rk] - int(res_have.get(rk, 0) or 0)) for rk in cum_cost}
             step_wait_h, step_bn = _compute_resource_eta(cum_missing, rates_hr)
-            step_div = max(1.0, float(sim_dev + 1) * (2**sim_micro) * speedup)
-            step_b_s = float(step_stats.get("base_time_s", 0.0) or 0.0) / step_div
-            cum_build_s += step_b_s
+            if step_wait_h is not None:
+                step_wait_h = _cap_eta_float(step_wait_h)
+            step_div = max(
+                1.0,
+                float(min(max(0, sim_dev), 1_000_000) + 1) * float(2 ** min(max(0, sim_micro), 60)) * speedup,
+            )
+            step_base_s = _safe_finite_float(step_stats.get("base_time_s", 0.0), 0.0)
+            step_b_s = _cap_eta_float(step_base_s / step_div)
+            cum_build_s = _cap_eta_float(cum_build_s + step_b_s)
             if bid == 7:
                 sim_dev = step_lvl
             elif bid == 17:
                 sim_micro = step_lvl
-            step_reach_h = (step_wait_h + cum_build_s / 3600.0) if step_wait_h is not None else None
+            step_reach_h = _cap_eta_float(step_wait_h + cum_build_s / 3600.0) if step_wait_h is not None else None
             horizons.append(
                 {
-                    "level": step_lvl,
-                    "cost": dict(step_raw_cost),
-                    "cum_cost": dict(cum_cost),
+                    "level": _cap_json_int(step_lvl),
+                    "cost": {rk: _cap_json_int(_safe_nonneg_int(step_raw_cost.get(rk, 0), 0)) for rk in cum_cost},
+                    "cum_cost": {rk: _cap_json_int(v) for rk, v in cum_cost.items()},
                     "build_time_text": _format_duration(step_b_s),
                     "wait_eta": _format_eta(step_wait_h),
                     "reach_eta": _format_eta(step_reach_h),
@@ -782,16 +1018,16 @@ def build_buildings_eta(
                 "building_id": bid,
                 "key": f"b{bid}",
                 "slug": str(info["slug"]),
-                "name": target.building_names.get(f"b{bid}") or str(info["name"]),
+                "name": _safe_eta_str(target.building_names.get(f"b{bid}")) or str(info["name"]),
                 "category": _building_category(bid),
                 "asteroid_ok": bool(info.get("asteroid_ok", False)),
-                "current_level": cur_lvl,
-                "next_level": nxt_lvl,
+                "current_level": _cap_json_int(cur_lvl),
+                "next_level": _cap_json_int(nxt_lvl),
                 "queued_count": queued_bids.get(bid, 0),
-                "energy_delta": int(game_data.building_energy_delta(bid, nxt_lvl)),
-                "cost": cost,
-                "missing": missing,
-                "missing_total": missing_total,
+                "energy_delta": _cap_json_int(game_data.building_energy_delta(bid, nxt_lvl)),
+                "cost": {rk: _cap_json_int(v) for rk, v in cost.items()},
+                "missing": {rk: _cap_json_int(v) for rk, v in missing.items()},
+                "missing_total": _cap_json_int(missing_total),
                 "can_afford": can_afford,
                 "can_build_live": bool(offer.can_build and can_afford) if offer is not None else False,
                 "offer_visible": offer is not None,
@@ -812,27 +1048,37 @@ def build_buildings_eta(
     research_rows: list[dict[str, Any]] = []
     r_keys = sorted(
         game_data.RESEARCH_BY_ID.keys(),
-        key=lambda rk: int(rk[1:]) if rk[1:].isdigit() else 999,
+        key=lambda rk: int(rk[1:]) if (rk[1:].isascii() and rk[1:].isdigit()) else 999,
     )
     for rkey in r_keys:
         info = game_data.RESEARCH_BY_ID[rkey]
-        rid_num = int(rkey[1:]) if rkey[1:].isdigit() else None
-        cur_lvl = int((state.researches or {}).get(rkey, 0) or 0)
+        rid_num = int(rkey[1:]) if (rkey[1:].isascii() and rkey[1:].isdigit()) else None
+        cur_lvl = _safe_nonneg_int((state.researches or {}).get(rkey, 0), 0)
         nxt_lvl = cur_lvl + 1
         offer = r_offers.get(rkey)
         stats_next = _research_level_stats(info, nxt_lvl)
         raw_cost = (
             _res_dict(offer.cost)
-            if (offer is not None and not offer.cost.is_zero() and offer.target_level == nxt_lvl)
+            if (
+                offer is not None
+                and not offer.cost.is_zero()
+                and _safe_eta_int(getattr(offer, "target_level", None), -1) == nxt_lvl
+            )
             else (stats_next.get("cost") or {})
         )
-        cost = {rk: int(raw_cost.get(rk, 0) or 0) for rk in ("pig_iron", "metal", "kryptonite", "spice")}
+        cost = {
+            rk: _safe_nonneg_int(raw_cost.get(rk, 0), 0)
+            for rk in ("pig_iron", "metal", "kryptonite", "spice")
+        }
         missing = {rk: max(0, cost[rk] - int(res_have.get(rk, 0) or 0)) for rk in cost}
         missing_total = sum(missing.values())
         can_afford = missing_total == 0
         wait_h, bottleneck = _compute_resource_eta(missing, rates_hr)
-        res_s = float(stats_next.get("base_time_s", 0.0) or 0.0) / r_divisor
-        reach_h = (wait_h + res_s / 3600.0) if wait_h is not None else None
+        if wait_h is not None:
+            wait_h = _cap_eta_float(wait_h)
+        res_base_s = _safe_finite_float(stats_next.get("base_time_s", 0.0), 0.0)
+        res_s = _cap_eta_float(res_base_s / r_divisor)
+        reach_h = _cap_eta_float(wait_h + res_s / 3600.0) if wait_h is not None else None
         unmet = game_data.missing_prerequisites(
             "research",
             rkey,
@@ -843,21 +1089,24 @@ def build_buildings_eta(
         r_horizons: list[dict[str, Any]] = []
         cum_cost = {rk: 0 for rk in ("pig_iron", "metal", "kryptonite", "spice")}
         cum_res_s = 0.0
-        for step_idx in range(min(3, horizon_count)):
+        for step_idx in range(min(3, safe_horizon)):
             step_lvl = nxt_lvl + step_idx
             step_stats = _research_level_stats(info, step_lvl)
             step_raw = cost if step_idx == 0 else (step_stats.get("cost") or {})
             for rk in cum_cost:
-                cum_cost[rk] += int(step_raw.get(rk, 0) or 0)
+                cum_cost[rk] += _safe_nonneg_int(step_raw.get(rk, 0), 0)
             cum_missing = {rk: max(0, cum_cost[rk] - int(res_have.get(rk, 0) or 0)) for rk in cum_cost}
             step_wait_h, step_bn = _compute_resource_eta(cum_missing, rates_hr)
-            step_s = float(step_stats.get("base_time_s", 0.0) or 0.0) / r_divisor
-            cum_res_s += step_s
-            step_reach_h = (step_wait_h + cum_res_s / 3600.0) if step_wait_h is not None else None
+            if step_wait_h is not None:
+                step_wait_h = _cap_eta_float(step_wait_h)
+            step_base_s = _safe_finite_float(step_stats.get("base_time_s", 0.0), 0.0)
+            step_s = _cap_eta_float(step_base_s / r_divisor)
+            cum_res_s = _cap_eta_float(cum_res_s + step_s)
+            step_reach_h = _cap_eta_float(step_wait_h + cum_res_s / 3600.0) if step_wait_h is not None else None
             r_horizons.append(
                 {
-                    "level": step_lvl,
-                    "cost": dict(step_raw),
+                    "level": _cap_json_int(step_lvl),
+                    "cost": {rk: _cap_json_int(_safe_nonneg_int(step_raw.get(rk, 0), 0)) for rk in cum_cost},
                     "build_time_text": _format_duration(step_s),
                     "wait_eta": _format_eta(step_wait_h),
                     "reach_eta": _format_eta(step_reach_h),
@@ -870,12 +1119,12 @@ def build_buildings_eta(
                 "research_id": rid_num,
                 "key": rkey,
                 "slug": str(info["slug"]),
-                "name": state.research_names.get(rkey) or str(info["name"]),
-                "current_level": cur_lvl,
-                "next_level": nxt_lvl,
-                "cost": cost,
-                "missing": missing,
-                "missing_total": missing_total,
+                "name": _safe_eta_str(state.research_names.get(rkey)) or str(info["name"]),
+                "current_level": _cap_json_int(cur_lvl),
+                "next_level": _cap_json_int(nxt_lvl),
+                "cost": {rk: _cap_json_int(v) for rk, v in cost.items()},
+                "missing": {rk: _cap_json_int(v) for rk, v in missing.items()},
+                "missing_total": _cap_json_int(missing_total),
                 "can_afford": can_afford,
                 "can_research_live": bool(offer.can_research and can_afford) if offer is not None else False,
                 "active": bool(offer.active) if offer is not None else False,
@@ -894,19 +1143,19 @@ def build_buildings_eta(
 
     return {
         "planet": {
-            "planet_id": target.planet_id,
-            "name": target.name,
-            "coords": target.coords,
-            "planet_type": target.planet_type,
-            "temperature": target.temperature,
-            "fields_used": target.fields_used,
-            "fields_max": target.fields_max,
+            "planet_id": _cap_json_int(_safe_eta_int(target.planet_id, 0)),
+            "name": _safe_eta_str(target.name),
+            "coords": _safe_eta_str(target.coords),
+            "planet_type": normalize_planet_type(target),
+            "temperature": _cap_json_int(_safe_eta_int(target.temperature, 0)),
+            "fields_used": _cap_json_int(_safe_nonneg_int(target.fields_used, 0)),
+            "fields_max": _cap_json_int(_safe_nonneg_int(target.fields_max, 0)),
             "resources": res_have,
-            "dev_center_level": dev_lvl,
-            "research_lab_level": lab_lvl,
-            "microsystem_level": micro_lvl,
-            "building_time_divisor": round(b_divisor, 2),
-            "research_time_divisor": round(r_divisor, 2),
+            "dev_center_level": _cap_json_int(dev_lvl),
+            "research_lab_level": _cap_json_int(lab_lvl),
+            "microsystem_level": _cap_json_int(micro_lvl),
+            "building_time_divisor": round(_cap_eta_float(b_divisor), 2),
+            "research_time_divisor": round(_cap_eta_float(r_divisor), 2),
         },
         "planet_economy": p_econ,
         "buildings": buildings_rows,
@@ -923,24 +1172,26 @@ def build_combat_overview(
     """Build combat readiness, AZ bounds, stationed ships/defense, and Escape flight data."""
     target = planet or state.active_planet()
     est = estimate_account_points(state)
-    baseline_pts = max(float(state.account_points or 0), float(est["estimated_points"]))
+    srv_pts = _safe_nonneg_int(state.account_points, 0) if state.account_points is not None else 0
+    baseline_pts = max(_safe_big_float(srv_pts), _safe_big_float(est["estimated_points"]))
     az = attack_zone_for_points(baseline_pts)
 
+    r_map = state.researches if isinstance(state.researches, Mapping) else {}
     techs = {
-        "weapons": int((state.researches or {}).get("r8", 0) or 0),
-        "shield": int((state.researches or {}).get("r9", 0) or 0),
-        "defense": int((state.researches or {}).get("r10", 0) or 0),
-        "spy": int((state.researches or {}).get("r7", 0) or 0),
-        "targeting": int((state.researches or {}).get("r11", 0) or 0),
-        "particle": int((state.researches or {}).get("r12", 0) or 0),
-        "rocket": int((state.researches or {}).get("r4", 0) or 0),
-        "diffusion": int((state.researches or {}).get("r5", 0) or 0),
-        "warp": int((state.researches or {}).get("r6", 0) or 0),
+        "weapons": _cap_json_int(_safe_nonneg_int(r_map.get("r8", 0), 0)),
+        "shield": _cap_json_int(_safe_nonneg_int(r_map.get("r9", 0), 0)),
+        "defense": _cap_json_int(_safe_nonneg_int(r_map.get("r10", 0), 0)),
+        "spy": _cap_json_int(_safe_nonneg_int(r_map.get("r7", 0), 0)),
+        "targeting": _cap_json_int(_safe_nonneg_int(r_map.get("r11", 0), 0)),
+        "particle": _cap_json_int(_safe_nonneg_int(r_map.get("r12", 0), 0)),
+        "rocket": _cap_json_int(_safe_nonneg_int(r_map.get("r4", 0), 0)),
+        "diffusion": _cap_json_int(_safe_nonneg_int(r_map.get("r5", 0), 0)),
+        "warp": _cap_json_int(_safe_nonneg_int(r_map.get("r6", 0), 0)),
     }
 
-    atk_mult = 1.0 + 0.10 * techs["weapons"]
-    shd_mult = 1.0 + 0.10 * techs["shield"]
-    def_mult = 1.0 + 0.10 * techs["defense"]
+    atk_mult = 1.0 + 0.10 * min(100_000, techs["weapons"])
+    shd_mult = 1.0 + 0.10 * min(100_000, techs["shield"])
+    def_mult = 1.0 + 0.10 * min(100_000, techs["defense"])
 
     ship_catalog: list[dict[str, Any]] = []
     defense_catalog: list[dict[str, Any]] = []
@@ -948,25 +1199,29 @@ def build_combat_overview(
     total_defense_power = 0.0
     total_cargo = 0
 
-    for skey in sorted(SHIP_SLUG_BY_KEY.keys(), key=lambda k: int(k[1:]) if k[1:].isdigit() else 99):
+    for skey in sorted(
+        SHIP_SLUG_BY_KEY.keys(),
+        key=lambda k: int(k[1:]) if (k[1:].isascii() and k[1:].isdigit()) else 99,
+    ):
         slug = SHIP_SLUG_BY_KEY[skey]
         unit = game_data.SHIPS.get(slug) or {}
         stats = unit.get("stats") or {}
-        owned = int((target.ships or {}).get(skey, 0) or 0) if target else 0
+        owned = _safe_nonneg_int((target.ships or {}).get(skey, 0), 0) if target else 0
+        owned_f = _safe_big_float(owned, cap=1e100)
         atk = float(stats.get("attack", 0) or 0) * atk_mult
         shd = float(stats.get("shield", 0) or 0) * shd_mult
         hul = float(stats.get("hull", 0) or 0) * def_mult
-        power = (atk + shd + hul * 0.25) * owned
+        power = (atk + shd + hul * 0.25) * owned_f
         cargo = int(stats.get("cargo", 0) or 0)
         total_fleet_power += power
         total_cargo += cargo * owned
         ship_catalog.append(
             {
                 "key": skey,
-                "unit_id": int(skey[1:]) if skey[1:].isdigit() else 0,
+                "unit_id": int(skey[1:]) if (skey[1:].isascii() and skey[1:].isdigit()) else 0,
                 "slug": slug,
                 "name": str(unit.get("name", slug)),
-                "owned": owned,
+                "owned": _cap_json_int(owned),
                 "attack": int(stats.get("attack", 0) or 0),
                 "shield": int(stats.get("shield", 0) or 0),
                 "hull": int(stats.get("hull", 0) or 0),
@@ -976,22 +1231,26 @@ def build_combat_overview(
             }
         )
 
-    for dkey in sorted(DEFENSE_SLUG_BY_KEY.keys(), key=lambda k: int(k[1:]) if k[1:].isdigit() else 99):
+    for dkey in sorted(
+        DEFENSE_SLUG_BY_KEY.keys(),
+        key=lambda k: int(k[1:]) if (k[1:].isascii() and k[1:].isdigit()) else 99,
+    ):
         slug = DEFENSE_SLUG_BY_KEY[dkey]
         unit = game_data.DEFENSES.get(slug) or {}
         stats = unit.get("stats") or {}
-        owned = int((target.defense or {}).get(dkey, 0) or 0) if target else 0
+        owned = _safe_nonneg_int((target.defense or {}).get(dkey, 0), 0) if target else 0
+        owned_f = _safe_big_float(owned, cap=1e100)
         atk = float(stats.get("attack", 0) or 0) * atk_mult
         shd = float(stats.get("shield", 0) or 0) * shd_mult
         hul = float(stats.get("hull", 0) or 0) * def_mult
-        total_defense_power += (atk + shd + hul * 0.25) * owned
+        total_defense_power += (atk + shd + hul * 0.25) * owned_f
         defense_catalog.append(
             {
                 "key": dkey,
-                "unit_id": int(dkey[1:]) if dkey[1:].isdigit() else 0,
+                "unit_id": int(dkey[1:]) if (dkey[1:].isascii() and dkey[1:].isdigit()) else 0,
                 "slug": slug,
                 "name": str(unit.get("name", slug)),
-                "owned": owned,
+                "owned": _cap_json_int(owned),
                 "attack": int(stats.get("attack", 0) or 0),
                 "shield": int(stats.get("shield", 0) or 0),
                 "hull": int(stats.get("hull", 0) or 0),
@@ -1004,13 +1263,13 @@ def build_combat_overview(
         for o in target.ship_offers or ():
             ship_offers.append(
                 {
-                    "unit_type": o.unit_type,
-                    "unit_id": o.unit_id,
-                    "name": o.name,
-                    "owned": o.owned,
+                    "unit_type": _safe_eta_str(o.unit_type),
+                    "unit_id": _cap_json_int(_safe_nonneg_int(o.unit_id, 0)),
+                    "name": _safe_eta_str(o.name),
+                    "owned": _cap_json_int(_safe_nonneg_int(o.owned, 0)),
                     "cost": _res_dict(o.cost),
                     "can_build": o.can_build,
-                    "status_text": o.status_text,
+                    "status_text": _safe_eta_str(o.status_text),
                 }
             )
 
@@ -1021,35 +1280,41 @@ def build_combat_overview(
             target.coords,
         )
         esc = plan_escape_flight(target, target_coords=other_coords)
+        esc_cargo = _res_dict(esc.cargo)
         escape_plan_dict = {
             "feasible": esc.feasible,
-            "target_coords": esc.target_coords,
-            "ships": dict(esc.ships),
-            "cargo": _res_dict(esc.cargo),
-            "total_cargo": sum(_res_dict(esc.cargo).values()),
-            "total_capacity": esc.total_capacity,
-            "fuel_reserved_spice": esc.fuel_reserved_spice,
-            "duration_hint": esc.duration_hint,
-            "spice_saved": esc.cargo.spice,
-            "reason": esc.reason,
+            "target_coords": _safe_eta_str(esc.target_coords),
+            "ships": {
+                game_data.safe_key(k): _cap_json_int(_safe_nonneg_int(v, 0))
+                for k, v in (esc.ships or {}).items()
+            },
+            "cargo": esc_cargo,
+            "total_cargo": _cap_json_int(sum(esc_cargo.values())),
+            "total_capacity": _cap_json_int(_safe_nonneg_int(esc.total_capacity, 0)),
+            "fuel_reserved_spice": _cap_json_int(_safe_nonneg_int(esc.fuel_reserved_spice, 0)),
+            "duration_hint": _safe_eta_str(esc.duration_hint),
+            "spice_saved": esc_cargo.get("spice", 0),
+            "reason": _safe_eta_str(esc.reason),
         }
 
+    raw_margin = _safe_finite_float(safety_margin, 1.4)
+    eff_margin = raw_margin if raw_margin >= 0.0 else 1.4
     return {
-        "planet_id": target.planet_id if target else None,
-        "planet_coords": target.coords if target else None,
-        "weapons_factory_level": target.building_level(9) if target else 0,
-        "fleet_base_level": target.building_level(10) if target else 0,
-        "galaxy_scanner_level": target.building_level(19) if target else 0,
+        "planet_id": _cap_json_int(_safe_eta_int(target.planet_id, 0)) if target else None,
+        "planet_coords": _safe_eta_str(target.coords) if target else None,
+        "weapons_factory_level": _cap_json_int(target.building_level(9)) if target else 0,
+        "fleet_base_level": _cap_json_int(target.building_level(10)) if target else 0,
+        "galaxy_scanner_level": _cap_json_int(target.building_level(19)) if target else 0,
         "combat_techs": techs,
         "attack_zone": az,
         "newbie_protected": baseline_pts < NEWBIE_PROTECTION_POINTS,
-        "safety_margin": float(safety_margin),
+        "safety_margin": eff_margin,
         "bash_rule": "Max 3 attacks / 24h on active planets (exempt: yellow inactives & Spacia)",
         "az_rule": "Eligible targets within AZ ±2 (Top 50 bypass AZ outside Newbie Shield)",
         "combat_model": "1:1 zero-rapidfire combat; attacker retreats unless ratio >= safety margin",
         "stationed_fleet_power": round(total_fleet_power, 1),
         "stationed_defense_power": round(total_defense_power, 1),
-        "total_cargo_capacity": total_cargo,
+        "total_cargo_capacity": _cap_json_int(total_cargo),
         "ships": ship_catalog,
         "defenses": defense_catalog,
         "ship_offers": ship_offers,
@@ -1069,44 +1334,57 @@ def simulate_combat_matchup(
     safety_margin: float = 1.4,
 ) -> dict[str, Any]:
     """Run 1:1 zero-rapidfire combat simulator with attacker's current techs and safety threshold."""
-    clean_atk = {str(k): max(0, int(v or 0)) for k, v in attacker_ships.items() if int(v or 0) > 0}
+    atk_map = attacker_ships if isinstance(attacker_ships, Mapping) else {}
+    def_s_map = defender_ships if isinstance(defender_ships, Mapping) else {}
+    def_d_map = defender_defense if isinstance(defender_defense, Mapping) else {}
+    def_r_map = defender_researches if isinstance(defender_researches, Mapping) else {}
+    clean_atk = {
+        game_data.safe_key(k): cnt for k, v in atk_map.items() if (cnt := _safe_nonneg_int(v, 0)) > 0
+    }
     clean_def_ships = {
-        str(k): max(0, int(v or 0)) for k, v in (defender_ships or {}).items() if int(v or 0) > 0
+        game_data.safe_key(k): cnt for k, v in def_s_map.items() if (cnt := _safe_nonneg_int(v, 0)) > 0
     }
     clean_def_defs = {
-        str(k): max(0, int(v or 0)) for k, v in (defender_defense or {}).items() if int(v or 0) > 0
+        game_data.safe_key(k): cnt for k, v in def_d_map.items() if (cnt := _safe_nonneg_int(v, 0)) > 0
     }
-    res_map = target_resources or {}
+    clean_def_researches = {
+        game_data.safe_key(k): cnt for k, v in def_r_map.items() if (cnt := _safe_nonneg_int(v, 0)) > 0
+    }
+    res_map = target_resources if isinstance(target_resources, Mapping) else {}
     report = SpyReport(
         target_coords=target_coords,
         owner="Simulated Target",
         resources=Resources(
-            pig_iron=max(0, int(res_map.get("pig_iron", 0) or 0)),
-            metal=max(0, int(res_map.get("metal", 0) or 0)),
-            kryptonite=max(0, int(res_map.get("kryptonite", 0) or 0)),
-            spice=max(0, int(res_map.get("spice", 0) or 0)),
+            pig_iron=_safe_nonneg_int(res_map.get("pig_iron", 0), 0),
+            metal=_safe_nonneg_int(res_map.get("metal", 0), 0),
+            kryptonite=_safe_nonneg_int(res_map.get("kryptonite", 0), 0),
+            spice=_safe_nonneg_int(res_map.get("spice", 0), 0),
         ),
         fleet=clean_def_ships,
         defense=clean_def_defs,
     )
+    raw_margin = _safe_finite_float(safety_margin, 1.4)
+    eff_margin = max(1.0, raw_margin if raw_margin > 0.0 else 1.4)
     est = simulate_raid_outcome(
         clean_atk,
         report,
         attacker_researches=state.researches,
-        safety_margin=max(1.0, float(safety_margin)),
+        defender_researches=clean_def_researches,
+        safety_margin=eff_margin,
     )
     plunder_map = _res_dict(est.expected_loot)
     return {
         "safe_to_attack": est.safe_to_attack,
         "win_ratio": est.power_ratio,
-        "safety_margin": max(1.0, float(safety_margin)),
+        "safety_margin": eff_margin,
         "attacker_power": est.attacker_power,
         "defender_power": est.defender_power,
+        "defender_researches": {k: _cap_json_int(v) for k, v in clean_def_researches.items()},
         "stealth_first_strike_power": est.stealth_first_strike_power,
-        "cargo_capacity": est.cargo_capacity,
+        "cargo_capacity": _cap_json_int(_safe_nonneg_int(est.cargo_capacity, 0)),
         "loot_spice_equivalent": est.loot_spice_equivalent,
         "expected_plunder": plunder_map,
-        "total_plunder": sum(plunder_map.values()),
+        "total_plunder": _cap_json_int(sum(plunder_map.values())),
         "notes": est.reason,
     }
 
@@ -1165,21 +1443,65 @@ def _decimal_is_integer(value: Decimal) -> bool:
     return all(d == 0 for d in digits[-frac_len:])
 
 
-def _safe_eta_int(raw: Any, default: int = 0) -> int:
-    if raw is None or isinstance(raw, bool):
+_SCI_NUM_RE = re.compile(r"^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))[eE]([+-]?\d+)$", re.ASCII)
+_PLAIN_NUM_RE = re.compile(r"^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))$", re.ASCII)
+
+
+def _safe_eta_int(raw: Any, default: int = 0, *, pos_inf_value: Optional[int] = None) -> int:
+    if isinstance(raw, os.PathLike):
+        try:
+            raw = os.fspath(raw)
+        except Exception:
+            return default
+    if raw is None or isinstance(raw, (bool, Mapping, list, tuple, set, frozenset, BaseException)):
         return default
     if isinstance(raw, int):
         return raw
     if isinstance(raw, float):
-        return int(raw) if math.isfinite(raw) else default
+        if math.isfinite(raw):
+            return int(raw)
+        if pos_inf_value is not None and raw > 0.0:
+            return pos_inf_value
+        return default
     if isinstance(raw, Decimal):
+        if pos_inf_value is not None and raw.is_infinite() and raw > 0:
+            return pos_inf_value
         return _decimal_to_eta_int(raw, default)
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", errors="replace")
     try:
-        s = str(raw).strip()
-        if not s:
+        s = raw.strip() if isinstance(raw, str) else str(raw).strip()
+        if not s or not s.isascii():
             return default
+        if pos_inf_value is not None and s.lower() in ("inf", "+inf", "infinity", "+infinity"):
+            return pos_inf_value
+        m_sci = _SCI_NUM_RE.match(s)
+        if m_sci:
+            sign, int_part, frac1, frac2, exp_str = m_sci.groups()
+            int_digits = int_part or ""
+            frac_digits = frac1 or frac2 or ""
+            if not any(ch != "0" for ch in int_digits) and not any(ch != "0" for ch in frac_digits):
+                return 0
+            exp = int(exp_str)
+            nz_int = int_digits.lstrip("0")
+            if nz_int:
+                adjusted = len(nz_int) - 1 + exp
+            else:
+                lz = len(frac_digits) - len(frac_digits.lstrip("0"))
+                adjusted = -(lz + 1) + exp
+            if adjusted > 5000:
+                return -(10**5000) if sign == "-" else (10**5000)
+            if adjusted < 0:
+                return 0
+        else:
+            m_pl = _PLAIN_NUM_RE.match(s)
+            if m_pl:
+                sign, int_part, _, _ = m_pl.groups()
+                nz_int = (int_part or "").lstrip("0")
+                if len(nz_int) - 1 > 5000:
+                    return -(10**5000) if sign == "-" else (10**5000)
         d = Decimal(s)
-    except (TypeError, ValueError, OverflowError, InvalidOperation):
+    except Exception:
         return default
     return _decimal_to_eta_int(d, default)
 
@@ -1189,12 +1511,12 @@ def _extract_resource_map(raw: Any) -> Optional[dict[str, int]]:
         return None
     if isinstance(raw, Mapping):
         return {
-            rk: max(0, _safe_eta_int(raw.get(rk, 0), 0))
+            rk: max(0, _safe_eta_int(raw.get(rk, 0), 0, pos_inf_value=_MAX_ETA_INT))
             for rk in _ETA_RESOURCE_KEYS
         }
     if any(hasattr(raw, rk) for rk in _ETA_RESOURCE_KEYS):
         return {
-            rk: max(0, _safe_eta_int(getattr(raw, rk, 0), 0))
+            rk: max(0, _safe_eta_int(getattr(raw, rk, 0), 0, pos_inf_value=_MAX_ETA_INT))
             for rk in _ETA_RESOURCE_KEYS
         }
     return None
@@ -1205,51 +1527,64 @@ def _resolve_planet_for_eta(state: GameState, action: Any) -> Optional[PlanetSta
     if not planets:
         return None
     raw_pid = _action_get(action, "planet_id", None)
-    raw_coords = str(_action_get(action, "planet_coords", "") or "").strip()
+    if isinstance(raw_pid, os.PathLike):
+        try:
+            raw_pid = os.fspath(raw_pid)
+        except Exception:
+            return None
+    if isinstance(raw_pid, (bytes, bytearray)):
+        raw_pid = bytes(raw_pid).decode("utf-8", errors="replace")
+    if isinstance(raw_pid, str):
+        raw_pid = raw_pid.strip()
+    raw_coords = _safe_eta_str(_action_get(action, "planet_coords", "")).strip()
 
     if raw_pid is not None and raw_pid != "":
-        if isinstance(raw_pid, bool):
+        if isinstance(raw_pid, (bool, Mapping, list, tuple, set, frozenset)):
             return None
         if isinstance(raw_pid, float):
             if not math.isfinite(raw_pid) or not raw_pid.is_integer():
                 return None
             try:
                 pid = int(raw_pid)
-            except (TypeError, ValueError, OverflowError):
+            except Exception:
                 return None
         elif isinstance(raw_pid, Decimal):
             if not _decimal_is_integer(raw_pid):
                 return None
-            max_pid_bits = max((abs(int(p.planet_id)).bit_length() for p in planets), default=0)
+            max_pid_bits = max(
+                (abs(_safe_eta_int(p.planet_id, 0)).bit_length() for p in planets),
+                default=0,
+            )
             if raw_pid != 0 and raw_pid.adjusted() > max(20, max_pid_bits):
                 return None
             try:
                 pid = int(raw_pid)
-            except (TypeError, ValueError, OverflowError, InvalidOperation, ArithmeticError):
+            except Exception:
                 return None
         elif isinstance(raw_pid, int):
             pid = raw_pid
         elif isinstance(raw_pid, str):
             s = raw_pid.strip()
-            if not s:
+            if not s or not s.isascii():
                 return None
             try:
                 pid = int(s)
-            except (TypeError, ValueError, OverflowError):
+            except Exception:
                 return None
         else:
             try:
                 pid = int(raw_pid)
-            except (TypeError, ValueError, OverflowError):
+            except Exception:
                 return None
         for planet in planets:
-            if int(planet.planet_id) == pid:
+            p_pid = _safe_optional_finite_int(planet.planet_id)
+            if p_pid is not None and p_pid == pid:
                 return planet
         return None
 
     if raw_coords:
         for planet in planets:
-            if str(planet.coords).strip() == raw_coords:
+            if _safe_eta_str(planet.coords).strip() == raw_coords:
                 return planet
         return None
 
@@ -1263,23 +1598,25 @@ def _resolve_building_id(target_id: Any, target_name: Any) -> Optional[int]:
         if isinstance(target_id, int):
             bid = target_id
         else:
-            s = str(target_id).strip()
+            s = _safe_eta_str(target_id).strip()
             try:
-                if s.lower().startswith("b") and s[1:].isascii() and s[1:].isdigit():
+                if s.lower().startswith("b") and len(s) <= 12 and s[1:].isascii() and s[1:].isdigit():
                     bid = int(s[1:])
-                elif s.isascii() and s.isdigit():
+                elif len(s) <= 12 and s.isascii() and s.isdigit():
                     bid = int(s)
                 else:
                     return None
-            except (TypeError, ValueError, OverflowError):
+            except Exception:
                 return None
         return bid if bid in game_data.BUILDING_BY_ID else None
 
     if target_name:
-        info = game_data.resolve_unit("buildings", str(target_name))
-        if info and info.get("id") is not None:
-            bid = int(info["id"])
-            return bid if bid in game_data.BUILDING_BY_ID else None
+        tname = _safe_eta_str(target_name)
+        if tname:
+            info = game_data.resolve_unit("buildings", tname)
+            if info and info.get("id") is not None:
+                bid = int(info["id"])
+                return bid if bid in game_data.BUILDING_BY_ID else None
     return None
 
 
@@ -1288,25 +1625,27 @@ def _resolve_research_key(target_id: Any, target_name: Any) -> Optional[str]:
         if isinstance(target_id, bool):
             return None
         if isinstance(target_id, int):
-            rkey = f"r{target_id}"
+            rkey = f"r{target_id}" if 0 <= target_id <= 10_000 else ""
         else:
-            s = str(target_id).strip()
+            s = _safe_eta_str(target_id).strip()
             try:
-                if s.lower().startswith("r") and s[1:].isascii() and s[1:].isdigit():
+                if s.lower().startswith("r") and len(s) <= 12 and s[1:].isascii() and s[1:].isdigit():
                     rkey = f"r{int(s[1:])}"
-                elif s.isascii() and s.isdigit():
+                elif len(s) <= 12 and s.isascii() and s.isdigit():
                     rkey = f"r{int(s)}"
                 else:
                     return None
-            except (TypeError, ValueError, OverflowError):
+            except Exception:
                 return None
         return rkey if rkey in game_data.RESEARCH_BY_ID else None
 
     if target_name:
-        info = game_data.resolve_unit("research", str(target_name))
-        if info and info.get("id") is not None:
-            rkey = str(info["id"])
-            return rkey if rkey in game_data.RESEARCH_BY_ID else None
+        tname = _safe_eta_str(target_name)
+        if tname:
+            info = game_data.resolve_unit("research", tname)
+            if info and info.get("id") is not None:
+                rkey = str(info["id"])
+                return rkey if rkey in game_data.RESEARCH_BY_ID else None
     return None
 
 
@@ -1322,23 +1661,25 @@ def _resolve_unit_slug(
         if isinstance(target_id, bool):
             return None
         if isinstance(target_id, int):
-            return slug_by_key.get(f"{prefix}{target_id}")
-        s = str(target_id).strip()
+            return slug_by_key.get(f"{prefix}{target_id}") if 0 <= target_id <= 10_000 else None
+        s = _safe_eta_str(target_id).strip()
         try:
-            if s.lower().startswith(prefix) and s[1:].isascii() and s[1:].isdigit():
+            if s.lower().startswith(prefix) and len(s) <= 12 and s[1:].isascii() and s[1:].isdigit():
                 return slug_by_key.get(f"{prefix}{int(s[1:])}")
-            if s.isascii() and s.isdigit():
+            if len(s) <= 12 and s.isascii() and s.isdigit():
                 return slug_by_key.get(f"{prefix}{int(s)}")
-        except (TypeError, ValueError, OverflowError):
+        except Exception:
             return None
         if s in catalog:
             return s
         return None
 
     if target_name:
-        info = game_data.resolve_unit(category, str(target_name))
-        if info and info.get("slug") in catalog:
-            return str(info["slug"])
+        tname = _safe_eta_str(target_name)
+        if tname:
+            info = game_data.resolve_unit(category, tname)
+            if info and info.get("slug") in catalog:
+                return str(info["slug"])
     return None
 
 
@@ -1352,7 +1693,7 @@ def _round_seconds(seconds: float) -> float:
 
 def compute_action_eta(state: GameState, action: Any) -> dict[str, Any]:
     """Compute resource wait ETA, action duration, and total completion ETA for one planned action."""
-    kind = str(_action_get(action, "kind", "") or "").strip().upper()
+    kind = _safe_eta_str(_action_get(action, "kind", "")).strip().upper()
     if kind in _INSTANT_ACTION_KINDS:
         return {
             "wait_hours": 0.0,
@@ -1416,19 +1757,19 @@ def compute_action_eta(state: GameState, action: Any) -> dict[str, Any]:
         tgt_lvl = max(0, _safe_eta_int(raw_tlvl, 0))
         if bid is not None and tgt_lvl > 0:
             stats = game_data.building_level_stats(bid, tgt_lvl)
-            base_s = float(stats.get("base_time_s", 0.0) or 0.0)
-            b_divisor = max(1.0, float(dev_lvl + 1) * micro_mult * speedup)
-            dur_s_raw = base_s / b_divisor
+            base_s = _safe_finite_float(stats.get("base_time_s", 0.0), 0.0)
+            b_divisor = max(1.0, float(min(dev_lvl, 1_000_000) + 1) * micro_mult * speedup)
+            dur_s_raw = _cap_eta_float(base_s / b_divisor)
     elif kind == "RESEARCH":
         rkey = _resolve_research_key(raw_tid, raw_tname)
         tgt_lvl = max(0, _safe_eta_int(raw_tlvl, 0))
         if rkey is not None and tgt_lvl > 0:
             info = game_data.RESEARCH_BY_ID[rkey]
             stats = _research_level_stats(info, tgt_lvl)
-            base_s = float(stats.get("base_time_s", 0.0) or 0.0)
+            base_s = _safe_finite_float(stats.get("base_time_s", 0.0), 0.0)
             # Research intentionally ignores Microsystem accelerator (b17)
-            r_divisor = max(1.0, float(lab_lvl + 1) * speedup)
-            dur_s_raw = base_s / r_divisor
+            r_divisor = max(1.0, float(min(lab_lvl, 1_000_000) + 1) * speedup)
+            dur_s_raw = _cap_eta_float(base_s / r_divisor)
     elif kind == "BUILD_SHIP":
         slug = _resolve_unit_slug(
             "ships", "s", SHIP_SLUG_BY_KEY, game_data.SHIPS, raw_tid, raw_tname
@@ -1438,9 +1779,9 @@ def compute_action_eta(state: GameState, action: Any) -> dict[str, Any]:
         has_qty = raw_qty is not None and (not isinstance(raw_qty, str) or raw_qty.strip() != "")
         qty = 1 if not has_qty else max(0, _safe_eta_int(raw_qty, 0))
         if slug is not None and qty > 0:
-            base_s = float((game_data.SHIPS.get(slug) or {}).get("base_build_time_s", 0.0) or 0.0)
-            wf_divisor = max(1.0, float(max(1, wf_lvl)) * micro_mult * speedup)
-            dur_s_raw = _safe_big_mul_div(qty, base_s, wf_divisor)
+            base_s = _safe_finite_float((game_data.SHIPS.get(slug) or {}).get("base_build_time_s", 0.0), 0.0)
+            wf_divisor = max(1.0, float(min(max(1, wf_lvl), 1_000_000)) * micro_mult * speedup)
+            dur_s_raw = _cap_eta_float(_safe_big_mul_div(qty, base_s, wf_divisor))
     elif kind in ("BUILD_DEFENSE", "DEFENSE"):
         slug = _resolve_unit_slug(
             "defense", "d", DEFENSE_SLUG_BY_KEY, game_data.DEFENSES, raw_tid, raw_tname
@@ -1450,12 +1791,14 @@ def compute_action_eta(state: GameState, action: Any) -> dict[str, Any]:
         has_qty = raw_qty is not None and (not isinstance(raw_qty, str) or raw_qty.strip() != "")
         qty = 1 if not has_qty else max(0, _safe_eta_int(raw_qty, 0))
         if slug is not None and qty > 0:
-            base_s = float((game_data.DEFENSES.get(slug) or {}).get("base_build_time_s", 0.0) or 0.0)
-            wf_divisor = max(1.0, float(max(1, wf_lvl)) * micro_mult * speedup)
-            dur_s_raw = _safe_big_mul_div(qty, base_s, wf_divisor)
+            base_s = _safe_finite_float((game_data.DEFENSES.get(slug) or {}).get("base_build_time_s", 0.0), 0.0)
+            wf_divisor = max(1.0, float(min(max(1, wf_lvl), 1_000_000)) * micro_mult * speedup)
+            dur_s_raw = _cap_eta_float(_safe_big_mul_div(qty, base_s, wf_divisor))
 
     if not math.isfinite(dur_s_raw) or dur_s_raw <= 0.0:
         dur_s_raw = 0.0
+    else:
+        dur_s_raw = _cap_eta_float(dur_s_raw)
 
     duration_seconds = _round_seconds(dur_s_raw)
     if dur_s_raw <= 0.0:
@@ -1478,10 +1821,10 @@ def compute_action_eta(state: GameState, action: Any) -> dict[str, Any]:
             "eta_bottleneck": bottleneck,
         }
 
-    wait_h = max(0.0, float(wait_h_raw))
-    wait_s = wait_h * 3600.0
-    total_s = wait_s + dur_s_raw
-    total_h = total_s / 3600.0
+    wait_h = _cap_eta_float(float(wait_h_raw))
+    wait_s = _cap_eta_float(wait_h * 3600.0)
+    total_s = _cap_eta_float(wait_s + dur_s_raw)
+    total_h = _cap_eta_float(total_s / 3600.0)
     return {
         "wait_hours": 0.0 if wait_h == 0.0 else round(wait_h, 6),
         "wait_seconds": _round_seconds(wait_s),

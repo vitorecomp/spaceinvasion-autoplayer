@@ -7,6 +7,8 @@ Do not hand-edit data tables; re-run `scripts/sync_wiki_data.py` to refresh.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import math
+import os
 from typing import Any, Optional
 
 
@@ -12371,17 +12373,39 @@ for _cat, _catalog in (
         if _info.get("id") is not None:
             _uid = str(_info["id"])
             _UNIT_ALIAS_INDEX[_uid] = (_cat, _slug)
-            if _cat == "buildings" and str(_uid).isdigit():
+            if _cat == "buildings" and _uid.isascii() and _uid.isdigit():
                 _UNIT_ALIAS_INDEX[f"b{_uid}"] = (_cat, _slug)
 
 
 def resolve_unit(category: Optional[str], identifier: str | int) -> Optional[dict[str, Any]]:
     """Look up a unit dict by slug, numeric building ID, `'b1'`/`'r1'` key, or display name."""
-    if isinstance(identifier, int) or (isinstance(identifier, str) and identifier.isdigit()):
-        b_info = BUILDING_BY_ID.get(int(identifier))
+    if identifier is None or isinstance(identifier, bool):
+        return None
+    if isinstance(identifier, os.PathLike):
+        try:
+            identifier = os.fspath(identifier)
+        except Exception:
+            return None
+        if identifier is None or isinstance(identifier, bool):
+            return None
+    if isinstance(identifier, int):
+        b_info = BUILDING_BY_ID.get(identifier)
         if b_info is not None and category in (None, "buildings"):
             return b_info
-    key = str(identifier).strip()
+        return None
+    if isinstance(identifier, (bytes, bytearray)):
+        key = bytes(identifier).decode("utf-8", errors="replace").strip()
+    elif isinstance(identifier, str):
+        key = identifier.strip()
+    else:
+        try:
+            key = str(identifier).strip()
+        except Exception:
+            return None
+    if key.isascii() and key.isdigit() and len(key) <= 12:
+        b_info = BUILDING_BY_ID.get(int(key))
+        if b_info is not None and category in (None, "buildings"):
+            return b_info
     hit = _UNIT_ALIAS_INDEX.get(key) or _UNIT_ALIAS_INDEX.get(normalize_unit_key(key))
     if not hit:
         return None
@@ -12391,36 +12415,545 @@ def resolve_unit(category: Optional[str], identifier: str | int) -> Optional[dic
     return {"buildings": BUILDINGS, "research": RESEARCHES, "ships": SHIPS, "defense": DEFENSES}[found_cat].get(slug)
 
 
+MAX_JSON_SAFE_INT = 10**200
+_MAX_FORMAT_INT_BITS = 12_000
+_LOG10_2 = 0.3010299956639812
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    if value is None or isinstance(value, (bool, Mapping, list, tuple, set, frozenset)):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) else default
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        txt = value.strip()
+        if (
+            not txt
+            or not txt.isascii()
+            or txt.lower()
+            in (
+                "null",
+                "none",
+                "~",
+                "nan",
+                "inf",
+                "+inf",
+                "-inf",
+                "infinity",
+                "+infinity",
+                "-infinity",
+            )
+        ):
+            return default
+        value = txt
+    try:
+        return int(value)
+    except Exception:
+        try:
+            f = float(value)
+            return int(f) if math.isfinite(f) else default
+        except Exception:
+            return default
+
+
+def safe_optional_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+    if value is None or isinstance(value, (bool, Mapping, list, tuple, set, frozenset)):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) else default
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        txt = value.strip()
+        if (
+            not txt
+            or not txt.isascii()
+            or txt.lower()
+            in (
+                "null",
+                "none",
+                "~",
+                "nan",
+                "inf",
+                "+inf",
+                "-inf",
+                "infinity",
+                "+infinity",
+                "-infinity",
+            )
+        ):
+            return default
+        value = txt
+    try:
+        return int(value)
+    except Exception:
+        try:
+            f = float(value)
+            return int(f) if math.isfinite(f) else default
+        except Exception:
+            return default
+
+
+def safe_finite_float(value: Any, default: float = 0.0) -> float:
+    if value is None or isinstance(value, (bool, Mapping, list, tuple, set, frozenset)):
+        return default
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        txt = value.strip()
+        if not txt or not txt.isascii() or txt.lower() in ("null", "none", "~"):
+            return default
+        value = txt
+    try:
+        f = float(value)
+    except OverflowError:
+        if isinstance(value, int):
+            return 1e300 if value > 0 else -1e300
+        return default
+    except Exception:
+        return default
+    return f if math.isfinite(f) else default
+
+
+def cap_json_int(value: Any, *, limit: int = MAX_JSON_SAFE_INT, default: int = 0) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        v = value
+    else:
+        v = safe_int(value, default)
+    if v > limit:
+        return limit
+    if v < -limit:
+        return -limit
+    return v
+
+
+_MAX_KEY_NODES = 256
+_MAX_KEY_CHARS = 4096
+_MAX_TREE_NODES = 32_768
+_MAX_TREE_DEPTH = 64
+
+
+def _clip_str(text: str, limit: int = _MAX_KEY_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...[truncated]"
+
+
+def _safe_json_key(
+    k: Any,
+    max_int: int,
+    *,
+    _depth: int = 0,
+    _seen: Optional[set[int]] = None,
+    _budget: Optional[list[int]] = None,
+) -> str:
+    if isinstance(k, str):
+        return k
+    if isinstance(k, int) and not isinstance(k, bool):
+        return str(cap_json_int(k, limit=max_int))
+    if isinstance(k, (bytes, bytearray)):
+        return bytes(k).decode("utf-8", errors="replace")
+    seen = _seen if _seen is not None else set()
+    budget = _budget if _budget is not None else [_MAX_KEY_NODES]
+    if isinstance(k, os.PathLike):
+        vid = id(k)
+        if vid in seen or _depth >= 16 or budget[0] <= 0:
+            return f"<{type(k).__name__}>"
+        budget[0] -= 1
+        seen.add(vid)
+        try:
+            try:
+                fsp = os.fspath(k)
+            except Exception:
+                return f"<{type(k).__name__}>"
+            return _safe_json_key(fsp, max_int, _depth=_depth + 1, _seen=seen, _budget=budget)
+        finally:
+            seen.discard(vid)
+    if isinstance(k, BaseException):
+        str_fn = getattr(type(k), "__str__", BaseException.__str__)
+        if str_fn not in (BaseException.__str__, KeyError.__str__):
+            try:
+                return _clip_str(str(k), 16_384)
+            except Exception:
+                pass
+        args = getattr(k, "args", ())
+        if not isinstance(args, (tuple, list)) or not args:
+            return "" if str_fn is BaseException.__str__ else type(k).__name__
+        vid = id(k)
+        if vid in seen or _depth >= 16 or budget[0] <= 0:
+            return f"<{type(k).__name__}>"
+        budget[0] -= 1
+        seen.add(vid)
+        try:
+            if len(args) == 1:
+                a0 = args[0]
+                if isinstance(a0, str):
+                    res = repr(a0) if isinstance(k, KeyError) else a0
+                    return _clip_str(res, 16_384)
+                return _clip_str(
+                    _safe_json_key(a0, max_int, _depth=_depth + 1, _seen=seen, _budget=budget),
+                    _MAX_KEY_CHARS,
+                )
+            parts: list[str] = []
+            for item in args[:8]:
+                if budget[0] <= 0:
+                    parts.append("...")
+                    break
+                if isinstance(item, str):
+                    parts.append(repr(item))
+                else:
+                    parts.append(
+                        _safe_json_key(
+                            item,
+                            max_int,
+                            _depth=_depth + 1,
+                            _seen=seen,
+                            _budget=budget,
+                        )
+                    )
+            if len(args) > 8:
+                parts.append(f"...+{len(args) - 8}")
+            return _clip_str("(" + ", ".join(parts) + ")", _MAX_KEY_CHARS)
+        finally:
+            seen.discard(vid)
+    if isinstance(k, (tuple, list, set, frozenset, Mapping)):
+        vid = id(k)
+        if vid in seen:
+            if isinstance(k, tuple):
+                return "(...)"
+            if isinstance(k, list):
+                return "[...]"
+            if isinstance(k, frozenset):
+                return "frozenset({...})"
+            return "{...}"
+        if _depth >= 16 or budget[0] <= 0:
+            return "..."
+        budget[0] -= 1
+        seen.add(vid)
+        try:
+            if isinstance(k, tuple):
+                parts = []
+                for idx, item in enumerate(k):
+                    if idx >= 64 or budget[0] <= 0:
+                        parts.append("...")
+                        break
+                    parts.append(
+                        _safe_json_key(item, max_int, _depth=_depth + 1, _seen=seen, _budget=budget)
+                    )
+                inner = ", ".join(parts)
+                return _clip_str(f"({inner},)" if len(k) == 1 else f"({inner})", _MAX_KEY_CHARS)
+            if isinstance(k, list):
+                parts = []
+                for idx, item in enumerate(k):
+                    if idx >= 64 or budget[0] <= 0:
+                        parts.append("...")
+                        break
+                    parts.append(
+                        _safe_json_key(item, max_int, _depth=_depth + 1, _seen=seen, _budget=budget)
+                    )
+                return _clip_str("[" + ", ".join(parts) + "]", _MAX_KEY_CHARS)
+            if isinstance(k, (set, frozenset)):
+                parts = []
+                for idx, item in enumerate(k):
+                    if idx >= 64 or budget[0] <= 0:
+                        parts.append("...")
+                        break
+                    parts.append(
+                        _safe_json_key(item, max_int, _depth=_depth + 1, _seen=seen, _budget=budget)
+                    )
+                inner = ", ".join(sorted(parts))
+                if isinstance(k, frozenset):
+                    return _clip_str(f"frozenset({{{inner}}})", _MAX_KEY_CHARS)
+                return _clip_str(f"{{{inner}}}" if parts else "set()", _MAX_KEY_CHARS)
+            # Mapping
+            parts = []
+            for idx, (mk, mv) in enumerate(k.items()):
+                if idx >= 32 or budget[0] <= 0:
+                    parts.append("...")
+                    break
+                ks = _safe_json_key(mk, max_int, _depth=_depth + 1, _seen=seen, _budget=budget)
+                vs = _safe_json_key(mv, max_int, _depth=_depth + 1, _seen=seen, _budget=budget)
+                parts.append(f"{ks!r}: {vs!r}")
+            return _clip_str("{" + ", ".join(parts) + "}", _MAX_KEY_CHARS)
+        finally:
+            seen.discard(vid)
+    try:
+        return str(k)
+    except Exception:
+        return type(k).__name__
+
+
+def safe_key(key: Any, *, max_int: int = MAX_JSON_SAFE_INT) -> str:
+    """Convert arbitrary dict keys or identifiers to string safely (resisting >4300-digit ints/tuples)."""
+    return _safe_json_key(key, max_int)
+
+
+def sanitize_json_tree(
+    obj: Any,
+    *,
+    max_int: int = MAX_JSON_SAFE_INT,
+    nonfinite_float: Any = 0.0,
+    _depth: int = 0,
+    _seen: Optional[set[int]] = None,
+    _budget: Optional[list[int]] = None,
+) -> Any:
+    seen = _seen if _seen is not None else set()
+    budget = _budget if _budget is not None else [_MAX_TREE_NODES]
+
+    def _walk(val: Any, d: int) -> Any:
+        tv = type(val)
+        if val is None or tv is bool or tv is str:
+            return val
+        if tv is int:
+            return val if -max_int <= val <= max_int else cap_json_int(val, limit=max_int)
+        if tv is float:
+            return val if math.isfinite(val) else nonfinite_float
+        is_dict = tv is dict
+        is_seq = tv is list or tv is tuple
+        if is_dict or is_seq or isinstance(val, (Mapping, list, tuple, set, frozenset, os.PathLike, bytes, bytearray, int, float)):
+            if not (is_dict or is_seq) and isinstance(val, (bool, str)):
+                return str(val)
+            if not (is_dict or is_seq) and isinstance(val, int):
+                return cap_json_int(int(val), limit=max_int)
+            if not (is_dict or is_seq) and isinstance(val, float):
+                fval = float(val)
+                return fval if math.isfinite(fval) else nonfinite_float
+            if not (is_dict or is_seq) and isinstance(val, (bytes, bytearray)):
+                return bytes(val).decode("utf-8", errors="replace")
+            vid = id(val)
+            if vid in seen:
+                return "[Cycle]"
+            if d >= _MAX_TREE_DEPTH or budget[0] <= 0:
+                return "[Truncated]"
+            budget[0] -= 1
+            seen.add(vid)
+            try:
+                if is_dict or isinstance(val, Mapping):
+                    out: dict[str, Any] = {}
+                    for k, v in val.items():
+                        if budget[0] <= 0:
+                            out["[Truncated]"] = "[Truncated]"
+                            break
+                        sk = k if type(k) is str else _safe_json_key(k, max_int)
+                        out[sk] = _walk(v, d + 1)
+                    return out
+                if is_seq or isinstance(val, (list, tuple, set, frozenset)):
+                    out_list: list[Any] = []
+                    for v in val:
+                        if budget[0] <= 0:
+                            out_list.append("[Truncated]")
+                            break
+                        out_list.append(_walk(v, d + 1))
+                    return out_list
+                try:
+                    fsp = os.fspath(val)
+                except Exception:
+                    return safe_key(val, max_int=max_int)
+                if isinstance(fsp, (bytes, bytearray)):
+                    return bytes(fsp).decode("utf-8", errors="replace")
+                if isinstance(fsp, str):
+                    return fsp
+                if isinstance(fsp, os.PathLike):
+                    return safe_key(fsp, max_int=max_int)
+                return _walk(fsp, d + 1)
+            finally:
+                seen.discard(vid)
+        return safe_key(val, max_int=max_int)
+
+    return _walk(obj, _depth)
+
+
+def _to_mant_exp2(val: int | float) -> tuple[float, int]:
+    if isinstance(val, int):
+        if val == 0:
+            return 0.0, 0
+        sign = -1.0 if val < 0 else 1.0
+        aval = -val if val < 0 else val
+        shift = max(0, aval.bit_length() - 53)
+        return sign * float(aval >> shift), shift
+    return math.frexp(float(val))
+
+
+def safe_big_ratio(
+    num: Any,
+    den: Any,
+    *,
+    cap: float = 1e200,
+    allow_negative: bool = False,
+) -> float:
+    if isinstance(num, bool) or isinstance(den, bool):
+        return 0.0
+    if not isinstance(num, (int, float)):
+        num = safe_finite_float(num, 0.0)
+    if not isinstance(den, (int, float)):
+        den = safe_finite_float(den, 0.0)
+    if isinstance(den, float) and (not math.isfinite(den) or den <= 0.0):
+        return 0.0
+    if isinstance(den, int) and den <= 0:
+        return 0.0
+    if isinstance(num, float) and not math.isfinite(num):
+        return 0.0
+    if not allow_negative and num <= 0:
+        return 0.0
+    if num == 0:
+        return 0.0
+
+    low_cap = -cap if allow_negative else 0.0
+    if (
+        isinstance(num, int)
+        and isinstance(den, int)
+        and abs(num).bit_length() <= 1020
+        and den.bit_length() <= 1020
+    ):
+        val = num / den
+        return max(low_cap, min(cap, val)) if math.isfinite(val) else 0.0
+
+    if isinstance(num, float) and isinstance(den, float):
+        try:
+            val = num / den
+            if math.isfinite(val):
+                return max(low_cap, min(cap, val))
+        except OverflowError:
+            pass
+
+    m_n, e_n = _to_mant_exp2(num)
+    m_d, e_d = _to_mant_exp2(den)
+    if m_d == 0.0 or m_n == 0.0:
+        return 0.0
+    m_q, r_e = math.frexp(m_n / m_d)
+    total_e = r_e + e_n - e_d
+    if total_e > 900:
+        return -cap if (allow_negative and m_q < 0.0) else cap
+    if total_e < -1074:
+        return 0.0
+    val = math.ldexp(m_q, total_e)
+    return max(low_cap, min(cap, val)) if math.isfinite(val) else 0.0
+
+
+def safe_scale_round_int(
+    raw: Any,
+    scale: float,
+    *,
+    default: int = 0,
+    max_result: Optional[int] = None,
+) -> int:
+    raw_i = safe_int(raw, default)
+    if raw_i <= 0 or isinstance(scale, bool) or not isinstance(scale, (int, float)):
+        return 0
+    scale_f = float(scale)
+    if not math.isfinite(scale_f) or scale_f <= 0.0:
+        return 0
+    if raw_i.bit_length() <= 1000:
+        prod = raw_i * scale_f
+        if math.isfinite(prod):
+            res = max(0, int(round(prod)))
+            return min(res, max(0, int(max_result))) if max_result is not None else res
+    mant, exp = math.frexp(scale_f)
+    if max_result is not None:
+        max_r = max(0, int(max_result))
+        if raw_i.bit_length() + exp - 2 > max_r.bit_length():
+            return max_r
+    mant_i = int(round(mant * (1 << 53)))
+    shift = max(0, raw_i.bit_length() - 256)
+    num = (raw_i >> shift) * mant_i
+    net = shift + exp - 53
+    if net >= 0:
+        res = num << net
+    else:
+        rshift = -net
+        if rshift > num.bit_length() + 1:
+            return 0
+        half = 1 << (rshift - 1)
+        res = (num + half) >> rshift
+    res = max(0, res)
+    if max_result is not None:
+        return min(res, max(0, int(max_result)))
+    return res
+
+
+def fmt_compact_int(
+    value: Any,
+    *,
+    signed: bool = False,
+    grouped: bool = False,
+    default: int = 0,
+) -> str:
+    v = safe_int(value, default)
+    av = abs(v)
+    if av.bit_length() >= _MAX_FORMAT_INT_BITS:
+        sign = "-" if v < 0 else ("+" if signed and v > 0 else "")
+        exp = int(av.bit_length() * _LOG10_2)
+        return f"{sign}~1e{exp}"
+    if signed and grouped:
+        return f"{v:+,}"
+    if signed:
+        return f"{v:+d}"
+    if grouped:
+        return f"{v:,}"
+    return str(v)
+
+
+def _safe_cost_int(value: Any) -> int:
+    return safe_int(value, 0)
+
+
+def _safe_cost_float(value: Any) -> float:
+    return safe_finite_float(value, 0.0)
+
+
 def _cost_dict(cost: Any) -> dict[str, int]:
+    if cost is None:
+        return {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0}
     if isinstance(cost, Mapping):
-        return {k: int(cost.get(k, 0)) for k in ("pig_iron", "metal", "kryptonite", "spice")}
+        return {k: _safe_cost_int(cost.get(k, 0)) for k in ("pig_iron", "metal", "kryptonite", "spice")}
     return {
-        "pig_iron": int(getattr(cost, "pig_iron", 0)),
-        "metal": int(getattr(cost, "metal", 0)),
-        "kryptonite": int(getattr(cost, "kryptonite", 0)),
-        "spice": int(getattr(cost, "spice", 0)),
+        "pig_iron": _safe_cost_int(getattr(cost, "pig_iron", 0)),
+        "metal": _safe_cost_int(getattr(cost, "metal", 0)),
+        "kryptonite": _safe_cost_int(getattr(cost, "kryptonite", 0)),
+        "spice": _safe_cost_int(getattr(cost, "spice", 0)),
+    }
+
+
+def _cost_float_dict(cost: Any) -> dict[str, float]:
+    if cost is None:
+        return {"pig_iron": 0.0, "metal": 0.0, "kryptonite": 0.0, "spice": 0.0}
+    if isinstance(cost, Mapping):
+        return {k: _safe_cost_float(cost.get(k, 0.0)) for k in ("pig_iron", "metal", "kryptonite", "spice")}
+    return {
+        "pig_iron": _safe_cost_float(getattr(cost, "pig_iron", 0.0)),
+        "metal": _safe_cost_float(getattr(cost, "metal", 0.0)),
+        "kryptonite": _safe_cost_float(getattr(cost, "kryptonite", 0.0)),
+        "spice": _safe_cost_float(getattr(cost, "spice", 0.0)),
     }
 
 
 def spice_equivalent(cost_or_res: Any) -> float:
     """Convert any resource bundle to Spice equivalents at fixed Merchant parity."""
-    vals = _cost_dict(cost_or_res)
-    return (
+    vals = _cost_float_dict(cost_or_res)
+    total = (
         vals["pig_iron"] / MERCHANT_RATES_IN_SPICE["pig_iron"]
         + vals["metal"] / MERCHANT_RATES_IN_SPICE["metal"]
         + vals["kryptonite"] / MERCHANT_RATES_IN_SPICE["kryptonite"]
         + vals["spice"] / MERCHANT_RATES_IN_SPICE["spice"]
     )
+    return total if math.isfinite(total) else 0.0
 
 
 def building_level_stats(building_id_or_slug: int | str, level: int) -> dict[str, Any]:
     """Return wiki table row for `(building, level)`, or `{}` if `level <= 0` or out of range."""
-    if level <= 0:
+    lvl = safe_int(level, 0)
+    if lvl <= 0 or lvl > 10_000:
         return {}
     info = resolve_unit("buildings", building_id_or_slug)
     if not info:
         return {}
-    return info.get("levels", {}).get(int(level), {})
+    return info.get("levels", {}).get(lvl, {})
 
 
 def building_cost(building_id_or_slug: int | str, target_level: int) -> dict[str, int]:
@@ -12432,20 +12965,29 @@ def building_cost(building_id_or_slug: int | str, target_level: int) -> dict[str
     return {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0}
 
 
-def interpolate_temp_value(temp_map: Mapping[int, int], temperature: int) -> float:
+def interpolate_temp_value(temp_map: Mapping[int, int], temperature: int | float) -> float:
     """Linearly interpolate a wiki temperature table for an arbitrary planet temperature."""
-    if not temp_map:
+    if not temp_map or not isinstance(temp_map, Mapping):
         return 0.0
-    pts = sorted((int(k), float(v)) for k, v in temp_map.items())
-    if temperature <= pts[0][0]:
+    temp = safe_finite_float(temperature, 0.0)
+    pts_raw: list[tuple[int, float]] = []
+    for k, v in temp_map.items():
+        ki = safe_optional_int(k, None)
+        if ki is None:
+            continue
+        pts_raw.append((cap_json_int(ki, limit=10**12), safe_finite_float(v, 0.0)))
+    if not pts_raw:
+        return 0.0
+    pts = sorted(pts_raw)
+    if temp <= pts[0][0]:
         return pts[0][1]
-    if temperature >= pts[-1][0]:
+    if temp >= pts[-1][0]:
         return pts[-1][1]
     for (t0, v0), (t1, v1) in zip(pts, pts[1:]):
-        if t0 <= temperature <= t1:
+        if t0 <= temp <= t1:
             if t1 == t0:
                 return v0
-            ratio = (temperature - t0) / (t1 - t0)
+            ratio = (temp - t0) / (t1 - t0)
             return v0 + ratio * (v1 - v0)
     return pts[-1][1]
 
@@ -12461,41 +13003,47 @@ def mine_production_per_hour(
 
     Blast furnace (`b2`) converts Pig iron to Metal and is not boosted by Mining technology.
     """
-    if level <= 0:
+    lvl = safe_int(level, 0)
+    bid = safe_int(building_id, 0)
+    if lvl <= 0:
         return 0.0
-    row = building_level_stats(building_id, level)
+    row = building_level_stats(bid, lvl)
     if not row:
         return 0.0
     if "prod_by_temp" in row and row["prod_by_temp"]:
         base = interpolate_temp_value(row["prod_by_temp"], temperature)
     else:
         base = float(row.get("prod", 0))
-    if building_id in (1, 3, 4) and mining_tech_level > 0:
-        base *= 1.0 + MINING_TECH_BONUS_PER_LEVEL * mining_tech_level
+    safe_tech = max(0, min(100_000, _safe_cost_int(mining_tech_level)))
+    if bid in (1, 3, 4) and safe_tech > 0:
+        base *= 1.0 + MINING_TECH_BONUS_PER_LEVEL * safe_tech
     return base
 
 
 def blast_furnace_pig_iron_used(level: int) -> float:
     """Return hourly Pig iron consumed by Blast furnace (`b2`) at `level`."""
-    if level <= 0:
+    lvl = safe_int(level, 0)
+    if lvl <= 0:
         return 0.0
-    return float(building_level_stats(2, level).get("pig_iron_used", 0))
+    return float(building_level_stats(2, lvl).get("pig_iron_used", 0))
 
 
 def mine_energy_needed(building_id_or_slug: int | str, level: int) -> int:
     """Return positive energy consumed by `building` at `level` (0 for power plants)."""
-    if level <= 0:
+    lvl = safe_int(level, 0)
+    if lvl <= 0:
         return 0
-    val = int(building_level_stats(building_id_or_slug, level).get("energy", 0))
+    val = int(building_level_stats(building_id_or_slug, lvl).get("energy", 0))
     return -val if val < 0 else 0
 
 
 def building_energy_delta(building_id_or_slug: int | str, target_level: int) -> int:
     """Signed net energy change when upgrading `building` from `target_level - 1` to `target_level`."""
-    if target_level <= 0:
+    tgt = safe_int(target_level, 0)
+    if tgt <= 0:
         return 0
-    cur_energy = int(building_level_stats(building_id_or_slug, target_level - 1).get("energy", 0))
-    nxt_energy = int(building_level_stats(building_id_or_slug, target_level).get("energy", 0))
+    cur_energy = int(building_level_stats(building_id_or_slug, tgt - 1).get("energy", 0))
+    nxt_energy = int(building_level_stats(building_id_or_slug, tgt).get("energy", 0))
     return nxt_energy - cur_energy
 
 
@@ -12505,21 +13053,26 @@ def _current_level_for_req(
     buildings: Mapping[str, int],
     researches: Mapping[str, int],
 ) -> int:
+    b_map = buildings if isinstance(buildings, Mapping) else {}
+    r_map = researches if isinstance(researches, Mapping) else {}
     if req_cat == "buildings":
         info = BUILDINGS.get(req_slug)
         if not info or info.get("id") is None:
             return 0
         bid = int(info["id"])
-        return int(buildings.get(f"b{bid}", buildings.get(str(bid), buildings.get(req_slug, 0))))
+        raw = b_map.get(f"b{bid}", b_map.get(str(bid), b_map.get(req_slug, 0)))
+        return max(0, _safe_cost_int(raw))
     if req_cat == "research":
         info = RESEARCHES.get(req_slug)
         if info and info.get("id"):
             rid = str(info["id"])
-            if rid in researches:
-                return int(researches[rid])
-        for k, v in researches.items():
-            if normalize_unit_key(str(k)) == normalize_unit_key(req_slug):
-                return int(v)
+            if rid in r_map:
+                return max(0, _safe_cost_int(r_map[rid]))
+        for k, v in r_map.items():
+            if not isinstance(k, str):
+                continue
+            if normalize_unit_key(k) == normalize_unit_key(req_slug):
+                return max(0, _safe_cost_int(v))
         return 0
     return 0
 

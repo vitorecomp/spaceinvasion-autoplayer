@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import signal
 import sys
+import threading
 
 
 def _maybe_reexec_venv() -> None:
@@ -27,6 +28,7 @@ def _maybe_reexec_venv() -> None:
 
 _maybe_reexec_venv()
 
+from spaceinvasion import game_data  # noqa: E402
 from spaceinvasion.auth import SpaceInvasionAuthError  # noqa: E402
 from spaceinvasion.browser import DEFAULT_DEBUG_PORT  # noqa: E402
 from spaceinvasion.api_server import (  # noqa: E402
@@ -34,6 +36,7 @@ from spaceinvasion.api_server import (  # noqa: E402
     create_api_server,
     ensure_debug_browser_ready,
 )
+from spaceinvasion.logging_utils import redact_sensitive  # noqa: E402
 from spaceinvasion.reloader import (  # noqa: E402
     current_python_cmd,
     should_spawn_reloader,
@@ -100,6 +103,66 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _safe_err_text(
+    exc: BaseException,
+    *,
+    _depth: int = 0,
+    _seen: set[int] | None = None,
+    _budget: list[int] | None = None,
+) -> str:
+    if not isinstance(exc, BaseException):
+        return str(redact_sensitive(game_data.safe_key(exc)))
+    seen = _seen if _seen is not None else set()
+    budget = _budget if _budget is not None else [256]
+    str_fn = getattr(type(exc), "__str__", BaseException.__str__)
+    used_custom_str = False
+    txt = ""
+    if str_fn not in (BaseException.__str__, KeyError.__str__):
+        try:
+            txt = str(exc)[:16_384]
+            used_custom_str = True
+        except Exception:
+            txt = ""
+    if not used_custom_str:
+        args = getattr(exc, "args", ())
+        if not isinstance(args, (tuple, list)) or not args:
+            txt = "" if str_fn is BaseException.__str__ else type(exc).__name__
+        else:
+            vid = id(exc)
+            if vid in seen or _depth >= 16 or budget[0] <= 0:
+                txt = f"<{type(exc).__name__}>"
+            else:
+                budget[0] -= 1
+                seen.add(vid)
+                try:
+                    if len(args) == 1:
+                        a0 = args[0]
+                        if isinstance(a0, str):
+                            txt = (repr(a0) if isinstance(exc, KeyError) else a0)[:16_384]
+                        elif isinstance(a0, BaseException):
+                            txt = _safe_err_text(a0, _depth=_depth + 1, _seen=seen, _budget=budget)
+                        else:
+                            txt = game_data.safe_key(a0)
+                    else:
+                        parts = []
+                        for a in args[:8]:
+                            if budget[0] <= 0:
+                                parts.append("...")
+                                break
+                            if isinstance(a, str):
+                                parts.append(repr(a))
+                            elif isinstance(a, BaseException):
+                                parts.append(_safe_err_text(a, _depth=_depth + 1, _seen=seen, _budget=budget))
+                            else:
+                                parts.append(game_data.safe_key(a))
+                        if len(args) > 8:
+                            parts.append(f"...+{len(args) - 8}")
+                        txt = ("(" + ", ".join(parts) + ")")[:4096]
+                finally:
+                    seen.discard(vid)
+    return str(redact_sensitive(txt))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -119,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
             account=args.account,
         )
     except SpaceInvasionAuthError as exc:
-        print(f"[API] Browser startup error: {exc}", file=sys.stderr)
+        print(f"[API] Browser startup error: {redact_sensitive(_safe_err_text(exc))}", file=sys.stderr)
         return 1
 
     bridge = GameApiBridge(
@@ -130,23 +193,35 @@ def main(argv: list[str] | None = None) -> int:
         max_actions_per_hour=args.max_per_hour,
         log_dir=args.log_dir,
     )
-    server = create_api_server(bridge, host=args.host, port=args.port)
+    server = None
+    is_main = threading.current_thread() is threading.main_thread()
+    prev_sigterm = signal.getsignal(signal.SIGTERM) if is_main else None
 
     def _shutdown_handler(_signum, _frame) -> None:
         raise KeyboardInterrupt
 
-    signal.signal(signal.SIGTERM, _shutdown_handler)
-    print(
-        f"[API] Listening on http://{args.host}:{args.port} "
-        f"(Control UI: http://{args.host}:{args.port}/ | Chrome debug port: 127.0.0.1:{args.debug_port})"
-    )
-    sys.stdout.flush()
     try:
+        server = create_api_server(bridge, host=args.host, port=args.port)
+        if is_main:
+            signal.signal(signal.SIGTERM, _shutdown_handler)
+        print(
+            f"[API] Listening on http://{args.host}:{args.port} "
+            f"(Control UI: http://{args.host}:{args.port}/ | Chrome debug port: 127.0.0.1:{args.debug_port})"
+        )
+        sys.stdout.flush()
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n[API] Shutting down (Chrome remains open on debug port).")
     finally:
-        server.server_close()
+        if server is not None:
+            server.server_close()
+        db = getattr(bridge, "_db", None)
+        if db is not None:
+            close_db = getattr(db, "close", None)
+            if callable(close_db):
+                close_db()
+        if is_main and prev_sigterm is not None:
+            signal.signal(signal.SIGTERM, prev_sigterm)
     return 0
 
 

@@ -498,10 +498,16 @@ class TestActionExecutor(unittest.TestCase):
             [attack_radio],
         ]
 
+        bld_html_after = """
+        <select name="planet">
+          <option value="indexInternal.es?action=internalBuildings&newPlanet=11111">Home</option>
+          <option value="indexInternal.es?action=internalBuildings&newPlanet=22222" selected="selected">RaidColony</option>
+        </select>
+        """
         client = MagicMock(spec=GameBrowserClient)
         client.driver = driver
         client.navigate_menu.side_effect = [bld_html, fleet_html]
-        client._wait_frame_ready.side_effect = [bld_html, send_html, "<div>Fleet sent</div>"]
+        client._wait_frame_ready.side_effect = [bld_html_after, send_html, "<div>Fleet sent</div>"]
         client.read_planets_overview.return_value = state
 
         ex = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0), allow_raids=True)
@@ -2135,6 +2141,933 @@ class TestActionExecutor(unittest.TestCase):
         client_ok._wait_frame_ready.assert_called_once()
         self.assertEqual(ex_c.last_observed_active_planet_id, 12477)
         self.assertTrue(ex_c.last_observed_active_planet_confirmed)
+
+    def test_tier5_bounce_detection_raid_stats_preserved_stale_retry_and_german_missions(self) -> None:
+        from bs4 import BeautifulSoup
+        from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
+
+        # 1. Server bounce back to old planet detected as switched=False
+        html_with_select = (
+            '<select name="planet">'
+            '<option value="indexInternal.es?newPlanet=12476" selected="selected">Home</option>'
+            '<option value="indexInternal.es?newPlanet=12477">Colony</option>'
+            "</select>"
+        )
+        bounced_html = (
+            '<select name="planet">'
+            '<option value="indexInternal.es?newPlanet=12476" selected="selected">Home</option>'
+            '<option value="indexInternal.es?newPlanet=12477">Colony</option>'
+            "</select>"
+        )
+        client_bounce = MagicMock(spec=GameBrowserClient)
+        client_bounce.driver = MagicMock()
+        client_bounce._wait_frame_ready.return_value = bounced_html
+        ex_b = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
+        with patch("spaceinvasion.executor.Select"):
+            switched_b, _ = ex_b._select_planet_if_needed(client_bounce, 12477, html=html_with_select, require_confirm=True)
+        self.assertFalse(switched_b)
+        self.assertEqual(ex_b.last_observed_active_planet_id, 12476)
+
+        # 2. _build_updated_state forwards prev_state.raid_stats
+        p0 = PlanetState(
+            planet_id=12476,
+            name="Home",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=20,
+            fields_used=10,
+            fields_max=200,
+            resources=Resources(),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(100, 50),
+        )
+        prev_st = GameState(31, 1, "u", 100.0, (p0,), active_planet_id=12476, raid_stats={"overall": {"attempts": 5}})
+        act_b = PlannedAction(
+            priority="P2",
+            kind="BUILD",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=1,
+            target_name="Pig",
+            reason="Test build",
+            executable_now=True,
+        )
+        client_u = MagicMock()
+        client_u.wait_for_home_frame.return_value = "<html></html>"
+        client_u.read_menu_status.return_value = {}
+        ex_u = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
+        updated_ov = GameState(31, 1, "u", 105.0, (p0,), active_planet_id=12476)
+        st_out = ex_u._build_updated_state(client_u, prev_st, act_b, updated_ov, page_html="<html></html>", is_home=True)
+        self.assertIsNotNone(st_out)
+        assert st_out is not None
+        self.assertEqual(st_out.raid_stats, {"overall": {"attempts": 5}})
+
+        # 3. Stale retry once -> clean failure on NoSuchElementException in claim_tutorial & build_ship
+        client_s = MagicMock(spec=GameBrowserClient)
+        client_s.driver = MagicMock()
+        tut_div = MagicMock()
+        tut_div.is_displayed.return_value = True
+        client_s.navigate_menu.return_value = '<div id="tutorial.text"><form action="indexInternal.es?action=internalHome"><input type="hidden" name="tutorialComplete" value="1"><input type="submit" value="Claim"></form></div>'
+        client_s.driver.find_element.side_effect = [
+            tut_div,
+            StaleElementReferenceException("stale"),
+            tut_div,
+            NoSuchElementException("missing"),
+        ]
+        client_s._wait_frame_ready.return_value = '<div id="tutorial.text"></div>'
+        tut_act = PlannedAction(
+            priority="P1",
+            kind="CLAIM_TUTORIAL",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=1,
+            target_name="Claim",
+            reason="Claim tutorial reward",
+            action_href="indexInternal.es?action=internalTutorial&claim=1",
+            executable_now=True,
+        )
+        res_tut = ex_u._execute_claim_tutorial(client_s, tut_act)
+        self.assertFalse(res_tut.executed)
+        self.assertIn("not found", res_tut.message.lower())
+
+        ship_act = PlannedAction(
+            priority="P2",
+            kind="BUILD_SHIP",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=1,
+            target_level=2,
+            target_name="Small transporter",
+            reason="Build ships",
+            executable_now=True,
+        )
+        client_ship = MagicMock(spec=GameBrowserClient)
+        client_ship.driver = MagicMock()
+        client_ship.navigate_menu.return_value = (
+            '<html><body><form action="indexInternal.es?action=internalBuildItem&buildShip=1" method="POST">'
+            '<table><tr><td><a href="indexInternal.es?action=internalDetail&type=ship&id=1">Small transport</a> '
+            'Available: 0 Required: 3.000 Metal 3.000 Kryptonite '
+            '<input type="text" name="ship[1]" value="0"/></td></tr></table>'
+            '<input type="submit" value="Build"/></form></body></html>'
+        )
+        client_ship.driver.find_element.side_effect = [
+            StaleElementReferenceException("stale"),
+            NoSuchElementException("no input"),
+        ]
+        res_ship = ex_u._execute_build_ship(client_ship, prev_st, ship_act)
+        self.assertFalse(res_ship.executed)
+        self.assertIn("not found", res_ship.message.lower())
+
+        # 4. German mission verb support ('Angriff', 'Angreifen', 'Spionieren', 'Hinweis: Tipp', Pass 2 skipping 'Halten')
+        def _mk_r(val: str, name: str = "mission", rid: str = "") -> MagicMock:
+            el = MagicMock()
+            attrs = {"value": val, "name": name, "id": rid}
+            el.get_attribute.side_effect = lambda k: attrs.get(k, "")
+            return el
+
+        soup = BeautifulSoup(
+            '<form id="f"><label><input type="radio" name="mission" value="atk">Angriff</label>'
+            '<label><input type="radio" name="mission" value="trn">Transportieren</label></form>',
+            "html.parser",
+        )
+        r_atk, r_trn = _mk_r("atk"), _mk_r("trn")
+        matched = ActionExecutor._match_mission_radio(soup, "form#f", [r_atk, r_trn], "ATTACK")
+        self.assertIs(matched, r_atk)
+
+        soup_tr = BeautifulSoup(
+            '<form id="f2"><table>'
+            '<tr><td>Angreifen</td><td><input type="radio" name="m" value="1"></td><td>Hinweis: Tipp</td></tr>'
+            '<tr><td>Spionieren</td><td><input type="radio" name="m" value="6"></td><td>Hinweis: Tipp</td></tr>'
+            '</table></form>',
+            "html.parser",
+        )
+        r_m1, r_m6 = _mk_r("1", "m"), _mk_r("6", "m")
+        self.assertIs(ActionExecutor._match_mission_radio(soup_tr, "form#f2", [r_m1, r_m6], "SPY"), r_m6)
+        self.assertIs(ActionExecutor._match_mission_radio(soup_tr, "form#f2", [r_m1, r_m6], "ATTACK"), r_m1)
+
+        soup_p2 = BeautifulSoup(
+            '<form id="f3">'
+            '<label><input type="radio" name="m" value="1">Halten</label>'
+            '<label><input type="radio" name="m" value="2">Angreifen</label>'
+            '</form>',
+            "html.parser",
+        )
+        h1, a2 = _mk_r("1", "m"), _mk_r("2", "m")
+        self.assertIs(ActionExecutor._match_mission_radio(soup_p2, "form#f3", [h1, a2], "ATTACK"), a2)
+
+        soup_hold_only = BeautifulSoup(
+            '<form id="f4">'
+            '<label><input type="radio" name="m" value="1">Halten</label>'
+            '<label><input type="radio" name="m" value="6">Spionieren</label>'
+            '</form>',
+            "html.parser",
+        )
+        self.assertIsNone(
+            ActionExecutor._match_mission_radio(
+                soup_hold_only, "form#f4", [_mk_r("1", "m"), _mk_r("6", "m")], "ATTACK"
+            )
+        )
+
+        for label_txt in ("Defend", "Verteidigen", "Escort", "Eskortieren", "Deploy", "Hold", "Expedition", "Explore"):
+            soup_non_atk = BeautifulSoup(
+                f'<form id="f_na"><label><input type="radio" name="mission" value="1">{label_txt}</label>'
+                '<label><input type="radio" name="mission" value="6">Spionieren</label></form>',
+                "html.parser",
+            )
+            self.assertIsNone(
+                ActionExecutor._match_mission_radio(
+                    soup_non_atk, "form#f_na", [_mk_r("1"), _mk_r("6")], "ATTACK"
+                ),
+                f"Pass 2 wrongly matched {label_txt!r} as ATTACK",
+            )
+
+        # 5. _execute_throttle_building stale/missing handling
+        econ_html = (
+            '<html><body><form id="ress" action="indexInternal.es?action=internalEconomy" method="POST">'
+            '<select name="resource2"><option value="100" selected>100%</option><option value="0">0%</option></select>'
+            '<input type="submit" value="Save"/></form></body></html>'
+        )
+        th_act = PlannedAction(
+            priority="P1",
+            kind="THROTTLE_BUILDING",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=2,
+            target_name="Blast furnace 0%",
+            target_level=0,
+            reason="Save Pig iron",
+            executable_now=True,
+        )
+        client_th_stale = MagicMock(spec=GameBrowserClient)
+        client_th_stale.driver = MagicMock()
+        client_th_stale.navigate_menu.return_value = econ_html
+        client_th_stale.driver.find_element.side_effect = [
+            StaleElementReferenceException("stale1"),
+            StaleElementReferenceException("stale2"),
+        ]
+        res_th_stale = ex_u._execute_throttle_building(client_th_stale, prev_st, th_act)
+        self.assertFalse(res_th_stale.executed)
+        self.assertIn("became stale", res_th_stale.message.lower())
+
+        client_th_miss = MagicMock(spec=GameBrowserClient)
+        client_th_miss.driver = MagicMock()
+        client_th_miss.navigate_menu.return_value = econ_html
+        client_th_miss.driver.find_element.side_effect = [
+            StaleElementReferenceException("stale1"),
+            NoSuchElementException("missing"),
+        ]
+        res_th_miss = ex_u._execute_throttle_building(client_th_miss, prev_st, th_act)
+        self.assertFalse(res_th_miss.executed)
+        self.assertIn("not found", res_th_miss.message.lower())
+
+        # 6. _click_dom_link_with_retry double-stale + _dispatch_fleet_mission Step 1/2 stale handling
+        client_clk = MagicMock(spec=GameBrowserClient)
+        client_clk.driver = MagicMock()
+        client_clk.driver.find_element.side_effect = [
+            StaleElementReferenceException("clk1"),
+            StaleElementReferenceException("clk2"),
+        ]
+        client_clk._wait_frame_ready.return_value = "<html>ok</html>"
+        bld_act = PlannedAction(
+            priority="P2",
+            kind="BUILD",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=1,
+            target_name="Pig iron mine",
+            target_level=2,
+            reason="Upgrade",
+            executable_now=True,
+        )
+        after_clk, err_clk = ex_u._click_dom_link_with_retry(
+            client_clk, bld_act, "<html>ok</html>", "a.bau", lambda _h: True
+        )
+        self.assertIsNone(after_clk)
+        assert err_clk is not None
+        self.assertFalse(err_clk.executed)
+        self.assertIn("became stale", err_clk.message.lower())
+
+        fleet_step1_html = (
+            '<html><body><form action="indexInternal.es?action=internalSendFleet" method="POST">'
+            '<input type="text" name="ship_4" value="0"/>'
+            '<input type="text" name="gal" value="2"/><input type="text" name="sun" value="380"/><input type="text" name="pla" value="4"/>'
+            '<input type="submit" value="Continue"/></form></body></html>'
+        )
+        fleet_step2_html = (
+            '<html><body><form action="indexInternal.es?action=internalSendFleet" method="POST">'
+            '<label><input type="radio" name="mission" value="1"/>Attack</label>'
+            '<input type="submit" value="Launch"/></form></body></html>'
+        )
+        atk_act = PlannedAction(
+            priority="P2",
+            kind="ATTACK",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_name="02:380:04 (Idle)",
+            reason="Raid",
+            executable_now=True,
+        )
+        st_flt = GameState(
+            31,
+            1,
+            "u",
+            100.0,
+            (
+                PlanetState(
+                    planet_id=12476,
+                    name="Home",
+                    coords="02:380:12",
+                    planet_type="normal",
+                    temperature=31,
+                    fields_used=10,
+                    fields_max=200,
+                    resources=Resources(),
+                    storage=Resources(),
+                    energy=EnergyBalance(),
+                    ships={"s4": 10},
+                ),
+            ),
+            active_planet_id=12476,
+        )
+        client_f1 = MagicMock(spec=GameBrowserClient)
+        client_f1.driver = MagicMock()
+        client_f1.navigate_menu.return_value = fleet_step1_html
+        client_f1.driver.find_elements.side_effect = StaleElementReferenceException("step1 ship stale")
+        res_f1_stale = ex_u._dispatch_fleet_mission(
+            client_f1, st_flt, atk_act, ships_to_send={"s4": 5}, mission_kind="ATTACK"
+        )
+        self.assertFalse(res_f1_stale.executed)
+        self.assertIn("became stale", res_f1_stale.message.lower())
+
+        client_f2 = MagicMock(spec=GameBrowserClient)
+        client_f2.driver = MagicMock()
+        client_f2.navigate_menu.return_value = fleet_step1_html
+        client_f2._wait_frame_ready.return_value = fleet_step2_html
+        ship_inp = MagicMock()
+        gal_inp, sun_inp, pla_inp = MagicMock(), MagicMock(), MagicMock()
+        cont_btn = MagicMock()
+        client_f2.driver.find_elements.side_effect = [
+            [ship_inp],
+            StaleElementReferenceException("step2 radio stale1"),
+            StaleElementReferenceException("step2 radio stale2"),
+        ]
+        client_f2.driver.find_element.side_effect = [gal_inp, sun_inp, pla_inp, cont_btn]
+        res_f2_stale = ex_u._dispatch_fleet_mission(
+            client_f2, st_flt, atk_act, ships_to_send={"s4": 5}, mission_kind="ATTACK"
+        )
+        self.assertFalse(res_f2_stale.executed)
+        self.assertIn("became stale", res_f2_stale.message.lower())
+
+        # GAP-05: Pass 2 mission radio matcher must never select Harvest/Recycle/Sammeln value="1" as ATTACK
+        harvest_soup = BeautifulSoup(
+            '<form id="f"><input type="radio" id="m_harv" name="mission" value="1">'
+            '<label for="m_harv">Harvest debris</label></form>',
+            "html.parser",
+        )
+        harv_radio = MagicMock()
+        harv_radio.get_attribute.side_effect = lambda attr: {
+            "value": "1",
+            "id": "m_harv",
+            "name": "mission",
+        }.get(attr, "")
+        self.assertIsNone(ex_u._match_mission_radio(harvest_soup, "form#f", [harv_radio], "ATTACK"))
+
+        # GAP-02: _select_planet_if_needed recovers cleanly on attempt 0 stale -> attempt 1 success,
+        # and aborts cleanly without uncaught StaleElementReferenceException on persistent staleness.
+        multi_html = (
+            '<select name="planet">'
+            '<option value="indexInternal.es?newplanet=101" selected>P1</option>'
+            '<option value="indexInternal.es?newplanet=102">P2</option>'
+            "</select>"
+        )
+        client_rec = MagicMock(spec=GameBrowserClient)
+        client_rec.driver = MagicMock()
+        opt1 = MagicMock()
+        opt1.get_attribute.return_value = "indexInternal.es?newplanet=101"
+        opt1.is_selected.return_value = True
+        opt2_ok = MagicMock()
+        opt2_ok.get_attribute.return_value = "indexInternal.es?newplanet=102"
+        opt2_ok.is_selected.return_value = False
+        sel_stale_once = MagicMock()
+        sel_stale_once.find_elements.return_value = [opt1, opt2_ok]
+        sel_ok = MagicMock()
+        sel_ok.find_elements.return_value = [opt1, opt2_ok]
+        switched_html = (
+            '<select name="planet">'
+            '<option value="indexInternal.es?newplanet=101">P1</option>'
+            '<option value="indexInternal.es?newplanet=102" selected>P2</option>'
+            "</select>"
+        )
+        client_rec.driver.find_element.side_effect = [
+            StaleElementReferenceException("select disappeared attempt 0"),
+            sel_ok,
+        ]
+        client_rec._wait_frame_ready.return_value = switched_html
+        with patch("spaceinvasion.executor.Select") as mock_select_cls:
+            mock_select_cls.return_value.select_by_value.side_effect = [None]
+            switched, waited_html = ex_u._select_planet_if_needed(client_rec, 102, html=multi_html)
+        self.assertTrue(switched)
+        self.assertEqual(waited_html, switched_html)
+
+        client_dbl_stale = MagicMock(spec=GameBrowserClient)
+        client_dbl_stale.driver = MagicMock()
+        client_dbl_stale.driver.find_element.side_effect = StaleElementReferenceException("select stays stale")
+        switched_fail, waited_fail = ex_u._select_planet_if_needed(client_dbl_stale, 102, html=multi_html)
+        self.assertFalse(switched_fail)
+        self.assertIsNone(waited_fail)
+        self.assertEqual(ex_u.last_observed_active_planet_id, 101)
+        self.assertTrue(ex_u.last_observed_active_planet_confirmed)
+
+    def test_select_planet_option_click_element_not_interactable_handled(self) -> None:
+        from selenium.common.exceptions import ElementNotInteractableException, WebDriverException
+
+        lim = PageViewLimiter(max_views_per_minute=60)
+        ex = ActionExecutor(dry_run=False, max_actions_per_hour=100, page_limiter=lim)
+        multi_html = (
+            '<select name="planet">'
+            '<option value="indexInternal.es?newplanet=101" selected>P1</option>'
+            '<option value="indexInternal.es?newplanet=102">P2</option>'
+            "</select>"
+        )
+        client = MagicMock(spec=GameBrowserClient)
+        client.driver = MagicMock()
+        opt1 = MagicMock()
+        opt1.get_attribute.return_value = "indexInternal.es?newplanet=101"
+        opt1.is_selected.return_value = True
+        opt2 = MagicMock()
+        opt2.get_attribute.return_value = "indexInternal.es?newplanet=102"
+        opt2.is_selected.return_value = False
+        opt2.click.side_effect = ElementNotInteractableException("hidden option")
+        sel = MagicMock()
+        sel.find_elements.return_value = [opt1, opt2]
+        client.driver.find_element.return_value = sel
+        with patch("spaceinvasion.executor.Select") as mock_select_cls:
+            mock_select_cls.return_value.select_by_value.side_effect = ElementNotInteractableException("select hidden")
+            switched, waited_html = ex._select_planet_if_needed(client, 102, html=multi_html)
+        self.assertFalse(switched)
+        self.assertIsNone(waited_html)
+
+        state, action = _make_state_and_action()
+        client_dom = MagicMock(spec=GameBrowserClient)
+        client_dom.driver = MagicMock()
+        client_dom.driver.find_elements.side_effect = ElementNotInteractableException("button hidden")
+        client_dom.driver.find_element.side_effect = ElementNotInteractableException("input hidden")
+        link_el, click_res = ex._click_dom_link_with_retry(
+            client_dom,
+            action,
+            "<html></html>",
+            "a[href*='buildingID=5']",
+            lambda _h: True,
+        )
+        self.assertIsNone(link_el)
+        self.assertIsNotNone(click_res)
+        assert click_res is not None
+        self.assertFalse(click_res.executed)
+
+        ship_act = PlannedAction(
+            priority="P2",
+            kind="BUILD_SHIP",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=4,
+            target_level=2,
+            target_name="Falcon",
+            reason="Test",
+            executable_now=True,
+        )
+        res_ship = ex._execute_build_ship(client_dom, state, ship_act)
+        self.assertFalse(res_ship.executed)
+
+        throttle_act = PlannedAction(
+            priority="P1",
+            kind="THROTTLE_BUILDING",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=2,
+            target_level=0,
+            target_name="Blast furnace",
+            reason="Test",
+            executable_now=True,
+        )
+        client_dom.navigate_menu.return_value = "<html></html>"
+        res_thr = ex._execute_throttle_building(client_dom, state, throttle_act)
+        self.assertFalse(res_thr.executed)
+
+        fleet_act = PlannedAction(
+            priority="P2",
+            kind="FLEETSAVE",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_name="02:380:13",
+            reason="Test",
+            executable_now=True,
+        )
+        client_dom.navigate_menu.return_value = (
+            '<form name="fleet" action="indexInternal.es?action=internalSendFleet">'
+            '<input name="ship_1" value="0"/><input type="submit"/></form>'
+        )
+        client_dom.driver.find_elements.side_effect = WebDriverException("fleet input hidden")
+        client_dom.driver.find_element.side_effect = WebDriverException("fleet input hidden")
+        res_flt = ex._dispatch_fleet_mission(
+            client_dom,
+            state,
+            fleet_act,
+            ships_to_send={"s1": 1},
+            mission_kind="transport",
+        )
+        self.assertFalse(res_flt.executed)
+
+    def test_executor_planet_id_5000_digits_and_corrupt_action_fields_safe(self) -> None:
+        huge = "9" * 5000
+        html_huge = (
+            f'<select name="planet">'
+            f'<option selected="selected" value="indexInternal.es?newplanet={huge}">Huge</option>'
+            f"</select>"
+        )
+        self.assertIsNone(ActionExecutor._extract_selected_planet_id(html_huge, "https://uni/indexInternal.es"))
+        html_ok = (
+            '<select name="planet">'
+            '<option selected="selected" value="indexInternal.es?newplanet=12476">Ok</option>'
+            "</select>"
+        )
+        self.assertEqual(ActionExecutor._extract_selected_planet_id(html_ok, "https://uni/indexInternal.es"), 12476)
+
+        state, _ = _make_state_and_action()
+        ex = ActionExecutor(dry_run=True)
+        client_dom = MagicMock()
+        client_dom.navigate_menu.return_value = "<html></html>"
+        client_dom.driver = MagicMock()
+
+        bad_act = PlannedAction(
+            priority="P2",
+            kind="BUILD_SHIP",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=10**5000,  # type: ignore[arg-type]
+            target_level=10**5000,
+            target_name="9" * 5000,
+            reason="Test",
+            executable_now=True,
+        )
+        res_bad_ship = ex._execute_build_ship(client_dom, state, bad_act)
+        self.assertFalse(res_bad_ship.executed)
+
+        res_bad_fleet = ex._dispatch_fleet_mission(
+            client_dom,
+            state,
+            bad_act,
+            ships_to_send={"s1": 10**5000, "s2": "bad"},  # type: ignore[dict-item]
+            mission_kind="transport",
+        )
+        self.assertFalse(res_bad_fleet.executed)
+
+    def test_adv_executor_10e5000_planet_switch_and_build_ship_and_actions(self) -> None:
+        from spaceinvasion import game_data
+        from spaceinvasion.state import UnitOffer
+
+        state, _ = _make_state_and_action()
+        client = MagicMock(spec=GameBrowserClient)
+        client.driver = MagicMock()
+        ex_dry = ActionExecutor(dry_run=True)
+        ex_live = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
+
+        # _find_newplanet_switch_target & _select_planet_if_needed with 10**5000
+        sel_html = (
+            '<select name="planet">'
+            '<option value="indexInternal.es?newplanet=12476" selected>Home</option>'
+            '<option value="indexInternal.es?newplanet=99999">Colony</option>'
+            "</select>"
+        )
+        self.assertEqual(ActionExecutor._find_newplanet_switch_target(sel_html, 10**5000), (False, None))
+        self.assertEqual(ex_live._select_planet_if_needed(client, 10**5000, html=sel_html), (False, None))
+        self.assertEqual(ex_live._select_planet_if_needed(client, 10**5000, html=""), (False, None))
+
+        # _execute_build_ship with target_level=10**5000 sends capped int string cleanly
+        wf_html = (
+            '<form action="indexInternal.es?action=internalBuildItem&buildShip=1" method="POST">'
+            '<table><tr><td>'
+            '<a href="indexInternal.es?action=internalDetail&type=ship&id=1">Small transport</a>'
+            'Required: 3.000 Metal 3.000 Kryptonite '
+            '<input type="text" name="ship[1]" value="0"/>'
+            "</td></tr></table></form>"
+        )
+        qty_inp = MagicMock()
+        submit_btn = MagicMock()
+        form_mock = MagicMock()
+        form_mock.find_element.return_value = submit_btn
+        client.driver.find_element.side_effect = [qty_inp, form_mock]
+        client.navigate_menu.return_value = wf_html
+        client._wait_frame_ready.return_value = wf_html
+        client.read_planets_overview.return_value = state
+
+        huge_ship = PlannedAction(
+            priority="P2",
+            kind="BUILD_SHIP",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=1,
+            target_level=10**5000,
+            target_name="Small transport",
+            reason="Adv huge qty",
+            executable_now=True,
+        )
+        ship_res = ex_live._execute_build_ship(client, state, huge_ship)
+        self.assertTrue(ship_res.executed)
+        qty_inp.send_keys.assert_called_once_with(str(game_data.MAX_JSON_SAFE_INT))
+        self.assertIn(str(game_data.MAX_JSON_SAFE_INT), ship_res.message)
+
+        # Dry-run and direct _execute_build / _execute_research with 10**5000 fields
+        for kind in ("BUILD", "RESEARCH", "BUILD_SHIP", "THROTTLE_BUILDING", "SPY"):
+            act_big = PlannedAction(
+                priority="P2",
+                kind=kind,
+                planet_id=10**5000,
+                planet_coords="02:380:12",
+                target_id=10**5000,
+                target_level=10**5000,
+                target_name="Unit",
+                reason="Test",
+                executable_now=True,
+            )
+            dry_res = ex_dry.execute_action(client, state, act_big)
+            self.assertTrue(dry_res.dry_run)
+            self.assertIn("[DRY-RUN]", dry_res.message)
+
+        client.driver.find_element.side_effect = NoSuchElementException("missing")
+        client.navigate_menu.return_value = "<html></html>"
+        for fn, kind in ((ex_live._execute_build, "BUILD"), (ex_live._execute_research, "RESEARCH")):
+            act_k = PlannedAction("P2", kind, 10**5000, "02:380:12", "T", "R", target_id=10**5000, target_level=10**5000, executable_now=True)
+            res_k = fn(client, state, act_k)
+            self.assertFalse(res_k.executed)
+
+    def test_r7_throttle_building_empty_html_10e5000_planet_id_and_compact_new_lvl(self) -> None:
+        state, _ = _make_state_and_action()
+        client = MagicMock(spec=GameBrowserClient)
+        client.driver = MagicMock()
+        ex_live = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
+
+        client.navigate_menu.return_value = ""
+        act_throttle = PlannedAction(
+            priority="P1",
+            kind="THROTTLE_BUILDING",
+            planet_id=10**5000,
+            planet_coords="02:380:12",
+            target_id=2,
+            target_level=0,
+            target_name="Blast furnace",
+            reason="Starving",
+            executable_now=True,
+        )
+        res_empty = ex_live.execute_action(client, state, act_throttle)
+        self.assertFalse(res_empty.executed)
+        self.assertIn("~1e5000", res_empty.message)
+
+    def test_r8_executor_sanitizes_huge_and_nonfinite_max_limiter_wait(self) -> None:
+        import math
+
+        self.assertIsNone(ActionExecutor(max_limiter_wait=None).max_limiter_wait)
+        self.assertIsNone(ActionExecutor(max_limiter_wait=True).max_limiter_wait)  # type: ignore[arg-type]
+        self.assertEqual(ActionExecutor(max_limiter_wait=8.0).max_limiter_wait, 8.0)
+
+        for bad_wait in (10**400, float("nan"), float("inf"), float("-inf"), -5.0):
+            ex = ActionExecutor(max_limiter_wait=bad_wait)
+            self.assertIsNotNone(ex.max_limiter_wait)
+            assert ex.max_limiter_wait is not None
+            self.assertTrue(math.isfinite(ex.max_limiter_wait))
+            self.assertGreaterEqual(ex.max_limiter_wait, 0.0)
+            self.assertLessEqual(ex.max_limiter_wait, 3600.0)
+
+    def test_r9_scan_galaxy_and_fleet_dispatch_reject_arabic_indic_coords(self) -> None:
+        state, _ = _make_state_and_action()
+        client = MagicMock(spec=GameBrowserClient)
+        client.driver = MagicMock()
+        client.open_galaxy.return_value = "<html></html>"
+        client.last_galaxy_coords = (1, 1)
+
+        ex_live = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
+        scan_act = PlannedAction(
+            priority="P2",
+            kind="SCAN_GALAXY",
+            planet_id=12476,
+            planet_coords="\u0660\u0661:\u0660\u0660\u0661:\u0660\u0661",
+            target_name="Galaxy [\u0660\u0662:\u0663\u0668\u0660]",
+            reason="Arabic coords scan test",
+            executable_now=True,
+        )
+        scan_res = ex_live._execute_scan_galaxy(client, state, scan_act)
+        self.assertTrue(scan_res.executed)
+        client.open_galaxy.assert_called_once_with(galaxy=1, system=1)
+
+        atk_act = PlannedAction(
+            priority="P2",
+            kind="ATTACK",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_name="\u0660\u0662:\u0663\u0668\u0660:\u0660\u0664",
+            reason="Arabic coords attack test",
+            executable_now=True,
+        )
+        atk_res = ex_live._dispatch_fleet_mission(
+            client,
+            state,
+            atk_act,
+            ships_to_send={"s4": 5},
+            mission_kind="ATTACK",
+        )
+        self.assertFalse(atk_res.executed)
+        self.assertIn("could not parse target coordinates", atk_res.message.lower())
+        client.navigate_menu.assert_not_called()
+
+    def test_r10_none_fields_logging_bytes_redaction_and_hourly_cap_zero(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock
+        from spaceinvasion.logging_utils import append_api_log, append_tick_logs, redact_sensitive
+        from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
+        from spaceinvasion.strategy import PlannedAction
+
+        ex_zero = ActionExecutor(dry_run=False, max_actions_per_hour=0)
+        self.assertEqual(ex_zero.max_actions_per_hour, 0)
+        self.assertEqual(ex_zero.remaining_hourly_budget(), 0)
+        ex_huge = ActionExecutor(max_actions_per_hour=10**5000)
+        self.assertLessEqual(ex_huge.max_actions_per_hour, 1_000_000)
+
+        p = PlanetState(
+            planet_id=1,
+            name="Home",
+            coords="01:001:01",
+            planet_type="normal",
+            temperature=20,
+            fields_used=10,
+            fields_max=200,
+            resources=Resources(100, 100, 100, 100),
+            storage=Resources(1000, 1000, 1000, 1000),
+            energy=EnergyBalance(50, 10),
+        )
+        st = GameState(31, 1, "u", 1000.0, (p,), active_planet_id=1)
+
+        none_act = PlannedAction(
+            priority="P2",
+            kind="BUILD",
+            planet_id=1,
+            planet_coords=None,  # type: ignore[arg-type]
+            target_id=1,
+            target_name=None,  # type: ignore[arg-type]
+            target_level="bad",  # type: ignore[arg-type]
+            reason=None,  # type: ignore[arg-type]
+            executable_now=True,
+        )
+        dry_res = ActionExecutor(dry_run=True).execute_action(MagicMock(), st, none_act)
+        self.assertFalse(dry_res.executed)
+        self.assertTrue(dry_res.dry_run)
+
+        blk_res = ex_zero.execute_action(MagicMock(), st, none_act)
+        self.assertFalse(blk_res.executed)
+        self.assertIn("hourly action rate cap reached", blk_res.message.lower())
+
+        client = MagicMock()
+        client.open_galaxy.return_value = "<html></html>"
+        client.last_galaxy_coords = (1, 1)
+        scan_none = PlannedAction(
+            priority="P2",
+            kind="SCAN_GALAXY",
+            planet_id=1,
+            planet_coords=None,  # type: ignore[arg-type]
+            target_name=None,  # type: ignore[arg-type]
+            reason=None,  # type: ignore[arg-type]
+            executable_now=True,
+        )
+        scan_res = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))._execute_scan_galaxy(client, st, scan_none)
+        self.assertTrue(scan_res.executed)
+
+        atk_none = PlannedAction(
+            priority="P2",
+            kind="ATTACK",
+            planet_id=1,
+            planet_coords=None,  # type: ignore[arg-type]
+            target_name=None,  # type: ignore[arg-type]
+            reason=None,  # type: ignore[arg-type]
+            executable_now=True,
+        )
+        disp_res = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))._dispatch_fleet_mission(
+            client, st, atk_none, ships_to_send={"s4": 1}, mission_kind="ATTACK"
+        )
+        self.assertFalse(disp_res.executed)
+        self.assertIn("could not parse target coordinates", disp_res.message.lower())
+
+        # Bytes / secret dict keys / frozenset / Path double-redaction
+        red = redact_sensitive(
+            {
+                "raw": b"https://x/?sid=RAW_BYTES_SECRET",
+                "password": b"PW_SECRET",
+                "api_key": "API_SECRET",
+                "fset": frozenset({b"?sid=FSET_SECRET"}),
+            }
+        )
+        self.assertNotIn("RAW_BYTES_SECRET", json.dumps(red, allow_nan=False))
+        self.assertNotIn("PW_SECRET", json.dumps(red, allow_nan=False))
+        self.assertNotIn("API_SECRET", json.dumps(red, allow_nan=False))
+        self.assertNotIn("FSET_SECRET", json.dumps(red, allow_nan=False))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            jl, tl = append_tick_logs(
+                tp,
+                source="r10",
+                tick=1,
+                mode="DRY-RUN",
+                state=st,
+                actual_action=none_act,
+                actual_result={"password": "PW_IN_RES", "path": Path("https://x/?sid=PATH_SECRET")},
+                next_action=None,
+            )
+            ajl, atl = append_api_log(
+                tp,
+                method=b"POST?sid=M_BYTES",  # type: ignore[arg-type]
+                path="/command",
+                status=200,
+                payload={"password": "API_PW_SECRET"},
+                response={"error": b"boom ?sid=RESP_BYTES"},
+            )
+            for p_log in (jl, tl, ajl, atl):
+                txt = p_log.read_text(encoding="utf-8")
+                for sec in ("PW_IN_RES", "PATH_SECRET", "M_BYTES", "API_PW_SECRET", "RESP_BYTES"):
+                    self.assertNotIn(sec, txt)
+
+    def test_r12_executor_safe_str_resists_broken_fspath_and_raise_str(self) -> None:
+        from spaceinvasion import executor as ex_mod
+
+        class _RaiseFspath:
+            def __fspath__(self) -> str:
+                raise RuntimeError("fspath boom")
+
+        class _IntPath:
+            def __fspath__(self) -> int:
+                return 10**5000
+
+        class _BytesPath:
+            def __fspath__(self) -> bytes:
+                return b"bytes_path_ok"
+
+        class _RaiseStrRepr:
+            def __str__(self) -> str:
+                raise RuntimeError("str boom")
+
+            def __repr__(self) -> str:
+                raise RuntimeError("repr boom")
+
+        for val in (_RaiseFspath(), _IntPath(), _BytesPath(), _RaiseStrRepr(), RuntimeError(10**5000, "err")):
+            self.assertIsInstance(ex_mod._safe_str(val), str)
+
+        _, st = _make_state_and_action()
+        bad_act = PlannedAction(
+            priority="P2",
+            kind="BUILD",
+            planet_id=12476,
+            planet_coords=_RaiseFspath(),  # type: ignore[arg-type]
+            target_id=1,
+            target_name=_RaiseStrRepr(),  # type: ignore[arg-type]
+            target_level=1,
+            reason=_IntPath(),  # type: ignore[arg-type]
+            executable_now=True,
+            action_href=_BytesPath(),  # type: ignore[arg-type]
+        )
+        res = ActionExecutor(dry_run=True).execute_action(MagicMock(), st, bad_act)
+        self.assertFalse(res.executed)
+        self.assertTrue(res.dry_run)
+
+    def test_r13_executor_safe_str_handles_deep_cyclic_exceptions(self) -> None:
+        import time
+        from spaceinvasion import executor as ex_mod
+
+        class _SelfPath:
+            def __fspath__(self) -> "_SelfPath":
+                return self
+
+        self.assertEqual(ex_mod._safe_str(_SelfPath()), "<_SelfPath>")
+
+        cyc = RuntimeError("x")
+        cyc.args = (10**5000, cyc)
+        cyc_str = ex_mod._safe_str(cyc)
+        self.assertIsInstance(cyc_str, str)
+        self.assertIn("RuntimeError", cyc_str)
+
+        deep: BaseException = RuntimeError("leaf")
+        for _ in range(25):
+            deep = RuntimeError(10**5000, deep)
+        deep_str = ex_mod._safe_str(deep)
+        self.assertIsInstance(deep_str, str)
+        self.assertIn("RuntimeError", deep_str)
+
+        dag: BaseException = RuntimeError("dag_leaf")
+        for _ in range(18):
+            dag = RuntimeError(10**5000, dag, dag, dag, dag, dag, dag, dag)
+        t0 = time.perf_counter()
+        dag_str = ex_mod._safe_str(dag)
+        self.assertLess((time.perf_counter() - t0) * 1000.0, 200.0)
+        self.assertIsInstance(dag_str, str)
+
+        _, st = _make_state_and_action()
+        bad_act = PlannedAction(
+            priority="P2",
+            kind="BUILD",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=1,
+            target_name=cyc,  # type: ignore[arg-type]
+            target_level=1,
+            reason=deep,  # type: ignore[arg-type]
+            executable_now=True,
+        )
+        res = ActionExecutor(dry_run=True).execute_action(MagicMock(), st, bad_act)
+        self.assertFalse(res.executed)
+        self.assertTrue(res.dry_run)
+
+    def test_r14_executor_safe_str_dag20_and_throttle_blocks_asteroid_and_raid(self) -> None:
+        import time
+        from spaceinvasion import executor as ex_mod
+        from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
+        from spaceinvasion.strategy import PlannedAction
+
+        dag: BaseException = RuntimeError("leaf")
+        for _ in range(20):
+            dag = RuntimeError(10**5000, dag, dag, dag, dag)
+        t0 = time.perf_counter()
+        self.assertIsInstance(ex_mod._safe_str(dag), str)
+        self.assertLess((time.perf_counter() - t0) * 1000.0, 50.0)
+
+        ex = ex_mod.ActionExecutor(dry_run=False)
+        for ptype in ("asteroid", "raid"):
+            p = PlanetState(
+                planet_id=910,
+                name="Special",
+                coords="02:380:09",
+                planet_type=ptype,
+                temperature=10,
+                fields_used=1,
+                fields_max=50,
+                resources=Resources(1000, 1000, 1000, 1000),
+                storage=Resources(10_000, 10_000, 10_000, 10_000),
+                energy=EnergyBalance(50, 10),
+                buildings={"b1": 1},
+            )
+            st = GameState(31, 1, "u", 1000.0, (p,), active_planet_id=910)
+            act = PlannedAction(
+                priority="P2",
+                kind="THROTTLE_BUILDING",
+                planet_id=910,
+                planet_coords="02:380:09",
+                target_id=1,
+                target_name="Pig iron mine",
+                target_level=50,
+                reason="test throttle guard",
+                executable_now=True,
+            )
+            client = MagicMock()
+            res = ex._execute_throttle_building(client, st, act)
+            self.assertFalse(res.executed)
+            self.assertEqual(client.method_calls, [])
 
 
 if __name__ == "__main__":

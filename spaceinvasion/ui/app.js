@@ -16,7 +16,14 @@ const state = {
   apiOnline: false,
   reconnectAttempts: 0,
   configDirty: false,
-  gaCalcRunning: false,
+  configSaving: 0,
+  gaCalcCount: 0,
+  get gaCalcRunning() {
+    return this.gaCalcCount > 0;
+  },
+  set gaCalcRunning(flag) {
+    this.gaCalcCount = flag ? Math.max(1, this.gaCalcCount) : 0;
+  },
   lastOptimizerSummary: null,
   uiVersions: {
     code_version: null,
@@ -54,7 +61,9 @@ function restorePersistedUiState() {
     const raw = sessionStorage.getItem(SESSION_STATE_KEY);
     if (!raw) return;
     const saved = JSON.parse(raw);
-    if (saved.selectedPlanetId != null) state.selectedPlanetId = Number(saved.selectedPlanetId);
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return;
+    const savedPid = finiteNum(saved.selectedPlanetId, null);
+    if (savedPid !== null) state.selectedPlanetId = savedPid;
     if (saved.bldCategory) state.bldCategory = String(saved.bldCategory);
     if (saved.selectedUnitKey) state.selectedUnitKey = String(saved.selectedUnitKey);
     if (saved.combatSubTab) state.combatSubTab = String(saved.combatSubTab);
@@ -81,18 +90,29 @@ const PAGE_TITLES = {
 const el = (id) => document.getElementById(id);
 
 function fmtInt(n) {
-  return Number(n || 0).toLocaleString("en-US");
+  if (n === null || n === undefined || n === "") return "0";
+  const v = finiteNum(n, null);
+  if (v === null) return "—";
+  const clean = v === 0 ? 0 : v;
+  const formatted = clean.toLocaleString("en-US");
+  return formatted === "-0" ? "0" : formatted;
 }
 
 function fmtRate(n) {
-  const v = Math.round(Number(n || 0));
+  if (n === null || n === undefined || n === "") return "0/h";
+  const raw = finiteNum(n, null);
+  if (raw === null) return "—/h";
+  const rounded = Math.round(raw);
+  const v = rounded === 0 ? 0 : rounded;
   const sign = v > 0 ? "+" : "";
   return `${sign}${fmtInt(v)}/h`;
 }
 
 function fmtClock(tsSec) {
   if (!tsSec) return "SYNC --:--:--";
-  const d = new Date(Number(tsSec) * 1000);
+  const ts = finiteNum(tsSec, null);
+  if (ts === null) return "SYNC ACTIVE";
+  const d = new Date(ts * 1000);
   if (Number.isNaN(d.getTime())) return "SYNC ACTIVE";
   return `SYNC ${d.toTimeString().slice(0, 8)}`;
 }
@@ -151,14 +171,69 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 4000) {
   }
 }
 
+function ensureJsonObject(parsed, res, preview = "") {
+  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return parsed;
+  }
+  const kind = parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed;
+  const snippet = preview ? `: ${preview}` : "";
+  const err = new Error(
+    res && !res.ok
+      ? `HTTP ${res.status}${snippet || ` (non-object JSON ${kind})`}`
+      : `Invalid JSON object response (expected object, got ${kind})`
+  );
+  err.status = res?.status;
+  err.rateLimited = res?.status === 429;
+  throw err;
+}
+
+async function parseResponseJson(res) {
+  if (typeof res?.text === "function") {
+    const raw = await res.text();
+    if (!raw || !raw.trim()) {
+      return {};
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      const preview = raw.replace(/\s+/g, " ").trim().slice(0, 120);
+      const err = new Error(
+        res.ok
+          ? `Invalid JSON response (${preview || "empty"})`
+          : `HTTP ${res.status}${preview ? `: ${preview}` : ""}`
+      );
+      err.status = res.status;
+      err.rateLimited = res.status === 429;
+      throw err;
+    }
+    const preview = raw.replace(/\s+/g, " ").trim().slice(0, 120);
+    return ensureJsonObject(parsed, res, preview);
+  }
+  let parsed;
+  try {
+    parsed = await res.json();
+  } catch (parseErr) {
+    const err = new Error(
+      res && !res.ok
+        ? `HTTP ${res.status}`
+        : `Invalid JSON response (${parseErr?.message || "parse error"})`
+    );
+    err.status = res?.status;
+    err.rateLimited = res?.status === 429;
+    throw err;
+  }
+  return ensureJsonObject(parsed, res);
+}
+
 async function apiGet(url, timeoutMs = 6000) {
   const res = await fetchWithTimeout(url, {}, timeoutMs);
-  const data = await res.json();
-  if (!res.ok || data.ok === false) {
-    const err = new Error(data.error || `HTTP ${res.status}`);
+  const data = ensureJsonObject(await parseResponseJson(res), res);
+  if (!res.ok || data?.ok === false) {
+    const err = new Error(data?.error || `HTTP ${res.status}`);
     err.status = res.status;
-    err.rateLimited = Boolean(data.rate_limited || res.status === 429);
-    err.retryAfter = Number(data.retry_after || 0);
+    err.rateLimited = Boolean(data?.rate_limited || res.status === 429);
+    err.retryAfter = finiteNum(data?.retry_after, 0);
     throw err;
   }
   return data;
@@ -200,13 +275,13 @@ async function apiCommand(payload) {
     setApiStatus(false, msg);
     throw err;
   }
-  const data = await res.json();
+  const data = ensureJsonObject(await parseResponseJson(res), res);
   setApiStatus(true);
-  if (!res.ok || data.ok === false) {
-    const err = new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok || data?.ok === false) {
+    const err = new Error(data?.error || `HTTP ${res.status}`);
     err.status = res.status;
-    err.rateLimited = Boolean(data.rate_limited || res.status === 429);
-    err.retryAfter = Number(data.retry_after || 0);
+    err.rateLimited = Boolean(data?.rate_limited || res.status === 429);
+    err.retryAfter = finiteNum(data?.retry_after, 0);
     throw err;
   }
   return data;
@@ -220,6 +295,9 @@ function activePlanetFrom(dash) {
 }
 
 function currentBuildingsEta(dash) {
+  if (dash && dash !== state.dashboard && dash.buildings_eta) {
+    return dash.buildings_eta;
+  }
   const planet = activePlanetFrom(dash);
   if (
     state.buildingsEtaData &&
@@ -232,6 +310,9 @@ function currentBuildingsEta(dash) {
 }
 
 function currentCombat(dash) {
+  if (dash && dash !== state.dashboard && dash.combat) {
+    return dash.combat;
+  }
   const planet = activePlanetFrom(dash);
   if (state.combatData && planet && state.combatData.planet_id === planet.planet_id) {
     return state.combatData;
@@ -398,7 +479,7 @@ function renderTopbar(dash) {
   const statusText = el("chrome-status-text");
   if (health.in_game) {
     pip.className = "status-pip online";
-    const cdSec = Math.ceil(Number(health.retry_after || 0));
+    const cdSec = Math.ceil(finiteNum(health.retry_after, 0));
     const cdTag = health.rate_limited && cdSec > 0 ? ` · COOLDOWN ${cdSec}s` : health.rate_limited ? " · COOLDOWN" : "";
     statusText.textContent = `CHROME :${health.debug_port || 9222} ONLINE${cdTag}`;
     el("btn-ensure-session").hidden = true;
@@ -455,10 +536,11 @@ function renderTopbar(dash) {
 }
 
 function renderResourceBar(key, amount, storage, hourlyRate) {
-  const cap = Number(storage || 0);
-  const val = Number(amount || 0);
-  const pct = cap > 0 ? Math.min(100, Math.round((val / cap) * 100)) : 0;
-  el(`val-${key}`).textContent = fmtInt(val);
+  const cap = finiteNum(storage, 0);
+  const val = finiteNum(amount, null);
+  const ratioPct = cap > 0 && val !== null ? (val / cap) * 100 : 0;
+  const pct = Number.isFinite(ratioPct) ? Math.max(0, Math.min(100, Math.round(ratioPct))) : 0;
+  el(`val-${key}`).textContent = fmtInt(amount ?? 0);
   el(`cap-${key}`).textContent = cap > 0 ? `/ ${fmtInt(cap)} (${pct}%)` : "—";
   const bar = el(`bar-${key}`);
   bar.style.transform = `scaleX(${pct / 100})`;
@@ -470,8 +552,9 @@ function renderResourceBar(key, amount, storage, hourlyRate) {
       rateNode.textContent = "—/h";
       rateNode.className = "track-rate";
     } else {
+      const rateNum = finiteNum(hourlyRate, null);
       rateNode.textContent = fmtRate(hourlyRate);
-      rateNode.className = `track-rate${Number(hourlyRate) < 0 ? " is-neg" : ""}`;
+      rateNode.className = `track-rate${rateNum !== null && Math.round(rateNum) < 0 ? " is-neg" : ""}`;
     }
   }
 }
@@ -479,11 +562,10 @@ function renderResourceBar(key, amount, storage, hourlyRate) {
 function getSelectedBlastFurnacePct(dash) {
   const planet = activePlanetFrom(dash);
   const eta = currentBuildingsEta(dash);
-  const pct =
-    planet?.economy_rates?.resource2 ??
-    eta?.planet_economy?.blast_furnace_pct ??
-    100;
-  return Number(pct);
+  const r2 = finiteNum(planet?.economy_rates?.resource2, null);
+  const etaPct = finiteNum(eta?.planet_economy?.blast_furnace_pct, null);
+  const pct = r2 !== null ? r2 : etaPct !== null ? etaPct : 100;
+  return clampPct(Math.round(pct));
 }
 
 function renderTelemetry(dash) {
@@ -492,18 +574,25 @@ function renderTelemetry(dash) {
   const pEcon = eta?.planet_economy || null;
 
   if (planet) {
-    el("command-subpath").textContent = `SECTOR // [${planet.coords}] ${planet.name.toUpperCase()}`;
-    renderResourceBar("pig", planet.resources.pig_iron, planet.storage.pig_iron, pEcon?.pig_iron_per_hr);
-    renderResourceBar("metal", planet.resources.metal, planet.storage.metal, pEcon?.metal_per_hr);
-    renderResourceBar("kryp", planet.resources.kryptonite, planet.storage.kryptonite, pEcon?.kryptonite_per_hr);
-    renderResourceBar("spice", planet.resources.spice, planet.storage.spice, pEcon?.spice_per_hr);
+    const planetTitle = String(planet.name || "COLONY").toUpperCase();
+    el("command-subpath").textContent = `SECTOR // [${planet.coords || "--"}] ${planetTitle}`;
+    renderResourceBar("pig", planet.resources?.pig_iron, planet.storage?.pig_iron, pEcon?.pig_iron_per_hr);
+    renderResourceBar("metal", planet.resources?.metal, planet.storage?.metal, pEcon?.metal_per_hr);
+    renderResourceBar("kryp", planet.resources?.kryptonite, planet.storage?.kryptonite, pEcon?.kryptonite_per_hr);
+    renderResourceBar("spice", planet.resources?.spice, planet.storage?.spice, pEcon?.spice_per_hr);
 
-    const produced = Number(planet.energy?.produced || 0);
-    const used = Number(planet.energy?.used || 0);
-    const net = produced - used;
-    el("val-energy").textContent = `${net >= 0 ? "+" : ""}${fmtInt(net)}`;
-    el("energy-ratio").textContent = `${fmtInt(produced)} / ${fmtInt(used)} E`;
-    el("planet-specs").textContent = `TEMP ${planet.temperature}°C · FIELDS ${planet.fields_used}/${planet.fields_max}`;
+    const prodRaw = planet.energy?.produced;
+    const usedRaw = planet.energy?.used;
+    const prodFinite = prodRaw == null ? 0 : finiteNum(prodRaw, null);
+    const usedFinite = usedRaw == null ? 0 : finiteNum(usedRaw, null);
+    const netRaw = prodFinite !== null && usedFinite !== null ? prodFinite - usedFinite : null;
+    const net = netRaw === null ? null : netRaw === 0 ? 0 : netRaw;
+    el("val-energy").textContent = net === null ? "—" : `${net >= 0 ? "+" : ""}${fmtInt(net)}`;
+    el("energy-ratio").textContent = `${prodFinite === null ? "—" : fmtInt(prodFinite)} / ${usedFinite === null ? "—" : fmtInt(usedFinite)} E`;
+    const tempVal = finiteNum(planet.temperature, null);
+    const fUsedVal = finiteNum(planet.fields_used, null);
+    const fMaxVal = finiteNum(planet.fields_max, null);
+    el("planet-specs").textContent = `TEMP ${tempVal === null ? "—" : tempVal}°C · FIELDS ${fUsedVal === null ? "—" : fUsedVal}/${fMaxVal === null ? "—" : fMaxVal}`;
   }
 
   const b2Pct = getSelectedBlastFurnacePct(dash);
@@ -523,14 +612,20 @@ function renderTelemetry(dash) {
   const cur = rnk.current || {};
   const rates = rnk.rates || {};
   const az = cur.attack_zone || {};
-  el("dash-rank-val").textContent = cur.server_rank != null ? `#${fmtInt(cur.server_rank)}` : az.label || "#—";
-  el("dash-az-val").textContent = `${az.label || "AZ —"} · ${fmtInt(Math.round(cur.baseline_points || 0))} pts`;
-  el("dash-pts-hr").textContent = `+${Number(rates.pts_per_hr_steady || 0).toFixed(2)}/h`;
-  el("dash-spice-hr").textContent = `${fmtInt(Math.round(rates.spice_eq_per_hr || 0))} SpiceEq/h`;
+  const rankFinite = finiteNum(cur.server_rank, null);
+  el("dash-rank-val").textContent = cur.server_rank != null ? (rankFinite !== null ? `#${fmtInt(rankFinite)}` : "#—") : az.label || "#—";
+  const baselinePts = finiteNum(cur.baseline_points, 0);
+  const steadyRate = finiteNum(rates.pts_per_hr_steady, 0);
+  const spiceEqRate = finiteNum(rates.spice_eq_per_hr, 0);
+  el("dash-az-val").textContent = `${az.label || "AZ —"} · ${fmtInt(Math.round(baselinePts))} pts`;
+  const cleanSteady = Math.abs(steadyRate) < 0.005 || Number(steadyRate.toFixed(2)) === 0 ? 0 : steadyRate;
+  el("dash-pts-hr").textContent = `${cleanSteady >= 0 ? "+" : ""}${cleanSteady.toFixed(2)}/h`;
+  el("dash-spice-hr").textContent = `${fmtInt(Math.round(spiceEqRate))} SpiceEq/h`;
 
   const health = dash.health || {};
   el("val-budget").textContent = `${health.remaining_hourly_actions ?? "—"} OPS/HR`;
-  el("val-speedup").textContent = dash.state?.speedup_factor ? `SPEED x${dash.state.speedup_factor}` : "STD x1";
+  const spdVal = finiteNum(dash.state?.speedup_factor, null);
+  el("val-speedup").textContent = spdVal !== null && spdVal > 0 ? `SPEED x${spdVal}` : "STD x1";
 
   const hostileCount = (dash.state?.fleet_alerts || []).filter((a) => a.hostile).length;
   const beacon = el("hud-alert-beacon");
@@ -582,24 +677,29 @@ function renderColonyMatrix(dash) {
 
       const tdCoords = document.createElement("td");
       tdCoords.className = "tabular";
-      tdCoords.textContent = p.coords;
+      tdCoords.textContent = p.coords || "--";
 
       const tdName = document.createElement("td");
-      tdName.textContent = p.name;
+      tdName.textContent = p.name || "Colony";
 
       const tdStat = document.createElement("td");
       const badge = document.createElement("span");
+      const pigStor = finiteNum(p.storage?.pig_iron, 0);
+      const pigAmt = finiteNum(p.resources?.pig_iron, 0);
+      const spiStor = finiteNum(p.storage?.spice, 0);
+      const spiAmt = finiteNum(p.resources?.spice, 0);
       const nearFull =
-        p.storage &&
-        ((p.storage.pig_iron && p.resources.pig_iron / p.storage.pig_iron >= 0.85) ||
-          (p.storage.spice && p.resources.spice / p.storage.spice >= 0.85));
+        (pigStor > 0 && pigAmt / pigStor >= 0.85) ||
+        (spiStor > 0 && spiAmt / spiStor >= 0.85);
       badge.className = `status-word${nearFull ? " is-warn" : ""}`;
       badge.textContent = nearFull ? "NEAR-CAP" : p.planet_id === chosenId ? "ONLINE" : "READY";
       tdStat.appendChild(badge);
 
       const tdFields = document.createElement("td");
       tdFields.className = "col-right tabular";
-      tdFields.textContent = `${p.fields_used}/${p.fields_max}`;
+      const fUsed = finiteNum(p.fields_used, null);
+      const fMax = finiteNum(p.fields_max, null);
+      tdFields.textContent = `${fUsed === null ? "—" : fUsed}/${fMax === null ? "—" : fMax}`;
 
       tr.append(tdCoords, tdName, tdStat, tdFields);
       rows.push(tr);
@@ -640,7 +740,7 @@ function actionPayloadFor(action, dryRun) {
     return {
       command: "build_ship",
       ship_id: action.target_id,
-      quantity: Math.max(1, Number(action.target_level || 1)),
+      quantity: Math.max(1, Math.round(finiteNum(action.target_level, 1))),
       planet_id: action.planet_id,
       dry_run: dryRun,
     };
@@ -649,7 +749,7 @@ function actionPayloadFor(action, dryRun) {
     return {
       command: "throttle_building",
       building_id: action.target_id,
-      percentage: action.target_level == null ? 0 : Number(action.target_level),
+      percentage: action.target_level == null ? 0 : finiteNum(action.target_level, 0),
       planet_id: action.planet_id,
       dry_run: dryRun,
     };
@@ -901,8 +1001,8 @@ function renderDashNearestEtas(dash) {
   const prioritized = [...blds]
     .filter((b) => (b.unmet_prerequisites || []).length === 0)
     .sort((a, b) => {
-      const ra = a.reach_hours == null ? 1e9 : Number(a.reach_hours);
-      const rb = b.reach_hours == null ? 1e9 : Number(b.reach_hours);
+      const ra = finiteNum(a.reach_hours, 1e9);
+      const rb = finiteNum(b.reach_hours, 1e9);
       return ra - rb;
     })
     .slice(0, 6);
@@ -919,18 +1019,20 @@ function renderDashNearestEtas(dash) {
       });
 
       const tdN = document.createElement("td");
-      tdN.textContent = b.name;
+      tdN.textContent = b.name || "Building";
       const tdNext = document.createElement("td");
       tdNext.className = "tabular";
-      tdNext.textContent = `L${b.current_level} → L${b.next_level}`;
+      tdNext.textContent = `L${b.current_level ?? 0} → L${b.next_level ?? b.target_level ?? "—"}`;
       const tdTime = document.createElement("td");
       tdTime.className = "tabular";
-      tdTime.textContent = b.build_time_text;
+      tdTime.textContent = b.build_time_text ?? "—";
       const tdReach = document.createElement("td");
       tdReach.className = "col-right tabular";
       const pill = document.createElement("span");
-      pill.className = `eta-pill${b.reach_eta === "—" ? " is-blocked" : b.wait_hours > 0 ? " is-wait" : ""}`;
-      pill.textContent = b.reach_eta;
+      const reachEta = b.reach_eta ?? "—";
+      const waitH = finiteNum(b.wait_hours, 0);
+      pill.className = `eta-pill${reachEta === "—" ? " is-blocked" : waitH > 0 ? " is-wait" : ""}`;
+      pill.textContent = reachEta;
       tdReach.appendChild(pill);
 
       tr.append(tdN, tdNext, tdTime, tdReach);
@@ -951,7 +1053,14 @@ function bottleneckTag(code) {
 }
 
 function finiteNum(val, fallback = null) {
-  if (val === null || val === undefined || val === "" || typeof val === "boolean") {
+  if (
+    val === null ||
+    val === undefined ||
+    typeof val === "boolean" ||
+    typeof val === "object" ||
+    typeof val === "symbol" ||
+    (typeof val === "string" && val.trim() === "")
+  ) {
     return fallback;
   }
   const n = Number(val);
@@ -969,23 +1078,27 @@ function fmtCompact(val) {
   const absN = Math.abs(n);
   if (absN >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
   if (absN >= 1e4) return `${(n / 1e3).toFixed(1)}k`;
-  return Number.isInteger(n) ? fmtInt(n) : n.toFixed(1);
+  if (Number.isInteger(n)) return fmtInt(n);
+  return absN < 0.05 ? "0.0" : n.toFixed(1);
 }
 
 function fmtImprovementPct(rawPct, baseFit, bestFit) {
   let pct = finiteNum(rawPct, null);
-  if (pct === null && baseFit !== null && bestFit !== null) {
-    if (Math.abs(baseFit) > 1e-6) {
-      pct = ((bestFit - baseFit) / Math.abs(baseFit)) * 100;
-    } else if (Math.abs(bestFit) <= 1e-12) {
+  const base = finiteNum(baseFit, null);
+  const best = finiteNum(bestFit, null);
+  if (pct === null && base !== null && best !== null) {
+    if (Math.abs(base) > 1e-6) {
+      pct = ((best - base) / Math.abs(base)) * 100;
+    } else if (Math.abs(best) <= 1e-12) {
       pct = 0;
     } else {
-      pct = bestFit > 0 ? 999.9 : -999.9;
+      pct = best > 0 ? 999.9 : -999.9;
     }
   }
-  if (pct === null) return "0.0%";
+  if (pct === null) return "—";
   if (pct > 999.9) return ">+999.9%";
   if (pct < -999.9) return "<-999.9%";
+  if (Math.abs(pct) < 0.05) pct = 0;
   return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
 }
 
@@ -1057,11 +1170,12 @@ function renderGaNnHud(dash) {
   const popSize = Math.max(1, Math.round(finiteNum(rawSum.population_size, cfgPop)));
   const nnBackend = String(rawSum.nn_backend || "mlp").toUpperCase();
   const elapsedMs = finiteNum(rawSum.elapsed_ms, null);
+  const safeElapsed = elapsedMs !== null ? Math.max(0, Math.round(elapsedMs)) : null;
   const metaLine = el("gann-meta-line");
   if (metaLine) {
     metaLine.textContent =
-      elapsedMs !== null
-        ? `POP ${popSize} · ${nnBackend} · ${Math.round(elapsedMs)}ms`
+      safeElapsed !== null
+        ? `POP ${popSize} · ${nnBackend} · ${safeElapsed}ms`
         : `POP ${popSize} · ${nnBackend}`;
   }
 
@@ -1087,7 +1201,8 @@ function renderGaNnHud(dash) {
     0,
     Math.round(finiteNum(rawSum.nn_evaluations ?? rawSum.neural_evals, 0))
   );
-  const loss = finiteNum(rawSum.nn_final_loss, null);
+  const lossRaw = finiteNum(rawSum.nn_final_loss, null);
+  const loss = lossRaw !== null ? Math.max(0, lossRaw) : null;
   const nnPct = state.gaCalcRunning
     ? 72
     : nnEvals > 0
@@ -1183,10 +1298,14 @@ function renderBuildingInspector(etaData) {
 
   const unmet = selected.unmet_prerequisites || [];
   const pEcon = etaData?.planet_economy || {};
+  const selBnTag =
+    typeof selected.bottleneck === "string" && selected.bottleneck.trim()
+      ? bottleneckTag(selected.bottleneck)
+      : "";
   const parts = [
     `Prerequisites: ${unmet.length === 0 ? "Unlocked" : unmet.join(", ")}`,
     `Next L${selected.next_level} Cost: ${formatResourcesInline(selected.cost)}`,
-    `Resources Ready: ${selected.wait_eta}${selected.bottleneck ? ` (${bottleneckTag(selected.bottleneck)} bottleneck)` : ""}`,
+    `Resources Ready: ${selected.wait_eta}${selBnTag ? ` (${selBnTag} bottleneck)` : ""}`,
     `Estimated Level Reached: ${selected.reach_eta}`,
   ];
   if (!isResearch && selected.energy_delta) {
@@ -1201,13 +1320,14 @@ function renderBuildingInspector(etaData) {
   );
 
   // Blast furnace 0% counter-factual impact note when Pig iron slows down upgrade
-  const bfUsed = Number(pEcon.blast_furnace_pig_used_per_hr || 0);
-  const bfPct = Number(pEcon.blast_furnace_pct ?? 100);
-  const missPig = Number(selected.missing?.pig_iron || 0);
+  const bfUsed = finiteNum(pEcon.blast_furnace_pig_used_per_hr, 0);
+  const bfPct = finiteNum(pEcon.blast_furnace_pct, 100);
+  const missPig = finiteNum(selected.missing?.pig_iron, 0);
   if (selected.bottleneck === "pig_iron" && bfPct > 0 && bfUsed > 0 && missPig > 0) {
-    const newRate = Number(pEcon.pig_iron_per_hr || 0) + bfUsed;
+    const newRate = finiteNum(pEcon.pig_iron_per_hr, 0) + bfUsed;
     const oldWait = selected.wait_eta;
-    const altWait = newRate > 0 ? `${(missPig / newRate).toFixed(1)}h` : "Blocked";
+    const altHours = newRate > 0 ? missPig / newRate : NaN;
+    const altWait = Number.isFinite(altHours) ? `${altHours.toFixed(1)}h` : "Blocked";
     bfHint.textContent = `Bucket tip: Pausing Blast furnace (b2 → 0%) frees +${fmtInt(Math.round(bfUsed))} Pig/h (Pig iron wait improves from ${oldWait} to ${altWait}).`;
     bfHint.hidden = false;
   } else {
@@ -1277,10 +1397,13 @@ function renderBuildingsView(dash) {
 
   const p = etaData.planet || {};
   const econ = etaData.planet_economy || {};
+  const bldDiv = finiteNum(p.building_time_divisor, 1);
   el("bld-planet-meta").textContent =
-    `[${p.coords || "--"}] · Dev L${p.dev_center_level ?? 0} · Lab L${p.research_lab_level ?? 0} · Micro L${p.microsystem_level ?? 0} · Div x${p.building_time_divisor ?? 1}`;
+    `[${p.coords || "--"}] · Dev L${finiteNum(p.dev_center_level, 0)} · Lab L${finiteNum(p.research_lab_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${bldDiv}`;
 
-  const bfPct = Number(econ.blast_furnace_pct ?? getSelectedBlastFurnacePct(dash));
+  const econBfPct = finiteNum(econ.blast_furnace_pct, null);
+  const bfPct =
+    econBfPct !== null ? clampPct(Math.round(econBfPct)) : getSelectedBlastFurnacePct(dash);
   const btnPause = el("btn-b2-pause");
   const btnResume = el("btn-b2-resume");
   if (btnPause && btnResume) {
@@ -1321,36 +1444,42 @@ function renderBuildingsView(dash) {
         const tdUnit = document.createElement("td");
         const title = document.createElement("div");
         title.className = "action-title";
-        title.textContent = row.name;
-        const sub = document.createElement("span");
-        sub.className = "action-sub tabular";
-        sub.textContent = ` (${row.key})`;
-        title.appendChild(sub);
+        title.textContent = row.name || "Unit";
+        if (row.key != null && String(row.key).trim() !== "") {
+          const sub = document.createElement("span");
+          sub.className = "action-sub tabular";
+          sub.textContent = ` (${row.key})`;
+          title.appendChild(sub);
+        }
         if (row.queued_count > 0 || row.active) {
           const qBadge = document.createElement("span");
           qBadge.className = "rate-chip";
           qBadge.textContent = row.active ? "ACTIVE" : `Q x${row.queued_count}`;
           title.appendChild(qBadge);
         }
-        if (row.economy_rate_pct != null && row.current_level > 0) {
+        const curLvl = finiteNum(row.current_level, 0);
+        const rowPct = finiteNum(row.economy_rate_pct, null);
+        if (rowPct !== null && curLvl > 0) {
+          const clampedRowPct = clampPct(Math.round(rowPct));
           const rChip = document.createElement("span");
-          rChip.className = `rate-chip tabular${row.economy_rate_pct < 100 ? " is-paused" : ""}`;
-          rChip.textContent = `${row.economy_rate_pct}%`;
+          rChip.className = `rate-chip tabular${clampedRowPct < 100 ? " is-paused" : ""}`;
+          rChip.textContent = `${clampedRowPct}%`;
           title.appendChild(rChip);
         }
         tdUnit.appendChild(title);
 
         const tdLvl = document.createElement("td");
         tdLvl.className = "col-right tabular";
-        tdLvl.textContent = String(row.current_level);
+        tdLvl.textContent = String(curLvl);
 
         const tdNext = document.createElement("td");
         tdNext.className = "col-right tabular";
-        tdNext.textContent = `L${row.next_level}`;
+        tdNext.textContent = `L${row.next_level ?? row.target_level ?? "—"}`;
 
         const tdMiss = document.createElement("td");
         tdMiss.className = "tabular";
-        if (row.missing_total === 0) {
+        const missTotal = finiteNum(row.missing_total, 0);
+        if (missTotal === 0) {
           const ok = document.createElement("span");
           ok.className = "status-word";
           ok.textContent = "Affordable";
@@ -1361,17 +1490,24 @@ function renderBuildingsView(dash) {
 
         const tdBuildT = document.createElement("td");
         tdBuildT.className = "col-right tabular";
-        tdBuildT.textContent = row.build_time_text;
+        tdBuildT.textContent = row.build_time_text ?? "—";
 
+        const waitEtaText = row.wait_eta ?? "—";
         const tdReady = document.createElement("td");
         tdReady.className = "col-right tabular";
-        tdReady.textContent = row.bottleneck ? `${row.wait_eta} (${bottleneckTag(row.bottleneck)})` : row.wait_eta;
+        const bnTag =
+          typeof row.bottleneck === "string" && row.bottleneck.trim()
+            ? bottleneckTag(row.bottleneck)
+            : "";
+        tdReady.textContent = bnTag ? `${waitEtaText} (${bnTag})` : waitEtaText;
 
+        const reachEtaText = row.reach_eta ?? "—";
+        const rowWaitH = finiteNum(row.wait_hours, 0);
         const tdReach = document.createElement("td");
         tdReach.className = "col-right tabular";
         const rSpan = document.createElement("span");
-        rSpan.className = `eta-pill${row.reach_eta === "—" ? " is-blocked" : row.wait_hours > 0 ? " is-wait" : ""}`;
-        rSpan.textContent = row.reach_eta;
+        rSpan.className = `eta-pill${reachEtaText === "—" ? " is-blocked" : rowWaitH > 0 ? " is-wait" : ""}`;
+        rSpan.textContent = reachEtaText;
         tdReach.appendChild(rSpan);
 
         const tdCtl = document.createElement("td");
@@ -1427,8 +1563,11 @@ function renderCombatView(dash) {
   el("cmb-az-rule").textContent = `${az.range_text || "—"} pts · Margin ${cmb.safety_margin || 1.4}x · Bash 3/24h`;
   el("cmb-tech-val").textContent = `L${techs.weapons ?? 0} / L${techs.shield ?? 0} / L${techs.defense ?? 0}`;
   el("cmb-tech-sub").textContent = `Spy L${techs.spy ?? 0} · Targeting L${techs.targeting ?? 0} · Scanner L${cmb.galaxy_scanner_level ?? 0}`;
-  el("cmb-power-val").textContent = `${fmtInt(Math.round(cmb.stationed_fleet_power || 0))} / ${fmtInt(Math.round(cmb.stationed_defense_power || 0))}`;
-  el("cmb-cargo-val").textContent = `Cargo ${fmtInt(cmb.total_cargo_capacity || 0)} · Weapons Fac L${cmb.weapons_factory_level ?? 0}`;
+  const fltPow = finiteNum(cmb.stationed_fleet_power, 0);
+  const defPow = finiteNum(cmb.stationed_defense_power, 0);
+  const cargoCap = finiteNum(cmb.total_cargo_capacity, 0);
+  el("cmb-power-val").textContent = `${fmtInt(Math.round(fltPow))} / ${fmtInt(Math.round(defPow))}`;
+  el("cmb-cargo-val").textContent = `Cargo ${fmtInt(cargoCap)} · Weapons Fac L${cmb.weapons_factory_level ?? 0}`;
 
   const shipsBody = el("cmb-ships-tbody");
   const ships = cmb.ships || [];
@@ -1480,7 +1619,7 @@ function renderCombatView(dash) {
         btn.className = "btn btn-primary btn-sm";
         btn.textContent = "Build";
         btn.addEventListener("click", async () => {
-          const qty = Math.max(1, Number(inp.value || 1));
+          const qty = Math.max(1, Math.round(finiteNum(inp.value, 1)));
           try {
             const res = await apiCommand({
               command: "build_ship",
@@ -1582,13 +1721,13 @@ function renderRaidTargetsTable(dash, cmb) {
       tdType.appendChild(badge);
 
       const totalRes =
-        Number(resMap.pig_iron || 0) +
-        Number(resMap.metal || 0) +
-        Number(resMap.kryptonite || 0) +
-        Number(resMap.spice || 0);
+        finiteNum(resMap.pig_iron, 0) +
+        finiteNum(resMap.metal, 0) +
+        finiteNum(resMap.kryptonite, 0) +
+        finiteNum(resMap.spice, 0);
       const tdLoot = document.createElement("td");
       tdLoot.className = "col-right tabular";
-      tdLoot.textContent = totalRes > 0 ? fmtInt(totalRes) : "Unspied";
+      tdLoot.textContent = Number.isFinite(totalRes) ? (totalRes > 0 ? fmtInt(totalRes) : "Unspied") : "—";
 
       const tdOps = document.createElement("td");
       tdOps.className = "col-right";
@@ -1651,21 +1790,21 @@ function populateSimWithOwnedFleet(cmb) {
 async function runCombatSimulation() {
   const atk = {};
   for (const key of ["s4", "s6", "s7", "s13", "s1", "s2"]) {
-    const val = Math.max(0, Number(el(`sim-atk-${key}`)?.value || 0));
+    const val = Math.max(0, Math.round(finiteNum(el(`sim-atk-${key}`)?.value, 0)));
     if (val > 0) atk[key] = val;
   }
   const defShips = {};
-  const s4 = Math.max(0, Number(el("sim-def-s4")?.value || 0));
+  const s4 = Math.max(0, Math.round(finiteNum(el("sim-def-s4")?.value, 0)));
   if (s4 > 0) defShips.s4 = s4;
 
   const defDefs = {};
   for (const dk of ["d1", "d2", "d4"]) {
-    const val = Math.max(0, Number(el(`sim-def-${dk}`)?.value || 0));
+    const val = Math.max(0, Math.round(finiteNum(el(`sim-def-${dk}`)?.value, 0)));
     if (val > 0) defDefs[dk] = val;
   }
-  const totalLoot = Math.max(0, Number(el("sim-loot-total")?.value || 0));
+  const totalLoot = Math.max(0, Math.round(finiteNum(el("sim-loot-total")?.value, 0)));
   const split = Math.floor(totalLoot / 4);
-  const margin = Math.max(1.0, Number(el("sim-margin")?.value || 1.4));
+  const margin = Math.max(1.0, finiteNum(el("sim-margin")?.value, 1.4));
 
   try {
     const res = await apiCommand({
@@ -1676,16 +1815,22 @@ async function runCombatSimulation() {
       target_resources: { pig_iron: split, metal: split, kryptonite: split, spice: totalLoot - split * 3 },
       safety_margin: margin,
     });
-    const sim = res.simulation;
+    const sim = res.simulation || {};
     const badge = el("sim-verdict-badge");
     badge.textContent = sim.safe_to_attack ? "SAFE TO RAID" : "UNSAFE / HOLD";
     badge.className = `run-badge tabular${sim.safe_to_attack ? "" : " is-paused"}`;
-    const ratioStr = sim.win_ratio === Infinity ? "INF" : Number(sim.win_ratio || 0).toFixed(2);
-    el("sim-ratio-text").textContent = `Power Ratio: ${ratioStr}x (Threshold ${sim.safety_margin}x)`;
-    el("sim-atk-pwr").textContent = fmtInt(Math.round(sim.attacker_power || 0));
-    el("sim-def-pwr").textContent = fmtInt(Math.round(sim.defender_power || 0));
-    el("sim-cargo").textContent = fmtInt(sim.cargo_capacity || 0);
-    el("sim-plunder").textContent = `${fmtInt(sim.total_plunder || 0)} (${fmtInt(Math.round(sim.loot_spice_equivalent || 0))} SpEq)`;
+    const winRatioNum = finiteNum(sim.win_ratio, null);
+    const ratioStr =
+      sim.win_ratio === Infinity || sim.win_ratio === "Infinity"
+        ? "INF"
+        : winRatioNum !== null
+          ? winRatioNum.toFixed(2)
+          : "0.00";
+    el("sim-ratio-text").textContent = `Power Ratio: ${ratioStr}x (Threshold ${finiteNum(sim.safety_margin, margin)}x)`;
+    el("sim-atk-pwr").textContent = fmtInt(Math.round(finiteNum(sim.attacker_power, 0)));
+    el("sim-def-pwr").textContent = fmtInt(Math.round(finiteNum(sim.defender_power, 0)));
+    el("sim-cargo").textContent = fmtInt(finiteNum(sim.cargo_capacity, 0));
+    el("sim-plunder").textContent = `${fmtInt(finiteNum(sim.total_plunder, 0))} (${fmtInt(Math.round(finiteNum(sim.loot_spice_equivalent, 0)))} SpEq)`;
     el("sim-notes").textContent = sim.notes || "Simulation complete.";
   } catch (err) {
     showFeedback(`Simulation failed: ${err.message}`, feedbackKindForError(err));
@@ -1754,7 +1899,11 @@ function renderRankingChart(samples) {
     svg.appendChild(gridLine);
   }
 
-  if (!samples || samples.length === 0) {
+  const vals = (samples || [])
+    .map((s) => finiteNum(s?.estimated_points, null))
+    .filter((v) => v !== null);
+
+  if (vals.length === 0) {
     const txt = document.createElementNS(ns, "text");
     txt.setAttribute("x", String(w / 2));
     txt.setAttribute("y", String(h / 2));
@@ -1766,18 +1915,20 @@ function renderRankingChart(samples) {
     return;
   }
 
-  const vals = samples.map((s) => Number(s.estimated_points || 0));
   const minV = Math.min(...vals);
   const maxV = Math.max(...vals);
-  const span = Math.max(0.5, maxV - minV);
+  const rawSpan = maxV - minV;
+  const span = Number.isFinite(rawSpan) && rawSpan >= 0.5 ? rawSpan : 0.5;
 
   const toXY = (idx, val) => {
-    const x = samples.length === 1 ? w / 2 : padX + (idx / (samples.length - 1)) * (w - padX * 2);
-    const y = h - padY - ((val - minV) / span) * (h - padY * 2);
+    const x = vals.length === 1 ? w / 2 : padX + (idx / (vals.length - 1)) * (w - padX * 2);
+    const ratio = Number.isFinite(rawSpan) && rawSpan > 0 ? (val - minV) / span : 0;
+    const rawY = h - padY - (Number.isFinite(ratio) ? ratio : 0) * (h - padY * 2);
+    const y = Number.isFinite(rawY) ? rawY : h / 2;
     return [x.toFixed(1), y.toFixed(1)];
   };
 
-  if (samples.length >= 2) {
+  if (vals.length >= 2) {
     const ptsAttr = vals.map((v, i) => toXY(i, v).join(",")).join(" ");
     const poly = document.createElementNS(ns, "polyline");
     poly.setAttribute("fill", "none");
@@ -1811,29 +1962,53 @@ function renderRanking(dash) {
   const rates = rnk.rates || {};
   const trend = rnk.observed_trend || {};
 
+  const srvRank = finiteNum(cur.server_rank, null);
+  const srvPts = finiteNum(cur.server_points, null);
+
   if (badge) {
-    badge.textContent = cur.server_rank != null ? `#${cur.server_rank}` : az.label || "—";
+    badge.textContent = cur.server_rank != null ? (srvRank !== null ? `#${srvRank}` : "#—") : az.label || "—";
   }
 
-  const srvRankTxt = cur.server_rank != null ? `#${fmtInt(cur.server_rank)}` : "Rank pending";
-  const srvPtsTxt = cur.server_points != null ? `${fmtInt(cur.server_points)} pts` : "— pts";
+  const srvRankTxt = cur.server_rank != null ? (srvRank !== null ? `#${fmtInt(srvRank)}` : "#—") : "Rank pending";
+  const srvPtsTxt = cur.server_points != null ? (srvPts !== null ? `${fmtInt(srvPts)} pts` : "— pts") : "— pts";
   el("rnk-server-pos").textContent = `${srvRankTxt} · ${srvPtsTxt}`;
-  el("rnk-est-pts").textContent = `~${Number(cur.estimated_points || 0).toFixed(1)} est. score (bld/res/flt)`;
+  const estPts = finiteNum(cur.estimated_points, 0);
+  const cleanEstPts = Math.abs(estPts) < 0.05 ? 0 : estPts;
+  el("rnk-est-pts").textContent = `~${cleanEstPts.toFixed(1)} est. score (bld/res/flt)`;
 
   el("rnk-az-label").textContent = az.label || "—";
   const shield = cur.newbie_protected ? `Shielded (<10k · ${cur.newbie_eta_compound || "—"})` : "Open AZ";
   el("rnk-az-range").textContent = `${az.range_text || ""} · ${shield}`;
 
-  el("rnk-rate-hr").textContent = `+${Number(rates.pts_per_hr_steady || 0).toFixed(2)} pts/hr`;
-  el("rnk-res-hr").textContent = `${fmtInt(Math.round(rates.net_resources_per_hr || 0))} res/hr · x${rates.speedup_factor || 1}`;
+  const steadyRate = finiteNum(rates.pts_per_hr_steady, 0);
+  const netResRate = finiteNum(rates.net_resources_per_hr, 0);
+  const spdFactor = finiteNum(rates.speedup_factor, 1);
+  const cleanSteady = Math.abs(steadyRate) < 0.005 ? 0 : steadyRate;
+  el("rnk-rate-hr").textContent = `${cleanSteady >= 0 ? "+" : ""}${cleanSteady.toFixed(2)} pts/hr`;
+  el("rnk-res-hr").textContent = `${fmtInt(Math.round(netResRate))} res/hr · x${spdFactor}`;
 
-  const totalEst = Math.max(0.01, Number(cur.estimated_points || 0));
-  const bPct = Math.round((Number(cur.buildings_points || 0) / totalEst) * 100);
-  const rPct = Math.round((Number(cur.research_points || 0) / totalEst) * 100);
+  const estPtsRaw = finiteNum(cur.estimated_points, null);
+  const bldPts = finiteNum(cur.buildings_points, null);
+  const resPts = finiteNum(cur.research_points, null);
+  let bPct = 0;
+  let rPct = 0;
+  if (estPtsRaw !== null && estPtsRaw > 0 && bldPts !== null && resPts !== null) {
+    bPct = clampPct(Math.round((bldPts / estPtsRaw) * 100));
+    rPct = clampPct(Math.round((resPts / estPtsRaw) * 100));
+    if (bPct + rPct > 100) {
+      rPct = Math.max(0, 100 - bPct);
+    }
+  }
   const fPct = Math.max(0, 100 - bPct - rPct);
   el("rnk-breakdown").textContent = `Bld ${bPct}% · Res ${rPct}% · Flt ${fPct}%`;
-  el("rnk-spice-val").textContent = `${fmtInt(Math.round(cur.spice_value || 0))} Spice Eq`;
+  const spiceVal = finiteNum(cur.spice_value, 0);
+  el("rnk-spice-val").textContent = `${fmtInt(Math.round(spiceVal))} Spice Eq`;
 
+  const fmtSignedDeltaInt = (val) => {
+    const rounded = Math.round(val);
+    const clean = rounded === 0 ? 0 : rounded;
+    return `${clean >= 0 ? "+" : ""}${fmtInt(clean)}`;
+  };
   const hBody = el("rnk-horizons-tbody");
   const horizons = rnk.horizons || [];
   hBody.replaceChildren(
@@ -1845,13 +2020,17 @@ function renderRanking(dash) {
           tdL.textContent = row.label;
           const tdS = document.createElement("td");
           tdS.className = "col-right tabular";
-          tdS.textContent = `${fmtInt(Math.round(row.steady_points))} (+${fmtInt(Math.round(row.steady_delta))})`;
+          const sp = finiteNum(row.steady_points, null);
+          const sd = finiteNum(row.steady_delta, null);
+          tdS.textContent = sp !== null && sd !== null ? `${fmtInt(Math.round(sp))} (${fmtSignedDeltaInt(sd)})` : "—";
           const tdSAz = document.createElement("td");
           tdSAz.className = "col-right tabular";
           tdSAz.textContent = row.steady_az;
           const tdC = document.createElement("td");
           tdC.className = "col-right tabular";
-          tdC.textContent = `${fmtInt(Math.round(row.compound_points))} (+${fmtInt(Math.round(row.compound_delta))})`;
+          const cp = finiteNum(row.compound_points, null);
+          const cd = finiteNum(row.compound_delta, null);
+          tdC.textContent = cp !== null && cd !== null ? `${fmtInt(Math.round(cp))} (${fmtSignedDeltaInt(cd)})` : "—";
           const tdCAz = document.createElement("td");
           tdCAz.className = "col-right tabular";
           tdCAz.textContent = row.compound_az;
@@ -1868,10 +2047,12 @@ function renderRanking(dash) {
       : miles.map((m) => {
           const tr = document.createElement("tr");
           const tdN = document.createElement("td");
-          tdN.textContent = `${m.label} (${fmtInt(m.target_points)})`;
+          const tgtPts = finiteNum(m.target_points, null);
+          tdN.textContent = `${m.label} (${tgtPts !== null ? fmtInt(tgtPts) : "—"})`;
           const tdM = document.createElement("td");
           tdM.className = "col-right tabular";
-          tdM.textContent = `+${fmtInt(Math.round(m.missing_points))}`;
+          const missPts = finiteNum(m.missing_points, null);
+          tdM.textContent = missPts !== null ? `+${fmtInt(Math.round(missPts))}` : "—";
           const tdSE = document.createElement("td");
           tdSE.className = "col-right tabular";
           tdSE.textContent = m.steady_eta;
@@ -1883,18 +2064,32 @@ function renderRanking(dash) {
         }))
   );
 
-  const count = Number(trend.sample_count || 0);
+  const count = finiteNum(trend.sample_count, 0);
+  const deltaPts = finiteNum(trend.delta_points, null);
+  const obsRate = finiteNum(trend.observed_pts_per_hr, null);
+  const elapsedHrs = finiteNum(trend.elapsed_hours, null);
+  const rankClimbed = finiteNum(trend.rank_climbed, null);
   el("rnk-trend-meta").textContent = `${count} sample${count === 1 ? "" : "s"}`;
-  if (count >= 2 && trend.delta_points != null) {
-    const sign = trend.delta_points >= 0 ? "+" : "";
-    const rankStr =
-      trend.rank_climbed != null
-        ? ` · Rank ${trend.rank_climbed >= 0 ? `climbed +${trend.rank_climbed}` : trend.rank_climbed}`
-        : "";
+  if (count >= 2 && deltaPts !== null) {
+    const cleanDelta = deltaPts === 0 ? 0 : deltaPts;
+    const deltaSign = cleanDelta >= 0 ? "+" : "";
+    const cleanObsRate = obsRate !== null ? (obsRate === 0 ? 0 : obsRate) : null;
+    const rateSign = cleanObsRate !== null && cleanObsRate >= 0 ? "+" : "";
+    let rankStr = "";
+    if (rankClimbed !== null) {
+      const cleanRank = rankClimbed === 0 ? 0 : rankClimbed;
+      if (cleanRank > 0) {
+        rankStr = ` · Rank climbed +${fmtInt(cleanRank)}`;
+      } else if (cleanRank < 0) {
+        rankStr = ` · Rank dropped ${fmtInt(Math.abs(cleanRank))}`;
+      } else {
+        rankStr = " · Rank unchanged (0)";
+      }
+    }
     el("rnk-observed-rate").textContent =
-      trend.observed_pts_per_hr != null ? `${sign}${trend.observed_pts_per_hr} pts/hr observed` : `${sign}${trend.delta_points} pts`;
+      cleanObsRate !== null ? `${rateSign}${cleanObsRate} pts/hr observed` : `${deltaSign}${cleanDelta} pts`;
     el("rnk-observed-summary").textContent =
-      `Window ${trend.elapsed_hours}h: ${sign}${trend.delta_points} pts${rankStr}.`;
+      `Window ${elapsedHrs !== null ? elapsedHrs : "—"}h: ${deltaSign}${cleanDelta} pts${rankStr}.`;
   } else {
     el("rnk-observed-rate").textContent = "Collecting samples...";
     el("rnk-observed-summary").textContent =
@@ -1979,7 +2174,7 @@ async function loadDashboard({ refresh = false, preserveConfig = true, force = f
     renderCombatView(dash);
     renderRanking(dash);
     renderLogs(dash.logs, dash.db_summary);
-    if (!state.configDirty) {
+    if (!state.configDirty && !state.configSaving) {
       renderConfigForm(dash.config);
       state.configDirty = false;
     }
@@ -2032,6 +2227,16 @@ async function updateLoopMode(mode) {
   }
 }
 
+function beginGaCalc() {
+  state.gaCalcCount += 1;
+  renderGaNnHud(state.dashboard);
+}
+
+function endGaCalc() {
+  state.gaCalcCount = Math.max(0, state.gaCalcCount - 1);
+  renderGaNnHud(state.dashboard);
+}
+
 function wireEvents() {
   // Sidebar route navigation -> single screen view swap
   document.querySelectorAll("[data-page]").forEach((btn) => {
@@ -2043,8 +2248,7 @@ function wireEvents() {
   el("hud-bf-pill")?.addEventListener("click", () => setActivePage("buildings"));
 
   el("btn-gann-recalc")?.addEventListener("click", async () => {
-    state.gaCalcRunning = true;
-    renderGaNnHud(state.dashboard);
+    beginGaCalc();
     try {
       showFeedback("Running GA + Neural Network sequence optimizer...", "ok");
       const res = await apiCommand({ command: "plan", planner_mode: "ga_nn", refresh: false });
@@ -2069,23 +2273,21 @@ function wireEvents() {
     } catch (err) {
       showFeedback(`GA+NN calculation failed: ${err.message}`, feedbackKindForError(err));
     } finally {
-      state.gaCalcRunning = false;
-      renderGaNnHud(state.dashboard);
+      endGaCalc();
     }
   });
 
   el("btn-sync").addEventListener("click", async () => {
     const isGa = String(state.dashboard?.config?.planner_mode || "").toLowerCase() === "ga_nn";
     if (isGa) {
-      state.gaCalcRunning = true;
-      renderGaNnHud(state.dashboard);
+      beginGaCalc();
     }
     try {
       showFeedback("Syncing live snapshot from Chrome...", "ok");
       const ok = await loadDashboard({ refresh: true, preserveConfig: true, force: true });
       if (ok) {
         if (state.dashboard?.health?.rate_limited) {
-          const rem = Math.ceil(Number(state.dashboard.health.retry_after || 0));
+          const rem = Math.ceil(finiteNum(state.dashboard.health.retry_after, 0));
           showFeedback(
             `Synced cached state — SpaceInvasion rate-limit cooldown active (${rem > 0 ? `${rem}s` : "wait"}).`,
             "warn"
@@ -2096,8 +2298,7 @@ function wireEvents() {
       }
     } finally {
       if (isGa) {
-        state.gaCalcRunning = false;
-        renderGaNnHud(state.dashboard);
+        endGaCalc();
       }
     }
   });
@@ -2116,8 +2317,7 @@ function wireEvents() {
   el("btn-tick-now").addEventListener("click", async () => {
     const isGa = String(state.dashboard?.config?.planner_mode || "").toLowerCase() === "ga_nn";
     if (isGa) {
-      state.gaCalcRunning = true;
-      renderGaNnHud(state.dashboard);
+      beginGaCalc();
     }
     try {
       const dryRun = (state.modeOverride || "auto") === "dry-run";
@@ -2129,8 +2329,7 @@ function wireEvents() {
       showFeedback(`Tick failed: ${err.message}`, feedbackKindForError(err));
     } finally {
       if (isGa) {
-        state.gaCalcRunning = false;
-        renderGaNnHud(state.dashboard);
+        endGaCalc();
       }
     }
   });
@@ -2324,33 +2523,57 @@ function wireEvents() {
       const inp = el(`cfg-${numField}`);
       const raw = inp ? String(inp.value ?? "").trim() : "";
       if (raw !== "") {
-        payload[numField] = Number(raw);
+        const parsed = finiteNum(raw, null);
+        payload[numField] = parsed !== null ? parsed : raw;
       }
     }
     const seedInp = el("cfg-ga_seed");
     if (seedInp) {
       const rawSeed = String(seedInp.value ?? "").trim();
-      payload.ga_seed = rawSeed === "" ? null : Number(rawSeed);
+      if (rawSeed === "") {
+        payload.ga_seed = null;
+      } else if (/^-?\d+$/.test(rawSeed)) {
+        const parsedSeed = Number(rawSeed);
+        payload.ga_seed = Number.isSafeInteger(parsedSeed) ? parsedSeed : rawSeed;
+      } else {
+        payload.ga_seed = rawSeed;
+      }
     }
 
     const isGa = String(plannerModeVal).toLowerCase() === "ga_nn";
     if (isGa) {
-      state.gaCalcRunning = true;
-      renderGaNnHud(state.dashboard);
+      beginGaCalc();
     }
+    state.dashboardSeq += 1;
+    state.configSaving = (state.configSaving || 0) + 1;
     try {
       const res = await apiCommand({ command: "update_config", config: payload });
       state.dashboardSeq += 1;
       state.configDirty = false;
+      if (res.config && typeof res.config === "object") {
+        if (state.dashboard) {
+          state.dashboard = {
+            ...state.dashboard,
+            config: res.config,
+            planner_mode: res.config.planner_mode || state.dashboard.planner_mode,
+          };
+        } else {
+          state.dashboard = {
+            config: res.config,
+            planner_mode: res.config.planner_mode || "priority",
+          };
+        }
+        renderGaNnHud(state.dashboard);
+      }
       renderConfigForm(res.config);
       showFeedback("Saved config.yaml — Commander & API updated.", "ok");
       await loadDashboard({ refresh: false, preserveConfig: false, force: true });
     } catch (err) {
       showFeedback(`Failed saving config: ${err.message}`, feedbackKindForError(err));
     } finally {
+      state.configSaving = Math.max(0, (state.configSaving || 0) - 1);
       if (isGa) {
-        state.gaCalcRunning = false;
-        renderGaNnHud(state.dashboard);
+        endGaCalc();
       }
     }
   });

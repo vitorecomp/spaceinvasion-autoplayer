@@ -6,6 +6,7 @@ from collections import deque
 import contextlib
 from dataclasses import replace
 import inspect
+import math
 import random
 import re
 import secrets
@@ -22,6 +23,7 @@ from selenium.common.exceptions import (
 )
 from selenium.webdriver.common.by import By
 
+from spaceinvasion import game_data
 from spaceinvasion.auth import AntiBotChallengeError, SpaceInvasionAuthError, detect_antibot_challenge
 from spaceinvasion.browser import (
     DEFAULT_DEBUG_PORT,
@@ -54,6 +56,119 @@ PAGE_VIEW_WINDOW_SECONDS: float = 60.0
 _SID_TOKEN_RE = re.compile(r"\bsid=([0-9a-zA-Z_-]+)")
 
 
+def _safe_clamp_cooldown(val: Optional[float], default: float) -> float:
+    base = float(default)
+    if not math.isfinite(base) or base <= 0.0:
+        base = 45.0
+    base = max(1.0, min(3600.0, base))
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+        return base
+    if isinstance(val, (bytes, bytearray)):
+        val = bytes(val).decode("utf-8", errors="replace")  # type: ignore[assignment]
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or not s.isascii():
+            return base
+        val = s  # type: ignore[assignment]
+    try:
+        parsed = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return base
+    if not math.isfinite(parsed):
+        return base
+    return max(1.0, min(3600.0, parsed))
+
+
+def _safe_bounded_float(
+    val: Optional[float],
+    default: float,
+    *,
+    min_val: float = 0.05,
+    max_val: float = 300.0,
+) -> float:
+    base = float(default)
+    if not math.isfinite(base):
+        base = min_val
+    base = max(min_val, min(max_val, base))
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+        return base
+    if isinstance(val, (bytes, bytearray)):
+        val = bytes(val).decode("utf-8", errors="replace")  # type: ignore[assignment]
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or not s.isascii():
+            return base
+        val = s  # type: ignore[assignment]
+    try:
+        parsed = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return base
+    if not math.isfinite(parsed):
+        return base
+    return max(min_val, min(max_val, parsed))
+
+
+def _safe_positive_timeout(
+    val: Optional[float],
+    default: float,
+    *,
+    min_val: float = 0.05,
+    max_val: float = 300.0,
+) -> float:
+    base = _safe_bounded_float(default, min_val, min_val=min_val, max_val=max_val)
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+        return base
+    if isinstance(val, (bytes, bytearray)):
+        val = bytes(val).decode("utf-8", errors="replace")  # type: ignore[assignment]
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or not s.isascii():
+            return base
+        val = s  # type: ignore[assignment]
+    try:
+        parsed = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return base
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        return base
+    return max(min_val, min(max_val, parsed))
+
+
+def _safe_clamped_int(
+    val: Any,
+    default: int,
+    *,
+    min_val: int,
+    max_val: int,
+) -> int:
+    safe_def = max(min_val, min(max_val, default))
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+        return safe_def
+    if isinstance(val, int):
+        return max(min_val, min(max_val, val))
+    if isinstance(val, float):
+        if not math.isfinite(val):
+            return safe_def
+        return max(min_val, min(max_val, int(val)))
+    if isinstance(val, (bytes, bytearray)):
+        val = bytes(val).decode("utf-8", errors="replace")
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or not s.isascii():
+            return safe_def
+        try:
+            return max(min_val, min(max_val, int(s)))
+        except (ValueError, OverflowError):
+            try:
+                parsed = float(s)
+            except (TypeError, ValueError, OverflowError):
+                return safe_def
+            if not math.isfinite(parsed):
+                return safe_def
+            return max(min_val, min(max_val, int(parsed)))
+    return safe_def
+
+
 class RateLimitError(SpaceInvasionAuthError):
     """Raised when SpaceInvasion's per-minute page-view throttle or local budget triggers."""
 
@@ -65,7 +180,7 @@ class RateLimitError(SpaceInvasionAuthError):
         server_throttle: bool = True,
     ) -> None:
         super().__init__(message)
-        self.retry_after = max(1.0, float(retry_after))
+        self.retry_after = _safe_clamp_cooldown(retry_after, DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS)
         self.server_throttle = bool(server_throttle)
 
 
@@ -85,11 +200,25 @@ class PageViewLimiter:
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self.min_delay_range = min_delay_range
-        self.max_views_per_minute = max(1, int(max_views_per_minute))
+        self.max_views_per_minute = _safe_clamped_int(
+            max_views_per_minute,
+            DEFAULT_MAX_VIEWS_PER_MINUTE,
+            min_val=1,
+            max_val=100_000,
+        )
         reserve = reserved_interactive_views if interactive_reserve is None else interactive_reserve
-        self.reserved_interactive_views = max(0, int(reserve))
-        self.default_cooldown_seconds = max(1.0, float(default_cooldown_seconds))
-        self.window_seconds = max(1.0, float(window_seconds))
+        self.reserved_interactive_views = _safe_clamped_int(
+            reserve,
+            DEFAULT_RESERVED_INTERACTIVE_VIEWS,
+            min_val=0,
+            max_val=100_000,
+        )
+        self.default_cooldown_seconds = _safe_clamp_cooldown(
+            default_cooldown_seconds, DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
+        )
+        self.window_seconds = _safe_bounded_float(
+            window_seconds, PAGE_VIEW_WINDOW_SECONDS, min_val=1.0, max_val=3600.0
+        )
         self._clock = clock
         self._sleeper = sleeper
         self._lock = threading.Lock()
@@ -139,7 +268,7 @@ class PageViewLimiter:
             return max(0, self._effective_cap(priority) - len(self._views))
 
     def record_view(self, count: int = 1) -> None:
-        n = max(1, int(count))
+        n = _safe_clamped_int(count, 1, min_val=1, max_val=10_000)
         with self._lock:
             now = self._clock()
             self._prune_locked(now)
@@ -149,10 +278,7 @@ class PageViewLimiter:
                 self._last_view_at = now
 
     def record_rate_limit(self, retry_after: Optional[float] = None) -> float:
-        dur = max(
-            1.0,
-            float(retry_after if retry_after is not None else self.default_cooldown_seconds),
-        )
+        dur = _safe_clamp_cooldown(retry_after, self.default_cooldown_seconds)
         with self._recovery_cond:
             now = self._clock()
             self._rate_limit_until = max(self._rate_limit_until, now + dur)
@@ -172,10 +298,7 @@ class PageViewLimiter:
         retry_after: Optional[float] = None,
     ) -> tuple[bool, float]:
         """Record a server throttle hit atomically only if recovery generation still matches."""
-        dur = max(
-            1.0,
-            float(retry_after if retry_after is not None else self.default_cooldown_seconds),
-        )
+        dur = _safe_clamp_cooldown(retry_after, self.default_cooldown_seconds)
         with self._recovery_cond:
             now = self._clock()
             cd_rem = max(0.0, self._rate_limit_until - now)
@@ -220,7 +343,10 @@ class PageViewLimiter:
         deadline = (
             None
             if wait_timeout is None
-            else (time.monotonic() + max(0.0, float(wait_timeout)))
+            else (
+                time.monotonic()
+                + _safe_bounded_float(wait_timeout, 15.0, min_val=0.0, max_val=300.0)
+            )
         )
         with self._recovery_cond:
             if not self._throttle_recovery_in_flight:
@@ -252,7 +378,10 @@ class PageViewLimiter:
         deadline = (
             None
             if wait_timeout is None
-            else (time.monotonic() + max(0.0, float(wait_timeout)))
+            else (
+                time.monotonic()
+                + _safe_bounded_float(wait_timeout, 15.0, min_val=0.0, max_val=300.0)
+            )
         )
         with self._recovery_cond:
             while True:
@@ -305,14 +434,21 @@ class PageViewLimiter:
         max_wait: Optional[float] = None,
         record: bool = True,
     ) -> float:
-        n = max(1, int(cost))
+        n = _safe_clamped_int(cost, 1, min_val=1, max_val=10_000)
         low, high = delay_range if delay_range is not None else self.min_delay_range
-        if high <= 0:
+        safe_low = _safe_bounded_float(low, 0.0, min_val=0.0, max_val=60.0)
+        safe_high = _safe_bounded_float(high, 0.0, min_val=0.0, max_val=60.0)
+        if safe_high <= 0.0:
             target_gap = 0.0
-        elif low >= high:
-            target_gap = float(low)
+        elif safe_low >= safe_high:
+            target_gap = safe_low
         else:
-            target_gap = random.uniform(float(low), float(high))
+            target_gap = random.uniform(safe_low, safe_high)
+        safe_max_wait = (
+            None
+            if max_wait is None
+            else _safe_bounded_float(max_wait, 60.0, min_val=0.0, max_val=3600.0)
+        )
 
         waited_total = 0.0
         while True:
@@ -350,7 +486,7 @@ class PageViewLimiter:
                         self._last_view_at = now
                     return waited_total
 
-                if max_wait is not None and (waited_total + wait_s) > float(max_wait):
+                if safe_max_wait is not None and (waited_total + wait_s) > safe_max_wait:
                     win_s = max(1, int(round(self.window_seconds)))
                     raise RateLimitError(
                         f"Page-view budget reached ({len(self._views)}/{eff_cap} in {win_s}s); retry after {wait_s:.1f}s.",
@@ -466,8 +602,12 @@ class GameBrowserClient:
         self.min_nav_delay = (
             min_nav_delay if min_nav_delay is not None else self.page_limiter.min_delay_range
         )
-        self.timeout = timeout
-        self.max_limiter_wait = max_limiter_wait
+        self.timeout = _safe_positive_timeout(timeout, 20.0, min_val=0.05, max_val=300.0)
+        self.max_limiter_wait = (
+            None
+            if max_limiter_wait is None
+            else _safe_bounded_float(max_limiter_wait, 60.0, min_val=0.0, max_val=3600.0)
+        )
         self.last_galaxy_coords: Optional[tuple[int, int]] = None
         self.last_snapshot_observed_active_planet: bool = True
         self._driver_lock = threading.RLock()
@@ -489,9 +629,10 @@ class GameBrowserClient:
     ) -> GameBrowserClient:
         """Attach to an already-open Chrome session inside the game."""
         if not is_debug_port_open(port, host):
+            port_s = game_data.fmt_compact_int(port) if (isinstance(port, int) and not isinstance(port, bool)) else game_data.safe_key(port)
             raise SpaceInvasionAuthError(
-                f"No Chrome debug session is listening on {host}:{port}. "
-                f"Start Chrome with `python3 login.py --debug-port {port} --detach`."
+                f"No Chrome debug session is listening on {host}:{port_s}. "
+                f"Start Chrome with `python3 login.py --debug-port {port_s} --detach`."
             )
         driver = attach_chrome_driver(port=port, timeout=timeout, host=host)
         return cls(
@@ -577,15 +718,9 @@ class GameBrowserClient:
 
     def ensure_in_game(self, *, priority: str = "normal") -> None:
         """Verify the attached browser has an active `indexGame.es` tab with game frames."""
-        raw_timeout = getattr(self, "timeout", 20.0)
-        try:
-            wait_budget = (
-                max(0.05, float(raw_timeout))
-                if raw_timeout is not None and float(raw_timeout) > 0.0
-                else 20.0
-            )
-        except (TypeError, ValueError):
-            wait_budget = 20.0
+        wait_budget = _safe_positive_timeout(
+            getattr(self, "timeout", 20.0), 20.0, min_val=0.05, max_val=300.0
+        )
         deadline = time.monotonic() + wait_budget
         drv_lock = getattr(self, "_driver_lock", None)
 
@@ -833,7 +968,10 @@ class GameBrowserClient:
         *,
         nav_token: Optional[str] = None,
     ) -> str:
-        deadline = time.monotonic() + self.timeout
+        wait_budget = _safe_positive_timeout(
+            getattr(self, "timeout", 20.0), 20.0, min_val=0.05, max_val=300.0
+        )
+        deadline = time.monotonic() + wait_budget
         while True:
             self._switch_frame(frame_id)
             probe = None
@@ -860,11 +998,7 @@ class GameBrowserClient:
                 html = self.driver.page_source or ""
                 self._check_page_guards(html)
                 html_low = html.lower()
-                if (
-                    expected_action
-                    and expected_action not in href
-                    and ("bitmeup-login" in html_low or "sip-tab-universe" in html_low)
-                ):
+                if "bitmeup-login" in html_low or "sip-tab-universe" in html_low:
                     raise SpaceInvasionAuthError(
                         "Browser redirected to BitMeUp portal/login while waiting for game frame."
                     )
@@ -988,10 +1122,10 @@ class GameBrowserClient:
         nav_token = self._mark_frame_navigation("F_Hauptframe")
         if galaxy is not None and gal_inp is not None:
             gal_inp.clear()
-            gal_inp.send_keys(str(max(1, int(galaxy))))
+            gal_inp.send_keys(str(game_data.cap_json_int(max(1, game_data.safe_int(galaxy, 1)))))
         if system is not None and sys_inp is not None:
             sys_inp.clear()
-            sys_inp.send_keys(str(max(1, int(system))))
+            sys_inp.send_keys(str(game_data.cap_json_int(max(1, game_data.safe_int(system, 1)))))
 
         target_form = None
         for anchor_inp in (gal_inp, sys_inp):
@@ -1072,12 +1206,22 @@ class GameBrowserClient:
         """Open `internalGalaxy` inside `F_Hauptframe` and return `(html, actual_galaxy, actual_system)`."""
         self._pace(priority=priority)
         sid_query = self._resolve_sid_query()
+        gal_arg = (
+            game_data.cap_json_int(max(1, game_data.safe_int(galaxy, 1)))
+            if galaxy is not None
+            else None
+        )
+        sys_arg = (
+            game_data.cap_json_int(max(1, game_data.safe_int(system, 1)))
+            if system is not None
+            else None
+        )
         if sid_query:
             params = ["action=internalGalaxy", sid_query]
-            if galaxy is not None:
-                params.append(f"galaxy={max(1, int(galaxy))}")
-            if system is not None:
-                params.append(f"system={max(1, int(system))}")
+            if gal_arg is not None:
+                params.append(f"galaxy={gal_arg}")
+            if sys_arg is not None:
+                params.append(f"system={sys_arg}")
             target_url = self._build_internal_url("&".join(params))
             nav_token = self._mark_frame_navigation("F_Hauptframe")
             self.driver.execute_script("location.href = arguments[0];", target_url)
@@ -1098,16 +1242,16 @@ class GameBrowserClient:
             cur_url = str(self.driver.execute_script("return location.href;") or "")
         except Exception:
             cur_url = ""
-        fallback_gal = max(1, int(galaxy)) if galaxy is not None else 1
-        fallback_sys = max(1, int(system)) if system is not None else 1
+        fallback_gal = gal_arg if gal_arg is not None else 1
+        fallback_sys = sys_arg if sys_arg is not None else 1
         actual_gal, actual_sys = extract_galaxy_system_coords(
             html,
             url=cur_url,
             default=(fallback_gal, fallback_sys),
         )
 
-        want_gal = max(1, int(galaxy)) if galaxy is not None else actual_gal
-        want_sys = max(1, int(system)) if system is not None else actual_sys
+        want_gal = gal_arg if gal_arg is not None else actual_gal
+        want_sys = sys_arg if sys_arg is not None else actual_sys
         if (galaxy is not None or system is not None) and (actual_gal != want_gal or actual_sys != want_sys):
             switched_html = self._submit_galaxy_coords_form(
                 galaxy=galaxy,
@@ -1240,7 +1384,10 @@ class GameBrowserClient:
                     )
                 else:
                     self.driver.execute_script("window.__siReloadPending = 1; location.reload();")
-            deadline = time.monotonic() + min(self.timeout, 12.0)
+            wait_budget = _safe_positive_timeout(
+                getattr(self, "timeout", 20.0), 12.0, min_val=0.05, max_val=12.0
+            )
+            deadline = time.monotonic() + wait_budget
             while True:
                 html_to_check: Optional[str] = None
                 ready_with_json = False
@@ -1257,6 +1404,11 @@ class GameBrowserClient:
                         )
                 if html_to_check is not None:
                     self._check_page_guards(html_to_check)
+                    html_low = html_to_check.lower()
+                    if "bitmeup-login" in html_low or "sip-tab-universe" in html_low:
+                        raise SpaceInvasionAuthError(
+                            "Browser redirected to BitMeUp portal/login while reading planets overview."
+                        )
                     if ready_with_json:
                         break
                 if time.monotonic() >= deadline:
@@ -1275,6 +1427,11 @@ class GameBrowserClient:
 
         if missing_exc is not None:
             self._check_page_guards(missing_html)
+            missing_low = missing_html.lower()
+            if "bitmeup-login" in missing_low or "sip-tab-universe" in missing_low:
+                raise SpaceInvasionAuthError(
+                    "Browser redirected to BitMeUp portal/login while reading planets overview."
+                ) from missing_exc
             raise SpaceInvasionAuthError(
                 "SpaceInvasion session expired (missing #json-container in F_planets)."
             ) from missing_exc
@@ -1309,9 +1466,12 @@ class GameBrowserClient:
             if "action=internalfleet" in val.lower():
                 return None
             if opt.has_attr("selected"):
-                m = re.search(r"newplanet=(\d+)", val, re.IGNORECASE)
+                m = re.search(r"newplanet=(\d+)", val, re.IGNORECASE | re.ASCII)
                 if m:
-                    return int(m.group(1))
+                    pid_s = m.group(1)
+                    if pid_s.isascii() and pid_s.isdigit() and len(pid_s) <= 18:
+                        return int(pid_s)
+                    return None
         return None
 
     def read_full_snapshot(
@@ -1338,14 +1498,17 @@ class GameBrowserClient:
             raw_main_html = str(self.driver.page_source or "")
 
         home_html = ""
+        raw_main_low = raw_main_html.lower()
+        has_portal_redirect = (
+            "bitmeup-login" in raw_main_low
+            or "sip-tab-universe" in raw_main_low
+        )
         if "action=internalHome" in main_url:
-            raw_main_low = raw_main_html.lower()
             is_stale_home = (
                 not raw_main_low.strip()
                 or ("made more than" in raw_main_low and "page views" in raw_main_low)
                 or bool(detect_antibot_challenge(200, raw_main_html))
-                or "bitmeup-login" in raw_main_low
-                or "sip-tab-universe" in raw_main_low
+                or has_portal_redirect
             )
             if is_stale_home:
                 if include_home:
@@ -1364,11 +1527,23 @@ class GameBrowserClient:
                             expected_action="internalHome",
                             nav_token=nav_token,
                         )
+                elif raw_main_html.strip():
+                    self._check_page_guards(raw_main_html)
+                    if has_portal_redirect:
+                        raise SpaceInvasionAuthError(
+                            "Browser redirected to BitMeUp portal/login while reading game snapshot."
+                        )
             else:
                 self._check_page_guards(raw_main_html)
                 home_html = raw_main_html
         elif include_home:
             home_html = self.navigate_menu("internalHome", priority=priority)
+        elif raw_main_html.strip():
+            self._check_page_guards(raw_main_html)
+            if has_portal_redirect:
+                raise SpaceInvasionAuthError(
+                    "Browser redirected to BitMeUp portal/login while reading game snapshot."
+                )
 
         if home_html:
             tutorial = parse_tutorial_from_home(home_html)

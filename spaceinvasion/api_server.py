@@ -7,19 +7,22 @@ from dataclasses import asdict, replace
 import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections.abc import Mapping
 import inspect
 import json
 import math
+import os
 from pathlib import Path
 import re
 import secrets
 import threading
 import time
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
+from spaceinvasion import game_data
 from spaceinvasion.auth import SpaceInvasionAuthError, load_credentials
 from spaceinvasion.browser import (
     DEFAULT_DEBUG_PORT,
@@ -40,12 +43,20 @@ from spaceinvasion.fleet import (
     SHIP_SLUG_BY_KEY,
     SpyReport,
     extract_galaxy_system_coords,
+    normalize_coords,
     parse_galaxy_system_html,
     parse_spy_messages_html,
     plan_escape_flight,
     simulate_raid_outcome,
 )
-from spaceinvasion.logging_utils import append_api_log, redact_sensitive
+from spaceinvasion.logging_utils import (
+    _SECRET_DICT_KEYS,
+    _SID_RE as _LOG_SID_RE,
+    _sub_sid_kv as _sub_log_sid_kv,
+    append_api_log,
+    is_secret_dict_key,
+    redact_sensitive,
+)
 from spaceinvasion.optimizer import get_last_optimizer_summary
 from spaceinvasion.ranking import (
     attach_action_etas,
@@ -60,6 +71,8 @@ from spaceinvasion.state import (
     GameState,
     PlanetState,
     Resources,
+    is_building_allowed_on_planet_type,
+    normalize_planet_type,
     parse_economy_rates,
     parse_home_metadata,
     parse_tutorial_from_home,
@@ -68,11 +81,14 @@ from spaceinvasion.storage import GameDatabase
 from spaceinvasion.strategy import PlannedAction, plan_actions
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
+MAX_REQUEST_BYTES = 1_048_576
 _SERVER_BOOT_ID = secrets.token_hex(4)
 _GLOBAL_OPTIMIZER_LOCK = threading.Lock()
-_API_SID_RE = re.compile(
-    r"(?i)([?&;]|\b|%3[fb]|%26)(sid(?:=|%3d))((?:(?!%26|%23|%20|%22|%27|%3[ce])[^\s&\"'<>#)])+)"
-)
+_API_SID_RE = re.compile(_LOG_SID_RE.pattern, _LOG_SID_RE.flags)
+
+
+def _sub_api_sid(match: re.Match[str]) -> str:
+    return _sub_log_sid_kv(match)
 _UI_ASSETS: dict[str, tuple[str, str]] = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -125,16 +141,181 @@ class ApiRequestError(ValueError):
     """Raised when an API request payload is malformed or unsupported."""
 
 
-def _redact_api_payload(value: Any) -> Any:
-    """Recursively scrub `sid=` / `SID=` session tokens from API responses."""
-    sanitized = redact_sensitive(value)
-    if isinstance(sanitized, str):
-        return _API_SID_RE.sub(r"\1\2REDACTED", sanitized)
-    if isinstance(sanitized, dict):
-        return {k: _redact_api_payload(v) for k, v in sanitized.items()}
-    if isinstance(sanitized, (list, tuple)):
-        return [_redact_api_payload(v) for v in sanitized]
-    return sanitized
+_API_SECRET_DICT_KEYS: frozenset[str] = _SECRET_DICT_KEYS
+_MAX_API_JSON_INT: int = game_data.MAX_JSON_SAFE_INT
+
+
+def _scrub_api_str(text: str) -> str:
+    if not text:
+        return text
+    low = text.lower()
+    if (
+        "sid" not in low
+        and "pass" not in low
+        and "cookie" not in low
+        and "api_key" not in low
+        and "api-key" not in low
+        and "secret" not in low
+        and "auth" not in low
+        and "bearer" not in low
+        and (
+            text.isascii()
+            or (
+                "\u0130" not in text
+                and "\u0131" not in text
+                and "\u017f" not in text
+                and "\u212a" not in text
+            )
+        )
+    ):
+        return text
+    scrubbed = redact_sensitive(text)
+    s = scrubbed if isinstance(scrubbed, str) else _bounded_api_str(scrubbed)
+    if (
+        "sid" in low
+        or "\u0130" in s
+        or "\u0131" in s
+        or "\u017f" in s
+        or "sid" in s.lower()
+    ):
+        return _API_SID_RE.sub(_sub_api_sid, s)
+    return s
+
+
+_MAX_API_KEY_NODES = 256
+_MAX_API_KEY_CHARS = 4096
+_MAX_API_TREE_NODES = 32_768
+_MAX_API_TREE_DEPTH = 64
+
+
+def _clip_api_str(text: str, limit: int = _MAX_API_KEY_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...[truncated]"
+
+
+def _redact_api_key(
+    key: Any,
+    *,
+    _depth: int = 0,
+    _seen: Optional[set[int]] = None,
+    _budget: Optional[list[int]] = None,
+) -> Any:
+    if isinstance(key, str):
+        return _scrub_api_str(key)
+    if key is None or isinstance(key, (bool, int, float)):
+        return key
+    if isinstance(key, (bytes, bytearray)):
+        return _scrub_api_str(bytes(key).decode("utf-8", errors="replace"))
+    seen = _seen if _seen is not None else set()
+    budget = _budget if _budget is not None else [_MAX_API_KEY_NODES]
+    if isinstance(key, os.PathLike):
+        vid = id(key)
+        if vid in seen or _depth >= 16 or budget[0] <= 0:
+            return "<unprintable>"
+        budget[0] -= 1
+        seen.add(vid)
+        try:
+            try:
+                fsp = os.fspath(key)
+            except Exception:
+                return "<unprintable>"
+            return _redact_api_key(fsp, _depth=_depth + 1, _seen=seen, _budget=budget)
+        finally:
+            seen.discard(vid)
+    if isinstance(key, BaseException):
+        return _format_api_exception(key, max_len=512, _depth=_depth, _seen=seen, _budget=budget)
+    if isinstance(key, (tuple, frozenset)):
+        vid = id(key)
+        if vid in seen or _depth >= 16 or budget[0] <= 0:
+            return "(...)" if isinstance(key, tuple) else "frozenset({...})"
+        budget[0] -= 1
+        seen.add(vid)
+        try:
+            items: list[Any] = []
+            for idx, item in enumerate(key):
+                if idx >= 64 or budget[0] <= 0:
+                    items.append("...")
+                    break
+                items.append(_redact_api_key(item, _depth=_depth + 1, _seen=seen, _budget=budget))
+            return tuple(items) if isinstance(key, tuple) else frozenset(items)
+        except TypeError:
+            pass
+        finally:
+            seen.discard(vid)
+    return _bounded_api_str(key)
+
+
+def _redact_api_payload(
+    value: Any,
+    *,
+    _depth: int = 0,
+    _seen: Optional[set[int]] = None,
+    _budget: Optional[list[int]] = None,
+) -> Any:
+    """Recursively scrub session tokens and secret key-value fields from API responses."""
+    if isinstance(value, str):
+        return _scrub_api_str(value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return _scrub_api_str(bytes(value).decode("utf-8", errors="replace"))
+    if isinstance(value, BaseException):
+        return _format_api_exception(value, max_len=2048)
+    if isinstance(value, (Mapping, list, tuple, set, frozenset, os.PathLike)):
+        seen = _seen if _seen is not None else set()
+        budget = _budget if _budget is not None else [_MAX_API_TREE_NODES]
+        vid = id(value)
+        if vid in seen:
+            return "<unprintable>" if isinstance(value, os.PathLike) else "[Cycle]"
+        if _depth >= _MAX_API_TREE_DEPTH or budget[0] <= 0:
+            return "<unprintable>" if isinstance(value, os.PathLike) else "[Truncated]"
+        budget[0] -= 1
+        seen.add(vid)
+        try:
+            if isinstance(value, os.PathLike):
+                try:
+                    raw = os.fspath(value)
+                except Exception:
+                    return "<unprintable>"
+                if isinstance(raw, (bytes, bytearray)):
+                    return _scrub_api_str(bytes(raw).decode("utf-8", errors="replace"))
+                if isinstance(raw, str):
+                    return _scrub_api_str(raw)
+                if isinstance(raw, os.PathLike):
+                    return "<unprintable>"
+                return _redact_api_payload(raw, _depth=_depth + 1, _seen=seen, _budget=budget)
+            if isinstance(value, Mapping):
+                out: dict[Any, Any] = {}
+                for k, v in value.items():
+                    if budget[0] <= 0:
+                        out["[Truncated]"] = "[Truncated]"
+                        break
+                    clean_k = _redact_api_key(k)
+                    if isinstance(clean_k, str) and is_secret_dict_key(clean_k):
+                        if v is None or v == "":
+                            out[clean_k] = v
+                        elif isinstance(v, (bytes, bytearray)) and len(v) == 0:
+                            out[clean_k] = ""
+                        else:
+                            out[clean_k] = "REDACTED"
+                    else:
+                        out[clean_k] = _redact_api_payload(
+                            v, _depth=_depth + 1, _seen=seen, _budget=budget
+                        )
+                return out
+            out_list: list[Any] = []
+            for v in value:
+                if budget[0] <= 0:
+                    out_list.append("[Truncated]")
+                    break
+                out_list.append(
+                    _redact_api_payload(v, _depth=_depth + 1, _seen=seen, _budget=budget)
+                )
+            return out_list
+        finally:
+            seen.discard(vid)
+    return value
 
 
 def _parse_command_int(
@@ -147,7 +328,7 @@ def _parse_command_int(
 ) -> Optional[int]:
     if allow_none and val is None:
         return None
-    if isinstance(val, bool) or val is None or isinstance(val, (dict, list, tuple, set)):
+    if isinstance(val, bool) or val is None or isinstance(val, (Mapping, list, tuple, set, frozenset)):
         raise ApiRequestError(f"Command parameter {name!r} must be an integer.")
     if isinstance(val, int):
         parsed = val
@@ -157,7 +338,7 @@ def _parse_command_int(
         parsed = int(val)
     elif isinstance(val, str):
         txt = val.strip()
-        if not txt:
+        if not txt or not txt.isascii():
             raise ApiRequestError(f"Command parameter {name!r} must be an integer.")
         try:
             parsed = int(txt)
@@ -182,7 +363,7 @@ def _validate_strict_int(
 ) -> Optional[int]:
     if allow_none and val is None:
         return None
-    if isinstance(val, bool) or val is None or isinstance(val, (dict, list, tuple, set)):
+    if isinstance(val, bool) or val is None or isinstance(val, (Mapping, list, tuple, set, frozenset)):
         raise ApiRequestError(f"Config field {name!r} must be an integer.")
     if isinstance(val, int):
         parsed = val
@@ -192,7 +373,7 @@ def _validate_strict_int(
         parsed = int(val)
     elif isinstance(val, str):
         txt = val.strip()
-        if not txt:
+        if not txt or not txt.isascii():
             raise ApiRequestError(f"Config field {name!r} must be an integer.")
         try:
             parsed = int(txt)
@@ -208,6 +389,18 @@ def _validate_strict_int(
     return parsed
 
 
+def _safe_api_int(val: Any, default: int = 0) -> int:
+    return game_data.safe_int(val, default=default)
+
+
+def _safe_api_float(val: Any, default: float = 0.0) -> float:
+    return game_data.safe_finite_float(val, default=default)
+
+
+def _reject_nonfinite_json(token: str) -> Any:
+    raise ValueError(f"Non-standard JSON constant {token!r} is not allowed.")
+
+
 def _validate_strict_float(
     name: str,
     val: Any,
@@ -215,13 +408,16 @@ def _validate_strict_float(
     min_val: Optional[float] = None,
     max_val: Optional[float] = None,
 ) -> float:
-    if isinstance(val, bool) or val is None or isinstance(val, (dict, list, tuple, set)):
+    if isinstance(val, bool) or val is None or isinstance(val, (Mapping, list, tuple, set, frozenset)):
         raise ApiRequestError(f"Config field {name!r} must be a finite number.")
-    if isinstance(val, str) and not val.strip():
-        raise ApiRequestError(f"Config field {name!r} must be a finite number.")
+    if isinstance(val, str):
+        txt = val.strip()
+        if not txt or not txt.isascii():
+            raise ApiRequestError(f"Config field {name!r} must be a finite number.")
+        val = txt
     try:
         parsed = float(val)
-    except (TypeError, ValueError, OverflowError) as exc:
+    except Exception as exc:
         raise ApiRequestError(f"Config field {name!r} must be a finite number.") from exc
     if not math.isfinite(parsed):
         raise ApiRequestError(f"Config field {name!r} must be a finite number.")
@@ -232,7 +428,7 @@ def _validate_strict_float(
     return parsed
 
 
-def _validate_config_patch(raw_cfg: dict[str, Any]) -> None:
+def _validate_config_patch(raw_cfg: Mapping[str, Any]) -> None:
     if "planner_mode" in raw_cfg:
         raw_mode = raw_cfg["planner_mode"]
         if not isinstance(raw_mode, str) or not raw_mode.strip():
@@ -242,7 +438,12 @@ def _validate_config_patch(raw_cfg: dict[str, Any]) -> None:
         try:
             normalize_planner_mode(raw_mode, strict=True)
         except ValueError as exc:
-            raise ApiRequestError(str(exc)) from exc
+            raise ApiRequestError(_redact_api_payload(exc)) from exc
+
+    if "playstyle" in raw_cfg:
+        raw_playstyle = raw_cfg["playstyle"]
+        if not isinstance(raw_playstyle, str) or not raw_playstyle.strip():
+            raise ApiRequestError("'playstyle' must be a non-empty string.")
 
     int_specs: dict[str, tuple[Optional[int], Optional[int], bool]] = {
         "ga_population_size": (4, 200, False),
@@ -295,26 +496,260 @@ def _parse_sim_count_map(field_name: str, raw: Any, *, max_val: int = 1_000_000_
     return out
 
 
-def _sanitize_finite_json(obj: Any) -> Any:
-    if isinstance(obj, float):
-        return obj if math.isfinite(obj) else 0.0
-    if isinstance(obj, Mapping):
-        return {str(k): _sanitize_finite_json(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_sanitize_finite_json(v) for v in obj]
-    return obj
+def _format_api_exception(
+    exc: BaseException,
+    *,
+    default: str = "<unprintable>",
+    max_len: int = 1024,
+    _depth: int = 0,
+    _seen: Optional[set[int]] = None,
+    _budget: Optional[list[int]] = None,
+) -> str:
+    seen = _seen if _seen is not None else set()
+    budget = _budget if _budget is not None else [_MAX_API_KEY_NODES]
+    str_fn = getattr(type(exc), "__str__", BaseException.__str__)
+    used_custom_str = False
+    raw = ""
+    if str_fn not in (BaseException.__str__, KeyError.__str__):
+        try:
+            raw = _clip_api_str(str(exc), 16_384)
+            used_custom_str = True
+        except Exception:
+            raw = ""
+    if not used_custom_str:
+        args = getattr(exc, "args", ())
+        if not isinstance(args, (tuple, list)) or not args:
+            raw = "" if str_fn is BaseException.__str__ else type(exc).__name__
+        else:
+            vid = id(exc)
+            if vid in seen or _depth >= 16 or budget[0] <= 0:
+                raw = f"<{type(exc).__name__}>"
+            else:
+                budget[0] -= 1
+                seen.add(vid)
+                try:
+                    if len(args) == 1:
+                        a0 = args[0]
+                        if isinstance(a0, str):
+                            raw = repr(a0) if isinstance(exc, KeyError) else a0
+                        elif isinstance(a0, BaseException):
+                            raw = _format_api_exception(
+                                a0,
+                                default=default,
+                                max_len=4096,
+                                _depth=_depth + 1,
+                                _seen=seen,
+                                _budget=budget,
+                            )
+                        else:
+                            raw = _bounded_api_str(a0, default=default, max_len=4096)
+                    else:
+                        parts: list[str] = []
+                        for a in args[:8]:
+                            if budget[0] <= 0:
+                                parts.append("...")
+                                break
+                            if isinstance(a, str):
+                                parts.append(repr(a))
+                            elif isinstance(a, BaseException):
+                                parts.append(
+                                    _format_api_exception(
+                                        a,
+                                        default=default,
+                                        max_len=4096,
+                                        _depth=_depth + 1,
+                                        _seen=seen,
+                                        _budget=budget,
+                                    )
+                                )
+                            else:
+                                parts.append(_bounded_api_str(a, default=default, max_len=4096))
+                        if len(args) > 8:
+                            parts.append(f"...+{len(args) - 8}")
+                        raw = _clip_api_str("(" + ", ".join(parts) + ")")
+                finally:
+                    seen.discard(vid)
+    scrubbed = _scrub_api_str(raw)
+    return scrubbed[:max_len] if len(scrubbed) > max_len else scrubbed
+
+
+def _bounded_api_str(val: Any, default: str = "<unprintable>", max_len: int = 1024) -> str:
+    if isinstance(val, BaseException):
+        return _format_api_exception(val, default=default, max_len=max_len)
+    if isinstance(val, os.PathLike):
+        try:
+            val = os.fspath(val)
+        except Exception:
+            return default
+        if isinstance(val, os.PathLike):
+            return default
+    if isinstance(val, (bytes, bytearray)):
+        txt = bytes(val).decode("utf-8", errors="replace")
+    elif isinstance(val, str):
+        txt = val
+    else:
+        try:
+            txt = game_data.safe_key(val)
+        except Exception:
+            return default
+    scrubbed = _scrub_api_str(txt)
+    return scrubbed[:max_len] if len(scrubbed) > max_len else scrubbed
+
+
+def _sanitize_api_json_key(key: Any) -> str:
+    if isinstance(key, str):
+        return _scrub_api_str(key)
+    if key is None or isinstance(key, bool):
+        return str(key)
+    if isinstance(key, int):
+        if -_MAX_API_JSON_INT <= key <= _MAX_API_JSON_INT:
+            return str(key)
+        return str(_MAX_API_JSON_INT if key > 0 else -_MAX_API_JSON_INT)
+    if isinstance(key, float):
+        return str(key) if math.isfinite(key) else "0.0"
+    if isinstance(key, BaseException):
+        return _format_api_exception(key, max_len=512)
+    if isinstance(key, os.PathLike):
+        try:
+            key = os.fspath(key)
+        except Exception:
+            return "<unprintable>"
+        return _sanitize_api_json_key(key) if not isinstance(key, os.PathLike) else "<unprintable>"
+    if isinstance(key, (bytes, bytearray)):
+        return _scrub_api_str(bytes(key).decode("utf-8", errors="replace"))
+    red_k = _redact_api_key(key)
+    try:
+        k_txt = game_data.safe_key(red_k, max_int=_MAX_API_JSON_INT)
+    except Exception:
+        k_txt = _bounded_api_str(red_k, default="<unprintable>", max_len=512)
+    return _scrub_api_str(k_txt)
+
+
+def _sanitize_finite_json(
+    obj: Any,
+    *,
+    _depth: int = 0,
+    _seen: Optional[set[int]] = None,
+    _budget: Optional[list[int]] = None,
+) -> Any:
+    seen = _seen if _seen is not None else set()
+    budget = _budget if _budget is not None else [_MAX_API_TREE_NODES]
+
+    def _walk(val: Any, d: int) -> Any:
+        tv = type(val)
+        if val is None or tv is bool:
+            return val
+        if tv is str:
+            return val if len(val) < 5 else _scrub_api_str(val)
+        if tv is int:
+            if -_MAX_API_JSON_INT <= val <= _MAX_API_JSON_INT:
+                return val
+            return _MAX_API_JSON_INT if val > 0 else -_MAX_API_JSON_INT
+        if tv is float:
+            return val if math.isfinite(val) else 0.0
+        is_dict = tv is dict
+        is_seq = tv is list or tv is tuple
+        if not (is_dict or is_seq):
+            if isinstance(val, bool):
+                return bool(val)
+            if isinstance(val, str):
+                s = str(val)
+                return s if len(s) < 5 else _scrub_api_str(s)
+            if isinstance(val, int):
+                iv = int(val)
+                if -_MAX_API_JSON_INT <= iv <= _MAX_API_JSON_INT:
+                    return iv
+                return _MAX_API_JSON_INT if iv > 0 else -_MAX_API_JSON_INT
+            if isinstance(val, float):
+                fv = float(val)
+                return fv if math.isfinite(fv) else 0.0
+            if isinstance(val, (bytes, bytearray)):
+                return _scrub_api_str(bytes(val).decode("utf-8", errors="replace"))
+            if isinstance(val, BaseException):
+                return _format_api_exception(val, default="<unprintable>", max_len=1024)
+        if is_dict or is_seq or isinstance(val, (Mapping, list, tuple, set, frozenset, os.PathLike)):
+            is_pathlike = (not (is_dict or is_seq)) and isinstance(val, os.PathLike)
+            vid = id(val)
+            if vid in seen:
+                return "<unprintable>" if is_pathlike else "[Cycle]"
+            if d >= _MAX_API_TREE_DEPTH or budget[0] <= 0:
+                return "<unprintable>" if is_pathlike else "[Truncated]"
+            budget[0] -= 1
+            seen.add(vid)
+            try:
+                if is_pathlike:
+                    try:
+                        raw = os.fspath(val)
+                    except Exception:
+                        return "<unprintable>"
+                    if isinstance(raw, (bytes, bytearray)):
+                        return _scrub_api_str(bytes(raw).decode("utf-8", errors="replace"))
+                    if isinstance(raw, str):
+                        return _scrub_api_str(raw)
+                    if isinstance(raw, os.PathLike):
+                        return "<unprintable>"
+                    return _bounded_api_str(raw)
+                if is_dict:
+                    out_d: dict[str, Any] = {}
+                    for k, v in val.items():
+                        if budget[0] <= 0:
+                            out_d["[Truncated]"] = "[Truncated]"
+                            break
+                        if type(k) is str:
+                            clean_k = k if len(k) < 5 else _scrub_api_str(k)
+                        else:
+                            clean_k = _sanitize_api_json_key(k)
+                        if is_secret_dict_key(clean_k):
+                            if v is None or v == "":
+                                out_d[clean_k] = v
+                            elif isinstance(v, (bytes, bytearray)) and len(v) == 0:
+                                out_d[clean_k] = ""
+                            else:
+                                out_d[clean_k] = "REDACTED"
+                        else:
+                            out_d[clean_k] = _walk(v, d + 1)
+                    return out_d
+                if isinstance(val, Mapping):
+                    out: dict[str, Any] = {}
+                    for k, v in val.items():
+                        if budget[0] <= 0:
+                            out["[Truncated]"] = "[Truncated]"
+                            break
+                        clean_k = _sanitize_api_json_key(k)
+                        if is_secret_dict_key(clean_k):
+                            if v is None or v == "":
+                                out[clean_k] = v
+                            elif isinstance(v, (bytes, bytearray)) and len(v) == 0:
+                                out[clean_k] = ""
+                            else:
+                                out[clean_k] = "REDACTED"
+                        else:
+                            out[clean_k] = _walk(v, d + 1)
+                    return out
+                out_list: list[Any] = []
+                for v in val:
+                    if budget[0] <= 0:
+                        out_list.append("[Truncated]")
+                        break
+                    out_list.append(_walk(v, d + 1))
+                return out_list
+            finally:
+                seen.discard(vid)
+        return _bounded_api_str(val, default="<unprintable>", max_len=1024)
+
+    return _walk(obj, _depth)
 
 
 def _sanitize_optimizer_summary(raw: Optional[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
     if not isinstance(raw, Mapping) or not raw:
         return None
-    clean = _redact_api_payload(_sanitize_finite_json(dict(raw)))
+    clean = _sanitize_finite_json(dict(raw))
     if not isinstance(clean, dict):
         return None
     if "improvement_pct" in clean:
         try:
             imp = float(clean["improvement_pct"])
-        except (TypeError, ValueError):
+        except Exception:
             imp = 0.0
         if not math.isfinite(imp):
             imp = 0.0
@@ -355,6 +790,48 @@ def ensure_debug_browser_ready(
         login_with_browser(creds=creds, config=cfg, require_in_game=True)
 
 
+def _safe_limiter_wait(
+    raw: Any,
+    default: float = 8.0,
+    *,
+    min_val: float = 0.0,
+    max_val: float = 3600.0,
+) -> float:
+    if isinstance(raw, bool) or raw is None or isinstance(raw, (dict, list, tuple, set, frozenset)):
+        return default
+    if isinstance(raw, int):
+        if raw.bit_length() > 128:
+            return max_val if raw > 0 else min_val
+        val = float(raw)
+    elif isinstance(raw, float):
+        val = raw
+    else:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = bytes(raw).decode("utf-8", errors="replace")
+        if isinstance(raw, str):
+            txt = raw.strip()
+            if not txt or not txt.isascii():
+                return default
+            raw = txt
+        try:
+            val = float(raw)
+        except Exception:
+            return default
+    if not math.isfinite(val):
+        return default
+    return max(min_val, min(max_val, val))
+
+
+def _safe_debug_port(raw: Any, default: int = DEFAULT_DEBUG_PORT) -> int:
+    port = game_data.safe_int(raw, default)
+    return max(0, min(65535, port))
+
+
+def _safe_hourly_budget(raw: Any, default: int = 60) -> int:
+    cap = game_data.safe_int(raw, default)
+    return max(0, min(1_000_000, cap))
+
+
 class GameApiBridge:
     """Thread-safe facade connecting HTTP API calls to the Chrome debug port."""
 
@@ -379,7 +856,7 @@ class GameApiBridge:
         max_limiter_wait: float = 8.0,
         executor_max_limiter_wait: Optional[float] = 8.0,
     ) -> None:
-        self.debug_port = debug_port
+        self.debug_port = _safe_debug_port(debug_port, DEFAULT_DEBUG_PORT)
         self.env_file = env_file
         self.account = account
         self.config_path = config_path
@@ -387,13 +864,13 @@ class GameApiBridge:
         self.log_dir = log_dir
         self._lock = threading.Lock()
         self._page_limiter = page_limiter or PageViewLimiter()
-        self._max_limiter_wait = float(max_limiter_wait)
+        self._max_limiter_wait = _safe_limiter_wait(max_limiter_wait, 8.0)
         if executor_max_limiter_wait is None:
             self._executor_max_limiter_wait: Optional[float] = None
         elif isinstance(executor_max_limiter_wait, (int, float)) and not isinstance(
             executor_max_limiter_wait, bool
         ):
-            val = float(executor_max_limiter_wait)
+            val = _safe_limiter_wait(executor_max_limiter_wait, self._max_limiter_wait)
             self._executor_max_limiter_wait = val if val != 8.0 else self._max_limiter_wait
         else:
             self._executor_max_limiter_wait = self._max_limiter_wait
@@ -439,11 +916,12 @@ class GameApiBridge:
             self._rank_samples = load_rank_history(self._rank_history_path)
             self._raid_targets = ()
         self._bot_control: dict[str, Any] = {"paused": False, "mode_override": None}
-        budget = (
+        raw_budget = (
             max_actions_per_hour
             if max_actions_per_hour is not None
             else self.strategy_config.max_actions_per_hour
         )
+        budget = _safe_hourly_budget(raw_budget, 60)
         self._live_executor = ActionExecutor(
             dry_run=False,
             max_actions_per_hour=budget,
@@ -475,6 +953,23 @@ class GameApiBridge:
             )
         )
 
+    def close(self) -> None:
+        """Close owned database resources idempotently."""
+        lock = getattr(self, "_lock", None)
+        with (lock if lock is not None else contextlib.nullcontext()):
+            db = getattr(self, "_db", None)
+            if db is not None:
+                self._db = None
+                close_fn = getattr(db, "close", None)
+                if callable(close_fn):
+                    close_fn()
+
+    def __enter__(self) -> "GameApiBridge":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
     def record_rate_limit(self, retry_after: Optional[float] = None) -> float:
         return self._page_limiter.record_rate_limit(retry_after)
 
@@ -486,8 +981,8 @@ class GameApiBridge:
             return
         if getattr(exc, "_recorded_limiter_id", None) == id(self._page_limiter):
             return
-        rem = self._page_limiter.rate_limit_remaining()
-        req = float(getattr(exc, "retry_after", 0.0) or 0.0)
+        rem = _safe_limiter_wait(self._page_limiter.rate_limit_remaining(), 0.0, min_val=0.0)
+        req = _safe_limiter_wait(getattr(exc, "retry_after", 45.0), 45.0, min_val=1.0)
         if rem > 0.0 and req <= rem + 1.0:
             setattr(exc, "_recorded_limiter_id", id(self._page_limiter))
             return
@@ -537,7 +1032,7 @@ class GameApiBridge:
             val = raw.get(key)
             if isinstance(val, float) and not math.isfinite(val):
                 raw[key] = None if key.startswith(("wait_", "total_")) else 0.0
-        return _redact_api_payload(raw)
+        return _sanitize_finite_json(_redact_api_payload(raw))
 
     def _plan_with_summary(
         self,
@@ -676,30 +1171,36 @@ class GameApiBridge:
                 in_game = True
             self._last_url = current_url
             rate_rem = self._page_limiter.rate_limit_remaining()
-            return {
-                "ok": port_open,
-                "debug_port": self.debug_port,
-                "debug_port_open": port_open,
-                "in_game": in_game,
-                "rate_limited": rate_rem > 0.0,
-                "retry_after": round(rate_rem, 1),
-                "page_views_last_60s": self._page_limiter.views_last_60s(),
-                "page_view_limit_per_minute": self._page_limiter.max_views_per_minute,
-                "rate_limit_hits": self._page_limiter.rate_limit_hits,
-                "url": _redact_api_payload(current_url) if current_url else None,
-                "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
-                "bot_control": dict(self._bot_control),
-            }
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": port_open,
+                        "debug_port": self.debug_port,
+                        "debug_port_open": port_open,
+                        "in_game": in_game,
+                        "rate_limited": rate_rem > 0.0,
+                        "retry_after": round(rate_rem, 1),
+                        "page_views_last_60s": self._page_limiter.views_last_60s(),
+                        "page_view_limit_per_minute": self._page_limiter.max_views_per_minute,
+                        "rate_limit_hits": self._page_limiter.rate_limit_hits,
+                        "url": current_url if current_url else None,
+                        "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
+                        "bot_control": dict(self._bot_control),
+                    }
+                )
+            )
 
     def get_bot_control(self) -> dict[str, Any]:
         with self._lock:
-            return _redact_api_payload(
-                {
-                    "ok": True,
-                    **dict(self._bot_control),
-                    "scanned_systems": self._get_scanned_systems(),
-                    "throttle_cooldowns": self._get_throttle_cooldowns(),
-                }
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": True,
+                        **dict(self._bot_control),
+                        "scanned_systems": self._get_scanned_systems(),
+                        "throttle_cooldowns": self._get_throttle_cooldowns(),
+                    }
+                )
             )
 
     def _read_log_tail(self, filename: str, lines: int = 40) -> str:
@@ -764,7 +1265,64 @@ class GameApiBridge:
             and state.active_planet_id == prev.active_planet_id
             and cur_b8 == prev_b8
         ):
-            res_offers = prev.research_offers
+            if any(q.category == "research" for q in state.active_queues):
+                res_offers = prev.research_offers
+            elif any(o.active for o in prev.research_offers):
+                from spaceinvasion import game_data
+                from spaceinvasion.strategy import _resources_from_dict
+
+                active_p = state.active_planet()
+                has_lab = active_p is not None and active_p.building_level(8) >= 1
+                rebuilt_offers = []
+                for o in prev.research_offers:
+                    st_low = str(o.status_text or "").lower()
+                    was_suppressed = o.active or any(
+                        tok in st_low
+                        for tok in ("in research", "queue busy", "busy", "active", "cancel", "unavailable")
+                    )
+                    if not was_suppressed:
+                        rebuilt_offers.append(o)
+                        continue
+                    unmet = game_data.missing_prerequisites(
+                        "research",
+                        o.research_key,
+                        buildings=active_p.buildings if active_p is not None else {},
+                        researches=state.researches,
+                    )
+                    check_cost = o.cost
+                    if check_cost.is_zero() and o.research_key:
+                        unit = game_data.resolve_unit("research", o.research_key)
+                        raw_cost = ((unit or {}).get("levels") or {}).get(o.target_level, {}).get("cost")
+                        if isinstance(raw_cost, dict):
+                            check_cost = _resources_from_dict(raw_cost)
+                    can_afford = active_p is not None and active_p.resources.can_afford(check_cost)
+                    if has_lab and not unmet and can_afford and not check_cost.is_zero():
+                        rebuilt_offers.append(
+                            replace(o, cost=check_cost, active=False, can_research=True, status_text="Available")
+                        )
+                    elif has_lab and not unmet and not can_afford:
+                        rebuilt_offers.append(
+                            replace(
+                                o,
+                                cost=check_cost,
+                                active=False,
+                                can_research=False,
+                                status_text="Not enough resources",
+                            )
+                        )
+                    else:
+                        rebuilt_offers.append(
+                            replace(
+                                o,
+                                cost=check_cost,
+                                active=False,
+                                can_research=False,
+                                status_text="Prerequisites unmet" if unmet else "Unavailable",
+                            )
+                        )
+                res_offers = tuple(rebuilt_offers)
+            else:
+                res_offers = prev.research_offers
             changed_state = True
         if changed_planets or changed_state:
             return replace(
@@ -782,31 +1340,39 @@ class GameApiBridge:
             get_stats = getattr(self._db, "get_raid_stats", None)
             if callable(get_stats):
                 stats = get_stats()
-                if isinstance(stats, dict) and isinstance(stats.get("per_target"), dict):
+                if isinstance(stats, Mapping) and isinstance(stats.get("per_target"), Mapping):
                     per_target = stats["per_target"]
         enriched: list[dict[str, Any]] = []
         for raw in rows:
+            if not isinstance(raw, Mapping):
+                continue
             item = dict(raw)
-            coords = str(item.get("coords") or item.get("target_coords") or "").strip()
+            coords = normalize_coords(item.get("coords") or item.get("target_coords") or "")
             pt = per_target.get(coords) if coords else None
-            if isinstance(pt, dict) and int(pt.get("attempts", 0) or 0) > 0:
+            if isinstance(pt, Mapping) and _safe_api_int(pt.get("attempts", 0)) > 0:
                 item.update(
                     {
-                        "attack_attempts": int(pt.get("attempts", 0) or 0),
-                        "attack_wins": int(pt.get("wins", 0) or 0),
-                        "attack_losses": int(pt.get("losses", 0) or 0),
-                        "attack_success_rate": float(pt.get("success_rate", 0.0) or 0.0),
-                        "avg_attack_loot": dict(pt.get("avg_loot") or {}),
-                        "avg_attack_loot_spice_eq": float(pt.get("avg_loot_spice_eq", 0.0) or 0.0),
-                        "total_attack_loot": dict(pt.get("total_loot") or {}),
-                        "total_attack_loot_spice_eq": float(pt.get("total_loot_spice_eq", 0.0) or 0.0),
-                        "recency_weighted_loot_spice_eq": float(
-                            pt.get("recency_weighted_loot_spice_eq", 0.0) or 0.0
+                        "attack_attempts": game_data.cap_json_int(_safe_api_int(pt.get("attempts", 0))),
+                        "attack_wins": game_data.cap_json_int(_safe_api_int(pt.get("wins", 0))),
+                        "attack_losses": game_data.cap_json_int(_safe_api_int(pt.get("losses", 0))),
+                        "attack_success_rate": _safe_api_float(pt.get("success_rate", 0.0)),
+                        "avg_attack_loot": _sanitize_finite_json(dict(pt.get("avg_loot") or {}))
+                        if isinstance(pt.get("avg_loot"), Mapping)
+                        else {},
+                        "avg_attack_loot_spice_eq": _safe_api_float(pt.get("avg_loot_spice_eq", 0.0)),
+                        "total_attack_loot": _sanitize_finite_json(dict(pt.get("total_loot") or {}))
+                        if isinstance(pt.get("total_loot"), Mapping)
+                        else {},
+                        "total_attack_loot_spice_eq": _safe_api_float(pt.get("total_loot_spice_eq", 0.0)),
+                        "recency_weighted_loot_spice_eq": _safe_api_float(
+                            pt.get("recency_weighted_loot_spice_eq", 0.0)
                         ),
-                        "last_attack_outcome": str(pt.get("last_outcome") or ""),
-                        "last_attack_loot": dict(pt.get("last_loot") or {}),
-                        "last_attack_loot_spice_eq": float(pt.get("last_loot_spice_eq", 0.0) or 0.0),
-                        "last_attack_ts": float(pt.get("last_attacked_ts", 0.0) or 0.0),
+                        "last_attack_outcome": _bounded_api_str(pt.get("last_outcome") or "", default=""),
+                        "last_attack_loot": _sanitize_finite_json(dict(pt.get("last_loot") or {}))
+                        if isinstance(pt.get("last_loot"), Mapping)
+                        else {},
+                        "last_attack_loot_spice_eq": _safe_api_float(pt.get("last_loot_spice_eq", 0.0)),
+                        "last_attack_ts": _safe_api_float(pt.get("last_attacked_ts", 0.0)),
                     }
                 )
             else:
@@ -984,8 +1550,10 @@ class GameApiBridge:
         active_p = merged.active_planet()
         b8_lvl = active_p.building_level(8) if active_p is not None else 0
         b9_lvl = active_p.building_level(9) if active_p is not None else 0
-        pid_sig = int(active_p.planet_id) if active_p is not None else 0
-        res_sig = tuple(sorted((str(k), int(v)) for k, v in (merged.researches or {}).items()))
+        pid_sig = _safe_api_int(active_p.planet_id) if active_p is not None else 0
+        res_sig = tuple(
+            sorted((game_data.safe_key(k), _safe_api_int(v)) for k, v in (merged.researches or {}).items())
+        )
         res_busy = any(q.category == "research" for q in merged.active_queues)
         if fetched_research:
             self._last_research_sync_at = now
@@ -1065,38 +1633,40 @@ class GameApiBridge:
                 else None
             )
             rate_rem = self._page_limiter.rate_limit_remaining()
-            return {
-                "ok": True,
-                "server_boot_id": _SERVER_BOOT_ID,
-                **compute_ui_assets_state(),
-                "health": {
-                    "ok": port_open,
-                    "debug_port": self.debug_port,
-                    "debug_port_open": port_open,
-                    "in_game": in_game,
-                    "rate_limited": rate_rem > 0.0,
-                    "retry_after": round(rate_rem, 1),
-                    "page_views_last_60s": self._page_limiter.views_last_60s(),
-                    "page_view_limit_per_minute": self._page_limiter.max_views_per_minute,
-                    "rate_limit_hits": self._page_limiter.rate_limit_hits,
-                    "url": _redact_api_payload(current_url) if current_url else None,
-                    "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
-                },
-                "bot_control": dict(self._bot_control),
-                "planner_mode": eff_mode,
-                "config": _redact_api_payload(asdict(self.strategy_config)),
-                "state": _redact_api_payload(asdict(dash_state)) if dash_state else None,
-                "plan": [self._serialize_action(a) for a in actions],
-                "optimizer_summary": opt_summary if eff_mode == "ga_nn" else None,
-                "buildings_eta": _redact_api_payload(buildings_eta) if buildings_eta is not None else None,
-                "combat": _redact_api_payload(combat) if combat is not None else None,
-                "ranking": _redact_api_payload(ranking) if ranking is not None else None,
-                "db_summary": _redact_api_payload(self._db.summary()) if self._db is not None else None,
-                "logs": {
-                    "commander": self._read_log_tail("commander.log"),
-                    "game_api": self._read_log_tail("game_api.log"),
-                },
-            }
+            return _sanitize_finite_json(
+                {
+                    "ok": True,
+                    "server_boot_id": _SERVER_BOOT_ID,
+                    **compute_ui_assets_state(),
+                    "health": {
+                        "ok": port_open,
+                        "debug_port": self.debug_port,
+                        "debug_port_open": port_open,
+                        "in_game": in_game,
+                        "rate_limited": rate_rem > 0.0,
+                        "retry_after": round(rate_rem, 1),
+                        "page_views_last_60s": self._page_limiter.views_last_60s(),
+                        "page_view_limit_per_minute": self._page_limiter.max_views_per_minute,
+                        "rate_limit_hits": self._page_limiter.rate_limit_hits,
+                        "url": current_url if current_url else None,
+                        "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
+                    },
+                    "bot_control": dict(self._bot_control),
+                    "planner_mode": eff_mode,
+                    "config": asdict(self.strategy_config),
+                    "state": asdict(dash_state) if dash_state else None,
+                    "plan": [self._serialize_action(a) for a in actions],
+                    "optimizer_summary": opt_summary if eff_mode == "ga_nn" else None,
+                    "buildings_eta": buildings_eta,
+                    "combat": combat,
+                    "ranking": ranking,
+                    "db_summary": self._db.summary() if self._db is not None else None,
+                    "logs": {
+                        "commander": self._read_log_tail("commander.log"),
+                        "game_api": self._read_log_tail("game_api.log"),
+                    },
+                }
+            )
 
     def get_state(self, *, include_buildings: bool = True) -> dict[str, Any]:
         with self._lock:
@@ -1116,7 +1686,7 @@ class GameApiBridge:
                 )
             ):
                 cached = self._refresh_cached_economy(self._last_state)
-                return _redact_api_payload(asdict(self._attach_raid_stats(cached)))
+                return _sanitize_finite_json(_redact_api_payload(asdict(self._attach_raid_stats(cached))))
 
             research_due = self._last_research_sync_at <= 0.0 or (now - self._last_research_sync_at) >= self.RESEARCH_SYNC_TTL_S
             shipyard_due = self._last_shipyard_sync_at <= 0.0 or (now - self._last_shipyard_sync_at) >= self.SHIPYARD_SYNC_TTL_S
@@ -1124,10 +1694,12 @@ class GameApiBridge:
             need_shipyard = bool(include_buildings and (self._last_state is None or shipyard_due))
             if self._last_state is not None and include_buildings:
                 prev_active = self._last_state.active_planet()
-                cur_pid = int(prev_active.planet_id) if prev_active is not None else 0
+                cur_pid = _safe_api_int(prev_active.planet_id) if prev_active is not None else 0
                 cur_b8 = prev_active.building_level(8) if prev_active is not None else 0
                 cur_b9 = prev_active.building_level(9) if prev_active is not None else 0
-                cur_res_sig = tuple(sorted((str(k), int(v)) for k, v in (self._last_state.researches or {}).items()))
+                cur_res_sig = tuple(
+                    sorted((game_data.safe_key(k), _safe_api_int(v)) for k, v in (self._last_state.researches or {}).items())
+                )
                 cur_res_busy = any(q.category == "research" for q in self._last_state.active_queues)
                 if (
                     prev_active is not None
@@ -1167,7 +1739,7 @@ class GameApiBridge:
             except RateLimitError as exc:
                 self._record_server_rate_limit(exc)
                 raise
-            return _redact_api_payload(asdict(self._attach_raid_stats(merged)))
+            return _sanitize_finite_json(_redact_api_payload(asdict(self._attach_raid_stats(merged))))
 
     def _pick_executor(self, dry_run: bool) -> ActionExecutor:
         return self._dry_executor if dry_run else self._live_executor
@@ -1180,7 +1752,8 @@ class GameApiBridge:
             else state.active_planet()
         )
         if planet is None:
-            raise ApiRequestError(f"Planet {planet_id} not found in state.")
+            pid_txt = game_data.fmt_compact_int(planet_id) if planet_id is not None else "None"
+            raise ApiRequestError(f"Planet {pid_txt} not found in state.")
         return planet
 
     def _find_build_action(
@@ -1197,36 +1770,39 @@ class GameApiBridge:
         planet = self._resolve_planet(state, planet_id)
         nxt_lvl = planet.building_level(building_id) + 1
         offer = next((o for o in planet.building_offers if o.building_id == building_id), None)
+        bid_int = int(building_id)
+        ptype_norm = normalize_planet_type(planet)
+        planet_type_allowed = is_building_allowed_on_planet_type(
+            planet,
+            bid_int,
+            has_b8_offer=(offer is not None and bid_int == 8),
+        )
         if offer is None:
             wiki_cost = _resources_from_dict(game_data.building_cost(building_id, nxt_lvl))
             can_fallback = planet.planet_id != state.active_planet_id or (
                 allow_live_verify and not planet.building_offers
             )
-            astro_allowed = planet.planet_type != "asteroid" or bool(
-                (game_data.BUILDING_BY_ID.get(int(building_id)) or {}).get("asteroid_ok", False)
-            )
             prereqs_met = not game_data.missing_prerequisites(
                 "buildings",
-                int(building_id),
+                bid_int,
                 buildings=planet.buildings,
                 researches=state.researches,
             )
             fallback_ok = (
                 can_fallback
-                and astro_allowed
+                and planet_type_allowed
                 and prereqs_met
                 and not wiki_cost.is_zero()
                 and planet.resources.can_afford(wiki_cost)
             )
-            reason = (
-                "API build command (cross-planet check)"
-                if planet.planet_id != state.active_planet_id and fallback_ok
-                else (
-                    "API build command (live verify)"
-                    if fallback_ok
-                    else "API build command (offer unavailable/not unlocked)"
-                )
-            )
+            if not planet_type_allowed:
+                reason = f"API build command (building b{bid_int} not allowed on planet_type={ptype_norm})"
+            elif planet.planet_id != state.active_planet_id and fallback_ok:
+                reason = "API build command (cross-planet check)"
+            elif fallback_ok:
+                reason = "API build command (live verify)"
+            else:
+                reason = "API build command (offer unavailable/not unlocked)"
             return PlannedAction(
                 priority="P2",
                 kind="BUILD",
@@ -1239,10 +1815,31 @@ class GameApiBridge:
                 missing=planet.resources.missing(wiki_cost),
                 reason=reason,
                 executable_now=fallback_ok,
+                action_href=None,
             )
-        if allow_live_verify and offer.target_level != nxt_lvl:
+        if offer.target_level != nxt_lvl:
             wiki_cost = _resources_from_dict(game_data.building_cost(building_id, nxt_lvl))
-            can_exec = not wiki_cost.is_zero() and planet.resources.can_afford(wiki_cost)
+            prereqs_met = not game_data.missing_prerequisites(
+                "buildings",
+                bid_int,
+                buildings=planet.buildings,
+                researches=state.researches,
+            )
+            can_exec = (
+                allow_live_verify
+                and planet_type_allowed
+                and prereqs_met
+                and not wiki_cost.is_zero()
+                and planet.resources.can_afford(wiki_cost)
+            )
+            if not planet_type_allowed:
+                reason = f"API build command (building b{bid_int} not allowed on planet_type={ptype_norm})"
+            elif not prereqs_met:
+                reason = "API build command (prerequisites unmet)"
+            elif allow_live_verify:
+                reason = "API build command (live verify)"
+            else:
+                reason = "API build command (offer unavailable/not unlocked)"
             return PlannedAction(
                 priority="P2",
                 kind="BUILD",
@@ -1253,17 +1850,24 @@ class GameApiBridge:
                 target_level=nxt_lvl,
                 cost=wiki_cost,
                 missing=planet.resources.missing(wiki_cost),
-                reason="API build command (live verify)",
+                reason=reason,
                 executable_now=can_exec,
+                action_href=None,
             )
-        can_exec = offer.can_build and planet.resources.can_afford(offer.cost)
+        can_exec = planet_type_allowed and offer.can_build and planet.resources.can_afford(offer.cost)
         if (
-            not can_exec
+            planet_type_allowed
+            and not can_exec
             and allow_live_verify
             and "not enough" in (offer.status_text or "").lower()
             and planet.resources.can_afford(offer.cost)
         ):
             can_exec = True
+        reason = (
+            "API build command"
+            if planet_type_allowed
+            else f"API build command (building b{bid_int} not allowed on planet_type={ptype_norm})"
+        )
         return PlannedAction(
             priority="P2",
             kind="BUILD",
@@ -1274,7 +1878,7 @@ class GameApiBridge:
             target_level=offer.target_level,
             cost=offer.cost,
             missing=planet.resources.missing(offer.cost),
-            reason="API build command",
+            reason=reason,
             executable_now=can_exec,
             action_href=offer.build_href if can_exec else None,
         )
@@ -1287,12 +1891,25 @@ class GameApiBridge:
         *,
         allow_live_verify: bool = False,
     ) -> PlannedAction:
-        from spaceinvasion import game_data
         from spaceinvasion.strategy import _resources_from_dict
 
         planet = self._resolve_planet(state, planet_id)
         rkey = f"r{research_id}"
-        nxt_lvl = int(state.researches.get(rkey, 0)) + 1
+        nxt_lvl = _safe_api_int(state.researches.get(rkey, 0)) + 1
+        ptype_norm = normalize_planet_type(planet)
+        if ptype_norm == "raid":
+            return PlannedAction(
+                priority="P2",
+                kind="RESEARCH",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=research_id,
+                target_name=state.research_names.get(rkey, f"Research {research_id}"),
+                target_level=nxt_lvl,
+                reason=f"API research command (research not permitted on planet_type={ptype_norm})",
+                executable_now=False,
+                action_href=None,
+            )
         res_busy = (
             any(q.category == "research" for q in state.active_queues)
             or any(o.active for o in state.research_offers)
@@ -1361,7 +1978,7 @@ class GameApiBridge:
             and not offer.active
             and not res_busy
             and planet.building_level(8) >= 1
-            and not missing_b_prereqs
+            and not missing_prereqs
         ):
             unit = game_data.resolve_unit("research", rkey)
             raw_cost = ((unit or {}).get("levels") or {}).get(nxt_lvl, {}).get("cost")
@@ -1388,6 +2005,7 @@ class GameApiBridge:
             offer.can_research
             and not res_busy
             and planet.building_level(8) >= 1
+            and not missing_prereqs
             and planet.resources.can_afford(offer.cost)
         )
         if (
@@ -1396,6 +2014,7 @@ class GameApiBridge:
             and not offer.active
             and not res_busy
             and planet.building_level(8) >= 1
+            and not missing_prereqs
         ):
             if (
                 "not enough" in (offer.status_text or "").lower()
@@ -1455,15 +2074,49 @@ class GameApiBridge:
 
         planet = self._resolve_planet(state, planet_id)
         qty = max(1, quantity)
+        slug = SHIP_SLUG_BY_KEY.get(f"s{ship_id}")
+        ptype_norm = normalize_planet_type(planet)
+        if ptype_norm == "raid" or slug is None:
+            unit = game_data.resolve_unit("ships", slug) if slug else None
+            return PlannedAction(
+                priority="P2",
+                kind="BUILD_SHIP",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=ship_id,
+                target_name=str((unit or {}).get("name") or f"Ship {ship_id}"),
+                target_level=qty,
+                reason=(
+                    f"API build_ship command (shipyard not permitted on planet_type={ptype_norm})"
+                    if ptype_norm == "raid"
+                    else f"API build_ship command (unknown ship_id={ship_id})"
+                ),
+                executable_now=False,
+                action_href=None,
+            )
+        missing_prereqs = (
+            game_data.missing_prerequisites(
+                "ships",
+                slug,
+                buildings=planet.buildings,
+                researches=state.researches,
+            )
+            if slug
+            else []
+        )
         offer = next((o for o in planet.ship_offers if o.unit_id == ship_id), None)
         if offer is None:
-            slug = SHIP_SLUG_BY_KEY.get(f"s{ship_id}")
             unit = game_data.resolve_unit("ships", slug) if slug else None
             raw_cost = (unit or {}).get("base_cost")
             can_fallback = planet.planet_id != state.active_planet_id or (
                 allow_live_verify and not planet.ship_offers
             )
-            if isinstance(raw_cost, dict) and can_fallback and planet.building_level(9) >= 1:
+            if (
+                isinstance(raw_cost, dict)
+                and can_fallback
+                and planet.building_level(9) >= 1
+                and not missing_prereqs
+            ):
                 unit_cost = _resources_from_dict(raw_cost)
                 total_cost = Resources(
                     pig_iron=unit_cost.pig_iron * qty,
@@ -1507,12 +2160,17 @@ class GameApiBridge:
             kryptonite=offer.cost.kryptonite * qty,
             spice=offer.cost.spice * qty,
         )
-        can_exec = offer.can_build and planet.resources.can_afford(total_offer_cost)
+        can_exec = (
+            offer.can_build
+            and not missing_prereqs
+            and planet.resources.can_afford(total_offer_cost)
+        )
         status_l = (offer.status_text or "").lower()
         if (
             not offer.can_build
             and allow_live_verify
             and planet.building_level(9) >= 1
+            and not missing_prereqs
             and ("not enough" in status_l or "insufficient" in status_l)
             and planet.resources.can_afford(total_offer_cost)
         ):
@@ -1565,7 +2223,7 @@ class GameApiBridge:
             self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
             return saved
         by_coords: dict[str, dict[str, Any]] = {
-            str(r.get("coords") or r.get("target_coords") or ""): dict(r)
+            normalize_coords(r.get("coords") or r.get("target_coords") or ""): dict(r)
             for r in self._raid_targets
             if (r.get("coords") or r.get("target_coords"))
         }
@@ -1574,13 +2232,14 @@ class GameApiBridge:
         for s in slots:
             if getattr(s, "status_color", "free") == "free" and not getattr(s, "is_spacia", False):
                 continue
-            status_color = str(getattr(s, "status_color", "yellow") or "yellow")
+            status_color = _bounded_api_str(getattr(s, "status_color", "yellow") or "yellow", default="yellow")
             is_spacia = bool(getattr(s, "is_spacia", False))
-            prev = by_coords.get(str(s.coords), {})
-            by_coords[str(s.coords)] = {
-                "coords": str(s.coords),
-                "owner": str(getattr(s, "owner", "") or ""),
-                "planet_name": str(getattr(s, "name", "") or ""),
+            norm_sc = normalize_coords(s.coords)
+            prev = by_coords.get(norm_sc, {})
+            by_coords[norm_sc] = {
+                "coords": norm_sc,
+                "owner": _bounded_api_str(getattr(s, "owner", "") or "", default=""),
+                "planet_name": _bounded_api_str(getattr(s, "name", "") or "", default=""),
                 "status_color": status_color,
                 "is_inactive": bool(status_color == "yellow" or is_spacia),
                 "is_spacia": is_spacia,
@@ -1607,16 +2266,17 @@ class GameApiBridge:
             self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
             return len(reports)
         by_coords: dict[str, dict[str, Any]] = {
-            str(r.get("coords") or r.get("target_coords") or ""): dict(r)
+            normalize_coords(r.get("coords") or r.get("target_coords") or ""): dict(r)
             for r in self._raid_targets
             if (r.get("coords") or r.get("target_coords"))
         }
         for rep in reports:
-            prev = by_coords.get(rep.target_coords, {})
+            norm_tc = normalize_coords(rep.target_coords)
+            prev = by_coords.get(norm_tc, {})
             is_spacia = bool(rep.is_spacia or prev.get("is_spacia", False))
             status_color = prev.get("status_color") or ("yellow" if is_spacia else "light_red")
-            by_coords[rep.target_coords] = {
-                "coords": rep.target_coords,
+            by_coords[norm_tc] = {
+                "coords": norm_tc,
                 "owner": rep.owner or prev.get("owner", ""),
                 "planet_name": prev.get("planet_name", ""),
                 "status_color": status_color,
@@ -1640,14 +2300,25 @@ class GameApiBridge:
         state: GameState,
         *,
         priority: str = "normal",
+        get_client: Optional[Callable[[], Any]] = None,
+        ignore_auth_error: bool = False,
     ) -> int:
-        if int((state.unread_messages or {}).get("spio", 0) or 0) <= 0:
+        if _safe_api_int((state.unread_messages or {}).get("spio", 0)) <= 0:
             return 0
         if self.rate_limit_remaining() > 0.0:
             return 0
         now = time.monotonic()
         if (now - self._last_spio_sync_at) < self.SPIO_SYNC_TTL_S:
             return 0
+        if client is None and get_client is not None:
+            try:
+                client = get_client()
+            except RateLimitError:
+                raise
+            except SpaceInvasionAuthError:
+                if ignore_auth_error:
+                    return 0
+                raise
         open_msg = getattr(client, "open_messages", None)
         if not callable(open_msg):
             return 0
@@ -1713,7 +2384,11 @@ class GameApiBridge:
                 self._persist_galaxy_slots(gal_slots)
                 executor.last_galaxy_slots = []
             if res.executed and res.action.kind == "SCAN_GALAXY":
-                m_sys = re.search(r"(\d{1,2}):(\d{1,3})", f"{res.message} {res.action.target_name}")
+                m_sys = re.search(
+                    r"(\d{1,2}):(\d{1,3})",
+                    f"{_bounded_api_str(res.message, default='')} {_bounded_api_str(res.action.target_name, default='')}",
+                    re.ASCII,
+                )
                 if m_sys:
                     self._persist_galaxy_scan(
                         int(m_sys.group(1)),
@@ -1721,25 +2396,45 @@ class GameApiBridge:
                         gal_slots or (),
                     )
             if res.executed and res.action.kind == "THROTTLE_BUILDING":
-                self._throttle_timestamps[int(res.action.planet_id)] = time.time()
+                pid_i = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
+                self._throttle_timestamps[pid_i] = time.time()
             if res.executed and res.action.kind == "ATTACK" and self._db is not None:
-                m_coords = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", res.action.target_name)
-                t_coords = m_coords.group(1) if m_coords else res.action.target_name
-                reason_l = f"{res.action.target_name} {res.action.reason}".lower()
+                tname_s = (
+                    game_data.safe_key(res.action.target_name)
+                    if res.action.target_name is not None
+                    else ""
+                )
+                reason_s = (
+                    game_data.safe_key(res.action.reason)
+                    if res.action.reason is not None
+                    else ""
+                )
+                m_coords = re.search(
+                    r"(\d{1,2}:\d{1,3}:\d{1,2})",
+                    tname_s,
+                    re.ASCII,
+                )
+                raw_t_coords = m_coords.group(1) if m_coords else tname_s
+                t_coords = normalize_coords(raw_t_coords)
+                reason_l = f"{tname_s} {reason_s}".lower()
                 target_row = next(
                     (
                         r
                         for r in (self._raid_targets or ())
-                        if (r.get("coords") or r.get("target_coords")) == t_coords
+                        if normalize_coords(r.get("coords") or r.get("target_coords") or "") == t_coords
                     ),
                     None,
                 )
+                if target_row is None:
+                    get_by_coords = getattr(self._db, "get_spy_target_by_coords", None)
+                    if callable(get_by_coords):
+                        target_row = get_by_coords(t_coords)
                 if target_row is None:
                     target_row = next(
                         (
                             r
                             for r in self._db.get_spy_targets(limit=200)
-                            if (r.get("coords") or r.get("target_coords")) == t_coords
+                            if normalize_coords(r.get("coords") or r.get("target_coords") or "") == t_coords
                         ),
                         None,
                     )
@@ -1748,7 +2443,7 @@ class GameApiBridge:
                     and (
                         target_row.get("is_spacia")
                         or target_row.get("is_inactive")
-                        or str(target_row.get("status_color") or "").lower() == "yellow"
+                        or game_data.safe_key(target_row.get("status_color") or "").lower() == "yellow"
                     )
                 )
                 is_exempt = row_exempt or (
@@ -1945,31 +2640,40 @@ class GameApiBridge:
             "next_action": next_action,
         }
         if after_state is not None:
-            summary["state"] = _redact_api_payload(asdict(self._attach_raid_stats(after_state)))
-        return summary
+            summary["state"] = _sanitize_finite_json(_redact_api_payload(asdict(self._attach_raid_stats(after_state))))
+        return _sanitize_finite_json(summary)
 
     def handle_command(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(payload, dict) or not payload.get("command"):
+        if not isinstance(payload, Mapping) or not payload.get("command"):
             raise ApiRequestError("Request JSON must include a non-empty 'command' field.")
 
-        cmd = str(payload["command"]).strip().lower()
+        raw_cmd = payload["command"]
+        if not isinstance(raw_cmd, str):
+            raise ApiRequestError("Request JSON 'command' field must be a non-empty string.")
+        cmd = raw_cmd.strip().lower()
+        if not cmd:
+            raise ApiRequestError("Request JSON must include a non-empty 'command' field.")
         dry_run = bool(payload.get("dry_run", False))
 
         if cmd == "config":
             with self._lock:
-                return {
-                    "ok": True,
-                    "command": cmd,
-                    "config": _redact_api_payload(asdict(self.strategy_config)),
-                }
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "config": _redact_api_payload(asdict(self.strategy_config)),
+                    }
+                )
 
         if cmd == "db_summary":
             with self._lock:
-                return {
-                    "ok": True,
-                    "command": cmd,
-                    "db": _redact_api_payload(self._db.summary()) if self._db is not None else None,
-                }
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "db": _redact_api_payload(self._db.summary()) if self._db is not None else None,
+                    }
+                )
 
         if cmd == "bot_control":
             with self._lock:
@@ -1980,11 +2684,15 @@ class GameApiBridge:
                     if raw_mode not in (None, "live", "dry-run"):
                         raise ApiRequestError("mode_override must be null, 'live', or 'dry-run'.")
                     self._bot_control["mode_override"] = raw_mode
-                return {"ok": True, "command": cmd, "bot_control": dict(self._bot_control)}
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {"ok": True, "command": cmd, "bot_control": dict(self._bot_control)}
+                    )
+                )
 
         if cmd == "update_config":
             raw_cfg = payload.get("config")
-            if not isinstance(raw_cfg, dict):
+            if not isinstance(raw_cfg, Mapping):
                 raise ApiRequestError("'update_config' requires a 'config' dictionary.")
             _validate_config_patch(raw_cfg)
             with self._lock:
@@ -2009,12 +2717,16 @@ class GameApiBridge:
                 for ex in (self._live_executor, self._dry_executor):
                     ex.allow_fleetsave = new_cfg.allow_fleetsave
                     ex.allow_raids = new_cfg.allow_raids
-                    ex.max_actions_per_hour = new_cfg.max_actions_per_hour
-                return {
-                    "ok": True,
-                    "command": cmd,
-                    "config": _redact_api_payload(asdict(new_cfg)),
-                }
+                    ex.max_actions_per_hour = _safe_hourly_budget(new_cfg.max_actions_per_hour, 60)
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "config": asdict(new_cfg),
+                        }
+                    )
+                )
 
         if cmd == "simulate_combat":
             with self._lock:
@@ -2060,11 +2772,13 @@ class GameApiBridge:
                     target_coords=tgt_coords,
                     safety_margin=margin,
                 )
-            return {
-                "ok": True,
-                "command": cmd,
-                "simulation": _redact_api_payload(_sanitize_finite_json(sim)),
-            }
+            return _sanitize_finite_json(
+                {
+                    "ok": True,
+                    "command": cmd,
+                    "simulation": sim,
+                }
+            )
 
         with self._lock:
             if cmd == "ensure_session":
@@ -2074,7 +2788,7 @@ class GameApiBridge:
                 except RateLimitError as exc:
                     self._record_server_rate_limit(exc)
                     raise
-                return {"ok": True, "command": cmd, "message": "Session verified."}
+                return _sanitize_finite_json({"ok": True, "command": cmd, "message": "Session verified."})
 
             if cmd == "buildings_eta" and not bool(payload.get("refresh", False)) and self._last_state is not None:
                 pid = _parse_command_int(
@@ -2085,11 +2799,13 @@ class GameApiBridge:
                     max_val=2**63 - 1,
                 )
                 planet = self._resolve_planet(self._last_state, pid) if pid is not None else self._last_state.active_planet()
-                return {
-                    "ok": True,
-                    "command": cmd,
-                    "buildings_eta": _redact_api_payload(build_buildings_eta(self._last_state, planet)),
-                }
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "buildings_eta": _redact_api_payload(build_buildings_eta(self._last_state, planet)),
+                    }
+                )
 
             if cmd == "combat_overview" and not bool(payload.get("refresh", False)) and self._last_state is not None:
                 pid = _parse_command_int(
@@ -2100,17 +2816,19 @@ class GameApiBridge:
                     max_val=2**63 - 1,
                 )
                 planet = self._resolve_planet(self._last_state, pid) if pid is not None else self._last_state.active_planet()
-                return {
-                    "ok": True,
-                    "command": cmd,
-                    "combat": _redact_api_payload(
-                        build_combat_overview(
-                            self._last_state,
-                            planet,
-                            safety_margin=self.strategy_config.combat_safety_margin,
-                        )
-                    ),
-                }
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "combat": _redact_api_payload(
+                            build_combat_overview(
+                                self._last_state,
+                                planet,
+                                safety_margin=self.strategy_config.combat_safety_margin,
+                            )
+                        ),
+                    }
+                )
 
             self._raise_if_rate_limited()
             if self._last_state is None:
@@ -2120,7 +2838,23 @@ class GameApiBridge:
             now_mono = time.monotonic()
             force_refresh = bool(payload.get("refresh", False))
             try:
-                with self._client_factory(self.debug_port) as client:
+                with contextlib.ExitStack() as stack:
+                    _client_state: list[Any] = [None]
+
+                    def _get_client() -> Any:
+                        if _client_state[0] is None:
+                            _client_state[0] = stack.enter_context(
+                                self._client_factory(self.debug_port)
+                            )
+                        return _client_state[0]
+
+                    def _exec_client(planned: PlannedAction) -> Any:
+                        if dry_run or not planned.executable_now:
+                            return None
+                        if planned.kind == "ATTACK" and not self._live_executor.allow_raids:
+                            return None
+                        return _get_client()
+
                     def _cached_or_fetch(
                         *,
                         include_buildings: bool,
@@ -2148,8 +2882,9 @@ class GameApiBridge:
                             )
                         ):
                             return self._refresh_cached_economy(self._last_state)
+                        live_client = _get_client()
                         snap = self._read_snapshot(
-                            client,
+                            live_client,
                             include_buildings=include_buildings,
                             include_research=include_research,
                             include_shipyard=include_shipyard,
@@ -2157,7 +2892,9 @@ class GameApiBridge:
                             return_home=False,
                             priority=priority,
                         )
-                        obs_active = bool(getattr(client, "last_snapshot_observed_active_planet", True))
+                        obs_active = bool(
+                            getattr(live_client, "last_snapshot_observed_active_planet", True)
+                        )
                         return self._record_state(
                             snap,
                             fetched_buildings=include_buildings,
@@ -2205,11 +2942,12 @@ class GameApiBridge:
                                 priority="interactive",
                             )
 
+                        live_client = _get_client()
                         self._call_with_optional_priority(
-                            client.ensure_in_game,
+                            live_client.ensure_in_game,
                             priority="interactive",
                         )
-                        read_ov = getattr(client, "read_planets_overview", None)
+                        read_ov = getattr(live_client, "read_planets_overview", None)
                         ov: Any = None
                         if callable(read_ov):
                             try:
@@ -2232,7 +2970,7 @@ class GameApiBridge:
                         unread = dict(ov.unread_messages)
                         account_points = ov.account_points
                         account_rank = ov.account_rank
-                        read_menu_fn = getattr(client, "read_menu_status", None)
+                        read_menu_fn = getattr(live_client, "read_menu_status", None)
                         if callable(read_menu_fn):
                             try:
                                 menu_res = read_menu_fn()
@@ -2257,10 +2995,10 @@ class GameApiBridge:
                         queues = ov.active_queues
                         alerts = ov.fleet_alerts
 
-                        drv = getattr(client, "driver", None)
-                        switch_fn = getattr(client, "_switch_frame", None)
+                        drv = getattr(live_client, "driver", None)
+                        switch_fn = getattr(live_client, "_switch_frame", None)
                         if drv is not None and callable(switch_fn):
-                            drv_lock = getattr(client, "_driver_lock", None)
+                            drv_lock = getattr(live_client, "_driver_lock", None)
                             try:
                                 with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
                                     switch_fn("F_Hauptframe")
@@ -2272,7 +3010,11 @@ class GameApiBridge:
                                         pass
                                 if "action=internalHome" in cur_url and cur_html:
                                     low_h = cur_html.lower()
-                                    if "made more than" not in low_h and "bitmeup-login" not in low_h:
+                                    if (
+                                        "made more than" not in low_h
+                                        and "bitmeup-login" not in low_h
+                                        and "sip-tab-universe" not in low_h
+                                    ):
                                         home_pid, h_spd, h_newbie, h_q, h_al = parse_home_metadata(
                                             cur_html
                                         )
@@ -2325,7 +3067,7 @@ class GameApiBridge:
                             try:
                                 req_mode = normalize_planner_mode(raw_mode, strict=True)
                             except ValueError as exc:
-                                raise ApiRequestError(str(exc)) from exc
+                                raise ApiRequestError(_redact_api_payload(exc)) from exc
                             override_cfg = replace(self.strategy_config, planner_mode=req_mode)
                         effective_cfg = override_cfg or self.strategy_config
                         effective_mode = normalize_planner_mode(effective_cfg.planner_mode)
@@ -2335,7 +3077,16 @@ class GameApiBridge:
                             include_shipyard=False,
                             priority="normal",
                         )
-                        if self._sync_spio_if_unread(client, state, priority="normal") > 0:
+                        if (
+                            self._sync_spio_if_unread(
+                                None,
+                                state,
+                                priority="normal",
+                                get_client=_get_client,
+                                ignore_auth_error=not force_refresh,
+                            )
+                            > 0
+                        ):
                             state = self._record_state(
                                 state,
                                 fetched_buildings=self._last_buildings_fetched,
@@ -2344,13 +3095,17 @@ class GameApiBridge:
                                 update_snapshot_ts=False,
                             )
                         actions, opt_summary = self._plan_with_summary(state, config=effective_cfg)
-                        return {
-                            "ok": True,
-                            "command": cmd,
-                            "planner_mode": effective_mode,
-                            "actions": [self._serialize_action(a) for a in actions],
-                            "optimizer_summary": opt_summary,
-                        }
+                        return _sanitize_finite_json(
+                            _redact_api_payload(
+                                {
+                                    "ok": True,
+                                    "command": cmd,
+                                    "planner_mode": effective_mode,
+                                    "actions": [self._serialize_action(a) for a in actions],
+                                    "optimizer_summary": opt_summary,
+                                }
+                            )
+                        )
 
                     if cmd == "buildings_eta":
                         state = _cached_or_fetch(
@@ -2367,11 +3122,13 @@ class GameApiBridge:
                             max_val=2**63 - 1,
                         )
                         planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
-                        return {
-                            "ok": True,
-                            "command": cmd,
-                            "buildings_eta": _redact_api_payload(build_buildings_eta(state, planet)),
-                        }
+                        return _sanitize_finite_json(
+                            {
+                                "ok": True,
+                                "command": cmd,
+                                "buildings_eta": _redact_api_payload(build_buildings_eta(state, planet)),
+                            }
+                        )
 
                     if cmd == "combat_overview":
                         state = _cached_or_fetch(
@@ -2388,17 +3145,19 @@ class GameApiBridge:
                             max_val=2**63 - 1,
                         )
                         planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
-                        return {
-                            "ok": True,
-                            "command": cmd,
-                            "combat": _redact_api_payload(
-                                build_combat_overview(
-                                    state,
-                                    planet,
-                                    safety_margin=self.strategy_config.combat_safety_margin,
-                                )
-                            ),
-                        }
+                        return _sanitize_finite_json(
+                            {
+                                "ok": True,
+                                "command": cmd,
+                                "combat": _redact_api_payload(
+                                    build_combat_overview(
+                                        state,
+                                        planet,
+                                        safety_margin=self.strategy_config.combat_safety_margin,
+                                    )
+                                ),
+                            }
+                        )
 
                     if cmd == "ranking_evolution":
                         state = _cached_or_fetch(
@@ -2407,13 +3166,16 @@ class GameApiBridge:
                             include_shipyard=False,
                             priority="normal",
                         )
-                        return {
-                            "ok": True,
-                            "command": cmd,
-                            "ranking": _redact_api_payload(build_ranking_evolution(state, self._rank_samples)),
-                        }
+                        return _sanitize_finite_json(
+                            {
+                                "ok": True,
+                                "command": cmd,
+                                "ranking": _redact_api_payload(build_ranking_evolution(state, self._rank_samples)),
+                            }
+                        )
 
                     if cmd == "tick_once":
+                        client = _get_client()
                         inc_r = (
                             self._last_research_sync_at <= 0.0
                             or (now_mono - self._last_research_sync_at) >= self.RESEARCH_SYNC_TTL_S
@@ -2446,22 +3208,27 @@ class GameApiBridge:
                         actions = self._plan_with_context(state)
                         ready = next((a for a in actions if a.executable_now), None)
                         if ready is None:
-                            return {
-                                "ok": True,
-                                "command": cmd,
-                                "executed": False,
-                                "dry_run": dry_run,
-                                "message": _redact_api_payload(
-                                    f"Waiting: {actions[0].target_name} ({actions[0].reason})"
-                                    if actions
-                                    else "No pending actions."
-                                ),
-                                "action": self._serialize_action(actions[0], state) if actions else None,
-                                "next_action": self._serialize_action(actions[1], state) if len(actions) > 1 else None,
-                            }
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "dry_run": dry_run,
+                                        "message": (
+                                            f"Waiting: {_bounded_api_str(actions[0].target_name, default='')} ({_bounded_api_str(actions[0].reason, default='')})"
+                                            if actions
+                                            else "No pending actions."
+                                        ),
+                                        "action": self._serialize_action(actions[0], state) if actions else None,
+                                        "next_action": self._serialize_action(actions[1], state) if len(actions) > 1 else None,
+                                    }
+                                )
+                            )
                         return self._execute_and_summarize(client, state, cmd, ready, dry_run)
 
                     if cmd == "menu":
+                        client = _get_client()
                         self._call_with_optional_priority(client.ensure_in_game, priority="interactive")
                         client._switch_frame("F_Navi")
                         nav_soup = BeautifulSoup(client.driver.page_source or "", "html.parser")
@@ -2483,14 +3250,24 @@ class GameApiBridge:
                             }
                             for a in nav_soup.find_all("a", href=True)
                         ]
-                        return {
-                            "ok": True,
-                            "command": cmd,
-                            "items": items,
-                        }
+                        return _sanitize_finite_json(
+                            _redact_api_payload(
+                                {
+                                    "ok": True,
+                                    "command": cmd,
+                                    "items": items,
+                                }
+                            )
+                        )
 
                     if cmd == "navigate":
-                        action = str(payload.get("action") or "").strip()
+                        client = _get_client()
+                        raw_action = payload.get("action")
+                        if not isinstance(raw_action, str):
+                            raise ApiRequestError(
+                                f"Unsupported menu action; allowed: {sorted(ALLOWED_MENU_ACTIONS)}"
+                            )
+                        action = raw_action.strip()
                         if action not in ALLOWED_MENU_ACTIONS:
                             raise ApiRequestError(
                                 f"Unsupported menu action {action!r}; allowed: {sorted(ALLOWED_MENU_ACTIONS)}"
@@ -2521,7 +3298,11 @@ class GameApiBridge:
                         if isinstance(html, str) and html:
                             if action == "internalHome":
                                 low_h = html.lower()
-                                if "made more than" not in low_h and "bitmeup-login" not in low_h:
+                                if (
+                                    "made more than" not in low_h
+                                    and "bitmeup-login" not in low_h
+                                    and "sip-tab-universe" not in low_h
+                                ):
                                     obs_nav_pid = parse_home_metadata(html)[0]
                             elif action in (
                                 "internalBuildings",
@@ -2591,16 +3372,17 @@ class GameApiBridge:
                             if (
                                 isinstance(coords_attr, tuple)
                                 and len(coords_attr) == 2
-                                and all(isinstance(v, int) for v in coords_attr)
+                                and all(isinstance(v, int) and not isinstance(v, bool) for v in coords_attr)
                             ):
-                                actual_gal, actual_sys = coords_attr
+                                actual_gal = max(1, min(1000, game_data.cap_json_int(coords_attr[0])))
+                                actual_sys = max(1, min(1000, game_data.cap_json_int(coords_attr[1])))
                             else:
                                 def_gal = gal_int or 1
                                 def_sys = sys_int or 1
                                 if gal_int is None and sys_int is None and self._last_state is not None:
                                     ap = self._last_state.active_planet()
                                     if ap is not None:
-                                        m_ap = re.search(r"(\d{1,2}):(\d{1,3})", ap.coords)
+                                        m_ap = re.search(r"(\d{1,2}):(\d{1,3})", ap.coords, re.ASCII)
                                         if m_ap:
                                             def_gal = int(m_ap.group(1))
                                             def_sys = int(m_ap.group(2))
@@ -2636,7 +3418,7 @@ class GameApiBridge:
                                 "internalHome",
                                 priority="interactive",
                             )
-                        return res_payload
+                        return _sanitize_finite_json(_redact_api_payload(res_payload))
 
                     if cmd == "scan_galaxy":
                         pid = _parse_command_int(
@@ -2649,8 +3431,9 @@ class GameApiBridge:
                         if self._last_state is not None and not force_refresh:
                             state = self._last_state
                         else:
+                            live_client = _get_client()
                             state = self._read_snapshot(
-                                client,
+                                live_client,
                                 include_buildings=False,
                                 include_research=False,
                                 include_shipyard=False,
@@ -2659,7 +3442,7 @@ class GameApiBridge:
                                 priority="interactive",
                             )
                             obs_active = bool(
-                                getattr(client, "last_snapshot_observed_active_planet", True)
+                                getattr(live_client, "last_snapshot_observed_active_planet", True)
                             )
                             state = self._record_state(
                                 state,
@@ -2677,8 +3460,20 @@ class GameApiBridge:
                             target_lbl = f"Galaxy [{gal_arg:02d}:{sys_arg:03d}]"
                         else:
                             parts = [p.strip() for p in planet.coords.split(":")]
-                            if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-                                target_lbl = f"Galaxy [{int(parts[0]):02d}:{int(parts[1]):03d}]"
+                            p0 = (parts[0].lstrip("0") or "0") if len(parts) >= 2 else ""
+                            p1 = (parts[1].lstrip("0") or "0") if len(parts) >= 2 else ""
+                            if (
+                                len(parts) >= 2
+                                and parts[0].isascii()
+                                and parts[0].isdigit()
+                                and len(p0) <= 3
+                                and parts[1].isascii()
+                                and parts[1].isdigit()
+                                and len(p1) <= 3
+                            ):
+                                gal_p = max(1, min(999, int(p0)))
+                                sys_p = max(1, min(999, int(p1)))
+                                target_lbl = f"Galaxy [{gal_p:02d}:{sys_p:03d}]"
                             else:
                                 target_lbl = "Galaxy [01:001]"
                         planned = PlannedAction(
@@ -2690,9 +3485,10 @@ class GameApiBridge:
                             reason="API scan_galaxy command",
                             executable_now=True,
                         )
-                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+                        return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
                     if cmd == "sync_spy_reports":
+                        client = _get_client()
                         self._call_with_optional_priority(client.ensure_in_game, priority="interactive")
                         html = self._call_with_optional_priority(
                             client.open_messages,
@@ -2703,19 +3499,27 @@ class GameApiBridge:
                         synced = self._persist_spy_reports(reports)
                         if self._last_state is not None:
                             self._refresh_cached_economy(self._last_state)
-                        return {
-                            "ok": True,
-                            "command": cmd,
-                            "synced_reports": synced,
-                            "reports": _redact_api_payload([asdict(r) for r in reports]),
-                        }
+                        return _sanitize_finite_json(
+                            {
+                                "ok": True,
+                                "command": cmd,
+                                "synced_reports": synced,
+                                "reports": _redact_api_payload([asdict(r) for r in reports]),
+                            }
+                        )
 
                     if cmd == "spy":
-                        target_coords = str(payload.get("target_coords") or "").strip()
-                        if not re.fullmatch(r"\d{1,2}:\d{1,3}:\d{1,2}", target_coords):
+                        raw_target_coords = payload.get("target_coords")
+                        if not isinstance(raw_target_coords, str):
                             raise ApiRequestError(
                                 "'spy' command requires 'target_coords' formatted as GG:SSS:PP."
                             )
+                        target_coords = raw_target_coords.strip()
+                        if not re.fullmatch(r"\d{1,2}:\d{1,3}:\d{1,2}", target_coords, re.ASCII):
+                            raise ApiRequestError(
+                                "'spy' command requires 'target_coords' formatted as GG:SSS:PP."
+                            )
+                        norm_target = normalize_coords(target_coords)
                         qty_parsed = _parse_command_int(
                             "quantity",
                             payload.get("quantity", 1),
@@ -2734,13 +3538,13 @@ class GameApiBridge:
                         state = _resolve_fleet_command_state(pid, is_spy=True)
                         if pid is None:
                             probe_p = next(
-                                (p for p in state.planets if int(p.ships.get("s10", 0) or 0) > 0),
+                                (p for p in state.planets if _safe_api_int(p.ships.get("s10", 0)) > 0),
                                 None,
                             )
                             planet = probe_p or self._resolve_planet(state, None)
                         else:
                             planet = self._resolve_planet(state, pid)
-                        if any(p.coords == target_coords for p in state.planets):
+                        if any(normalize_coords(p.coords) == norm_target for p in state.planets):
                             planned_own = PlannedAction(
                                 priority="P2",
                                 kind="SPY",
@@ -2748,19 +3552,23 @@ class GameApiBridge:
                                 planet_coords=planet.coords,
                                 target_id=10,
                                 target_level=qty,
-                                target_name=target_coords,
+                                target_name=norm_target,
                                 reason="Own colony safety check",
                                 executable_now=False,
                             )
-                            return {
-                                "ok": True,
-                                "command": cmd,
-                                "executed": False,
-                                "dry_run": dry_run,
-                                "message": f"Aborted: {target_coords} is one of your own planets.",
-                                "action": self._serialize_action(planned_own, state),
-                                "next_action": None,
-                            }
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "dry_run": dry_run,
+                                        "message": f"Aborted: {norm_target} is one of your own planets.",
+                                        "action": self._serialize_action(planned_own, state),
+                                        "next_action": None,
+                                    }
+                                )
+                            )
                         planned = PlannedAction(
                             priority="P2",
                             kind="SPY",
@@ -2768,18 +3576,24 @@ class GameApiBridge:
                             planet_coords=planet.coords,
                             target_id=10,
                             target_level=qty,
-                            target_name=target_coords,
+                            target_name=norm_target,
                             reason="API spy command",
                             executable_now=True,
                         )
-                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+                        return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
                     if cmd == "attack":
-                        target_coords = str(payload.get("target_coords") or "").strip()
-                        if not re.fullmatch(r"\d{1,2}:\d{1,3}:\d{1,2}", target_coords):
+                        raw_target_coords = payload.get("target_coords")
+                        if not isinstance(raw_target_coords, str):
                             raise ApiRequestError(
                                 "'attack' command requires 'target_coords' formatted as GG:SSS:PP."
                             )
+                        target_coords = raw_target_coords.strip()
+                        if not re.fullmatch(r"\d{1,2}:\d{1,3}:\d{1,2}", target_coords, re.ASCII):
+                            raise ApiRequestError(
+                                "'attack' command requires 'target_coords' formatted as GG:SSS:PP."
+                            )
+                        norm_target = normalize_coords(target_coords)
                         pid = _parse_command_int(
                             "planet_id",
                             payload.get("planet_id"),
@@ -2794,102 +3608,140 @@ class GameApiBridge:
                             kind="ATTACK",
                             planet_id=planet.planet_id,
                             planet_coords=planet.coords,
-                            target_name=target_coords,
+                            target_name=norm_target,
                             reason="API attack command",
                             executable_now=True,
                         )
                         # Check allow_raids guard first so `"allow_raids"` error message contract holds
                         if not dry_run and not self._live_executor.allow_raids:
-                            return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+                            return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
-                        if any(p.coords == target_coords for p in state.planets):
-                            return {
-                                "ok": True,
-                                "command": cmd,
-                                "executed": False,
-                                "dry_run": dry_run,
-                                "message": f"Aborted: {target_coords} is one of your own planets.",
-                                "action": self._serialize_action(planned, state),
-                                "next_action": None,
-                            }
+                        if any(normalize_coords(p.coords) == norm_target for p in state.planets):
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "dry_run": dry_run,
+                                        "message": f"Aborted: {norm_target} is one of your own planets.",
+                                        "action": self._serialize_action(planned, state),
+                                        "next_action": None,
+                                    }
+                                )
+                            )
 
                         target_row = next(
                             (
                                 r
                                 for r in (self._raid_targets or ())
-                                if (r.get("coords") or r.get("target_coords")) == target_coords
+                                if normalize_coords(r.get("coords") or r.get("target_coords") or "") == norm_target
                             ),
                             None,
                         )
+                        if target_row is None and self._db is not None:
+                            get_by_coords = getattr(self._db, "get_spy_target_by_coords", None)
+                            if callable(get_by_coords):
+                                target_row = get_by_coords(norm_target)
                         is_inactive = bool((target_row or {}).get("is_inactive", False))
                         is_spacia = bool((target_row or {}).get("is_spacia", False))
-                        status_color = str((target_row or {}).get("status_color") or "").lower()
+                        status_color = game_data.safe_key((target_row or {}).get("status_color") or "").strip().lower()
                         if status_color == "yellow":
                             is_inactive = True
-                        if status_color in ("blue", "green", "white", "purple") and not is_spacia:
-                            return {
-                                "ok": True,
-                                "command": cmd,
-                                "executed": False,
-                                "dry_run": dry_run,
-                                "message": f"Aborted: target {target_coords} is protected ({status_color}).",
-                                "action": self._serialize_action(planned, state),
-                                "next_action": None,
-                            }
+                        if status_color in ("blue", "green", "white", "purple", "dark_red") and not is_spacia:
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "dry_run": dry_run,
+                                        "message": f"Aborted: target {norm_target} is protected ({status_color}).",
+                                        "action": self._serialize_action(planned, state),
+                                        "next_action": None,
+                                    }
+                                )
+                            )
                         if (
                             status_color == "light_red"
                             and not is_inactive
                             and not is_spacia
                             and not self.strategy_config.allow_pvp_in_az
                         ):
-                            return {
-                                "ok": True,
-                                "command": cmd,
-                                "executed": False,
-                                "dry_run": dry_run,
-                                "message": f"Aborted: target {target_coords} is an active player and allow_pvp_in_az=false.",
-                                "action": self._serialize_action(planned, state),
-                                "next_action": None,
-                            }
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "dry_run": dry_run,
+                                        "message": f"Aborted: target {norm_target} is an active player and allow_pvp_in_az=false.",
+                                        "action": self._serialize_action(planned, state),
+                                        "next_action": None,
+                                    }
+                                )
+                            )
 
                         if self._db is not None:
                             bash = self._db.load_bash_tracker()
                             if not bash.can_attack(
-                                target_coords,
+                                norm_target,
                                 is_inactive=is_inactive,
                                 is_spacia=is_spacia,
                             ):
-                                return {
-                                    "ok": True,
-                                    "command": cmd,
-                                    "executed": False,
-                                    "dry_run": dry_run,
-                                    "message": f"Aborted: BashTracker 3/24h limit reached for {target_coords}.",
-                                    "action": self._serialize_action(planned, state),
-                                    "next_action": None,
-                                }
+                                return _sanitize_finite_json(
+                                    _redact_api_payload(
+                                        {
+                                            "ok": True,
+                                            "command": cmd,
+                                            "executed": False,
+                                            "dry_run": dry_run,
+                                            "message": f"Aborted: BashTracker 3/24h limit reached for {norm_target}.",
+                                            "action": self._serialize_action(planned, state),
+                                            "next_action": None,
+                                        }
+                                    )
+                                )
 
                         if target_row is not None:
-                            res_d = target_row.get("resources") if isinstance(target_row.get("resources"), dict) else {}
+                            res_d = target_row.get("resources") if isinstance(target_row.get("resources"), Mapping) else {}
                             rep_res = Resources(
-                                pig_iron=int(res_d.get("pig_iron", 0) or 0),
-                                metal=int(res_d.get("metal", 0) or 0),
-                                kryptonite=int(res_d.get("kryptonite", 0) or 0),
-                                spice=int(res_d.get("spice", 0) or 0),
+                                pig_iron=max(0, _safe_api_int(res_d.get("pig_iron", 0), 0)),
+                                metal=max(0, _safe_api_int(res_d.get("metal", 0), 0)),
+                                kryptonite=max(0, _safe_api_int(res_d.get("kryptonite", 0), 0)),
+                                spice=max(0, _safe_api_int(res_d.get("spice", 0), 0)),
                             )
-                            rep_fleet = {str(k): int(v) for k, v in (target_row.get("fleet") or {}).items()}
-                            rep_def = {str(k): int(v) for k, v in (target_row.get("defense") or {}).items()}
+                            raw_fleet = target_row.get("fleet")
+                            rep_fleet = (
+                                {
+                                    game_data.safe_key(k): cnt
+                                    for k, v in raw_fleet.items()
+                                    if (cnt := max(0, _safe_api_int(v, 0))) > 0
+                                }
+                                if isinstance(raw_fleet, Mapping)
+                                else {}
+                            )
+                            raw_def = target_row.get("defense")
+                            rep_def = (
+                                {
+                                    game_data.safe_key(k): cnt
+                                    for k, v in raw_def.items()
+                                    if (cnt := max(0, _safe_api_int(v, 0))) > 0
+                                }
+                                if isinstance(raw_def, Mapping)
+                                else {}
+                            )
                             if bool(target_row.get("has_spy_intel")) or not rep_res.is_zero() or rep_fleet or rep_def:
                                 attack_keys = ("s4", "s5", "s6", "s7", "s13", "s14", "s15", "s16", "s1", "s2", "s3")
                                 atk_ships = {
-                                    k: int(planet.ships.get(k, 0) or 0)
+                                    k: cnt
                                     for k in attack_keys
-                                    if int(planet.ships.get(k, 0) or 0) > 0
+                                    if (cnt := max(0, _safe_api_int(planet.ships.get(k, 0), 0))) > 0
                                 }
                                 if atk_ships:
                                     rep_obj = SpyReport(
-                                        target_coords=target_coords,
-                                        owner=str(target_row.get("owner") or ""),
+                                        target_coords=norm_target,
+                                        owner=game_data.safe_key(target_row.get("owner") or ""),
                                         resources=rep_res,
                                         fleet=rep_fleet,
                                         defense=rep_def,
@@ -2903,17 +3755,21 @@ class GameApiBridge:
                                         safety_margin=self.strategy_config.combat_safety_margin,
                                     )
                                     if not sim.safe_to_attack:
-                                        return {
-                                            "ok": True,
-                                            "command": cmd,
-                                            "executed": False,
-                                            "dry_run": dry_run,
-                                            "message": f"Aborted: combat safety check failed ({sim.reason}).",
-                                            "action": self._serialize_action(planned, state),
-                                            "next_action": None,
-                                        }
+                                        return _sanitize_finite_json(
+                                            _redact_api_payload(
+                                                {
+                                                    "ok": True,
+                                                    "command": cmd,
+                                                    "executed": False,
+                                                    "dry_run": dry_run,
+                                                    "message": f"Aborted: combat safety check failed ({sim.reason}).",
+                                                    "action": self._serialize_action(planned, state),
+                                                    "next_action": None,
+                                                }
+                                            )
+                                        )
 
-                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+                        return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
                     if cmd == "build":
                         raw_bid = payload.get("building_id")
@@ -2942,7 +3798,7 @@ class GameApiBridge:
                             pid,
                             allow_live_verify=not dry_run,
                         )
-                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+                        return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
                     if cmd == "research":
                         raw_rid = payload.get("research_id")
@@ -2971,7 +3827,7 @@ class GameApiBridge:
                             pid,
                             allow_live_verify=not dry_run,
                         )
-                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+                        return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
                     if cmd == "build_ship":
                         raw_sid = payload.get("ship_id")
@@ -3009,7 +3865,7 @@ class GameApiBridge:
                             pid,
                             allow_live_verify=not dry_run,
                         )
-                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+                        return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
                     if cmd == "throttle_building":
                         bid = _parse_command_int(
@@ -3040,7 +3896,15 @@ class GameApiBridge:
                             priority="interactive",
                         )
                         planet = self._resolve_planet(state, pid)
+                        ptype_norm = normalize_planet_type(planet)
+                        bid_allowed = ptype_norm not in ("asteroid", "raid") and bid in (1, 2, 3, 4, 5, 6)
                         label = "Blast furnace" if bid == 2 else planet.building_names.get(f"b{bid}", f"Building b{bid}")
+                        if ptype_norm in ("asteroid", "raid"):
+                            t_reason = f"Throttle not permitted on planet_type={ptype_norm}"
+                        elif bid not in (1, 2, 3, 4, 5, 6):
+                            t_reason = f"Building b{bid} does not support internalEconomy rate control"
+                        else:
+                            t_reason = f"Set {label} rate to {pct}% in internalEconomy"
                         planned = PlannedAction(
                             priority="P1",
                             kind="THROTTLE_BUILDING",
@@ -3049,10 +3913,10 @@ class GameApiBridge:
                             target_id=bid,
                             target_name=f"{label} {pct}%",
                             target_level=pct,
-                            reason=f"Set {label} rate to {pct}% in internalEconomy",
-                            executable_now=True,
+                            reason=t_reason,
+                            executable_now=bid_allowed,
                         )
-                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+                        return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
                     if cmd == "fleetsave_plan":
                         pid = _parse_command_int(
@@ -3062,6 +3926,13 @@ class GameApiBridge:
                             min_val=1,
                             max_val=2**63 - 1,
                         )
+                        reserve_override = _parse_command_int(
+                            "fuel_reserve_spice",
+                            payload.get("fuel_reserve_spice"),
+                            allow_none=True,
+                            min_val=0,
+                            max_val=game_data.MAX_JSON_SAFE_INT,
+                        )
                         state = _cached_or_fetch(
                             include_buildings=False,
                             include_research=False,
@@ -3070,18 +3941,31 @@ class GameApiBridge:
                             priority="interactive",
                         )
                         planet = self._resolve_planet(state, pid)
-                        target_coords = str(payload.get("target_coords") or "").strip()
+                        raw_target_coords = payload.get("target_coords")
+                        if raw_target_coords is None:
+                            target_coords = ""
+                        elif not isinstance(raw_target_coords, str):
+                            raise ApiRequestError("'fleetsave_plan' field 'target_coords' must be a string.")
+                        else:
+                            target_coords = raw_target_coords.strip()
                         if not target_coords:
                             target_coords = next(
                                 (p.coords for p in state.planets if p.planet_id != planet.planet_id),
                                 planet.coords,
                             )
+                        fuel_reserve = (
+                            reserve_override
+                            if reserve_override is not None
+                            else self.strategy_config.fleet_save_fuel_reserve_spice
+                        )
                         escape = plan_escape_flight(
                             planet,
                             target_coords=target_coords,
-                            fuel_reserve_spice=self.strategy_config.fleet_save_fuel_reserve_spice,
+                            fuel_reserve_spice=fuel_reserve,
                         )
-                        return {"ok": True, "command": cmd, "escape_plan": _redact_api_payload(asdict(escape))}
+                        return _sanitize_finite_json(
+                            {"ok": True, "command": cmd, "escape_plan": _redact_api_payload(asdict(escape))}
+                        )
 
                     if cmd == "claim_tutorial":
                         state = _cached_or_fetch(
@@ -3092,25 +3976,30 @@ class GameApiBridge:
                             priority="interactive",
                         )
                         if not (state.tutorial and state.tutorial.can_complete):
-                            return {
-                                "ok": True,
-                                "command": cmd,
-                                "executed": False,
-                                "dry_run": dry_run,
-                                "message": "Tutorial step is not ready to claim.",
-                            }
+                            return _sanitize_finite_json(
+                                {
+                                    "ok": True,
+                                    "command": cmd,
+                                    "executed": False,
+                                    "dry_run": dry_run,
+                                    "message": "Tutorial step is not ready to claim.",
+                                }
+                            )
                         planet = state.active_planet()
                         planned = PlannedAction(
                             priority="P2",
                             kind="CLAIM_TUTORIAL",
                             planet_id=planet.planet_id if planet else 0,
                             planet_coords=planet.coords if planet else "",
-                            target_name=f"Tutorial {state.tutorial.step}/{state.tutorial.total_steps} Reward",
+                            target_name=(
+                                f"Tutorial {game_data.fmt_compact_int(state.tutorial.step)}"
+                                f"/{game_data.fmt_compact_int(state.tutorial.total_steps)} Reward"
+                            ),
                             reason="API claim_tutorial command",
                             executable_now=True,
                         )
                         return self._execute_and_summarize(
-                            client,
+                            _exec_client(planned),
                             state,
                             cmd,
                             planned,
@@ -3122,6 +4011,10 @@ class GameApiBridge:
             except RateLimitError as exc:
                 self._record_server_rate_limit(exc)
                 raise
+
+
+class _RequestTooLargeError(Exception):
+    """Raised when an HTTP POST request exceeds `MAX_REQUEST_BYTES`."""
 
 
 class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
@@ -3143,25 +4036,26 @@ def create_api_server(
             limiter_obj is not None
             and getattr(exc, "_recorded_limiter_id", None) == id(limiter_obj)
         )
+        exc_retry = _safe_limiter_wait(getattr(exc, "retry_after", 5.0), 5.0, min_val=1.0)
         if getattr(exc, "server_throttle", True) and not already_recorded:
             rem_raw = bridge.rate_limit_remaining()
             rem_now = (
-                float(rem_raw)
+                _safe_limiter_wait(rem_raw, 0.0, min_val=0.0)
                 if isinstance(rem_raw, (int, float)) and not isinstance(rem_raw, bool)
                 else 0.0
             )
-            req = float(getattr(exc, "retry_after", 0.0) or 0.0)
+            req = _safe_limiter_wait(getattr(exc, "retry_after", 0.0), 0.0, min_val=0.0)
             if rem_now <= 0.0 or req > rem_now + 1.0:
-                bridge.record_rate_limit(exc.retry_after)
+                bridge.record_rate_limit(exc_retry)
         rem_raw_final = bridge.rate_limit_remaining()
         rem = (
-            float(rem_raw_final)
+            _safe_limiter_wait(rem_raw_final, exc_retry, min_val=0.0)
             if isinstance(rem_raw_final, (int, float))
             and not isinstance(rem_raw_final, bool)
             and rem_raw_final > 0.0
-            else float(exc.retry_after)
+            else exc_retry
         )
-        err_txt = str(exc)
+        err_txt = str(_redact_api_payload(exc))
         if "retry after" not in err_txt.lower():
             err_txt = f"{err_txt} (retry after {rem:.1f}s)"
         body = {
@@ -3181,7 +4075,8 @@ def create_api_server(
             *,
             extra_headers: Optional[dict[str, str]] = None,
         ) -> None:
-            raw = json.dumps(body).encode("utf-8")
+            clean_body = _sanitize_finite_json(body)
+            raw = json.dumps(clean_body, allow_nan=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -3214,6 +4109,11 @@ def create_api_server(
                 if parsed.path in _UI_ASSETS:
                     filename, ctype = _UI_ASSETS[parsed.path]
                     self._send_static(filename, ctype)
+                    return
+                if parsed.path == "/favicon.ico":
+                    self.send_response(HTTPStatus.NO_CONTENT)
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
                     return
                 if parsed.path == "/ui-version":
                     self._send_json(
@@ -3251,9 +4151,9 @@ def create_api_server(
                     extra_headers=headers,
                 )
             except SpaceInvasionAuthError as exc:
-                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": _redact_api_payload(str(exc))})
+                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": _redact_api_payload(exc)})
             except Exception as exc:
-                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": _redact_api_payload(str(exc))})
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": _redact_api_payload(exc)})
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
@@ -3265,37 +4165,58 @@ def create_api_server(
             body: dict[str, Any] = {}
             extra_headers: Optional[dict[str, str]] = None
             try:
-                length = int(self.headers.get("Content-Length") or "0")
+                raw_len_hdr = self.headers.get("Content-Length")
+                if raw_len_hdr is None:
+                    length = 0
+                else:
+                    raw_len = str(raw_len_hdr).strip()
+                    if not raw_len:
+                        length = 0
+                    elif not (raw_len.isascii() and raw_len.isdigit()) or len(raw_len) > 18:
+                        raise ApiRequestError("Invalid Content-Length header")
+                    else:
+                        length = int(raw_len)
+                if length > MAX_REQUEST_BYTES:
+                    raise _RequestTooLargeError(
+                        f"Request body too large (max {MAX_REQUEST_BYTES} bytes)"
+                    )
                 raw = self.rfile.read(length) if length > 0 else b"{}"
-                payload = json.loads(raw.decode("utf-8"))
+                payload = json.loads(raw.decode("utf-8"), parse_constant=_reject_nonfinite_json)
                 body = bridge.handle_command(payload)
+            except _RequestTooLargeError as exc:
+                status_code = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+                body = {"ok": False, "error": _redact_api_payload(exc)}
             except (ValueError, ApiRequestError) as exc:
                 status_code = HTTPStatus.BAD_REQUEST
-                body = {"ok": False, "error": _redact_api_payload(str(exc))}
+                body = {"ok": False, "error": _redact_api_payload(exc)}
             except RateLimitError as exc:
                 body, extra_headers = _build_rate_limit_response(exc)
                 status_code = HTTPStatus.TOO_MANY_REQUESTS
             except SpaceInvasionAuthError as exc:
                 status_code = HTTPStatus.SERVICE_UNAVAILABLE
-                body = {"ok": False, "error": _redact_api_payload(str(exc))}
+                body = {"ok": False, "error": _redact_api_payload(exc)}
             except Exception as exc:
                 status_code = HTTPStatus.INTERNAL_SERVER_ERROR
-                body = {"ok": False, "error": _redact_api_payload(str(exc))}
+                body = {"ok": False, "error": _redact_api_payload(exc)}
 
-            if bridge.log_dir is not None:
+            log_dir = getattr(bridge, "log_dir", None)
+            if isinstance(log_dir, (str, Path)):
                 log_payload = (
                     payload
-                    if isinstance(payload, dict)
+                    if isinstance(payload, Mapping)
                     else ({"raw_payload": payload} if payload is not None else None)
                 )
-                append_api_log(
-                    bridge.log_dir,
-                    method="POST",
-                    path=parsed.path,
-                    status=int(status_code),
-                    payload=log_payload,
-                    response=body,
-                )
+                try:
+                    append_api_log(
+                        Path(log_dir),
+                        method="POST",
+                        path=parsed.path,
+                        status=int(status_code),
+                        payload=_sanitize_finite_json(log_payload),
+                        response=_sanitize_finite_json(body),
+                    )
+                except Exception:
+                    pass
             self._send_json(status_code, body, extra_headers=extra_headers)
 
     return _ReusableThreadingHTTPServer((host, port), Handler)

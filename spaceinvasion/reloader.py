@@ -7,8 +7,9 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
-from typing import Sequence
+from typing import Optional, Sequence
 
 RELOAD_CHILD_ENV = "SPACEINVASION_RELOAD_CHILD"
 
@@ -36,12 +37,21 @@ def snapshot_mtimes(paths: Sequence[Path]) -> dict[str, int]:
 def _terminate_child(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
-    proc.terminate()
     try:
+        proc.terminate()
         proc.wait(timeout=5.0)
     except subprocess.TimeoutExpired:
         proc.kill()
-        proc.wait(timeout=2.0)
+        try:
+            proc.wait(timeout=5.0)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    except OSError:
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=0.5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
 
 
 def watch_and_run(
@@ -56,17 +66,20 @@ def watch_and_run(
     env = os.environ.copy()
     env[RELOAD_CHILD_ENV] = "1"
 
-    mtimes = snapshot_mtimes(watch_paths)
-    proc = subprocess.Popen(list(cmd), env=env)
-    print(f"[{label}] hot-reloader started (pid={proc.pid}, watching {len(mtimes)} files)", flush=True)
-
-    prev_sigterm = signal.getsignal(signal.SIGTERM)
+    is_main = threading.current_thread() is threading.main_thread()
+    prev_sigterm = signal.getsignal(signal.SIGTERM) if is_main else None
 
     def _on_sigterm(_signum, _frame) -> None:
         raise KeyboardInterrupt
 
-    signal.signal(signal.SIGTERM, _on_sigterm)
+    if is_main:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+
+    proc: Optional[subprocess.Popen] = None
     try:
+        mtimes = snapshot_mtimes(watch_paths)
+        proc = subprocess.Popen(list(cmd), env=env)
+        print(f"[{label}] hot-reloader started (pid={proc.pid}, watching {len(mtimes)} files)", flush=True)
         while True:
             time.sleep(poll_interval)
             rc = proc.poll()
@@ -85,10 +98,14 @@ def watch_and_run(
             if rc is not None:
                 return rc
     except KeyboardInterrupt:
-        _terminate_child(proc)
+        if proc is not None:
+            _terminate_child(proc)
         return 0
     finally:
-        signal.signal(signal.SIGTERM, prev_sigterm)
+        if proc is not None and proc.poll() is None:
+            _terminate_child(proc)
+        if is_main and prev_sigterm is not None:
+            signal.signal(signal.SIGTERM, prev_sigterm)
 
 
 def should_spawn_reloader(reload_flag: bool) -> bool:

@@ -282,12 +282,27 @@ class TestExperimentationNotebook(unittest.TestCase):
 
         # ascii_bar NaN / Inf / non-positive guards.
         empty_bar = "[" + ("." * 20) + "]"
+        full_bar = "[" + ("#" * 20) + "]"
         self.assertEqual(ns["ascii_bar"](float("nan"), 10.0), empty_bar)
         self.assertEqual(ns["ascii_bar"](5.0, float("nan")), empty_bar)
         self.assertEqual(ns["ascii_bar"](5.0, float("inf")), empty_bar)
         self.assertEqual(ns["ascii_bar"](float("-inf"), 10.0), empty_bar)
         self.assertEqual(ns["ascii_bar"](-1.0, 10.0), empty_bar)
         self.assertEqual(ns["ascii_bar"](5.0, 0.0), empty_bar)
+        self.assertEqual(ns["ascii_bar"](10**400, 10.0), full_bar)
+        self.assertEqual(ns["ascii_bar"](10.0, 10**400), empty_bar)
+        self.assertEqual(ns["ascii_bar"](10**5000, 10**5000), full_bar)
+        self.assertEqual(ns["ascii_bar"](5 * 10**4999, 10**5000), "[" + ("#" * 10) + ("." * 10) + "]")
+        self.assertEqual(ns["ascii_bar"](-(10**400), 10.0), empty_bar)
+        self.assertEqual(ns["ascii_bar"](10**400, float("inf")), empty_bar)
+        self.assertEqual(ns["ascii_bar"](float("inf"), 10.0), empty_bar)
+        self.assertEqual(ns["ascii_bar"](True, 10.0), empty_bar)
+        self.assertEqual(ns["_safe_float"](10**400), 0.0)
+        self.assertEqual(ns["_safe_float"](10**5000, -1.0), -1.0)
+        self.assertEqual(ns["_safe_float"]("9" * 5000, 3.0), 3.0)
+        self.assertEqual(ns["_safe_int"](str(10**18 + 123456789)), 10**18 + 123456789)
+        self.assertEqual(ns["_safe_int"]("9" * 5000, -7), -7)
+        self.assertIn("~1e5000", ns["render_table"](["Col"], [[10**5000]]))
 
         # Prerequisite integrity on default exp_state offers.
         exp_state = ns["exp_state"]
@@ -500,12 +515,13 @@ class TestExperimentationNotebook(unittest.TestCase):
                 )
                 if is_dyn_import:
                     dyn_targets: list[str] = []
-                    if (
-                        node.args
-                        and isinstance(node.args[0], ast.Constant)
-                        and isinstance(node.args[0].value, str)
-                    ):
-                        dyn_targets.append(node.args[0].value)
+                    for arg_idx in (0, 1):
+                        if (
+                            len(node.args) > arg_idx
+                            and isinstance(node.args[arg_idx], ast.Constant)
+                            and isinstance(node.args[arg_idx].value, str)
+                        ):
+                            dyn_targets.append(node.args[arg_idx].value)
                     for kw in node.keywords:
                         if (
                             kw.arg in ("name", "package")
@@ -573,6 +589,7 @@ class TestExperimentationNotebook(unittest.TestCase):
             "__import__('e2e_tests.harness')",
             "from importlib import import_module\nimport_module('spaceinvasion.api_server')",
             "import importlib\nimportlib.import_module(name='spaceinvasion.api_server')",
+            "import importlib\nimportlib.import_module('.harness', 'e2e_tests')",
         ):
             with self.assertRaises(AssertionError):
                 self._assert_cell_ast_safe(bad_import_stmt, "ast_guard_self_check")
@@ -778,6 +795,30 @@ class TestExperimentationNotebook(unittest.TestCase):
                         "ok",
                     ),
                 )
+                db._conn.execute(
+                    """
+                    INSERT INTO action_history(
+                        ts, source, command, priority, kind, planet_id, planet_coords,
+                        target_id, target_name, target_level, executed, dry_run, reason, message
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        1_700_000_060.0,
+                        "test",
+                        "attack",
+                        b"\xff\xfeP2 sid=" + secret_sid.encode("ascii"),
+                        b"\xff\xfeATTACK sid=" + secret_sid.encode("ascii"),
+                        12476,
+                        b"\xff\xfe02:380:12 sid=" + secret_sid.encode("ascii"),
+                        None,
+                        None,
+                        None,
+                        1,
+                        0,
+                        "blob non-target cols and null target_name",
+                        "ok",
+                    ),
+                )
                 db.record_raid(
                     "02:380:04",
                     attacked_ts=1_700_000_100.0,
@@ -826,6 +867,7 @@ class TestExperimentationNotebook(unittest.TestCase):
                     for act in recent_actions
                 )
             )
+            self.assertTrue(any(act["target_name"] is None for act in recent_actions))
             recent_json = json.dumps(recent_actions)
             self.assertNotIn(secret_sid, recent_json)
             self.assertIn("sid=REDACTED", recent_json)
@@ -1170,6 +1212,9 @@ class TestExperimentationNotebook(unittest.TestCase):
             "CREATE TABLE spy_targets(wrong INT);",
             "CREATE TABLE meta(wrong INT);",
             "CREATE TABLE idx_rank_snapshots_ts(a INT);",
+            "CREATE VIRTUAL TABLE meta USING fts5(key, value, updated_ts);",
+            "CREATE VIRTUAL TABLE raid_history USING fts5(id, target_coords, attacked_ts, is_exempt, outcome, loot_json);",
+            "CREATE VIRTUAL TABLE rank_snapshots USING fts5(id, ts, universe_id, nickname, server_points, server_rank, estimated_points, pts_per_hr, spice_value, planets);",
             (
                 "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_ts REAL NOT NULL);"
                 "CREATE TRIGGER meta_abort BEFORE INSERT ON meta "
@@ -1237,12 +1282,33 @@ class TestExperimentationNotebook(unittest.TestCase):
             with contextlib.closing(sqlite3.connect(leg_db_path)) as conn:
                 conn.executescript(legacy_spy_ddl)
                 conn.commit()
-            ns_leg, out_leg = self._run_notebook_headless(tmp_path, max_cells=2)
+                ns_leg, out_leg = self._run_notebook_headless(tmp_path, max_cells=2)
             insp_leg = ns_leg["live_db_inspection"]
             self.assertTrue(insp_leg["exists"])
             self.assertIsNone(insp_leg["error"])
             self.assertEqual(insp_leg["counts"]["spy_targets"], 1)
             self.assertTrue(out_leg.strip())
+
+        # 2c-trigger) Benign AFTER UPDATE trigger on `meta` must pass preflight cleanly (M21)
+        with tempfile.TemporaryDirectory(prefix="si_nb_benigntrig_") as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "data").mkdir()
+            (tmp_path / "state").mkdir()
+            (tmp_path / "data" / "attack_history.json").write_text("{}", encoding="utf-8")
+            trig_db_path = tmp_path / "state" / "spaceinvasion.db"
+            trig_db = GameDatabase(trig_db_path, legacy_rank_json=None)
+            try:
+                trig_db._conn.execute(
+                    "CREATE TRIGGER benign_meta_audit AFTER UPDATE ON meta BEGIN SELECT 1; END;"
+                )
+                trig_db._conn.commit()
+            finally:
+                trig_db.close()
+            ns_trig, out_trig = self._run_notebook_headless(tmp_path, max_cells=2)
+            insp_trig = ns_trig["live_db_inspection"]
+            self.assertTrue(insp_trig["exists"])
+            self.assertIsNone(insp_trig["error"])
+            self.assertTrue(out_trig.strip())
 
         # 2d) Schema-valid DB with weird column values (atomic out staging + 0 ResourceWarnings)
         weird_sql_cases = (
@@ -1279,10 +1345,8 @@ class TestExperimentationNotebook(unittest.TestCase):
                 ns_w, out_w = self._run_notebook_headless(tmp_path, max_cells=2)
                 insp_w = ns_w["live_db_inspection"]
                 self.assertTrue(insp_w["exists"])
-                self.assertIsInstance(insp_w["error"], str)
-                self.assertTrue(insp_w["error"].strip())
-                self.assertEqual(insp_w["counts"], {})
-                self.assertEqual(insp_w["raid_stats"]["overall"]["attempts"], 0)
+                self.assertIsNone(insp_w["error"])
+                self.assertEqual(insp_w["counts"].get("raid_history"), 1)
                 self.assertTrue(out_w.strip())
 
         with tempfile.TemporaryDirectory(prefix="si_nb_nulltask_") as tmp:
@@ -1310,10 +1374,9 @@ class TestExperimentationNotebook(unittest.TestCase):
             ns_nt, out_nt = self._run_notebook_headless(tmp_path, max_cells=2)
             insp_nt = ns_nt["live_db_inspection"]
             self.assertTrue(insp_nt["exists"])
-            self.assertIsInstance(insp_nt["error"], str)
-            self.assertTrue(insp_nt["error"].strip())
-            self.assertEqual(insp_nt["counts"], {})
-            self.assertEqual(insp_nt["raid_stats"]["overall"]["attempts"], 0)
+            self.assertIsNone(insp_nt["error"])
+            self.assertEqual(insp_nt["counts"].get("raid_history"), 1)
+            self.assertEqual(insp_nt["raid_stats"]["overall"]["attempts"], 1)
             self.assertTrue(out_nt.strip())
 
         # 3) 0-byte DB + malformed JSON ("{bad")
@@ -1477,6 +1540,41 @@ class TestExperimentationNotebook(unittest.TestCase):
                 os.environ.pop("MPLBACKEND", None)
             else:
                 os.environ["MPLBACKEND"] = orig_mpl_env
+
+    def test_r10_cell3_helpers_reject_arabic_indic_decode_bytes_and_allow_nan_false(self) -> None:
+        _, nb = self._load_notebook()
+        self.assertEqual((nb.get("nbformat"), nb.get("nbformat_minor")), (4, 5))
+        for cell in nb.get("cells", []):
+            if cell.get("cell_type") == "code":
+                self.assertEqual(cell.get("outputs"), [])
+                self.assertIsNone(cell.get("execution_count"))
+
+        cell3_src = _cell_source(nb["cells"][3])
+        self.assertIn("bkey[1:].isascii() and bkey[1:].isdigit()", cell3_src)
+        self.assertIn("allow_nan=False", cell3_src)
+
+        tree = ast.parse(cell3_src)
+        helpers = [
+            n
+            for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name in ("_safe_float", "_safe_int")
+        ]
+        self.assertEqual(len(helpers), 2)
+        mod = ast.Module(body=helpers, type_ignores=[])
+        ns: dict = {"Any": object, "math": math}
+        exec(compile(mod, "cell3_helpers", "exec"), ns, ns)
+        sf = ns["_safe_float"]
+        si = ns["_safe_int"]
+
+        self.assertEqual(sf(b"2.5"), 2.5)
+        self.assertEqual(sf("\u0662.\u0665"), 0.0)
+        self.assertEqual(sf(frozenset({1})), 0.0)
+        self.assertEqual(si(b"42"), 42)
+        self.assertEqual(si("\u0664\u0662"), 0)
+        self.assertEqual(si("inf"), 0)
+        self.assertEqual(si(float("nan")), 0)
+        self.assertEqual(si(frozenset({1})), 0)
+        self.assertEqual(si(10**5000), 10**5000)
 
 
 if __name__ == "__main__":

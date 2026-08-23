@@ -337,6 +337,346 @@ class TestLoginFlow(unittest.TestCase):
                 ok2, _, _ = verify_saved_session(session_dir=session_dir)
                 self.assertFalse(ok2)
 
+    def test_universes_from_portal_data_handles_empty_and_malformed_speeds(self) -> None:
+        from spaceinvasion.auth import universes_from_portal_data
+
+        uni_opts = universes_from_portal_data(
+            "sid123",
+            [
+                {"id": 31, "name": "Genesis", "speed": "", "flightSpeed": "bad", "playable": 1},
+                {"id": 32, "name": "Retro", "speed": float("nan"), "flightSpeed": True, "playable": True},
+                {"id": 33, "name": "NoneSpd", "speed": None, "flightSpeed": None, "playable": True},
+                {"id": 34, "name": "Fast", "speed": "3.0", "flightSpeed": "2.5", "playable": True},
+            ],
+            "https://spaceinvasion.bitmeup.com",
+        )
+        by_id = {u.universe_id: u for u in uni_opts}
+        self.assertEqual(by_id[31].speed, 1.0)
+        self.assertEqual(by_id[31].flight_speed, 1.0)
+        self.assertEqual(by_id[32].speed, 1.0)
+        self.assertEqual(by_id[32].flight_speed, 1.0)
+        self.assertIsNone(by_id[33].speed)
+        self.assertIsNone(by_id[33].flight_speed)
+        self.assertEqual(by_id[34].speed, 3.0)
+        self.assertEqual(by_id[34].flight_speed, 2.5)
+
+    def test_universes_from_portal_data_skips_non_mapping_entries(self) -> None:
+        from spaceinvasion.auth import universes_from_portal_data
+
+        uni_opts = universes_from_portal_data(
+            "sid123",
+            ["bad", 123, None, {"id": True, "name": "BadBool"}, {"id": 31, "name": "Genesis"}],  # type: ignore[list-item]
+            "https://spaceinvasion.bitmeup.com",
+        )
+        self.assertEqual(len(uni_opts), 1)
+        self.assertEqual(uni_opts[0].universe_id, 31)
+        self.assertEqual(uni_opts[0].label, "Genesis")
+        self.assertEqual(universes_from_portal_data("sid123", "not_a_list", "https://e.test"), ())  # type: ignore[arg-type]
+
+        huge_opts = universes_from_portal_data(
+            "sid123",
+            [{"id": 31, "name": 10**5000}],
+            "https://e.test",
+        )
+        self.assertEqual(len(huge_opts), 1)
+        self.assertEqual(huge_opts[0].label, "~1e5000")
+
+    def test_r7_http_keepalive_login_and_verify_saved_session_close_session_cleanly(self) -> None:
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import threading
+        from spaceinvasion.auth import universes_from_portal_data
+
+        mode = {"reject": False}
+
+        class _KeepAliveHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+            def do_GET(self) -> None:
+                if "bitmeup.php" in self.path:
+                    body = b"bitmeup.setData({});"
+                    ctype = "application/javascript"
+                elif "/portal" in self.path:
+                    body = SAMPLE_PORTAL_HTML.encode("utf-8")
+                    ctype = "text/html; charset=utf-8"
+                else:
+                    body = SAMPLE_LANDING_HTML.encode("utf-8")
+                    ctype = "text/html; charset=utf-8"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self) -> None:
+                raw_len = int(self.headers.get("Content-Length", "0"))
+                if raw_len > 0:
+                    self.rfile.read(raw_len)
+                if mode["reject"]:
+                    payload = {"result": {"result": "error", "error": "b.external.login.error.1"}}
+                else:
+                    payload = {"result": {"result": "ok", "login": "/portal"}}
+                body = json.dumps(payload, allow_nan=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                self.wfile.write(body)
+
+        srv = HTTPServer(("127.0.0.1", 0), _KeepAliveHandler)
+        srv_thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        srv_thread.start()
+        base_url = f"http://127.0.0.1:{srv.server_address[1]}"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                sdir = Path(tmp) / ".sessions"
+                creds = Credentials(email="pilot@example.com", password="secret")
+
+                res = login(creds=creds, session_dir=sdir, base_url=base_url)
+                self.assertEqual(res.page_title, "BitMeUp Portal")
+
+                ok, checked_url, title = verify_saved_session(
+                    account="default", session_dir=sdir, base_url=base_url
+                )
+                self.assertTrue(ok)
+                self.assertIn("/portal", checked_url)
+                self.assertEqual(title, "BitMeUp Portal")
+
+                mode["reject"] = True
+                with self.assertRaises(LoginRejectedError) as ctx:
+                    login(creds=creds, session_dir=sdir, base_url=base_url)
+                self.assertIn("Invalid email or password", str(ctx.exception))
+        finally:
+            sd_thread = threading.Thread(target=srv.shutdown, daemon=True)
+            sd_thread.start()
+            sd_thread.join(timeout=2.0)
+            self.assertFalse(sd_thread.is_alive(), "HTTPServer.shutdown() deadlocked on leaked keep-alive socket")
+            srv.server_close()
+            srv_thread.join(timeout=2.0)
+
+    def test_r8_keepalive_held_exception_login_and_verify_saved_session_no_deadlock(self) -> None:
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import threading
+
+        mode = {"status": 200, "reject": True}
+
+        class _HeldKeepAliveHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+            def do_GET(self) -> None:
+                if mode["status"] >= 500:
+                    body = b"Server Error"
+                    self.send_response(mode["status"])
+                    self.send_header("Content-Type", "text/plain")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Connection", "keep-alive")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if "bitmeup.php" in self.path:
+                    body = b"bitmeup.setData({});"
+                    ctype = "application/javascript"
+                else:
+                    body = SAMPLE_LANDING_HTML.encode("utf-8")
+                    ctype = "text/html; charset=utf-8"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self) -> None:
+                raw_len = int(self.headers.get("Content-Length", "0"))
+                if raw_len > 0:
+                    self.rfile.read(raw_len)
+                payload = {"result": {"result": "error", "error": "b.external.login.error.1"}}
+                body = json.dumps(payload, allow_nan=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                self.wfile.write(body)
+
+        srv = HTTPServer(("127.0.0.1", 0), _HeldKeepAliveHandler)
+        srv_thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        srv_thread.start()
+        base_url = f"http://127.0.0.1:{srv.server_address[1]}"
+        held_login_exc: Exception | None = None
+        held_verify_exc: Exception | None = None
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                sdir = Path(tmp) / ".sessions"
+                creds = Credentials(email="pilot@example.com", password="secret")
+
+                # Caller-owned session must remain open when passed explicitly
+                caller_sess = requests.Session()
+                caller_closed = False
+                orig_close = caller_sess.close
+
+                def _track_close() -> None:
+                    nonlocal caller_closed
+                    caller_closed = True
+                    orig_close()
+
+                caller_sess.close = _track_close  # type: ignore[method-assign]
+                try:
+                    try:
+                        login(creds=creds, session_dir=sdir, base_url=base_url, session=caller_sess)
+                        self.fail("Expected LoginRejectedError")
+                    except LoginRejectedError as exc:
+                        self.assertFalse(caller_closed)
+                        self.assertIn("Invalid email or password", str(exc))
+                finally:
+                    orig_close()
+
+                # Owned session held in except block must NOT deadlock HTTPServer.shutdown()
+                try:
+                    login(creds=creds, session_dir=sdir, base_url=base_url)
+                    self.fail("Expected LoginRejectedError")
+                except LoginRejectedError as exc:
+                    held_login_exc = exc
+
+                sdir.mkdir(parents=True, exist_ok=True)
+                (sdir / "default.json").write_text(
+                    json.dumps(
+                        {
+                            "metadata": {"last_url": f"{base_url}/portal", "locale": "en"},
+                            "cookies": [],
+                        },
+                        allow_nan=False,
+                    ),
+                    encoding="utf-8",
+                )
+                mode["status"] = 500
+                try:
+                    verify_saved_session(account="default", session_dir=sdir, base_url=base_url)
+                    self.fail("Expected requests.HTTPError")
+                except requests.HTTPError as exc:
+                    held_verify_exc = exc
+
+                # Shutdown BEFORE releasing held exception references
+                sd_thread = threading.Thread(target=srv.shutdown, daemon=True)
+                sd_thread.start()
+                sd_thread.join(timeout=1.5)
+                self.assertFalse(
+                    sd_thread.is_alive(),
+                    "HTTPServer.shutdown() deadlocked while caller retained LoginRejectedError/HTTPError",
+                )
+                self.assertIsNotNone(held_login_exc)
+                self.assertIsNotNone(held_verify_exc)
+        finally:
+            held_login_exc = None
+            held_verify_exc = None
+            srv.shutdown()
+            srv.server_close()
+            srv_thread.join(timeout=2.0)
+
+    def test_r10_portal_ascii_bytes_and_safe_key_metadata(self) -> None:
+        from spaceinvasion import auth
+        from spaceinvasion.auth import extract_universes, save_session_cookies, universes_from_portal_data
+
+        self.assertEqual(auth._safe_portal_speed(b"4.5"), 4.5)
+        self.assertEqual(auth._safe_portal_speed("\u0664.\u0665"), 1.0)
+        self.assertIsNone(auth._safe_portal_speed(None))
+        self.assertEqual(auth._safe_portal_speed([1]), 1.0)
+        self.assertEqual(auth._safe_portal_label(10**5000), "~1e5000")
+        self.assertTrue(isinstance(auth._safe_portal_label((10**5000, "x")), str))
+        self.assertTrue(isinstance(auth._safe_portal_label(frozenset({10**5000})), str))
+
+        unis_ar = extract_universes(
+            '<a href="https://uni1.example/?sid=abc">Uni \u0661\u0662\u0663</a>',
+            "https://uni1.example/",
+        )
+        self.assertTrue(all(u.universe_id != 123 for u in unis_ar))
+        unis_ar_portal = universes_from_portal_data(
+            "SECRET_SID",
+            [{"id": "\u0661\u0662\u0663", "speed": "\u0665", "name": "Ar"}],
+            "https://uni1.example/",
+        )
+        self.assertEqual(unis_ar_portal, ())
+
+        unis_bytes = universes_from_portal_data(
+            "SECRET_99",
+            [
+                {
+                    "id": b"31",
+                    "name": b"Uni 31",
+                    "speed": b"2.5",
+                    "flightSpeed": b"1.5",
+                }
+            ],
+            "https://uni31.example/",
+        )
+        self.assertEqual(len(unis_bytes), 1)
+        self.assertEqual(unis_bytes[0].universe_id, 31)
+        self.assertEqual(unis_bytes[0].speed, 2.5)
+        self.assertEqual(unis_bytes[0].flight_speed, 1.5)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            import requests
+
+            cookie_path = Path(tmp) / "r10_cookies.json"
+            save_session_cookies(
+                requests.Session(),
+                cookie_path,
+                metadata={(10**5000, "k"): frozenset({10**5000})},  # type: ignore[arg-type]
+            )
+            payload = json.loads(cookie_path.read_text(encoding="utf-8"))
+            self.assertIn("metadata", payload)
+
+    def test_r13_load_session_cookies_malformed_json_raises_configuration_error(self) -> None:
+        from unittest.mock import patch
+        from spaceinvasion.auth import ConfigurationError, SpaceInvasionAuthError, load_session_cookies
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            corrupt = tp / "corrupt.json"
+            corrupt.write_text('{corrupt?password=FILE_BODY_SECRET', encoding="utf-8")
+            with self.assertRaises(ConfigurationError) as ctx_bad:
+                load_session_cookies(corrupt)
+            self.assertIsInstance(ctx_bad.exception, SpaceInvasionAuthError)
+            self.assertNotIn("FILE_BODY_SECRET", str(ctx_bad.exception))
+
+            bad_bytes = tp / "bad_bytes.json"
+            bad_bytes.write_bytes(b"\xff\xfe{bad")
+            with self.assertRaises(ConfigurationError):
+                load_session_cookies(bad_bytes)
+
+            # Corrupt cookie insertion closes locally created session
+            bad_cookie_file = tp / "bad_item.json"
+            bad_cookie_file.write_text(
+                json.dumps({"cookies": [{"name": "c1", "value": "v1"}], "metadata": {}}, allow_nan=False),
+                encoding="utf-8",
+            )
+            import requests
+
+            fake_sess = requests.Session()
+            closed = False
+            orig_close = fake_sess.close
+
+            def _track() -> None:
+                nonlocal closed
+                closed = True
+                orig_close()
+
+            fake_sess.close = _track  # type: ignore[method-assign]
+            with (
+                patch("spaceinvasion.auth.build_http_session", return_value=fake_sess),
+                patch.object(fake_sess.cookies, "set", side_effect=RuntimeError("jar boom")),
+            ):
+                with self.assertRaises(RuntimeError):
+                    load_session_cookies(bad_cookie_file)
+            self.assertTrue(closed)
+
 
 if __name__ == "__main__":
     unittest.main()

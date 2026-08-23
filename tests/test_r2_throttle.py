@@ -2056,7 +2056,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 self.unread_spio = 0
                 self.page_view_log: list[str] = []
                 self.launched_fleets: list[dict[str, object]] = []
-                self.researches = {"r1": 1}
+                self.researches = {"r1": 1, "r2": 4, "r4": 4}
                 self.planets = {
                     12476: {
                         "id": 12476,
@@ -2094,8 +2094,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                             "b1": {"level": 3, "name": "Pig iron mine"},
                             "b2": {"level": 2, "name": "Blast furnace"},
                             "b5": {"level": 7, "name": "Fusion plant"},
-                            "b8": {"level": 1, "name": "Research lab"},
-                            "b9": {"level": 1, "name": "Weapons factory"},
+                            "b8": {"level": 2, "name": "Research lab"},
+                            "b9": {"level": 2, "name": "Weapons factory"},
                         },
                         "ships": {"s1": 1, "s4": 8, "s10": 4},
                         "defense": {},
@@ -3175,7 +3175,7 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 },
             },
             active_planet_id=12476,
-            researches={"r1": 0, "r2": 1},
+            researches={"r1": 0, "r2": 4, "r4": 4},
             clock=clock,
         )
         with tempfile.TemporaryDirectory() as tmp:
@@ -3532,6 +3532,149 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 self.assertEqual(lim_c.views_last_60s(), views_before)
             finally:
                 bridge_c._db.close()
+
+    def test_adv_bridge_internalbuildings_banner_external_cancel_ship_prereq_and_cross_planet_b8(self) -> None:
+        from e2e_tests.harness import FakeClock, FakeDriver, FakeSpaceInvasionServer
+        from spaceinvasion.state import ResearchOffer, UnitOffer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            # 1) internalBuildings embedding #tutorial.text with _last_home_fetched=False still refreshes internalHome on plan -> detects ALERT_HOSTILE
+            clock_h = FakeClock(initial=3000.0)
+            srv_h = FakeSpaceInvasionServer(
+                active_planet_id=12476,
+                tutorial={"step": 1, "total_steps": 11, "can_complete": False, "tasks": []},
+                clock=clock_h,
+            )
+            orig_bld_fn = srv_h._render_buildings_html
+
+            def _bld_with_tutorial(ap, sq_amp, built_msg=""):
+                url, html = orig_bld_fn(ap, sq_amp, built_msg=built_msg)
+                injected = html.replace(
+                    "</body>",
+                    '<div id="tutorial.text">Tutorial 1 / 11</div></body>',
+                )
+                return url, injected
+
+            srv_h._render_buildings_html = _bld_with_tutorial
+            drv_h = FakeDriver(srv_h)
+            lim_h = PageViewLimiter(min_delay_range=(0.0, 0.0), clock=clock_h.monotonic, sleeper=clock_h.sleep)
+            cfg_h = tmp_path / "cfg_h.yaml"
+            cfg_h.write_text("allow_raids: false\n", encoding="utf-8")
+            bridge_h = GameApiBridge(
+                debug_port=9222,
+                config_path=cfg_h,
+                log_dir=None,
+                db_path=tmp_path / "h.db",
+                page_limiter=lim_h,
+                client_factory=lambda _p: GameBrowserClient(drv_h, page_limiter=lim_h, min_nav_delay=(0.0, 0.0), timeout=2.0),
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                bridge_h.get_state(include_buildings=True)
+                self.assertIsNotNone(bridge_h._last_state)
+                assert bridge_h._last_state is not None
+                self.assertIsNotNone(bridge_h._last_state.tutorial)
+                bridge_h._last_home_fetched = False
+                bridge_h._last_home_at = None
+                self.assertFalse(bridge_h._is_home_fresh(time.monotonic()))
+                srv_h.hostile_alerts.append("Hostile raid incoming at 02:380:12")
+                plan_res = bridge_h.handle_command({"command": "plan"})
+                self.assertTrue(any(a["kind"] == "ALERT_HOSTILE" for a in plan_res["actions"]))
+            finally:
+                bridge_h._db.close()
+
+            # 2) External research cancel (active_queues=()) clears carried o.active=True so next research is executable_now=True
+            # 3) _find_ship_action s10 Locked/insufficient + fallback when r5=0 -> executable_now=False
+            # 4) Home (b8=5) caches r8.can_research=True, Colony (b8=1) returns executable_now=False & 0 views on dry_run=False
+            clock_x = FakeClock(initial=4000.0)
+            planets_x = {
+                12476: {
+                    "planet_id": 12476,
+                    "name": "Home",
+                    "coords": "02:380:12",
+                    "planet_type": "normal",
+                    "temperature": 31,
+                    "fields_max": 230,
+                    "resources": [100_000, 100_000, 100_000, 50_000],
+                    "storage": [500_000, 500_000, 500_000, 500_000],
+                    "energy": {"produced": 600, "used": 100},
+                    "buildings": {"b1": 5, "b5": 8, "b8": 5, "b9": 1},
+                    "ships": {},
+                    "defense": {},
+                    "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                    "building_queue": [],
+                },
+                12477: {
+                    "planet_id": 12477,
+                    "name": "Colony",
+                    "coords": "02:380:14",
+                    "planet_type": "normal",
+                    "temperature": 24,
+                    "fields_max": 190,
+                    "resources": [100_000, 100_000, 100_000, 50_000],
+                    "storage": [500_000, 500_000, 500_000, 500_000],
+                    "energy": {"produced": 600, "used": 100},
+                    "buildings": {"b1": 4, "b5": 8, "b8": 1, "b9": 1},
+                    "ships": {},
+                    "defense": {},
+                    "economy_rates": {"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100, "resource5": 100},
+                    "building_queue": [],
+                },
+            }
+            srv_x = FakeSpaceInvasionServer(
+                planets=planets_x,
+                active_planet_id=12476,
+                researches={"r1": 1, "r2": 4, "r4": 2, "r5": 0, "r8": 0},
+                clock=clock_x,
+            )
+            drv_x = FakeDriver(srv_x)
+            lim_x = PageViewLimiter(min_delay_range=(0.0, 0.0), clock=clock_x.monotonic, sleeper=clock_x.sleep)
+            cfg_x = tmp_path / "cfg_x.yaml"
+            bridge_x = GameApiBridge(
+                debug_port=9222,
+                config_path=cfg_x,
+                log_dir=None,
+                db_path=tmp_path / "x.db",
+                page_limiter=lim_x,
+                client_factory=lambda _p: GameBrowserClient(drv_x, page_limiter=lim_x, min_nav_delay=(0.0, 0.0), timeout=2.0),
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                bridge_x.get_state(include_buildings=True)
+                st_x = bridge_x._last_state
+                assert st_x is not None
+                self.assertTrue(next(o for o in st_x.research_offers if o.research_id == 8).can_research)
+
+                # Colony b8=1 < 3: r8 must be blocked in 0 views even though Home cached can_research=True
+                r8_dry = bridge_x.handle_command({"command": "research", "research_id": 8, "planet_id": 12477, "dry_run": True})
+                self.assertFalse(r8_dry["action"]["executable_now"])
+                v_before = lim_x.views_last_60s()
+                r8_live = bridge_x.handle_command({"command": "research", "research_id": 8, "planet_id": 12477, "dry_run": False})
+                self.assertFalse(r8_live["executed"])
+                self.assertEqual(lim_x.views_last_60s(), v_before)
+
+                # s10 Locked/insufficient & fallback when r5=0 -> executable_now=False
+                s10_locked_offer = UnitOffer("ship", 10, "Spy probe", 0, Resources(0, 1000, 500, 0), False, None, "Locked / insufficient")
+                p_home = st_x.planets[0]
+                st_s10_offer = replace(st_x, planets=(replace(p_home, ship_offers=(s10_locked_offer,)), st_x.planets[1]))
+                self.assertFalse(bridge_x._find_ship_action(st_s10_offer, 10, 1, 12476, allow_live_verify=True).executable_now)
+                st_s10_empty = replace(st_x, planets=(replace(p_home, ship_offers=()), st_x.planets[1]))
+                self.assertFalse(bridge_x._find_ship_action(st_s10_empty, 10, 1, 12476, allow_live_verify=True).executable_now)
+
+                # External cancel clears carried o.active=True
+                bridge_x._last_state = replace(
+                    st_x,
+                    research_offers=(
+                        ResearchOffer(2, "r2", "Energy technology", 4, 5, Resources(0, 1600, 800, 0), False, "In research (Cancel)", None, active=True),
+                        next(o for o in st_x.research_offers if o.research_id == 8),
+                    ),
+                )
+                merged_cancel = bridge_x._merge_cached_offers(replace(st_x, research_offers=(), active_queues=()))
+                self.assertFalse(any(o.active for o in merged_cancel.research_offers))
+                self.assertTrue(bridge_x._find_research_action(merged_cancel, 8, 12476).executable_now)
+            finally:
+                bridge_x._db.close()
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
+import math
+import os
 import re
 import time
 from typing import Any, Deque, Mapping, Optional
@@ -123,21 +125,67 @@ class RaidRecommendation:
     is_inactive: bool = False
 
 
+_COORDS_NORM_RE = re.compile(
+    r"^\s*\[?\s*(\d{1,2})\s*[:/\-]\s*(\d{1,3})\s*[:/\-]\s*(\d{1,2})\s*\]?\s*$",
+    re.ASCII,
+)
+
+
+def normalize_coords(coords: Any) -> str:
+    """Normalize SpaceInvasion coordinates like `'2:380:4'` to `'02:380:04'`."""
+    raw = game_data.safe_key(coords).strip() if coords is not None else ""
+    m = _COORDS_NORM_RE.match(raw)
+    if m:
+        return f"{int(m.group(1)):02d}:{int(m.group(2)):03d}:{int(m.group(3)):02d}"
+    return raw
+
+
+def _safe_fleet_int(value: Any, default: int = 0) -> int:
+    if value is None or isinstance(value, (bool, Mapping, list, tuple, set, frozenset, BaseException)):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) else default
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        txt = value.strip()
+        if not txt or not txt.isascii():
+            return default
+        value = txt
+    try:
+        return int(value)
+    except Exception:
+        try:
+            f = float(value)
+            return int(f) if math.isfinite(f) else default
+        except Exception:
+            return default
+
+
 def fleet_cargo_capacity(ships: Mapping[str, int], *, miner_spec_level: int = 0) -> int:
     """Return total fleet cargo capacity in units across all non-zero ships."""
     total = 0
+    if not isinstance(ships, Mapping):
+        return 0
     for key, count in ships.items():
-        cnt = int(count or 0)
+        cnt = _safe_fleet_int(count, 0)
         if cnt <= 0:
             continue
-        slug = SHIP_SLUG_BY_KEY.get(str(key), str(key))
+        key_s = game_data.safe_key(key)
+        slug = SHIP_SLUG_BY_KEY.get(key_s, key_s)
         info = game_data.resolve_unit("ships", slug)
         if not info:
             continue
-        cargo = int((info.get("stats") or {}).get("cargo", 0))
+        cargo = _safe_fleet_int((info.get("stats") or {}).get("cargo", 0), 0)
         total += cnt * cargo
-    if miner_spec_level > 0:
-        total = int(total * (1.0 + 0.05 * miner_spec_level))
+    spec_lvl = min(100_000, max(0, _safe_fleet_int(miner_spec_level, 0)))
+    if spec_lvl > 0:
+        try:
+            total = int(total * (1.0 + 0.05 * spec_lvl))
+        except OverflowError:
+            total = (total * (100 + 5 * spec_lvl)) // 100
     return total
 
 
@@ -150,54 +198,63 @@ def plan_escape_flight(
     save_solar_cells: bool = False,
 ) -> EscapeFlightPlan:
     """Pack saved resources in optimal value density: Spice -> Metal -> Kryptonite -> Pig iron."""
+    fuel_reserve = max(0, _safe_fleet_int(fuel_reserve_spice, 0))
+    p_coords_s = game_data.safe_key(planet.coords)
+    t_coords_s = game_data.safe_key(target_coords)
+    dur_hint_s = game_data.safe_key(duration_hint)
     ships_to_save: dict[str, int] = {}
     for key, count in planet.ships.items():
-        cnt = int(count or 0)
+        cnt = _safe_fleet_int(count, 0)
         if cnt <= 0:
             continue
         # Solar cells (`s9`) are stationary orbital units unless explicitly moved
-        if str(key) == "s9" and not save_solar_cells:
+        key_s = game_data.safe_key(key)
+        if key_s == "s9" and not save_solar_cells:
             continue
-        ships_to_save[str(key)] = cnt
+        ships_to_save[key_s] = cnt
 
     cap = fleet_cargo_capacity(ships_to_save)
     if not ships_to_save or cap <= 0:
         return EscapeFlightPlan(
             planet_id=planet.planet_id,
-            planet_coords=planet.coords,
-            target_coords=target_coords,
+            planet_coords=p_coords_s,
+            target_coords=t_coords_s,
             ships={},
             cargo=Resources(),
             total_capacity=0,
-            fuel_reserved_spice=fuel_reserve_spice,
-            duration_hint=duration_hint,
+            fuel_reserved_spice=fuel_reserve,
+            duration_hint=dur_hint_s,
             feasible=False,
             reason="No mobile ships with cargo capacity stationed on planet",
         )
 
-    avail_spice = max(0, planet.resources.spice - max(0, fuel_reserve_spice))
-    if planet.resources.spice < min(fuel_reserve_spice, 50) and cap > 0:
+    res_spice = _safe_fleet_int(getattr(planet.resources, "spice", 0), 0)
+    res_metal = max(0, _safe_fleet_int(getattr(planet.resources, "metal", 0), 0))
+    res_kryp = max(0, _safe_fleet_int(getattr(planet.resources, "kryptonite", 0), 0))
+    res_pig = max(0, _safe_fleet_int(getattr(planet.resources, "pig_iron", 0), 0))
+    avail_spice = max(0, res_spice - fuel_reserve)
+    if res_spice < min(fuel_reserve, 50) and cap > 0:
         return EscapeFlightPlan(
             planet_id=planet.planet_id,
-            planet_coords=planet.coords,
-            target_coords=target_coords,
+            planet_coords=p_coords_s,
+            target_coords=t_coords_s,
             ships=ships_to_save,
             cargo=Resources(),
             total_capacity=cap,
-            fuel_reserved_spice=fuel_reserve_spice,
-            duration_hint=duration_hint,
+            fuel_reserved_spice=fuel_reserve,
+            duration_hint=dur_hint_s,
             feasible=False,
-            reason=f"Insufficient Spice for escape-flight fuel ({planet.resources.spice} available)",
+            reason=f"Insufficient Spice for escape-flight fuel ({game_data.fmt_compact_int(res_spice)} available)",
         )
 
-    rem = max(0, cap - fuel_reserve_spice)
+    rem = max(0, cap - fuel_reserve)
     take_spice = min(avail_spice, rem)
     rem -= take_spice
-    take_metal = min(planet.resources.metal, rem)
+    take_metal = min(res_metal, rem)
     rem -= take_metal
-    take_kryp = min(planet.resources.kryptonite, rem)
+    take_kryp = min(res_kryp, rem)
     rem -= take_kryp
-    take_pig = min(planet.resources.pig_iron, rem)
+    take_pig = min(res_pig, rem)
 
     cargo = Resources(
         pig_iron=take_pig,
@@ -205,17 +262,19 @@ def plan_escape_flight(
         kryptonite=take_kryp,
         spice=take_spice,
     )
+    total_ship_cnt = sum(ships_to_save.values())
+    ship_cnt_str = game_data.fmt_compact_int(total_ship_cnt)
     return EscapeFlightPlan(
         planet_id=planet.planet_id,
-        planet_coords=planet.coords,
-        target_coords=target_coords,
+        planet_coords=p_coords_s,
+        target_coords=t_coords_s,
         ships=ships_to_save,
         cargo=cargo,
         total_capacity=cap,
-        fuel_reserved_spice=fuel_reserve_spice,
-        duration_hint=duration_hint,
+        fuel_reserved_spice=fuel_reserve,
+        duration_hint=dur_hint_s,
         feasible=True,
-        reason=f"Packed {cargo.format_short()} into {sum(ships_to_save.values())} ships",
+        reason=f"Packed {cargo.format_short()} into {ship_cnt_str} ships",
     )
 
 
@@ -228,25 +287,28 @@ def _unit_combat_score(
     def_lvl: int = 0,
 ) -> tuple[float, float]:
     """Return `(weighted_power, stealth_strike)` respecting +10%/lvl techs & zero rapidfire."""
+    if not isinstance(counts, Mapping):
+        return 0.0, 0.0
     key_map = SHIP_SLUG_BY_KEY if category == "ships" else DEFENSE_SLUG_BY_KEY
-    atk_mult = 1.0 + 0.10 * max(0, atk_lvl)
-    shd_mult = 1.0 + 0.10 * max(0, shd_lvl)
-    def_mult = 1.0 + 0.10 * max(0, def_lvl)
+    atk_mult = 1.0 + 0.10 * min(100_000, max(0, _safe_fleet_int(atk_lvl, 0)))
+    shd_mult = 1.0 + 0.10 * min(100_000, max(0, _safe_fleet_int(shd_lvl, 0)))
+    def_mult = 1.0 + 0.10 * min(100_000, max(0, _safe_fleet_int(def_lvl, 0)))
 
     total_power = 0.0
     stealth_power = 0.0
     for key, cnt in counts.items():
-        n = int(cnt or 0)
+        n = min(10**100, _safe_fleet_int(cnt, 0))
         if n <= 0:
             continue
-        slug = key_map.get(str(key), str(key))
+        key_s = game_data.safe_key(key)
+        slug = key_map.get(key_s, key_s)
         info = game_data.resolve_unit(category, slug)
         if not info:
             continue
         stats = info.get("stats") or {}
-        atk = float(stats.get("attack", 0)) * atk_mult
-        shd = float(stats.get("shield", 0)) * shd_mult
-        hull = float(stats.get("hull", 0)) * def_mult
+        atk = float(stats.get("attack", 0) or 0) * atk_mult
+        shd = float(stats.get("shield", 0) or 0) * shd_mult
+        hull = float(stats.get("hull", 0) or 0) * def_mult
         # Balanced effective power blending firepower with shield+hull survivability
         unit_score = n * (atk + (shd * 0.5) + (hull * 0.04))
         total_power += unit_score
@@ -260,14 +322,20 @@ def simulate_raid_outcome(
     report: SpyReport,
     *,
     attacker_researches: Optional[Mapping[str, int]] = None,
+    defender_researches: Optional[Mapping[str, int]] = None,
     safety_margin: float = 1.4,
     plunder_ratio: float = 0.5,
 ) -> CombatEstimate:
     """Evaluate expected combat margin and cargo-capped loot against a spy report."""
-    res_map = attacker_researches or {}
-    atk_tech = int(res_map.get("r8", 0))
-    shd_tech = int(res_map.get("r9", 0))
-    def_tech = int(res_map.get("r10", 0))
+    res_map = attacker_researches if isinstance(attacker_researches, Mapping) else {}
+    atk_tech = max(0, _safe_fleet_int(res_map.get("r8", 0), 0))
+    shd_tech = max(0, _safe_fleet_int(res_map.get("r9", 0), 0))
+    def_tech = max(0, _safe_fleet_int(res_map.get("r10", 0), 0))
+
+    def_res_map = defender_researches if isinstance(defender_researches, Mapping) else {}
+    d_atk_tech = max(0, _safe_fleet_int(def_res_map.get("r8", 0), 0))
+    d_shd_tech = max(0, _safe_fleet_int(def_res_map.get("r9", 0), 0))
+    d_def_tech = max(0, _safe_fleet_int(def_res_map.get("r10", 0), 0))
 
     atk_power, stealth_strike = _unit_combat_score(
         "ships",
@@ -276,22 +344,61 @@ def simulate_raid_outcome(
         shd_lvl=shd_tech,
         def_lvl=def_tech,
     )
-    def_ship_power, _ = _unit_combat_score("ships", report.fleet)
+    def_ship_power, _ = _unit_combat_score(
+        "ships",
+        report.fleet,
+        atk_lvl=d_atk_tech,
+        shd_lvl=d_shd_tech,
+        def_lvl=d_def_tech,
+    )
     def_turret_power, _ = (
-        (0.0, 0.0) if report.dug_in else _unit_combat_score("defense", report.defense)
+        (0.0, 0.0)
+        if report.dug_in
+        else _unit_combat_score(
+            "defense",
+            report.defense,
+            atk_lvl=d_atk_tech,
+            shd_lvl=d_shd_tech,
+            def_lvl=d_def_tech,
+        )
     )
     # Stealth bombers hit non-dug-in defenses before round 1
     reduced_turret_power = max(0.0, def_turret_power - stealth_strike * 0.5)
     def_power = def_ship_power + reduced_turret_power
 
+    try:
+        p_ratio = float(plunder_ratio)
+    except Exception:
+        p_ratio = 0.0
+    if not math.isfinite(p_ratio):
+        p_ratio = 0.0
+    p_ratio = max(0.0, min(1.0, p_ratio))
+
+    try:
+        s_margin = float(safety_margin)
+    except Exception:
+        s_margin = 1.4
+    if not math.isfinite(s_margin) or s_margin < 0.0:
+        s_margin = 1.4
+
     ratio = (atk_power / def_power) if def_power > 0 else (999.0 if atk_power > 0 else 0.0)
     cap = fleet_cargo_capacity(attacker_ships)
 
+    def _plunder_cap(raw_amt: Any) -> int:
+        amt = max(0, _safe_fleet_int(raw_amt, 0))
+        if amt <= 0 or p_ratio <= 0.0:
+            return 0
+        try:
+            return max(0, int(amt * p_ratio))
+        except OverflowError:
+            return max(0, (amt * int(round(p_ratio * 10_000))) // 10_000)
+
     # Plunder up to `plunder_ratio` (default 50%) capped by cargo capacity, highest value first
-    max_pig = int(report.resources.pig_iron * plunder_ratio)
-    max_met = int(report.resources.metal * plunder_ratio)
-    max_kry = int(report.resources.kryptonite * plunder_ratio)
-    max_spi = int(report.resources.spice * plunder_ratio)
+    rep_res = getattr(report, "resources", None)
+    max_pig = _plunder_cap(getattr(rep_res, "pig_iron", 0))
+    max_met = _plunder_cap(getattr(rep_res, "metal", 0))
+    max_kry = _plunder_cap(getattr(rep_res, "kryptonite", 0))
+    max_spi = _plunder_cap(getattr(rep_res, "spice", 0))
 
     rem = cap
     loot_spi = min(max_spi, rem)
@@ -304,14 +411,14 @@ def simulate_raid_outcome(
 
     loot = Resources(pig_iron=loot_pig, metal=loot_met, kryptonite=loot_kry, spice=loot_spi)
     loot_sp_eq = game_data.spice_equivalent(loot)
-    safe = atk_power > 0 and cap > 0 and ratio >= safety_margin
+    safe = atk_power > 0 and cap > 0 and ratio >= s_margin
 
     if atk_power <= 0 or cap <= 0:
         reason = "No combat/cargo fleet provided"
-    elif ratio < safety_margin:
-        reason = f"Safety margin too low ({ratio:.2f}x < {safety_margin:.2f}x required for battle luck)"
+    elif ratio < s_margin:
+        reason = f"Safety margin too low ({ratio:.2f}x < {s_margin:.2f}x required for battle luck)"
     else:
-        reason = f"Safe margin {ratio:.2f}x >= {safety_margin:.2f}x; est loot {loot_sp_eq:.0f} Spice-eq"
+        reason = f"Safe margin {ratio:.2f}x >= {s_margin:.2f}x; est loot {loot_sp_eq:.0f} Spice-eq"
 
     return CombatEstimate(
         attacker_power=atk_power,
@@ -334,6 +441,20 @@ class BashTracker:
         self.war_max_24h = war_max_24h
         self._history: dict[str, Deque[float]] = defaultdict(deque)
 
+    @staticmethod
+    def _norm_coords(target_coords: str) -> str:
+        return normalize_coords(target_coords)
+
+    @staticmethod
+    def _resolve_ts(timestamp: Optional[float]) -> float:
+        if timestamp is None:
+            return time.time()
+        try:
+            ts = float(timestamp)
+        except Exception:
+            return time.time()
+        return ts if math.isfinite(ts) else time.time()
+
     def _prune(self, coords: str, now: float) -> None:
         dq = self._history[coords]
         cutoff = now - 86400.0
@@ -341,14 +462,16 @@ class BashTracker:
             dq.popleft()
 
     def record_attack(self, target_coords: str, *, timestamp: Optional[float] = None) -> None:
-        now = time.time() if timestamp is None else float(timestamp)
-        self._prune(target_coords, now)
-        self._history[target_coords].append(now)
+        now = self._resolve_ts(timestamp)
+        key = self._norm_coords(target_coords)
+        self._prune(key, now)
+        self._history[key].append(now)
 
     def attacks_last_24h(self, target_coords: str, *, timestamp: Optional[float] = None) -> int:
-        now = time.time() if timestamp is None else float(timestamp)
-        self._prune(target_coords, now)
-        return len(self._history[target_coords])
+        now = self._resolve_ts(timestamp)
+        key = self._norm_coords(target_coords)
+        self._prune(key, now)
+        return len(self._history[key])
 
     def can_attack(
         self,
@@ -365,9 +488,11 @@ class BashTracker:
         return self.attacks_last_24h(target_coords, timestamp=timestamp) < cap
 
 
-def _parse_coords_distance(a: str, b: str) -> float:
-    pa = [int(x) for x in re.findall(r"\d+", a)[:3]]
-    pb = [int(x) for x in re.findall(r"\d+", b)[:3]]
+def _parse_coords_distance(a: Any, b: Any) -> float:
+    sa = game_data.safe_key(a) if a is not None else ""
+    sb = game_data.safe_key(b) if b is not None else ""
+    pa = [min(999_999, int(x[:9])) for x in re.findall(r"\d+", sa, re.ASCII)[:3]]
+    pb = [min(999_999, int(x[:9])) for x in re.findall(r"\d+", sb, re.ASCII)[:3]]
     if len(pa) < 3 or len(pb) < 3:
         return 100.0
     if pa[0] != pb[0]:
@@ -377,21 +502,99 @@ def _parse_coords_distance(a: str, b: str) -> float:
     return 1000.0 + 5.0 * abs(pa[2] - pb[2])
 
 
-_GALAXY_POS_CELL_RE = re.compile(r"^\s*(?:#\s*)?\[?\s*0?(\d{1,2})\s*\]?\.?\s*$")
-_GALAXY_BRACKETED_PAIR_RE = re.compile(r"\[\s*(\d{1,2})\s*[:/]\s*(\d{1,3})\s*\](?!\s*[:/]\s*\d)")
-_GALAXY_COORDS_TRIPLE_RE = re.compile(r"\b(\d{1,2}):(\d{1,3}):(\d{1,2})\b")
-_GALAXY_COORD_CONTEXT_PREFIX_RE = re.compile(
-    r"(?:Galaxy|Solar\s*System|System|Sonnensystem)\s*(?::\s*)?$",
+_GALAXY_POS_CELL_RE = re.compile(r"^\s*(?:#\s*)?\[?\s*0?(\d{1,2})\s*\]?\.?\s*$", re.ASCII)
+_GALAXY_BRACKETED_PAIR_RE = re.compile(r"\[\s*(\d{1,2})\s*[:/]\s*(\d{1,3})\s*\](?!\s*[:/]\s*\d)", re.ASCII)
+_GALAXY_COORDS_TRIPLE_RE = re.compile(r"\b(\d{1,2}):(\d{1,3}):(\d{1,2})\b", re.ASCII)
+_COORD_CONTEXT_PREFIX_RE = re.compile(
+    r"(?:^|[\s(\[\]|,/;-])"
+    r"(?:"
+    r"targets?|ziels?|zielplanet(?:en)?"
+    r"|planets?|planeten|asteroids?|monde?|moons?"
+    r"|coords?|coordinates?|koord(?:inaten)?"
+    r"|galax(?:y|ie)|solar\s*system|system|sonnensystem"
+    r"|pos(?:ition)?"
+    r"|location|ort|origin|destination|herkunft"
+    r"|(?:espionage|spy)\s+report\s+(?:on|for)|spying\s+(?:on|for)"
+    r"|spionagebericht\s+(?:auf|f(?:[üu]|ue)r|(?:[üu]|ue)ber|von)"
+    r"|(?:attack|raid|probe|spy|spied|angriff|spionage)\s+(?:on|auf)"
+    r"|besuchen"
+    r")\s*(?:[:=\-]\s*)?\[?\s*$",
     re.IGNORECASE,
 )
+_GALAXY_COORD_CONTEXT_PREFIX_RE = _COORD_CONTEXT_PREFIX_RE
 _GALAXY_PAIR_NOISE_PREFIX_RE = re.compile(
-    r"(?:server\s*time|time|clock|uhr|zeit|timer|countdown|eta|updated|stand|fields?|felder)\s*:?\s*$",
+    r"(?:server\s*time|report\s*time|date|datum|timestamp|sent|gesendet|time|clock|uhr|zeit|timer|countdown|eta|updated|stand|fields?|felder|arrival|ankunft)\s*:?\s*[\(\[]?\s*$",
     re.IGNORECASE,
 )
 _GALAXY_TRIPLE_NOISE_SUFFIX_RE = re.compile(
-    r"^\s*(?:utc|gmt|cet|cest|mez|mesz|uhr|am|pm)\b",
+    r"^\s*\)?\s*(?:utc|gmt|cet|cest|mez|mesz|uhr|zeit|am|pm)\b",
     re.IGNORECASE,
 )
+_GALAXY_PAREN_CLOCK_NOISE_RE = re.compile(
+    r"\b(?:server|time|report|date|datum|timestamp|sent|gesendet|clock|uhr|zeit|timer|countdown|eta|updated|stand|utc|gmt|cet|cest|mez|mesz|am|pm)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_clock_0m_triple(g_str: str, s_str: str, p_str: str) -> bool:
+    """Return True for unambiguous `H:0M:SS` / `HH:0M:SS` clock timestamps (`00..09` minute)."""
+    return (
+        len(g_str) in (1, 2)
+        and len(s_str) == 2
+        and s_str.startswith("0")
+        and len(p_str) == 2
+        and 0 <= int(g_str) <= 23
+    )
+
+
+def _is_clock_shaped_triple(g_str: str, s_str: str, p_str: str) -> bool:
+    """Return True for `HH:MM:SS` two-digit triples (`00<=HH<=23`, `00<=MM<=59`)."""
+    return (
+        len(g_str) == 2
+        and len(s_str) == 2
+        and len(p_str) == 2
+        and 0 <= int(g_str) <= 23
+        and 0 <= int(s_str) <= 59
+    )
+
+
+def _is_parenthesized_noise_triple(text: str, m_start: int, m_end: int) -> bool:
+    before_ch = text[m_start - 1] if m_start > 0 else ""
+    after_ch = text[m_end] if m_end < len(text) else ""
+    if before_ch == "(" and after_ch == ")":
+        return True
+    open_idx = -1
+    for i in range(m_start - 1, -1, -1):
+        ch = text[i]
+        if ch in (")", "[", "]"):
+            break
+        if ch == "(":
+            open_idx = i
+            break
+    if open_idx == -1:
+        return False
+    close_idx = -1
+    for j in range(m_end, len(text)):
+        ch = text[j]
+        if ch in ("(", "[", "]"):
+            break
+        if ch == ")":
+            close_idx = j
+            break
+    if close_idx == -1:
+        return False
+    interior = text[open_idx + 1 : close_idx]
+    if _GALAXY_PAREN_CLOCK_NOISE_RE.search(interior):
+        return True
+    left_in = text[open_idx + 1 : m_start].strip()
+    right_in = text[m_end : close_idx].strip()
+    if (not left_in and right_in.startswith(("-", "—", "|", "@"))) or (
+        not right_in and left_in.endswith(("-", "—", "|", "@", ":"))
+    ):
+        return True
+    return False
+
+
 _GALAXY_INACTIVE_TAG_RE = re.compile(r"\(\s*i+\s*\)", re.IGNORECASE)
 _GALAXY_YELLOW_HEX_RE = re.compile(
     r"(?<![0-9a-f])#ff0(?![0-9a-f])|(?<![0-9a-f])#ffff00(?![0-9a-f])|rgb\(\s*255\s*,\s*255\s*,\s*0\s*\)",
@@ -457,22 +660,56 @@ _GALAXY_NON_NAME_TOKEN_RE = re.compile(
     r"^(?:debris|rubble|trümmer|truemmer|recycle|spy|spio|espionage|probe|attack|angriff|colonize|message|msg|send\s+message|asteroid|\[a\]|a|-|—)$",
     re.IGNORECASE,
 )
-_GALAXY_DEBRIS_NUMBER_RE = re.compile(r"^[\d.,\s]+(?:k|m)?\s*(?:debris|tf|metal|pig\s*iron)?$", re.IGNORECASE)
+_GALAXY_DEBRIS_NUMBER_RE = re.compile(r"^[\d.,\s]+(?:k|m)?\s*(?:debris|tf|metal|pig\s*iron)?$", re.IGNORECASE | re.ASCII)
 
 
 def _valid_gal(val: Any) -> Optional[int]:
-    try:
-        n = int(str(val).strip())
-    except (TypeError, ValueError):
+    if isinstance(val, os.PathLike):
+        try:
+            val = os.fspath(val)
+        except Exception:
+            return None
+    if val is None or isinstance(val, (bool, Mapping, list, tuple, set, frozenset)):
         return None
+    if isinstance(val, int):
+        return val if 1 <= val <= 99 else None
+    if isinstance(val, (bytes, bytearray)):
+        val = bytes(val).decode("utf-8", errors="replace")
+    try:
+        s = str(val).strip()
+    except Exception:
+        return None
+    if not s or not (s.isascii() and s.isdigit()):
+        return None
+    trimmed = s.lstrip("0") or "0"
+    if len(trimmed) > 3:
+        return None
+    n = int(trimmed)
     return n if 1 <= n <= 99 else None
 
 
 def _valid_sys(val: Any) -> Optional[int]:
-    try:
-        n = int(str(val).strip())
-    except (TypeError, ValueError):
+    if isinstance(val, os.PathLike):
+        try:
+            val = os.fspath(val)
+        except Exception:
+            return None
+    if val is None or isinstance(val, (bool, Mapping, list, tuple, set, frozenset)):
         return None
+    if isinstance(val, int):
+        return val if 1 <= val <= 999 else None
+    if isinstance(val, (bytes, bytearray)):
+        val = bytes(val).decode("utf-8", errors="replace")
+    try:
+        s = str(val).strip()
+    except Exception:
+        return None
+    if not s or not (s.isascii() and s.isdigit()):
+        return None
+    trimmed = s.lstrip("0") or "0"
+    if len(trimmed) > 4:
+        return None
+    n = int(trimmed)
     return n if 1 <= n <= 999 else None
 
 
@@ -542,7 +779,7 @@ def extract_galaxy_system_coords(
     m_hdr = re.search(
         r"(?:Galaxy|Solar\s*System|System|Sonnensystem)\s*(?::\s*)?\[?\s*(\d{1,2})\s*[:/]\s*(\d{1,3})(?!\d)\s*\]?(?!\s*[:/]\s*\d)",
         text,
-        re.IGNORECASE,
+        re.IGNORECASE | re.ASCII,
     )
     if m_hdr:
         hg = _valid_gal(m_hdr.group(1))
@@ -554,49 +791,90 @@ def extract_galaxy_system_coords(
     for m_br in _GALAXY_BRACKETED_PAIR_RE.finditer(text):
         if _GALAXY_PAIR_NOISE_PREFIX_RE.search(text[: m_br.start()]):
             continue
-        hg = _valid_gal(m_br.group(1))
-        hs = _valid_sys(m_br.group(2))
-        if hg is not None and hs is not None:
-            return (gal_found or hg), (sys_found or hs)
+        if _GALAXY_TRIPLE_NOISE_SUFFIX_RE.match(text[m_br.end() :]):
+            continue
+        g_s, s_s = m_br.group(1), m_br.group(2)
+        hg = _valid_gal(g_s)
+        hs = _valid_sys(s_s)
+        if hg is None or hs is None:
+            continue
+        is_clock_pair = (
+            len(g_s) == 2 and len(s_s) == 2 and 0 <= hg <= 23 and 0 <= hs <= 59
+        )
+        if is_clock_pair and not _COORD_CONTEXT_PREFIX_RE.search(text[: m_br.start()]):
+            continue
+        return (gal_found or hg), (sys_found or hs)
 
-    # 4. High-confidence `GG:SSS:PP` (`1 <= PP <= 16`) inside clean <a>, bracketed, 3-digit system, coord-context, or >=2 occurrences
+    # 4. High-confidence `GG:SSS:PP` (`1 <= PP <= 16`) inside clean <a>, bracketed non-clock, 3-digit system, coord-context, or distinct-slot rows
     in_link_set: set[tuple[int, int]] = set()
-    clean_triples: list[tuple[tuple[int, int], bool, bool, bool, bool]] = []
+    clean_triples: list[tuple[tuple[int, int], bool, bool, bool, bool, bool]] = []
     clean_triple_counts: Counter[tuple[int, int]] = Counter()
+    distinct_positions: dict[tuple[int, int], set[int]] = defaultdict(set)
+    non_clock_keys: set[tuple[int, int]] = set()
     for m_tr in _GALAXY_COORDS_TRIPLE_RE.finditer(text):
-        tg = _valid_gal(m_tr.group(1))
-        ts = _valid_sys(m_tr.group(2))
-        tp = int(m_tr.group(3))
+        g_str, s_str, p_str = m_tr.group(1), m_tr.group(2), m_tr.group(3)
+        tg = _valid_gal(g_str)
+        ts = _valid_sys(s_str)
+        tp = int(p_str)
         if tg is None or ts is None or not (1 <= tp <= 16):
             continue
+        m_start, m_end = m_tr.start(), m_tr.end()
+        before_ch = text[m_start - 1] if m_start > 0 else ""
+        after_ch = text[m_end] if m_end < len(text) else ""
         is_noise = bool(
-            _GALAXY_PAIR_NOISE_PREFIX_RE.search(text[: m_tr.start()])
-            or _GALAXY_TRIPLE_NOISE_SUFFIX_RE.match(text[m_tr.end() :])
+            _is_parenthesized_noise_triple(text, m_start, m_end)
+            or _GALAXY_PAIR_NOISE_PREFIX_RE.search(text[:m_start])
+            or _GALAXY_TRIPLE_NOISE_SUFFIX_RE.match(text[m_end:])
         )
         if is_noise:
             continue
         key = (tg, ts)
         clean_triple_counts[key] += 1
-        m_start, m_end = m_tr.start(), m_tr.end()
+        distinct_positions[key].add(tp)
         is_in_link = any(s_a <= m_start and m_end <= e_a for s_a, e_a in link_spans)
         if is_in_link:
             in_link_set.add(key)
-        before_ch = text[m_start - 1] if m_start > 0 else ""
-        after_ch = text[m_end] if m_end < len(text) else ""
         is_bracketed = before_ch == "[" and after_ch == "]"
-        is_three_digit_sys = len(m_tr.group(2)) == 3
-        has_coord_context = bool(_GALAXY_COORD_CONTEXT_PREFIX_RE.search(text[:m_start]))
-        clean_triples.append((key, is_in_link, is_bracketed, is_three_digit_sys, has_coord_context))
+        is_three_digit_sys = len(s_str) == 3
+        has_coord_context = bool(_COORD_CONTEXT_PREFIX_RE.search(text[:m_start]))
+        is_clock_shape = _is_clock_shaped_triple(g_str, s_str, p_str) or _is_clock_0m_triple(
+            g_str, s_str, p_str
+        )
+        if not is_clock_shape:
+            non_clock_keys.add(key)
+        clean_triples.append((key, is_in_link, is_bracketed, is_three_digit_sys, has_coord_context, is_clock_shape))
 
     strong_triple_counts: Counter[tuple[int, int]] = Counter()
-    for key, is_in_link, is_bracketed, is_three_digit_sys, has_coord_context in clean_triples:
-        if is_in_link or key in in_link_set or is_bracketed or is_three_digit_sys or has_coord_context:
+    strong_non_clock_counts: Counter[tuple[int, int]] = Counter()
+    ctx_triple_counts: Counter[tuple[int, int]] = Counter()
+    for key, is_in_link, is_bracketed, is_three_digit_sys, has_coord_context, is_clock_shape in clean_triples:
+        if has_coord_context:
+            ctx_triple_counts[key] += 1
+        if (
+            is_in_link
+            or key in in_link_set
+            or (is_bracketed and not is_clock_shape)
+            or is_three_digit_sys
+            or has_coord_context
+        ):
             strong_triple_counts[key] += 1
+            if not is_clock_shape or key in non_clock_keys:
+                strong_non_clock_counts[key] += 1
 
     for key, cnt in clean_triple_counts.items():
-        if cnt >= 2 and key not in strong_triple_counts:
+        if key not in strong_triple_counts and (
+            (cnt >= 2 and key in non_clock_keys) or len(distinct_positions[key]) >= 2
+        ):
             strong_triple_counts[key] = cnt
+            if key in non_clock_keys:
+                strong_non_clock_counts[key] = cnt
 
+    if strong_non_clock_counts:
+        (mg, ms), _ = strong_non_clock_counts.most_common(1)[0]
+        return (gal_found or mg), (sys_found or ms)
+    if ctx_triple_counts:
+        (mg, ms), _ = ctx_triple_counts.most_common(1)[0]
+        return (gal_found or mg), (sys_found or ms)
     if strong_triple_counts:
         (mg, ms), _ = strong_triple_counts.most_common(1)[0]
         return (gal_found or mg), (sys_found or ms)
@@ -786,11 +1064,19 @@ def parse_galaxy_system_html(
     soup = BeautifulSoup(html or "", "html.parser")
     if galaxy is None or system is None:
         det_gal, det_sys = extract_galaxy_system_coords(html, url=url, default=(1, 1))
-        gal = det_gal if galaxy is None else int(galaxy)
-        sys_num = det_sys if system is None else int(system)
+        gal = det_gal if galaxy is None else _safe_fleet_int(galaxy, det_gal)
+        sys_num = det_sys if system is None else _safe_fleet_int(system, det_sys)
+        if abs(gal) > 999_999:
+            gal = det_gal
+        if abs(sys_num) > 999_999:
+            sys_num = det_sys
     else:
-        gal = int(galaxy)
-        sys_num = int(system)
+        gal = _safe_fleet_int(galaxy, 1)
+        sys_num = _safe_fleet_int(system, 1)
+        if abs(gal) > 999_999:
+            gal = 1
+        if abs(sys_num) > 999_999:
+            sys_num = 1
 
     slots: list[GalaxySlot] = []
     seen_pos: set[int] = set()
@@ -953,18 +1239,122 @@ def parse_galaxy_system_html(
     return tuple(slots)
 
 
+_SPY_BRACKETED_COORDS_RE = re.compile(r"\[\s*(\d{1,2}):(\d{1,3}):(\d{1,2})\s*\]", re.ASCII)
+
+
+def _extract_spy_coords(text: str) -> str:
+    candidates: list[tuple[int, int, int, str]] = []
+    bracketed_spans: list[tuple[int, int]] = []
+    for m_br in _SPY_BRACKETED_COORDS_RE.finditer(text):
+        bracketed_spans.append((m_br.start(), m_br.end()))
+        g_str, s_str, p_str = m_br.group(1), m_br.group(2), m_br.group(3)
+        tg = _valid_gal(g_str)
+        ts = _valid_sys(s_str)
+        tp = int(p_str)
+        if tg is None or ts is None or not (1 <= tp <= 16):
+            continue
+        m_start, m_end = m_br.start(), m_br.end()
+        if (
+            _is_parenthesized_noise_triple(text, m_start, m_end)
+            or _GALAXY_PAIR_NOISE_PREFIX_RE.search(text[:m_start])
+            or _GALAXY_TRIPLE_NOISE_SUFFIX_RE.match(text[m_end:])
+        ):
+            continue
+        is_clock = _is_clock_shaped_triple(g_str, s_str, p_str) or _is_clock_0m_triple(
+            g_str, s_str, p_str
+        )
+        has_ctx = bool(_COORD_CONTEXT_PREFIX_RE.search(text[:m_start]))
+        if is_clock and not has_ctx:
+            continue
+        coord_txt = f"{g_str}:{s_str}:{p_str}"
+        candidates.append((0 if has_ctx else 1, 1 if is_clock else 0, 0, coord_txt))
+    for m_tr in _GALAXY_COORDS_TRIPLE_RE.finditer(text):
+        m_start, m_end = m_tr.start(), m_tr.end()
+        if any(bs <= m_start and m_end <= be for bs, be in bracketed_spans):
+            continue
+        g_str, s_str, p_str = m_tr.group(1), m_tr.group(2), m_tr.group(3)
+        tg = _valid_gal(g_str)
+        ts = _valid_sys(s_str)
+        tp = int(p_str)
+        if tg is None or ts is None or not (1 <= tp <= 16):
+            continue
+        if _is_parenthesized_noise_triple(text, m_start, m_end):
+            continue
+        if (
+            _GALAXY_PAIR_NOISE_PREFIX_RE.search(text[:m_start])
+            or _GALAXY_TRIPLE_NOISE_SUFFIX_RE.match(text[m_end:])
+        ):
+            continue
+        is_clock = _is_clock_shaped_triple(g_str, s_str, p_str) or _is_clock_0m_triple(
+            g_str, s_str, p_str
+        )
+        has_ctx = bool(_COORD_CONTEXT_PREFIX_RE.search(text[:m_start]))
+        if is_clock and not has_ctx:
+            continue
+        candidates.append((0 if has_ctx else 1, 1 if is_clock else 0, 1, m_tr.group(0)))
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda c: (c[0], c[1], c[2]))
+    return candidates[0][3]
+
+
+def _extract_spy_link_coords(soup: Any) -> str:
+    if soup is None:
+        return ""
+    for a in soup.find_all("a"):
+        meta = f"{a.get('href') or ''} {a.get('onclick') or ''}".lower()
+        if not any(
+            tok in meta
+            for tok in (
+                "internalgalaxy",
+                "internalfleet",
+                "p_galaxy",
+                "sendspy",
+                "gal=",
+                "galaxy=",
+                "sun=",
+                "system=",
+            )
+        ):
+            continue
+        a_txt = " ".join(a.get_text(" ", strip=True).split())
+        if not a_txt:
+            continue
+        for m_tr in _GALAXY_COORDS_TRIPLE_RE.finditer(a_txt):
+            g_str, s_str, p_str = m_tr.group(1), m_tr.group(2), m_tr.group(3)
+            tg = _valid_gal(g_str)
+            ts = _valid_sys(s_str)
+            tp = int(p_str)
+            if tg is None or ts is None or not (1 <= tp <= 16):
+                continue
+            m_start, m_end = m_tr.start(), m_tr.end()
+            if (
+                _is_parenthesized_noise_triple(a_txt, m_start, m_end)
+                or _GALAXY_PAIR_NOISE_PREFIX_RE.search(a_txt[:m_start])
+                or _GALAXY_TRIPLE_NOISE_SUFFIX_RE.match(a_txt[m_end:])
+            ):
+                continue
+            is_clock = _is_clock_shaped_triple(g_str, s_str, p_str) or _is_clock_0m_triple(
+                g_str, s_str, p_str
+            )
+            has_ctx = bool(_COORD_CONTEXT_PREFIX_RE.search(a_txt[:m_start]))
+            if is_clock and not has_ctx:
+                continue
+            return m_tr.group(0)
+    return ""
+
+
 def parse_spy_report_html(html: str, *, target_coords: str = "") -> SpyReport:
     """Parse an espionage or uninhabited-ecology report snippet into `SpyReport`."""
     soup = BeautifulSoup(html, "html.parser")
     text = " ".join(soup.get_text(" ", strip=True).split())
 
     coords = target_coords
-    m_c = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", text)
-    if m_c and not coords:
-        coords = m_c.group(1)
+    if not coords:
+        coords = _extract_spy_coords(text) or _extract_spy_link_coords(soup)
 
     def _find_res(label: str) -> int:
-        m = re.search(rf"{label}\s*:?\s*([\d.]+)", text, re.IGNORECASE)
+        m = re.search(rf"{label}\s*:?\s*([\d.]+)", text, re.IGNORECASE | re.ASCII)
         return parse_si_int(m.group(1)) if m else 0
 
     res = Resources(
@@ -975,7 +1365,11 @@ def parse_spy_report_html(html: str, *, target_coords: str = "") -> SpyReport:
     )
 
     uninhabited_fields: Optional[int] = None
-    m_fld = re.search(r"(?:approx\.?|estimated|expected)?\s*(\d{2,3})\s*(?:building\s*)?fields", text, re.IGNORECASE)
+    m_fld = re.search(
+        r"(?:approx\.?|estimated|expected)?\s*(\d{2,3})\s*(?:building\s*)?fields",
+        text,
+        re.IGNORECASE | re.ASCII,
+    )
     if m_fld:
         uninhabited_fields = int(m_fld.group(1))
 
@@ -988,7 +1382,7 @@ def parse_spy_report_html(html: str, *, target_coords: str = "") -> SpyReport:
         info = game_data.SHIPS.get(slug)
         if not info:
             continue
-        m_u = re.search(rf"{re.escape(info['name'])}\s*:?\s*([\d.]+)", text, re.IGNORECASE)
+        m_u = re.search(rf"{re.escape(info['name'])}\s*:?\s*([\d.]+)", text, re.IGNORECASE | re.ASCII)
         if m_u:
             fleet[skey] = parse_si_int(m_u.group(1))
 
@@ -997,7 +1391,7 @@ def parse_spy_report_html(html: str, *, target_coords: str = "") -> SpyReport:
         info = game_data.DEFENSES.get(slug)
         if not info:
             continue
-        m_u = re.search(rf"{re.escape(info['name'])}\s*:?\s*([\d.]+)", text, re.IGNORECASE)
+        m_u = re.search(rf"{re.escape(info['name'])}\s*:?\s*([\d.]+)", text, re.IGNORECASE | re.ASCII)
         if m_u:
             defense[dkey] = parse_si_int(m_u.group(1))
 
@@ -1007,7 +1401,7 @@ def parse_spy_report_html(html: str, *, target_coords: str = "") -> SpyReport:
         m_own = re.search(
             r"(?:Player|Owner|Spieler)\s*:\s*(.+?)(?=\s+(?:Resources|Pig\s+iron|Metal|Kryptonite|Spice|Fleet|Defense|Buildings|Approx|Dug|\d{1,2}:\d{1,3}:\d{1,2}|$)|$)",
             text,
-            re.IGNORECASE,
+            re.IGNORECASE | re.ASCII,
         )
         if m_own:
             owner = m_own.group(1).strip(" |:-")
@@ -1029,15 +1423,17 @@ def parse_spy_messages_html(html: str) -> tuple[SpyReport, ...]:
     soup = BeautifulSoup(html or "", "html.parser")
     keywords = ("pig iron", "metal", "kryptonite", "spice", "fields")
 
-    def _looks_like_spy_block(txt: str) -> bool:
+    def _looks_like_spy_block(txt: str, el: Any = None) -> bool:
         low = txt.lower()
-        return bool(_GALAXY_COORDS_TRIPLE_RE.search(txt)) and any(k in low for k in keywords)
+        if not any(k in low for k in keywords):
+            return False
+        return bool(_extract_spy_coords(txt) or (el is not None and _extract_spy_link_coords(el)))
 
     blocks: list[str] = []
     # 1. Explicit message containers
     containers = soup.select("div.message, div.msg, tr.message, tr.msg, tr[id^='msg'], div[id^='msg']")
     for el in containers:
-        if _looks_like_spy_block(el.get_text(" ", strip=True)):
+        if _looks_like_spy_block(el.get_text(" ", strip=True), el):
             blocks.append(str(el))
 
     # 2. Fallback: innermost table rows / divs containing spy blocks without nested spy containers
@@ -1045,17 +1441,17 @@ def parse_spy_messages_html(html: str) -> tuple[SpyReport, ...]:
         candidates = soup.find_all(["tr", "div", "li"])
         for el in candidates:
             txt = el.get_text(" ", strip=True)
-            if not _looks_like_spy_block(txt):
+            if not _looks_like_spy_block(txt, el):
                 continue
             has_child_spy = any(
-                child is not el and _looks_like_spy_block(child.get_text(" ", strip=True))
+                child is not el and _looks_like_spy_block(child.get_text(" ", strip=True), child)
                 for child in el.find_all(["tr", "div", "li"])
             )
             if not has_child_spy:
                 blocks.append(str(el))
 
     # 3. Last resort: single report in whole page text
-    if not blocks and _looks_like_spy_block(soup.get_text(" ", strip=True)):
+    if not blocks and _looks_like_spy_block(soup.get_text(" ", strip=True), soup):
         blocks.append(html)
 
     reports: list[SpyReport] = []

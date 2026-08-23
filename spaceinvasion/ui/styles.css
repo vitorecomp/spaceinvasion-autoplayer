@@ -269,7 +269,7 @@ input {
 }
 
 .nav-title {
-  font-size: 0.84rem;
+  font-size: 0.86rem;
   font-weight: 500;
 }
 
@@ -1106,6 +1106,7 @@ input {
 }
 
 .eta-pill {
+  font-size: 0.86rem;
   font-weight: 700;
   color: var(--mint);
   white-space: nowrap;
@@ -1710,6 +1711,10 @@ tbody tr:hover {
   .inspector-pane {
     border-left: 0;
     border-top: 1px solid var(--line-mid);
+  }
+
+  #logs-pre {
+    min-height: 240px;
   }
 }
 

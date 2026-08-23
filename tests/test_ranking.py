@@ -704,6 +704,604 @@ class TestActionEtaEngine(unittest.TestCase):
         self.assertEqual(e_nan_rate["wait_eta"], "—")
         self.assertEqual(e_nan_rate["eta_bottleneck"], "pig_iron")
 
+    def test_format_duration_half_second_huge_ints_clamp_micro_and_malformed_ranking_fields(self) -> None:
+        import time
+        from spaceinvasion.ranking import (
+            _format_duration,
+            _safe_big_mul_div,
+            build_buildings_eta,
+            build_combat_overview,
+            build_ranking_evolution,
+            estimate_account_points,
+        )
+
+        self.assertEqual(_format_duration(0.0), "0s")
+        self.assertEqual(_format_duration(0.25), "1s")
+        self.assertEqual(_format_duration(0.5), "1s")
+        self.assertEqual(_format_duration(1.0), "1s")
+
+        # build_buildings_eta exact 0.5s parity with compute_action_eta on b6 L1 (b7=7, b17=5, speedup=1.0)
+        p_half = PlanetState(
+            planet_id=1,
+            name="HalfSec",
+            coords="01:001:01",
+            planet_type="normal",
+            temperature=20,
+            fields_used=10,
+            fields_max=220,
+            resources=Resources(10_000, 10_000, 10_000, 10_000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(500, 100),
+            buildings={"b1": 5, "b2": 2, "b7": 7, "b17": 5},
+        )
+        st_half = GameState(31, 1, "u", 0.0, (p_half,), active_planet_id=1, speedup_factor=1.0)
+        bld_eta = build_buildings_eta(st_half)
+        b6_row = next(r for r in bld_eta["buildings"] if r["building_id"] == 6)
+        act_half = compute_action_eta(st_half, {"kind": "BUILD", "planet_id": 1, "target_id": 6, "target_level": 1})
+        self.assertEqual(b6_row["build_time_text"], "1s")
+        self.assertEqual(act_half["duration_text"], "1s")
+
+        # O(1) bit_length short-circuit on million-digit int
+        huge_int = 10**1_000_000
+        t0 = time.perf_counter()
+        big_res = _safe_big_mul_div(huge_int, 1.0, 100.0)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self.assertEqual(big_res, 1e200)
+        self.assertLess(elapsed_ms, 50.0)
+
+        p_bad = PlanetState(
+            planet_id=1,
+            name="Test",
+            coords="01:001:01",
+            planet_type="normal",
+            temperature=20,
+            fields_used=10,
+            fields_max=200,
+            resources=Resources(),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(100, 50),
+            buildings={"b1": 5, "b7": "bad", "b17": "bad"},  # type: ignore[dict-item]
+            ships={"s1": "bad", "s4": None},  # type: ignore[dict-item]
+            defense={"d1": "oops"},  # type: ignore[dict-item]
+        )
+        st_bad = GameState(
+            31,
+            1,
+            "u",
+            1000.0,
+            (p_bad,),
+            active_planet_id=1,
+            researches={"r1": "bad", "r2": "bad", "r8": None},  # type: ignore[dict-item]
+            raid_stats={"per_target": "bad", "overall": None},  # type: ignore[arg-type]
+        )
+        pts = estimate_account_points(st_bad)
+        self.assertIn("estimated_points", pts)
+        eta_rows = build_buildings_eta(st_bad)
+        self.assertIsInstance(eta_rows, dict)
+        self.assertEqual(len(eta_rows["buildings"]), 21)
+        for bad_lvl in (None, float("inf"), float("nan")):
+            st_b17 = GameState(
+                31,
+                1,
+                "u",
+                1000.0,
+                (
+                    PlanetState(
+                        1,
+                        "T",
+                        "01:001:01",
+                        "normal",
+                        20,
+                        10,
+                        200,
+                        Resources(),
+                        Resources(100_000, 100_000, 100_000, 100_000),
+                        EnergyBalance(100, 50),
+                        buildings={"b1": 5, "b17": bad_lvl},  # type: ignore[dict-item]
+                    ),
+                ),
+                active_planet_id=1,
+                researches={"r2": bad_lvl},  # type: ignore[dict-item]
+            )
+            self.assertEqual(len(build_buildings_eta(st_b17)["buildings"]), 21)
+        combat_ov = build_combat_overview(st_bad)
+        self.assertIsInstance(combat_ov, dict)
+        self.assertEqual(attack_zone_for_points("bad")["zone"], 1)  # type: ignore[arg-type]
+        self.assertEqual(attack_zone_for_points(float("nan"))["zone"], 1)
+        self.assertEqual(attack_zone_for_points(float("inf"))["zone"], 1)
+        evo = build_ranking_evolution(
+            st_bad,
+            [
+                {"ts": "bad", "server_points": "bad", "server_rank": "bad", "estimated_points": "nan"},
+                {"ts": 2000.0, "server_points": 250.0, "server_rank": float("inf"), "estimated_points": None},
+            ],
+        )
+        self.assertIsInstance(evo, dict)
+        sim_corrupt = simulate_combat_matchup(
+            st_bad,
+            attacker_ships={"s1": "bad", "s4": None},  # type: ignore[dict-item]
+            defender_ships={"s1": "oops"},  # type: ignore[dict-item]
+            defender_defense={"d1": "bad"},  # type: ignore[dict-item]
+            target_resources={"pig_iron": "bad"},  # type: ignore[dict-item]
+            safety_margin=float("nan"),
+        )
+        self.assertEqual(sim_corrupt["attacker_power"], 0.0)
+        huge_eta = compute_action_eta(
+            st_bad,
+            {"kind": "BUILD", "planet_id": "  ", "planet_coords": "01:001:01", "target_id": 1, "missing": {"pig_iron": "1e99999999999999999999"}},
+        )
+        self.assertIsNotNone(huge_eta["wait_hours"])
+        self.assertGreater(huge_eta["wait_hours"], 0.0)
+        self.assertNotEqual(huge_eta["wait_eta"], "Ready")
+        for inf_val in (float("inf"), "inf", "Infinity"):
+            inf_eta = compute_action_eta(
+                st_bad,
+                {"kind": "BUILD", "planet_id": 1, "target_id": 1, "target_level": 6, "missing": {"pig_iron": inf_val}},
+            )
+            self.assertIsNotNone(inf_eta["wait_hours"])
+            self.assertGreater(inf_eta["wait_hours"], 0.0)
+            self.assertNotEqual(inf_eta["wait_eta"], "Ready")
+            self.assertEqual(inf_eta["eta_bottleneck"], "pig_iron")
+
+    def test_huge_ints_unicode_digits_and_corrupt_safety_margin_and_snapshot(self) -> None:
+        import json
+        from spaceinvasion.storage import GameDatabase
+
+        base_st = _sample_ranking_state()
+        p0 = base_st.planets[0]
+        huge_planet = PlanetState(
+            p0.planet_id,
+            p0.name,
+            p0.coords,
+            p0.planet_type,
+            p0.temperature,
+            p0.fields_used,
+            p0.fields_max,
+            Resources(1500, 7900, 7000, 2600),
+            p0.storage,
+            p0.energy,
+            buildings={"b1": 10**400, "b5": 10},
+            ships={"s4": 10**1_000_000},
+            defense={"d1": 10**1_000_000},
+        )
+        huge_state = GameState(
+            31,
+            1,
+            "u",
+            1000.0,
+            (huge_planet,),
+            active_planet_id=huge_planet.planet_id,
+            researches={"r1": 10**400, "r4": 10**400, "r5": 10**400, "r6": 10**400, "r8": 10**400},
+            account_points=10**1_000_000,
+        )
+
+        # Finding 4: Unicode superscript digit "²" does not raise ValueError across BUILD/RESEARCH/SHIP/DEFENSE
+        for kind in ("BUILD", "RESEARCH", "BUILD_SHIP", "BUILD_DEFENSE"):
+            eta = compute_action_eta(
+                base_st,
+                {"kind": kind, "planet_id": p0.planet_id, "target_id": 0, "target_name": "²"},
+            )
+            self.assertIn("wait_eta", eta)
+
+        # Finding 3 & Finding 5: huge ints and bad/NaN/Inf safety_margin produce finite JSON without OverflowError/ValueError
+        evo = build_ranking_evolution(huge_state, [{"ts": 1000.0, "server_points": 500.0, "estimated_points": 500.0}])
+        json.dumps(evo, allow_nan=False)
+        for bad_margin in ("bad", float("nan"), float("inf"), -2.0):
+            ov = build_combat_overview(huge_state, safety_margin=bad_margin)  # type: ignore[arg-type]
+            self.assertEqual(ov["safety_margin"], 1.4)
+            json.dumps(ov, allow_nan=False)
+        sim = simulate_combat_matchup(
+            huge_state,
+            attacker_ships={"s4": 10**1_000_000},
+            defender_ships={"s4": 10**400},
+            defender_defense={"d1": 10**400},
+            safety_margin="bad",  # type: ignore[arg-type]
+        )
+        json.dumps(sim, allow_nan=False)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            snap_path = Path(tmp) / "rank.jsonl"
+            snap_path.write_text(
+                json.dumps([{"ts": "bad", "estimated_points": "nan"}]),
+                encoding="utf-8",
+            )
+            samples = record_rank_snapshot(snap_path, huge_state)
+            self.assertGreaterEqual(len(samples), 2)
+            self.assertIn("estimated_points", samples[-1])
+            json.dumps(samples, allow_nan=False)
+
+    def test_buildings_eta_combat_overview_huge_levels_and_rank_history_nan_sanitized(self) -> None:
+        import json
+        from spaceinvasion.ranking import _format_duration, load_rank_history
+
+        self.assertEqual(_format_duration(0.5), "1s")
+        p_huge = PlanetState(
+            planet_id=10**18 + 123456789,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=55,
+            fields_max=10**1_000_000,
+            resources=Resources(10**400, 10**400, 7000, 2600),
+            storage=Resources(100000, 100000, 100000, 100000),
+            energy=EnergyBalance(10**5000, 600),
+            buildings={"b1": 10**1_000_000, "b9": 10**1_000_000, "b10": 5},
+            ships={"s4": 10**1_000_000},
+            defense={"d1": 10**1_000_000},
+        )
+        st_huge = GameState(
+            31,
+            1,
+            "u",
+            1_700_000_000.0,
+            (p_huge,),
+            active_planet_id=10**18 + 123456789,
+            researches={"r1": 10**1_000_000, "r4": 5, "r5": 5, "r6": 5},
+            account_points=10**1_000_000,
+            account_rank=10**5000,
+        )
+        eta = build_buildings_eta(st_huge, p_huge)
+        cov = build_combat_overview(st_huge, p_huge)
+        self.assertEqual(eta["planet"]["planet_id"], 10**18 + 123456789)
+        self.assertEqual(cov["planet_id"], 10**18 + 123456789)
+        self.assertEqual(eta["planet"]["fields_max"], game_data.MAX_JSON_SAFE_INT)
+        json.dumps(eta, allow_nan=False)
+        json.dumps(cov, allow_nan=False)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hp = Path(tmp) / "rank_hist.json"
+            hp.write_text(
+                '[{"ts": 1000.0, "estimated_points": NaN, "server_rank": Infinity, "server_points": 1e5000}]',
+                encoding="utf-8",
+            )
+            loaded = load_rank_history(hp)
+            json.dumps(loaded, allow_nan=False)
+            recorded = record_rank_snapshot(hp, st_huge)
+            json.dumps(recorded, allow_nan=False)
+            evo = build_ranking_evolution(
+                st_huge,
+                [{"ts": 1000.0, "estimated_points": float("nan"), "server_rank": float("inf"), "server_points": 10**5000}],
+            )
+            json.dumps(evo, allow_nan=False)
+
+    def test_extreme_speedup_and_1e308_and_malformed_eta_targets_strict_json(self) -> None:
+        import json
+
+        for spd in (1e295, 1e306, 1e307, 1e308):
+            st = _sample_ranking_state()
+            p0 = PlanetState(
+                planet_id=10**18 + 123456789,
+                name="Big",
+                coords="01:001:01",
+                planet_type="normal",
+                temperature=30,
+                fields_used=20,
+                fields_max=200,
+                resources=Resources(10**1_000_000, 10**50, 10**50, 10**50),
+                storage=Resources(10**400, 10**400, 10**400, 10**400),
+                energy=EnergyBalance(produced=5000, used=1000),
+                buildings={"b1": 10, "b2": 5, "b3": 8, "b4": 6, "b5": 10, "b17": 60},
+            )
+            st_ext = GameState(
+                universe_id=31,
+                user_id=st.user_id,
+                nickname=st.nickname,
+                timestamp=st.timestamp,
+                planets=(p0,),
+                active_planet_id=p0.planet_id,
+                researches={"r1": 5, "r2": 4, "r3": 6},
+                speedup_factor=spd,
+                account_points=10**20,
+                account_rank=1,
+            )
+            p_econ = estimate_planet_hourly_economy(st_ext, p0)
+            json.dumps(p_econ, allow_nan=False)
+            acct_econ = estimate_hourly_economy(st_ext)
+            json.dumps(acct_econ, allow_nan=False)
+            b_eta = build_buildings_eta(st_ext)
+            json.dumps(b_eta, allow_nan=False)
+            self.assertEqual(b_eta["planet"]["planet_id"], 10**18 + 123456789)
+            evo = build_ranking_evolution(
+                st_ext,
+                [
+                    {"ts": 100.0, "estimated_points": -1e308, "server_rank": 1, "server_points": 1},
+                    {"ts": 3700.0, "estimated_points": 1e308, "server_rank": 1, "server_points": 2},
+                    {"ts": -1e308, "estimated_points": -1e308, "server_rank": 1, "server_points": -1e308},
+                    {"ts": 1e308, "estimated_points": 1e308, "server_rank": 1, "server_points": 1e308},
+                ],
+            )
+            json.dumps(evo, allow_nan=False)
+
+        # Preserve critical 1e307 blast-furnace wait_hours=None invariant AND test b2=0
+        for b2_lvl in (2, 0):
+            p_bf = PlanetState(
+                planet_id=12476,
+                name="Colony",
+                coords="02:380:12",
+                planet_type="normal",
+                temperature=31,
+                fields_used=55,
+                fields_max=230,
+                resources=Resources(0, 0, 0, 0),
+                storage=Resources(100000, 100000, 100000, 100000),
+                energy=EnergyBalance(produced=900, used=600),
+                buildings={"b1": 5, "b2": b2_lvl, "b3": 5, "b4": 3, "b5": 5},
+            )
+            st_bf = GameState(
+                universe_id=31,
+                user_id=1,
+                nickname="u",
+                timestamp=1000.0,
+                planets=(p_bf,),
+                active_planet_id=12476,
+                researches={"r1": 1},
+                speedup_factor=1e307,
+            )
+            eta = compute_action_eta(
+                st_bf,
+                PlannedAction(
+                    priority="P2",
+                    kind="BUILD",
+                    planet_id=12476,
+                    planet_coords="02:380:12",
+                    target_id=1,
+                    target_name="Pig iron mine",
+                    target_level=6,
+                    cost=Resources(100, 0, 0, 0),
+                    missing=Resources(100, 0, 0, 0),
+                    reason="test",
+                ),
+            )
+            json.dumps(eta, allow_nan=False)
+            if b2_lvl == 2:
+                self.assertIsNone(eta["wait_hours"])
+                self.assertEqual(eta["wait_eta"], "—")
+                self.assertEqual(eta["eta_bottleneck"], "pig_iron")
+
+        # Finding 3 part 2: corrupted coords / target_id / target_name / kind on compute_action_eta
+        st_norm = _sample_ranking_state()
+        for kind_val in ("BUILD", "RESEARCH", "BUILD_SHIP", "BUILD_DEFENSE", 10**5000):
+            act_bad = PlannedAction(
+                priority="P2",
+                kind=kind_val,  # type: ignore[arg-type]
+                planet_id=12476,
+                planet_coords="9" * 5000,
+                target_id=10**5000,  # type: ignore[arg-type]
+                target_name=10**5000,  # type: ignore[arg-type]
+                target_level=10**5000,
+                reason="test",
+            )
+            out = compute_action_eta(st_norm, act_bad)
+            json.dumps(out, allow_nan=False)
+
+        bad_res_eta = _compute_resource_eta(
+            missing={"pig_iron": 10**400, "metal": -5, "kryptonite": float("nan"), "spice": 100},  # type: ignore[dict-item]
+            rates_hr={"pig_iron": float("nan"), "metal": 1e308, "kryptonite": -1e308, "spice": 0.0},
+        )
+        json.dumps(bad_res_eta, allow_nan=False)
+        str_res_eta = _compute_resource_eta(
+            missing={"pig_iron": "bad"},  # type: ignore[dict-item]
+            rates_hr={"pig_iron": 10.0},
+        )
+        json.dumps(str_res_eta, allow_nan=False)
+
+    def test_r8_build_buildings_eta_bounds_nonfinite_bad_and_huge_horizon_count(self) -> None:
+        import json
+        import time
+        from spaceinvasion.ranking import build_buildings_eta
+
+        st = _sample_ranking_state()
+        for bad_h in (float("nan"), float("inf"), float("-inf"), "bad", None, True):
+            res = build_buildings_eta(st, horizon_count=bad_h)  # type: ignore[arg-type]
+            self.assertEqual(len(res["buildings"]), 21)
+            self.assertEqual(len(res["buildings"][0]["horizons"]), 4)
+            json.dumps(res, allow_nan=False)
+
+        for zero_h in (-5, 0):
+            res_z = build_buildings_eta(st, horizon_count=zero_h)
+            self.assertEqual(res_z["buildings"][0]["horizons"], [])
+            self.assertEqual(res_z["researches"][0]["horizons"], [])
+
+        t0 = time.monotonic()
+        for huge_h in (10_000, 10**6, 10**5000):
+            res_big = build_buildings_eta(st, horizon_count=huge_h)
+            self.assertEqual(len(res_big["buildings"][0]["horizons"]), 100)
+            self.assertEqual(len(res_big["researches"][0]["horizons"]), 3)
+            json.dumps(res_big, allow_nan=False)
+        self.assertLess(time.monotonic() - t0, 2.0)
+
+    def test_r9_simulate_combat_matchup_scales_defender_researches(self) -> None:
+        import json
+
+        st = _sample_ranking_state()
+        m0 = simulate_combat_matchup(
+            st,
+            attacker_ships={"s4": 16},
+            defender_ships={"s4": 10},
+            defender_researches={"r8": 0, "r9": 0, "r10": 0},
+        )
+        self.assertEqual(m0["defender_power"], 2950.0)
+        self.assertAlmostEqual(m0["win_ratio"], 1.6, places=6)
+        self.assertTrue(m0["safe_to_attack"])
+
+        m15 = simulate_combat_matchup(
+            st,
+            attacker_ships={"s4": 16},
+            defender_ships={"s4": 10},
+            defender_researches={"r8": 15, "r9": 15, "r10": 15},
+        )
+        self.assertEqual(m15["defender_power"], 7375.0)
+        self.assertAlmostEqual(m15["win_ratio"], 0.64, places=6)
+        self.assertFalse(m15["safe_to_attack"])
+        self.assertEqual(m15["defender_researches"], {"r8": 15, "r9": 15, "r10": 15})
+        json.dumps(m15, allow_nan=False)
+
+        # Rejects Arabic-Indic research digits and sanitizes huge values
+        m_bad = simulate_combat_matchup(
+            st,
+            attacker_ships={"s4": 16},
+            defender_ships={"s4": 10},
+            defender_researches={"r8": "\u0661\u0665", "r9": -5, "r10": 10**400},  # type: ignore[dict-item]
+        )
+        self.assertLess(m_bad["defender_power"], 1e12)
+        json.dumps(m_bad, allow_nan=False)
+
+    def test_r10_huge_precision_nonascii_bytes_and_safe_key(self) -> None:
+        import json
+        from dataclasses import replace
+        from spaceinvasion.ranking import (
+            attach_action_etas,
+            build_combat_overview,
+            estimate_account_points,
+        )
+        from spaceinvasion.strategy import PlannedAction
+
+        st = _sample_ranking_state()
+        pts = estimate_account_points(
+            replace(
+                st,
+                researches={**st.researches, (10**5000, "r"): 2},  # type: ignore[dict-item]
+                planets=(
+                    replace(
+                        st.planets[0],
+                        planet_id=10**18 + 123456789,
+                        buildings={**st.planets[0].buildings, "b\u0661": 5, b"b1": 5},  # type: ignore[dict-item]
+                        ships={**st.planets[0].ships, (10**5000, "s"): 2},  # type: ignore[dict-item]
+                        defense={**st.planets[0].defense, frozenset({10**5000}): 2},  # type: ignore[dict-item]
+                    ),
+                ),
+                active_planet_id=10**18 + 123456789,
+            )
+        )
+        self.assertIn("estimated_points", pts)
+        json.dumps(pts, allow_nan=False)
+
+        cov = build_combat_overview(st, replace(st.planets[0], ships={"s4": b"5", (10**5000, "s"): 2}))  # type: ignore[dict-item]
+        json.dumps(cov, allow_nan=False)
+
+        fast_st = replace(
+            st,
+            speedup_factor=1e307,
+            planets=(replace(st.planets[0], planet_id=10**18 + 123456789),),
+            active_planet_id=10**18 + 123456789,
+        )
+        act = PlannedAction(
+            priority="P2",
+            kind="BUILD",
+            planet_id=10**18 + 123456789,
+            planet_coords="01:001:01",
+            target_id=1,
+            target_name="Pig iron mine",
+            target_level=2,
+            cost=Resources(100, 0, 0, 0),
+            missing=Resources(100, 0, 0, 0),
+            reason="Wait ETA probe",
+            duration_seconds=1,
+        )
+        attached = attach_action_etas(fast_st, [act])
+        self.assertEqual(attached[0].wait_eta, "\u2014")
+        self.assertEqual(attached[0].duration_text, "1s")
+
+    def test_r11_build_buildings_eta_huge_research_key_and_normalized_asteroid_type(self) -> None:
+        import json
+        from dataclasses import replace
+        from spaceinvasion.ranking import build_buildings_eta
+        from spaceinvasion.state import ResearchOffer
+
+        st = _sample_ranking_state()
+        ast_p = replace(st.planets[0], planet_type=" Asteroid ")
+        st_ast = replace(
+            st,
+            speedup_factor=1e307,
+            planets=(ast_p,),
+            active_planet_id=ast_p.planet_id,
+            research_offers=(
+                ResearchOffer(1, 10**5000, "Huge", 0, 1, Resources(100, 0, 0, 0), True, "ok", "?r=1"),  # type: ignore[arg-type]
+                ResearchOffer(2, b"r2", "Energy technology", 0, 1, Resources(0, 400, 800, 400), True, "ok", "?r=2"),  # type: ignore[arg-type]
+            ),
+        )
+        eta = build_buildings_eta(st_ast)
+        self.assertEqual(eta["planet"]["planet_type"], "asteroid")
+        json.dumps(eta, allow_nan=False)
+
+    def test_r12_ranking_resists_broken_fspath_raise_str_and_huge_reward_fields(self) -> None:
+        import json
+        from spaceinvasion import ranking as rnk
+        from spaceinvasion.state import TutorialStatus, TutorialTask
+
+        class _RaiseFspath:
+            def __fspath__(self) -> str:
+                raise RuntimeError("fspath boom")
+
+        class _IntPath:
+            def __fspath__(self) -> int:
+                return 10**5000
+
+        class _RaiseStr:
+            def __str__(self) -> str:
+                raise RuntimeError("str boom")
+
+        class _RaiseStrRepr:
+            def __str__(self) -> str:
+                raise RuntimeError("str boom")
+
+            def __repr__(self) -> str:
+                raise RuntimeError("repr boom")
+
+        self.assertEqual(rnk._safe_eta_int(_RaiseFspath(), default=-3), -3)
+        self.assertIsInstance(rnk._safe_eta_int(_IntPath(), default=-3), int)
+
+        ast_p = PlanetState(
+            planet_id=1,
+            name=_RaiseStrRepr(),  # type: ignore[arg-type]
+            coords=_RaiseFspath(),  # type: ignore[arg-type]
+            planet_type=_RaiseStr(),  # type: ignore[arg-type]
+            temperature=10,
+            fields_used=_IntPath(),  # type: ignore[arg-type]
+            fields_max=50,
+            resources=Resources(100, 100, 100, 100),
+            storage=Resources(1000, 1000, 1000, 1000),
+            energy=EnergyBalance(50, 10),
+            buildings={"b7": _RaiseFspath()},  # type: ignore[dict-item]
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="u",
+            timestamp=1000.0,
+            planets=(ast_p,),
+            active_planet_id=1,
+            tutorial=TutorialStatus(
+                step=1,
+                total_steps=11,
+                reward_text=10**5000,  # type: ignore[arg-type]
+                tasks=(TutorialTask(_RaiseStrRepr(), _RaiseFspath(), 1, 0, 1),),  # type: ignore[arg-type]
+            ),
+        )
+        eta = build_buildings_eta(st)
+        cov = build_combat_overview(st)
+        json.dumps(eta, allow_nan=False)
+        json.dumps(cov, allow_nan=False)
+
+    def test_r14_safe_eta_int_resists_base_exception_dag20(self) -> None:
+        import time
+        from spaceinvasion import ranking as rnk
+
+        dag: BaseException = RuntimeError("leaf")
+        for _ in range(20):
+            dag = RuntimeError(10**5000, dag, dag, dag, dag)
+
+        t0 = time.perf_counter()
+        res_eta = rnk._safe_eta_int(dag, default=-7)
+        res_nn = rnk._safe_nonneg_int(dag, default=-8)
+        res_opt = rnk._safe_optional_finite_int(dag)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self.assertEqual(res_eta, -7)
+        self.assertEqual(res_nn, -8)
+        self.assertIsNone(res_opt)
+        self.assertLess(elapsed_ms, 50.0)
+
 
 if __name__ == "__main__":
     unittest.main()
