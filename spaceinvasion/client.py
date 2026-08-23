@@ -25,6 +25,7 @@ from selenium.webdriver.common.by import By
 
 from spaceinvasion import game_data
 from spaceinvasion.auth import AntiBotChallengeError, SpaceInvasionAuthError, detect_antibot_challenge
+from spaceinvasion.logging_utils import append_crash_debug_log
 from spaceinvasion.browser import (
     DEFAULT_DEBUG_PORT,
     attach_chrome_driver,
@@ -36,13 +37,16 @@ from spaceinvasion.fleet import extract_galaxy_system_coords
 from spaceinvasion.state import (
     GameState,
     QueueJob,
+    normalize_planet_type,
     parse_building_queue,
     parse_buildings_page,
+    parse_economy_rates,
     parse_home_metadata,
     parse_menu_messages,
     parse_menu_status,
     parse_planets_overview_json,
     parse_research_page,
+    parse_ticker_rates,
     parse_tutorial_from_home,
     parse_unit_factory_page,
 )
@@ -576,6 +580,23 @@ def _normalize_sid_query(raw_sid: str) -> str:
     return f"sid={cleaned}"
 
 
+_EMPTY_PAGEVIEW_MODAL_RE = re.compile(
+    r"made\s+more\s+than\s*<span[^>]*id=[\"']?pageview-amount[\"']?[^>]*>\s*</span>\s*page\s+views",
+    re.IGNORECASE,
+)
+
+
+def is_server_rate_limit_html(html: str) -> bool:
+    """Return `True` only on active server page-view throttle HTML, ignoring empty AJAX modal templates."""
+    if not isinstance(html, str) or not html:
+        return False
+    low = html.lower()
+    if "made more than" not in low or "page views" not in low:
+        return False
+    cleaned = _EMPTY_PAGEVIEW_MODAL_RE.sub("", html).lower()
+    return "made more than" in cleaned and "page views" in cleaned
+
+
 class GameBrowserClient:
     """Read-only / player-like browser client operating inside the 3-iframe game shell."""
 
@@ -664,14 +685,57 @@ class GameBrowserClient:
             max_wait=self.max_limiter_wait,
         )
 
+    def _capture_dom_diag(self, html: str = "") -> dict[str, Any]:
+        diag: dict[str, Any] = {
+            "page_views_last_60s": self.page_limiter.views_last_60s()
+            if hasattr(self.page_limiter, "views_last_60s")
+            else None,
+            "rate_limit_remaining": self.page_limiter.rate_limit_remaining()
+            if hasattr(self.page_limiter, "rate_limit_remaining")
+            else None,
+        }
+        try:
+            diag["top_url"] = str(getattr(self.driver, "current_url", "") or "")
+        except Exception as exc:
+            diag["top_url_err"] = str(exc)
+        try:
+            handles = getattr(self.driver, "window_handles", None)
+            diag["window_handles_count"] = len(handles) if isinstance(handles, (list, tuple)) else None
+        except Exception:
+            pass
+        try:
+            diag["frame_href"] = str(self.driver.execute_script("return String(location.href || '');") or "")
+        except Exception:
+            pass
+        if html:
+            low = html.lower()
+            idx_m = low.find("made more than")
+            idx_p = low.find("page views")
+            diag["html_len"] = len(html)
+            diag["matched_made_more_than"] = html[max(0, idx_m - 160) : idx_m + 320] if idx_m >= 0 else None
+            diag["matched_page_views"] = html[max(0, idx_p - 160) : idx_p + 320] if idx_p >= 0 else None
+            try:
+                soup = BeautifulSoup(html, "html.parser")
+                diag["visible_text_preview"] = " ".join(soup.get_text(" ", strip=True).split())[:1000]
+            except Exception:
+                diag["raw_preview"] = html[:1000]
+        return diag
+
     def _check_page_guards(self, html: str) -> None:
         issue = detect_antibot_challenge(200, html)
         if issue:
-            raise AntiBotChallengeError(
+            err_ab = AntiBotChallengeError(
                 f"{issue}. Stopping automation; handle verification in Chrome."
             )
-        low = html.lower()
-        if "made more than" in low and "page views" in low:
+            if self.detach_on_close and getattr(self.driver, "__class__", object).__module__.startswith("selenium"):
+                append_crash_debug_log(
+                    component="client._check_page_guards",
+                    event="antibot_challenge",
+                    error=err_ab,
+                    details=self._capture_dom_diag(html),
+                )
+            raise err_ab
+        if is_server_rate_limit_html(html):
             cooldown = self.page_limiter.record_rate_limit()
             err = RateLimitError(
                 f"SpaceInvasion per-minute page-view throttle hit; cooldown active ({cooldown:.1f}s remaining; retry after {cooldown:.1f}s).",
@@ -679,6 +743,13 @@ class GameBrowserClient:
                 server_throttle=True,
             )
             setattr(err, "_recorded_limiter_id", id(self.page_limiter))
+            if self.detach_on_close and getattr(self.driver, "__class__", object).__module__.startswith("selenium"):
+                append_crash_debug_log(
+                    component="client._check_page_guards",
+                    event="rate_limit_guard_triggered",
+                    error=err,
+                    details=self._capture_dom_diag(html),
+                )
             raise err
 
     def _supports_coordinated_recovery(self) -> bool:
@@ -776,14 +847,27 @@ class GameBrowserClient:
                 self.page_limiter.clear_throttle_recovery()
                 return
 
+            # If a popup window (e.g. `p_galaxy()` `"Galaxy"` window) stole focus, switch back to `indexGame.es`
+            if not in_planets_frame:
+                switched_tab = False
+                with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+                    try:
+                        handles = list(getattr(self.driver, "window_handles", None) or [])
+                        if len(handles) > 1 and find_and_switch_game_tab(self.driver):
+                            switched_tab = True
+                    except Exception:
+                        switched_tab = False
+                if switched_tab:
+                    self.page_limiter.clear_throttle_recovery()
+                    return
+
             if frame_html:
                 issue = detect_antibot_challenge(200, frame_html)
                 if issue:
                     raise AntiBotChallengeError(
                         f"{issue}. Stopping automation; handle verification in Chrome."
                     ) from missing_exc
-                low_frame = frame_html.lower()
-                if "made more than" in low_frame and "page views" in low_frame:
+                if is_server_rate_limit_html(frame_html):
                     if coordinated:
                         with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
                             cur_dom_epoch = getattr(self, "_dom_healthy_epoch", 0)
@@ -1002,7 +1086,11 @@ class GameBrowserClient:
                     raise SpaceInvasionAuthError(
                         "Browser redirected to BitMeUp portal/login while waiting for game frame."
                     )
-                if not expected_action or expected_action in href:
+                if (
+                    not expected_action
+                    or expected_action in href
+                    or (expected_action == "internalSendFleet" and "fleeterr." in href.lower())
+                ):
                     return html
 
             if time.monotonic() >= deadline:
@@ -1196,6 +1284,31 @@ class GameBrowserClient:
             self.driver.execute_script("arguments[0].submit();", form_els[0])
         return self._wait_frame_ready("F_Hauptframe", expected_action="internalGalaxy", nav_token=nav_token)
 
+    def _wait_galaxy_ajax_ready(self, html: str) -> str:
+        """Wait briefly for SpaceInvasion 2D/Modern Galaxy (`SI_TPL.galaxy` -> `si.getData()`) to populate planets."""
+        if "SI_TPL.galaxy" not in html:
+            return html
+        ajax_deadline = time.monotonic() + min(3.5, max(0.2, self.timeout * 0.25))
+        while time.monotonic() < ajax_deadline:
+            self._switch_frame("F_Hauptframe")
+            try:
+                rendered = bool(
+                    self.driver.execute_script(
+                        "var pl = document.getElementById('planet-list');"
+                        "if (pl && pl.children && pl.children.length > 0) return true;"
+                        "var bodyTxt = document.body ? (document.body.innerText || '') : '';"
+                        "return bodyTxt.indexOf('X:') !== -1;"
+                    )
+                )
+            except Exception:
+                rendered = True
+            if rendered:
+                html = self.driver.page_source or html
+                self._check_page_guards(html)
+                break
+            time.sleep(0.15)
+        return html
+
     def open_galaxy_with_coords(
         self,
         *,
@@ -1217,15 +1330,52 @@ class GameBrowserClient:
             else None
         )
         if sid_query:
+            p_gal_js = None
+            if self.detach_on_close and getattr(self.driver, "__class__", object).__module__.startswith("selenium"):
+                try:
+                    self._switch_frame("F_Navi")
+                    p_gal_js = self.driver.execute_script(
+                        "return (typeof window.p_galaxy === 'function') ? String(window.p_galaxy) : null;"
+                    )
+                except Exception as exc:
+                    p_gal_js = f"<err:{exc}>"
             params = ["action=internalGalaxy", sid_query]
             if gal_arg is not None:
                 params.append(f"galaxy={gal_arg}")
             if sys_arg is not None:
                 params.append(f"system={sys_arg}")
+            if gal_arg is not None:
+                params.append(f"g={gal_arg}")
+            if sys_arg is not None:
+                params.append(f"s={sys_arg}")
             target_url = self._build_internal_url("&".join(params))
             nav_token = self._mark_frame_navigation("F_Hauptframe")
             self.driver.execute_script("location.href = arguments[0];", target_url)
-            html = self._wait_frame_ready("F_Hauptframe", expected_action="internalGalaxy", nav_token=nav_token)
+            try:
+                html = self._wait_frame_ready("F_Hauptframe", expected_action="internalGalaxy", nav_token=nav_token)
+            except BaseException as exc:
+                if self.detach_on_close and getattr(self.driver, "__class__", object).__module__.startswith("selenium"):
+                    append_crash_debug_log(
+                        component="client.open_galaxy_with_coords",
+                        event="open_galaxy_failed",
+                        error=exc,
+                        details={
+                            "target_url": target_url,
+                            "p_galaxy_js": p_gal_js,
+                            **self._capture_dom_diag(),
+                        },
+                    )
+                raise
+            if self.detach_on_close and getattr(self.driver, "__class__", object).__module__.startswith("selenium"):
+                append_crash_debug_log(
+                    component="client.open_galaxy_with_coords",
+                    event="open_galaxy_loaded",
+                    details={
+                        "target_url": target_url,
+                        "p_galaxy_js": p_gal_js,
+                        **self._capture_dom_diag(html),
+                    },
+                )
         else:
             nav_token = self._mark_frame_navigation("F_Hauptframe")
             self._switch_frame("F_Navi")
@@ -1237,6 +1387,7 @@ class GameBrowserClient:
                 self.driver.execute_script("arguments[0].click();", gal_a)
             html = self._wait_frame_ready("F_Hauptframe", expected_action="internalGalaxy", nav_token=nav_token)
 
+        html = self._wait_galaxy_ajax_ready(html)
         self._switch_frame("F_Hauptframe")
         try:
             cur_url = str(self.driver.execute_script("return location.href;") or "")
@@ -1259,7 +1410,7 @@ class GameBrowserClient:
                 priority=priority,
             )
             if switched_html is not None:
-                html = switched_html
+                html = self._wait_galaxy_ajax_ready(switched_html)
                 self._switch_frame("F_Hauptframe")
                 try:
                     cur_url = str(self.driver.execute_script("return location.href;") or "")
@@ -1474,12 +1625,18 @@ class GameBrowserClient:
                     return None
         return None
 
+    def read_economy_rates(self, *, priority: str = "normal") -> dict[str, int]:
+        """Navigate to `internalEconomy` and extract active planet `resource1`..`resource6` rates."""
+        html = self.navigate_menu("internalEconomy", priority=priority)
+        return parse_economy_rates(html)
+
     def read_full_snapshot(
         self,
         *,
         include_buildings: bool = True,
         include_research: bool = True,
         include_shipyard: bool = True,
+        include_economy: bool = False,
         include_home: bool = True,
         return_home: bool = True,
         priority: str = "normal",
@@ -1506,7 +1663,7 @@ class GameBrowserClient:
         if "action=internalHome" in main_url:
             is_stale_home = (
                 not raw_main_low.strip()
-                or ("made more than" in raw_main_low and "page views" in raw_main_low)
+                or is_server_rate_limit_html(raw_main_html)
                 or bool(detect_antibot_challenge(200, raw_main_html))
                 or has_portal_redirect
             )
@@ -1563,6 +1720,7 @@ class GameBrowserClient:
             0 if planets else None,
         )
 
+        b_html = ""
         if include_buildings and planets and active_idx is not None:
             b_html = self.navigate_menu("internalBuildings", priority=priority)
             if active_pid is None:
@@ -1582,6 +1740,45 @@ class GameBrowserClient:
             planet = planets[active_idx]
             offers = parse_buildings_page(b_html, planet.buildings)
             planets[active_idx] = replace(planet, building_offers=offers)
+
+        # Passively detect Metal production enabled/disabled from `<form id="ress">` ticker on zero extra views
+        if active_idx is not None and planets:
+            cur_ap = planets[active_idx]
+            if (
+                normalize_planet_type(cur_ap) not in ("asteroid", "raid")
+                and cur_ap.building_level(2) >= 1
+            ):
+                ticker = parse_ticker_rates(b_html or home_html or raw_main_html)
+                if "metal" in ticker:
+                    econ = dict(cur_ap.economy_rates or {})
+                    if ticker["metal"] <= 0.0 and cur_ap.energy.produced > 0:
+                        if econ.get("resource2") != 0:
+                            econ["resource2"] = 0
+                            planets[active_idx] = replace(cur_ap, economy_rates=econ)
+                    elif ticker["metal"] > 0.0 and econ.get("resource2") == 0:
+                        econ["resource2"] = 100
+                        planets[active_idx] = replace(cur_ap, economy_rates=econ)
+
+        # Optionally fetch exact `internalEconomy` dropdown rates (`resource1`..`resource6`)
+        if (
+            include_economy
+            and active_idx is not None
+            and planets
+            and normalize_planet_type(planets[active_idx]) not in ("asteroid", "raid")
+        ):
+            e_html = self.navigate_menu("internalEconomy", priority=priority)
+            if active_pid is None:
+                sel_pid = self._extract_selected_planet_id(e_html, "internalEconomy")
+                if sel_pid is not None:
+                    active_pid = sel_pid
+                    target_pid = sel_pid
+                    active_idx = next(
+                        (i for i, p in enumerate(planets) if p.planet_id == target_pid),
+                        active_idx,
+                    )
+            econ_rates = parse_economy_rates(e_html)
+            if econ_rates:
+                planets[active_idx] = replace(planets[active_idx], economy_rates=econ_rates)
 
         # Fetch live Research cards only when a Research lab exists and slot is idle or needed by tutorial
         active_p = planets[active_idx] if active_idx is not None else None
@@ -1637,7 +1834,7 @@ class GameBrowserClient:
             )
             planets[active_idx] = replace(planets[active_idx], ship_offers=ship_offers)
 
-        if return_home and (include_buildings or include_research or include_shipyard):
+        if return_home and (include_buildings or include_research or include_shipyard or include_economy):
             self.navigate_menu("internalHome", priority=priority)
 
         self.last_snapshot_observed_active_planet = active_pid is not None

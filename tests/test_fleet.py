@@ -871,6 +871,47 @@ class TestFleetAndCombat(unittest.TestCase):
         if entries_bad:
             self.assertEqual(entries_bad[0].coords, "01:001:01")
 
+    def test_2d_graphical_galaxy_planet_hit_colors_spacia_and_si_tpl_coords(self) -> None:
+        from spaceinvasion.fleet import extract_galaxy_system_coords, parse_galaxy_system_html
+
+        html_2d = """
+        <html><body data-galaxy="1">
+        <script>window.SI_TPL=window.SI_TPL||{};SI_TPL.galaxy={sid:'abc',spacia:97563,galaxy:2,sun:378};</script>
+        <div id="planet-list">02:380:12 Colony 2 System</div>
+        <span id="planet-coords">02:380:12</span>
+        <div class="planet-hit" data-planet="12433">
+          <div><span style="color:#cacaca;">X: 520 Y: 90</span><div>1</div></div>
+        </div>
+        <div class="planet-hit" data-planet="12434">
+          <div class="rubble-orbit" name="rubblefield"></div>
+          <div><span style="color:#c9d324;"><div class="spacia-planet">Spacia Planet</div><br/>(Spacia)</span><div>2</div></div>
+        </div>
+        <div class="planet-hit" data-planet="12438">
+          <div><span style="color:#347187;"><b>Takayama</b><br/>(wieselhaar)</span><div>6</div></div>
+        </div>
+        <div class="planet-hit" data-planet="12447">
+          <div id="astro-12447" name="astro"></div>
+          <div><span style="color:#c9d324;"><b>Colony</b><br/>(Sigilo_respec)</span><div>15</div></div>
+        </div>
+        </body></html>
+        """
+        gal, sys_n = extract_galaxy_system_coords(
+            html_2d,
+            url="https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&g=2&s=378",
+        )
+        self.assertEqual((gal, sys_n), (2, 378))
+
+        slots = {s.position: s for s in parse_galaxy_system_html(html_2d)}
+        self.assertEqual(slots[1].status_color, "free")
+        self.assertTrue(slots[2].is_spacia)
+        self.assertTrue(slots[2].has_debris)
+        self.assertEqual(slots[2].coords, "02:378:02")
+        self.assertEqual(slots[6].status_color, "blue")
+        self.assertEqual(slots[6].owner, "wieselhaar")
+        self.assertEqual(slots[15].status_color, "yellow")
+        self.assertEqual(slots[15].owner, "Sigilo_respec")
+        self.assertTrue(slots[15].has_asteroid)
+
 
 if __name__ == "__main__":
     unittest.main()

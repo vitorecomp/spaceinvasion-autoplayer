@@ -5704,6 +5704,17 @@ def _repair_and_evaluate(
 
     m1 = _compute_sim_metrics(sim, cfg, warn_ratio)
     raw_growth = _compute_composite_growth(base_metrics, m1, sim, cfg, rejected_cnt)
+    if not base_sim.raid_targets_info:
+        build_pair_counts: dict[tuple[int, int], int] = {}
+        for step_a, out_a in zip(repaired, outcomes):
+            if out_a.valid and step_a.kind == "BUILD":
+                b_tid = _parse_building_target_id(step_a.target_id, 0)
+                if b_tid > 0:
+                    pair_k = (step_a.planet_id, b_tid)
+                    build_pair_counts[pair_k] = build_pair_counts.get(pair_k, 0) + 1
+        excess_same_build = sum(max(0, cnt - 2) for cnt in build_pair_counts.values())
+        if excess_same_build > 0:
+            raw_growth -= 200.0 * excess_same_build
     term_feats = encode_empire_state(sim)
     nn_val = nn_net.predict(term_feats)
     if not collect_step_features:

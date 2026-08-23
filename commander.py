@@ -45,7 +45,12 @@ from spaceinvasion.reloader import (  # noqa: E402
     should_spawn_reloader,
     watch_and_run,
 )
-from spaceinvasion.state import GameState, game_state_from_dict, is_asteroid_planet  # noqa: E402
+from spaceinvasion.state import (  # noqa: E402
+    GameState,
+    game_state_from_dict,
+    is_asteroid_planet,
+    normalize_planet_type,
+)
 from spaceinvasion.strategy import PlannedAction, plan_actions  # noqa: E402
 
 WATCH_PATHS = (
@@ -341,6 +346,7 @@ def run_commander_tick(
     include_buildings: bool = True,
     scanned_systems: Optional[Mapping[str, float]] = None,
     throttle_cooldowns: Optional[Mapping[int, float]] = None,
+    economy_sync_timestamps: Optional[Mapping[int, float]] = None,
 ) -> tuple[GameState, Optional[PlannedAction], Optional[dict], Optional[PlannedAction], list[dict]]:
     """Fetch state via HTTP, compute `plan_actions`, and send commands.
 
@@ -348,6 +354,29 @@ def run_commander_tick(
     """
     cfg = config or StrategyConfig()
     state = api.get_state(include_buildings=include_buildings)
+    active_for_econ = state.active_planet()
+    if (
+        live
+        and economy_sync_timestamps is not None
+        and active_for_econ is not None
+        and normalize_planet_type(active_for_econ) not in ("asteroid", "raid")
+        and active_for_econ.building_level(2) >= 1
+    ):
+        has_r2 = isinstance(active_for_econ.economy_rates, Mapping) and "resource2" in active_for_econ.economy_rates
+        raw_ts = economy_sync_timestamps.get(
+            active_for_econ.planet_id,
+            economy_sync_timestamps.get(str(active_for_econ.planet_id), 0.0),
+        )
+        last_econ_ts = _safe_finite_float(raw_ts) or 0.0
+        if (not has_r2) or (include_buildings and (time.time() - last_econ_ts) >= 300.0):
+            try:
+                sync_res = api.send_command(
+                    {"command": "sync_economy", "planet_id": active_for_econ.planet_id}
+                )
+                if isinstance(sync_res, Mapping) and isinstance(sync_res.get("state"), Mapping):
+                    state = game_state_from_dict(sync_res["state"])
+            except (requests.RequestException, GameApiError):
+                pass
     actions = plan_actions(
         state,
         config=cfg,
@@ -487,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
                 effective_live = args.live
                 scanned_systems: Optional[dict[str, float]] = None
                 throttle_cooldowns: Optional[dict[int, float]] = None
+                economy_sync_timestamps: Optional[dict[int, float]] = None
                 paused_via_ui = False
                 try:
                     bot_ctrl = api.get_bot_control()
@@ -525,6 +555,21 @@ def main(argv: list[str] | None = None) -> int:
                                     if re.fullmatch(r"-?\d{1,18}", ks, re.ASCII):
                                         parsed_cd[int(ks)] = fv
                             throttle_cooldowns = parsed_cd
+                        raw_es = bot_ctrl.get("economy_sync_timestamps")
+                        if isinstance(raw_es, Mapping):
+                            parsed_es: dict[int, float] = {}
+                            for k, v in raw_es.items():
+                                fv = _safe_finite_float(v)
+                                if fv is None:
+                                    continue
+                                if isinstance(k, int) and not isinstance(k, bool):
+                                    if abs(k).bit_length() <= 64:
+                                        parsed_es[k] = fv
+                                else:
+                                    ks = _safe_cmd_str(k).strip()
+                                    if re.fullmatch(r"-?\d{1,18}", ks, re.ASCII):
+                                        parsed_es[int(ks)] = fv
+                            economy_sync_timestamps = parsed_es
                 except (requests.RequestException, GameApiError):
                     pass
 
@@ -544,6 +589,7 @@ def main(argv: list[str] | None = None) -> int:
                         include_buildings=need_buildings,
                         scanned_systems=scanned_systems,
                         throttle_cooldowns=throttle_cooldowns,
+                        economy_sync_timestamps=economy_sync_timestamps,
                     )
                     refreshed_buildings = need_buildings or (
                         effective_live
@@ -577,7 +623,21 @@ def main(argv: list[str] | None = None) -> int:
                         if (planet and planet.coords is not None)
                         else "?"
                     )
-                    print(f"[CMD tick {game_data.fmt_compact_int(tick)} | {eff_label}] {coords_txt} | {res_str}")
+                    metal_tag = ""
+                    if (
+                        planet is not None
+                        and normalize_planet_type(planet) not in ("asteroid", "raid")
+                        and planet.building_level(2) >= 1
+                    ):
+                        b2_pct = max(
+                            0,
+                            min(
+                                100,
+                                _safe_cmd_int((planet.economy_rates or {}).get("resource2", 100), 100),
+                            ),
+                        )
+                        metal_tag = f" | MetalProd={'ON' if b2_pct > 0 else 'OFF'}({b2_pct}%)"
+                    print(f"[CMD tick {game_data.fmt_compact_int(tick)} | {eff_label}] {coords_txt} | {res_str}{metal_tag}")
                     print(f"  Actual: {format_action_summary(actual_action)} => {msg}")
                     print(f"  Next:   {format_action_summary(next_action)}")
                     if args.log_dir:

@@ -2336,6 +2336,64 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         api_cli = GameApiClient("http://127.0.0.1:8787", timeout=10**5000)  # type: ignore[arg-type]
         self.assertEqual(api_cli.timeout, 30.0)
 
+    def test_empty_pageview_modal_ignored_popup_tab_recovery_and_crash_debug_log(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from spaceinvasion.client import GameBrowserClient, RateLimitError, is_server_rate_limit_html
+        from spaceinvasion.logging_utils import append_crash_debug_log
+
+        # 1. Hidden unpopulated `internalGalaxy` modal does NOT trigger false RateLimitError
+        gal_modal_html = (
+            '<div style="display:none;"><div class="ecoshadow">'
+            'You\'ve made more than <span id="pageview-amount"></span> page views at last minute.'
+            "</div></div>"
+        )
+        self.assertFalse(is_server_rate_limit_html(gal_modal_html))
+        real_modal_html = (
+            '<div class="ecoshadow">'
+            'You\'ve made more than <span id="pageview-amount">30</span> page views at last minute.'
+            "</div>"
+        )
+        self.assertTrue(is_server_rate_limit_html(real_modal_html))
+        self.assertTrue(is_server_rate_limit_html("<div>You've made more than 30 page views at last minute.</div>"))
+
+        cli = GameBrowserClient(MagicMock())
+        cli._check_page_guards(gal_modal_html)  # must not raise
+        with self.assertRaises(RateLimitError):
+            cli._check_page_guards(real_modal_html)
+
+        # 2. Popup window recovery (`p_galaxy()` window without frames -> switches back via `find_and_switch_game_tab`)
+        drv = MagicMock()
+        drv.window_handles = ["popup_gal", "game_main"]
+        from selenium.common.exceptions import NoSuchElementException
+
+        drv.find_element.side_effect = NoSuchElementException("no F_planets in popup")
+        cli_pop = GameBrowserClient(drv)
+        with patch("spaceinvasion.client.find_and_switch_game_tab", return_value=True) as mock_switch:
+            cli_pop.ensure_in_game()
+        mock_switch.assert_called_once_with(drv)
+
+        # 3. Gitignored crash debug logger writes redacted JSONL + human log cleanly
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = append_crash_debug_log(
+                component="test.comp",
+                event="test_event",
+                error=RuntimeError("boom ?sid=SECRET_CRASH_SID"),
+                details={"url": "https://spaceinvasion.bitmeup.com/indexInternal.es?sid=SECRET_URL_SID"},
+                crash_dir=Path(tmp),
+            )
+            self.assertIsNotNone(paths)
+            assert paths is not None
+            j_txt = paths[0].read_text(encoding="utf-8")
+            l_txt = paths[1].read_text(encoding="utf-8")
+            self.assertNotIn("SECRET_CRASH_SID", j_txt)
+            self.assertNotIn("SECRET_URL_SID", j_txt)
+            self.assertNotIn("SECRET_CRASH_SID", l_txt)
+            rec = json.loads(j_txt.strip())
+            self.assertEqual(rec["component"], "test.comp")
+
 
 if __name__ == "__main__":
     unittest.main()

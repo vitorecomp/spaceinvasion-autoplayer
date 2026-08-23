@@ -58,6 +58,7 @@ _WIN_OUTCOME_TOKENS: tuple[str, ...] = (
     "plunder",
     "captur",
     "ok",
+    "dispatch",
 )
 
 

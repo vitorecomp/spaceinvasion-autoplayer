@@ -597,7 +597,7 @@ def _is_parenthesized_noise_triple(text: str, m_start: int, m_end: int) -> bool:
 
 _GALAXY_INACTIVE_TAG_RE = re.compile(r"\(\s*i+\s*\)", re.IGNORECASE)
 _GALAXY_YELLOW_HEX_RE = re.compile(
-    r"(?<![0-9a-f])#ff0(?![0-9a-f])|(?<![0-9a-f])#ffff00(?![0-9a-f])|rgb\(\s*255\s*,\s*255\s*,\s*0\s*\)",
+    r"(?<![0-9a-f])#ff0(?![0-9a-f])|(?<![0-9a-f])#(?:ffff00|c9d324|d4af37|e6c200|cfc628|f0c000)(?![0-9a-f])|rgb\(\s*255\s*,\s*255\s*,\s*0\s*\)",
     re.IGNORECASE,
 )
 _GALAXY_RED_DARK_HEX_RE = re.compile(
@@ -605,11 +605,11 @@ _GALAXY_RED_DARK_HEX_RE = re.compile(
     re.IGNORECASE,
 )
 _GALAXY_GREEN_HEX_RE = re.compile(
-    r"(?<![0-9a-f])#(?:0f0|00ff00|008000)(?![0-9a-f])|rgb\(\s*0\s*,\s*(?:255|128)\s*,\s*0\s*\)",
+    r"(?<![0-9a-f])#(?:0f0|00ff00|008000|496c2a)(?![0-9a-f])|rgb\(\s*0\s*,\s*(?:255|128)\s*,\s*0\s*\)",
     re.IGNORECASE,
 )
 _GALAXY_BLUE_HEX_RE = re.compile(
-    r"(?<![0-9a-f])#(?:00f|0000ff|3399ff)(?![0-9a-f])|rgb\(\s*0\s*,\s*0\s*,\s*255\s*\)",
+    r"(?<![0-9a-f])#(?:00f|0000ff|3399ff|347187|2b6a80|3b82a6)(?![0-9a-f])|rgb\(\s*0\s*,\s*0\s*,\s*255\s*\)",
     re.IGNORECASE,
 )
 _GALAXY_SRC_STATUS_RE = re.compile(
@@ -621,7 +621,7 @@ _GALAXY_ATTR_BLUE_RE = re.compile(
     re.IGNORECASE,
 )
 _GALAXY_ATTR_WHITE_RE = re.compile(
-    r"(?:^|[^a-z0-9]|_)(?:galaxy_)?(?:white|spectral)(?![a-z0-9])",
+    r"(?:^|[^a-z0-9]|_)(?:galaxy_)?(?:white(?!\s*-\s*space)|spectral)(?![a-z0-9])",
     re.IGNORECASE,
 )
 _GALAXY_ATTR_GREEN_RE = re.compile(
@@ -724,18 +724,18 @@ def extract_galaxy_system_coords(
     gal_found: Optional[int] = None
     sys_found: Optional[int] = None
 
-    # 1. Input fields (`galaxy`/`gal`, `system`/`sun`)
+    # 1. Input fields (`galaxy`/`gal`/`g`, `system`/`sun`/`s`)
     for inp in soup.find_all("input"):
         name = str(inp.get("name") or inp.get("id") or "").strip().lower()
         val = inp.get("value")
         if val is None:
             continue
-        if name in ("galaxy", "gal") and gal_found is None:
+        if name in ("galaxy", "gal", "g") and gal_found is None:
             gal_found = _valid_gal(val)
-        elif name in ("system", "sun") and sys_found is None:
+        elif name in ("system", "sun", "s") and sys_found is None:
             sys_found = _valid_sys(val)
 
-    # 2. Selected <option> inside <select name="galaxy|gal|system|sun">
+    # 2. Selected <option> inside <select name="galaxy|gal|g|system|sun|s">
     if gal_found is None or sys_found is None:
         for sel in soup.find_all("select"):
             name = str(sel.get("name") or sel.get("id") or "").strip().lower()
@@ -743,13 +743,28 @@ def extract_galaxy_system_coords(
             if opt is None:
                 continue
             raw_val = opt.get("value") if opt.get("value") is not None else opt.get_text(strip=True)
-            if name in ("galaxy", "gal") and gal_found is None:
+            if name in ("galaxy", "gal", "g") and gal_found is None:
                 gal_found = _valid_gal(raw_val)
-            elif name in ("system", "sun") and sys_found is None:
+            elif name in ("system", "sun", "s") and sys_found is None:
                 sys_found = _valid_sys(raw_val)
 
     if gal_found is not None and sys_found is not None:
         return gal_found, sys_found
+
+    # 2b. 2D/Modern Galaxy `SI_TPL.galaxy = {..., galaxy: G, sun: S, ...}` script metadata
+    if isinstance(html, str) and "SI_TPL.galaxy" in html:
+        m_tpl_g = re.search(r"\bgalaxy\s*:\s*(\d{1,2})\b", html, re.ASCII)
+        m_tpl_s = re.search(r"\bsun\s*:\s*(\d{1,3})\b", html, re.ASCII)
+        if m_tpl_g and gal_found is None:
+            gal_found = _valid_gal(m_tpl_g.group(1))
+        if m_tpl_s and sys_found is None:
+            sys_found = _valid_sys(m_tpl_s.group(1))
+        if gal_found is not None and sys_found is not None:
+            return gal_found, sys_found
+
+    # Remove own-planet switcher badges (`#planet-coords`, `#planet-list`) before text coordinate fallback
+    for own_el in soup.select("#planet-coords, #planet-list"):
+        own_el.decompose()
 
     # 3a. Header text (`Galaxy/System [GG:SSS]` or `System: [GG:SSS]` or `System GG:SSS`)
     text_parts: list[str] = []
@@ -879,17 +894,17 @@ def extract_galaxy_system_coords(
         (mg, ms), _ = strong_triple_counts.most_common(1)[0]
         return (gal_found or mg), (sys_found or ms)
 
-    # 5. URL query parameters (`galaxy`/`gal`, `system`/`sun`)
+    # 5. URL query parameters (`galaxy`/`gal`/`g`, `system`/`sun`/`s`)
     if url:
         qs = parse_qs(urlparse(url).query)
         if gal_found is None:
-            for key in ("galaxy", "gal"):
+            for key in ("galaxy", "gal", "g"):
                 if key in qs and qs[key]:
                     gal_found = _valid_gal(qs[key][0])
                     if gal_found is not None:
                         break
         if sys_found is None:
-            for key in ("system", "sun"):
+            for key in ("system", "sun", "s"):
                 if key in qs and qs[key]:
                     sys_found = _valid_sys(qs[key][0])
                     if sys_found is not None:
@@ -1233,6 +1248,76 @@ def parse_galaxy_system_html(
                     spy_href=spy_href,
                     has_asteroid=has_asteroid,
                     attack_href=attack_href,
+                )
+            )
+
+    # Fallback for SpaceInvasion Classic 2D Graphical Map (`div.planet-hit` populated via `si.getData()`)
+    if not slots:
+        for hit in soup.select("div.planet-hit"):
+            pos: Optional[int] = None
+            for div_child in reversed(hit.find_all("div")):
+                if div_child.find("div") is not None:
+                    continue
+                pos_txt = div_child.get_text(" ", strip=True)
+                if pos_txt.isascii() and pos_txt.isdigit():
+                    cand = int(pos_txt)
+                    if 1 <= cand <= 16:
+                        pos = cand
+                        break
+            if pos is None or pos in seen_pos:
+                continue
+            seen_pos.add(pos)
+
+            spacia_el = hit.select_one(".spacia-planet")
+            b_el = hit.find("b")
+            occupied = spacia_el is not None or b_el is not None
+            planet_name = ""
+            owner = ""
+            if spacia_el is not None:
+                planet_name = " ".join(spacia_el.get_text(" ", strip=True).split())
+            elif b_el is not None:
+                planet_name = " ".join(b_el.get_text(" ", strip=True).split())
+
+            if occupied:
+                label_span = (spacia_el or b_el).find_parent("span") if (spacia_el or b_el) is not None else None
+                span_txt = " ".join((label_span or hit).get_text(" ", strip=True).split())
+                m_own = re.search(r"\(([^()]+)\)", span_txt)
+                if m_own:
+                    owner = m_own.group(1).strip()
+
+            is_spacia = spacia_el is not None or owner.lower() == "spacia"
+            if is_spacia and planet_name and not owner:
+                owner = "Spacia"
+
+            has_debris = hit.select_one(".rubble-orbit, [name='rubblefield']") is not None
+            has_asteroid = hit.select_one("[name='astro'], [id^='astro-']") is not None
+            row_html = str(hit).lower()
+            row_text = f"{planet_name} ({owner})" if occupied else ""
+            style_attrs, semantic_attrs = _extract_slot_attr_blobs(hit)
+            if occupied and ("opacity:0.6" in style_attrs or "0px 0px 2px #fff" in style_attrs):
+                status_color = "white"
+            else:
+                status_color = _classify_slot_status(
+                    occupied=occupied,
+                    is_spacia=is_spacia,
+                    row_html=row_html,
+                    row_text=row_text,
+                    style_attrs=style_attrs,
+                    semantic_attrs=semantic_attrs,
+                )
+            coords = f"{gal:02d}:{sys_num:03d}:{pos:02d}"
+            slots.append(
+                GalaxySlot(
+                    coords=coords,
+                    position=pos,
+                    name=planet_name,
+                    owner=owner,
+                    status_color=status_color,
+                    has_debris=has_debris,
+                    is_spacia=is_spacia,
+                    spy_href=None,
+                    has_asteroid=has_asteroid,
+                    attack_href=None,
                 )
             )
 

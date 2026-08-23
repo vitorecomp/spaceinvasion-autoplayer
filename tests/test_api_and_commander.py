@@ -3149,6 +3149,101 @@ class TestApiAndCommander(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_sync_economy_command_loop_metal_check_and_home_queue_building_id(self) -> None:
+        from pathlib import Path
+        from unittest.mock import MagicMock
+        import commander
+        from spaceinvasion import api_server as api_mod
+        from spaceinvasion.state import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+            parse_home_metadata,
+            parse_ticker_rates,
+        )
+
+        # 1. parse_home_metadata extracts building_id & target_level; parse_ticker_rates reads #metall
+        home_html = """
+        <form id="ress" style="display:none;">
+          <input type="hidden" id="roheisen" value="29.13" />
+          <input type="hidden" id="metall" value="0" />
+        </form>
+        <script>SI_TPL={planetID:12476};</script>
+        <div id="sp-own-building">Fusion plant (Level 19)</div>
+        """
+        pid, _, _, queues, _ = parse_home_metadata(home_html)
+        self.assertEqual(pid, 12476)
+        self.assertEqual(len(queues), 1)
+        self.assertEqual(queues[0].building_id, 5)
+        self.assertEqual(queues[0].target_level, 19)
+        ticker = parse_ticker_rates(home_html)
+        self.assertEqual(ticker["metal"], 0.0)
+        self.assertAlmostEqual(ticker["pig_iron"], 29.13)
+
+        # 2. sync_economy API command & commander loop check
+        econ_html = """
+        <form name="economy" action="" method="POST">
+          <select name="resource1"><option value="100" selected>100%</option></select>
+          <select name="resource2"><option value="0" selected>0%</option></select>
+          <select name="resource5"><option value="100" selected>100%</option></select>
+          <input type="submit" value="Calculate" />
+        </form>
+        """
+        p_col = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=50,
+            fields_max=230,
+            resources=Resources(50_000, 22_925, 100_000, 40_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(3000, 2000),
+            buildings={"b1": 18, "b2": 18, "b5": 20},
+        )
+        st_init = GameState(31, 1, "u", 1000.0, (p_col,), active_planet_id=12476, speedup_factor=20.0)
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value = fake_client
+        fake_client.__exit__.return_value = False
+        fake_client.navigate_menu.return_value = econ_html
+        fake_client.read_full_snapshot.return_value = st_init
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bridge = api_mod.GameApiBridge(
+                db_path=Path(tmp) / "sync.db",
+                config_path=Path(tmp) / "cfg.yaml",
+                log_dir=Path(tmp) / "logs",
+                client_factory=lambda _p: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                bridge._record_state(st_init, fetched_buildings=True, fetched_home=True)
+                res_sync = bridge.handle_command({"command": "sync_economy", "planet_id": 12476})
+                self.assertTrue(res_sync["ok"])
+                self.assertFalse(res_sync["metal_production_enabled"])
+                self.assertEqual(res_sync["blast_furnace_pct"], 0)
+                bot_st = bridge.get_bot_control()
+                self.assertFalse(bot_st["metal_production_by_planet"]["12476"])
+                self.assertIn("12476", bot_st["economy_sync_timestamps"])
+
+                # Commander loop invokes sync_economy when economy_sync_timestamps is stale/empty
+                mock_api = MagicMock()
+                mock_api.get_state.return_value = st_init
+                mock_api.send_command.return_value = res_sync
+                st_out, _, _, _, _ = commander.run_commander_tick(
+                    mock_api,
+                    live=True,
+                    max_actions=0,
+                    include_buildings=True,
+                    economy_sync_timestamps={},
+                )
+                self.assertEqual(mock_api.send_command.call_args_list[0].args[0]["command"], "sync_economy")
+                self.assertEqual(st_out.planets[0].economy_rates["resource2"], 0)
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

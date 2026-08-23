@@ -12,8 +12,10 @@ cookies.json
 # Local strategy overrides (copy from config.example.yaml)
 config.yaml
 
-# Runtime state snapshots (logs are intentionally committed after sid redaction)
+# Runtime state snapshots & local crash/debug traces (never committed)
 state/
+logs/crash_debug.*
+crash_debug.*
 
 # Python artifacts
 __pycache__/

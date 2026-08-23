@@ -23,14 +23,14 @@ from urllib.parse import parse_qs, urlparse
 from bs4 import BeautifulSoup
 
 from spaceinvasion import game_data
-from spaceinvasion.auth import SpaceInvasionAuthError, load_credentials
+from spaceinvasion.auth import AntiBotChallengeError, SpaceInvasionAuthError, load_credentials
 from spaceinvasion.browser import (
     DEFAULT_DEBUG_PORT,
     BrowserConfig,
     is_debug_port_open,
     login_with_browser,
 )
-from spaceinvasion.client import GameBrowserClient, PageViewLimiter, RateLimitError
+from spaceinvasion.client import GameBrowserClient, PageViewLimiter, RateLimitError, is_server_rate_limit_html
 from spaceinvasion.config import (
     StrategyConfig,
     load_strategy_config,
@@ -54,6 +54,7 @@ from spaceinvasion.logging_utils import (
     _SID_RE as _LOG_SID_RE,
     _sub_sid_kv as _sub_log_sid_kv,
     append_api_log,
+    append_crash_debug_log,
     is_secret_dict_key,
     redact_sensitive,
 )
@@ -846,7 +847,7 @@ class GameApiBridge:
         debug_port: int = DEFAULT_DEBUG_PORT,
         env_file: Path = Path(".env"),
         account: str = "default",
-        config_path: Path = Path("config.yaml"),
+        config_path: Optional[Path] = None,
         max_actions_per_hour: Optional[int] = None,
         log_dir: Optional[Path] = Path("logs"),
         db_path: Optional[Path] = None,
@@ -859,8 +860,15 @@ class GameApiBridge:
         self.debug_port = _safe_debug_port(debug_port, DEFAULT_DEBUG_PORT)
         self.env_file = env_file
         self.account = account
-        self.config_path = config_path
-        self.strategy_config: StrategyConfig = load_strategy_config(config_path)
+        if config_path is not None:
+            self.config_path = config_path
+            self.strategy_config: StrategyConfig = load_strategy_config(config_path)
+        elif log_dir is not None:
+            self.config_path = Path("config.yaml")
+            self.strategy_config = load_strategy_config(self.config_path)
+        else:
+            self.config_path = Path("config.yaml")
+            self.strategy_config = StrategyConfig()
         self.log_dir = log_dir
         self._lock = threading.Lock()
         self._page_limiter = page_limiter or PageViewLimiter()
@@ -889,6 +897,7 @@ class GameApiBridge:
         self._last_shipyard_sync_sig: Optional[tuple[int, int, tuple[tuple[str, int], ...]]] = None
         self._last_spio_sync_at: float = 0.0
         self._economy_rates: dict[int, dict[str, int]] = {}
+        self._economy_sync_timestamps: dict[int, float] = {}
         self._scanned_systems: dict[str, float] = {}
         self._throttle_timestamps: dict[int, float] = {}
         self._rank_history_path: Optional[Path] = (
@@ -1192,6 +1201,11 @@ class GameApiBridge:
 
     def get_bot_control(self) -> dict[str, Any]:
         with self._lock:
+            metal_prod = {
+                str(pid): _safe_api_int(rates.get("resource2", 100), 100) > 0
+                for pid, rates in self._economy_rates.items()
+                if isinstance(rates, Mapping)
+            }
             return _sanitize_finite_json(
                 _redact_api_payload(
                     {
@@ -1199,6 +1213,8 @@ class GameApiBridge:
                         **dict(self._bot_control),
                         "scanned_systems": self._get_scanned_systems(),
                         "throttle_cooldowns": self._get_throttle_cooldowns(),
+                        "economy_sync_timestamps": dict(self._economy_sync_timestamps),
+                        "metal_production_by_planet": metal_prod,
                     }
                 )
             )
@@ -1405,7 +1421,11 @@ class GameApiBridge:
         updated_planets: list[PlanetState] = []
         for planet in state.planets:
             if planet.economy_rates:
-                self._economy_rates[planet.planet_id] = dict(planet.economy_rates)
+                prev_cached = self._economy_rates.get(planet.planet_id)
+                new_rates = dict(planet.economy_rates)
+                self._economy_rates[planet.planet_id] = new_rates
+                if self._db is not None and prev_cached != new_rates:
+                    self._db.save_economy_rates(planet.planet_id, planet.coords, new_rates)
                 updated_planets.append(planet)
             elif planet.planet_id in self._economy_rates:
                 changed = True
@@ -1738,6 +1758,20 @@ class GameApiBridge:
                     )
             except RateLimitError as exc:
                 self._record_server_rate_limit(exc)
+                if self.log_dir is not None:
+                    append_crash_debug_log(
+                        component="api_server.get_state",
+                        event="rate_limit",
+                        error=exc,
+                    )
+                raise
+            except (SpaceInvasionAuthError, AntiBotChallengeError, Exception) as exc:
+                if self.log_dir is not None and not isinstance(exc, ApiRequestError):
+                    append_crash_debug_log(
+                        component="api_server.get_state",
+                        event="state_error",
+                        error=exc,
+                    )
                 raise
             return _sanitize_finite_json(_redact_api_payload(asdict(self._attach_raid_stats(merged))))
 
@@ -2376,6 +2410,7 @@ class GameApiBridge:
             for pid, rates in getattr(executor, "last_economy_rates", {}).items():
                 if rates:
                     self._economy_rates[int(pid)] = dict(rates)
+                    self._economy_sync_timestamps[int(pid)] = time.time()
                     if self._db is not None:
                         coords = next((p.coords for p in state.planets if p.planet_id == int(pid)), "")
                         self._db.save_economy_rates(int(pid), coords, rates)
@@ -3299,7 +3334,7 @@ class GameApiBridge:
                             if action == "internalHome":
                                 low_h = html.lower()
                                 if (
-                                    "made more than" not in low_h
+                                    not is_server_rate_limit_html(html)
                                     and "bitmeup-login" not in low_h
                                     and "sip-tab-universe" not in low_h
                                 ):
@@ -3330,6 +3365,13 @@ class GameApiBridge:
                                 target_rate_pid = valid_nav_pid or (active_p.planet_id if active_p is not None else None)
                                 if target_rate_pid is not None:
                                     self._economy_rates[target_rate_pid] = dict(rates)
+                                    self._economy_sync_timestamps[target_rate_pid] = time.time()
+                                    if self._db is not None:
+                                        p_coords = next(
+                                            (p.coords for p in self._last_state.planets if p.planet_id == target_rate_pid),
+                                            "",
+                                        )
+                                        self._db.save_economy_rates(target_rate_pid, p_coords, rates)
                                     switched_pid = (
                                         valid_nav_pid is not None
                                         and self._last_state.active_planet_id != valid_nav_pid
@@ -3867,6 +3909,69 @@ class GameApiBridge:
                         )
                         return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
+                    if cmd == "sync_economy":
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
+                        state = _cached_or_fetch(
+                            include_buildings=False,
+                            include_research=False,
+                            include_shipyard=False,
+                            include_home=False,
+                            priority="normal",
+                        )
+                        planet = self._resolve_planet(state, pid)
+                        ptype_norm = normalize_planet_type(planet)
+                        if ptype_norm in ("asteroid", "raid"):
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "planet_id": planet.planet_id,
+                                        "economy_rates": {},
+                                        "blast_furnace_pct": 0,
+                                        "metal_production_enabled": False,
+                                        "state": asdict(self._attach_raid_stats(state)),
+                                    }
+                                )
+                            )
+                        client = _get_client()
+                        e_html = self._live_executor._navigate_and_select_planet(
+                            client,
+                            state,
+                            "internalEconomy",
+                            planet.planet_id,
+                        )
+                        rates = parse_economy_rates(e_html)
+                        if rates:
+                            self._economy_rates[planet.planet_id] = dict(rates)
+                            self._economy_sync_timestamps[planet.planet_id] = time.time()
+                            if self._db is not None:
+                                self._db.save_economy_rates(planet.planet_id, planet.coords, rates)
+                        synced_state = self._refresh_cached_economy(self._last_state or state)
+                        bf_pct = _safe_api_int(
+                            (self._economy_rates.get(planet.planet_id) or rates or {}).get("resource2", 100),
+                            100,
+                        )
+                        return _sanitize_finite_json(
+                            _redact_api_payload(
+                                {
+                                    "ok": True,
+                                    "command": cmd,
+                                    "planet_id": planet.planet_id,
+                                    "economy_rates": dict(self._economy_rates.get(planet.planet_id) or rates or {}),
+                                    "blast_furnace_pct": bf_pct,
+                                    "metal_production_enabled": bf_pct > 0,
+                                    "state": asdict(self._attach_raid_stats(synced_state)),
+                                }
+                            )
+                        )
+
                     if cmd == "throttle_building":
                         bid = _parse_command_int(
                             "building_id",
@@ -4010,6 +4115,22 @@ class GameApiBridge:
                     raise ApiRequestError(f"Unknown command {cmd!r}.")
             except RateLimitError as exc:
                 self._record_server_rate_limit(exc)
+                if self.log_dir is not None:
+                    append_crash_debug_log(
+                        component="api_server.handle_command",
+                        event=f"rate_limit:{cmd}",
+                        error=exc,
+                        details={"command": cmd, "payload": payload},
+                    )
+                raise
+            except (SpaceInvasionAuthError, AntiBotChallengeError, Exception) as exc:
+                if self.log_dir is not None and not isinstance(exc, ApiRequestError):
+                    append_crash_debug_log(
+                        component="api_server.handle_command",
+                        event=f"command_error:{cmd}",
+                        error=exc,
+                        details={"command": cmd, "payload": payload},
+                    )
                 raise
 
 

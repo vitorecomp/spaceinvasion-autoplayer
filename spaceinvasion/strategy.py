@@ -775,6 +775,19 @@ def _tutorial_fight_task(state: GameState) -> Optional[object]:
     return None
 
 
+def _tutorial_spy_task(state: GameState) -> Optional[object]:
+    """Return active incomplete tutorial espionage milestone task, if any."""
+    if state.tutorial is None or state.tutorial.can_complete:
+        return None
+    for task in state.tutorial.tasks:
+        if task.completed or task.category != "milestone":
+            continue
+        desc = _safe_strategy_str(task.description).lower()
+        if any(word in desc for word in ("spy", "espionage", "spionage", "probe")):
+            return task
+    return None
+
+
 def _plan_tutorial_fleet_milestones(
     state: GameState,
     active: PlanetState,
@@ -896,6 +909,48 @@ def _plan_tutorial_fleet_milestones(
             if any(word in desc_l for word in ("fight", "attack", "combat", "battle")):
                 # Handled at P2 as SCAN_GALAXY / ATTACK by `_plan_combat_and_raid_actions`
                 continue
+            if any(word in desc_l for word in ("spy", "espionage", "spionage", "probe")):
+                has_any_probe = any(
+                    _safe_strategy_int(p.ships.get("s10", 0), 0) > 0
+                    for p in non_raid_candidates
+                )
+                if has_any_probe:
+                    # Handled at P2 as SCAN_GALAXY / SPY by `_plan_combat_and_raid_actions`
+                    continue
+                if non_raid_candidates:
+                    probe_cand = non_raid_candidates[0]
+                    p_offer = _ship_offer_map(probe_cand).get(10)
+                    p_info = game_data.SHIPS.get("spy-probe") or {}
+                    p_cost = p_offer.cost if p_offer is not None else _resources_from_dict(p_info.get("base_cost", {}))
+                    p_can_exec = bool(
+                        p_offer is not None
+                        and probe_cand.building_level(WEAPONS_FACTORY) >= 1
+                        and not game_data.missing_prerequisites(
+                            "ships",
+                            "spy-probe",
+                            buildings=probe_cand.buildings,
+                            researches=state.researches,
+                        )
+                        and config.allow_shipyard
+                        and p_offer.can_build
+                        and probe_cand.resources.can_afford(p_cost)
+                    )
+                    out.append(
+                        PlannedAction(
+                            priority="P2",
+                            kind="BUILD_SHIP",
+                            planet_id=probe_cand.planet_id,
+                            planet_coords=_safe_strategy_str(probe_cand.coords),
+                            target_id=10,
+                            target_name=_safe_strategy_str(p_offer.name) if p_offer is not None else "Spy probe",
+                            target_level=1,
+                            cost=p_cost,
+                            missing=probe_cand.resources.missing(p_cost),
+                            reason=f"Tutorial {tut_step_s}/{tut_total_s}: build Spy probe for {desc_s}",
+                            executable_now=p_can_exec,
+                        )
+                    )
+                    continue
             out.append(
                 PlannedAction(
                     priority="P3",
@@ -938,7 +993,9 @@ def _plan_combat_and_raid_actions(
 
     ref_now = _safe_strategy_float(now_ts, time.time()) if now_ts is not None else time.time()
     tut_fight = _tutorial_fight_task(state)
+    tut_spy = _tutorial_spy_task(state)
     tutorial_fight_pending = tut_fight is not None
+    tutorial_spy_pending = tut_spy is not None
 
     def _planet_attack_ships(planet: PlanetState) -> dict[str, int]:
         return {
@@ -978,6 +1035,7 @@ def _plan_combat_and_raid_actions(
     if (
         not raid_targets
         and not tutorial_fight_pending
+        and not tutorial_spy_pending
         and not cfg.allow_galaxy_scan
         and not cfg.allow_raids
         and not has_attack_fleet
@@ -1065,7 +1123,7 @@ def _plan_combat_and_raid_actions(
         tag = "Spacia" if is_spacia else ("Inactive" if status_color == "yellow" else status_color.title())
         target_label = f"{coords} ({owner or pname or tag})"
 
-        if has_probes and not tutorial_fight_pending and eligible_target and (not has_intel or stale_intel):
+        if has_probes and (tutorial_spy_pending or not tutorial_fight_pending) and eligible_target and (tutorial_spy_pending or not has_intel or stale_intel):
             assert probe_planet is not None
             spy_actions.append(
                 (
@@ -1079,14 +1137,14 @@ def _plan_combat_and_raid_actions(
                         target_level=1,
                         target_name=target_label,
                         reason=(
-                            f"Send Spy probe (s10) to scout {tag} {coords}"
-                            + (" (refresh stale intel)" if stale_intel else " before raiding")
+                            f"{'Tutorial spy: ' if tutorial_spy_pending else ''}Send Spy probe (s10) to scout {tag} {coords}"
+                            + (" (refresh stale intel)" if (stale_intel and not tutorial_spy_pending) else " before raiding")
                         ),
                         executable_now=bool(cfg.allow_galaxy_scan),
                     ),
                 )
             )
-            if not has_intel:
+            if tutorial_spy_pending or not has_intel:
                 continue
 
         report = SpyReport(
@@ -1116,7 +1174,14 @@ def _plan_combat_and_raid_actions(
         if rec is None:
             continue
 
-        can_exec = bool(cfg.allow_raids and has_attack_fleet and rec.combat.safe_to_attack)
+        own_fleet_in_flight = any(q.category == "fleet" for q in state.active_queues)
+        hold_tutorial_inflight = bool(tutorial_fight_pending and own_fleet_in_flight)
+        can_exec = bool(
+            cfg.allow_raids
+            and has_attack_fleet
+            and rec.combat.safe_to_attack
+            and not hold_tutorial_inflight
+        )
         if rec.loot_spice_equivalent > 0:
             loot_disp = (
                 game_data.fmt_compact_int(round(rec.loot_spice_equivalent), grouped=True)
@@ -1127,6 +1192,8 @@ def _plan_combat_and_raid_actions(
         else:
             loot_note = "scouted inactive target"
         gates: list[str] = []
+        if hold_tutorial_inflight:
+            gates.append("tutorial raid fleet already in transit")
         if not has_attack_fleet:
             gates.append("need stationed attack/transport ships")
         if not cfg.allow_raids:
@@ -1136,9 +1203,11 @@ def _plan_combat_and_raid_actions(
         gate_suffix = f" [Hold: {'; '.join(gates)}]" if gates else " [Safe >=1.4x]"
         tut_prefix = "Tutorial fight: " if tutorial_fight_pending else ""
 
+        o_gal, o_sys, o_pos = _parse_gal_sys_pos(origin.coords)
+        phys_dist = abs(o_gal - t_gal) * 20000 + abs(o_sys - t_sys) * 95 + abs(o_pos - pos) * 5
         scored_attacks.append(
             (
-                (0 if can_exec else 1, -rec.loot_spice_equivalent, rec.distance_score),
+                (0 if can_exec else 1, -rec.distance_score, -rec.loot_spice_equivalent, phys_dist),
                 PlannedAction(
                     priority="P2",
                     kind="ATTACK",
@@ -1150,6 +1219,10 @@ def _plan_combat_and_raid_actions(
                 ),
             )
         )
+
+    if tutorial_spy_pending and spy_actions:
+        spy_actions.sort(key=lambda item: item[0])
+        return [act for _, act in spy_actions[:3]]
 
     if scored_attacks:
         scored_attacks.sort(key=lambda item: item[0])
@@ -1602,16 +1675,25 @@ def _plan_unlock_and_advisory_actions(
                 )
                 if m.get("category") == "buildings"
             ]
+            own_fleet_in_flight = any(q.category == "fleet" for q in state.active_queues)
+            hold_for_in_flight = (
+                own_fleet_in_flight
+                and sid_num not in tutorial_ship_ids
+                and sid_num in (1, 2, 3, 4, 5, 6, 7, 13, 14, 15, 16)
+            )
             has_wf_now = planet.building_level(WEAPONS_FACTORY) >= 1 and not missing_b
             can_exec = (
                 not is_raid
+                and not hold_for_in_flight
                 and has_wf_now
                 and offer is not None
                 and offer.can_build
                 and planet.resources.can_afford(cost)
             )
             ship_reason = f"Fleet build target ({game_data.fmt_compact_int(owned)}/{game_data.fmt_compact_int(target_cnt)} {ship_name})"
-            if planet.building_level(WEAPONS_FACTORY) < 1:
+            if hold_for_in_flight:
+                ship_reason += " (hold while own fleet is in transit)"
+            elif planet.building_level(WEAPONS_FACTORY) < 1:
                 ship_reason += " (Weapons factory b9 required)"
             elif missing_b:
                 first_req = missing_b[0]
@@ -1673,6 +1755,25 @@ def _plan_economy_for_planet(
     )
     blast_used_next = game_data.blast_furnace_pig_iron_used(blast_lvl + 1)
     blast_pig_capped = pig_prod <= 0 or (blast_used_next > pig_prod * config.blast_pig_iron_max_share)
+    rates = getattr(planet, "economy_rates", None) or {}
+    cur_b2_pct = max(0, min(100, _safe_strategy_int(rates.get("resource2", 100), 100)))
+    tut_needs_b2 = bool(
+        state.tutorial
+        and not state.tutorial.can_complete
+        and any(
+            not t.completed and t.category == "building" and t.building_id == BLAST_FURNACE
+            for t in state.tutorial.tasks
+        )
+    )
+    b2_offer = offers.get(BLAST_FURNACE)
+    blast_paused_hold = (
+        cur_b2_pct == 0
+        and blast_lvl >= 1
+        and config.auto_throttle_blast_furnace
+        and not config.merchant_mode
+        and not tut_needs_b2
+        and (b2_offer is None or b2_offer.cost.metal == 0)
+    )
 
     scored_mines: list[tuple[float, int, int, str]] = []
     deferred_blast: Optional[tuple[float, int, int, str]] = None
@@ -1693,6 +1794,14 @@ def _plan_economy_for_planet(
         nxt_lvl_s = game_data.fmt_compact_int(nxt_lvl)
         reason = f"Best mine ROI ({payback_h:.1f}h Spice payback, +{delta_sp:.1f} Spice-eq/h @ {temp_s}C)"
         if bid == BLAST_FURNACE:
+            if blast_paused_hold:
+                deferred_blast = (
+                    payback_h,
+                    bid,
+                    nxt_lvl,
+                    f"Blast furnace L{game_data.fmt_compact_int(blast_lvl)} is paused at 0%; resume Metal smelting before upgrading to L{nxt_lvl_s}",
+                )
+                continue
             if blast_pig_capped:
                 deferred_blast = (
                     payback_h,
@@ -1810,7 +1919,122 @@ def _plan_economy_for_planet(
             researches=state.researches,
             allow_remote_colony_build=allow_remote_build,
         )
-        advisories.append(_apply_queue_cap_if_full(act, queue_full))
+        capped_act = _apply_queue_cap_if_full(act, queue_full)
+        if blast_paused_hold and capped_act.executable_now:
+            capped_act = replace(
+                capped_act,
+                kind="WAIT_RESOURCES",
+                executable_now=False,
+            )
+        advisories.append(capped_act)
+
+    # Reserve energy and proactively scale power when Blast furnace is paused (0%) and Metal is needed
+    if (
+        cur_b2_pct == 0
+        and blast_lvl >= 1
+        and config.auto_throttle_blast_furnace
+        and not config.merchant_mode
+        and has_free_fields
+    ):
+        b2_latent_energy = abs(
+            _safe_strategy_int(
+                game_data.building_level_stats(BLAST_FURNACE, blast_lvl).get("energy", 0) or 0,
+                0,
+            )
+        )
+        colony_needs_metal = any(
+            a.missing.metal > 0
+            for a in (*unlocks, *advisories, *(m for _, m in mine_actions))
+        )
+        if colony_needs_metal and b2_latent_energy > 0:
+            power_bid, power_name, power_note = _pick_best_power_building(
+                planet,
+                eff_buildings,
+                state.researches,
+            )
+            already_has_power = any(
+                a.target_id in (FUSION_PLANT, THERMOSOLAR_PLANT, SOLAR_CELLS_ID)
+                for a in priority_builds
+            )
+            if (
+                projected_net < b2_latent_energy
+                and _safe_strategy_int(planet.energy.net, 0) >= 0
+                and not already_has_power
+                and _is_building_allowed_on_planet(planet, power_bid, offers)
+            ):
+                p1_bf_pw = _make_build_action(
+                    "P1",
+                    planet,
+                    power_bid,
+                    power_name,
+                    (
+                        f"Proactive power ({power_note}) to resume Blast furnace L{game_data.fmt_compact_int(blast_lvl)} "
+                        f"(needs {game_data.fmt_compact_int(b2_latent_energy)} energy, net {game_data.fmt_compact_int(projected_net, signed=True)})"
+                    ),
+                    offers,
+                    effective_level=_eff_level(planet, eff_buildings, power_bid),
+                    researches=state.researches,
+                    allow_remote_colony_build=allow_remote_build,
+                )
+                priority_builds.insert(0, _apply_queue_cap_if_full(p1_bf_pw, queue_full))
+            elif projected_net >= b2_latent_energy:
+                pw_offer = offers.get(power_bid)
+                pw_already_buildable = bool(
+                    not queue_full
+                    and pw_offer is not None
+                    and pw_offer.can_build
+                    and planet.resources.can_afford(pw_offer.cost)
+                )
+                if not pw_already_buildable:
+                    net_after_b2 = projected_net - b2_latent_energy
+                    held_any_mine = False
+                    guarded_mines: list[tuple[float, PlannedAction]] = []
+                    for pb_h, m_act in mine_actions:
+                        m_tid = game_data.safe_optional_int(m_act.target_id, None)
+                        m_lvl = _safe_strategy_int(m_act.target_level, 0)
+                        if (
+                            m_act.executable_now
+                            and m_tid is not None
+                            and _energy_starvation_delta(m_tid, m_lvl, net_after_b2) < 0
+                        ):
+                            held_any_mine = True
+                            guarded_mines.append(
+                                (
+                                    pb_h,
+                                    replace(
+                                        m_act,
+                                        kind="WAIT_RESOURCES",
+                                        executable_now=False,
+                                        reason=(
+                                            f"{m_act.reason} (hold until power covers paused Blast furnace "
+                                            f"L{game_data.fmt_compact_int(blast_lvl)} +{game_data.fmt_compact_int(b2_latent_energy)} energy)"
+                                        ),
+                                    ),
+                                )
+                            )
+                        else:
+                            guarded_mines.append((pb_h, m_act))
+                    mine_actions = guarded_mines
+                    if (
+                        held_any_mine
+                        and not already_has_power
+                        and _is_building_allowed_on_planet(planet, power_bid, offers)
+                    ):
+                        p2_bf_pw = _make_build_action(
+                            "P2",
+                            planet,
+                            power_bid,
+                            power_name,
+                            (
+                                f"Scale power ({power_note}) so Blast furnace L{game_data.fmt_compact_int(blast_lvl)} "
+                                f"can resume 100% alongside next mine"
+                            ),
+                            offers,
+                            effective_level=_eff_level(planet, eff_buildings, power_bid),
+                            researches=state.researches,
+                            allow_remote_colony_build=allow_remote_build,
+                        )
+                        priority_builds.append(_apply_queue_cap_if_full(p2_bf_pw, queue_full))
 
     return mine_actions, priority_builds, advisories
 
@@ -1842,6 +2066,7 @@ def _plan_blast_furnace_throttle(
     e_net = _safe_strategy_int(getattr(planet.energy, "net", 0), 0)
     res_pig = _safe_strategy_int(getattr(planet.resources, "pig_iron", 0), 0)
     res_met = _safe_strategy_int(getattr(planet.resources, "metal", 0), 0)
+    sto_pig = _safe_strategy_int(getattr(planet.storage, "pig_iron", 0), 0)
     sto_met = _safe_strategy_int(getattr(planet.storage, "metal", 0), 0)
 
     ref_now = _safe_strategy_float(now_ts, time.time()) if now_ts is not None else time.time()
@@ -1899,12 +2124,22 @@ def _plan_blast_furnace_throttle(
     metal_cap_pct = game_data.safe_big_ratio(res_met, sto_met, cap=1e200) if sto_met > 0 else 0.0
 
     b2_full_energy = abs(_safe_strategy_int(game_data.building_level_stats(BLAST_FURNACE, b2_lvl).get("energy", 0) or 0, 0))
+    pause_pig_floor = math.ceil(max(500.0, bf_pig_used_full * 0.5)) if math.isfinite(bf_pig_used_full) else 500
+    pause_pig_full = math.ceil(bf_pig_used_full) if math.isfinite(bf_pig_used_full) else 0
+    top_pig_storage_capped = bool(
+        top_blocker is not None and sto_pig > 0 and top_blocker.cost.pig_iron > sto_pig
+    )
+    metal_starved_with_positive_pig = bool(
+        any_needs_metal and net_pig_at_100 >= 0 and res_pig >= pause_pig_floor
+    )
     candidate: Optional[PlannedAction] = None
 
     if cur_b2_pct > 0:
-        pause_pig_floor = math.ceil(max(500.0, bf_pig_used_full * 0.5)) if math.isfinite(bf_pig_used_full) else 500
-        pause_pig_full = math.ceil(bf_pig_used_full) if math.isfinite(bf_pig_used_full) else 0
-        if top_needs_pig_only or (
+        if (
+            top_needs_pig_only
+            and not top_pig_storage_capped
+            and not metal_starved_with_positive_pig
+        ) or (
             not any_needs_metal
             and net_pig_at_100 < 0
             and res_pig < pause_pig_floor
@@ -1947,7 +2182,12 @@ def _plan_blast_furnace_throttle(
         # Currently paused (0%): apply energy-coupling lookahead and symmetric deadband before resuming 100%
         if metal_cap_pct >= warn_ratio * 0.85:
             return None
-        if any(a.priority == "P1" and a.missing.pig_iron > 0 for a in p_acts):
+        if any(
+            a.priority == "P1"
+            and a.missing.pig_iron > 0
+            and not (sto_pig > 0 and a.cost.pig_iron > sto_pig)
+            for a in p_acts
+        ):
             return None
 
         resume_energy_cost = int(round(b2_full_energy * max(0, 100 - cur_b2_pct) / 100.0))
@@ -2027,7 +2267,7 @@ def _plan_blast_furnace_throttle(
                         and planet.resources.can_afford(power_cost)
                         and prereq_ok
                     )
-            if (
+            if not metal_starved_with_positive_pig and (
                 has_p1_power
                 or miss_pw.pig_iron > 0
                 or (not miss_pw.is_zero() and miss_pw.metal == 0)
@@ -2035,7 +2275,11 @@ def _plan_blast_furnace_throttle(
             ):
                 return None
 
-        if top_needs_metal or (not top_needs_pig_only and any_needs_metal and net_pig_at_100 >= 0):
+        if (
+            top_needs_metal
+            or metal_starved_with_positive_pig
+            or (not top_needs_pig_only and any_needs_metal and net_pig_at_100 >= 0)
+        ):
             resume_pig_min_i = max(2000, math.ceil(bf_pig_used_full * 0.6)) if math.isfinite(bf_pig_used_full) else 2000
             if net_pig_at_100 >= 0 or res_pig >= resume_pig_min_i:
                 candidate = PlannedAction(
@@ -2355,6 +2599,57 @@ def _build_pre_throttle_plan(
         all_mines.sort(key=lambda pair: pair[0])
         plan.extend(act for _, act in all_mines)
         plan.extend(all_advisories)
+
+        # Expand warehouse when a P1/P2 planned upgrade exceeds current warehouse capacity
+        for planet in planets_to_check:
+            if _norm_planet_type(planet) in ("asteroid", "raid") or not _planet_has_free_building_fields(planet):
+                continue
+            is_p_active = planet.planet_id == active.planet_id
+            p_offers = _offer_map(planet)
+            if not p_offers:
+                continue
+            eff_b_wh, _ = _effective_building_levels_and_energy(state, planet, is_active_planet=is_p_active)
+            p_queue_full = active_queue_full if is_p_active else False
+            p_allow_remote = cfg.allow_multi_planet and not is_p_active
+            p_wait_acts = [
+                a for a in plan
+                if a.planet_id == planet.planet_id and a.priority in ("P1", "P2") and a.kind == "WAIT_RESOURCES"
+            ]
+            for w_act in p_wait_acts:
+                for rk in ("pig_iron", "metal", "kryptonite", "spice"):
+                    cost_v = _safe_strategy_int(getattr(w_act.cost, rk, 0), 0)
+                    sto_v = _safe_strategy_int(getattr(planet.storage, rk, 0), 0)
+                    if sto_v <= 0 or cost_v <= sto_v:
+                        continue
+                    wh_id, wh_name = _WAREHOUSE_BY_RESOURCE[rk]
+                    if wh_id not in p_offers or not _is_building_allowed_on_planet(planet, wh_id, p_offers):
+                        continue
+                    if is_p_active and queued_counts.get(wh_id, 0) > 0:
+                        continue
+                    if any(
+                        a.planet_id == planet.planet_id and a.target_id == wh_id and a.kind in ("BUILD", "WAIT_RESOURCES")
+                        for a in plan
+                    ):
+                        continue
+                    plan.append(
+                        _apply_queue_cap_if_full(
+                            _make_build_action(
+                                w_act.priority,
+                                planet,
+                                wh_id,
+                                wh_name,
+                                (
+                                    f"Expand {rk.replace('_', ' ')} cap ({game_data.fmt_compact_int(sto_v)}) "
+                                    f"for {w_act.target_name} ({game_data.fmt_compact_int(cost_v)} needed)"
+                                ),
+                                p_offers,
+                                effective_level=_eff_level(planet, eff_b_wh, wh_id),
+                                researches=state.researches,
+                                allow_remote_colony_build=p_allow_remote,
+                            ),
+                            p_queue_full,
+                        )
+                    )
 
         if state.tutorial is not None and not state.tutorial.can_complete:
             plan.extend(

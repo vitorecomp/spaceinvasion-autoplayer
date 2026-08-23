@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Mapping
+import contextlib
 from dataclasses import dataclass, replace
 import inspect
 import math
@@ -27,6 +28,7 @@ from selenium.webdriver.support.ui import Select
 from spaceinvasion import game_data
 from spaceinvasion.client import GameBrowserClient, PageViewLimiter
 from spaceinvasion.fleet import GalaxySlot, parse_galaxy_system_html
+from spaceinvasion.logging_utils import append_crash_debug_log, redact_sensitive
 from spaceinvasion.state import (
     GameState,
     QueueJob,
@@ -280,6 +282,21 @@ class ActionExecutor:
             el.click()
         except ElementClickInterceptedException:
             client.driver.execute_script("arguments[0].click();", el)
+
+    @staticmethod
+    def _set_text_input_value(client: GameBrowserClient, el: Any, value: str) -> None:
+        el.clear()
+        el.send_keys(value)
+        with contextlib.suppress(Exception):
+            cur_val = el.get_attribute("value")
+            if cur_val is not None and str(cur_val) != value:
+                client.driver.execute_script(
+                    "arguments[0].value = arguments[1]; "
+                    "arguments[0].dispatchEvent(new Event('input', {bubbles: true})); "
+                    "arguments[0].dispatchEvent(new Event('change', {bubbles: true}));",
+                    el,
+                    value,
+                )
 
     @staticmethod
     def _find_newplanet_switch_target(html: str, planet_id: int) -> tuple[bool, Optional[str]]:
@@ -1119,7 +1136,7 @@ class ActionExecutor:
                 message=f"Aborted: building b{game_data.fmt_compact_int(bid)} does not support internalEconomy rate control.",
             )
 
-        field_name = f"resource{bid}" if bid <= 4 else "resource5"
+        field_name = f"resource{bid}"
         raw_pct = 0 if action.target_level is None else game_data.safe_int(action.target_level, 0)
         target_pct = max(0, min(100, (raw_pct // 10) * 10))
 
@@ -1147,6 +1164,8 @@ class ActionExecutor:
         tname_s = _safe_str(action.target_name)
         coords_s = _safe_str(action.planet_coords)
         cur_rates = parse_economy_rates(html)
+        if bid == 6 and "resource6" not in cur_rates and "resource5" in cur_rates:
+            field_name = "resource5"
         if cur_rates:
             self.last_economy_rates[action.planet_id] = dict(cur_rates)
         if field_name in cur_rates and cur_rates[field_name] == target_pct:
@@ -1157,6 +1176,14 @@ class ActionExecutor:
                 message=f"No-op: {tname_s} ({field_name}) is already at {target_pct}% on [{coords_s}].",
             )
 
+        econ_soup = BeautifulSoup(html, "html.parser")
+        if econ_soup.select_one('form[name="economy"] input[type="submit"][value="Calculate"]') is not None:
+            submit_css = 'form[name="economy"] input[type="submit"][value="Calculate"]'
+        elif econ_soup.select_one('form[name="economy"] input[type="submit"], form[name="economy"] button[type="submit"]') is not None:
+            submit_css = 'form[name="economy"] input[type="submit"], form[name="economy"] button[type="submit"]'
+        else:
+            submit_css = 'form#ress input[type="submit"], form[action*="internalEconomy"] input[type="submit"], form input[type="submit"]'
+
         client._switch_frame("F_Hauptframe")
         nav_token = self._mark_frame_nav(client)
         paced = False
@@ -1166,7 +1193,7 @@ class ActionExecutor:
                 Select(select_el).select_by_value(str(target_pct))
                 submit_btn = client.driver.find_element(
                     By.CSS_SELECTOR,
-                    'form#ress input[type="submit"], form[action*="internalEconomy"] input[type="submit"], form input[type="submit"]',
+                    submit_css,
                 )
                 if not paced:
                     self._pace_action(client, priority="interactive")
@@ -1200,9 +1227,19 @@ class ActionExecutor:
                 )
 
         updated_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token)
-        updated_rates = parse_economy_rates(updated_html)
-        if not updated_rates:
-            updated_rates = dict(cur_rates)
+        post_rates = parse_economy_rates(updated_html)
+        if field_name in post_rates and post_rates[field_name] != target_pct:
+            self.last_economy_rates[action.planet_id] = dict(post_rates)
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=(
+                    f"Aborted: internalEconomy Calculate submit did not persist "
+                    f"{field_name}={target_pct}% (still {post_rates[field_name]}%) on [{coords_s}]."
+                ),
+            )
+        updated_rates = dict(post_rates) if post_rates else dict(cur_rates)
         updated_rates[field_name] = target_pct
         self.last_economy_rates[action.planet_id] = dict(updated_rates)
 
@@ -1266,7 +1303,20 @@ class ActionExecutor:
 
     @staticmethod
     def _pick_send_fleet_form_css(send_soup: BeautifulSoup) -> str:
-        if send_soup.select_one('form[action*="internalSendFleet"]'):
+        if send_soup.select_one('form[action*="internalSendFleetFinish"]'):
+            return 'form[action*="internalSendFleetFinish"]'
+        send_forms = send_soup.select('form[action*="internalSendFleet"]')
+        if send_forms and any(f.select('input[type="radio"]') for f in send_forms):
+            if len(send_forms) == 1:
+                return 'form[action*="internalSendFleet"]'
+            for f in send_forms:
+                if f.select('input[type="radio"]'):
+                    fid = str(f.get("id") or "").strip()
+                    if fid and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", fid):
+                        return f"form#{fid}"
+        if send_soup.select_one('form[name="fleet"]') and send_soup.select_one('form[name="fleet"] input[type="radio"]'):
+            return 'form[name="fleet"]'
+        if send_forms:
             return 'form[action*="internalSendFleet"]'
         if send_soup.select_one('form[name="fleet"]'):
             return 'form[name="fleet"]'
@@ -1739,6 +1789,9 @@ class ActionExecutor:
     def _extract_fleet_server_error(confirm_html: str) -> Optional[str]:
         if not confirm_html:
             return None
+        m_err = re.search(r"\bfleetErr\.[A-Za-z0-9_]+", confirm_html)
+        if m_err:
+            return m_err.group(0)
         soup = BeautifulSoup(confirm_html, "html.parser")
         for sel in (".error", ".errormessage", ".fehler", ".alert-danger"):
             el = soup.select_one(sel)
@@ -1879,9 +1932,8 @@ class ActionExecutor:
                             if els:
                                 break
                     if els:
-                        els[0].clear()
                         qty_safe = max(1, game_data.cap_json_int(game_data.safe_int(qty, 1)))
-                        els[0].send_keys(str(qty_safe))
+                        self._set_text_input_value(client, els[0], str(qty_safe))
                         filled_any = True
                 if not filled_any:
                     return ExecutionResult(
@@ -1895,8 +1947,7 @@ class ActionExecutor:
                         coord_inp = client.driver.find_element(By.CSS_SELECTOR, _scoped_field_css(fname))
                     else:
                         coord_inp = client.driver.find_element(By.NAME, fname)
-                    coord_inp.clear()
-                    coord_inp.send_keys(fval)
+                    self._set_text_input_value(client, coord_inp, fval)
                 if is_asteroid and "astro" in soup_input_names:
                     if _field_needs_scoping("astro"):
                         astro_cb = client.driver.find_element(By.CSS_SELECTOR, _scoped_field_css("astro"))
@@ -1943,17 +1994,54 @@ class ActionExecutor:
             nav_token=nav_token1,
         )
         send_soup = BeautifulSoup(send_html or "", "html.parser")
+        step1_err = self._extract_fleet_server_error(send_html)
+        if step1_err and send_soup.select_one('input[type="radio"]') is None:
+            append_crash_debug_log(
+                component="executor._dispatch_fleet_mission",
+                event="step1_rejected",
+                details={
+                    "mission_kind": mission_kind,
+                    "target": tname_s,
+                    "ships": ships_to_send,
+                    "server_err": step1_err,
+                    "page_text": " ".join(send_soup.get_text(" ", strip=True).split())[:800],
+                },
+            )
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: fleet step 1 rejected by server ({step1_err}).",
+            )
         form_css = self._pick_send_fleet_form_css(send_soup)
 
         client._switch_frame("F_Hauptframe")
         nav_token2: Optional[str] = None
-        launch_css = f'{form_css} input[type="submit"], {form_css} button[type="submit"]'
+        launch_css = (
+            f'{form_css} input[type="submit"], '
+            f'{form_css} button[type="submit"], '
+            f'{form_css} input#goButton, '
+            f'{form_css} input.fleet-start-button, '
+            f'{form_css} input[onclick*="startFleet"]'
+        )
         paced2 = False
         for attempt in range(2):
             try:
                 radios = client.driver.find_elements(By.CSS_SELECTOR, f'{form_css} input[type="radio"]')
                 mission_radio = self._match_mission_radio(send_soup, form_css, radios, mission_kind)
                 if mission_radio is None:
+                    append_crash_debug_log(
+                        component="executor._dispatch_fleet_mission",
+                        event="mission_radio_missing",
+                        details={
+                            "mission_kind": mission_kind,
+                            "target": tname_s,
+                            "form_css": form_css,
+                            "radios_html": [redact_sensitive(str(r))[:300] for r in send_soup.select('input[type="radio"]')],
+                            "forms_html": [redact_sensitive(str(f))[:1200] for f in send_soup.find_all("form")],
+                            "page_text": " ".join(send_soup.get_text(" ", strip=True).split())[:1000],
+                        },
+                    )
                     return ExecutionResult(
                         executed=False,
                         dry_run=False,
@@ -1987,8 +2075,30 @@ class ActionExecutor:
                     send_html = refreshed_html
                     send_soup = BeautifulSoup(send_html, "html.parser")
                     form_css = self._pick_send_fleet_form_css(send_soup)
-                    launch_css = f'{form_css} input[type="submit"], {form_css} button[type="submit"]'
+                    launch_css = (
+                        f'{form_css} input[type="submit"], '
+                        f'{form_css} button[type="submit"], '
+                        f'{form_css} input#goButton, '
+                        f'{form_css} input.fleet-start-button, '
+                        f'{form_css} input[onclick*="startFleet"]'
+                    )
             except NoSuchElementException:
+                post_click_html = str(getattr(client.driver, "page_source", "") or send_html or "")
+                post_soup = BeautifulSoup(post_click_html, "html.parser")
+                append_crash_debug_log(
+                    component="executor._dispatch_fleet_mission",
+                    event="launch_button_missing",
+                    details={
+                        "mission_kind": mission_kind,
+                        "target": tname_s,
+                        "selected_radio_val": str(mission_radio.get_attribute("value") or "") if mission_radio else None,
+                        "selected_radio_id": str(mission_radio.get_attribute("id") or "") if mission_radio else None,
+                        "selected_radio_name": str(mission_radio.get_attribute("name") or "") if mission_radio else None,
+                        "form_css": form_css,
+                        "forms_tail": [redact_sensitive(str(f))[-3500:] for f in post_soup.find_all("form")],
+                        "page_text": " ".join(post_soup.get_text(" ", strip=True).split())[:1500],
+                    },
+                )
                 return ExecutionResult(
                     executed=False,
                     dry_run=False,
@@ -2006,6 +2116,16 @@ class ActionExecutor:
         confirm_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token2)
         server_err = self._extract_fleet_server_error(confirm_html)
         if server_err:
+            append_crash_debug_log(
+                component="executor._dispatch_fleet_mission",
+                event="step2_rejected",
+                details={
+                    "mission_kind": mission_kind,
+                    "target": tname_s,
+                    "ships": ships_to_send,
+                    "server_err": server_err,
+                },
+            )
             return ExecutionResult(
                 executed=False,
                 dry_run=False,

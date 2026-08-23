@@ -3069,6 +3069,238 @@ class TestActionExecutor(unittest.TestCase):
             self.assertFalse(res.executed)
             self.assertEqual(client.method_calls, [])
 
+    def test_real_three_form_economy_calculate_save_resource6_and_persist_check(self) -> None:
+        base_state, _ = _make_state_and_action()
+        real_econ_before = """
+        <form name="ress" id="ress" style="display:none;">
+          <input type="hidden" id="roheisen" value="29.13" />
+          <input type="hidden" id="metall" value="0" />
+          <input type="submit" value="WrongHiddenSubmit" />
+        </form>
+        <form name="fselect">
+          <select name="planet"><option selected value="indexInternal.es?action=internalEconomy&newPlanet=12476">Colony</option></select>
+        </form>
+        <form name="economy" action="" method="POST">
+          <select name="resource1"><option value="100" selected>100%</option></select>
+          <select name="resource2"><option value="100">100%</option><option value="0" selected>0%</option></select>
+          <select name="resource5"><option value="100" selected>100%</option></select>
+          <select name="resource6"><option value="100" selected>100%</option><option value="0">0%</option></select>
+          <input type="hidden" name="economy" value="1" />
+          <input type="submit" value="Calculate" class="planet" />
+        </form>
+        """
+        real_econ_after = real_econ_before.replace(
+            '<select name="resource2"><option value="100">100%</option><option value="0" selected>0%</option></select>',
+            '<select name="resource2"><option value="100" selected>100%</option><option value="0">0%</option></select>',
+        )
+        sel_mock = MagicMock()
+        calc_btn = MagicMock()
+        driver = MagicMock()
+        driver.find_element.side_effect = [sel_mock, calc_btn]
+        client = MagicMock(spec=GameBrowserClient)
+        client.driver = driver
+        client.navigate_menu.return_value = real_econ_before
+        client._wait_frame_ready.return_value = real_econ_after
+        client.read_planets_overview.return_value = base_state
+
+        resume_bf = PlannedAction(
+            priority="P1",
+            kind="THROTTLE_BUILDING",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=2,
+            target_name="Blast furnace 100%",
+            target_level=100,
+            reason="Resume metal smelting",
+            executable_now=True,
+        )
+        ex = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
+        with patch("spaceinvasion.executor.Select") as mock_sel:
+            res = ex.execute_action(client, base_state, resume_bf)
+        self.assertTrue(res.executed)
+        mock_sel.return_value.select_by_value.assert_called_once_with("100")
+        self.assertEqual(
+            driver.find_element.call_args_list[1].args[1],
+            'form[name="economy"] input[type="submit"][value="Calculate"]',
+        )
+        calc_btn.click.assert_called_once()
+        self.assertEqual(ex.last_economy_rates[12476]["resource2"], 100)
+
+        # Unsaved Calculate submit is detected and reported as executed=False
+        driver_fail = MagicMock()
+        driver_fail.find_element.side_effect = [MagicMock(), MagicMock()]
+        client_fail = MagicMock(spec=GameBrowserClient)
+        client_fail.driver = driver_fail
+        client_fail.navigate_menu.return_value = real_econ_before
+        client_fail._wait_frame_ready.return_value = real_econ_before  # still 0%!
+        with patch("spaceinvasion.executor.Select"):
+            res_fail = ex.execute_action(client_fail, base_state, resume_bf)
+        self.assertFalse(res_fail.executed)
+        self.assertIn("did not persist", res_fail.message)
+
+        # Thermosolar (b6) uses resource6 when present in 6-select live DOM
+        thermo_after = real_econ_before.replace(
+            '<select name="resource6"><option value="100" selected>100%</option><option value="0">0%</option></select>',
+            '<select name="resource6"><option value="100">100%</option><option value="0" selected>0%</option></select>',
+        )
+        driver_b6 = MagicMock()
+        driver_b6.find_element.side_effect = [MagicMock(), MagicMock()]
+        client_b6 = MagicMock(spec=GameBrowserClient)
+        client_b6.driver = driver_b6
+        client_b6.navigate_menu.return_value = real_econ_before
+        client_b6._wait_frame_ready.return_value = thermo_after
+        client_b6.read_planets_overview.return_value = base_state
+        pause_b6 = PlannedAction(
+            priority="P1",
+            kind="THROTTLE_BUILDING",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=6,
+            target_name="Thermosolar plant 0%",
+            target_level=0,
+            reason="Pause thermosolar",
+            executable_now=True,
+        )
+        with patch("spaceinvasion.executor.Select"):
+            res_b6 = ex.execute_action(client_b6, base_state, pause_b6)
+        self.assertTrue(res_b6.executed)
+        self.assertEqual(driver_b6.find_element.call_args_list[0].args[1], "resource6")
+        self.assertEqual(ex.last_economy_rates[12476]["resource6"], 0)
+
+    def test_live_internal_send_fleet_finish_gobutton_maxlength_and_html_sid_redaction(self) -> None:
+        from spaceinvasion.logging_utils import redact_sensitive
+
+        raw_html = (
+            '<form id="ress"><input name="sid" type="hidden" value="181659802557cf6e707aa6177d2b66a6"/>'
+            '<input type="hidden" value="abcdef0123456789" name="sid"/></form>'
+        )
+        redacted = redact_sensitive(raw_html)
+        self.assertNotIn("181659802557cf6e707aa6177d2b66a6", redacted)
+        self.assertNotIn("abcdef0123456789", redacted)
+        self.assertEqual(redacted.count('value="REDACTED"'), 2)
+
+        step1_html = """
+        <form name="fleet" action="indexInternal.es?action=internalSendFleet&sid=s1" method="POST">
+          <input type="text" name="ship_1" maxlength="1" value="0"/>
+          <input type="text" name="ship_4" maxlength="2" value="0"/>
+          <input type="text" name="gal" value="2"/>
+          <input type="text" name="sun" value="380"/>
+          <input type="text" name="pla" value="12"/>
+          <input type="submit" value="continue"/>
+        </form>
+        """
+        step2_html = """
+        <form action="indexInternal.es?action=internalSendFleet&sid=s1" method="POST" name="thissetup">
+          <input name="ship_4" type="hidden" value="12"/>
+        </form>
+        <form action="indexInternal.es?action=internalSendFleetFinish&sid=s1" id="fleet" method="POST" name="fleet">
+          <div><span>Transport (forbidden): the target is inactive</span></div>
+          <label><input name="todo" onclick="javascript:goFleet(this.value)" type="radio" value="SAVE"/> Escape flight</label>
+          <label><input name="todo" onclick="javascript:goFleet(this.value)" type="radio" value="ATTACK_a8a41403ec"/> Attack</label>
+          <input class="planet" onclick="reloadFormData(1);" type="button" value="longer distance"/>
+          <input class="fleet-start-button ecoshadow" id="goButton" onclick="startFleet()" type="button" value="LAUNCH"/>
+        </form>
+        """
+        soup2 = BeautifulSoup(step2_html, "html.parser")
+        self.assertEqual(ActionExecutor._pick_send_fleet_form_css(soup2), 'form[action*="internalSendFleetFinish"]')
+
+        class _MaxLengthInput:
+            def __init__(self, maxlen: int) -> None:
+                self.maxlen = maxlen
+                self.value = "0"
+
+            def clear(self) -> None:
+                # Simulate real SpaceInvasion onblur="if(this.value=='') this.value='0';"
+                self.value = "0"
+
+            def send_keys(self, txt: str) -> None:
+                self.value = (self.value + str(txt))[: self.maxlen]
+
+            def get_attribute(self, name: str) -> str:
+                return self.value if name == "value" else ""
+
+        s1_inp = _MaxLengthInput(1)
+        s4_inp = _MaxLengthInput(2)
+        gal_inp = _MaxLengthInput(2)
+        sun_inp = _MaxLengthInput(3)
+        pla_inp = _MaxLengthInput(2)
+
+        save_radio = MagicMock()
+        save_radio.get_attribute.side_effect = lambda k: {"value": "SAVE", "name": "todo", "id": ""}.get(k, "")
+        save_radio.is_selected.return_value = False
+        atk_radio = MagicMock()
+        atk_radio.get_attribute.side_effect = lambda k: {"value": "ATTACK_a8a41403ec", "name": "todo", "id": ""}.get(k, "")
+        atk_radio.is_selected.return_value = False
+        cont_btn = MagicMock()
+        go_btn = MagicMock()
+
+        driver = MagicMock()
+        driver.execute_script.side_effect = lambda script, el=None, val=None: setattr(el, "value", val) if (el is not None and val is not None) else "tok"
+        driver.find_elements.side_effect = lambda by, sel: (
+            [s4_inp] if sel == "ship_4" else ([s1_inp] if sel == "ship_1" else ([save_radio, atk_radio] if "radio" in str(sel) else []))
+        )
+
+        def _find_el(by: str, sel: str):
+            if sel == "gal":
+                return gal_inp
+            if sel == "sun":
+                return sun_inp
+            if sel == "pla":
+                return pla_inp
+            if "internalSendFleetFinish" in sel and "goButton" in sel:
+                return go_btn
+            return cont_btn
+
+        driver.find_element.side_effect = _find_el
+
+        planet = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=100,
+            fields_max=230,
+            resources=Resources(100_000, 17_000, 200_000, 45_000),
+            storage=Resources(200_000, 100_000, 800_000, 200_000),
+            energy=EnergyBalance(3075, 2532),
+            buildings={"b9": 2},
+            ships={"s1": 6, "s4": 12},
+        )
+        st = GameState(31, 103603, "u", 1000.0, (planet,), active_planet_id=12476)
+        atk_act = PlannedAction(
+            priority="P2",
+            kind="ATTACK",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_name="02:383:02 (Spacia)",
+            reason="Tutorial fight",
+            executable_now=True,
+        )
+        client = MagicMock(spec=GameBrowserClient)
+        client.driver = driver
+        client.navigate_menu.return_value = step1_html
+        client._wait_frame_ready.side_effect = [step2_html, "<html><body>Fleet dispatched</body></html>"]
+        client.read_planets_overview.return_value = st
+
+        ex = ActionExecutor(dry_run=False, allow_raids=True, action_delay_range=(0.0, 0.0))
+        res = ex.execute_action(client, st, atk_act)
+        self.assertTrue(res.executed, msg=res.message)
+        self.assertEqual(s1_inp.value, "6")
+        self.assertEqual(s4_inp.value, "12")
+        atk_radio.click.assert_called_once()
+        go_btn.click.assert_called_once()
+
+        # Step 1 redirect with fleetErr.noFleet aborts cleanly without hanging
+        client_err = MagicMock(spec=GameBrowserClient)
+        client_err.driver = driver
+        client_err.navigate_menu.return_value = step1_html
+        client._wait_frame_ready.side_effect = None
+        client_err._wait_frame_ready.return_value = '<a href="indexInternal.es?action=internalFleet&err=fleetErr.noFleet">err</a>'
+        res_err = ex.execute_action(client_err, st, atk_act)
+        self.assertFalse(res_err.executed)
+        self.assertIn("fleetErr.noFleet", res_err.message)
+
 
 if __name__ == "__main__":
     unittest.main()

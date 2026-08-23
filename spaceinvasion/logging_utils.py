@@ -220,6 +220,22 @@ _SECRET_KV_RE = re.compile(
     rf"(?<![\w-]){_COMP_KV_KEY_RE}(?P<sep>{_KV_SEP_RE})(?:{_delim_val_pattern('kv')})",
     re.IGNORECASE,
 )
+_HTML_SECRET_INPUT_RE = re.compile(
+    rf"(?P<p1><input\b[^>]*?\bname=(?P<nq1>[\"']){_COMP_KEY_RE}(?P=nq1)[^>]*?\bvalue=(?P<vq1>[\"']))(?P<val1>[^\"']*)(?P<s1>(?P=vq1))"
+    rf"|"
+    rf"(?P<p2><input\b[^>]*?\bvalue=(?P<vq2>[\"']))(?P<val2>[^\"']*)(?P<m2>(?P=vq2)[^>]*?\bname=(?P<nq2>[\"'])(?P<key2>{_COMP_PREFIX_RE}(?:sid|password|passwd|cookie|api_key|api-key|secret|authorization))(?P=nq2))",
+    re.IGNORECASE,
+)
+
+
+def _sub_html_secret_input(match: re.Match[str]) -> str:
+    if match.group("p1") is not None:
+        if not is_secret_dict_key(match.group("key")):
+            return match.group(0)
+        return f"{match.group('p1')}REDACTED{match.group('s1')}"
+    if not is_secret_dict_key(match.group("key2")):
+        return match.group(0)
+    return f"{match.group('p2')}REDACTED{match.group('m2')}"
 
 
 def _sub_secret_json_kv(match: re.Match[str]) -> str:
@@ -290,7 +306,8 @@ def _redact_text(text: str) -> str:
         )
     ):
         return text
-    masked = _SECRET_JSON_KV_RE.sub(_sub_secret_json_kv, text)
+    masked = _HTML_SECRET_INPUT_RE.sub(_sub_html_secret_input, text)
+    masked = _SECRET_JSON_KV_RE.sub(_sub_secret_json_kv, masked)
     masked = _SECRET_URLENC_JSON_KV_RE.sub(_sub_secret_urlenc_json_kv, masked)
     masked = _SECRET_QUOTED_KV_RE.sub(_sub_secret_quoted, masked)
     masked = _AUTH_HEADER_RE.sub(_sub_auth_header, masked)
@@ -792,3 +809,75 @@ def append_api_log(
         handle.write(line)
 
     return jsonl_path, text_path
+
+
+DEFAULT_CRASH_LOG_DIR: Path = Path(__file__).resolve().parent.parent / "state"
+
+
+def append_crash_debug_log(
+    *,
+    component: str,
+    event: str,
+    error: Optional[BaseException] = None,
+    details: Optional[Mapping[str, Any]] = None,
+    crash_dir: Optional[Path] = None,
+) -> Optional[tuple[Path, Path]]:
+    """Append a gitignored, `sid=`-redacted diagnostic/crash record to `state/crash_debug.*`.
+
+    Never raises so instrumentation cannot mask or alter runtime behavior.
+    """
+    import traceback as _tb
+
+    try:
+        target_dir = crash_dir if crash_dir is not None else DEFAULT_CRASH_LOG_DIR
+        target_dir.mkdir(parents=True, exist_ok=True)
+        jsonl_path = target_dir / "crash_debug.jsonl"
+        text_path = target_dir / "crash_debug.log"
+
+        ts = datetime.now(timezone.utc).isoformat()
+        exc_type = type(error).__name__ if error is not None else None
+        exc_msg = _safe_exc_text(error) if error is not None else None
+        tb_str = (
+            "".join(_tb.format_exception(type(error), error, error.__traceback__))
+            if error is not None and getattr(error, "__traceback__", None) is not None
+            else None
+        )
+        raw_rec = {
+            "ts": ts,
+            "component": component,
+            "event": event,
+            "exc_type": exc_type,
+            "exc_message": exc_msg,
+            "traceback": _clip_log_str(tb_str, 16_384) if tb_str else None,
+            "details": dict(details) if isinstance(details, Mapping) else {},
+        }
+        record = redact_sensitive(
+            _coerce_json_scalars(
+                game_data.sanitize_json_tree(
+                    redact_sensitive(raw_rec),
+                    max_int=game_data.MAX_JSON_SAFE_INT,
+                    nonfinite_float=None,
+                )
+            )
+        )
+        with jsonl_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, allow_nan=False) + "\n")
+
+        header = redact_sensitive(
+            f"=== [{ts}] {component} :: {event}"
+            + (f" ({exc_type}: {exc_msg})" if exc_type else "")
+            + " ===\n"
+        )
+        det_json = redact_sensitive(
+            json.dumps(record.get("details") or {}, indent=2, allow_nan=False)
+        )
+        tb_redacted = redact_sensitive(str(record.get("traceback") or ""))
+        with text_path.open("a", encoding="utf-8") as handle:
+            handle.write(header)
+            if det_json and det_json != "{}":
+                handle.write(f"details: {det_json}\n")
+            if tb_redacted:
+                handle.write(f"traceback:\n{tb_redacted}\n")
+        return jsonl_path, text_path
+    except Exception:
+        return None

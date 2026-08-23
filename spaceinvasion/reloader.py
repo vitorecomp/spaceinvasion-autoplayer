@@ -96,6 +96,17 @@ def watch_and_run(
                 continue
 
             if rc is not None:
+                if rc != 0:
+                    try:
+                        from spaceinvasion.logging_utils import append_crash_debug_log
+
+                        append_crash_debug_log(
+                            component=f"reloader.{label}",
+                            event="child_exited_nonzero",
+                            details={"returncode": rc, "cmd": list(cmd)},
+                        )
+                    except Exception:
+                        pass
                 return rc
     except KeyboardInterrupt:
         if proc is not None:

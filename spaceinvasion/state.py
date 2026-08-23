@@ -1374,7 +1374,27 @@ def parse_home_metadata(html: str) -> tuple[Optional[int], Optional[float], bool
         if el:
             content = " ".join(el.get_text(" ", strip=True).split())
             if content:
-                queues.append(QueueJob(category=cat, name=content))
+                q_bid: Optional[int] = None
+                q_lvl: Optional[int] = None
+                if cat == "building":
+                    m_bq = re.search(
+                        r"([A-Za-z][A-Za-z ]+?)\s*\(\s*Level\s+(\d+)\s*\)",
+                        content,
+                        re.ASCII,
+                    )
+                    if m_bq:
+                        bname = " ".join(m_bq.group(1).split()).lower()
+                        q_bid = BUILDING_ID_BY_NAME.get(bname)
+                        parsed_lvl = _parse_bounded_int(m_bq.group(2), 0)
+                        q_lvl = parsed_lvl if parsed_lvl > 0 else None
+                queues.append(
+                    QueueJob(
+                        category=cat,
+                        name=content,
+                        building_id=q_bid,
+                        target_level=q_lvl,
+                    )
+                )
 
     alerts: list[FleetAlert] = []
     # Check for hostile attack indicators rendered on overview
@@ -1418,7 +1438,7 @@ def parse_menu_status(html: str) -> tuple[dict[str, int], Optional[int], Optiona
 
 
 def parse_economy_rates(html: str) -> dict[str, int]:
-    """Extract per-building percentage throttle values (`resource1`..`resource5`) from `internalEconomy`."""
+    """Extract per-building percentage throttle values (`resource1`..`resource6`) from `internalEconomy`."""
     soup = BeautifulSoup(html, "html.parser")
     rates: dict[str, int] = {}
     for sel in soup.find_all("select", attrs={"name": re.compile(r"^resource\d+$", re.ASCII)}):
@@ -1430,6 +1450,33 @@ def parse_economy_rates(html: str) -> dict[str, int]:
         if selected is not None:
             raw_val = str(selected.get("value") or selected.get_text(strip=True))
             rates[name] = parse_si_int(raw_val)
+    return rates
+
+
+_TICKER_INPUT_MAP: tuple[tuple[str, str], ...] = (
+    ("roheisen", "pig_iron"),
+    ("metall", "metal"),
+    ("kryptonit", "kryptonite"),
+    ("spice", "spice"),
+)
+
+
+def parse_ticker_rates(html: str) -> dict[str, float]:
+    """Extract live per-second production rates from hidden `<form id="ress">` ticker inputs."""
+    if not isinstance(html, str) or "metall" not in html:
+        return {}
+    soup = BeautifulSoup(html, "html.parser")
+    ress_form = soup.find("form", id="ress")
+    if ress_form is None:
+        return {}
+    rates: dict[str, float] = {}
+    for input_id, key in _TICKER_INPUT_MAP:
+        inp = ress_form.find("input", id=input_id)
+        if inp is None:
+            continue
+        val = _safe_optional_state_float(inp.get("value"))
+        if val is not None and val >= 0.0:
+            rates[key] = val
     return rates
 
 

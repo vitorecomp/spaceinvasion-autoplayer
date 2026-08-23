@@ -1707,6 +1707,155 @@ class TestStrategyPlanner(unittest.TestCase):
         zero_acts = plan_actions(st_alias, config=cfg_zero)
         self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 4 for a in zero_acts))
 
+    def test_zero_metal_blast_furnace_paused_holds_b2_upgrades_reserves_power_and_recovers(self) -> None:
+        # Exact Colony 12476 live deadlock reproduction: b2=18 at 0%, Metal=22,925 blocking Dev Center L7 & Spice Mine L14
+        offers_live = (
+            BuildingOffer(1, "Pig iron mine", 18, 19, Resources(129_922, 0, 41_642, 0), True, "Build", "?b=1"),
+            BuildingOffer(2, "Blast furnace", 18, 19, Resources(103_415, 0, 34_472, 0), True, "Build", "?b=2"),
+            BuildingOffer(5, "Fusion plant", 19, 20, Resources(201_212, 0, 88_030, 0), True, "Build", "?b=5"),
+            BuildingOffer(7, "Development center", 6, 7, Resources(0, 38_400, 19_200, 12_800), False, "Need Metal"),
+            BuildingOffer(4, "Spice mine", 13, 14, Resources(0, 46_680, 16_975, 0), False, "Need Metal"),
+        )
+        # 1. With Fusion L19 + Thermosolar L8 finished (`e_prod=3050, e_used=2532`, net=+518 >= 445, but 518-445=73 < Pig L19 163 energy)
+        #    and PigIron=150,000 (affordable for Pig L19 129,922, still saving toward Fusion L20 201,212):
+        #    Must NOT upgrade paused Blast furnace L18->L19, and must hold Pig iron mine L19 from stealing energy!
+        offers_saving = (
+            BuildingOffer(1, "Pig iron mine", 18, 19, Resources(129_922, 0, 41_642, 0), True, "Build", "?b=1"),
+            BuildingOffer(2, "Blast furnace", 18, 19, Resources(103_415, 0, 34_472, 0), True, "Build", "?b=2"),
+            BuildingOffer(5, "Fusion plant", 19, 20, Resources(201_212, 0, 88_030, 0), False, "Wait"),
+            BuildingOffer(7, "Development center", 6, 7, Resources(0, 38_400, 19_200, 12_800), False, "Need Metal"),
+            BuildingOffer(4, "Spice mine", 13, 14, Resources(0, 46_680, 16_975, 0), False, "Need Metal"),
+        )
+        p_mid = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=108,
+            fields_max=230,
+            resources=Resources(150_000, 22_925, 210_000, 43_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(3050, 2532),
+            buildings={"b1": 18, "b2": 18, "b3": 18, "b4": 13, "b5": 19, "b6": 8, "b7": 6, "b8": 1, "b9": 2},
+            building_offers=offers_saving,
+            economy_rates={"resource1": 100, "resource2": 0, "resource3": 100, "resource4": 100, "resource5": 100},
+        )
+        st_mid = GameState(31, 103603, "u", 1000.0, (p_mid,), active_planet_id=12476, speedup_factor=20.0)
+        acts_mid = plan_actions(st_mid, config=StrategyConfig(auto_throttle_blast_furnace=True))
+        self.assertFalse(any(a.target_id == 2 and a.kind == "BUILD" and a.executable_now for a in acts_mid))
+        self.assertFalse(any(a.target_id == 1 and a.kind == "BUILD" and a.executable_now for a in acts_mid))
+
+        # 2. Once Fusion L20 finishes (`e_prod=3620, e_used=2532`, net=+1088 covers b2 445 + Pig L19 163):
+        #    Planner immediately emits P1 THROTTLE_BUILDING Blast furnace 100%!
+        p_ready = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=109,
+            fields_max=230,
+            resources=Resources(150_000, 22_925, 210_000, 43_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(3620, 2532),
+            buildings={"b1": 18, "b2": 18, "b3": 18, "b4": 13, "b5": 20, "b6": 8, "b7": 6, "b8": 1, "b9": 2},
+            building_offers=offers_live,
+            economy_rates={"resource1": 100, "resource2": 0, "resource3": 100, "resource4": 100, "resource5": 100},
+        )
+        st_ready = GameState(31, 103603, "u", 2000.0, (p_ready,), active_planet_id=12476, speedup_factor=20.0)
+        acts_ready = plan_actions(st_ready, config=StrategyConfig(auto_throttle_blast_furnace=True))
+        thr_ready = [a for a in acts_ready if a.kind == "THROTTLE_BUILDING"]
+        self.assertTrue(thr_ready and thr_ready[0].target_level == 100 and thr_ready[0].executable_now)
+
+    def test_storage_capped_warehouse_inflight_ship_hold_and_tutorial_spy_milestone(self) -> None:
+        # 1. Storage-capped P1 Fusion plant (cost 201,212 > 200,000 cap) triggers P1 Pig iron warehouse;
+        #    active own-fleet flight holds combat/transport ship replacement from draining Metal.
+        offers = (
+            BuildingOffer(5, "Fusion plant", 19, 20, Resources(201_212, 0, 88_030, 0), False, "Wait"),
+            BuildingOffer(11, "Pig iron warehouse", 1, 2, Resources(4_000, 1_600, 0, 0), True, "Build", "?b=11"),
+        )
+        s_offers = (
+            UnitOffer("ship", 4, "Small fighter", 0, Resources(3_000, 1_000, 0, 0), True, "ship_4"),
+        )
+        p_cap = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=110,
+            fields_max=230,
+            resources=Resources(40_000, 5_000, 200_000, 40_000),
+            storage=Resources(200_000, 100_000, 800_000, 200_000),
+            energy=EnergyBalance(3075, 3167),
+            buildings={"b1": 19, "b2": 18, "b3": 18, "b4": 13, "b5": 19, "b6": 9, "b7": 6, "b8": 1, "b9": 2, "b11": 1},
+            building_offers=offers,
+            ship_offers=s_offers,
+            economy_rates={"resource2": 100},
+        )
+        st_cap = GameState(
+            31,
+            103603,
+            "u",
+            1000.0,
+            (p_cap,),
+            active_planet_id=12476,
+            active_queues=(QueueJob("fleet", "Attack 02:383:02"),),
+            researches={"r4": 4},
+            speedup_factor=20.0,
+        )
+        acts_cap = plan_actions(
+            st_cap,
+            config=StrategyConfig(allow_shipyard=True, shipyard_targets={"small-fighter": 4}),
+        )
+        wh_acts = [a for a in acts_cap if a.target_id == 11 and a.kind == "BUILD"]
+        self.assertTrue(wh_acts and wh_acts[0].priority == "P1" and wh_acts[0].executable_now)
+        sf_acts = [a for a in acts_cap if a.kind == "BUILD_SHIP" and a.target_id == 4]
+        self.assertTrue(sf_acts and not sf_acts[0].executable_now and "in transit" in sf_acts[0].reason)
+
+        # 2. Tutorial spy milestone auto-builds Spy probe when 0 owned, then dispatches P2 SPY when owned
+        tut_spy = TutorialStatus(
+            step=7,
+            total_steps=11,
+            can_complete=False,
+            tasks=(TutorialTask("Spy on another planet 0 / 1", "Spy on another planet", None, 0, 1, "milestone"),),
+        )
+        probe_offer = UnitOffer("ship", 10, "Spy probe", 0, Resources(0, 0, 1_000, 0), True, "ship_10")
+        p_no_probe = replace(
+            p_cap,
+            energy=EnergyBalance(3500, 2500),
+            buildings={**p_cap.buildings, "b9": 3},
+            ship_offers=(probe_offer,),
+            ships={},
+        )
+        st_no_probe = GameState(
+            31,
+            103603,
+            "u",
+            1000.0,
+            (p_no_probe,),
+            active_planet_id=12476,
+            researches={"r4": 3, "r7": 2},
+            tutorial=tut_spy,
+        )
+        acts_build_probe = plan_actions(st_no_probe, config=StrategyConfig(allow_shipyard=True, allow_galaxy_scan=True))
+        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == 10 and a.executable_now for a in acts_build_probe))
+
+        p_has_probe = replace(p_no_probe, ships={"s10": 2})
+        st_has_probe = GameState(
+            31,
+            103603,
+            "u",
+            1000.0,
+            (p_has_probe,),
+            active_planet_id=12476,
+            tutorial=tut_spy,
+            raid_targets=({"coords": "02:378:15", "owner": "Sigilo_respec", "status_color": "yellow", "last_scanned_ts": 990.0},),
+        )
+        acts_spy = plan_actions(st_has_probe, config=StrategyConfig(allow_galaxy_scan=True), now_ts=1000.0)
+        self.assertTrue(any(a.kind == "SPY" and a.executable_now for a in acts_spy))
+
 
 if __name__ == "__main__":
     unittest.main()
