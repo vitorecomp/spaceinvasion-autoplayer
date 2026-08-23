@@ -12,7 +12,7 @@ from typing import Any, Optional, Sequence
 from spaceinvasion.state import GameState
 from spaceinvasion.strategy import PlannedAction
 
-_SID_RE = re.compile(r"(sid=)([0-9a-fA-F]+)")
+_SID_RE = re.compile(r"(sid=)([A-Za-z0-9_.-]+)", re.IGNORECASE)
 
 
 def redact_sensitive(obj: Any) -> Any:

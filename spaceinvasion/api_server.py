@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import asdict, replace
 import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import inspect
 import json
+import math
 from pathlib import Path
+import re
 import secrets
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
@@ -23,7 +27,7 @@ from spaceinvasion.browser import (
     is_debug_port_open,
     login_with_browser,
 )
-from spaceinvasion.client import GameBrowserClient
+from spaceinvasion.client import GameBrowserClient, PageViewLimiter, RateLimitError
 from spaceinvasion.config import (
     StrategyConfig,
     load_strategy_config,
@@ -31,7 +35,15 @@ from spaceinvasion.config import (
     strategy_config_from_dict,
 )
 from spaceinvasion.executor import ActionExecutor
-from spaceinvasion.fleet import plan_escape_flight
+from spaceinvasion.fleet import (
+    SHIP_SLUG_BY_KEY,
+    SpyReport,
+    extract_galaxy_system_coords,
+    parse_galaxy_system_html,
+    parse_spy_messages_html,
+    plan_escape_flight,
+    simulate_raid_outcome,
+)
 from spaceinvasion.logging_utils import append_api_log, redact_sensitive
 from spaceinvasion.ranking import (
     build_buildings_eta,
@@ -41,7 +53,14 @@ from spaceinvasion.ranking import (
     record_rank_snapshot,
     simulate_combat_matchup,
 )
-from spaceinvasion.state import GameState, PlanetState, parse_economy_rates
+from spaceinvasion.state import (
+    GameState,
+    PlanetState,
+    Resources,
+    parse_economy_rates,
+    parse_home_metadata,
+    parse_tutorial_from_home,
+)
 from spaceinvasion.storage import GameDatabase
 from spaceinvasion.strategy import PlannedAction, plan_actions
 
@@ -119,6 +138,8 @@ def ensure_debug_browser_ready(
     try:
         with GameBrowserClient.attach(port=debug_port) as client:
             client.ensure_in_game()
+    except RateLimitError:
+        raise
     except SpaceInvasionAuthError:
         creds = load_credentials(env_path=env_file, account=account)
         cfg = BrowserConfig(
@@ -133,6 +154,11 @@ def ensure_debug_browser_ready(
 class GameApiBridge:
     """Thread-safe facade connecting HTTP API calls to the Chrome debug port."""
 
+    SNAPSHOT_CACHE_TTL_S = 6.0
+    RESEARCH_SYNC_TTL_S = 60.0
+    SHIPYARD_SYNC_TTL_S = 120.0
+    SPIO_SYNC_TTL_S = 30.0
+
     def __init__(
         self,
         *,
@@ -145,6 +171,9 @@ class GameApiBridge:
         db_path: Optional[Path] = None,
         client_factory: Optional[Callable[[int], Any]] = None,
         ensure_session_fn: Optional[Callable[[], None]] = None,
+        page_limiter: Optional[PageViewLimiter] = None,
+        max_limiter_wait: float = 8.0,
+        executor_max_limiter_wait: Optional[float] = 8.0,
     ) -> None:
         self.debug_port = debug_port
         self.env_file = env_file
@@ -153,9 +182,33 @@ class GameApiBridge:
         self.strategy_config: StrategyConfig = load_strategy_config(config_path)
         self.log_dir = log_dir
         self._lock = threading.Lock()
+        self._page_limiter = page_limiter or PageViewLimiter()
+        self._max_limiter_wait = float(max_limiter_wait)
+        if executor_max_limiter_wait is None:
+            self._executor_max_limiter_wait: Optional[float] = None
+        elif isinstance(executor_max_limiter_wait, (int, float)) and not isinstance(
+            executor_max_limiter_wait, bool
+        ):
+            val = float(executor_max_limiter_wait)
+            self._executor_max_limiter_wait = val if val != 8.0 else self._max_limiter_wait
+        else:
+            self._executor_max_limiter_wait = self._max_limiter_wait
         self._last_state: Optional[GameState] = None
         self._last_url: Optional[str] = None
+        self._last_snapshot_at: float = 0.0
+        self._last_buildings_fetched: bool = False
+        self._last_home_fetched: bool = False
+        self._last_home_at: Optional[float] = None
+        self._last_recorded_state_obj: Optional[GameState] = None
+        self._active_planet_confirmed: bool = False
+        self._last_research_sync_at: float = 0.0
+        self._last_research_sync_sig: Optional[tuple[int, tuple[tuple[str, int], ...], bool]] = None
+        self._last_shipyard_sync_at: float = 0.0
+        self._last_shipyard_sync_sig: Optional[tuple[int, int, tuple[tuple[str, int], ...]]] = None
+        self._last_spio_sync_at: float = 0.0
         self._economy_rates: dict[int, dict[str, int]] = {}
+        self._scanned_systems: dict[str, float] = {}
+        self._throttle_timestamps: dict[int, float] = {}
         self._rank_history_path: Optional[Path] = (
             (log_dir.parent / "state" / "rank_history.json") if log_dir is not None else None
         )
@@ -172,8 +225,14 @@ class GameApiBridge:
         if self._db is not None:
             self._rank_samples = self._db.get_rank_samples()
             self._economy_rates.update(self._db.get_all_economy_rates())
+            self._raid_targets: tuple[dict[str, Any], ...] = self._enrich_raid_targets(
+                self._db.get_spy_targets(limit=100)
+            )
+            self._scanned_systems.update(self._db.get_galaxy_scans())
+            self._throttle_timestamps.update(self._db.get_last_throttle_timestamps())
         else:
             self._rank_samples = load_rank_history(self._rank_history_path)
+            self._raid_targets = ()
         self._bot_control: dict[str, Any] = {"paused": False, "mode_override": None}
         budget = (
             max_actions_per_hour
@@ -184,14 +243,24 @@ class GameApiBridge:
             dry_run=False,
             max_actions_per_hour=budget,
             allow_fleetsave=self.strategy_config.allow_fleetsave,
+            allow_raids=self.strategy_config.allow_raids,
+            page_limiter=self._page_limiter,
+            max_limiter_wait=self._executor_max_limiter_wait,
         )
         self._dry_executor = ActionExecutor(
             dry_run=True,
             max_actions_per_hour=budget,
             allow_fleetsave=self.strategy_config.allow_fleetsave,
+            allow_raids=self.strategy_config.allow_raids,
+            page_limiter=self._page_limiter,
+            max_limiter_wait=self._executor_max_limiter_wait,
         )
         self._client_factory = client_factory or (
-            lambda port: GameBrowserClient.attach(port=port)
+            lambda port: GameBrowserClient.attach(
+                port=port,
+                page_limiter=self._page_limiter,
+                max_limiter_wait=self._max_limiter_wait,
+            )
         )
         self._ensure_session_fn = ensure_session_fn or (
             lambda: ensure_debug_browser_ready(
@@ -201,35 +270,175 @@ class GameApiBridge:
             )
         )
 
+    def record_rate_limit(self, retry_after: Optional[float] = None) -> float:
+        return self._page_limiter.record_rate_limit(retry_after)
+
+    def rate_limit_remaining(self) -> float:
+        return self._page_limiter.rate_limit_remaining()
+
+    def _record_server_rate_limit(self, exc: RateLimitError) -> None:
+        if not getattr(exc, "server_throttle", True):
+            return
+        if getattr(exc, "_recorded_limiter_id", None) == id(self._page_limiter):
+            return
+        rem = self._page_limiter.rate_limit_remaining()
+        req = float(getattr(exc, "retry_after", 0.0) or 0.0)
+        if rem > 0.0 and req <= rem + 1.0:
+            setattr(exc, "_recorded_limiter_id", id(self._page_limiter))
+            return
+        self._page_limiter.record_rate_limit(req)
+        setattr(exc, "_recorded_limiter_id", id(self._page_limiter))
+
+    def _raise_if_rate_limited(self) -> None:
+        rem = self._page_limiter.rate_limit_remaining()
+        if rem > 0.0:
+            err = RateLimitError(
+                f"SpaceInvasion rate-limit cooldown active ({rem:.1f}s remaining; retry after {rem:.1f}s).",
+                retry_after=rem,
+                server_throttle=True,
+            )
+            setattr(err, "_recorded_limiter_id", id(self._page_limiter))
+            raise err
+
+    def _get_scanned_systems(self) -> dict[str, float]:
+        if self._db is not None:
+            return self._db.get_galaxy_scans()
+        return dict(self._scanned_systems)
+
+    def _get_throttle_cooldowns(self) -> dict[int, float]:
+        if self._db is not None:
+            return self._db.get_last_throttle_timestamps()
+        return dict(self._throttle_timestamps)
+
+    def _plan_with_context(self, state: GameState) -> list[PlannedAction]:
+        return plan_actions(
+            state,
+            config=self.strategy_config,
+            scanned_systems=self._get_scanned_systems(),
+            throttle_cooldowns=self._get_throttle_cooldowns(),
+        )
+
+    @staticmethod
+    def _supports_kwarg(fn: Callable[..., Any], kwarg_name: str) -> bool:
+        targets: list[Any] = [fn]
+        for attr in ("side_effect", "_mock_wraps"):
+            wrapped = getattr(fn, attr, None)
+            if callable(wrapped) and not isinstance(wrapped, type):
+                targets.append(wrapped)
+        for target in targets:
+            try:
+                sig = inspect.signature(target)
+            except (TypeError, ValueError):
+                return False
+            if kwarg_name not in sig.parameters and not any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            ):
+                return False
+        return True
+
+    @staticmethod
+    def _call_with_optional_priority(
+        fn: Callable[..., Any],
+        *args: Any,
+        priority: str = "interactive",
+        **kwargs: Any,
+    ) -> Any:
+        call_kwargs = dict(kwargs)
+        if GameApiBridge._supports_kwarg(fn, "priority"):
+            call_kwargs["priority"] = priority
+        return fn(*args, **call_kwargs)
+
+    @staticmethod
+    def _read_snapshot(
+        client: Any,
+        *,
+        include_buildings: bool = True,
+        include_research: bool = True,
+        include_shipyard: bool = True,
+        include_home: bool = True,
+        return_home: bool = False,
+        priority: str = "normal",
+    ) -> GameState:
+        fn = getattr(client, "read_full_snapshot")
+        extra: dict[str, Any] = {}
+        if not include_home and GameApiBridge._supports_kwarg(fn, "include_home"):
+            extra["include_home"] = False
+        return GameApiBridge._call_with_optional_priority(
+            fn,
+            include_buildings=include_buildings,
+            include_research=include_research,
+            include_shipyard=include_shipyard,
+            return_home=return_home,
+            priority=priority,
+            **extra,
+        )
+
+    @staticmethod
+    def _open_galaxy(
+        client: Any,
+        *,
+        galaxy: Optional[int] = None,
+        system: Optional[int] = None,
+        priority: str = "interactive",
+    ) -> str:
+        fn = getattr(client, "open_galaxy")
+        return GameApiBridge._call_with_optional_priority(
+            fn,
+            galaxy=galaxy,
+            system=system,
+            priority=priority,
+        )
+
     def health(self) -> dict[str, Any]:
         with self._lock:
             port_open = is_debug_port_open(self.debug_port)
-            in_game = False
-            current_url: Optional[str] = None
-            if port_open:
+            rate_rem = self._page_limiter.rate_limit_remaining()
+            in_game = port_open and (self._last_state is not None or rate_rem > 0.0)
+            current_url: Optional[str] = self._last_url
+            if port_open and rate_rem <= 0.0:
                 try:
                     with self._client_factory(self.debug_port) as client:
                         try:
                             client.ensure_in_game()
                             in_game = True
+                        except RateLimitError as exc:
+                            self._record_server_rate_limit(exc)
+                            in_game = port_open
                         except SpaceInvasionAuthError:
                             in_game = False
                         current_url = str(getattr(client.driver, "current_url", "") or "")
+                except RateLimitError as exc:
+                    self._record_server_rate_limit(exc)
+                    in_game = port_open
                 except SpaceInvasionAuthError:
                     in_game = False
+            elif port_open and rate_rem > 0.0:
+                in_game = True
             self._last_url = current_url
+            rate_rem = self._page_limiter.rate_limit_remaining()
             return {
                 "ok": port_open,
                 "debug_port": self.debug_port,
                 "debug_port_open": port_open,
                 "in_game": in_game,
+                "rate_limited": rate_rem > 0.0,
+                "retry_after": round(rate_rem, 1),
+                "page_views_last_60s": self._page_limiter.views_last_60s(),
+                "page_view_limit_per_minute": self._page_limiter.max_views_per_minute,
+                "rate_limit_hits": self._page_limiter.rate_limit_hits,
                 "url": redact_sensitive(current_url) if current_url else None,
                 "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
                 "bot_control": dict(self._bot_control),
             }
 
     def get_bot_control(self) -> dict[str, Any]:
-        return {"ok": True, **dict(self._bot_control)}
+        with self._lock:
+            return {
+                "ok": True,
+                **dict(self._bot_control),
+                "scanned_systems": self._get_scanned_systems(),
+                "throttle_cooldowns": self._get_throttle_cooldowns(),
+            }
 
     def _read_log_tail(self, filename: str, lines: int = 40) -> str:
         if self.log_dir is None:
@@ -239,6 +448,125 @@ class GameApiBridge:
             return ""
         raw_lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
         return str(redact_sensitive("\n".join(raw_lines[-lines:])))
+
+    def _merge_cached_offers(self, state: GameState) -> GameState:
+        prev = self._last_state
+        if prev is None:
+            return state
+        prev_by_id = {p.planet_id: p for p in prev.planets}
+        prev_b_jobs = sum(1 for q in prev.active_queues if q.category == "building")
+        cur_b_jobs = sum(1 for q in state.active_queues if q.category == "building")
+        queues_same = prev_b_jobs == cur_b_jobs
+
+        changed_planets = False
+        new_planets: list[PlanetState] = []
+        for planet in state.planets:
+            old_p = prev_by_id.get(planet.planet_id)
+            if old_p is None:
+                new_planets.append(planet)
+                continue
+            b_offers = planet.building_offers
+            s_offers = planet.ship_offers
+            if (
+                not b_offers
+                and old_p.building_offers
+                and planet.buildings == old_p.buildings
+                and state.researches == prev.researches
+                and (queues_same or planet.planet_id != state.active_planet_id)
+            ):
+                b_offers = old_p.building_offers
+                changed_planets = True
+            if (
+                not s_offers
+                and old_p.ship_offers
+                and planet.building_level(9) == old_p.building_level(9)
+                and state.researches == prev.researches
+            ):
+                s_offers = old_p.ship_offers
+                changed_planets = True
+            if b_offers is not planet.building_offers or s_offers is not planet.ship_offers:
+                new_planets.append(
+                    replace(planet, building_offers=b_offers, ship_offers=s_offers)
+                )
+            else:
+                new_planets.append(planet)
+
+        prev_b8 = {p.planet_id: p.building_level(8) for p in prev.planets}
+        cur_b8 = {p.planet_id: p.building_level(8) for p in state.planets}
+        res_offers = state.research_offers
+        changed_state = False
+        if (
+            not res_offers
+            and prev.research_offers
+            and state.researches == prev.researches
+            and state.active_planet_id == prev.active_planet_id
+            and cur_b8 == prev_b8
+        ):
+            res_offers = prev.research_offers
+            changed_state = True
+        if changed_planets or changed_state:
+            return replace(
+                state,
+                planets=tuple(new_planets) if changed_planets else state.planets,
+                research_offers=res_offers,
+            )
+        return state
+
+    def _enrich_raid_targets(self, rows: Sequence[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+        if not rows:
+            return ()
+        per_target: dict[str, Any] = {}
+        if self._db is not None:
+            get_stats = getattr(self._db, "get_raid_stats", None)
+            if callable(get_stats):
+                stats = get_stats()
+                if isinstance(stats, dict) and isinstance(stats.get("per_target"), dict):
+                    per_target = stats["per_target"]
+        enriched: list[dict[str, Any]] = []
+        for raw in rows:
+            item = dict(raw)
+            coords = str(item.get("coords") or item.get("target_coords") or "").strip()
+            pt = per_target.get(coords) if coords else None
+            if isinstance(pt, dict) and int(pt.get("attempts", 0) or 0) > 0:
+                item.update(
+                    {
+                        "attack_attempts": int(pt.get("attempts", 0) or 0),
+                        "attack_wins": int(pt.get("wins", 0) or 0),
+                        "attack_losses": int(pt.get("losses", 0) or 0),
+                        "attack_success_rate": float(pt.get("success_rate", 0.0) or 0.0),
+                        "avg_attack_loot": dict(pt.get("avg_loot") or {}),
+                        "avg_attack_loot_spice_eq": float(pt.get("avg_loot_spice_eq", 0.0) or 0.0),
+                        "total_attack_loot": dict(pt.get("total_loot") or {}),
+                        "total_attack_loot_spice_eq": float(pt.get("total_loot_spice_eq", 0.0) or 0.0),
+                        "recency_weighted_loot_spice_eq": float(
+                            pt.get("recency_weighted_loot_spice_eq", 0.0) or 0.0
+                        ),
+                        "last_attack_outcome": str(pt.get("last_outcome") or ""),
+                        "last_attack_loot": dict(pt.get("last_loot") or {}),
+                        "last_attack_loot_spice_eq": float(pt.get("last_loot_spice_eq", 0.0) or 0.0),
+                        "last_attack_ts": float(pt.get("last_attacked_ts", 0.0) or 0.0),
+                    }
+                )
+            else:
+                item.update(
+                    {
+                        "attack_attempts": 0,
+                        "attack_wins": 0,
+                        "attack_losses": 0,
+                        "attack_success_rate": None,
+                        "avg_attack_loot": None,
+                        "avg_attack_loot_spice_eq": None,
+                        "total_attack_loot": None,
+                        "total_attack_loot_spice_eq": None,
+                        "recency_weighted_loot_spice_eq": None,
+                        "last_attack_outcome": "",
+                        "last_attack_loot": None,
+                        "last_attack_loot_spice_eq": None,
+                        "last_attack_ts": 0.0,
+                    }
+                )
+            enriched.append(item)
+        return tuple(enriched)
 
     def _merge_economy_rates(self, state: GameState) -> GameState:
         for pid, rates in getattr(self._live_executor, "last_economy_rates", {}).items():
@@ -258,11 +586,151 @@ class GameApiBridge:
                 )
             else:
                 updated_planets.append(planet)
-        return replace(state, planets=tuple(updated_planets)) if changed else state
+        if self._db is not None:
+            self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
+        out_state = replace(state, planets=tuple(updated_planets)) if changed else state
+        if self._raid_targets and getattr(out_state, "raid_targets", ()) != self._raid_targets:
+            out_state = replace(out_state, raid_targets=self._raid_targets)
+        return out_state
 
-    def _record_state(self, state: GameState) -> GameState:
+    def _sync_observed_active_planet_state(
+        self,
+        fallback_state: GameState,
+        *,
+        obs_pid: Optional[int],
+        obs_confirmed: Optional[bool],
+    ) -> None:
+        target_state = self._last_state or fallback_state
+        planet_ids = {p.planet_id for p in target_state.planets}
+        if obs_confirmed is False:
+            if len(target_state.planets) > 1:
+                self._active_planet_confirmed = False
+        elif obs_confirmed is True:
+            self._active_planet_confirmed = True
+            if (
+                isinstance(obs_pid, int)
+                and not isinstance(obs_pid, bool)
+                and obs_pid in planet_ids
+                and target_state.active_planet_id != obs_pid
+            ):
+                was_recorded = target_state is self._last_recorded_state_obj
+                upd_fields: dict[str, Any] = {"active_planet_id": obs_pid}
+                if len(target_state.planets) > 1:
+                    upd_fields["research_offers"] = ()
+                self._last_state = replace(target_state, **upd_fields)
+                if was_recorded:
+                    self._last_recorded_state_obj = self._last_state
+                active_p = self._last_state.active_planet()
+                if active_p is None or not active_p.building_offers:
+                    self._last_buildings_fetched = False
+        elif len(target_state.planets) <= 1:
+            self._active_planet_confirmed = True
+
+    def _refresh_cached_economy(self, state: GameState) -> GameState:
+        was_recorded = state is self._last_recorded_state_obj
         merged = self._merge_economy_rates(state)
         self._last_state = merged
+        if was_recorded:
+            self._last_recorded_state_obj = merged
+        return merged
+
+    def _is_home_fresh(self, now_mono: float) -> bool:
+        if self._last_state is None:
+            return False
+        if (
+            self._last_home_fetched
+            and self._last_home_at is not None
+            and (now_mono - self._last_home_at) <= 15.0
+        ):
+            return True
+        return (
+            self._last_state is not self._last_recorded_state_obj
+            and self._last_state.tutorial is not None
+        )
+
+    def _record_state(
+        self,
+        state: GameState,
+        *,
+        fetched_buildings: bool = False,
+        fetched_research: bool = False,
+        fetched_shipyard: bool = False,
+        fetched_home: bool = False,
+        observed_active_planet: bool = False,
+        update_snapshot_ts: bool = True,
+    ) -> GameState:
+        prev = self._last_state
+        if prev is None:
+            self._last_home_fetched = False
+            self._last_home_at = None
+            self._active_planet_confirmed = False
+        if prev is not None and (not fetched_home or not observed_active_planet):
+            planet_ids = {p.planet_id for p in state.planets}
+            upd_kwargs: dict[str, Any] = {}
+            if (
+                not observed_active_planet
+                and prev.active_planet_id is not None
+                and prev.active_planet_id in planet_ids
+            ):
+                upd_kwargs["active_planet_id"] = prev.active_planet_id
+            if not fetched_home:
+                if state.tutorial is None and prev.tutorial is not None:
+                    upd_kwargs["tutorial"] = prev.tutorial
+                if state.speedup_factor is None and prev.speedup_factor is not None:
+                    upd_kwargs["speedup_factor"] = prev.speedup_factor
+                if not state.newbie_protection and prev.newbie_protection:
+                    upd_kwargs["newbie_protection"] = True
+                if not state.fleet_alerts and prev.fleet_alerts:
+                    upd_kwargs["fleet_alerts"] = prev.fleet_alerts
+                if prev.active_queues:
+                    refreshed_q_cats: set[str] = set()
+                    if fetched_buildings:
+                        refreshed_q_cats.add("building")
+                    if fetched_research and state.research_offers:
+                        refreshed_q_cats.add("research")
+                    cur_cats = {q.category for q in state.active_queues} | refreshed_q_cats
+                    extra_q = [q for q in prev.active_queues if q.category not in cur_cats]
+                    if extra_q:
+                        upd_kwargs["active_queues"] = tuple(list(state.active_queues) + extra_q)
+            if upd_kwargs:
+                state = replace(state, **upd_kwargs)
+        now = time.monotonic()
+        if fetched_home:
+            self._last_home_fetched = True
+            self._last_home_at = now
+        elif update_snapshot_ts and (
+            prev is None
+            or not self._last_home_fetched
+            or self._last_home_at is None
+            or (now - self._last_home_at) > 15.0
+        ):
+            self._last_home_fetched = False
+        if observed_active_planet or len(state.planets) <= 1:
+            self._active_planet_confirmed = True
+
+        merged = self._merge_economy_rates(self._merge_cached_offers(state))
+        self._last_state = merged
+        self._last_recorded_state_obj = merged
+        if update_snapshot_ts:
+            self._last_snapshot_at = now
+        if fetched_buildings:
+            self._last_buildings_fetched = True
+        else:
+            active_p_chk = merged.active_planet()
+            if active_p_chk is None or not active_p_chk.building_offers:
+                self._last_buildings_fetched = False
+        active_p = merged.active_planet()
+        b8_lvl = active_p.building_level(8) if active_p is not None else 0
+        b9_lvl = active_p.building_level(9) if active_p is not None else 0
+        pid_sig = int(active_p.planet_id) if active_p is not None else 0
+        res_sig = tuple(sorted((str(k), int(v)) for k, v in (merged.researches or {}).items()))
+        res_busy = any(q.category == "research" for q in merged.active_queues)
+        if fetched_research:
+            self._last_research_sync_at = now
+            self._last_research_sync_sig = (b8_lvl, res_sig, res_busy)
+        if fetched_shipyard:
+            self._last_shipyard_sync_at = now
+            self._last_shipyard_sync_sig = (pid_sig, b9_lvl, res_sig)
         if self._db is not None:
             self._rank_samples = self._db.record_state_snapshot(merged)
         else:
@@ -273,21 +741,40 @@ class GameApiBridge:
         """Return combined UI telemetry, plan, buildings ETAs, combat, ranking, config, and logs."""
         with self._lock:
             port_open = is_debug_port_open(self.debug_port)
-            in_game = self._last_state is not None
+            rate_rem = self._page_limiter.rate_limit_remaining()
+            in_game = port_open and (self._last_state is not None or rate_rem > 0.0)
             current_url = self._last_url
-            if port_open and (refresh or self._last_state is None):
+            if port_open and rate_rem <= 0.0 and (refresh or self._last_state is None):
                 try:
                     with self._client_factory(self.debug_port) as client:
-                        snap = client.read_full_snapshot(include_buildings=True)
-                        self._record_state(snap)
+                        snap = self._read_snapshot(
+                            client,
+                            include_buildings=True,
+                            include_research=True,
+                            include_shipyard=True,
+                            return_home=False,
+                            priority="normal",
+                        )
+                        obs_active = bool(getattr(client, "last_snapshot_observed_active_planet", True))
+                        self._record_state(
+                            snap,
+                            fetched_buildings=True,
+                            fetched_research=True,
+                            fetched_shipyard=True,
+                            fetched_home=True,
+                            observed_active_planet=obs_active,
+                        )
                         current_url = str(getattr(client.driver, "current_url", "") or "")
                         self._last_url = current_url
                         in_game = True
+                except RateLimitError as exc:
+                    self._record_server_rate_limit(exc)
+                    in_game = port_open
                 except SpaceInvasionAuthError:
                     in_game = False
 
             actions = (
-                plan_actions(self._last_state, config=self.strategy_config)
+                self._plan_with_context(self._last_state)
                 if self._last_state is not None
                 else []
             )
@@ -309,6 +796,7 @@ class GameApiBridge:
                 if self._last_state is not None
                 else None
             )
+            rate_rem = self._page_limiter.rate_limit_remaining()
             return {
                 "ok": True,
                 "server_boot_id": _SERVER_BOOT_ID,
@@ -318,6 +806,11 @@ class GameApiBridge:
                     "debug_port": self.debug_port,
                     "debug_port_open": port_open,
                     "in_game": in_game,
+                    "rate_limited": rate_rem > 0.0,
+                    "retry_after": round(rate_rem, 1),
+                    "page_views_last_60s": self._page_limiter.views_last_60s(),
+                    "page_view_limit_per_minute": self._page_limiter.max_views_per_minute,
+                    "rate_limit_hits": self._page_limiter.rate_limit_hits,
                     "url": redact_sensitive(current_url) if current_url else None,
                     "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
                 },
@@ -337,9 +830,72 @@ class GameApiBridge:
 
     def get_state(self, *, include_buildings: bool = True) -> dict[str, Any]:
         with self._lock:
-            with self._client_factory(self.debug_port) as client:
-                state = client.read_full_snapshot(include_buildings=include_buildings)
-                merged = self._record_state(state)
+            self._raise_if_rate_limited()
+            if self._last_state is None:
+                self._active_planet_confirmed = False
+                self._last_home_fetched = False
+                self._last_home_at = None
+            now = time.monotonic()
+            if (
+                self._last_state is not None
+                and (now - self._last_snapshot_at) <= self.SNAPSHOT_CACHE_TTL_S
+                and (not include_buildings or self._last_buildings_fetched)
+                and (
+                    self._is_home_fresh(now)
+                    or self._last_state is not self._last_recorded_state_obj
+                )
+            ):
+                return asdict(self._refresh_cached_economy(self._last_state))
+
+            research_due = self._last_research_sync_at <= 0.0 or (now - self._last_research_sync_at) >= self.RESEARCH_SYNC_TTL_S
+            shipyard_due = self._last_shipyard_sync_at <= 0.0 or (now - self._last_shipyard_sync_at) >= self.SHIPYARD_SYNC_TTL_S
+            need_research = bool(include_buildings and (self._last_state is None or research_due))
+            need_shipyard = bool(include_buildings and (self._last_state is None or shipyard_due))
+            if self._last_state is not None and include_buildings:
+                prev_active = self._last_state.active_planet()
+                cur_pid = int(prev_active.planet_id) if prev_active is not None else 0
+                cur_b8 = prev_active.building_level(8) if prev_active is not None else 0
+                cur_b9 = prev_active.building_level(9) if prev_active is not None else 0
+                cur_res_sig = tuple(sorted((str(k), int(v)) for k, v in (self._last_state.researches or {}).items()))
+                cur_res_busy = any(q.category == "research" for q in self._last_state.active_queues)
+                if (
+                    prev_active is not None
+                    and cur_b9 > 0
+                    and not prev_active.ship_offers
+                    and self._last_shipyard_sync_sig != (cur_pid, cur_b9, cur_res_sig)
+                ):
+                    need_shipyard = True
+                if (
+                    cur_b8 > 0
+                    and not self._last_state.research_offers
+                    and self._last_research_sync_sig != (cur_b8, cur_res_sig, cur_res_busy)
+                ):
+                    need_research = True
+
+            try:
+                with self._client_factory(self.debug_port) as client:
+                    state = self._read_snapshot(
+                        client,
+                        include_buildings=include_buildings,
+                        include_research=need_research,
+                        include_shipyard=need_shipyard,
+                        return_home=False,
+                        priority="normal",
+                    )
+                    if not include_buildings:
+                        self._last_buildings_fetched = False
+                    obs_active = bool(getattr(client, "last_snapshot_observed_active_planet", True))
+                    merged = self._record_state(
+                        state,
+                        fetched_buildings=include_buildings,
+                        fetched_research=need_research,
+                        fetched_shipyard=need_shipyard,
+                        fetched_home=True,
+                        observed_active_planet=obs_active,
+                    )
+            except RateLimitError as exc:
+                self._record_server_rate_limit(exc)
+                raise
             return asdict(merged)
 
     def _pick_executor(self, dry_run: bool) -> ActionExecutor:
@@ -361,19 +917,44 @@ class GameApiBridge:
         state: GameState,
         building_id: int,
         planet_id: Optional[int],
+        *,
+        allow_live_verify: bool = False,
     ) -> PlannedAction:
+        from spaceinvasion import game_data
+        from spaceinvasion.strategy import _resources_from_dict
+
         planet = self._resolve_planet(state, planet_id)
+        nxt_lvl = planet.building_level(building_id) + 1
         offer = next((o for o in planet.building_offers if o.building_id == building_id), None)
         if offer is None:
-            from spaceinvasion import game_data
-            from spaceinvasion.strategy import _resources_from_dict
-
-            nxt_lvl = planet.building_level(building_id) + 1
             wiki_cost = _resources_from_dict(game_data.building_cost(building_id, nxt_lvl))
-            remote_ok = (
-                planet.planet_id != state.active_planet_id
+            can_fallback = planet.planet_id != state.active_planet_id or (
+                allow_live_verify and not planet.building_offers
+            )
+            astro_allowed = planet.planet_type != "asteroid" or bool(
+                (game_data.BUILDING_BY_ID.get(int(building_id)) or {}).get("asteroid_ok", False)
+            )
+            prereqs_met = not game_data.missing_prerequisites(
+                "buildings",
+                int(building_id),
+                buildings=planet.buildings,
+                researches=state.researches,
+            )
+            fallback_ok = (
+                can_fallback
+                and astro_allowed
+                and prereqs_met
                 and not wiki_cost.is_zero()
                 and planet.resources.can_afford(wiki_cost)
+            )
+            reason = (
+                "API build command (cross-planet check)"
+                if planet.planet_id != state.active_planet_id and fallback_ok
+                else (
+                    "API build command (live verify)"
+                    if fallback_ok
+                    else "API build command (offer unavailable/not unlocked)"
+                )
             )
             return PlannedAction(
                 priority="P2",
@@ -385,10 +966,33 @@ class GameApiBridge:
                 target_level=nxt_lvl,
                 cost=wiki_cost,
                 missing=planet.resources.missing(wiki_cost),
-                reason="API build command (cross-planet check)" if remote_ok else "API build command (offer unavailable/not unlocked)",
-                executable_now=remote_ok,
+                reason=reason,
+                executable_now=fallback_ok,
+            )
+        if allow_live_verify and offer.target_level != nxt_lvl:
+            wiki_cost = _resources_from_dict(game_data.building_cost(building_id, nxt_lvl))
+            can_exec = not wiki_cost.is_zero() and planet.resources.can_afford(wiki_cost)
+            return PlannedAction(
+                priority="P2",
+                kind="BUILD",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=offer.building_id,
+                target_name=offer.name,
+                target_level=nxt_lvl,
+                cost=wiki_cost,
+                missing=planet.resources.missing(wiki_cost),
+                reason="API build command (live verify)",
+                executable_now=can_exec,
             )
         can_exec = offer.can_build and planet.resources.can_afford(offer.cost)
+        if (
+            not can_exec
+            and allow_live_verify
+            and "not enough" in (offer.status_text or "").lower()
+            and planet.resources.can_afford(offer.cost)
+        ):
+            can_exec = True
         return PlannedAction(
             priority="P2",
             kind="BUILD",
@@ -409,22 +1013,148 @@ class GameApiBridge:
         state: GameState,
         research_id: int,
         planet_id: Optional[int],
+        *,
+        allow_live_verify: bool = False,
     ) -> PlannedAction:
+        from spaceinvasion import game_data
+        from spaceinvasion.strategy import _resources_from_dict
+
         planet = self._resolve_planet(state, planet_id)
+        rkey = f"r{research_id}"
+        nxt_lvl = int(state.researches.get(rkey, 0)) + 1
+        res_busy = (
+            any(q.category == "research" for q in state.active_queues)
+            or any(o.active for o in state.research_offers)
+        )
         offer = next((o for o in state.research_offers if o.research_id == research_id), None)
+        missing_prereqs = game_data.missing_prerequisites(
+            "research",
+            rkey,
+            buildings=planet.buildings,
+            researches=state.researches,
+        )
+        missing_b_prereqs = [m for m in missing_prereqs if m.get("category") == "buildings"]
         if offer is None:
+            if (
+                allow_live_verify
+                and not res_busy
+                and planet.building_level(8) >= 1
+                and (
+                    (not state.research_offers and not missing_b_prereqs)
+                    or (planet.planet_id != state.active_planet_id and not missing_prereqs)
+                )
+            ):
+                unit = game_data.resolve_unit("research", rkey)
+                raw_cost = ((unit or {}).get("levels") or {}).get(nxt_lvl, {}).get("cost")
+                wiki_cost = (
+                    _resources_from_dict(raw_cost)
+                    if isinstance(raw_cost, dict)
+                    else Resources()
+                )
+                can_exec = not wiki_cost.is_zero() and planet.resources.can_afford(wiki_cost)
+                rname = state.research_names.get(
+                    rkey,
+                    str((unit or {}).get("name") or f"Research {research_id}"),
+                )
+                return PlannedAction(
+                    priority="P2",
+                    kind="RESEARCH",
+                    planet_id=planet.planet_id,
+                    planet_coords=planet.coords,
+                    target_id=research_id,
+                    target_name=rname,
+                    target_level=nxt_lvl,
+                    cost=wiki_cost,
+                    missing=planet.resources.missing(wiki_cost),
+                    reason=(
+                        "API research command (live verify)"
+                        if can_exec
+                        else "API research command (insufficient resources)"
+                    ),
+                    executable_now=can_exec,
+                )
             return PlannedAction(
                 priority="P2",
                 kind="RESEARCH",
                 planet_id=planet.planet_id,
                 planet_coords=planet.coords,
                 target_id=research_id,
-                target_name=state.research_names.get(f"r{research_id}", f"Research {research_id}"),
-                target_level=int(state.researches.get(f"r{research_id}", 0)) + 1,
+                target_name=state.research_names.get(rkey, f"Research {research_id}"),
+                target_level=nxt_lvl,
                 reason="API research command (offer unavailable/slot busy)",
                 executable_now=False,
             )
-        can_exec = offer.can_research and planet.resources.can_afford(offer.cost)
+        if (
+            allow_live_verify
+            and offer.target_level != nxt_lvl
+            and not offer.active
+            and not res_busy
+            and planet.building_level(8) >= 1
+            and not missing_b_prereqs
+        ):
+            unit = game_data.resolve_unit("research", rkey)
+            raw_cost = ((unit or {}).get("levels") or {}).get(nxt_lvl, {}).get("cost")
+            wiki_cost = (
+                _resources_from_dict(raw_cost)
+                if isinstance(raw_cost, dict)
+                else offer.cost
+            )
+            can_exec = not wiki_cost.is_zero() and planet.resources.can_afford(wiki_cost)
+            return PlannedAction(
+                priority="P2",
+                kind="RESEARCH",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=offer.research_id,
+                target_name=offer.name,
+                target_level=nxt_lvl,
+                cost=wiki_cost,
+                missing=planet.resources.missing(wiki_cost),
+                reason="API research command (live verify)",
+                executable_now=can_exec,
+            )
+        can_exec = (
+            offer.can_research
+            and not res_busy
+            and planet.building_level(8) >= 1
+            and planet.resources.can_afford(offer.cost)
+        )
+        if (
+            not can_exec
+            and allow_live_verify
+            and not offer.active
+            and not res_busy
+            and planet.building_level(8) >= 1
+        ):
+            if (
+                "not enough" in (offer.status_text or "").lower()
+                and planet.resources.can_afford(offer.cost)
+            ):
+                can_exec = True
+            elif planet.planet_id != state.active_planet_id and not missing_prereqs:
+                unit = game_data.resolve_unit("research", rkey)
+                raw_cost = ((unit or {}).get("levels") or {}).get(nxt_lvl, {}).get("cost")
+                wiki_cost = (
+                    _resources_from_dict(raw_cost)
+                    if isinstance(raw_cost, dict)
+                    else Resources()
+                )
+                live_cost = offer.cost if not offer.cost.is_zero() else wiki_cost
+                live_ok = not live_cost.is_zero() and planet.resources.can_afford(live_cost)
+                if live_ok:
+                    return PlannedAction(
+                        priority="P2",
+                        kind="RESEARCH",
+                        planet_id=planet.planet_id,
+                        planet_coords=planet.coords,
+                        target_id=offer.research_id,
+                        target_name=offer.name,
+                        target_level=nxt_lvl,
+                        cost=live_cost,
+                        missing=planet.resources.missing(live_cost),
+                        reason="API research command (cross-planet check)",
+                        executable_now=True,
+                    )
         return PlannedAction(
             priority="P2",
             kind="RESEARCH",
@@ -446,22 +1176,90 @@ class GameApiBridge:
         ship_id: int,
         quantity: int,
         planet_id: Optional[int],
+        *,
+        allow_live_verify: bool = False,
     ) -> PlannedAction:
+        from spaceinvasion import game_data
+        from spaceinvasion.strategy import _resources_from_dict
+
         planet = self._resolve_planet(state, planet_id)
+        qty = max(1, quantity)
         offer = next((o for o in planet.ship_offers if o.unit_id == ship_id), None)
-        if offer is None or not offer.can_build:
+        if offer is None:
+            slug = SHIP_SLUG_BY_KEY.get(f"s{ship_id}")
+            unit = game_data.resolve_unit("ships", slug) if slug else None
+            raw_cost = (unit or {}).get("base_cost")
+            can_fallback = planet.planet_id != state.active_planet_id or (
+                allow_live_verify and not planet.ship_offers
+            )
+            if isinstance(raw_cost, dict) and can_fallback and planet.building_level(9) >= 1:
+                unit_cost = _resources_from_dict(raw_cost)
+                total_cost = Resources(
+                    pig_iron=unit_cost.pig_iron * qty,
+                    metal=unit_cost.metal * qty,
+                    kryptonite=unit_cost.kryptonite * qty,
+                    spice=unit_cost.spice * qty,
+                )
+                can_exec = not unit_cost.is_zero() and planet.resources.can_afford(total_cost)
+                sname = str((unit or {}).get("name") or f"Ship {ship_id}")
+                return PlannedAction(
+                    priority="P2",
+                    kind="BUILD_SHIP",
+                    planet_id=planet.planet_id,
+                    planet_coords=planet.coords,
+                    target_id=ship_id,
+                    target_name=sname,
+                    target_level=qty,
+                    cost=unit_cost,
+                    missing=planet.resources.missing(total_cost),
+                    reason=(
+                        "API build_ship command (live verify)"
+                        if can_exec
+                        else "API build_ship command (insufficient resources)"
+                    ),
+                    executable_now=can_exec,
+                )
             return PlannedAction(
                 priority="P2",
                 kind="BUILD_SHIP",
                 planet_id=planet.planet_id,
                 planet_coords=planet.coords,
                 target_id=ship_id,
-                target_name=f"Ship {ship_id}",
-                target_level=max(1, quantity),
+                target_name=str((unit or {}).get("name") or f"Ship {ship_id}"),
+                target_level=qty,
                 reason="API build_ship command (offer unavailable/not unlocked)",
                 executable_now=False,
             )
-        can_exec = planet.resources.can_afford(offer.cost)
+        total_offer_cost = Resources(
+            pig_iron=offer.cost.pig_iron * qty,
+            metal=offer.cost.metal * qty,
+            kryptonite=offer.cost.kryptonite * qty,
+            spice=offer.cost.spice * qty,
+        )
+        can_exec = offer.can_build and planet.resources.can_afford(total_offer_cost)
+        status_l = (offer.status_text or "").lower()
+        if (
+            not offer.can_build
+            and allow_live_verify
+            and planet.building_level(9) >= 1
+            and ("not enough" in status_l or "insufficient" in status_l)
+            and planet.resources.can_afford(total_offer_cost)
+        ):
+            can_exec = True
+        if not offer.can_build and not can_exec:
+            return PlannedAction(
+                priority="P2",
+                kind="BUILD_SHIP",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=offer.unit_id,
+                target_name=offer.name,
+                target_level=qty,
+                cost=offer.cost,
+                missing=planet.resources.missing(total_offer_cost),
+                reason="API build_ship command (offer unavailable/not unlocked)",
+                executable_now=False,
+            )
         return PlannedAction(
             priority="P2",
             kind="BUILD_SHIP",
@@ -469,12 +1267,130 @@ class GameApiBridge:
             planet_coords=planet.coords,
             target_id=offer.unit_id,
             target_name=offer.name,
-            target_level=max(1, quantity),
+            target_level=qty,
             cost=offer.cost,
-            missing=planet.resources.missing(offer.cost),
+            missing=planet.resources.missing(total_offer_cost),
             reason="API build_ship command",
             executable_now=can_exec,
         )
+
+    def _persist_galaxy_scan(
+        self,
+        galaxy: int,
+        system: int,
+        slots: list[Any] | tuple[Any, ...] = (),
+    ) -> None:
+        now_ts = round(time.time(), 3)
+        skey = f"{int(galaxy):02d}:{int(system):03d}"
+        self._scanned_systems[skey] = now_ts
+        if self._db is not None:
+            self._db.record_galaxy_scan(int(galaxy), int(system), slots, ts=now_ts)
+
+    def _persist_galaxy_slots(self, slots: list[Any] | tuple[Any, ...]) -> int:
+        if not slots:
+            return 0
+        if self._db is not None:
+            saved = self._db.record_galaxy_slots(slots)
+            self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
+            return saved
+        by_coords: dict[str, dict[str, Any]] = {
+            str(r.get("coords") or r.get("target_coords") or ""): dict(r)
+            for r in self._raid_targets
+            if (r.get("coords") or r.get("target_coords"))
+        }
+        now_ts = round(time.time(), 3)
+        saved = 0
+        for s in slots:
+            if getattr(s, "status_color", "free") == "free" and not getattr(s, "is_spacia", False):
+                continue
+            status_color = str(getattr(s, "status_color", "yellow") or "yellow")
+            is_spacia = bool(getattr(s, "is_spacia", False))
+            prev = by_coords.get(str(s.coords), {})
+            by_coords[str(s.coords)] = {
+                "coords": str(s.coords),
+                "owner": str(getattr(s, "owner", "") or ""),
+                "planet_name": str(getattr(s, "name", "") or ""),
+                "status_color": status_color,
+                "is_inactive": bool(status_color == "yellow" or is_spacia),
+                "is_spacia": is_spacia,
+                "points": prev.get("points"),
+                "resources": prev.get("resources") or {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0},
+                "fleet": prev.get("fleet") or {},
+                "defense": prev.get("defense") or {},
+                "dug_in": prev.get("dug_in", False),
+                "last_scanned_ts": now_ts,
+                "last_spied_ts": prev.get("last_spied_ts", 0.0),
+                "has_spy_intel": bool(prev.get("has_spy_intel", False)),
+            }
+            saved += 1
+        self._raid_targets = self._enrich_raid_targets(list(by_coords.values())[:100])
+        return saved
+
+    def _persist_spy_reports(self, reports: tuple[SpyReport, ...] | list[SpyReport]) -> int:
+        if not reports:
+            return 0
+        now_ts = round(time.time(), 3)
+        if self._db is not None:
+            for rep in reports:
+                self._db.record_spy_report(rep, ts=now_ts)
+            self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
+            return len(reports)
+        by_coords: dict[str, dict[str, Any]] = {
+            str(r.get("coords") or r.get("target_coords") or ""): dict(r)
+            for r in self._raid_targets
+            if (r.get("coords") or r.get("target_coords"))
+        }
+        for rep in reports:
+            prev = by_coords.get(rep.target_coords, {})
+            is_spacia = bool(rep.is_spacia or prev.get("is_spacia", False))
+            status_color = prev.get("status_color") or ("yellow" if is_spacia else "light_red")
+            by_coords[rep.target_coords] = {
+                "coords": rep.target_coords,
+                "owner": rep.owner or prev.get("owner", ""),
+                "planet_name": prev.get("planet_name", ""),
+                "status_color": status_color,
+                "is_inactive": bool(prev.get("is_inactive", False) or is_spacia or status_color == "yellow"),
+                "is_spacia": is_spacia,
+                "points": prev.get("points"),
+                "resources": asdict(rep.resources),
+                "fleet": dict(rep.fleet),
+                "defense": dict(rep.defense),
+                "dug_in": bool(rep.dug_in),
+                "last_scanned_ts": max(float(prev.get("last_scanned_ts") or 0.0), now_ts),
+                "last_spied_ts": now_ts,
+                "has_spy_intel": True,
+            }
+        self._raid_targets = self._enrich_raid_targets(list(by_coords.values())[:100])
+        return len(reports)
+
+    def _sync_spio_if_unread(
+        self,
+        client: Any,
+        state: GameState,
+        *,
+        priority: str = "normal",
+    ) -> int:
+        if int((state.unread_messages or {}).get("spio", 0) or 0) <= 0:
+            return 0
+        if self.rate_limit_remaining() > 0.0:
+            return 0
+        now = time.monotonic()
+        if (now - self._last_spio_sync_at) < self.SPIO_SYNC_TTL_S:
+            return 0
+        open_msg = getattr(client, "open_messages", None)
+        if not callable(open_msg):
+            return 0
+        self._last_spio_sync_at = now
+        try:
+            html = self._call_with_optional_priority(open_msg, "spio", priority=priority)
+        except RateLimitError:
+            raise
+        except Exception:
+            return 0
+        if not isinstance(html, str):
+            return 0
+        reports = parse_spy_messages_html(html)
+        return self._persist_spy_reports(reports)
 
     def _execute_and_summarize(
         self,
@@ -483,9 +1399,36 @@ class GameApiBridge:
         cmd: str,
         planned: PlannedAction,
         dry_run: bool,
+        *,
+        return_home: bool = False,
     ) -> dict[str, Any]:
         executor = self._pick_executor(dry_run)
-        res = executor.execute_action(client, state, planned)
+        res = None
+        try:
+            if GameApiBridge._supports_kwarg(executor.execute_action, "active_planet_confirmed"):
+                res = executor.execute_action(
+                    client,
+                    state,
+                    planned,
+                    active_planet_confirmed=self._active_planet_confirmed,
+                )
+            else:
+                res = executor.execute_action(client, state, planned)
+        finally:
+            if res is None and not dry_run:
+                raw_obs_pid = getattr(executor, "last_observed_active_planet_id", None)
+                raw_obs_conf = getattr(executor, "last_observed_active_planet_confirmed", None)
+                self._sync_observed_active_planet_state(
+                    state,
+                    obs_pid=(
+                        raw_obs_pid
+                        if isinstance(raw_obs_pid, int) and not isinstance(raw_obs_pid, bool)
+                        else None
+                    ),
+                    obs_confirmed=(
+                        raw_obs_conf if isinstance(raw_obs_conf, bool) else None
+                    ),
+                )
         if not dry_run:
             for pid, rates in getattr(executor, "last_economy_rates", {}).items():
                 if rates:
@@ -493,6 +1436,54 @@ class GameApiBridge:
                     if self._db is not None:
                         coords = next((p.coords for p in state.planets if p.planet_id == int(pid)), "")
                         self._db.save_economy_rates(int(pid), coords, rates)
+            gal_slots = getattr(executor, "last_galaxy_slots", None)
+            if gal_slots:
+                self._persist_galaxy_slots(gal_slots)
+                executor.last_galaxy_slots = []
+            if res.executed and res.action.kind == "SCAN_GALAXY":
+                m_sys = re.search(r"(\d{1,2}):(\d{1,3})", f"{res.message} {res.action.target_name}")
+                if m_sys:
+                    self._persist_galaxy_scan(
+                        int(m_sys.group(1)),
+                        int(m_sys.group(2)),
+                        gal_slots or (),
+                    )
+            if res.executed and res.action.kind == "THROTTLE_BUILDING":
+                self._throttle_timestamps[int(res.action.planet_id)] = time.time()
+            if res.executed and res.action.kind == "ATTACK" and self._db is not None:
+                m_coords = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", res.action.target_name)
+                t_coords = m_coords.group(1) if m_coords else res.action.target_name
+                reason_l = f"{res.action.target_name} {res.action.reason}".lower()
+                target_row = next(
+                    (
+                        r
+                        for r in (self._raid_targets or ())
+                        if (r.get("coords") or r.get("target_coords")) == t_coords
+                    ),
+                    None,
+                )
+                if target_row is None:
+                    target_row = next(
+                        (
+                            r
+                            for r in self._db.get_spy_targets(limit=200)
+                            if (r.get("coords") or r.get("target_coords")) == t_coords
+                        ),
+                        None,
+                    )
+                row_exempt = bool(
+                    target_row is not None
+                    and (
+                        target_row.get("is_spacia")
+                        or target_row.get("is_inactive")
+                        or str(target_row.get("status_color") or "").lower() == "yellow"
+                    )
+                )
+                is_exempt = row_exempt or (
+                    "spacia" in reason_l or "inactive" in reason_l or "yellow" in reason_l
+                )
+                self._db.record_raid(t_coords, is_exempt=is_exempt, outcome=res.message)
+                self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
         if self._db is not None:
             self._db.record_action(
                 source="api",
@@ -502,17 +1493,177 @@ class GameApiBridge:
                 dry_run=res.dry_run,
                 message=res.message,
             )
-        if res.executed:
+
+        after_state: Optional[GameState] = None
+        res_updated = getattr(res, "updated_state", None)
+        res_obs_pid = getattr(res, "observed_active_planet_id", None)
+        res_obs_conf = getattr(res, "observed_active_planet_confirmed", None)
+        valid_obs_pid = (
+            res_obs_pid
+            if isinstance(res_obs_pid, int) and not isinstance(res_obs_pid, bool)
+            else None
+        )
+        obs_conf_bool = res_obs_conf if isinstance(res_obs_conf, bool) else None
+        if res.executed and res.action.kind == "SCAN_GALAXY":
             after_state = self._record_state(
-                client.read_full_snapshot(include_buildings=True, return_home=False)
+                state,
+                fetched_buildings=self._last_buildings_fetched,
+                fetched_home=False,
+                observed_active_planet=False,
+                update_snapshot_ts=False,
             )
-            after_plan = plan_actions(after_state, config=self.strategy_config)
+            after_plan = self._plan_with_context(after_state)
+        elif res.executed and isinstance(res_updated, GameState):
+            if res.action.kind == "BUILD" and res.action.target_id == 9:
+                self._last_shipyard_sync_at = 0.0
+                self._last_shipyard_sync_sig = None
+            elif res.action.kind == "BUILD" and res.action.target_id == 8:
+                self._last_research_sync_at = 0.0
+                self._last_research_sync_sig = None
+                res_updated = replace(res_updated, research_offers=())
+            state_to_record = res_updated
+            if (
+                obs_conf_bool is True
+                and valid_obs_pid is not None
+                and any(p.planet_id == valid_obs_pid for p in res_updated.planets)
+                and res_updated.active_planet_id != valid_obs_pid
+            ):
+                state_to_record = replace(res_updated, active_planet_id=valid_obs_pid)
+            if res.action.kind != "RESEARCH" and (
+                state_to_record.active_planet_id != state.active_planet_id
+                or {p.planet_id: p.building_level(8) for p in state_to_record.planets}
+                != {p.planet_id: p.building_level(8) for p in state.planets}
+            ):
+                state_to_record = replace(state_to_record, research_offers=())
+            after_state = self._record_state(
+                state_to_record,
+                fetched_buildings=(res.action.kind == "BUILD"),
+                fetched_research=(res.action.kind == "RESEARCH"),
+                fetched_shipyard=(res.action.kind == "BUILD_SHIP"),
+                fetched_home=(res.action.kind == "CLAIM_TUTORIAL"),
+                observed_active_planet=(obs_conf_bool is True),
+            )
+            if obs_conf_bool is False and len(after_state.planets) > 1:
+                self._active_planet_confirmed = False
+            after_plan = self._plan_with_context(after_state)
+        elif res.executed and res.action.kind == "SPY":
+            state_to_record = state
+            obs_flag = False
+            if obs_conf_bool is True:
+                obs_flag = True
+                if (
+                    valid_obs_pid is not None
+                    and any(p.planet_id == valid_obs_pid for p in state.planets)
+                    and state.active_planet_id != valid_obs_pid
+                ):
+                    state_to_record = replace(
+                        state,
+                        active_planet_id=valid_obs_pid,
+                        research_offers=(),
+                    )
+            after_state = self._record_state(
+                state_to_record,
+                fetched_buildings=(
+                    self._last_buildings_fetched
+                    and state_to_record.active_planet_id == state.active_planet_id
+                ),
+                fetched_home=False,
+                observed_active_planet=obs_flag,
+                update_snapshot_ts=False,
+            )
+            if obs_conf_bool is False and len(after_state.planets) > 1:
+                self._active_planet_confirmed = False
+            after_plan = self._plan_with_context(after_state)
+        elif res.executed:
+            self._last_snapshot_at = 0.0
+            if res.action.kind == "BUILD" and res.action.target_id == 9:
+                self._last_shipyard_sync_at = 0.0
+                self._last_shipyard_sync_sig = None
+            elif res.action.kind == "BUILD" and res.action.target_id == 8:
+                self._last_research_sync_at = 0.0
+                self._last_research_sync_sig = None
+            inc_b = res.action.kind in ("BUILD", "CLAIM_TUTORIAL")
+            inc_r = res.action.kind == "RESEARCH"
+            inc_h = res.action.kind == "CLAIM_TUTORIAL"
+            snap = self._read_snapshot(
+                client,
+                include_buildings=inc_b,
+                include_research=inc_r,
+                include_shipyard=False,
+                include_home=inc_h,
+                return_home=False,
+                priority="interactive",
+            )
+            obs_active = bool(getattr(client, "last_snapshot_observed_active_planet", True))
+            if obs_conf_bool is True:
+                obs_active = True
+                if (
+                    valid_obs_pid is not None
+                    and any(p.planet_id == valid_obs_pid for p in snap.planets)
+                    and snap.active_planet_id != valid_obs_pid
+                ):
+                    snap = replace(snap, active_planet_id=valid_obs_pid)
+            if (res.action.kind == "BUILD" and res.action.target_id == 8) or (
+                not inc_r
+                and (
+                    snap.active_planet_id != state.active_planet_id
+                    or {p.planet_id: p.building_level(8) for p in snap.planets}
+                    != {p.planet_id: p.building_level(8) for p in state.planets}
+                )
+            ):
+                snap = replace(snap, research_offers=())
+            after_state = self._record_state(
+                snap,
+                fetched_buildings=inc_b,
+                fetched_research=inc_r,
+                fetched_home=inc_h,
+                observed_active_planet=obs_active,
+            )
+            if obs_conf_bool is False and len(after_state.planets) > 1:
+                self._active_planet_confirmed = False
+            after_plan = self._plan_with_context(after_state)
         else:
-            merged_state = self._record_state(state)
-            after_plan = plan_actions(merged_state, config=self.strategy_config)
+            state_to_record = state
+            obs_flag = False
+            if not dry_run and obs_conf_bool is True:
+                obs_flag = True
+                if (
+                    valid_obs_pid is not None
+                    and any(p.planet_id == valid_obs_pid for p in state.planets)
+                    and state.active_planet_id != valid_obs_pid
+                ):
+                    state_to_record = replace(
+                        state,
+                        active_planet_id=valid_obs_pid,
+                        research_offers=(),
+                    )
+            merged_state = self._record_state(
+                state_to_record,
+                fetched_buildings=(
+                    self._last_buildings_fetched
+                    and state_to_record.active_planet_id == state.active_planet_id
+                ),
+                fetched_home=False,
+                observed_active_planet=obs_flag,
+                update_snapshot_ts=False,
+            )
+            if not dry_run and obs_conf_bool is False and len(merged_state.planets) > 1:
+                self._active_planet_confirmed = False
+            after_plan = self._plan_with_context(merged_state)
+
+        if (
+            return_home
+            and res.executed
+            and not (res.action.kind == "CLAIM_TUTORIAL" and isinstance(res_updated, GameState))
+        ):
+            self._call_with_optional_priority(
+                client.navigate_menu,
+                "internalHome",
+                priority="interactive",
+            )
+
         next_action = asdict(after_plan[0]) if after_plan else None
-        client.navigate_menu("internalHome")
-        return {
+        summary: dict[str, Any] = {
             "ok": True,
             "command": cmd,
             "executed": res.executed,
@@ -521,6 +1672,9 @@ class GameApiBridge:
             "action": asdict(res.action),
             "next_action": next_action,
         }
+        if after_state is not None:
+            summary["state"] = redact_sensitive(asdict(after_state))
+        return summary
 
     def handle_command(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict) or not payload.get("command"):
@@ -560,7 +1714,10 @@ class GameApiBridge:
             with self._lock:
                 save_strategy_config(new_cfg, self.config_path)
                 self.strategy_config = new_cfg
-                self._live_executor.allow_fleetsave = new_cfg.allow_fleetsave
+                for ex in (self._live_executor, self._dry_executor):
+                    ex.allow_fleetsave = new_cfg.allow_fleetsave
+                    ex.allow_raids = new_cfg.allow_raids
+                    ex.max_actions_per_hour = new_cfg.max_actions_per_hour
             return {"ok": True, "command": cmd, "config": asdict(new_cfg)}
 
         if cmd == "simulate_combat":
@@ -570,6 +1727,7 @@ class GameApiBridge:
                     user_id=0,
                     nickname="simulator",
                     timestamp=0.0,
+                    planets=(),
                 )
                 atk_ships = payload.get("attacker_ships") or {}
                 def_ships = payload.get("defender_ships") or {}
@@ -594,7 +1752,12 @@ class GameApiBridge:
 
         with self._lock:
             if cmd == "ensure_session":
-                self._ensure_session_fn()
+                self._raise_if_rate_limited()
+                try:
+                    self._ensure_session_fn()
+                except RateLimitError as exc:
+                    self._record_server_rate_limit(exc)
+                    raise
                 return {"ok": True, "command": cmd, "message": "Session verified."}
 
             if cmd == "buildings_eta" and not bool(payload.get("refresh", False)) and self._last_state is not None:
@@ -619,228 +1782,902 @@ class GameApiBridge:
                     ),
                 }
 
-            with self._client_factory(self.debug_port) as client:
-                if cmd == "plan":
-                    state = client.read_full_snapshot(include_buildings=True)
-                    self._record_state(state)
-                    actions = plan_actions(state, config=self.strategy_config)
-                    return {
-                        "ok": True,
-                        "command": cmd,
-                        "actions": [asdict(a) for a in actions],
-                    }
+            self._raise_if_rate_limited()
+            if self._last_state is None:
+                self._active_planet_confirmed = False
+                self._last_home_fetched = False
+                self._last_home_at = None
+            now_mono = time.monotonic()
+            force_refresh = bool(payload.get("refresh", False))
+            try:
+                with self._client_factory(self.debug_port) as client:
+                    def _cached_or_fetch(
+                        *,
+                        include_buildings: bool,
+                        include_research: bool,
+                        include_shipyard: bool,
+                        include_home: bool = True,
+                        priority: str = "interactive",
+                    ) -> GameState:
+                        if (
+                            not force_refresh
+                            and self._last_state is not None
+                            and (now_mono - self._last_snapshot_at) <= 15.0
+                            and (not include_buildings or self._last_buildings_fetched)
+                            and (not include_research or bool(self._last_state.research_offers))
+                            and (
+                                not include_shipyard
+                                or bool(
+                                    self._last_state.active_planet()
+                                    and self._last_state.active_planet().ship_offers
+                                )
+                            )
+                            and (
+                                not include_home
+                                or self._is_home_fresh(now_mono)
+                            )
+                        ):
+                            return self._refresh_cached_economy(self._last_state)
+                        snap = self._read_snapshot(
+                            client,
+                            include_buildings=include_buildings,
+                            include_research=include_research,
+                            include_shipyard=include_shipyard,
+                            include_home=include_home,
+                            return_home=False,
+                            priority=priority,
+                        )
+                        obs_active = bool(getattr(client, "last_snapshot_observed_active_planet", True))
+                        return self._record_state(
+                            snap,
+                            fetched_buildings=include_buildings,
+                            fetched_research=include_research,
+                            fetched_shipyard=include_shipyard,
+                            fetched_home=include_home,
+                            observed_active_planet=obs_active,
+                        )
 
-                if cmd == "buildings_eta":
-                    state = self._record_state(client.read_full_snapshot(include_buildings=True))
-                    pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
-                    planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
-                    return {
-                        "ok": True,
-                        "command": cmd,
-                        "buildings_eta": build_buildings_eta(state, planet),
-                    }
+                    def _resolve_fleet_command_state(
+                        target_pid: Optional[int],
+                        *,
+                        is_spy: bool,
+                    ) -> GameState:
+                        if dry_run or force_refresh:
+                            return _cached_or_fetch(
+                                include_buildings=False,
+                                include_research=False,
+                                include_shipyard=False,
+                                include_home=False,
+                                priority="interactive",
+                            )
+                        if self._last_state is not None:
+                            is_warm = (now_mono - self._last_snapshot_at) <= 15.0
+                            is_cross_planet = (
+                                target_pid is not None
+                                and target_pid != self._last_state.active_planet_id
+                            )
+                            unconfirmed_multi = (
+                                not self._active_planet_confirmed
+                                and len(self._last_state.planets) > 1
+                            )
+                            if (
+                                is_warm
+                                or is_cross_planet
+                                or unconfirmed_multi
+                                or (is_spy and target_pid is None)
+                            ):
+                                return self._refresh_cached_economy(self._last_state)
+                            return _cached_or_fetch(
+                                include_buildings=False,
+                                include_research=False,
+                                include_shipyard=False,
+                                include_home=False,
+                                priority="interactive",
+                            )
 
-                if cmd == "combat_overview":
-                    state = self._record_state(
-                        client.read_full_snapshot(
+                        self._call_with_optional_priority(
+                            client.ensure_in_game,
+                            priority="interactive",
+                        )
+                        read_ov = getattr(client, "read_planets_overview", None)
+                        ov: Any = None
+                        if callable(read_ov):
+                            try:
+                                ov = self._call_with_optional_priority(
+                                    read_ov,
+                                    refresh=False,
+                                    priority="interactive",
+                                )
+                            except TypeError:
+                                ov = None
+                        if not isinstance(ov, GameState):
+                            return _cached_or_fetch(
+                                include_buildings=False,
+                                include_research=False,
+                                include_shipyard=False,
+                                include_home=False,
+                                priority="interactive",
+                            )
+
+                        unread = dict(ov.unread_messages)
+                        account_points = ov.account_points
+                        account_rank = ov.account_rank
+                        read_menu_fn = getattr(client, "read_menu_status", None)
+                        if callable(read_menu_fn):
+                            try:
+                                menu_res = read_menu_fn()
+                                if (
+                                    isinstance(menu_res, tuple)
+                                    and len(menu_res) == 3
+                                    and isinstance(menu_res[0], dict)
+                                ):
+                                    unread = dict(menu_res[0])
+                                    account_points = menu_res[1]
+                                    account_rank = menu_res[2]
+                            except Exception:
+                                pass
+
+                        planet_ids = {p.planet_id for p in ov.planets}
+                        active_pid: Optional[int] = None
+                        obs_active = False
+                        fetched_home = False
+                        tutorial = ov.tutorial
+                        speedup = ov.speedup_factor
+                        newbie = ov.newbie_protection
+                        queues = ov.active_queues
+                        alerts = ov.fleet_alerts
+
+                        drv = getattr(client, "driver", None)
+                        switch_fn = getattr(client, "_switch_frame", None)
+                        if drv is not None and callable(switch_fn):
+                            drv_lock = getattr(client, "_driver_lock", None)
+                            try:
+                                with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+                                    switch_fn("F_Hauptframe")
+                                    cur_url = str(drv.execute_script("return location.href;") or "")
+                                    cur_html = str(getattr(drv, "page_source", "") or "")
+                                    try:
+                                        drv.switch_to.default_content()
+                                    except Exception:
+                                        pass
+                                if "action=internalHome" in cur_url and cur_html:
+                                    low_h = cur_html.lower()
+                                    if "made more than" not in low_h and "bitmeup-login" not in low_h:
+                                        home_pid, h_spd, h_newbie, h_q, h_al = parse_home_metadata(
+                                            cur_html
+                                        )
+                                        if home_pid is not None and home_pid in planet_ids:
+                                            active_pid = home_pid
+                                            obs_active = True
+                                        tutorial = parse_tutorial_from_home(cur_html)
+                                        speedup = h_spd
+                                        newbie = h_newbie
+                                        queues = h_q
+                                        alerts = h_al
+                                        fetched_home = True
+                                elif cur_html:
+                                    sel_pid = GameBrowserClient._extract_selected_planet_id(
+                                        cur_html,
+                                        cur_url,
+                                    )
+                                    if sel_pid is not None and sel_pid in planet_ids:
+                                        active_pid = sel_pid
+                                        obs_active = True
+                            except Exception:
+                                pass
+
+                        ov = replace(
+                            ov,
+                            active_planet_id=active_pid or ov.active_planet_id,
+                            unread_messages=unread,
+                            tutorial=tutorial,
+                            active_queues=queues,
+                            fleet_alerts=alerts,
+                            speedup_factor=speedup,
+                            newbie_protection=newbie,
+                            account_points=account_points,
+                            account_rank=account_rank,
+                        )
+                        return self._record_state(
+                            ov,
+                            fetched_home=fetched_home,
+                            observed_active_planet=obs_active,
+                        )
+
+                    if cmd == "plan":
+                        state = _cached_or_fetch(
                             include_buildings=True,
+                            include_research=False,
+                            include_shipyard=False,
+                            priority="normal",
+                        )
+                        if self._sync_spio_if_unread(client, state, priority="normal") > 0:
+                            state = self._record_state(
+                                state,
+                                fetched_buildings=self._last_buildings_fetched,
+                                fetched_home=False,
+                                observed_active_planet=False,
+                                update_snapshot_ts=False,
+                            )
+                        actions = self._plan_with_context(state)
+                        return {
+                            "ok": True,
+                            "command": cmd,
+                            "actions": [asdict(a) for a in actions],
+                        }
+
+                    if cmd == "buildings_eta":
+                        state = _cached_or_fetch(
+                            include_buildings=True,
+                            include_research=False,
+                            include_shipyard=False,
+                            priority="normal",
+                        )
+                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
+                        return {
+                            "ok": True,
+                            "command": cmd,
+                            "buildings_eta": build_buildings_eta(state, planet),
+                        }
+
+                    if cmd == "combat_overview":
+                        state = _cached_or_fetch(
+                            include_buildings=False,
+                            include_research=False,
                             include_shipyard=True,
+                            priority="normal",
+                        )
+                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
+                        return {
+                            "ok": True,
+                            "command": cmd,
+                            "combat": build_combat_overview(
+                                state,
+                                planet,
+                                safety_margin=self.strategy_config.combat_safety_margin,
+                            ),
+                        }
+
+                    if cmd == "ranking_evolution":
+                        state = _cached_or_fetch(
+                            include_buildings=False,
+                            include_research=False,
+                            include_shipyard=False,
+                            priority="normal",
+                        )
+                        return {
+                            "ok": True,
+                            "command": cmd,
+                            "ranking": build_ranking_evolution(state, self._rank_samples),
+                        }
+
+                    if cmd == "tick_once":
+                        inc_r = (
+                            self._last_research_sync_at <= 0.0
+                            or (now_mono - self._last_research_sync_at) >= self.RESEARCH_SYNC_TTL_S
+                        )
+                        state = self._read_snapshot(
+                            client,
+                            include_buildings=True,
+                            include_research=inc_r,
+                            include_shipyard=False,
+                            return_home=False,
+                            priority="normal",
+                        )
+                        obs_active = bool(getattr(client, "last_snapshot_observed_active_planet", True))
+                        state = self._record_state(
+                            state,
+                            fetched_buildings=True,
+                            fetched_research=inc_r,
+                            fetched_home=True,
+                            observed_active_planet=obs_active,
+                        )
+                        if self._sync_spio_if_unread(client, state, priority="normal") > 0:
+                            state = self._record_state(
+                                state,
+                                fetched_buildings=self._last_buildings_fetched,
+                                fetched_research=inc_r,
+                                fetched_home=False,
+                                observed_active_planet=False,
+                                update_snapshot_ts=False,
+                            )
+                        actions = self._plan_with_context(state)
+                        ready = next((a for a in actions if a.executable_now), None)
+                        if ready is None:
+                            return {
+                                "ok": True,
+                                "command": cmd,
+                                "executed": False,
+                                "dry_run": dry_run,
+                                "message": (
+                                    f"Waiting: {actions[0].target_name} ({actions[0].reason})"
+                                    if actions
+                                    else "No pending actions."
+                                ),
+                                "action": asdict(actions[0]) if actions else None,
+                                "next_action": asdict(actions[1]) if len(actions) > 1 else None,
+                            }
+                        return self._execute_and_summarize(client, state, cmd, ready, dry_run)
+
+                    if cmd == "menu":
+                        self._call_with_optional_priority(client.ensure_in_game, priority="interactive")
+                        client._switch_frame("F_Navi")
+                        nav_soup = BeautifulSoup(client.driver.page_source or "", "html.parser")
+                        items = [
+                            {
+                                "text": a.get_text(" ", strip=True),
+                                "href": str(a.get("href") or "").split("sid=")[0],
+                                "onclick": str(a.get("onclick") or ""),
+                            }
+                            for a in nav_soup.find_all("a", href=True)
+                        ]
+                        return {
+                            "ok": True,
+                            "command": cmd,
+                            "items": items,
+                        }
+
+                    if cmd == "navigate":
+                        action = str(payload.get("action") or "").strip()
+                        if action not in ALLOWED_MENU_ACTIONS:
+                            raise ApiRequestError(
+                                f"Unsupported menu action {action!r}; allowed: {sorted(ALLOWED_MENU_ACTIONS)}"
+                            )
+                        gal_int: Optional[int] = None
+                        sys_int: Optional[int] = None
+                        if payload.get("galaxy") is not None:
+                            try:
+                                gal_int = int(payload["galaxy"])
+                            except (TypeError, ValueError) as exc:
+                                raise ApiRequestError("'galaxy' must be a positive integer.") from exc
+                            if gal_int < 1:
+                                raise ApiRequestError("'galaxy' must be >= 1.")
+                        if payload.get("system") is not None:
+                            try:
+                                sys_int = int(payload["system"])
+                            except (TypeError, ValueError) as exc:
+                                raise ApiRequestError("'system' must be a positive integer.") from exc
+                            if sys_int < 1:
+                                raise ApiRequestError("'system' must be >= 1.")
+
+                        self._call_with_optional_priority(client.ensure_in_game, priority="interactive")
+                        if action == "internalGalaxy" and (gal_int is not None or sys_int is not None):
+                            html = self._open_galaxy(
+                                client,
+                                galaxy=gal_int,
+                                system=sys_int,
+                                priority="interactive",
+                            )
+                        else:
+                            html = self._call_with_optional_priority(
+                                client.navigate_menu,
+                                action,
+                                priority="interactive",
+                            )
+
+                        obs_nav_pid: Optional[int] = None
+                        if isinstance(html, str) and html:
+                            if action == "internalHome":
+                                low_h = html.lower()
+                                if "made more than" not in low_h and "bitmeup-login" not in low_h:
+                                    obs_nav_pid = parse_home_metadata(html)[0]
+                            elif action in (
+                                "internalBuildings",
+                                "internalEconomy",
+                                "internalResearch",
+                                "internalWeaponFactory",
+                            ):
+                                obs_nav_pid = GameBrowserClient._extract_selected_planet_id(
+                                    html,
+                                    action,
+                                )
+
+                        handled_econ_sync = False
+                        if action == "internalEconomy":
+                            rates = parse_economy_rates(html)
+                            if rates and self._last_state is not None:
+                                valid_nav_pid = (
+                                    obs_nav_pid
+                                    if isinstance(obs_nav_pid, int)
+                                    and not isinstance(obs_nav_pid, bool)
+                                    and any(p.planet_id == obs_nav_pid for p in self._last_state.planets)
+                                    else None
+                                )
+                                active_p = self._last_state.active_planet()
+                                target_rate_pid = valid_nav_pid or (active_p.planet_id if active_p is not None else None)
+                                if target_rate_pid is not None:
+                                    self._economy_rates[target_rate_pid] = dict(rates)
+                                    switched_pid = (
+                                        valid_nav_pid is not None
+                                        and self._last_state.active_planet_id != valid_nav_pid
+                                    )
+                                    st_econ = (
+                                        replace(
+                                            self._last_state,
+                                            active_planet_id=valid_nav_pid,
+                                            research_offers=() if len(self._last_state.planets) > 1 else self._last_state.research_offers,
+                                        )
+                                        if switched_pid
+                                        else self._last_state
+                                    )
+                                    self._record_state(
+                                        st_econ,
+                                        fetched_buildings=(self._last_buildings_fetched and not switched_pid),
+                                        fetched_home=False,
+                                        observed_active_planet=(valid_nav_pid is not None),
+                                        update_snapshot_ts=False,
+                                    )
+                                    handled_econ_sync = True
+                        if (
+                            not handled_econ_sync
+                            and self._last_state is not None
+                            and isinstance(obs_nav_pid, int)
+                            and not isinstance(obs_nav_pid, bool)
+                            and any(p.planet_id == obs_nav_pid for p in self._last_state.planets)
+                        ):
+                            self._sync_observed_active_planet_state(
+                                self._last_state,
+                                obs_pid=obs_nav_pid,
+                                obs_confirmed=True,
+                            )
+
+                        saved_slots = 0
+                        actual_gal: Optional[int] = None
+                        actual_sys: Optional[int] = None
+                        if action == "internalGalaxy":
+                            coords_attr = getattr(client, "last_galaxy_coords", None)
+                            if (
+                                isinstance(coords_attr, tuple)
+                                and len(coords_attr) == 2
+                                and all(isinstance(v, int) for v in coords_attr)
+                            ):
+                                actual_gal, actual_sys = coords_attr
+                            else:
+                                def_gal = gal_int or 1
+                                def_sys = sys_int or 1
+                                if gal_int is None and sys_int is None and self._last_state is not None:
+                                    ap = self._last_state.active_planet()
+                                    if ap is not None:
+                                        m_ap = re.search(r"(\d{1,2}):(\d{1,3})", ap.coords)
+                                        if m_ap:
+                                            def_gal = int(m_ap.group(1))
+                                            def_sys = int(m_ap.group(2))
+                                actual_gal, actual_sys = extract_galaxy_system_coords(
+                                    html,
+                                    default=(def_gal, def_sys),
+                                )
+                            slots = parse_galaxy_system_html(
+                                html,
+                                galaxy=actual_gal,
+                                system=actual_sys,
+                            )
+                            self._persist_galaxy_scan(actual_gal, actual_sys, slots)
+                            saved_slots = self._persist_galaxy_slots(slots)
+                            if self._last_state is not None:
+                                self._refresh_cached_economy(self._last_state)
+
+                        res_payload: dict[str, Any] = {
+                            "ok": True,
+                            "command": cmd,
+                            "action": action,
+                            "html_bytes": len(html),
+                        }
+                        if action == "internalGalaxy":
+                            res_payload["scanned_targets"] = saved_slots
+                            res_payload["galaxy"] = actual_gal
+                            res_payload["system"] = actual_sys
+                        if payload.get("include_html"):
+                            res_payload["html"] = html
+                        if payload.get("return_home", False):
+                            self._call_with_optional_priority(
+                                client.navigate_menu,
+                                "internalHome",
+                                priority="interactive",
+                            )
+                        return res_payload
+
+                    if cmd == "scan_galaxy":
+                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        if self._last_state is not None and not force_refresh:
+                            state = self._last_state
+                        else:
+                            state = self._read_snapshot(
+                                client,
+                                include_buildings=False,
+                                include_research=False,
+                                include_shipyard=False,
+                                include_home=False,
+                                return_home=False,
+                                priority="interactive",
+                            )
+                            obs_active = bool(
+                                getattr(client, "last_snapshot_observed_active_planet", True)
+                            )
+                            state = self._record_state(
+                                state,
+                                fetched_home=False,
+                                observed_active_planet=obs_active,
+                            )
+                        planet = self._resolve_planet(state, pid)
+                        gal_arg = payload.get("galaxy")
+                        sys_arg = payload.get("system")
+                        if gal_arg is not None and sys_arg is not None:
+                            target_lbl = f"Galaxy [{int(gal_arg):02d}:{int(sys_arg):03d}]"
+                        else:
+                            parts = [p.strip() for p in planet.coords.split(":")]
+                            if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                                target_lbl = f"Galaxy [{int(parts[0]):02d}:{int(parts[1]):03d}]"
+                            else:
+                                target_lbl = "Galaxy [01:001]"
+                        planned = PlannedAction(
+                            priority="P2",
+                            kind="SCAN_GALAXY",
+                            planet_id=planet.planet_id,
+                            planet_coords=planet.coords,
+                            target_name=target_lbl,
+                            reason="API scan_galaxy command",
+                            executable_now=True,
+                        )
+                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+
+                    if cmd == "sync_spy_reports":
+                        self._call_with_optional_priority(client.ensure_in_game, priority="interactive")
+                        html = self._call_with_optional_priority(
+                            client.open_messages,
+                            "spio",
+                            priority="interactive",
+                        )
+                        reports = parse_spy_messages_html(html)
+                        synced = self._persist_spy_reports(reports)
+                        if self._last_state is not None:
+                            self._refresh_cached_economy(self._last_state)
+                        return {
+                            "ok": True,
+                            "command": cmd,
+                            "synced_reports": synced,
+                            "reports": [asdict(r) for r in reports],
+                        }
+
+                    if cmd == "spy":
+                        target_coords = str(payload.get("target_coords") or "").strip()
+                        if not re.fullmatch(r"\d{1,2}:\d{1,3}:\d{1,2}", target_coords):
+                            raise ApiRequestError(
+                                "'spy' command requires 'target_coords' formatted as GG:SSS:PP."
+                            )
+                        qty = max(1, int(payload.get("quantity", 1)))
+                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        state = _resolve_fleet_command_state(pid, is_spy=True)
+                        if pid is None:
+                            probe_p = next(
+                                (p for p in state.planets if int(p.ships.get("s10", 0) or 0) > 0),
+                                None,
+                            )
+                            planet = probe_p or self._resolve_planet(state, None)
+                        else:
+                            planet = self._resolve_planet(state, pid)
+                        if any(p.coords == target_coords for p in state.planets):
+                            planned_own = PlannedAction(
+                                priority="P2",
+                                kind="SPY",
+                                planet_id=planet.planet_id,
+                                planet_coords=planet.coords,
+                                target_id=10,
+                                target_level=qty,
+                                target_name=target_coords,
+                                reason="Own colony safety check",
+                                executable_now=False,
+                            )
+                            return {
+                                "ok": True,
+                                "command": cmd,
+                                "executed": False,
+                                "dry_run": dry_run,
+                                "message": f"Aborted: {target_coords} is one of your own planets.",
+                                "action": asdict(planned_own),
+                                "next_action": None,
+                            }
+                        planned = PlannedAction(
+                            priority="P2",
+                            kind="SPY",
+                            planet_id=planet.planet_id,
+                            planet_coords=planet.coords,
+                            target_id=10,
+                            target_level=qty,
+                            target_name=target_coords,
+                            reason="API spy command",
+                            executable_now=True,
+                        )
+                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+
+                    if cmd == "attack":
+                        target_coords = str(payload.get("target_coords") or "").strip()
+                        if not re.fullmatch(r"\d{1,2}:\d{1,3}:\d{1,2}", target_coords):
+                            raise ApiRequestError(
+                                "'attack' command requires 'target_coords' formatted as GG:SSS:PP."
+                            )
+                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        state = _resolve_fleet_command_state(pid, is_spy=False)
+                        planet = self._resolve_planet(state, pid)
+                        planned = PlannedAction(
+                            priority="P2",
+                            kind="ATTACK",
+                            planet_id=planet.planet_id,
+                            planet_coords=planet.coords,
+                            target_name=target_coords,
+                            reason="API attack command",
+                            executable_now=True,
+                        )
+                        # Check allow_raids guard first so `"allow_raids"` error message contract holds
+                        if not dry_run and not self._live_executor.allow_raids:
+                            return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+
+                        if any(p.coords == target_coords for p in state.planets):
+                            return {
+                                "ok": True,
+                                "command": cmd,
+                                "executed": False,
+                                "dry_run": dry_run,
+                                "message": f"Aborted: {target_coords} is one of your own planets.",
+                                "action": asdict(planned),
+                                "next_action": None,
+                            }
+
+                        target_row = next(
+                            (
+                                r
+                                for r in (self._raid_targets or ())
+                                if (r.get("coords") or r.get("target_coords")) == target_coords
+                            ),
+                            None,
+                        )
+                        is_inactive = bool((target_row or {}).get("is_inactive", False))
+                        is_spacia = bool((target_row or {}).get("is_spacia", False))
+                        status_color = str((target_row or {}).get("status_color") or "").lower()
+                        if status_color == "yellow":
+                            is_inactive = True
+                        if status_color in ("blue", "green", "white", "purple") and not is_spacia:
+                            return {
+                                "ok": True,
+                                "command": cmd,
+                                "executed": False,
+                                "dry_run": dry_run,
+                                "message": f"Aborted: target {target_coords} is protected ({status_color}).",
+                                "action": asdict(planned),
+                                "next_action": None,
+                            }
+                        if (
+                            status_color == "light_red"
+                            and not is_inactive
+                            and not is_spacia
+                            and not self.strategy_config.allow_pvp_in_az
+                        ):
+                            return {
+                                "ok": True,
+                                "command": cmd,
+                                "executed": False,
+                                "dry_run": dry_run,
+                                "message": f"Aborted: target {target_coords} is an active player and allow_pvp_in_az=false.",
+                                "action": asdict(planned),
+                                "next_action": None,
+                            }
+
+                        if self._db is not None:
+                            bash = self._db.load_bash_tracker()
+                            if not bash.can_attack(
+                                target_coords,
+                                is_inactive=is_inactive,
+                                is_spacia=is_spacia,
+                            ):
+                                return {
+                                    "ok": True,
+                                    "command": cmd,
+                                    "executed": False,
+                                    "dry_run": dry_run,
+                                    "message": f"Aborted: BashTracker 3/24h limit reached for {target_coords}.",
+                                    "action": asdict(planned),
+                                    "next_action": None,
+                                }
+
+                        if target_row is not None:
+                            res_d = target_row.get("resources") if isinstance(target_row.get("resources"), dict) else {}
+                            rep_res = Resources(
+                                pig_iron=int(res_d.get("pig_iron", 0) or 0),
+                                metal=int(res_d.get("metal", 0) or 0),
+                                kryptonite=int(res_d.get("kryptonite", 0) or 0),
+                                spice=int(res_d.get("spice", 0) or 0),
+                            )
+                            rep_fleet = {str(k): int(v) for k, v in (target_row.get("fleet") or {}).items()}
+                            rep_def = {str(k): int(v) for k, v in (target_row.get("defense") or {}).items()}
+                            if bool(target_row.get("has_spy_intel")) or not rep_res.is_zero() or rep_fleet or rep_def:
+                                attack_keys = ("s4", "s5", "s6", "s7", "s13", "s14", "s15", "s16", "s1", "s2", "s3")
+                                atk_ships = {
+                                    k: int(planet.ships.get(k, 0) or 0)
+                                    for k in attack_keys
+                                    if int(planet.ships.get(k, 0) or 0) > 0
+                                }
+                                if atk_ships:
+                                    rep_obj = SpyReport(
+                                        target_coords=target_coords,
+                                        owner=str(target_row.get("owner") or ""),
+                                        resources=rep_res,
+                                        fleet=rep_fleet,
+                                        defense=rep_def,
+                                        dug_in=bool(target_row.get("dug_in", False)),
+                                        is_spacia=is_spacia,
+                                    )
+                                    sim = simulate_raid_outcome(
+                                        atk_ships,
+                                        rep_obj,
+                                        attacker_researches=state.researches,
+                                        safety_margin=self.strategy_config.combat_safety_margin,
+                                    )
+                                    if not sim.safe_to_attack:
+                                        return {
+                                            "ok": True,
+                                            "command": cmd,
+                                            "executed": False,
+                                            "dry_run": dry_run,
+                                            "message": f"Aborted: combat safety check failed ({sim.reason}).",
+                                            "action": asdict(planned),
+                                            "next_action": None,
+                                        }
+
+                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+
+                    if cmd == "build":
+                        raw_bid = payload.get("building_id")
+                        if raw_bid is None:
+                            raise ApiRequestError("'build' command requires 'building_id'.")
+                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        state = _cached_or_fetch(
+                            include_buildings=bool(dry_run or force_refresh),
+                            include_research=False,
+                            include_shipyard=False,
+                            include_home=False,
+                            priority="interactive",
+                        )
+                        planned = self._find_build_action(
+                            state,
+                            int(raw_bid),
+                            pid,
+                            allow_live_verify=not dry_run,
+                        )
+                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+
+                    if cmd == "research":
+                        raw_rid = payload.get("research_id")
+                        if raw_rid is None:
+                            raise ApiRequestError("'research' command requires 'research_id'.")
+                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        state = _cached_or_fetch(
+                            include_buildings=False,
+                            include_research=bool(dry_run or force_refresh),
+                            include_shipyard=False,
+                            include_home=False,
+                            priority="interactive",
+                        )
+                        planned = self._find_research_action(
+                            state,
+                            int(raw_rid),
+                            pid,
+                            allow_live_verify=not dry_run,
+                        )
+                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+
+                    if cmd == "build_ship":
+                        raw_sid = payload.get("ship_id")
+                        if raw_sid is None:
+                            raise ApiRequestError("'build_ship' command requires 'ship_id'.")
+                        qty = max(1, int(payload.get("quantity", 1)))
+                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        state = _cached_or_fetch(
+                            include_buildings=False,
+                            include_research=False,
+                            include_shipyard=bool(dry_run or force_refresh),
+                            include_home=False,
+                            priority="interactive",
+                        )
+                        planned = self._find_ship_action(
+                            state,
+                            int(raw_sid),
+                            qty,
+                            pid,
+                            allow_live_verify=not dry_run,
+                        )
+                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+
+                    if cmd == "throttle_building":
+                        bid = int(payload.get("building_id", 2))
+                        if payload.get("percentage") is None:
+                            raise ApiRequestError("'throttle_building' command requires 'percentage' (0..100).")
+                        pct = max(0, min(100, (int(payload["percentage"]) // 10) * 10))
+                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        state = _cached_or_fetch(
+                            include_buildings=False,
+                            include_research=False,
+                            include_shipyard=False,
+                            include_home=False,
+                            priority="interactive",
+                        )
+                        planet = self._resolve_planet(state, pid)
+                        label = "Blast furnace" if bid == 2 else planet.building_names.get(f"b{bid}", f"Building b{bid}")
+                        planned = PlannedAction(
+                            priority="P1",
+                            kind="THROTTLE_BUILDING",
+                            planet_id=planet.planet_id,
+                            planet_coords=planet.coords,
+                            target_id=bid,
+                            target_name=f"{label} {pct}%",
+                            target_level=pct,
+                            reason=f"Set {label} rate to {pct}% in internalEconomy",
+                            executable_now=True,
+                        )
+                        return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+
+                    if cmd == "fleetsave_plan":
+                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        state = _cached_or_fetch(
+                            include_buildings=False,
+                            include_research=False,
+                            include_shipyard=False,
+                            include_home=False,
+                            priority="interactive",
+                        )
+                        planet = self._resolve_planet(state, pid)
+                        target_coords = str(payload.get("target_coords") or "").strip()
+                        if not target_coords:
+                            target_coords = next(
+                                (p.coords for p in state.planets if p.planet_id != planet.planet_id),
+                                planet.coords,
+                            )
+                        escape = plan_escape_flight(
+                            planet,
+                            target_coords=target_coords,
+                            fuel_reserve_spice=self.strategy_config.fleet_save_fuel_reserve_spice,
+                        )
+                        return {"ok": True, "command": cmd, "escape_plan": asdict(escape)}
+
+                    if cmd == "claim_tutorial":
+                        state = _cached_or_fetch(
+                            include_buildings=False,
+                            include_research=False,
+                            include_shipyard=False,
+                            include_home=True,
+                            priority="interactive",
+                        )
+                        if not (state.tutorial and state.tutorial.can_complete):
+                            return {
+                                "ok": True,
+                                "command": cmd,
+                                "executed": False,
+                                "dry_run": dry_run,
+                                "message": "Tutorial step is not ready to claim.",
+                            }
+                        planet = state.active_planet()
+                        planned = PlannedAction(
+                            priority="P2",
+                            kind="CLAIM_TUTORIAL",
+                            planet_id=planet.planet_id if planet else 0,
+                            planet_coords=planet.coords if planet else "",
+                            target_name=f"Tutorial {state.tutorial.step}/{state.tutorial.total_steps} Reward",
+                            reason="API claim_tutorial command",
+                            executable_now=True,
+                        )
+                        return self._execute_and_summarize(
+                            client,
+                            state,
+                            cmd,
+                            planned,
+                            dry_run,
                             return_home=True,
                         )
-                    )
-                    pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
-                    planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
-                    return {
-                        "ok": True,
-                        "command": cmd,
-                        "combat": build_combat_overview(
-                            state,
-                            planet,
-                            safety_margin=self.strategy_config.combat_safety_margin,
-                        ),
-                    }
 
-                if cmd == "ranking_evolution":
-                    state = self._record_state(client.read_full_snapshot(include_buildings=True))
-                    return {
-                        "ok": True,
-                        "command": cmd,
-                        "ranking": build_ranking_evolution(state, self._rank_samples),
-                    }
-
-                if cmd == "tick_once":
-                    state = client.read_full_snapshot(include_buildings=True, return_home=False)
-                    self._record_state(state)
-                    actions = plan_actions(state, config=self.strategy_config)
-                    ready = next((a for a in actions if a.executable_now), None)
-                    if ready is None:
-                        client.navigate_menu("internalHome")
-                        return {
-                            "ok": True,
-                            "command": cmd,
-                            "executed": False,
-                            "dry_run": dry_run,
-                            "message": (
-                                f"Waiting: {actions[0].target_name} ({actions[0].reason})"
-                                if actions
-                                else "No pending actions."
-                            ),
-                            "action": asdict(actions[0]) if actions else None,
-                            "next_action": asdict(actions[1]) if len(actions) > 1 else None,
-                        }
-                    return self._execute_and_summarize(client, state, cmd, ready, dry_run)
-
-                if cmd == "menu":
-                    client.ensure_in_game()
-                    client._switch_frame("F_Navi")
-                    nav_soup = BeautifulSoup(client.driver.page_source or "", "html.parser")
-                    items = [
-                        {
-                            "text": a.get_text(" ", strip=True),
-                            "href": str(a.get("href") or "").split("sid=")[0],
-                            "onclick": str(a.get("onclick") or ""),
-                        }
-                        for a in nav_soup.find_all("a", href=True)
-                    ]
-                    return {"ok": True, "command": cmd, "items": items}
-
-                if cmd == "navigate":
-                    action = str(payload.get("action") or "").strip()
-                    if action not in ALLOWED_MENU_ACTIONS:
-                        raise ApiRequestError(
-                            f"Unsupported menu action {action!r}; allowed: {sorted(ALLOWED_MENU_ACTIONS)}"
-                        )
-                    client.ensure_in_game()
-                    html = client.navigate_menu(action)
-                    if action == "internalEconomy":
-                        rates = parse_economy_rates(html)
-                        if rates and self._last_state is not None:
-                            active_p = self._last_state.active_planet()
-                            if active_p is not None:
-                                self._economy_rates[active_p.planet_id] = dict(rates)
-                                self._record_state(self._last_state)
-                    res_payload: dict[str, Any] = {
-                        "ok": True,
-                        "command": cmd,
-                        "action": action,
-                        "html_bytes": len(html),
-                    }
-                    if payload.get("include_html"):
-                        res_payload["html"] = html
-                    if payload.get("return_home", False):
-                        client.navigate_menu("internalHome")
-                    return res_payload
-
-                if cmd == "build":
-                    raw_bid = payload.get("building_id")
-                    if raw_bid is None:
-                        raise ApiRequestError("'build' command requires 'building_id'.")
-                    pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
-                    state = client.read_full_snapshot(include_buildings=True, return_home=False)
-                    planned = self._find_build_action(state, int(raw_bid), pid)
-                    return self._execute_and_summarize(client, state, cmd, planned, dry_run)
-
-                if cmd == "research":
-                    raw_rid = payload.get("research_id")
-                    if raw_rid is None:
-                        raise ApiRequestError("'research' command requires 'research_id'.")
-                    pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
-                    state = client.read_full_snapshot(
-                        include_buildings=False,
-                        include_research=True,
-                        include_shipyard=False,
-                        return_home=False,
-                    )
-                    planned = self._find_research_action(state, int(raw_rid), pid)
-                    return self._execute_and_summarize(client, state, cmd, planned, dry_run)
-
-                if cmd == "build_ship":
-                    raw_sid = payload.get("ship_id")
-                    if raw_sid is None:
-                        raise ApiRequestError("'build_ship' command requires 'ship_id'.")
-                    qty = max(1, int(payload.get("quantity", 1)))
-                    pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
-                    state = client.read_full_snapshot(
-                        include_buildings=False,
-                        include_research=False,
-                        include_shipyard=True,
-                        return_home=False,
-                    )
-                    planned = self._find_ship_action(state, int(raw_sid), qty, pid)
-                    return self._execute_and_summarize(client, state, cmd, planned, dry_run)
-
-                if cmd == "throttle_building":
-                    bid = int(payload.get("building_id", 2))
-                    if payload.get("percentage") is None:
-                        raise ApiRequestError("'throttle_building' command requires 'percentage' (0..100).")
-                    pct = max(0, min(100, (int(payload["percentage"]) // 10) * 10))
-                    pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
-                    state = client.read_full_snapshot(
-                        include_buildings=False,
-                        include_research=False,
-                        include_shipyard=False,
-                        return_home=False,
-                    )
-                    planet = self._resolve_planet(state, pid)
-                    label = "Blast furnace" if bid == 2 else planet.building_names.get(f"b{bid}", f"Building b{bid}")
-                    planned = PlannedAction(
-                        priority="P1",
-                        kind="THROTTLE_BUILDING",
-                        planet_id=planet.planet_id,
-                        planet_coords=planet.coords,
-                        target_id=bid,
-                        target_name=f"{label} {pct}%",
-                        target_level=pct,
-                        reason=f"Set {label} rate to {pct}% in internalEconomy",
-                        executable_now=True,
-                    )
-                    return self._execute_and_summarize(client, state, cmd, planned, dry_run)
-
-                if cmd == "fleetsave_plan":
-                    pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
-                    state = client.read_full_snapshot(
-                        include_buildings=False,
-                        include_research=False,
-                        include_shipyard=False,
-                        return_home=False,
-                    )
-                    planet = self._resolve_planet(state, pid)
-                    target_coords = str(payload.get("target_coords") or "").strip()
-                    if not target_coords:
-                        target_coords = next(
-                            (p.coords for p in state.planets if p.planet_id != planet.planet_id),
-                            planet.coords,
-                        )
-                    escape = plan_escape_flight(
-                        planet,
-                        target_coords=target_coords,
-                        fuel_reserve_spice=self.strategy_config.fleet_save_fuel_reserve_spice,
-                    )
-                    return {"ok": True, "command": cmd, "escape_plan": asdict(escape)}
-
-                if cmd == "claim_tutorial":
-                    state = client.read_full_snapshot(include_buildings=False, return_home=False)
-                    if not (state.tutorial and state.tutorial.can_complete):
-                        return {
-                            "ok": True,
-                            "command": cmd,
-                            "executed": False,
-                            "dry_run": dry_run,
-                            "message": "Tutorial step is not ready to claim.",
-                        }
-                    planet = state.active_planet()
-                    planned = PlannedAction(
-                        priority="P2",
-                        kind="CLAIM_TUTORIAL",
-                        planet_id=planet.planet_id if planet else 0,
-                        planet_coords=planet.coords if planet else "",
-                        target_name=f"Tutorial {state.tutorial.step}/{state.tutorial.total_steps} Reward",
-                        reason="API claim_tutorial command",
-                        executable_now=True,
-                    )
-                    return self._execute_and_summarize(client, state, cmd, planned, dry_run)
-
-                raise ApiRequestError(f"Unknown command {cmd!r}.")
+                    raise ApiRequestError(f"Unknown command {cmd!r}.")
+            except RateLimitError as exc:
+                self._record_server_rate_limit(exc)
+                raise
 
 
 class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
@@ -856,12 +2693,57 @@ def create_api_server(
 ) -> ThreadingHTTPServer:
     """Create a local `ThreadingHTTPServer` bound to `host:port` for `bridge`."""
 
+    def _build_rate_limit_response(exc: RateLimitError) -> tuple[dict[str, Any], dict[str, str]]:
+        limiter_obj = getattr(bridge, "_page_limiter", None)
+        already_recorded = (
+            limiter_obj is not None
+            and getattr(exc, "_recorded_limiter_id", None) == id(limiter_obj)
+        )
+        if getattr(exc, "server_throttle", True) and not already_recorded:
+            rem_raw = bridge.rate_limit_remaining()
+            rem_now = (
+                float(rem_raw)
+                if isinstance(rem_raw, (int, float)) and not isinstance(rem_raw, bool)
+                else 0.0
+            )
+            req = float(getattr(exc, "retry_after", 0.0) or 0.0)
+            if rem_now <= 0.0 or req > rem_now + 1.0:
+                bridge.record_rate_limit(exc.retry_after)
+        rem_raw_final = bridge.rate_limit_remaining()
+        rem = (
+            float(rem_raw_final)
+            if isinstance(rem_raw_final, (int, float))
+            and not isinstance(rem_raw_final, bool)
+            and rem_raw_final > 0.0
+            else float(exc.retry_after)
+        )
+        err_txt = str(exc)
+        if "retry after" not in err_txt.lower():
+            err_txt = f"{err_txt} (retry after {rem:.1f}s)"
+        body = {
+            "ok": False,
+            "rate_limited": True,
+            "retry_after": round(rem, 1),
+            "error": err_txt,
+        }
+        headers = {"Retry-After": str(max(1, int(math.ceil(rem))))}
+        return body, headers
+
     class Handler(BaseHTTPRequestHandler):
-        def _send_json(self, status: int, body: dict[str, Any]) -> None:
+        def _send_json(
+            self,
+            status: int,
+            body: dict[str, Any],
+            *,
+            extra_headers: Optional[dict[str, str]] = None,
+        ) -> None:
             raw = json.dumps(body).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            if extra_headers:
+                for hk, hv in extra_headers.items():
+                    self.send_header(str(hk), str(hv))
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
@@ -917,6 +2799,13 @@ def create_api_server(
                     self._send_json(HTTPStatus.OK, bridge.get_state(include_buildings=inc))
                     return
                 self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"Unknown route {parsed.path}"})
+            except RateLimitError as exc:
+                body, headers = _build_rate_limit_response(exc)
+                self._send_json(
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    body,
+                    extra_headers=headers,
+                )
             except SpaceInvasionAuthError as exc:
                 self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": str(exc)})
             except Exception as exc:
@@ -930,6 +2819,7 @@ def create_api_server(
             payload: Optional[dict[str, Any]] = None
             status_code = HTTPStatus.OK
             body: dict[str, Any] = {}
+            extra_headers: Optional[dict[str, str]] = None
             try:
                 length = int(self.headers.get("Content-Length") or "0")
                 raw = self.rfile.read(length) if length > 0 else b"{}"
@@ -938,6 +2828,9 @@ def create_api_server(
             except (ValueError, ApiRequestError) as exc:
                 status_code = HTTPStatus.BAD_REQUEST
                 body = {"ok": False, "error": str(exc)}
+            except RateLimitError as exc:
+                body, extra_headers = _build_rate_limit_response(exc)
+                status_code = HTTPStatus.TOO_MANY_REQUESTS
             except SpaceInvasionAuthError as exc:
                 status_code = HTTPStatus.SERVICE_UNAVAILABLE
                 body = {"ok": False, "error": str(exc)}
@@ -954,6 +2847,6 @@ def create_api_server(
                     payload=payload,
                     response=body,
                 )
-            self._send_json(status_code, body)
+            self._send_json(status_code, body, extra_headers=extra_headers)
 
     return _ReusableThreadingHTTPServer((host, port), Handler)

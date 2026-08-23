@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import inspect
 import random
+import re
 import time
-from typing import Callable, Deque, Optional
+from typing import Any, Callable, Deque, Optional
 
+from bs4 import BeautifulSoup, NavigableString, Tag
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
     NoSuchElementException,
@@ -16,15 +19,49 @@ from selenium.common.exceptions import (
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 
-from spaceinvasion.client import GameBrowserClient
+from spaceinvasion.client import GameBrowserClient, PageViewLimiter
+from spaceinvasion.fleet import GalaxySlot, parse_galaxy_system_html
 from spaceinvasion.state import (
     GameState,
+    QueueJob,
+    parse_building_queue,
     parse_buildings_page,
     parse_economy_rates,
+    parse_home_metadata,
     parse_research_page,
+    parse_tutorial_from_home,
     parse_unit_factory_page,
 )
 from spaceinvasion.strategy import PlannedAction
+
+
+def _call_with_optional_priority(
+    fn: Callable[..., Any],
+    *args: Any,
+    priority: str = "interactive",
+    **kwargs: Any,
+) -> Any:
+    call_kwargs = dict(kwargs)
+    targets: list[Any] = [fn]
+    for attr in ("side_effect", "_mock_wraps"):
+        wrapped = getattr(fn, attr, None)
+        if callable(wrapped) and not isinstance(wrapped, type):
+            targets.append(wrapped)
+    accepts_priority = True
+    for target in targets:
+        try:
+            sig = inspect.signature(target)
+        except (TypeError, ValueError):
+            accepts_priority = False
+            break
+        if "priority" not in sig.parameters and not any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        ):
+            accepts_priority = False
+            break
+    if accepts_priority:
+        call_kwargs["priority"] = priority
+    return fn(*args, **call_kwargs)
 
 
 @dataclass(frozen=True)
@@ -35,6 +72,9 @@ class ExecutionResult:
     dry_run: bool
     action: PlannedAction
     message: str
+    updated_state: Optional[GameState] = None
+    observed_active_planet_id: Optional[int] = None
+    observed_active_planet_confirmed: Optional[bool] = None
 
 
 class ActionExecutor:
@@ -47,13 +87,293 @@ class ActionExecutor:
         max_actions_per_hour: int = 30,
         action_delay_range: tuple[float, float] = (0.4, 0.9),
         allow_fleetsave: bool = False,
+        allow_raids: bool = False,
+        page_limiter: Optional[PageViewLimiter] = None,
+        max_limiter_wait: Optional[float] = None,
     ) -> None:
         self.dry_run = dry_run
         self.max_actions_per_hour = max_actions_per_hour
         self.action_delay_range = action_delay_range
         self.allow_fleetsave = allow_fleetsave
+        self.allow_raids = allow_raids
+        self.page_limiter = page_limiter
+        self.max_limiter_wait: Optional[float] = (
+            float(max_limiter_wait)
+            if isinstance(max_limiter_wait, (int, float)) and not isinstance(max_limiter_wait, bool)
+            else None
+        )
         self._recent_timestamps: Deque[float] = deque()
         self.last_economy_rates: dict[int, dict[str, int]] = {}
+        self.last_galaxy_slots: list[GalaxySlot] = []
+        self.last_observed_active_planet_id: Optional[int] = None
+        self.last_observed_active_planet_confirmed: Optional[bool] = None
+
+    def _reset_observed_planet_tracking(self) -> None:
+        self.last_observed_active_planet_id = None
+        self.last_observed_active_planet_confirmed = None
+
+    def _record_observed_planet(
+        self,
+        planet_id: Optional[int],
+        *,
+        confirmed: Optional[bool],
+    ) -> None:
+        if isinstance(planet_id, int) and not isinstance(planet_id, bool):
+            self.last_observed_active_planet_id = planet_id
+        elif confirmed is False:
+            self.last_observed_active_planet_id = None
+        self.last_observed_active_planet_confirmed = confirmed
+
+    def _attach_observed_planet(self, result: ExecutionResult) -> ExecutionResult:
+        obs_pid = result.observed_active_planet_id
+        obs_conf = result.observed_active_planet_confirmed
+        if obs_pid is None:
+            obs_pid = self.last_observed_active_planet_id
+        if obs_conf is None:
+            obs_conf = self.last_observed_active_planet_confirmed
+        if (
+            obs_pid is result.observed_active_planet_id
+            and obs_conf is result.observed_active_planet_confirmed
+        ):
+            return result
+        return replace(
+            result,
+            observed_active_planet_id=obs_pid,
+            observed_active_planet_confirmed=obs_conf,
+        )
+
+    def _confirmed_planet_mismatch(self, planet_id: int) -> Optional[int]:
+        if (
+            self.last_observed_active_planet_confirmed is True
+            and isinstance(self.last_observed_active_planet_id, int)
+            and not isinstance(self.last_observed_active_planet_id, bool)
+            and self.last_observed_active_planet_id != planet_id
+        ):
+            return self.last_observed_active_planet_id
+        return None
+
+    def _pace_action(self, client: GameBrowserClient, *, priority: str = "interactive") -> None:
+        wait_limit: Optional[float] = None
+        if isinstance(self.max_limiter_wait, (int, float)) and not isinstance(self.max_limiter_wait, bool):
+            wait_limit = float(self.max_limiter_wait)
+        else:
+            client_wait = getattr(client, "max_limiter_wait", None)
+            if isinstance(client_wait, (int, float)) and not isinstance(client_wait, bool):
+                wait_limit = float(client_wait)
+
+        if self.page_limiter is not None:
+            self.page_limiter.acquire(priority=priority, max_wait=wait_limit)
+            return
+        pace_fn = getattr(client, "_pace", None)
+        if callable(pace_fn):
+            pace_fn(priority=priority)
+
+    @staticmethod
+    def _mark_frame_nav(client: GameBrowserClient, frame_id: str = "F_Hauptframe") -> Optional[str]:
+        mark_fn = getattr(client, "_mark_frame_navigation", None)
+        if callable(mark_fn):
+            tok = mark_fn(frame_id)
+            return tok if isinstance(tok, str) else None
+        return None
+
+    @staticmethod
+    def _safe_click(client: GameBrowserClient, el) -> None:
+        try:
+            client.driver.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'});",
+                el,
+            )
+        except Exception:
+            pass
+        try:
+            el.click()
+        except ElementClickInterceptedException:
+            client.driver.execute_script("arguments[0].click();", el)
+
+    @staticmethod
+    def _find_newplanet_switch_target(html: str, planet_id: int) -> tuple[bool, Optional[str]]:
+        """Inspect `<select name='planet'>` in `html` via BS4; return `(needs_switch, target_value)`."""
+        if not html or "newplanet=" not in html.lower():
+            return False, None
+        soup = BeautifulSoup(html, "html.parser")
+        select_el = soup.find("select", attrs={"name": "planet"})
+        if select_el is None:
+            return False, None
+        target_re = re.compile(rf"newplanet={int(planet_id)}(?!\d)", re.IGNORECASE)
+        target_value: Optional[str] = None
+        selected_value: Optional[str] = None
+        has_newplanet = False
+        for opt in select_el.find_all("option"):
+            val = str(opt.get("value") or "")
+            if "newplanet=" in val.lower():
+                has_newplanet = True
+            if target_re.search(val):
+                target_value = val
+            if opt.has_attr("selected"):
+                selected_value = val
+        if not has_newplanet or target_value is None:
+            return False, None
+        if selected_value is not None and target_re.search(selected_value):
+            return False, None
+        return True, target_value
+
+    @staticmethod
+    def _extract_selected_planet_id(html: str, url: str = "") -> Optional[int]:
+        if not html or "internalfleet" in (url or "").lower() or "newplanet=" not in html.lower():
+            return None
+        soup = BeautifulSoup(html, "html.parser")
+        select_el = soup.find("select", attrs={"name": "planet"})
+        if select_el is None:
+            return None
+        for opt in select_el.find_all("option"):
+            val = str(opt.get("value") or "")
+            if "action=internalfleet" in val.lower():
+                return None
+            if opt.has_attr("selected"):
+                m = re.search(r"newplanet=(\d+)", val, re.IGNORECASE)
+                if m:
+                    return int(m.group(1))
+        return None
+
+    def _build_updated_state(
+        self,
+        client: Any,
+        prev_state: Optional[GameState],
+        action: PlannedAction,
+        updated_overview: Any,
+        *,
+        page_html: str = "",
+        is_home: bool = False,
+        is_fleet: bool = False,
+        include_buildings: bool = False,
+        include_research: bool = False,
+        include_shipyard: bool = False,
+    ) -> Optional[GameState]:
+        if not isinstance(updated_overview, GameState):
+            return None
+
+        planets = list(updated_overview.planets)
+        planet_ids = {p.planet_id for p in planets}
+
+        unread = dict(prev_state.unread_messages) if prev_state is not None else {}
+        account_points = prev_state.account_points if prev_state is not None else None
+        account_rank = prev_state.account_rank if prev_state is not None else None
+        read_menu_fn = getattr(client, "read_menu_status", None)
+        if callable(read_menu_fn):
+            try:
+                menu_res = read_menu_fn()
+                if (
+                    isinstance(menu_res, tuple)
+                    and len(menu_res) == 3
+                    and isinstance(menu_res[0], dict)
+                ):
+                    unread = dict(menu_res[0])
+                    if menu_res[1] is not None:
+                        account_points = menu_res[1]
+                    if menu_res[2] is not None:
+                        account_rank = menu_res[2]
+            except Exception:
+                pass
+
+        tutorial = prev_state.tutorial if prev_state is not None else None
+        speedup = prev_state.speedup_factor if prev_state is not None else None
+        newbie = prev_state.newbie_protection if prev_state is not None else False
+        merged_queues = list(prev_state.active_queues) if prev_state is not None else []
+        alerts = prev_state.fleet_alerts if prev_state is not None else ()
+        research_offers = prev_state.research_offers if prev_state is not None else ()
+
+        active_pid: Optional[int] = None
+        if is_home and page_html:
+            home_pid, h_speedup, h_newbie, h_queues, h_alerts = parse_home_metadata(page_html)
+            if home_pid is not None and home_pid in planet_ids:
+                active_pid = home_pid
+            if h_speedup is not None:
+                speedup = h_speedup
+            newbie = bool(h_newbie)
+            merged_queues = list(h_queues)
+            alerts = h_alerts
+            tutorial = parse_tutorial_from_home(page_html)
+        elif not is_fleet and page_html:
+            sel_pid = self._extract_selected_planet_id(page_html)
+            if sel_pid is not None and sel_pid in planet_ids:
+                active_pid = sel_pid
+
+        if active_pid is None:
+            if (
+                isinstance(self.last_observed_active_planet_id, int)
+                and not isinstance(self.last_observed_active_planet_id, bool)
+                and self.last_observed_active_planet_id in planet_ids
+            ):
+                active_pid = self.last_observed_active_planet_id
+            elif action.planet_id in planet_ids:
+                active_pid = action.planet_id
+            elif prev_state is not None and prev_state.active_planet_id in planet_ids:
+                active_pid = prev_state.active_planet_id
+            else:
+                active_pid = updated_overview.active_planet_id
+
+        active_idx = next(
+            (i for i, p in enumerate(planets) if p.planet_id == active_pid),
+            0 if planets else None,
+        )
+
+        if include_buildings and page_html and active_idx is not None:
+            parsed_tut = parse_tutorial_from_home(page_html)
+            if parsed_tut is not None:
+                tutorial = parsed_tut
+            b_queues = parse_building_queue(page_html)
+            if b_queues:
+                merged_queues = [q for q in merged_queues if q.category != "building"] + list(b_queues)
+            elif re.search(r"construction\s+queue\s*\(\s*0\b", page_html, re.IGNORECASE):
+                merged_queues = [q for q in merged_queues if q.category != "building"]
+            planet = planets[active_idx]
+            offers = parse_buildings_page(page_html, planet.buildings)
+            planets[active_idx] = replace(planet, building_offers=offers)
+
+        if include_research and page_html:
+            parsed_offers = parse_research_page(page_html, updated_overview.researches)
+            research_offers = parsed_offers
+            active_res = [o for o in parsed_offers if o.active]
+            if active_res:
+                res_jobs = [
+                    QueueJob(category="research", name=o.name, target_level=o.target_level)
+                    for o in active_res
+                ]
+                merged_queues = [q for q in merged_queues if q.category != "research"] + res_jobs
+            elif parsed_offers:
+                merged_queues = [q for q in merged_queues if q.category != "research"]
+
+        if include_shipyard and page_html and active_idx is not None:
+            planet = planets[active_idx]
+            ship_offers = parse_unit_factory_page(
+                page_html,
+                unit_type="ship",
+                owned_counts=planet.ships,
+            )
+            planets[active_idx] = replace(planet, ship_offers=ship_offers)
+
+        if prev_state is not None:
+            prev_rates = {p.planet_id: p.economy_rates for p in prev_state.planets if p.economy_rates}
+            for i, p in enumerate(planets):
+                rates = self.last_economy_rates.get(p.planet_id) or prev_rates.get(p.planet_id)
+                if rates and not p.economy_rates:
+                    planets[i] = replace(p, economy_rates=dict(rates))
+
+        return replace(
+            updated_overview,
+            planets=tuple(planets),
+            active_planet_id=active_pid,
+            unread_messages=unread,
+            tutorial=tutorial,
+            active_queues=tuple(merged_queues),
+            fleet_alerts=alerts,
+            research_offers=research_offers,
+            speedup_factor=speedup,
+            newbie_protection=newbie,
+            account_points=account_points,
+            account_rank=account_rank,
+            raid_targets=prev_state.raid_targets if prev_state is not None else updated_overview.raid_targets,
+        )
 
     def _prune_hour_window(self, now: float) -> None:
         cutoff = now - 3600.0
@@ -65,21 +385,84 @@ class ActionExecutor:
         self._prune_hour_window(now)
         return max(0, self.max_actions_per_hour - len(self._recent_timestamps))
 
-    def _select_planet_if_needed(self, client: GameBrowserClient, planet_id: int) -> None:
-        """Switch active planet in `F_Hauptframe` if `select[name='planet']` doesn't match."""
+    def _select_planet_if_needed(
+        self,
+        client: GameBrowserClient,
+        planet_id: int,
+        *,
+        html: str = "",
+        require_confirm: bool = False,
+    ) -> tuple[bool, Optional[str]]:
+        """Switch active planet in `F_Hauptframe` using `<select name='planet'>` `newPlanet=` options."""
+        obs_html_pid = self._extract_selected_planet_id(html)
+        if obs_html_pid is not None:
+            self._record_observed_planet(obs_html_pid, confirmed=True)
+        needs_switch, target_value = self._find_newplanet_switch_target(html, planet_id)
+        if html and not needs_switch and target_value is None:
+            return False, None
+
         client._switch_frame("F_Hauptframe")
         try:
             select_el = client.driver.find_element(By.CSS_SELECTOR, 'select[name="planet"]')
         except NoSuchElementException:
-            return
-        options = select_el.find_elements(By.TAG_NAME, "option")
-        for opt in options:
-            val = opt.get_attribute("value") or ""
-            if f"newPlanet={planet_id}" in val:
-                if not opt.is_selected():
-                    opt.click()
-                    time.sleep(1.0)
-                return
+            return False, None
+
+        target_re = re.compile(rf"newplanet={int(planet_id)}(?!\d)", re.IGNORECASE)
+        any_np_re = re.compile(r"newplanet=(\d+)", re.IGNORECASE)
+        chosen_val = target_value
+        chosen_opt = None
+        dom_selected_pid: Optional[int] = None
+        dom_has_newplanet = False
+        for opt in select_el.find_elements(By.TAG_NAME, "option"):
+            val = str(opt.get_attribute("value") or "")
+            if "newplanet=" in val.lower():
+                dom_has_newplanet = True
+            try:
+                raw_sel = opt.is_selected()
+                is_sel = isinstance(raw_sel, (bool, int)) and bool(raw_sel)
+            except Exception:
+                is_sel = False
+            if is_sel:
+                m_dom = any_np_re.search(val)
+                if m_dom:
+                    dom_selected_pid = int(m_dom.group(1))
+            if target_re.search(val):
+                if is_sel:
+                    self._record_observed_planet(int(planet_id), confirmed=True)
+                    return False, None
+                chosen_val = val
+                chosen_opt = opt
+        if dom_selected_pid is not None:
+            self._record_observed_planet(dom_selected_pid, confirmed=True)
+        if chosen_val is None and chosen_opt is None:
+            return False, None
+        if dom_has_newplanet and chosen_opt is None:
+            return False, None
+        if chosen_opt is None and dom_selected_pid is not None and dom_selected_pid == int(planet_id):
+            return False, None
+
+        self._pace_action(client, priority="interactive")
+        self._record_observed_planet(None, confirmed=False)
+        nav_token = self._mark_frame_nav(client)
+        switched = False
+        if chosen_val is not None:
+            try:
+                Select(select_el).select_by_value(chosen_val)
+                switched = True
+            except Exception:
+                switched = False
+        if not switched and chosen_opt is not None:
+            self._safe_click(client, chosen_opt)
+            switched = True
+        updated_html: Optional[str] = None
+        if switched:
+            updated_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token)
+            self._record_observed_planet(int(planet_id), confirmed=True)
+        else:
+            fallback_pid = dom_selected_pid if dom_selected_pid is not None else obs_html_pid
+            if fallback_pid is not None:
+                self._record_observed_planet(fallback_pid, confirmed=True)
+        return switched, updated_html
 
     def _navigate_and_select_planet(
         self,
@@ -87,12 +470,54 @@ class ActionExecutor:
         state: GameState,
         menu_action: str,
         planet_id: int,
+        *,
+        active_planet_confirmed: bool = True,
     ) -> str:
-        client.ensure_in_game()
-        html = client.navigate_menu(menu_action)
-        if state.active_planet_id != planet_id:
-            self._select_planet_if_needed(client, planet_id)
-            html = client._wait_frame_ready("F_Hauptframe")
+        _call_with_optional_priority(client.ensure_in_game, priority="interactive")
+        # On `internalFleet`, `select[name="planet"]` is target favourites (`REQ-UI-080`), NOT planet switcher!
+        if menu_action == "internalFleet":
+            planets = getattr(state, "planets", ()) or ()
+            needs_confirm = (not active_planet_confirmed) and len(planets) > 1
+            if state.active_planet_id != planet_id or needs_confirm:
+                b_html = _call_with_optional_priority(
+                    client.navigate_menu,
+                    "internalBuildings",
+                    priority="interactive",
+                )
+                b_html_str = b_html if isinstance(b_html, str) else ""
+                obs_pid = self._extract_selected_planet_id(b_html_str, "internalBuildings")
+                if obs_pid is not None:
+                    self._record_observed_planet(obs_pid, confirmed=True)
+                self._select_planet_if_needed(
+                    client,
+                    planet_id,
+                    html=b_html_str,
+                    require_confirm=True,
+                )
+                if self._confirmed_planet_mismatch(planet_id) is not None:
+                    return ""
+            return _call_with_optional_priority(
+                client.navigate_menu,
+                "internalFleet",
+                priority="interactive",
+            )
+
+        html = _call_with_optional_priority(
+            client.navigate_menu,
+            menu_action,
+            priority="interactive",
+        )
+        html_str = html if isinstance(html, str) else ""
+        obs_pid = self._extract_selected_planet_id(html_str, menu_action)
+        if obs_pid is not None:
+            self._record_observed_planet(obs_pid, confirmed=True)
+        needs_switch, _ = self._find_newplanet_switch_target(html_str, planet_id)
+        if needs_switch or (state.active_planet_id != planet_id and "newplanet=" in html_str.lower()):
+            switched, updated_html = self._select_planet_if_needed(client, planet_id, html=html_str)
+            if switched and updated_html:
+                html = updated_html
+        if self._confirmed_planet_mismatch(planet_id) is not None:
+            return ""
         return html
 
     def _click_dom_link_with_retry(
@@ -116,16 +541,11 @@ class ActionExecutor:
             try:
                 client._switch_frame("F_Hauptframe")
                 btn = client.driver.find_element(By.CSS_SELECTOR, selector)
-                client.driver.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center'});",
-                    btn,
-                )
+                self._pace_action(client, priority="interactive")
+                nav_token = self._mark_frame_nav(client)
                 time.sleep(random.uniform(*self.action_delay_range))
-                try:
-                    btn.click()
-                except ElementClickInterceptedException:
-                    client.driver.execute_script("arguments[0].click();", btn)
-                after_html = client._wait_frame_ready("F_Hauptframe")
+                self._safe_click(client, btn)
+                after_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token)
                 self._recent_timestamps.append(time.monotonic())
                 return after_html, None
             except StaleElementReferenceException:
@@ -150,16 +570,21 @@ class ActionExecutor:
         self,
         client: GameBrowserClient,
         action: PlannedAction,
+        state: Optional[GameState] = None,
     ) -> ExecutionResult:
         """Expand `#tutorial.text` if collapsed and submit `Mission complete` in `internalHome`."""
-        client.ensure_in_game()
-        client.navigate_menu("internalHome")
+        _call_with_optional_priority(client.ensure_in_game, priority="interactive")
+        home_html = _call_with_optional_priority(client.navigate_menu, "internalHome", priority="interactive")
+        if isinstance(home_html, str) and home_html:
+            home_pid, *_ = parse_home_metadata(home_html)
+            if home_pid is not None:
+                self._record_observed_planet(home_pid, confirmed=True)
         client._switch_frame("F_Hauptframe")
 
         tut_div = client.driver.find_element(By.ID, "tutorial.text")
         if not tut_div.is_displayed():
             try:
-                client.driver.find_element(By.ID, "tutorial.show").click()
+                self._safe_click(client, client.driver.find_element(By.ID, "tutorial.show"))
                 time.sleep(0.3)
             except NoSuchElementException:
                 client.driver.execute_script("arguments[0].style.display='block';", tut_div)
@@ -168,16 +593,35 @@ class ActionExecutor:
             By.CSS_SELECTOR,
             'form[action*="internalHome"] input[name="tutorialComplete"] ~ input[type="submit"]',
         )
+        self._pace_action(client, priority="interactive")
+        nav_token = self._mark_frame_nav(client)
         time.sleep(random.uniform(*self.action_delay_range))
-        submit_btn.click()
-        client._wait_frame_ready("F_Hauptframe")
+        self._safe_click(client, submit_btn)
+        after_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token)
+        if isinstance(after_html, str) and after_html:
+            after_pid, *_ = parse_home_metadata(after_html)
+            if after_pid is not None:
+                self._record_observed_planet(after_pid, confirmed=True)
         self._recent_timestamps.append(time.monotonic())
-        client.read_planets_overview(refresh=True)
+        updated = _call_with_optional_priority(
+            client.read_planets_overview,
+            refresh=True,
+            priority="interactive",
+        )
+        updated_state = self._build_updated_state(
+            client,
+            state,
+            action,
+            updated,
+            page_html=after_html if isinstance(after_html, str) else "",
+            is_home=True,
+        )
         return ExecutionResult(
             executed=True,
             dry_run=False,
             action=action,
             message=f"Claimed {action.target_name}.",
+            updated_state=updated_state,
         )
 
     def _execute_build(
@@ -187,6 +631,19 @@ class ActionExecutor:
         action: PlannedAction,
     ) -> ExecutionResult:
         html = self._navigate_and_select_planet(client, state, "internalBuildings", action.planet_id)
+        mismatch_pid = self._confirmed_planet_mismatch(action.planet_id)
+        if mismatch_pid is not None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=(
+                    f"Aborted: active planet is {mismatch_pid}, "
+                    f"not requested planet {action.planet_id}."
+                ),
+                observed_active_planet_id=mismatch_pid,
+                observed_active_planet_confirmed=True,
+            )
         planet_map = next(
             (p.buildings for p in state.planets if p.planet_id == action.planet_id),
             None,
@@ -203,7 +660,11 @@ class ActionExecutor:
             return err
         assert after_html is not None
 
-        updated = client.read_planets_overview(refresh=True)
+        updated = _call_with_optional_priority(
+            client.read_planets_overview,
+            refresh=True,
+            priority="interactive",
+        )
         after_planet = next(
             (p for p in updated.planets if p.planet_id == action.planet_id),
             updated.active_planet(),
@@ -220,7 +681,21 @@ class ActionExecutor:
             f"Built/queued {action.target_name} -> L{action.target_level} "
             f"(verified={'ok' if in_queue else 'submitted'}, current_lvl={new_lvl})."
         )
-        return ExecutionResult(executed=True, dry_run=False, action=action, message=detail)
+        updated_state = self._build_updated_state(
+            client,
+            state,
+            action,
+            updated,
+            page_html=after_html if isinstance(after_html, str) else "",
+            include_buildings=True,
+        )
+        return ExecutionResult(
+            executed=True,
+            dry_run=False,
+            action=action,
+            message=detail,
+            updated_state=updated_state,
+        )
 
     def _execute_research(
         self,
@@ -229,6 +704,19 @@ class ActionExecutor:
         action: PlannedAction,
     ) -> ExecutionResult:
         html = self._navigate_and_select_planet(client, state, "internalResearch", action.planet_id)
+        mismatch_pid = self._confirmed_planet_mismatch(action.planet_id)
+        if mismatch_pid is not None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=(
+                    f"Aborted: active planet is {mismatch_pid}, "
+                    f"not requested planet {action.planet_id}."
+                ),
+                observed_active_planet_id=mismatch_pid,
+                observed_active_planet_confirmed=True,
+            )
         selector = f'a.bau[href*="internalBuildItem"][href*="researchID={action.target_id}"]'
 
         def _ready(page_html: str) -> bool:
@@ -241,7 +729,11 @@ class ActionExecutor:
             return err
         assert after_html is not None
 
-        updated = client.read_planets_overview(refresh=True)
+        updated = _call_with_optional_priority(
+            client.read_planets_overview,
+            refresh=True,
+            priority="interactive",
+        )
         new_lvl = int(updated.researches.get(f"r{action.target_id}", 0))
         after_lower = after_html.lower()
         verified = (
@@ -253,7 +745,21 @@ class ActionExecutor:
             f"Started research {action.target_name} -> L{action.target_level} "
             f"(verified={'ok' if verified else 'submitted'}, current_lvl={new_lvl})."
         )
-        return ExecutionResult(executed=True, dry_run=False, action=action, message=detail)
+        updated_state = self._build_updated_state(
+            client,
+            state,
+            action,
+            updated,
+            page_html=after_html if isinstance(after_html, str) else "",
+            include_research=True,
+        )
+        return ExecutionResult(
+            executed=True,
+            dry_run=False,
+            action=action,
+            message=detail,
+            updated_state=updated_state,
+        )
 
     def _execute_build_ship(
         self,
@@ -262,6 +768,19 @@ class ActionExecutor:
         action: PlannedAction,
     ) -> ExecutionResult:
         html = self._navigate_and_select_planet(client, state, "internalWeaponFactory", action.planet_id)
+        mismatch_pid = self._confirmed_planet_mismatch(action.planet_id)
+        if mismatch_pid is not None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=(
+                    f"Aborted: active planet is {mismatch_pid}, "
+                    f"not requested planet {action.planet_id}."
+                ),
+                observed_active_planet_id=mismatch_pid,
+                observed_active_planet_confirmed=True,
+            )
         planet = next((p for p in state.planets if p.planet_id == action.planet_id), None)
         offers = parse_unit_factory_page(
             html,
@@ -284,9 +803,11 @@ class ActionExecutor:
             qty_input.clear()
             qty_input.send_keys(str(qty))
             form = client.driver.find_element(By.CSS_SELECTOR, 'form[action*="buildShip=1"]')
+            self._pace_action(client, priority="interactive")
+            nav_token = self._mark_frame_nav(client)
             time.sleep(random.uniform(*self.action_delay_range))
             submit_btn = form.find_element(By.CSS_SELECTOR, 'input[type="submit"], button[type="submit"]')
-            submit_btn.click()
+            self._safe_click(client, submit_btn)
         except NoSuchElementException:
             return ExecutionResult(
                 executed=False,
@@ -295,14 +816,27 @@ class ActionExecutor:
                 message=f"Aborted: shipyard form controls for {action.target_name} not found.",
             )
 
-        client._wait_frame_ready("F_Hauptframe")
+        after_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token)
         self._recent_timestamps.append(time.monotonic())
-        client.read_planets_overview(refresh=True)
+        updated = _call_with_optional_priority(
+            client.read_planets_overview,
+            refresh=True,
+            priority="interactive",
+        )
+        updated_state = self._build_updated_state(
+            client,
+            state,
+            action,
+            updated,
+            page_html=after_html if isinstance(after_html, str) else "",
+            include_shipyard=True,
+        )
         return ExecutionResult(
             executed=True,
             dry_run=False,
             action=action,
             message=f"Ordered {qty}x {action.target_name} on [{action.planet_coords}].",
+            updated_state=updated_state,
         )
 
     def _execute_throttle_building(
@@ -325,6 +859,19 @@ class ActionExecutor:
         target_pct = max(0, min(100, (raw_pct // 10) * 10))
 
         html = self._navigate_and_select_planet(client, state, "internalEconomy", action.planet_id)
+        mismatch_pid = self._confirmed_planet_mismatch(action.planet_id)
+        if mismatch_pid is not None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=(
+                    f"Aborted: active planet is {mismatch_pid}, "
+                    f"not requested planet {action.planet_id}."
+                ),
+                observed_active_planet_id=mismatch_pid,
+                observed_active_planet_confirmed=True,
+            )
         cur_rates = parse_economy_rates(html)
         if cur_rates:
             self.last_economy_rates[action.planet_id] = dict(cur_rates)
@@ -344,8 +891,10 @@ class ActionExecutor:
                 By.CSS_SELECTOR,
                 'form#ress input[type="submit"], form[action*="internalEconomy"] input[type="submit"], form input[type="submit"]',
             )
+            self._pace_action(client, priority="interactive")
+            nav_token = self._mark_frame_nav(client)
             time.sleep(random.uniform(*self.action_delay_range))
-            submit_btn.click()
+            self._safe_click(client, submit_btn)
         except NoSuchElementException:
             return ExecutionResult(
                 executed=False,
@@ -354,7 +903,7 @@ class ActionExecutor:
                 message=f"Aborted: internalEconomy control {field_name} not found.",
             )
 
-        updated_html = client._wait_frame_ready("F_Hauptframe")
+        updated_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token)
         updated_rates = parse_economy_rates(updated_html)
         if not updated_rates:
             updated_rates = dict(cur_rates)
@@ -362,12 +911,838 @@ class ActionExecutor:
         self.last_economy_rates[action.planet_id] = dict(updated_rates)
 
         self._recent_timestamps.append(time.monotonic())
-        client.read_planets_overview(refresh=True)
+        updated = _call_with_optional_priority(
+            client.read_planets_overview,
+            refresh=True,
+            priority="interactive",
+        )
+        updated_state = self._build_updated_state(
+            client,
+            state,
+            action,
+            updated,
+            page_html=updated_html if isinstance(updated_html, str) else "",
+        )
         return ExecutionResult(
             executed=True,
             dry_run=False,
             action=action,
             message=f"Set {action.target_name} ({field_name}) to {target_pct}% on [{action.planet_coords}].",
+            updated_state=updated_state,
+        )
+
+    def _execute_scan_galaxy(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+    ) -> ExecutionResult:
+        m = re.search(r"(\d{1,2}):(\d{1,3})", action.target_name) or re.search(
+            r"(\d{1,2}):(\d{1,3})", action.planet_coords
+        )
+        gal, sys_num = (int(m.group(1)), int(m.group(2))) if m else (1, 1)
+        _call_with_optional_priority(client.ensure_in_game, priority="interactive")
+        html = client.open_galaxy(galaxy=gal, system=sys_num)
+        actual_coords = getattr(client, "last_galaxy_coords", None)
+        if (
+            isinstance(actual_coords, tuple)
+            and len(actual_coords) == 2
+            and all(isinstance(v, int) for v in actual_coords)
+        ):
+            gal, sys_num = actual_coords
+        slots = parse_galaxy_system_html(html, galaxy=gal, system=sys_num)
+        self.last_galaxy_slots = list(slots)
+        # Read-only SCAN_GALAXY does not consume mutation hourly budget
+        occupied = [s for s in slots if s.status_color != "free"]
+        yellows = [s for s in slots if s.status_color == "yellow"]
+        spacias = [s for s in slots if s.is_spacia]
+        return ExecutionResult(
+            executed=True,
+            dry_run=False,
+            action=action,
+            message=(
+                f"Scanned Galaxy [{gal:02d}:{sys_num:03d}]: "
+                f"{len(occupied)} occupied ({len(yellows)} inactive yellow, {len(spacias)} Spacia)."
+            ),
+        )
+
+    @staticmethod
+    def _pick_send_fleet_form_css(send_soup: BeautifulSoup) -> str:
+        if send_soup.select_one('form[action*="internalSendFleet"]'):
+            return 'form[action*="internalSendFleet"]'
+        if send_soup.select_one('form[name="fleet"]'):
+            return 'form[name="fleet"]'
+        for form_el in send_soup.find_all("form"):
+            txt = form_el.get_text(" ", strip=True).lower()
+            radios = form_el.select('input[type="radio"]')
+            if radios and any(
+                tok in txt for tok in ("attack", "spying", "espionage", "spionage", "mission", "transport")
+            ):
+                fid = str(form_el.get("id") or "").strip()
+                if fid and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", fid):
+                    return f"form#{fid}"
+                faction = str(form_el.get("action") or "").strip()
+                if faction:
+                    return f'form[action="{faction}"]'
+        return "form"
+
+    _STRUCTURAL_RADIO_STOP_TAGS = (
+        "br",
+        "td",
+        "th",
+        "div",
+        "tr",
+        "p",
+        "li",
+        "hr",
+        "table",
+        "tbody",
+        "thead",
+        "tfoot",
+        "fieldset",
+        "section",
+        "form",
+        "legend",
+        "caption",
+        "ul",
+        "ol",
+        "dl",
+        "dt",
+        "dd",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+    )
+    _NON_LABEL_CONTAINER_TAGS = (
+        "tr",
+        "form",
+        "table",
+        "tbody",
+        "thead",
+        "tfoot",
+        "fieldset",
+        "section",
+        "ul",
+        "ol",
+        "dl",
+        "[document]",
+    )
+    _WRAPPER_WALK_STOP_TAGS = (
+        "br",
+        "td",
+        "th",
+        "tr",
+        "p",
+        "li",
+        "hr",
+        "table",
+        "tbody",
+        "thead",
+        "tfoot",
+        "fieldset",
+        "section",
+        "form",
+        "legend",
+        "caption",
+        "ul",
+        "ol",
+        "dl",
+        "dt",
+        "dd",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "[document]",
+    )
+    _FORM_CONTROL_TAGS = ("input", "select", "textarea", "button")
+    _TR_HEADER_LABEL_RE = re.compile(
+        r"^(?:mission|auftrag|speed|geschwindigkeit|route|aktion|action|options?|select|choose)\b",
+        re.IGNORECASE,
+    )
+    _TR_OPTION_TOKEN_RE = re.compile(
+        r"(?:(?<!\d)\d{1,3}\s*%(?!\w)"
+        r"|\b(?:attack|angriff|raid|spy(?:ing)?|spio(?:nage)?|espionage"
+        r"|transport|station(?:ing|ieren)?|deploy|colonize|kolonisier(?:en)?"
+        r"|recycl(?:e|ing)|harvest|escape(?:\s+flight)?|flucht|expedition"
+        r"|explore|erkund(?:ung|en)?|hold|halt|direct|direkt|detour|umweg)\b)",
+        re.IGNORECASE,
+    )
+    _TR_UTILITY_CELL_RE = re.compile(
+        r"^(?:help|hilfe|info|hint|hinweis|note|send|submit|absenden|ok|cancel|abort|abbrechen|back|zur[uü]ck|close|schlie[sß]en|\?)$",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_visible_form_control(cls, tag: Tag) -> bool:
+        if tag.name in ("select", "textarea", "button"):
+            return True
+        if tag.name == "input":
+            return str(tag.get("type") or "").strip().lower() != "hidden"
+        return False
+
+    @classmethod
+    def _has_visible_form_control(cls, tag: Tag) -> bool:
+        if cls._is_visible_form_control(tag):
+            return True
+        return any(cls._is_visible_form_control(c) for c in tag.find_all(cls._FORM_CONTROL_TAGS))
+
+    @classmethod
+    def _has_other_visible_form_control(cls, container: Tag, target_radio: Tag) -> bool:
+        for ctrl in container.find_all(cls._FORM_CONTROL_TAGS):
+            if ctrl is target_radio:
+                continue
+            if cls._is_visible_form_control(ctrl):
+                return True
+        return False
+
+    @classmethod
+    def _collect_adjacent_radio_text(
+        cls,
+        node: Tag,
+        *,
+        reverse: bool = False,
+        target_id: str = "",
+    ) -> str:
+        parts: list[str] = []
+        siblings = node.previous_siblings if reverse else node.next_siblings
+        for sib in siblings:
+            if isinstance(sib, NavigableString):
+                txt = " ".join(str(sib).split())
+                if txt:
+                    parts.append(txt)
+            elif isinstance(sib, Tag):
+                if sib.name in cls._STRUCTURAL_RADIO_STOP_TAGS:
+                    break
+                if sib.name == "input" and str(sib.get("type") or "").strip().lower() == "hidden":
+                    continue
+                if sib.name == "label":
+                    lbl_for = str(sib.get("for") or "").strip().lower()
+                    if lbl_for and lbl_for != target_id:
+                        if reverse:
+                            parts.clear()
+                        break
+                if cls._has_visible_form_control(sib):
+                    if reverse:
+                        parts.clear()
+                    break
+                txt = " ".join(sib.get_text(" ", strip=True).split())
+                if txt:
+                    parts.append(txt)
+        if reverse:
+            parts.reverse()
+        return " ".join(parts)
+
+    @classmethod
+    def _is_tr_header_cell(cls, cell_tag: Tag, txt: str) -> bool:
+        if cell_tag.name == "th":
+            return True
+        if txt.endswith(":"):
+            return True
+        if cls._TR_OPTION_TOKEN_RE.search(txt):
+            return False
+        return bool(cls._TR_HEADER_LABEL_RE.match(txt))
+
+    @classmethod
+    def _is_tr_option_label(cls, cell_tag: Tag, txt: str) -> bool:
+        if not txt or cls._is_tr_header_cell(cell_tag, txt):
+            return False
+        if re.search(r"[A-Za-z]\s*:", txt) or len(txt.split()) > 5:
+            return False
+        return bool(cls._TR_OPTION_TOKEN_RE.search(txt))
+
+    @classmethod
+    def _cell_labels_foreign_id(cls, cell_tag: Tag, target_radio_id: str) -> bool:
+        lbls = [lbl for lbl in cell_tag.find_all("label") if str(lbl.get("for") or "").strip()]
+        if not lbls:
+            return False
+        for_ids = {str(lbl.get("for") or "").strip().lower() for lbl in lbls}
+        if target_radio_id and target_radio_id in for_ids:
+            return False
+        lbl_txt = " ".join(" ".join(l.get_text(" ", strip=True).split()) for l in lbls).strip()
+        full_txt = " ".join(cell_tag.get_text(" ", strip=True).split())
+        return bool(lbl_txt) and lbl_txt == full_txt
+
+    @classmethod
+    def _is_pure_link_cell(cls, cell_tag: Tag, txt: str) -> bool:
+        links = cell_tag.find_all("a")
+        if not links:
+            return False
+        lnk_txt = " ".join(" ".join(a.get_text(" ", strip=True).split()) for a in links).strip()
+        return bool(lnk_txt) and lnk_txt == txt
+
+    @classmethod
+    def _extract_multi_radio_tr_cell_label(cls, tr: Tag, cell: Tag) -> str:
+        cells = tr.find_all(["td", "th"], recursive=False)
+        if cell not in cells and cell.parent is not None:
+            cells = cell.parent.find_all(["td", "th"], recursive=False)
+        if cell not in cells:
+            nxt_td = cell.find_next_sibling(["td", "th"])
+            if (
+                nxt_td is not None
+                and not nxt_td.select('input[type="radio"]')
+                and not cls._has_visible_form_control(nxt_td)
+            ):
+                return " ".join(nxt_td.get_text(" ", strip=True).split())
+            return ""
+
+        cell_idx = cells.index(cell)
+        has_radio = [bool(c.select('input[type="radio"]')) for c in cells]
+        cell_txts = [" ".join(c.get_text(" ", strip=True).split()) for c in cells]
+        is_label = [
+            (not has_radio[i])
+            and (not cls._has_visible_form_control(cells[i]))
+            and bool(cell_txts[i])
+            for i in range(len(cells))
+        ]
+        radio_ids: dict[int, str] = {}
+        needs_sib: list[int] = []
+        for i, c in enumerate(cells):
+            radios_in_c = c.select('input[type="radio"]')
+            if len(radios_in_c) == 1 and not cell_txts[i]:
+                needs_sib.append(i)
+                radio_ids[i] = str(radios_in_c[0].get("id") or "").strip().lower()
+
+        def _can_pair(r_idx: int, lbl_idx: int) -> bool:
+            if not (0 <= lbl_idx < len(cells)) or not is_label[lbl_idx]:
+                return False
+            return not cls._cell_labels_foreign_id(cells[lbl_idx], radio_ids.get(r_idx, ""))
+
+        after_hits = sum(1 for i in needs_sib if _can_pair(i, i + 1))
+        before_hits = sum(1 for i in needs_sib if _can_pair(i, i - 1))
+
+        direction = "after"
+        if before_hits > after_hits:
+            direction = "before"
+        elif before_hits == after_hits and before_hits > 0 and needs_sib:
+            def _dir_score(offset: int) -> tuple[int, int, int, int, int]:
+                paired = [i + offset for i in needs_sib if _can_pair(i, i + offset)]
+                opt_hits = sum(1 for j in paired if cls._is_tr_option_label(cells[j], cell_txts[j]))
+                hdr_hits = sum(1 for j in paired if cls._is_tr_header_cell(cells[j], cell_txts[j]))
+                pure_lnk_hits = sum(1 for j in paired if cls._is_pure_link_cell(cells[j], cell_txts[j]))
+                any_lnk_hits = sum(1 for j in paired if cells[j].find("a") is not None)
+                util_hits = sum(1 for j in paired if cls._TR_UTILITY_CELL_RE.match(cell_txts[j]))
+                return (opt_hits, -hdr_hits, -pure_lnk_hits, -any_lnk_hits, -util_hits)
+
+            if _dir_score(-1) > _dir_score(1):
+                direction = "before"
+            else:
+                direction = "after"
+
+        if direction == "before":
+            if _can_pair(cell_idx, cell_idx - 1):
+                return cell_txts[cell_idx - 1]
+            return ""
+        if _can_pair(cell_idx, cell_idx + 1):
+            return cell_txts[cell_idx + 1]
+        return ""
+
+    @classmethod
+    def _match_mission_radio(
+        cls,
+        send_soup: BeautifulSoup,
+        form_css: str,
+        radios: list,
+        mission_kind: str,
+    ):
+        # Collect BS4 label/row text per radio input inside the selected form without bleeding across siblings
+        scoped_form = send_soup.select_one(form_css) if form_css else None
+        radio_labels: list[tuple[str, str, str, str]] = []
+        if scoped_form is not None:
+            for inp in scoped_form.select('input[type="radio"]'):
+                rid = str(inp.get("id") or "").strip().lower()
+                rval = str(inp.get("value") or "").strip().lower()
+                rname = str(inp.get("name") or "").strip().lower()
+                lbl_parts: list[str] = []
+                if rid:
+                    lbl = scoped_form.find("label", attrs={"for": inp.get("id")})
+                    if (
+                        lbl is not None
+                        and len(lbl.select('input[type="radio"]')) <= 1
+                        and not cls._has_other_visible_form_control(lbl, inp)
+                    ):
+                        ltxt = " ".join(lbl.get_text(" ", strip=True).split())
+                        if ltxt:
+                            lbl_parts.append(ltxt)
+                parent_lbl = inp.find_parent("label")
+                if (
+                    parent_lbl is not None
+                    and len(parent_lbl.select('input[type="radio"]')) <= 1
+                    and not cls._has_other_visible_form_control(parent_lbl, inp)
+                ):
+                    ltxt = " ".join(parent_lbl.get_text(" ", strip=True).split())
+                    if ltxt:
+                        lbl_parts.append(ltxt)
+                if not lbl_parts:
+                    cell = inp.find_parent(["td", "th"])
+                    if cell is not None and scoped_form not in cell.parents:
+                        cell = None
+                    tr = cell.find_parent("tr") if cell is not None else None
+                    if tr is not None and scoped_form not in tr.parents:
+                        tr = None
+                    if (
+                        cell is not None
+                        and tr is not None
+                        and not cell.find("table")
+                        and len(cell.select('input[type="radio"]')) == 1
+                        and not cls._has_other_visible_form_control(cell, inp)
+                    ):
+                        ctxt = " ".join(cell.get_text(" ", strip=True).split())
+                        if ctxt:
+                            lbl_parts.append(ctxt)
+                        elif (
+                            len(tr.select('input[type="radio"]')) == 1
+                            and not cls._has_other_visible_form_control(tr, inp)
+                        ):
+                            lbl_parts.append(" ".join(tr.get_text(" ", strip=True).split()))
+                        else:
+                            tr_txt = cls._extract_multi_radio_tr_cell_label(tr, cell)
+                            if tr_txt:
+                                lbl_parts.append(tr_txt)
+                    else:
+                        wrapper = inp
+                        while (
+                            wrapper.parent is not None
+                            and isinstance(wrapper.parent, Tag)
+                            and wrapper.parent is not scoped_form
+                            and wrapper.parent.name not in cls._WRAPPER_WALK_STOP_TAGS
+                            and not cls._has_other_visible_form_control(wrapper.parent, inp)
+                            and len(wrapper.parent.select('input[type="radio"]')) == 1
+                            and not " ".join(wrapper.parent.get_text(" ", strip=True).split())
+                        ):
+                            wrapper = wrapper.parent
+                        parent = wrapper.parent
+                        if (
+                            parent is not None
+                            and isinstance(parent, Tag)
+                            and parent is not scoped_form
+                            and parent.name not in cls._NON_LABEL_CONTAINER_TAGS
+                            and parent.name not in ("td", "th")
+                            and len(parent.select('input[type="radio"]')) == 1
+                            and not cls._has_other_visible_form_control(parent, inp)
+                        ):
+                            ptxt = " ".join(parent.get_text(" ", strip=True).split())
+                            if ptxt:
+                                lbl_parts.append(ptxt)
+                            else:
+                                sib_txt = (
+                                    cls._collect_adjacent_radio_text(parent, target_id=rid)
+                                    or cls._collect_adjacent_radio_text(parent, reverse=True, target_id=rid)
+                                )
+                                if sib_txt:
+                                    lbl_parts.append(sib_txt)
+                        else:
+                            sib_txt = (
+                                cls._collect_adjacent_radio_text(wrapper, target_id=rid)
+                                or cls._collect_adjacent_radio_text(wrapper, reverse=True, target_id=rid)
+                            )
+                            if sib_txt:
+                                lbl_parts.append(sib_txt)
+                radio_labels.append((rval, rid, rname, " ".join(lbl_parts).lower()))
+
+        want_tokens = ("attack", "angriff") if mission_kind == "ATTACK" else ("spy", "spio", "espionage")
+
+        def _is_speed_or_route(r_name: str, lbl: str) -> bool:
+            return (
+                "procent" in r_name
+                or "percent" in r_name
+                or "geschwindigkeit" in r_name
+                or "speed" in r_name
+                or "route" in r_name
+                or "%" in lbl
+            )
+
+        candidates: list[tuple[object, str, str, str, str]] = []
+        for idx, r in enumerate(radios):
+            r_val = str(r.get_attribute("value") or "").strip().lower()
+            r_id = str(r.get_attribute("id") or "").strip().lower()
+            r_name = str(r.get_attribute("name") or "").strip().lower()
+            label_txt = ""
+            matched_label = False
+            if len(radios) == len(radio_labels) and idx < len(radio_labels):
+                b_val, b_id, b_name, b_lbl = radio_labels[idx]
+                if (
+                    (not r_id or not b_id or r_id == b_id)
+                    and (not r_name or not b_name or r_name == b_name)
+                    and (not r_val or not b_val or r_val == b_val)
+                ):
+                    label_txt = b_lbl
+                    matched_label = True
+            if not matched_label:
+                for b_val, b_id, b_name, b_lbl in radio_labels:
+                    if r_id and b_id and r_id != b_id:
+                        continue
+                    if (r_id and r_id == b_id) or (
+                        r_val and r_val == b_val and (not r_name or not b_name or r_name == b_name)
+                    ):
+                        label_txt = b_lbl
+                        matched_label = True
+                        break
+            if not matched_label and idx < len(radio_labels):
+                label_txt = radio_labels[idx][3]
+            if _is_speed_or_route(r_name, label_txt):
+                continue
+            candidates.append((r, r_val, r_id, r_name, label_txt))
+
+        # Pass 1: explicit keyword match across ALL non-speed/non-route radios
+        for r, r_val, r_id, r_name, label_txt in candidates:
+            if any(tok in r_val or tok in r_id or tok in label_txt for tok in want_tokens):
+                return r
+
+        # Pass 2: numeric value="1" fallback ONLY for ATTACK when Pass 1 found nothing
+        if mission_kind == "ATTACK":
+            other_missions = (
+                "transport",
+                "station",
+                "spy",
+                "spio",
+                "espionage",
+                "colonize",
+                "recycle",
+                "escape",
+            )
+            for r, r_val, r_id, r_name, label_txt in candidates:
+                if (r_val == "1" or ("mission" in r_name and r_val == "1")) and not any(
+                    m in label_txt for m in other_missions
+                ):
+                    return r
+        return None
+
+    @staticmethod
+    def _extract_fleet_server_error(confirm_html: str) -> Optional[str]:
+        if not confirm_html:
+            return None
+        soup = BeautifulSoup(confirm_html, "html.parser")
+        for sel in (".error", ".errormessage", ".fehler", ".alert-danger"):
+            el = soup.select_one(sel)
+            if el is not None:
+                txt = " ".join(el.get_text(" ", strip=True).split())
+                if txt:
+                    return txt[:160]
+        low = " ".join(soup.get_text(" ", strip=True).split()).lower()
+        for phrase in (
+            "not enough spice",
+            "not enough deuterium",
+            "not enough ships",
+            "no free fleet slot",
+            "too many fleets",
+            "newbie protection",
+            "vacation mode",
+            "cannot attack",
+        ):
+            if phrase in low:
+                return phrase
+        return None
+
+    def _dispatch_fleet_mission(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+        *,
+        ships_to_send: dict[str, int],
+        mission_kind: str,
+        active_planet_confirmed: bool = True,
+    ) -> ExecutionResult:
+        m = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", action.target_name)
+        if not m:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: could not parse target coordinates from {action.target_name!r}.",
+            )
+        t_gal, t_sys, t_pos = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        is_asteroid = bool(re.search(r"\[\s*a\s*\]|\basteroid\b", f"{action.target_name} {action.reason}", re.IGNORECASE))
+
+        fleet_html = self._navigate_and_select_planet(
+            client,
+            state,
+            "internalFleet",
+            action.planet_id,
+            active_planet_confirmed=active_planet_confirmed,
+        )
+        mismatch_pid = self._confirmed_planet_mismatch(action.planet_id)
+        if mismatch_pid is not None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=(
+                    f"Aborted: active planet is {mismatch_pid}, "
+                    f"not requested origin {action.planet_id}."
+                ),
+                observed_active_planet_id=mismatch_pid,
+                observed_active_planet_confirmed=True,
+            )
+        fleet_soup = BeautifulSoup(fleet_html or "", "html.parser")
+        send_form_soup = fleet_soup.select_one('form[action*="internalSendFleet"]')
+        fleet_named_soup = fleet_soup.select_one('form[name="fleet"]')
+        step1_form_soup = send_form_soup or fleet_named_soup
+        if step1_form_soup is None:
+            for cand_form in fleet_soup.find_all("form"):
+                if all(cand_form.find(attrs={"name": fn}) is not None for fn in ("gal", "sun", "pla")):
+                    step1_form_soup = cand_form
+                    break
+
+        step1_form_css = ""
+        if send_form_soup is not None:
+            step1_form_css = 'form[action*="internalSendFleet"]'
+        elif fleet_named_soup is not None:
+            step1_form_css = 'form[name="fleet"]'
+        elif step1_form_soup is not None:
+            fid = str(step1_form_soup.get("id") or "").strip()
+            faction = str(step1_form_soup.get("action") or "").strip()
+            if fid and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", fid):
+                step1_form_css = f"form#{fid}"
+            elif faction:
+                esc_action = faction.replace('"', '\\"')
+                step1_form_css = f'form[action="{esc_action}"]'
+
+        scope_soup = step1_form_soup if step1_form_soup is not None else fleet_soup
+        soup_input_names = {
+            str(inp.get("name") or "")
+            for inp in scope_soup.find_all("input")
+            if inp.get("name")
+        }
+        step1_submit_css = (
+            f'{step1_form_css} input[type="submit"], {step1_form_css} button[type="submit"]'
+            if step1_form_css
+            else 'form[name="fleet"] input[type="submit"], form[name="fleet"] button[type="submit"]'
+        )
+
+        def _field_needs_scoping(fname: str) -> bool:
+            if not step1_form_css or step1_form_soup is None:
+                return False
+            all_matches = fleet_soup.find_all(attrs={"name": fname})
+            if len(all_matches) > 1:
+                return True
+            if all_matches and len(step1_form_soup.find_all(attrs={"name": fname})) != len(all_matches):
+                return True
+            return False
+
+        def _scoped_field_css(fname: str) -> str:
+            esc_fn = fname.replace('"', '\\"')
+            inp_css = f'{step1_form_css} input[name="{esc_fn}"]'
+            return inp_css if fleet_soup.select_one(inp_css) is not None else f'{step1_form_css} [name="{esc_fn}"]'
+
+        client._switch_frame("F_Hauptframe")
+        filled_any = False
+        nav_token1: Optional[str] = None
+        try:
+            for skey, qty in ships_to_send.items():
+                num = skey[1:]
+                candidates = (f"ship_{num}", f"ship[{num}]", f"s{num}", f"ship{num}")
+                matched_in_html = next((c for c in candidates if c in soup_input_names), None)
+                if matched_in_html is not None:
+                    if _field_needs_scoping(matched_in_html):
+                        els = client.driver.find_elements(By.CSS_SELECTOR, _scoped_field_css(matched_in_html))
+                    else:
+                        els = client.driver.find_elements(By.NAME, matched_in_html)
+                else:
+                    els = []
+                    for cname in candidates:
+                        els = client.driver.find_elements(By.NAME, cname)
+                        if els:
+                            break
+                if els:
+                    els[0].clear()
+                    els[0].send_keys(str(qty))
+                    filled_any = True
+            if not filled_any:
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message="Aborted: no ship input fields found on internalFleet.",
+                )
+            for fname, fval in (("gal", str(t_gal)), ("sun", str(t_sys)), ("pla", str(t_pos))):
+                if _field_needs_scoping(fname):
+                    coord_inp = client.driver.find_element(By.CSS_SELECTOR, _scoped_field_css(fname))
+                else:
+                    coord_inp = client.driver.find_element(By.NAME, fname)
+                coord_inp.clear()
+                coord_inp.send_keys(fval)
+            if is_asteroid and "astro" in soup_input_names:
+                if _field_needs_scoping("astro"):
+                    astro_cb = client.driver.find_element(By.CSS_SELECTOR, _scoped_field_css("astro"))
+                else:
+                    astro_cb = client.driver.find_element(By.NAME, "astro")
+                if not astro_cb.is_selected():
+                    self._safe_click(client, astro_cb)
+
+            for attempt in range(2):
+                try:
+                    cont_btn = client.driver.find_element(By.CSS_SELECTOR, step1_submit_css)
+                    self._pace_action(client, priority="interactive")
+                    nav_token1 = self._mark_frame_nav(client)
+                    time.sleep(random.uniform(*self.action_delay_range))
+                    self._safe_click(client, cont_btn)
+                    break
+                except StaleElementReferenceException:
+                    if attempt == 1:
+                        raise
+                    client._switch_frame("F_Hauptframe")
+        except NoSuchElementException:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message="Aborted: internalFleet target or submit controls not found.",
+            )
+
+        send_html = client._wait_frame_ready(
+            "F_Hauptframe",
+            expected_action="internalSendFleet",
+            nav_token=nav_token1,
+        )
+        send_soup = BeautifulSoup(send_html or "", "html.parser")
+        form_css = self._pick_send_fleet_form_css(send_soup)
+
+        client._switch_frame("F_Hauptframe")
+        radios = client.driver.find_elements(By.CSS_SELECTOR, f'{form_css} input[type="radio"]')
+        mission_radio = self._match_mission_radio(send_soup, form_css, radios, mission_kind)
+        if mission_radio is None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=(
+                    f"Aborted: {mission_kind.title()} mission radio button not confirmed on internalSendFleet "
+                    f"(page bytes={len(send_html)})."
+                ),
+            )
+
+        nav_token2: Optional[str] = None
+        launch_css = f'{form_css} input[type="submit"], {form_css} button[type="submit"]'
+        try:
+            for attempt in range(2):
+                try:
+                    if not mission_radio.is_selected():
+                        self._safe_click(client, mission_radio)
+                    launch_btn = client.driver.find_element(By.CSS_SELECTOR, launch_css)
+                    self._pace_action(client, priority="interactive")
+                    nav_token2 = self._mark_frame_nav(client)
+                    time.sleep(random.uniform(*self.action_delay_range))
+                    self._safe_click(client, launch_btn)
+                    break
+                except StaleElementReferenceException:
+                    if attempt == 1:
+                        raise
+                    client._switch_frame("F_Hauptframe")
+                    radios = client.driver.find_elements(By.CSS_SELECTOR, f'{form_css} input[type="radio"]')
+                    mission_radio = self._match_mission_radio(send_soup, form_css, radios, mission_kind)
+                    if mission_radio is None:
+                        raise NoSuchElementException("Mission radio lost after page refresh")
+        except NoSuchElementException:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: {mission_kind.title()} mission launch button not found on internalSendFleet.",
+            )
+
+        confirm_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token2)
+        server_err = self._extract_fleet_server_error(confirm_html)
+        if server_err:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: fleet launch rejected by server ({server_err}).",
+            )
+
+        self._recent_timestamps.append(time.monotonic())
+        updated = _call_with_optional_priority(
+            client.read_planets_overview,
+            refresh=True,
+            priority="interactive",
+        )
+        updated_state = self._build_updated_state(
+            client,
+            state,
+            action,
+            updated,
+            is_fleet=True,
+        )
+        ship_desc = ", ".join(f"{qty}x {k}" for k, qty in ships_to_send.items())
+        verb = "spy probe" if mission_kind == "SPY" else "attack"
+        return ExecutionResult(
+            executed=True,
+            dry_run=False,
+            action=action,
+            message=(
+                f"Dispatched {verb} ({ship_desc}) to [{t_gal:02d}:{t_sys:03d}:{t_pos:02d}] "
+                f"from [{action.planet_coords}]."
+            ),
+            updated_state=updated_state,
+        )
+
+    def _execute_attack(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+        *,
+        active_planet_confirmed: bool = True,
+    ) -> ExecutionResult:
+        planet = next((p for p in state.planets if p.planet_id == action.planet_id), None) or state.active_planet()
+        attack_keys = ("s4", "s5", "s6", "s7", "s13", "s14", "s15", "s16", "s1", "s2", "s3")
+        ships_to_send = (
+            {
+                k: int(planet.ships.get(k, 0) or 0)
+                for k in attack_keys
+                if int(planet.ships.get(k, 0) or 0) > 0
+            }
+            if planet is not None
+            else {}
+        )
+        if not ships_to_send:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: no stationed combat or transport ships on [{action.planet_coords}].",
+            )
+        return self._dispatch_fleet_mission(
+            client,
+            state,
+            action,
+            ships_to_send=ships_to_send,
+            mission_kind="ATTACK",
+            active_planet_confirmed=active_planet_confirmed,
+        )
+
+    def _execute_spy(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+        *,
+        active_planet_confirmed: bool = True,
+    ) -> ExecutionResult:
+        planet = next((p for p in state.planets if p.planet_id == action.planet_id), None) or state.active_planet()
+        avail = int(planet.ships.get("s10", 0) or 0) if planet is not None else 0
+        if avail <= 0:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: no spy probes (s10) stationed on [{action.planet_coords}].",
+            )
+        probe_count = min(avail, max(1, int(action.target_level or 1)))
+        return self._dispatch_fleet_mission(
+            client,
+            state,
+            action,
+            ships_to_send={"s10": probe_count},
+            mission_kind="SPY",
+            active_planet_confirmed=active_planet_confirmed,
         )
 
     def execute_action(
@@ -375,8 +1750,11 @@ class ActionExecutor:
         client: GameBrowserClient,
         state: GameState,
         action: PlannedAction,
+        *,
+        active_planet_confirmed: bool = True,
     ) -> ExecutionResult:
-        """Execute one approved action (`BUILD`, `CLAIM_TUTORIAL`, `RESEARCH`, `BUILD_SHIP`, `THROTTLE_BUILDING`)."""
+        """Execute one approved action (`BUILD`, `CLAIM_TUTORIAL`, `RESEARCH`, `BUILD_SHIP`, `THROTTLE_BUILDING`, `SCAN_GALAXY`, `SPY`, `ATTACK`)."""
+        self._reset_observed_planet_tracking()
         if not action.executable_now:
             return ExecutionResult(
                 executed=False,
@@ -392,6 +1770,9 @@ class ActionExecutor:
             "BUILD_SHIP",
             "THROTTLE_BUILDING",
             "ESCAPE_FLIGHT",
+            "SCAN_GALAXY",
+            "SPY",
+            "ATTACK",
         )
         if action.kind not in supported:
             return ExecutionResult(
@@ -417,6 +1798,8 @@ class ActionExecutor:
                 suffix = f" -> {action.target_level}%"
             elif action.kind == "BUILD_SHIP" and action.target_level:
                 suffix = f" x{action.target_level}"
+            elif action.kind == "SPY":
+                suffix = f" ({max(1, int(action.target_level or 1))}x s10)"
             elif action.target_level:
                 suffix = f" -> L{action.target_level}"
             return ExecutionResult(
@@ -434,7 +1817,15 @@ class ActionExecutor:
                 message="Guarded: live ESCAPE_FLIGHT requires allow_fleetsave=true in config.",
             )
 
-        if self.remaining_hourly_budget() <= 0:
+        if action.kind == "ATTACK" and not self.allow_raids:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message="Guarded: live ATTACK requires allow_raids=true in config.",
+            )
+
+        if action.kind != "SCAN_GALAXY" and self.remaining_hourly_budget() <= 0:
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
@@ -443,19 +1834,36 @@ class ActionExecutor:
             )
 
         if action.kind == "CLAIM_TUTORIAL":
-            return self._execute_claim_tutorial(client, action)
-        if action.kind == "BUILD":
-            return self._execute_build(client, state, action)
-        if action.kind == "RESEARCH":
-            return self._execute_research(client, state, action)
-        if action.kind == "BUILD_SHIP":
-            return self._execute_build_ship(client, state, action)
-        if action.kind == "THROTTLE_BUILDING":
-            return self._execute_throttle_building(client, state, action)
-
-        return ExecutionResult(
-            executed=False,
-            dry_run=False,
-            action=action,
-            message=f"Escape flight planned ({action.reason}); inspect internalFleet before dispatch.",
-        )
+            res = self._execute_claim_tutorial(client, action, state=state)
+        elif action.kind == "BUILD":
+            res = self._execute_build(client, state, action)
+        elif action.kind == "RESEARCH":
+            res = self._execute_research(client, state, action)
+        elif action.kind == "BUILD_SHIP":
+            res = self._execute_build_ship(client, state, action)
+        elif action.kind == "THROTTLE_BUILDING":
+            res = self._execute_throttle_building(client, state, action)
+        elif action.kind == "SCAN_GALAXY":
+            res = self._execute_scan_galaxy(client, state, action)
+        elif action.kind == "SPY":
+            res = self._execute_spy(
+                client,
+                state,
+                action,
+                active_planet_confirmed=active_planet_confirmed,
+            )
+        elif action.kind == "ATTACK":
+            res = self._execute_attack(
+                client,
+                state,
+                action,
+                active_planet_confirmed=active_planet_confirmed,
+            )
+        else:
+            res = ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Escape flight planned ({action.reason}); inspect internalFleet before dispatch.",
+            )
+        return self._attach_observed_planet(res)

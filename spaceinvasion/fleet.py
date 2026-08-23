@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 import re
 import time
 from typing import Any, Deque, Mapping, Optional
+from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -75,6 +76,8 @@ class GalaxySlot:
     has_debris: bool = False
     is_spacia: bool = False
     spy_href: Optional[str] = None
+    has_asteroid: bool = False
+    attack_href: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -374,53 +377,487 @@ def _parse_coords_distance(a: str, b: str) -> float:
     return 1000.0 + 5.0 * abs(pa[2] - pb[2])
 
 
-def parse_galaxy_system_html(html: str, *, galaxy: int = 1, system: int = 1) -> tuple[GalaxySlot, ...]:
+_GALAXY_POS_CELL_RE = re.compile(r"^\s*(?:#\s*)?\[?\s*0?(\d{1,2})\s*\]?\.?\s*$")
+_GALAXY_BRACKETED_PAIR_RE = re.compile(r"\[\s*(\d{1,2})\s*[:/]\s*(\d{1,3})\s*\](?!\s*[:/]\s*\d)")
+_GALAXY_COORDS_TRIPLE_RE = re.compile(r"\b(\d{1,2}):(\d{1,3}):(\d{1,2})\b")
+_GALAXY_COORD_CONTEXT_PREFIX_RE = re.compile(
+    r"(?:Galaxy|Solar\s*System|System|Sonnensystem)\s*(?::\s*)?$",
+    re.IGNORECASE,
+)
+_GALAXY_PAIR_NOISE_PREFIX_RE = re.compile(
+    r"(?:server\s*time|time|clock|uhr|zeit|timer|countdown|eta|updated|stand|fields?|felder)\s*:?\s*$",
+    re.IGNORECASE,
+)
+_GALAXY_TRIPLE_NOISE_SUFFIX_RE = re.compile(
+    r"^\s*(?:utc|gmt|cet|cest|mez|mesz|uhr|am|pm)\b",
+    re.IGNORECASE,
+)
+_GALAXY_INACTIVE_TAG_RE = re.compile(r"\(\s*i+\s*\)", re.IGNORECASE)
+_GALAXY_YELLOW_HEX_RE = re.compile(
+    r"(?<![0-9a-f])#ff0(?![0-9a-f])|(?<![0-9a-f])#ffff00(?![0-9a-f])|rgb\(\s*255\s*,\s*255\s*,\s*0\s*\)",
+    re.IGNORECASE,
+)
+_GALAXY_RED_DARK_HEX_RE = re.compile(
+    r"(?<![0-9a-f])#(?:8b0000|990000|800000)(?![0-9a-f])",
+    re.IGNORECASE,
+)
+_GALAXY_GREEN_HEX_RE = re.compile(
+    r"(?<![0-9a-f])#(?:0f0|00ff00|008000)(?![0-9a-f])|rgb\(\s*0\s*,\s*(?:255|128)\s*,\s*0\s*\)",
+    re.IGNORECASE,
+)
+_GALAXY_BLUE_HEX_RE = re.compile(
+    r"(?<![0-9a-f])#(?:00f|0000ff|3399ff)(?![0-9a-f])|rgb\(\s*0\s*,\s*0\s*,\s*255\s*\)",
+    re.IGNORECASE,
+)
+_GALAXY_SRC_STATUS_RE = re.compile(
+    r"(?:galaxy_blue|galaxy_white|galaxy_green|galaxy_purple|galaxy_yellow|galaxy_dark_red|galaxy_darkred|dark_red|darkred|dark-red|vacation|urlaub|newbie|noob|spectral|operator|inaktiv|inactive)",
+    re.IGNORECASE,
+)
+_GALAXY_ATTR_BLUE_RE = re.compile(
+    r"(?:^|[^a-z0-9]|_)(?:galaxy_)?(?:blue|vacation|urlaub|newbie|noob)(?![a-z0-9])",
+    re.IGNORECASE,
+)
+_GALAXY_ATTR_WHITE_RE = re.compile(
+    r"(?:^|[^a-z0-9]|_)(?:galaxy_)?(?:white|spectral)(?![a-z0-9])",
+    re.IGNORECASE,
+)
+_GALAXY_ATTR_GREEN_RE = re.compile(
+    r"(?:^|[^a-z0-9]|_)(?:galaxy_)?(?:green|alliance|ally|turquoise)(?![a-z0-9])",
+    re.IGNORECASE,
+)
+_GALAXY_ATTR_PURPLE_RE = re.compile(
+    r"(?:^|[^a-z0-9]|_)(?:galaxy_)?(?:purple|pink|operator)(?![a-z0-9])",
+    re.IGNORECASE,
+)
+_GALAXY_ATTR_DARK_RED_RE = re.compile(
+    r"(?:^|[^a-z0-9]|_)(?:galaxy_)?dark[_-]?red(?![a-z0-9])",
+    re.IGNORECASE,
+)
+_GALAXY_ATTR_YELLOW_RE = re.compile(
+    r"(?:^|[^a-z0-9]|_)(?:galaxy_)?(?:yellow|inaktiv|inactive)(?![a-z0-9])|color\s*:\s*yellow(?![a-z0-9])",
+    re.IGNORECASE,
+)
+_GALAXY_TEXT_BLUE_RE = re.compile(
+    r"\b(?:vacation|urlaub|newbie|noob)\b|\(\s*[vun]\s*\)",
+    re.IGNORECASE,
+)
+_GALAXY_TEXT_WHITE_RE = re.compile(
+    r"\bspectral\b|\(\s*s\s*\)",
+    re.IGNORECASE,
+)
+_GALAXY_TEXT_PURPLE_RE = re.compile(
+    r"\boperator\b|\(\s*go\s*\)",
+    re.IGNORECASE,
+)
+_GALAXY_TEXT_DARK_RED_RE = re.compile(
+    r"\btoo\s+strong\b",
+    re.IGNORECASE,
+)
+_GALAXY_NON_NAME_TOKEN_RE = re.compile(
+    r"^(?:debris|rubble|trümmer|truemmer|recycle|spy|spio|espionage|probe|attack|angriff|colonize|message|msg|send\s+message|asteroid|\[a\]|a|-|—)$",
+    re.IGNORECASE,
+)
+_GALAXY_DEBRIS_NUMBER_RE = re.compile(r"^[\d.,\s]+(?:k|m)?\s*(?:debris|tf|metal|pig\s*iron)?$", re.IGNORECASE)
+
+
+def _valid_gal(val: Any) -> Optional[int]:
+    try:
+        n = int(str(val).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if 1 <= n <= 99 else None
+
+
+def _valid_sys(val: Any) -> Optional[int]:
+    try:
+        n = int(str(val).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if 1 <= n <= 999 else None
+
+
+def extract_galaxy_system_coords(
+    html: str,
+    *,
+    url: str = "",
+    default: tuple[int, int] = (1, 1),
+) -> tuple[int, int]:
+    """Infer `(galaxy, system)` from Galaxy HTML inputs/selects/headers or URL query params."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    gal_found: Optional[int] = None
+    sys_found: Optional[int] = None
+
+    # 1. Input fields (`galaxy`/`gal`, `system`/`sun`)
+    for inp in soup.find_all("input"):
+        name = str(inp.get("name") or inp.get("id") or "").strip().lower()
+        val = inp.get("value")
+        if val is None:
+            continue
+        if name in ("galaxy", "gal") and gal_found is None:
+            gal_found = _valid_gal(val)
+        elif name in ("system", "sun") and sys_found is None:
+            sys_found = _valid_sys(val)
+
+    # 2. Selected <option> inside <select name="galaxy|gal|system|sun">
+    if gal_found is None or sys_found is None:
+        for sel in soup.find_all("select"):
+            name = str(sel.get("name") or sel.get("id") or "").strip().lower()
+            opt = sel.find("option", selected=True) or sel.find("option", attrs={"selected": True})
+            if opt is None:
+                continue
+            raw_val = opt.get("value") if opt.get("value") is not None else opt.get_text(strip=True)
+            if name in ("galaxy", "gal") and gal_found is None:
+                gal_found = _valid_gal(raw_val)
+            elif name in ("system", "sun") and sys_found is None:
+                sys_found = _valid_sys(raw_val)
+
+    if gal_found is not None and sys_found is not None:
+        return gal_found, sys_found
+
+    # 3a. Header text (`Galaxy/System [GG:SSS]` or `System: [GG:SSS]` or `System GG:SSS`)
+    text_parts: list[str] = []
+    link_spans: list[tuple[int, int]] = []
+    pos = 0
+    last_a_id: Optional[int] = None
+    for s in soup.strings:
+        cleaned = " ".join(str(s).split())
+        if not cleaned:
+            continue
+        a_tag = s.find_parent("a")
+        a_id = id(a_tag) if a_tag is not None else None
+        if text_parts:
+            pos += 1
+        start = pos
+        end = start + len(cleaned)
+        text_parts.append(cleaned)
+        pos = end
+        if a_id is not None:
+            if link_spans and last_a_id == a_id:
+                prev_start, _ = link_spans[-1]
+                link_spans[-1] = (prev_start, end)
+            else:
+                link_spans.append((start, end))
+        last_a_id = a_id
+    text = " ".join(text_parts)
+    m_hdr = re.search(
+        r"(?:Galaxy|Solar\s*System|System|Sonnensystem)\s*(?::\s*)?\[?\s*(\d{1,2})\s*[:/]\s*(\d{1,3})(?!\d)\s*\]?(?!\s*[:/]\s*\d)",
+        text,
+        re.IGNORECASE,
+    )
+    if m_hdr:
+        hg = _valid_gal(m_hdr.group(1))
+        hs = _valid_sys(m_hdr.group(2))
+        if hg is not None and hs is not None:
+            return (gal_found or hg), (sys_found or hs)
+
+    # 3b. Explicit bracketed `[GG:SSS]` / `[GG/SSS]`
+    for m_br in _GALAXY_BRACKETED_PAIR_RE.finditer(text):
+        if _GALAXY_PAIR_NOISE_PREFIX_RE.search(text[: m_br.start()]):
+            continue
+        hg = _valid_gal(m_br.group(1))
+        hs = _valid_sys(m_br.group(2))
+        if hg is not None and hs is not None:
+            return (gal_found or hg), (sys_found or hs)
+
+    # 4. High-confidence `GG:SSS:PP` (`1 <= PP <= 16`) inside clean <a>, bracketed, 3-digit system, coord-context, or >=2 occurrences
+    in_link_set: set[tuple[int, int]] = set()
+    clean_triples: list[tuple[tuple[int, int], bool, bool, bool, bool]] = []
+    clean_triple_counts: Counter[tuple[int, int]] = Counter()
+    for m_tr in _GALAXY_COORDS_TRIPLE_RE.finditer(text):
+        tg = _valid_gal(m_tr.group(1))
+        ts = _valid_sys(m_tr.group(2))
+        tp = int(m_tr.group(3))
+        if tg is None or ts is None or not (1 <= tp <= 16):
+            continue
+        is_noise = bool(
+            _GALAXY_PAIR_NOISE_PREFIX_RE.search(text[: m_tr.start()])
+            or _GALAXY_TRIPLE_NOISE_SUFFIX_RE.match(text[m_tr.end() :])
+        )
+        if is_noise:
+            continue
+        key = (tg, ts)
+        clean_triple_counts[key] += 1
+        m_start, m_end = m_tr.start(), m_tr.end()
+        is_in_link = any(s_a <= m_start and m_end <= e_a for s_a, e_a in link_spans)
+        if is_in_link:
+            in_link_set.add(key)
+        before_ch = text[m_start - 1] if m_start > 0 else ""
+        after_ch = text[m_end] if m_end < len(text) else ""
+        is_bracketed = before_ch == "[" and after_ch == "]"
+        is_three_digit_sys = len(m_tr.group(2)) == 3
+        has_coord_context = bool(_GALAXY_COORD_CONTEXT_PREFIX_RE.search(text[:m_start]))
+        clean_triples.append((key, is_in_link, is_bracketed, is_three_digit_sys, has_coord_context))
+
+    strong_triple_counts: Counter[tuple[int, int]] = Counter()
+    for key, is_in_link, is_bracketed, is_three_digit_sys, has_coord_context in clean_triples:
+        if is_in_link or key in in_link_set or is_bracketed or is_three_digit_sys or has_coord_context:
+            strong_triple_counts[key] += 1
+
+    for key, cnt in clean_triple_counts.items():
+        if cnt >= 2 and key not in strong_triple_counts:
+            strong_triple_counts[key] = cnt
+
+    if strong_triple_counts:
+        (mg, ms), _ = strong_triple_counts.most_common(1)[0]
+        return (gal_found or mg), (sys_found or ms)
+
+    # 5. URL query parameters (`galaxy`/`gal`, `system`/`sun`)
+    if url:
+        qs = parse_qs(urlparse(url).query)
+        if gal_found is None:
+            for key in ("galaxy", "gal"):
+                if key in qs and qs[key]:
+                    gal_found = _valid_gal(qs[key][0])
+                    if gal_found is not None:
+                        break
+        if sys_found is None:
+            for key in ("system", "sun"):
+                if key in qs and qs[key]:
+                    sys_found = _valid_sys(qs[key][0])
+                    if sys_found is not None:
+                        break
+        if gal_found is not None and sys_found is not None:
+            return gal_found, sys_found
+
+    return (
+        gal_found if gal_found is not None else default[0],
+        sys_found if sys_found is not None else default[1],
+    )
+
+
+def extract_galaxy_coords_from_html(
+    html: str,
+    url: str = "",
+    *,
+    default: tuple[int, int] = (1, 1),
+) -> tuple[int, int]:
+    """Alias for `extract_galaxy_system_coords` supporting positional `url`."""
+    return extract_galaxy_system_coords(html, url=url, default=default)
+
+
+def _extract_action_href_from_el(el: Any) -> str:
+    href = str(el.get("href") or "").strip()
+    onclick = str(el.get("onclick") or "").strip()
+    if href and href not in ("#", "javascript:void(0)", "javascript:void(0);", "javascript:;"):
+        return href
+    if onclick:
+        m_url = re.search(r"['\"]([^'\"]*indexInternal\.es[^'\"]*)['\"]", onclick, re.IGNORECASE)
+        if m_url:
+            return m_url.group(1)
+        return onclick
+    return href
+
+
+def _extract_slot_attr_blobs(container: Any) -> tuple[str, str]:
+    style_parts: list[str] = []
+    semantic_parts: list[str] = []
+    if container is None:
+        return "", ""
+    nodes = [container, *container.find_all(True)]
+    for el in nodes:
+        cls = el.get("class")
+        if cls:
+            if isinstance(cls, (list, tuple)):
+                style_parts.extend(str(c) for c in cls if c)
+            else:
+                style_parts.append(str(cls))
+        for attr in ("style", "color", "data-status", "data-color", "data-state"):
+            val = el.get(attr)
+            if val:
+                style_parts.append(str(val))
+        src = el.get("src")
+        if src:
+            for tok in _GALAXY_SRC_STATUS_RE.findall(str(src)):
+                style_parts.append(tok)
+        for attr in ("title", "alt"):
+            val = el.get(attr)
+            if val:
+                semantic_parts.append(str(val))
+    return " ".join(style_parts).lower(), " ".join(semantic_parts).lower()
+
+
+def _classify_slot_status(
+    *,
+    occupied: bool,
+    is_spacia: bool,
+    row_html: str,
+    row_text: str,
+    style_attrs: Optional[str] = None,
+    semantic_attrs: Optional[str] = None,
+) -> str:
+    if not occupied:
+        return "free"
+    if is_spacia:
+        return "yellow"
+    if style_attrs is None or semantic_attrs is None:
+        frag = BeautifulSoup(row_html or "", "html.parser")
+        parsed_style, parsed_semantic = _extract_slot_attr_blobs(frag)
+        if style_attrs is None:
+            style_attrs = parsed_style
+        if semantic_attrs is None:
+            semantic_attrs = parsed_semantic
+    semantic_text = f"{row_text or ''} {semantic_attrs}".lower()
+    if (
+        _GALAXY_ATTR_BLUE_RE.search(style_attrs)
+        or _GALAXY_BLUE_HEX_RE.search(style_attrs)
+        or _GALAXY_TEXT_BLUE_RE.search(semantic_text)
+    ):
+        return "blue"
+    if _GALAXY_ATTR_WHITE_RE.search(style_attrs) or _GALAXY_TEXT_WHITE_RE.search(semantic_text):
+        return "white"
+    if _GALAXY_ATTR_GREEN_RE.search(style_attrs) or _GALAXY_GREEN_HEX_RE.search(style_attrs):
+        return "green"
+    if _GALAXY_ATTR_PURPLE_RE.search(style_attrs) or _GALAXY_TEXT_PURPLE_RE.search(semantic_text):
+        return "purple"
+    if (
+        _GALAXY_ATTR_DARK_RED_RE.search(style_attrs)
+        or _GALAXY_RED_DARK_HEX_RE.search(style_attrs)
+        or _GALAXY_TEXT_DARK_RED_RE.search(semantic_text)
+    ):
+        return "dark_red"
+    if (
+        _GALAXY_ATTR_YELLOW_RE.search(style_attrs)
+        or _GALAXY_YELLOW_HEX_RE.search(style_attrs)
+        or _GALAXY_INACTIVE_TAG_RE.search(semantic_text)
+    ):
+        return "yellow"
+    return "light_red"
+
+
+def _extract_slot_links(container: Any) -> tuple[Optional[str], Optional[str]]:
+    spy_href: Optional[str] = None
+    attack_href: Optional[str] = None
+    for el in container.find_all(["a", "button", "span", "img"]):
+        if el.name not in ("a", "button") and not el.get("onclick"):
+            continue
+        href = str(el.get("href") or "")
+        onclick = str(el.get("onclick") or "")
+        title = str(el.get("title") or "")
+        txt = el.get_text(" ", strip=True)
+        img_alts = " ".join(str(img.get("alt") or img.get("title") or img.get("src") or "") for img in el.find_all("img"))
+        blob = f"{href} {onclick} {title} {txt} {img_alts}".lower()
+        if spy_href is None and (
+            any(tok in blob for tok in ("spy", "spio", "espionage", "probe", "s10", "mission=5", "typ=5"))
+        ):
+            val = _extract_action_href_from_el(el)
+            if val:
+                spy_href = val
+        if attack_href is None and (
+            any(tok in blob for tok in ("attack", "angriff", "mission=1", "typ=1"))
+        ):
+            val = _extract_action_href_from_el(el)
+            if val:
+                attack_href = val
+    return spy_href, attack_href
+
+
+def _is_non_name_cell(cell: Any, cell_text: str) -> bool:
+    if not cell_text:
+        return True
+    cls = " ".join(str(c) for c in (cell.get("class") or ())).lower()
+    if any(tok in cls for tok in ("debris", "tf", "action", "actions", "icon", "img", "thumb", "asteroid", "moon")):
+        return True
+    low = cell_text.strip().lower()
+    if _GALAXY_NON_NAME_TOKEN_RE.match(low):
+        return True
+    if _GALAXY_DEBRIS_NUMBER_RE.match(low):
+        return True
+    # Pure action cell where all visible text comes from Spy/Attack/Colonize/Recycle/Msg buttons
+    links = cell.find_all(["a", "button"])
+    if links:
+        link_texts = [a.get_text(" ", strip=True) for a in links if a.get_text(" ", strip=True)]
+        if link_texts and all(_GALAXY_NON_NAME_TOKEN_RE.match(lt.lower()) for lt in link_texts):
+            remainder = cell_text
+            for lt in link_texts:
+                remainder = remainder.replace(lt, " ")
+            if not re.sub(r"[\s|/,;\-\[\]()]+", "", remainder):
+                return True
+    return False
+
+
+def parse_galaxy_system_html(
+    html: str,
+    *,
+    galaxy: Optional[int] = None,
+    system: Optional[int] = None,
+    url: str = "",
+) -> tuple[GalaxySlot, ...]:
     """Parse galaxy system rows for status colors, Spacia flags, empty slots, and debris."""
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html or "", "html.parser")
+    if galaxy is None or system is None:
+        det_gal, det_sys = extract_galaxy_system_coords(html, url=url, default=(1, 1))
+        gal = det_gal if galaxy is None else int(galaxy)
+        sys_num = det_sys if system is None else int(system)
+    else:
+        gal = int(galaxy)
+        sys_num = int(system)
+
     slots: list[GalaxySlot] = []
     seen_pos: set[int] = set()
 
     for tr in soup.find_all("tr"):
         tds = tr.find_all("td", recursive=False)
-        if len(tds) < 3:
+        if len(tds) < 2:
             continue
-        pos_txt = tds[0].get_text(" ", strip=True)
-        m_pos = re.fullmatch(r"(\d{1,2})", pos_txt)
-        if not m_pos:
-            continue
-        pos = int(m_pos.group(1))
-        if not (1 <= pos <= 16) or pos in seen_pos:
+        pos: Optional[int] = None
+        pos_idx = 0
+        raw_attr_pos = tr.get("data-pos") or tr.get("data-pla")
+        if raw_attr_pos is not None:
+            m_attr = _GALAXY_POS_CELL_RE.match(str(raw_attr_pos))
+            if m_attr:
+                cand = int(m_attr.group(1))
+                if 1 <= cand <= 16:
+                    pos = cand
+                    pos_idx = -1
+        if pos is None:
+            for idx in range(min(2, len(tds))):
+                pos_txt = tds[idx].get_text(" ", strip=True)
+                m_pos = _GALAXY_POS_CELL_RE.match(pos_txt)
+                if m_pos:
+                    cand = int(m_pos.group(1))
+                    if 1 <= cand <= 16:
+                        pos = cand
+                        pos_idx = idx
+                        break
+                elif idx == 0 and pos_txt:
+                    # First cell has non-empty non-position text -> not a slot row
+                    break
+        if pos is None or pos in seen_pos:
             continue
         seen_pos.add(pos)
 
+        data_cells = tds[pos_idx + 1 :] if pos_idx >= 0 else tds
+        texts: list[str] = []
+        for cell in data_cells:
+            txt = " ".join(cell.get_text(" ", strip=True).split())
+            if _is_non_name_cell(cell, txt):
+                continue
+            texts.append(txt)
+
+        planet_name = texts[0] if len(texts) >= 1 else ""
+        owner = texts[1] if len(texts) >= 2 else ""
+
         row_html = str(tr).lower()
         row_text = " ".join(tr.get_text(" ", strip=True).split())
-        owner = ""
-        planet_name = ""
-        if len(tds) >= 3:
-            planet_name = tds[1].get_text(" ", strip=True)
-            owner = tds[2].get_text(" ", strip=True)
-
-        status_color = "free" if not (planet_name or owner) else "light_red"
-        for color_key, tokens in (
-            ("yellow", ("yellow", "inaktiv", "inactive", "spacia", "#ff0", "#ffff00")),
-            ("dark_red", ("darkred", "dark_red", "too strong")),
-            ("blue", ("blue", "vacation", "urlaub", "newbie")),
-            ("green", ("green", "alliance", "ally")),
-            ("white", ("white", "spectral")),
-            ("purple", ("purple", "pink", "operator")),
-        ):
-            if any(tok in row_html for tok in tokens):
-                status_color = color_key
-                break
-
-        has_debris = any(tok in row_html for tok in ("debris", "trümmer", "rubble", "recycle"))
+        spy_href, attack_href = _extract_slot_links(tr)
+        has_debris = any(tok in row_html for tok in ("debris", "trümmer", "truemmer", "rubble", "recycle"))
+        has_asteroid = bool(re.search(r"\[\s*a\s*\]|\basteroid\b", row_text, re.IGNORECASE) or tr.select(".asteroid, [class*='asteroid']"))
         is_spacia = "spacia" in row_text.lower() or "spacia" in row_html
-        if is_spacia:
-            status_color = "yellow"
+        if is_spacia and planet_name and not owner:
+            owner = "Spacia"
 
-        spy_a = tr.select_one('a[href*="Spy"], a[href*="spio"], a[href*="espionage"]')
-        coords = f"{galaxy:02d}:{system:03d}:{pos:02d}"
+        occupied = bool(planet_name or owner or spy_href or attack_href)
+        style_attrs, semantic_attrs = _extract_slot_attr_blobs(tr)
+        status_color = _classify_slot_status(
+            occupied=occupied,
+            is_spacia=is_spacia,
+            row_html=row_html,
+            row_text=row_text,
+            style_attrs=style_attrs,
+            semantic_attrs=semantic_attrs,
+        )
+
+        coords = f"{gal:02d}:{sys_num:03d}:{pos:02d}"
         slots.append(
             GalaxySlot(
                 coords=coords,
@@ -430,9 +867,88 @@ def parse_galaxy_system_html(html: str, *, galaxy: int = 1, system: int = 1) -> 
                 status_color=status_color,
                 has_debris=has_debris,
                 is_spacia=is_spacia,
-                spy_href=spy_a.get("href") if spy_a else None,
+                spy_href=spy_href,
+                has_asteroid=has_asteroid,
+                attack_href=attack_href,
             )
         )
+
+    # Fallback for Modern/3D div/li slot cards when no table rows matched
+    if not slots:
+        for card in soup.select("[data-pos], [data-pla], .galaxy-row, .galaxy-slot, .galaxy_row, li.slot"):
+            raw_pos = card.get("data-pos") or card.get("data-pla")
+            pos: Optional[int] = None
+            if raw_pos is not None:
+                m_attr = _GALAXY_POS_CELL_RE.match(str(raw_pos))
+                if m_attr:
+                    cand = int(m_attr.group(1))
+                    if 1 <= cand <= 16:
+                        pos = cand
+            if pos is None:
+                pos_el = card.select_one(".pos, .position, .slot-pos, .gal-pos")
+                if pos_el is not None:
+                    m_pos = _GALAXY_POS_CELL_RE.match(pos_el.get_text(" ", strip=True))
+                    if m_pos:
+                        cand = int(m_pos.group(1))
+                        if 1 <= cand <= 16:
+                            pos = cand
+            if pos is None or pos in seen_pos:
+                continue
+            seen_pos.add(pos)
+
+            p_el = card.select_one(".planet, .planet-name, .planet_name, .slot-planet")
+            o_el = card.select_one(".owner, .player, .player-name, .player_name, .slot-owner")
+            planet_name = " ".join(p_el.get_text(" ", strip=True).split()) if p_el is not None else ""
+            owner = " ".join(o_el.get_text(" ", strip=True).split()) if o_el is not None else ""
+            if not planet_name and not owner:
+                raw_parts = [
+                    " ".join(ch.get_text(" ", strip=True).split())
+                    for ch in card.find_all(["span", "div"], recursive=False)
+                ]
+                clean_parts = [
+                    part
+                    for part in raw_parts
+                    if part and not _GALAXY_POS_CELL_RE.match(part) and not _GALAXY_NON_NAME_TOKEN_RE.match(part.lower())
+                ]
+                if len(clean_parts) >= 1:
+                    planet_name = clean_parts[0]
+                if len(clean_parts) >= 2:
+                    owner = clean_parts[1]
+
+            row_html = str(card).lower()
+            row_text = " ".join(card.get_text(" ", strip=True).split())
+            spy_href, attack_href = _extract_slot_links(card)
+            has_debris = any(tok in row_html for tok in ("debris", "trümmer", "truemmer", "rubble", "recycle"))
+            has_asteroid = bool(re.search(r"\[\s*a\s*\]|\basteroid\b", row_text, re.IGNORECASE) or card.select(".asteroid, [class*='asteroid']"))
+            is_spacia = "spacia" in row_text.lower() or "spacia" in row_html
+            if is_spacia and planet_name and not owner:
+                owner = "Spacia"
+
+            occupied = bool(planet_name or owner or spy_href or attack_href)
+            style_attrs, semantic_attrs = _extract_slot_attr_blobs(card)
+            status_color = _classify_slot_status(
+                occupied=occupied,
+                is_spacia=is_spacia,
+                row_html=row_html,
+                row_text=row_text,
+                style_attrs=style_attrs,
+                semantic_attrs=semantic_attrs,
+            )
+            coords = f"{gal:02d}:{sys_num:03d}:{pos:02d}"
+            slots.append(
+                GalaxySlot(
+                    coords=coords,
+                    position=pos,
+                    name=planet_name,
+                    owner=owner,
+                    status_color=status_color,
+                    has_debris=has_debris,
+                    is_spacia=is_spacia,
+                    spy_href=spy_href,
+                    has_asteroid=has_asteroid,
+                    attack_href=attack_href,
+                )
+            )
 
     return tuple(slots)
 
@@ -485,16 +1001,74 @@ def parse_spy_report_html(html: str, *, target_coords: str = "") -> SpyReport:
         if m_u:
             defense[dkey] = parse_si_int(m_u.group(1))
 
+    is_spacia = "spacia" in text.lower()
+    owner = "Spacia" if is_spacia else ""
+    if not owner:
+        m_own = re.search(
+            r"(?:Player|Owner|Spieler)\s*:\s*(.+?)(?=\s+(?:Resources|Pig\s+iron|Metal|Kryptonite|Spice|Fleet|Defense|Buildings|Approx|Dug|\d{1,2}:\d{1,3}:\d{1,2}|$)|$)",
+            text,
+            re.IGNORECASE,
+        )
+        if m_own:
+            owner = m_own.group(1).strip(" |:-")
+
     return SpyReport(
         target_coords=coords,
-        owner="Spacia" if "spacia" in text.lower() else "",
+        owner=owner,
         resources=res,
         fleet=fleet,
         defense=defense,
         dug_in=dug_in,
         uninhabited_fields=uninhabited_fields,
-        is_spacia="spacia" in text.lower(),
+        is_spacia=is_spacia,
     )
+
+
+def parse_spy_messages_html(html: str) -> tuple[SpyReport, ...]:
+    """Parse multiple espionage reports from `internalMessages&type=spio` HTML."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    keywords = ("pig iron", "metal", "kryptonite", "spice", "fields")
+
+    def _looks_like_spy_block(txt: str) -> bool:
+        low = txt.lower()
+        return bool(_GALAXY_COORDS_TRIPLE_RE.search(txt)) and any(k in low for k in keywords)
+
+    blocks: list[str] = []
+    # 1. Explicit message containers
+    containers = soup.select("div.message, div.msg, tr.message, tr.msg, tr[id^='msg'], div[id^='msg']")
+    for el in containers:
+        if _looks_like_spy_block(el.get_text(" ", strip=True)):
+            blocks.append(str(el))
+
+    # 2. Fallback: innermost table rows / divs containing spy blocks without nested spy containers
+    if not blocks:
+        candidates = soup.find_all(["tr", "div", "li"])
+        for el in candidates:
+            txt = el.get_text(" ", strip=True)
+            if not _looks_like_spy_block(txt):
+                continue
+            has_child_spy = any(
+                child is not el and _looks_like_spy_block(child.get_text(" ", strip=True))
+                for child in el.find_all(["tr", "div", "li"])
+            )
+            if not has_child_spy:
+                blocks.append(str(el))
+
+    # 3. Last resort: single report in whole page text
+    if not blocks and _looks_like_spy_block(soup.get_text(" ", strip=True)):
+        blocks.append(html)
+
+    reports: list[SpyReport] = []
+    seen_coords: set[str] = set()
+    for blk in blocks:
+        rep = parse_spy_report_html(blk)
+        if not rep.target_coords:
+            continue
+        if rep.target_coords in seen_coords:
+            continue
+        seen_coords.add(rep.target_coords)
+        reports.append(rep)
+    return tuple(reports)
 
 
 def score_raid_target(
