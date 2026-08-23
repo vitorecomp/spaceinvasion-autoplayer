@@ -52,6 +52,7 @@ WATCH_PATHS = (
     Path("spaceinvasion/state.py"),
     Path("spaceinvasion/storage.py"),
     Path("spaceinvasion/strategy.py"),
+    Path("spaceinvasion/optimizer.py"),
     Path("spaceinvasion/client.py"),
     Path("spaceinvasion/executor.py"),
     Path("spaceinvasion/api_server.py"),

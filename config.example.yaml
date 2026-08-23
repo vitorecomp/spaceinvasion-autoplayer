@@ -2,6 +2,13 @@
 # Copy to `config.yaml` and customize without touching `.env` credentials.
 
 playstyle: fleeter                # "fleeter" | "hybrid" | "miner"
+planner_mode: priority            # "priority" (default) | "ga_nn" (GA + Neural Network optimizer)
+ga_population_size: 24            # Genetic algorithm population size (4..200)
+ga_generations: 12                # Genetic algorithm generations (1..200)
+ga_horizon_steps: 6               # Multi-step forward simulation horizon (1..24)
+ga_mutation_rate: 0.25            # Per-gene mutation rate (0.0..1.0)
+ga_nn_weight: 0.35                # Neural value guidance weight (0.0..1.0)
+ga_seed: null                     # Optional deterministic PRNG seed (integer or null)
 merchant_mode: false              # Set true if Merchant assistant is active (skips Blast furnace post-tutorial)
 auto_throttle_blast_furnace: true # Auto-pause Blast furnace (0%) when Pig iron is the bottleneck; resume (100%) when Metal is needed
 allow_research: true              # Auto-queue global research when Research lab is ready
