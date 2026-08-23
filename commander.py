@@ -375,8 +375,9 @@ def run_commander_tick(
                 )
                 if isinstance(sync_res, Mapping) and isinstance(sync_res.get("state"), Mapping):
                     state = game_state_from_dict(sync_res["state"])
-            except (requests.RequestException, GameApiError):
-                pass
+            except (requests.RequestException, GameApiError) as sync_exc:
+                if compute_rate_limit_backoff(_safe_cmd_str(sync_exc)) is not None:
+                    raise
     actions = plan_actions(
         state,
         config=cfg,
@@ -629,11 +630,14 @@ def main(argv: list[str] | None = None) -> int:
                         and normalize_planet_type(planet) not in ("asteroid", "raid")
                         and planet.building_level(2) >= 1
                     ):
+                        raw_r2 = (planet.economy_rates or {}).get("resource2", 100)
+                        if isinstance(raw_r2, str) and raw_r2.strip().endswith("%"):
+                            raw_r2 = raw_r2.strip()[:-1].strip()
                         b2_pct = max(
                             0,
                             min(
                                 100,
-                                _safe_cmd_int((planet.economy_rates or {}).get("resource2", 100), 100),
+                                _safe_cmd_int(raw_r2, 100),
                             ),
                         )
                         metal_tag = f" | MetalProd={'ON' if b2_pct > 0 else 'OFF'}({b2_pct}%)"

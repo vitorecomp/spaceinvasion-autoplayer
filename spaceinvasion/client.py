@@ -581,7 +581,7 @@ def _normalize_sid_query(raw_sid: str) -> str:
 
 
 _EMPTY_PAGEVIEW_MODAL_RE = re.compile(
-    r"made\s+more\s+than\s*<span[^>]*id=[\"']?pageview-amount[\"']?[^>]*>\s*</span>\s*page\s+views",
+    r"made\s+more\s+than\s*<span\b[^>]*\bid=[\"']?pageview-amount[\"']?[^>]*>(?:\s|&nbsp;|&#160;|0|-)*</span>\s*page\s+views",
     re.IGNORECASE,
 )
 
@@ -1187,7 +1187,7 @@ class GameBrowserClient:
         self._switch_frame("F_Hauptframe")
         gal_inp = None
         sys_inp = None
-        for name in ("galaxy", "gal"):
+        for name in ("galaxy", "gal", "g"):
             try:
                 els = self.driver.find_elements(By.NAME, name)
                 if els:
@@ -1195,7 +1195,7 @@ class GameBrowserClient:
                     break
             except Exception:
                 pass
-        for name in ("system", "sun"):
+        for name in ("system", "sun", "s"):
             try:
                 els = self.driver.find_elements(By.NAME, name)
                 if els:
@@ -1254,10 +1254,14 @@ class GameBrowserClient:
                 'form:has(input[name="galaxy"]) button[type="submit"]',
                 'form:has(input[name="gal"]) input[type="submit"]',
                 'form:has(input[name="gal"]) button[type="submit"]',
+                'form:has(input[name="g"]) input[type="submit"]',
+                'form:has(input[name="g"]) button[type="submit"]',
                 'form:has(input[name="system"]) input[type="submit"]',
                 'form:has(input[name="system"]) button[type="submit"]',
                 'form:has(input[name="sun"]) input[type="submit"]',
                 'form:has(input[name="sun"]) button[type="submit"]',
+                'form:has(input[name="s"]) input[type="submit"]',
+                'form:has(input[name="s"]) button[type="submit"]',
                 'form input[type="submit"]',
                 'form button[type="submit"]',
                 'input[type="submit"]',
@@ -1748,10 +1752,29 @@ class GameBrowserClient:
                 normalize_planet_type(cur_ap) not in ("asteroid", "raid")
                 and cur_ap.building_level(2) >= 1
             ):
-                ticker = parse_ticker_rates(b_html or home_html or raw_main_html)
+                ticker_src = b_html or home_html
+                if not ticker_src and raw_main_html:
+                    raw_sel = self._extract_selected_planet_id(raw_main_html, main_url)
+                    if raw_sel is None or raw_sel == cur_ap.planet_id:
+                        ticker_src = raw_main_html
+                ticker = parse_ticker_rates(ticker_src)
                 if "metal" in ticker:
                     econ = dict(cur_ap.economy_rates or {})
-                    if ticker["metal"] <= 0.0 and cur_ap.energy.produced > 0:
+                    metal_storage_full = (
+                        cur_ap.storage.metal > 0
+                        and cur_ap.resources.metal >= cur_ap.storage.metal
+                    )
+                    has_pig_feed = (
+                        cur_ap.resources.pig_iron > 0
+                        or ticker.get("pig_iron", 0.0) > 0.0
+                        or cur_ap.building_level(1) >= 1
+                    )
+                    if (
+                        ticker["metal"] <= 0.0
+                        and cur_ap.energy.produced > 0
+                        and not metal_storage_full
+                        and has_pig_feed
+                    ):
                         if econ.get("resource2") != 0:
                             econ["resource2"] = 0
                             planets[active_idx] = replace(cur_ap, economy_rates=econ)

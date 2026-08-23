@@ -2394,6 +2394,110 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             rec = json.loads(j_txt.strip())
             self.assertEqual(rec["component"], "test.comp")
 
+        # 4. Edge cases: &nbsp;/0 modal placeholders, HTML <input> quote/unquoted redaction,
+        #    2D `g`/`s` form fallback, full-warehouse `#ress` ticker guard, & commander sync_economy 429 propagation
+        self.assertFalse(
+            is_server_rate_limit_html(
+                '<div>You\'ve made more than <span class="amt" id="pageview-amount">&nbsp;</span> page views.</div>'
+            )
+        )
+        self.assertFalse(
+            is_server_rate_limit_html(
+                '<div>You\'ve made more than <span id="pageview-amount">0</span> page views.</div>'
+            )
+        )
+        from spaceinvasion.logging_utils import redact_sensitive
+
+        self.assertEqual(
+            redact_sensitive('<input type="password" name="password" value="p@ss\'word123">'),
+            '<input type="password" name="password" value="REDACTED">',
+        )
+        self.assertEqual(
+            redact_sensitive("<input type=hidden name=sid value=abcdef0123456789/>"),
+            "<input type=hidden name=sid value=REDACTED/>",
+        )
+        self.assertEqual(
+            redact_sensitive('<input name="has_sid" value="1">'),
+            '<input name="has_sid" value="1">',
+        )
+
+        # Full Metal warehouse (`metal >= storage.metal`) must NOT flip `resource2=100` to `0` on `#metall=0`
+        from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
+
+        p_full_met = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=50,
+            fields_max=230,
+            resources=Resources(50_000, 100_000, 50_000, 20_000),
+            storage=Resources(200_000, 100_000, 200_000, 200_000),
+            energy=EnergyBalance(3000, 2000),
+            buildings={"b1": 18, "b2": 18, "b5": 20},
+            economy_rates={"resource2": 100},
+        )
+        st_full = GameState(31, 1, "u", 1000.0, (p_full_met,), active_planet_id=12476)
+        ress_zero_html = (
+            '<form id="ress"><input type="hidden" id="roheisen" value="25.0"/>'
+            '<input type="hidden" id="metall" value="0"/></form>'
+            "<script>SI_TPL={planetID:12476};</script>"
+        )
+        drv_full = MagicMock()
+        drv_full.execute_script.return_value = "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalHome"
+        drv_full.page_source = ress_zero_html
+        cli_full = GameBrowserClient(drv_full, min_nav_delay=(0.0, 0.0))
+        with (
+            patch.object(cli_full, "ensure_in_game"),
+            patch.object(cli_full, "read_planets_overview", return_value=st_full),
+            patch.object(cli_full, "read_menu_status", return_value=({}, 100, 10)),
+            patch.object(cli_full, "_switch_frame"),
+        ):
+            snap_full = cli_full.read_full_snapshot(
+                include_buildings=False,
+                include_research=False,
+                include_shipyard=False,
+                return_home=False,
+            )
+            self.assertEqual(snap_full.planets[0].economy_rates.get("resource2"), 100)
+
+            p_not_full = p_full_met.__class__(
+                **{**p_full_met.__dict__, "resources": Resources(50_000, 20_000, 50_000, 20_000)}
+            )
+            cli_full.read_planets_overview.return_value = GameState(
+                31, 1, "u", 1000.0, (p_not_full,), active_planet_id=12476
+            )
+            snap_paused = cli_full.read_full_snapshot(
+                include_buildings=False,
+                include_research=False,
+                include_shipyard=False,
+                return_home=False,
+            )
+            self.assertEqual(snap_paused.planets[0].economy_rates.get("resource2"), 0)
+
+        # Commander `sync_economy` propagates HTTP 429 rate-limit instead of swallowing it
+        import commander
+        from spaceinvasion.commander_client import GameApiError
+        from dataclasses import asdict
+
+        fake_api = MagicMock()
+        fake_api.get_state.return_value = GameState(
+            31, 1, "u", 1000.0, (p_not_full,), active_planet_id=12476
+        )
+        fake_api.send_command.side_effect = GameApiError(
+            "HTTP 429: SpaceInvasion per-minute page-view throttle hit; retry after 45.0s."
+        )
+        with self.assertRaises(GameApiError):
+            commander.run_commander_tick(
+                fake_api,
+                live=True,
+                max_actions=1,
+                include_buildings=True,
+                economy_sync_timestamps={12476: 0.0},
+            )
+        _ = asdict(p_not_full)
+
 
 if __name__ == "__main__":
     unittest.main()

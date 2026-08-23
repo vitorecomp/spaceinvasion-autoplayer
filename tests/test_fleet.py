@@ -912,6 +912,35 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual(slots[15].owner, "Sigilo_respec")
         self.assertTrue(slots[15].has_asteroid)
 
+        # Edge cases: JSON-quoted SI_TPL.galaxy scoped past unrelated JS, data-pos on planet-hit,
+        # parenthesized planet names, (i) suffix outside (owner), #496c2a green, and spaced opacity: 0.6
+        html_2d_edge = """
+        <html><body>
+        <script>window.otherCfg={galaxy:1,sun:9};SI_TPL.galaxy={"sid":"abc","galaxy":"3","sun":"142"};</script>
+        <div class="planet-hit" data-pos="1" data-planet="20001">
+          <div><span style="color:#cacaca;">X: 110 Y: 40</span><div>1</div></div>
+        </div>
+        <div class="planet-hit" data-pos="4" data-planet="20004">
+          <div><span><b>Colony (Main)</b><br/>(RealOwner) (i)</span><div>4</div></div>
+        </div>
+        <div class="planet-hit" data-planet="20007">
+          <div><span style="color:#496c2a;"><b>AllyBase</b><br/>(Mate)</span><div>7</div></div>
+        </div>
+        <div class="planet-hit" data-planet="20009">
+          <div><span style="opacity: 0.6;"><b>GhostWorld</b><br/>(SpecUser)</span><div>9</div></div>
+        </div>
+        </body></html>
+        """
+        self.assertEqual(extract_galaxy_system_coords(html_2d_edge), (3, 142))
+        edge_slots = {s.position: s for s in parse_galaxy_system_html(html_2d_edge)}
+        self.assertEqual(edge_slots[1].status_color, "free")
+        self.assertEqual(edge_slots[4].name, "Colony (Main)")
+        self.assertEqual(edge_slots[4].owner, "RealOwner")
+        self.assertEqual(edge_slots[4].status_color, "yellow")
+        self.assertEqual(edge_slots[4].coords, "03:142:04")
+        self.assertEqual(edge_slots[7].status_color, "green")
+        self.assertEqual(edge_slots[9].status_color, "white")
+
 
 if __name__ == "__main__":
     unittest.main()

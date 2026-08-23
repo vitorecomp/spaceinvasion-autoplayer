@@ -220,22 +220,42 @@ _SECRET_KV_RE = re.compile(
     rf"(?<![\w-]){_COMP_KV_KEY_RE}(?P<sep>{_KV_SEP_RE})(?:{_delim_val_pattern('kv')})",
     re.IGNORECASE,
 )
-_HTML_SECRET_INPUT_RE = re.compile(
-    rf"(?P<p1><input\b[^>]*?\bname=(?P<nq1>[\"']){_COMP_KEY_RE}(?P=nq1)[^>]*?\bvalue=(?P<vq1>[\"']))(?P<val1>[^\"']*)(?P<s1>(?P=vq1))"
-    rf"|"
-    rf"(?P<p2><input\b[^>]*?\bvalue=(?P<vq2>[\"']))(?P<val2>[^\"']*)(?P<m2>(?P=vq2)[^>]*?\bname=(?P<nq2>[\"'])(?P<key2>{_COMP_PREFIX_RE}(?:sid|password|passwd|cookie|api_key|api-key|secret|authorization))(?P=nq2))",
+_HTML_INPUT_TAG_RE = re.compile(r"<input\b[^>]*>", re.IGNORECASE)
+_HTML_INPUT_NAME_RE = re.compile(
+    r"""(?<![\w-])name\s*=\s*(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<uq>[^\s"'=<>`/]+))""",
+    re.IGNORECASE,
+)
+_HTML_INPUT_VALUE_RE = re.compile(
+    r"""(?P<prefix>(?<![\w-])value\s*=\s*)(?:"(?P<dq>[^"]+)"|'(?P<sq>[^']+)'|(?P<uq>[^\s"'=<>`]+?)(?=(?:\s|/>|>|$)))""",
     re.IGNORECASE,
 )
 
 
-def _sub_html_secret_input(match: re.Match[str]) -> str:
-    if match.group("p1") is not None:
-        if not is_secret_dict_key(match.group("key")):
-            return match.group(0)
-        return f"{match.group('p1')}REDACTED{match.group('s1')}"
-    if not is_secret_dict_key(match.group("key2")):
+def _sub_html_input_value(match: re.Match[str]) -> str:
+    prefix = match.group("prefix")
+    if match.group("dq") is not None:
+        return f'{prefix}"REDACTED"'
+    if match.group("sq") is not None:
+        return f"{prefix}'REDACTED'"
+    uq = match.group("uq") or ""
+    if uq in ('""', "''"):
         return match.group(0)
-    return f"{match.group('p2')}REDACTED{match.group('m2')}"
+    return f"{prefix}REDACTED"
+
+
+def _sub_html_secret_input(match: re.Match[str]) -> str:
+    tag = match.group(0)
+    m_name = _HTML_INPUT_NAME_RE.search(tag)
+    if m_name is None:
+        return tag
+    raw_key = m_name.group("dq")
+    if raw_key is None:
+        raw_key = m_name.group("sq")
+    if raw_key is None:
+        raw_key = m_name.group("uq") or ""
+    if not is_secret_dict_key(raw_key):
+        return tag
+    return _HTML_INPUT_VALUE_RE.sub(_sub_html_input_value, tag)
 
 
 def _sub_secret_json_kv(match: re.Match[str]) -> str:
@@ -306,7 +326,7 @@ def _redact_text(text: str) -> str:
         )
     ):
         return text
-    masked = _HTML_SECRET_INPUT_RE.sub(_sub_html_secret_input, text)
+    masked = _HTML_INPUT_TAG_RE.sub(_sub_html_secret_input, text) if "<input" in low else text
     masked = _SECRET_JSON_KV_RE.sub(_sub_secret_json_kv, masked)
     masked = _SECRET_URLENC_JSON_KV_RE.sub(_sub_secret_urlenc_json_kv, masked)
     masked = _SECRET_QUOTED_KV_RE.sub(_sub_secret_quoted, masked)
@@ -863,9 +883,13 @@ def append_crash_debug_log(
         with jsonl_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, allow_nan=False) + "\n")
 
+        comp_s = _safe_summary_text(record.get("component"), "")
+        evt_s = _safe_summary_text(record.get("event"), "")
+        rec_exc_type = _safe_summary_text(record.get("exc_type"), "")
+        rec_exc_msg = _safe_summary_text(record.get("exc_message"), "")
         header = redact_sensitive(
-            f"=== [{ts}] {component} :: {event}"
-            + (f" ({exc_type}: {exc_msg})" if exc_type else "")
+            f"=== [{ts}] {comp_s} :: {evt_s}"
+            + (f" ({rec_exc_type}: {rec_exc_msg})" if rec_exc_type else "")
             + " ===\n"
         )
         det_json = redact_sensitive(
