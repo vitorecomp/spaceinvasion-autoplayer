@@ -344,7 +344,7 @@ def _plan_tutorial_actions(
         if t.category == "research" and t.research_id:
             if t.current < t.target:
                 research_tasks.append(t)
-        elif t.building_id:
+        elif t.category == "building" and t.building_id:
             eff_progress = t.current + queued_counts.get(t.building_id, 0)
             if eff_progress < t.target:
                 building_tasks.append((t, eff_progress))
@@ -441,6 +441,81 @@ def _plan_tutorial_actions(
         )
 
     return actions
+
+
+def _plan_tutorial_fleet_milestones(
+    state: GameState,
+    active: PlanetState,
+    config: StrategyConfig,
+) -> list[PlannedAction]:
+    """Emit ship build or combat milestone hints for later tutorial steps (e.g. Tutorial 6/11)."""
+    if state.tutorial is None:
+        return []
+    tut = state.tutorial
+    out: list[PlannedAction] = []
+    ship_offers = _ship_offer_map(active)
+    for task in tut.tasks:
+        if task.completed:
+            continue
+        if task.category == "ship" and task.building_id is not None:
+            sid = int(task.building_id)
+            offer = ship_offers.get(sid)
+            if offer is not None:
+                cost = offer.cost
+                missing = active.resources.missing(cost)
+                can_exec = config.allow_shipyard and offer.can_build and active.resources.can_afford(cost)
+                out.append(
+                    PlannedAction(
+                        priority="P2",
+                        kind="BUILD_SHIP" if can_exec else "WAIT_RESOURCES",
+                        planet_id=active.planet_id,
+                        planet_coords=active.coords,
+                        target_id=sid,
+                        target_name=offer.name,
+                        target_level=1,
+                        cost=cost,
+                        missing=missing,
+                        reason=f"Tutorial {tut.step}/{tut.total_steps}: {task.description}",
+                        executable_now=can_exec,
+                    )
+                )
+            else:
+                from spaceinvasion.fleet import SHIP_SLUG_BY_KEY
+
+                slug = SHIP_SLUG_BY_KEY.get(f"s{sid}")
+                info = game_data.SHIPS.get(slug or "") if slug else None
+                cost = _resources_from_dict((info or {}).get("base_cost", {}))
+                out.append(
+                    PlannedAction(
+                        priority="P2",
+                        kind="WAIT_RESOURCES",
+                        planet_id=active.planet_id,
+                        planet_coords=active.coords,
+                        target_id=sid,
+                        target_name=task.building_name or f"Ship s{sid}",
+                        target_level=max(1, task.target - task.current),
+                        cost=cost,
+                        missing=active.resources.missing(cost),
+                        reason=f"Tutorial {tut.step}/{tut.total_steps}: {task.description}",
+                        executable_now=False,
+                    )
+                )
+        elif task.category == "milestone":
+            out.append(
+                PlannedAction(
+                    priority="P3",
+                    kind="TUTORIAL_TASK",
+                    planet_id=active.planet_id,
+                    planet_coords=active.coords,
+                    target_name=task.description,
+                    reason=(
+                        f"Tutorial {tut.step}/{tut.total_steps}: attack inactive yellow <40 pts "
+                        "in internalFleet (manual/guided step)"
+                    ),
+                    executable_now=False,
+                )
+            )
+    return out
 
 
 def _mine_payback_hours(
@@ -1012,17 +1087,25 @@ def _plan_blast_furnace_throttle(
     prio_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
     p_acts.sort(key=lambda a: prio_order.get(a.priority, 9))
 
-    blocking_on_pig = any(
-        a.kind == "WAIT_RESOURCES" and a.missing.pig_iron > 0 and a.missing.metal == 0
-        for a in p_acts[:2]
+    top_blocker = next((a for a in p_acts if a.kind == "WAIT_RESOURCES"), None)
+    top_needs_pig_only = (
+        top_blocker is not None
+        and top_blocker.missing.pig_iron > 0
+        and top_blocker.missing.metal == 0
     )
-    needs_metal = any(a.missing.metal > 0 for a in p_acts[:3])
+    top_needs_metal = (
+        top_blocker is not None
+        and top_blocker.missing.metal > 0
+        and (top_blocker.missing.pig_iron == 0 or planet.resources.pig_iron >= 2000)
+    )
+    any_needs_metal = any(a.missing.metal > 0 for a in p_acts[:3])
     metal_cap_pct = (planet.resources.metal / planet.storage.metal) if planet.storage.metal > 0 else 0.0
 
     if cur_b2_pct > 0:
-        if not needs_metal and (
-            blocking_on_pig
-            or (net_pig_at_100 < 0 and planet.resources.pig_iron < max(500.0, bf_pig_used_full * 0.5))
+        if top_needs_pig_only or (
+            not any_needs_metal
+            and net_pig_at_100 < 0
+            and planet.resources.pig_iron < max(500.0, bf_pig_used_full * 0.5)
         ):
             return PlannedAction(
                 priority="P1",
@@ -1038,7 +1121,7 @@ def _plan_blast_furnace_throttle(
                 ),
                 executable_now=True,
             )
-        if not needs_metal and (
+        if not any_needs_metal and (
             metal_cap_pct >= cfg.storage_warn_ratio
             or (net_pig_at_100 < 0 and planet.resources.pig_iron < bf_pig_used_full)
         ):
@@ -1058,8 +1141,8 @@ def _plan_blast_furnace_throttle(
             )
         return None
 
-    # Currently paused (0%): resume when Metal is needed or Pig iron is abundant
-    if needs_metal:
+    # Currently paused (0%): only resume when top priority needs Metal or Pig iron is abundant
+    if top_needs_metal or (not top_needs_pig_only and any_needs_metal and net_pig_at_100 >= 0):
         return PlannedAction(
             priority="P1",
             kind="THROTTLE_BUILDING",
@@ -1068,10 +1151,14 @@ def _plan_blast_furnace_throttle(
             target_id=BLAST_FURNACE,
             target_name="Blast furnace 100%",
             target_level=100,
-            reason="Metal needed for upcoming build/research: resume Blast furnace to 100%",
+            reason="Metal needed for next priority build/research: resume Blast furnace to 100%",
             executable_now=True,
         )
-    if planet.resources.pig_iron >= max(2500, planet.resources.metal * 2) and net_pig_at_100 >= 0:
+    if (
+        not top_needs_pig_only
+        and planet.resources.pig_iron >= max(5000, planet.resources.metal * 2)
+        and net_pig_at_100 >= 0
+    ):
         return PlannedAction(
             priority="P2",
             kind="THROTTLE_BUILDING",
@@ -1274,6 +1361,9 @@ def plan_actions(
         all_mines.sort(key=lambda pair: pair[0])
         plan.extend(act for _, act in all_mines)
         plan.extend(all_advisories)
+
+        if state.tutorial is not None and not state.tutorial.can_complete:
+            plan.extend(_plan_tutorial_fleet_milestones(state, active, cfg))
 
     # Bucket: Blast furnace (b2) 0% / 100% auto-throttling to protect Pig iron flow
     if cfg.auto_throttle_blast_furnace and not cfg.merchant_mode:

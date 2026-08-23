@@ -539,6 +539,69 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(th_resume[0].target_level, 100)
         self.assertTrue(th_resume[0].executable_now)
 
+        # Scenario 3: Hysteresis — if P1 blocker needs Pig iron (0 Metal) while b2 is already 0%,
+        # stay at 0% even if P2/P3 wants Metal (avoid 0% <-> 100% oscillation)
+        p_stay_paused = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=55,
+            fields_max=230,
+            resources=Resources(1300, 100, 9000, 800),
+            storage=Resources(100000, 100000, 100000, 100000),
+            energy=EnergyBalance(800, 770),
+            buildings={"b1": 12, "b2": 11, "b3": 11, "b4": 8, "b5": 13, "b7": 4},
+            economy_rates={"resource2": 0},
+        )
+        st_stay = GameState(31, 1, "u", 0.0, (p_stay_paused,), speedup_factor=10.0)
+        acts_stay = plan_actions(st_stay, config=StrategyConfig(auto_throttle_blast_furnace=True))
+        self.assertEqual(acts_stay[0].priority, "P1")
+        self.assertEqual(acts_stay[0].target_id, FUSION_PLANT)
+        self.assertFalse(any(a.kind == "THROTTLE_BUILDING" for a in acts_stay))
+
+    def test_tutorial_step6_plans_ship_and_milestone_alongside_economy(self) -> None:
+        p = _sample_planet(
+            resources=Resources(6000, 6000, 6000, 2000),
+            energy=EnergyBalance(400, 200),
+            buildings={"b1": 10, "b2": 8, "b3": 8, "b4": 6, "b5": 10, "b9": 2},
+            offers=(
+                BuildingOffer(1, "Pig iron mine", 10, 11, Resources(3000, 0, 1000, 0), True, "Build level 11", "h1"),
+            ),
+        )
+        p = PlanetState(
+            planet_id=p.planet_id,
+            name=p.name,
+            coords=p.coords,
+            planet_type=p.planet_type,
+            temperature=p.temperature,
+            fields_used=p.fields_used,
+            fields_max=p.fields_max,
+            resources=p.resources,
+            storage=p.storage,
+            energy=p.energy,
+            buildings=p.buildings,
+            building_offers=p.building_offers,
+            ship_offers=(
+                UnitOffer("ship", 1, "Small transport", 1, Resources(0, 3000, 3000, 0), True, "ship[1]"),
+            ),
+        )
+        tut = TutorialStatus(
+            step=6,
+            total_steps=11,
+            tasks=(
+                TutorialTask("Build a Small transport 1 / 2", "Small transport", 1, 1, 2, "ship"),
+                TutorialTask("Have a successful fight 0 / 1", "Have a successful fight", None, 0, 1, "milestone"),
+            ),
+        )
+        st = GameState(31, 1, "u", 0.0, (p,), tutorial=tut)
+        actions = plan_actions(st, config=StrategyConfig(allow_shipyard=True))
+        kinds = {a.kind for a in actions}
+        self.assertIn("BUILD_SHIP", kinds)
+        self.assertIn("TUTORIAL_TASK", kinds)
+        self.assertIn("BUILD", kinds)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -184,6 +184,7 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertIn("ranking", dash)
             self.assertIn("buildings_eta", dash)
             self.assertIn("combat", dash)
+            self.assertIn("db_summary", dash)
             self.assertEqual(len(dash["buildings_eta"]["buildings"]), 21)
             self.assertEqual(len(dash["ranking"]["horizons"]), 5)
 
@@ -267,6 +268,13 @@ class TestApiAndCommander(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
+
+            self.assertTrue((Path(tmp) / "state" / "spaceinvasion.db").exists())
+            self.assertIsNotNone(bridge._db)
+            summary = bridge._db.summary()
+            bridge._db.close()
+            self.assertGreaterEqual(summary["counts"]["rank_snapshots"], 1)
+            self.assertGreaterEqual(summary["counts"]["action_history"], 1)
 
             cmd_jsonl = (logs_dir / "commander.jsonl").read_text(encoding="utf-8").strip().splitlines()
             cmd_log = (logs_dir / "commander.log").read_text(encoding="utf-8")

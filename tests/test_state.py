@@ -307,6 +307,29 @@ class TestStateParsers(unittest.TestCase):
         rt = game_state_from_dict(raw)
         self.assertEqual(rt.planets[0].economy_rates["resource2"], 0)
 
+    def test_parse_tutorial_step6_ships_and_combat_milestones(self) -> None:
+        html = """
+        <div>Tutorial 6 / 11</div>
+        <div id="tutorial.text">
+          <table><tr><td>
+            <table width="100%">
+              <tr><td>Build a Small transport</td><td><font color="#E54C4C">1 / 2</font></td></tr>
+              <tr><td>Have a successful fight</td><td><font color="#E54C4C">0 / 1</font></td></tr>
+            </table>
+          </td></tr></table>
+          You receive the following resources: 10000 Pig iron, 10000 Metal, 10000 Kryptonite, 2000 Spice
+        </div>
+        """
+        tut = parse_tutorial_from_home(html)
+        self.assertIsNotNone(tut)
+        self.assertEqual(tut.step, 6)
+        self.assertEqual(len(tut.tasks), 2)
+        self.assertEqual(tut.tasks[0].category, "ship")
+        self.assertEqual(tut.tasks[0].building_id, 1)
+        self.assertEqual((tut.tasks[0].current, tut.tasks[0].target), (1, 2))
+        self.assertEqual(tut.tasks[1].category, "milestone")
+        self.assertEqual((tut.tasks[1].current, tut.tasks[1].target), (0, 1))
+
 
 if __name__ == "__main__":
     unittest.main()

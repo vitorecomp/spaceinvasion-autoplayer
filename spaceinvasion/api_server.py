@@ -39,6 +39,7 @@ from spaceinvasion.ranking import (
     simulate_combat_matchup,
 )
 from spaceinvasion.state import GameState, PlanetState, parse_economy_rates
+from spaceinvasion.storage import GameDatabase
 from spaceinvasion.strategy import PlannedAction, plan_actions
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
@@ -116,6 +117,7 @@ class GameApiBridge:
         config_path: Path = Path("config.yaml"),
         max_actions_per_hour: Optional[int] = None,
         log_dir: Optional[Path] = Path("logs"),
+        db_path: Optional[Path] = None,
         client_factory: Optional[Callable[[int], Any]] = None,
         ensure_session_fn: Optional[Callable[[], None]] = None,
     ) -> None:
@@ -132,7 +134,21 @@ class GameApiBridge:
         self._rank_history_path: Optional[Path] = (
             (log_dir.parent / "state" / "rank_history.json") if log_dir is not None else None
         )
-        self._rank_samples: list[dict[str, Any]] = load_rank_history(self._rank_history_path)
+        resolved_db = (
+            db_path
+            if db_path is not None
+            else ((log_dir.parent / "state" / "spaceinvasion.db") if log_dir is not None else None)
+        )
+        self._db: Optional[GameDatabase] = (
+            GameDatabase(resolved_db, legacy_rank_json=self._rank_history_path)
+            if resolved_db is not None
+            else None
+        )
+        if self._db is not None:
+            self._rank_samples = self._db.get_rank_samples()
+            self._economy_rates.update(self._db.get_all_economy_rates())
+        else:
+            self._rank_samples = load_rank_history(self._rank_history_path)
         self._bot_control: dict[str, Any] = {"paused": False, "mode_override": None}
         budget = (
             max_actions_per_hour
@@ -222,7 +238,10 @@ class GameApiBridge:
     def _record_state(self, state: GameState) -> GameState:
         merged = self._merge_economy_rates(state)
         self._last_state = merged
-        self._rank_samples = record_rank_snapshot(self._rank_history_path, merged)
+        if self._db is not None:
+            self._rank_samples = self._db.record_state_snapshot(merged)
+        else:
+            self._rank_samples = record_rank_snapshot(self._rank_history_path, merged)
         return merged
 
     def dashboard(self, *, refresh: bool = False) -> dict[str, Any]:
@@ -282,6 +301,7 @@ class GameApiBridge:
                 "buildings_eta": buildings_eta,
                 "combat": combat,
                 "ranking": ranking,
+                "db_summary": self._db.summary() if self._db is not None else None,
                 "logs": {
                     "commander": self._read_log_tail("commander.log"),
                     "game_api": self._read_log_tail("game_api.log"),
@@ -443,6 +463,18 @@ class GameApiBridge:
             for pid, rates in getattr(executor, "last_economy_rates", {}).items():
                 if rates:
                     self._economy_rates[int(pid)] = dict(rates)
+                    if self._db is not None:
+                        coords = next((p.coords for p in state.planets if p.planet_id == int(pid)), "")
+                        self._db.save_economy_rates(int(pid), coords, rates)
+        if self._db is not None:
+            self._db.record_action(
+                source="api",
+                command=cmd,
+                action=res.action,
+                executed=res.executed,
+                dry_run=res.dry_run,
+                message=res.message,
+            )
         if res.executed:
             after_state = self._record_state(
                 client.read_full_snapshot(include_buildings=True, return_home=False)
@@ -472,6 +504,14 @@ class GameApiBridge:
 
         if cmd == "config":
             return {"ok": True, "command": cmd, "config": asdict(self.strategy_config)}
+
+        if cmd == "db_summary":
+            with self._lock:
+                return {
+                    "ok": True,
+                    "command": cmd,
+                    "db": self._db.summary() if self._db is not None else None,
+                }
 
         if cmd == "bot_control":
             with self._lock:

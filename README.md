@@ -64,7 +64,7 @@ Then open the **Operator Control UI** at `http://127.0.0.1:8787/` (served direct
 - **Dashboard (`DSH`)**: Sector resources, hourly net yields (`/h`), Blast furnace `0%`/`100%` toggle, active colonies, priority queue preview, and nearest building ETAs.
 - **Buildings & ETAs (`BLD`)**: Reach-time forecasts (`L+1` to `L+4`) for all **21 buildings (`b1`–`b21`)** and **15 researches (`r1`–`r15`)**, bottleneck flags, Blast furnace `0%` what-if Pig-iron boost analysis, and live build triggers.
 - **Combat & Fleet (`CMB`)**: Attack Zone bounds, `r8`/`r9`/`r10` combat bonuses, stationed ships/defenses, Weapons Factory quick orders, Escape Flight packer, and interactive `1:1` zero-rapidfire **Combat Simulator**.
-- **Operations (`OPS`)**, **Ranking Evolution (`RNK`)**, **Strategy Config (`CFG`)**, and **Live Logs (`LOG`)**: Full `P0`–`P3` queue, AZ trajectory + milestones, `config.yaml` editor (`auto_throttle_blast_furnace`), and live runtime logs.
+- **Operations (`OPS`)**, **Ranking Evolution (`RNK`)**, **Strategy Config (`CFG`)**, and **Live Logs (`LOG`)**: Full `P0`–`P3` queue, AZ trajectory + milestones, `config.yaml` editor (`auto_throttle_blast_furnace`), live runtime logs, and an integrated **SQLite DB** inspector (`state/spaceinvasion.db`).
 
 ## Operator Control UI
 
@@ -91,6 +91,7 @@ curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"throttle_building","building_id":2,"percentage":0,"dry_run":true}'
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"simulate_combat","attacker_ships":{"s4":20,"s1":4},"defender_defense":{"d1":2}}'
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"ranking_evolution"}'
+curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"db_summary"}'
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"tick_once","dry_run":true}'
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"bot_control","paused":false,"mode_override":null}'
 curl -s -X POST http://127.0.0.1:8787/command -H 'Content-Type: application/json' -d '{"command":"fleetsave_plan"}'

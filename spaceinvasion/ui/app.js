@@ -1285,8 +1285,34 @@ function renderRanking(dash) {
   renderRankingChart(trend.samples || []);
 }
 
-function renderLogs(logs) {
+function formatDbSummary(db) {
+  if (!db) return "SQLite database disabled (no persistent state directory configured).";
+  const lines = [
+    `DB Path: ${db.db_path} (${fmtInt(db.size_bytes)} bytes)`,
+    `Row Counts: ${Object.entries(db.counts || {}).map(([k, v]) => `${k}=${v}`).join(" · ")}`,
+    "",
+    "== Tutorial Progress ==",
+  ];
+  for (const t of db.tutorial_history || []) {
+    const status = t.completed_ts ? "DONE" : t.can_complete ? "READY TO CLAIM" : "ACTIVE";
+    const tStr = (t.tasks || []).map((x) => x.description).join(" | ") || "(no tasks parsed)";
+    lines.push(`Step ${t.step}/${t.total_steps} [${status}] ${tStr}`);
+  }
+  if ((db.tutorial_history || []).length === 0) lines.push("(no tutorial rows recorded)");
+  lines.push("", "== Recent Actions ==");
+  for (const a of db.recent_actions || []) {
+    const mode = a.dry_run ? "DRY" : a.executed ? "EXEC" : "SKIP";
+    lines.push(`[${mode}] ${a.kind} ${a.target_name || a.command}${a.target_level != null ? ` -> ${a.target_level}` : ""} @ ${a.planet_coords || "-"} — ${a.message || ""}`);
+  }
+  return lines.join("\n");
+}
+
+function renderLogs(logs, dbSummary) {
   const pre = el("logs-pre");
+  if (state.activeLogSource === "sqlite") {
+    pre.textContent = formatDbSummary(dbSummary);
+    return;
+  }
   const src = state.activeLogSource === "game_api" ? logs?.game_api : logs?.commander;
   pre.textContent = src || "(Log file empty or not created yet.)";
 }
@@ -1325,7 +1351,7 @@ async function loadDashboard({ refresh = false, preserveConfig = true } = {}) {
     renderBuildingsView(dash);
     renderCombatView(dash);
     renderRanking(dash);
-    renderLogs(dash.logs);
+    renderLogs(dash.logs, dash.db_summary);
     if (!preserveConfig || !state.configDirty) {
       renderConfigForm(dash.config);
       state.configDirty = false;
@@ -1525,7 +1551,7 @@ function wireEvents() {
     tabBtn.addEventListener("click", () => {
       state.activeLogSource = tabBtn.dataset.log;
       document.querySelectorAll("[data-log]").forEach((b) => b.classList.toggle("active", b === tabBtn));
-      if (state.dashboard) renderLogs(state.dashboard.logs);
+      if (state.dashboard) renderLogs(state.dashboard.logs, state.dashboard.db_summary);
     });
   });
 

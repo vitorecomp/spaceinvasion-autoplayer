@@ -16,6 +16,7 @@ Guide for coding agents working in `spaceinvasion-autoplayer`. Read [SPEC.md](SP
   - `spaceinvasion/strategy.py` — Priority-sorted `P0`–`P3` decision planner (`plan_actions`).
   - `spaceinvasion/executor.py` — Safe Selenium click/form executor with hourly rate cap, stale-element auto-reload retry, and dry-run defaults.
   - `spaceinvasion/fleet.py` — M5–M6 Escape flight packer, 1:1 zero-rapidfire combat simulator (`>=1.4x`), Bash tracker (`3/24h`), Galaxy/Spy parsers, Spacia scorer, and colony slot selector.
+  - `spaceinvasion/storage.py` — Thread-safe SQLite database (`state/spaceinvasion.db`, WAL mode) persisting rank snapshots, colony snapshots, `internalEconomy` sliders, tutorial steps, executed actions, spy reports, and 24h raid history.
   - `spaceinvasion/logging_utils.py` / `spaceinvasion/reloader.py` — Structured `logs/*.jsonl` + human-readable `logs/*.log` (`ACTUAL` / `NEXT`) and subprocess hot-reloader.
 
 ## Operational Rules for Agents
