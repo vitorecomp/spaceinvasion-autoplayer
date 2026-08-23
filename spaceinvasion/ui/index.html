@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SpaceInvasion Control — Tactical Operations Console</title>
-  <meta name="description" content="Tactical operations console for SpaceInvasion Classic autoplayer: persistent navigation sidebar, sector telemetry, colony matrix, priority queue, Escape Flight packer, and strategy config." />
+  <meta name="description" content="Tactical single-screen operations console for SpaceInvasion Classic autoplayer: dashboard, building reach ETAs, Blast furnace Pig iron bucket, 1:1 combat simulator, ranking evolution, and live telemetry." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -14,12 +14,12 @@
   <div class="hud-canvas">
     <div class="app-layout">
       <!-- Persistent Tactical Sidebar -->
-      <aside class="hud-sidebar" id="app-sidebar" aria-label="Control navigation and autopilot">
+      <aside class="hud-sidebar" id="app-sidebar" aria-label="Primary navigation and autopilot">
         <div class="sidebar-head">
           <div class="sidebar-brand">
             <span class="module-code tabular">CMD</span>
             <div class="brand-titles">
-              <h1>SpaceInvasion</h1>
+              <h1>SpaceInvasion Control</h1>
               <span class="brand-sub tabular" id="val-speedup">SPEED x1</span>
             </div>
           </div>
@@ -48,42 +48,42 @@
             </div>
           </section>
 
-          <!-- Primary Navigation -->
-          <section class="sidebar-section" aria-label="Workspace navigation">
-            <div class="sidebar-label tabular">Navigation</div>
-            <nav class="sidebar-nav" aria-label="Primary sections">
-              <button type="button" class="nav-item active" data-nav="overview" data-tab-link="queue">
-                <span class="nav-code tabular">ALL</span>
-                <span class="nav-label">Command Overview</span>
-              </button>
-              <button type="button" class="nav-item" data-nav="queue" data-tab-link="queue">
-                <span class="nav-code tabular">OPS</span>
-                <span class="nav-label">Operations Queue</span>
-                <span class="nav-badge tabular" id="nav-queue-count">0</span>
-              </button>
-              <button type="button" class="nav-item" data-nav="fleet" data-tab-link="fleet">
-                <span class="nav-code tabular">FLT</span>
-                <span class="nav-label">Escape &amp; Chrome</span>
-              </button>
-              <button type="button" class="nav-item" data-nav="levels" data-tab-link="levels">
-                <span class="nav-code tabular">BLD</span>
-                <span class="nav-label">Buildings &amp; Tech</span>
-              </button>
-              <button type="button" class="nav-item" data-nav="ranking" data-tab-link="ranking">
-                <span class="nav-code tabular">RNK</span>
-                <span class="nav-label">Ranking Evolution</span>
-                <span class="nav-badge tabular" id="nav-rank-badge">#—</span>
-              </button>
-              <button type="button" class="nav-item" data-nav="config">
-                <span class="nav-code tabular">CFG</span>
-                <span class="nav-label">Strategy Profile</span>
-              </button>
-              <button type="button" class="nav-item" data-nav="logs">
-                <span class="nav-code tabular">LOG</span>
-                <span class="nav-label">Telemetry Logs</span>
-              </button>
-            </nav>
-          </section>
+          <!-- Page Navigation (Single Active Screen per Route) -->
+          <nav class="sidebar-section sidebar-nav" aria-label="Console views">
+            <div class="nav-label tabular">Navigation</div>
+            <button type="button" class="sidebar-link active" data-page="dashboard" aria-current="page">
+              <span class="nav-code tabular">DSH</span>
+              <span class="nav-title">Dashboard</span>
+            </button>
+            <button type="button" class="sidebar-link" data-page="buildings">
+              <span class="nav-code tabular">BLD</span>
+              <span class="nav-title">Buildings &amp; ETAs</span>
+              <span class="nav-badge tabular" id="nav-bld-badge">21</span>
+            </button>
+            <button type="button" class="sidebar-link" data-page="combat">
+              <span class="nav-code tabular">CMB</span>
+              <span class="nav-title">Combat &amp; Fleet</span>
+              <span class="nav-badge tabular" id="nav-cmb-badge">1:1</span>
+            </button>
+            <button type="button" class="sidebar-link" data-page="operations">
+              <span class="nav-code tabular">OPS</span>
+              <span class="nav-title">Operations Queue</span>
+              <span class="nav-badge tabular" id="nav-queue-count">0</span>
+            </button>
+            <button type="button" class="sidebar-link" data-page="ranking">
+              <span class="nav-code tabular">RNK</span>
+              <span class="nav-title">Ranking Evolution</span>
+              <span class="nav-badge tabular" id="nav-rank-badge">#—</span>
+            </button>
+            <button type="button" class="sidebar-link" data-page="config">
+              <span class="nav-code tabular">CFG</span>
+              <span class="nav-title">Strategy Config</span>
+            </button>
+            <button type="button" class="sidebar-link" data-page="logs">
+              <span class="nav-code tabular">LOG</span>
+              <span class="nav-title">Live Logs</span>
+            </button>
+          </nav>
 
           <!-- Active Colony Switcher -->
           <section class="sidebar-section" aria-label="Colony selector">
@@ -112,44 +112,34 @@
             </div>
 
             <div class="stack-actions">
-              <button type="button" class="btn btn-secondary" id="btn-pause-toggle" aria-pressed="false">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                  <rect x="6" y="4" width="4" height="16" />
-                  <rect x="14" y="4" width="4" height="16" />
-                </svg>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-pause-toggle" aria-pressed="false">
                 <span id="pause-label">Pause Auto</span>
               </button>
 
-              <button type="button" class="btn btn-secondary" id="btn-sync">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                  <polyline points="23 4 23 10 17 10" />
-                  <polyline points="1 20 1 14 7 14" />
-                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-                </svg>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-sync">
                 <span>Sync</span>
               </button>
 
-              <button type="button" class="btn btn-primary btn-span" id="btn-tick-now">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                  <polygon points="5 3 19 12 5 21 5 3" />
-                </svg>
+              <button type="button" class="btn btn-primary btn-sm btn-span" id="btn-tick-now">
                 <span>Run 1 Tick</span>
               </button>
             </div>
           </section>
 
           <div class="sidebar-foot tabular">
-            <span>WIN // SIDEBAR</span>
-            <span>PORT :8787</span>
+            <span>WIN // VIEWS</span>
+            <span>API :8787</span>
           </div>
         </div>
       </aside>
 
-      <!-- Main Operational Canvas -->
+      <!-- Main Viewport-Locked Workspace -->
       <div class="main-column">
         <!-- Top Telemetry Ruler Bar -->
         <header class="hud-ruler" aria-label="Session telemetry bar">
           <div class="ruler-cluster">
+            <span class="ruler-page-tag tabular" id="hud-page-title">DASHBOARD</span>
+            <span class="ruler-sep" aria-hidden="true"></span>
             <span class="ruler-node tabular" id="hud-universe">U31 · COMMANDER</span>
             <span class="ruler-sep" aria-hidden="true"></span>
             <span class="ruler-node tabular" id="hud-clock">SYNC --:--:--</span>
@@ -158,6 +148,9 @@
           </div>
 
           <div class="ruler-cluster">
+            <button type="button" class="bf-pill tabular" id="hud-bf-pill" title="Blast furnace rate on selected planet — click to open Buildings & ETAs">
+              B2: 100%
+            </button>
             <div class="beacon-pill tabular" id="hud-alert-beacon" role="status">
               <span class="beacon-mark" aria-hidden="true"></span>
               <span id="val-alerts">SECTOR CLEAR · 0 HOSTILES</span>
@@ -167,421 +160,701 @@
 
         <div id="feedback-banner" class="feedback-banner" role="status" aria-live="polite" hidden></div>
 
-        <!-- Row 1: Sector Telemetry (Left) + Colony Matrix (Right) -->
-        <section class="upper-deck" aria-label="Sector telemetry and colony matrix">
-          <article class="hud-window window-telemetry">
-            <div class="window-bar">
-              <div class="window-title-group">
-                <span class="module-code tabular">SEC</span>
-                <h2>Sector Resources</h2>
+        <!-- Single-View Viewport Stage -->
+        <main id="view-stage" class="view-stage">
+          <!-- ==================== VIEW 1: DASHBOARD (DEFAULT) ==================== -->
+          <section id="view-dashboard" class="page-view dashboard-view" aria-label="Dashboard overview">
+            <!-- Tutorial Alert Bar (shown only during active tutorial) -->
+            <div class="tutorial-banner" id="tutorial-strip" hidden>
+              <div class="tutorial-copy">
+                <span class="module-code tabular" id="tutorial-title">TUTORIAL 1/11</span>
+                <span id="tutorial-tasks-summary" class="tabular">Loading tutorial steps...</span>
               </div>
-              <span class="module-meta tabular" id="command-subpath">SECTOR // ACTIVE COLONY TELEMETRY</span>
+              <button type="button" class="btn btn-primary btn-sm" id="btn-claim-tutorial" hidden>
+                Claim Reward
+              </button>
             </div>
 
-            <div class="telemetry-core">
-              <div class="track-list" aria-label="Planetary resource levels">
-                <div class="track-row">
-                  <div class="track-meta">
-                    <span class="track-code tabular">PIG</span>
-                    <span class="track-name">Pig Iron</span>
+            <!-- Upper Row: Resources + Colony Matrix -->
+            <div class="dash-upper-grid">
+              <article class="hud-window">
+                <div class="window-bar">
+                  <div class="window-title-group">
+                    <span class="module-code tabular">SEC</span>
+                    <h2>Resources &amp; Hourly Net Flow</h2>
                   </div>
-                  <div class="track-bar-group">
-                    <div class="meter-track"><div class="meter-fill" id="bar-pig"></div></div>
+                  <span class="module-meta tabular" id="command-subpath">SECTOR // ACTIVE COLONY</span>
+                </div>
+
+                <div class="telemetry-core">
+                  <div class="track-list" aria-label="Planetary resource levels and net hourly flow">
+                    <div class="track-row">
+                      <div class="track-meta">
+                        <span class="track-code tabular">PIG</span>
+                        <span class="track-name">Pig Iron</span>
+                      </div>
+                      <div class="track-bar-group">
+                        <div class="meter-track"><div class="meter-fill" id="bar-pig"></div></div>
+                      </div>
+                      <div class="track-values tabular">
+                        <span class="track-val" id="val-pig">—</span>
+                        <span class="track-cap" id="cap-pig">—</span>
+                        <span class="track-rate" id="rate-pig">—/h</span>
+                      </div>
+                    </div>
+
+                    <div class="track-row">
+                      <div class="track-meta">
+                        <span class="track-code tabular">MET</span>
+                        <span class="track-name">Metal</span>
+                      </div>
+                      <div class="track-bar-group">
+                        <div class="meter-track"><div class="meter-fill" id="bar-metal"></div></div>
+                      </div>
+                      <div class="track-values tabular">
+                        <span class="track-val" id="val-metal">—</span>
+                        <span class="track-cap" id="cap-metal">—</span>
+                        <span class="track-rate" id="rate-metal">—/h</span>
+                      </div>
+                    </div>
+
+                    <div class="track-row">
+                      <div class="track-meta">
+                        <span class="track-code tabular">KRY</span>
+                        <span class="track-name">Kryptonite</span>
+                      </div>
+                      <div class="track-bar-group">
+                        <div class="meter-track"><div class="meter-fill" id="bar-kryp"></div></div>
+                      </div>
+                      <div class="track-values tabular">
+                        <span class="track-val" id="val-kryp">—</span>
+                        <span class="track-cap" id="cap-kryp">—</span>
+                        <span class="track-rate" id="rate-kryp">—/h</span>
+                      </div>
+                    </div>
+
+                    <div class="track-row">
+                      <div class="track-meta">
+                        <span class="track-code tabular">SPI</span>
+                        <span class="track-name">Spice</span>
+                      </div>
+                      <div class="track-bar-group">
+                        <div class="meter-track"><div class="meter-fill" id="bar-spice"></div></div>
+                      </div>
+                      <div class="track-values tabular">
+                        <span class="track-val" id="val-spice">—</span>
+                        <span class="track-cap" id="cap-spice">—</span>
+                        <span class="track-rate" id="rate-spice">—/h</span>
+                      </div>
+                    </div>
                   </div>
-                  <div class="track-values tabular">
-                    <span class="track-val" id="val-pig">—</span>
-                    <span class="track-cap" id="cap-pig">—</span>
+
+                  <div class="digital-readout-row">
+                    <div class="digital-counter">
+                      <span class="digital-tag tabular">ENG</span>
+                      <span class="digital-number tabular" id="val-energy">+0</span>
+                      <span class="digital-sub tabular" id="energy-ratio">0 / 0 E</span>
+                    </div>
+                    <div class="digital-counter">
+                      <span class="digital-tag tabular">RNK</span>
+                      <span class="digital-number tabular" id="dash-rank-val">#—</span>
+                      <span class="digital-sub tabular" id="dash-az-val">AZ — · — pts</span>
+                    </div>
+                    <div class="digital-counter">
+                      <span class="digital-tag tabular">FLW</span>
+                      <span class="digital-number tabular" id="dash-pts-hr">+0/h</span>
+                      <span class="digital-sub tabular" id="dash-spice-hr">0 SpiceEq/h</span>
+                    </div>
+                  </div>
+                </div>
+              </article>
+
+              <article class="hud-window">
+                <div class="window-bar">
+                  <div class="window-title-group">
+                    <span class="module-code tabular">MAP</span>
+                    <h2>Empire Colonies &amp; Active Queues</h2>
+                  </div>
+                  <div class="inline-actions">
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-dash-b2-toggle">
+                      Pause b2 (0%)
+                    </button>
+                    <span class="module-meta tabular" id="colony-count-tag">01-31</span>
                   </div>
                 </div>
 
-                <div class="track-row">
-                  <div class="track-meta">
-                    <span class="track-code tabular">MET</span>
-                    <span class="track-name">Metal</span>
+                <div class="matrix-body">
+                  <div class="table-wrap table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Coords</th>
+                          <th>Colony</th>
+                          <th>State</th>
+                          <th class="col-right">Fields</th>
+                        </tr>
+                      </thead>
+                      <tbody id="colony-tbody">
+                        <tr>
+                          <td colspan="4" class="empty-cell">Waiting for snapshot...</td>
+                        </tr>
+                      </tbody>
+                    </table>
                   </div>
-                  <div class="track-bar-group">
-                    <div class="meter-track"><div class="meter-fill" id="bar-metal"></div></div>
-                  </div>
-                  <div class="track-values tabular">
-                    <span class="track-val" id="val-metal">—</span>
-                    <span class="track-cap" id="cap-metal">—</span>
-                  </div>
-                </div>
 
-                <div class="track-row">
-                  <div class="track-meta">
-                    <span class="track-code tabular">KRY</span>
-                    <span class="track-name">Kryptonite</span>
-                  </div>
-                  <div class="track-bar-group">
-                    <div class="meter-track"><div class="meter-fill" id="bar-kryp"></div></div>
-                  </div>
-                  <div class="track-values tabular">
-                    <span class="track-val" id="val-kryp">—</span>
-                    <span class="track-cap" id="cap-kryp">—</span>
-                  </div>
-                </div>
-
-                <div class="track-row">
-                  <div class="track-meta">
-                    <span class="track-code tabular">SPI</span>
-                    <span class="track-name">Spice</span>
-                  </div>
-                  <div class="track-bar-group">
-                    <div class="meter-track"><div class="meter-fill" id="bar-spice"></div></div>
-                  </div>
-                  <div class="track-values tabular">
-                    <span class="track-val" id="val-spice">—</span>
-                    <span class="track-cap" id="cap-spice">—</span>
+                  <div class="queue-strip">
+                    <div class="queue-strip-head tabular">
+                      <span>ACTIVE QUEUES</span>
+                      <span id="matrix-account-line">CMD // STANDBY</span>
+                    </div>
+                    <div id="active-queues-list" class="queue-summary tabular">No active construction jobs.</div>
                   </div>
                 </div>
-              </div>
+              </article>
+            </div>
 
-              <div class="digital-readout-row">
-                <div class="digital-counter">
-                  <span class="digital-tag tabular">ENG</span>
-                  <span class="digital-number tabular" id="val-energy">+0</span>
-                  <span class="digital-sub tabular" id="energy-ratio">0 / 0 E</span>
-                </div>
-
-                <div class="tutorial-inline" id="tutorial-strip" hidden>
-                  <div class="tutorial-copy">
-                    <strong class="tabular" id="tutorial-title">Tutorial</strong>
-                    <span id="tutorial-tasks-summary" class="muted"></span>
+            <!-- Lower Row: Immediate Next Actions + Upcoming Building Reach ETAs -->
+            <div class="dash-lower-grid">
+              <article class="hud-window">
+                <div class="window-bar">
+                  <div class="window-title-group">
+                    <span class="module-code tabular">NXQ</span>
+                    <h2>Top Planned Actions</h2>
                   </div>
-                  <button type="button" class="btn btn-primary btn-sm" id="btn-claim-tutorial" hidden>Claim Reward</button>
+                  <button type="button" class="btn btn-secondary btn-sm" data-goto-page="operations">
+                    Full Queue →
+                  </button>
                 </div>
-              </div>
-            </div>
 
-            <div class="window-foot">
-              <span class="foot-tag tabular">WIN // SECTOR-01</span>
-              <span class="foot-bar" aria-hidden="true"></span>
-              <span class="foot-tag tabular">POLL 5S</span>
-            </div>
-          </article>
-
-          <!-- Colony & Live Queue Matrix -->
-          <aside class="hud-window window-matrix" aria-label="Colony and queue matrix">
-            <div class="window-bar">
-              <div class="window-title-group">
-                <span class="module-code tabular">R4</span>
-                <h2>Colony Matrix</h2>
-              </div>
-              <span class="matrix-tag tabular" id="colony-count-tag">01-31</span>
-            </div>
-
-            <div class="matrix-subbar tabular" id="matrix-account-line">
-              ACCOUNT // READY
-            </div>
-
-            <div class="table-wrap matrix-scroll">
-              <table class="data-table matrix-table">
-                <thead>
-                  <tr>
-                    <th>Coords</th>
-                    <th>Station</th>
-                    <th>Status</th>
-                    <th class="col-right">Fields</th>
-                  </tr>
-                </thead>
-                <tbody id="colony-tbody">
-                  <tr>
-                    <td colspan="4" class="empty-cell">Scanning colonies...</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div class="queue-strip" aria-label="Active in-game queues">
-              <div class="queue-strip-head tabular">LIVE BUILD / RESEARCH QUEUES</div>
-              <div id="active-queues-list" class="queue-items tabular">No active jobs</div>
-            </div>
-
-            <div class="window-foot">
-              <span class="foot-tag tabular">WIN // MATRIX</span>
-              <span class="foot-bar" aria-hidden="true"></span>
-              <span class="foot-tag tabular">MULTI-PLANET</span>
-            </div>
-          </aside>
-        </section>
-
-        <!-- Row 2: Operations Workspace (Left) + Strategy Profile (Right) -->
-        <main class="workspace-grid">
-          <section class="hud-window pane-primary" id="section-ops" aria-label="Decision planner and operations">
-            <div class="window-bar window-bar-striped">
-              <div class="window-title-group">
-                <span class="module-code module-code-light tabular">H9</span>
-                <h2 id="ops-heading">Operations Queue</h2>
-                <span class="module-meta tabular" id="plan-count-badge">0 TASKS</span>
-              </div>
-
-              <div class="pane-controls">
-                <div class="filter-pills" role="tablist" aria-label="Operation tabs">
-                  <button type="button" class="chip active" role="tab" aria-selected="true" data-tab="queue">Queue</button>
-                  <button type="button" class="chip" role="tab" aria-selected="false" data-tab="fleet">Escape &amp; Chrome</button>
-                  <button type="button" class="chip" role="tab" aria-selected="false" data-tab="levels">Buildings &amp; Tech</button>
-                  <button type="button" class="chip" role="tab" aria-selected="false" data-tab="ranking">Ranking Evolution</button>
-                </div>
-                <span class="ruler-sep" aria-hidden="true"></span>
-                <div class="filter-pills" id="queue-filters">
-                  <button type="button" class="chip active" data-filter="all">All</button>
-                  <button type="button" class="chip" data-filter="ready">Ready Only</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="ops-panels">
-              <div class="tab-panel" id="panel-queue">
-                <div class="table-wrap">
-                  <table class="data-table">
+                <div class="table-wrap table-scroll">
+                  <table>
                     <thead>
                       <tr>
                         <th>Prio</th>
-                        <th>Target Action</th>
-                        <th>Cost / Missing</th>
-                        <th>Rationale</th>
-                        <th class="col-right">Dispatch</th>
+                        <th>Action</th>
+                        <th>Missing / Cost</th>
+                        <th class="col-right">Ops</th>
                       </tr>
                     </thead>
-                    <tbody id="plan-tbody">
+                    <tbody id="dash-plan-tbody">
                       <tr>
-                        <td colspan="5" class="empty-cell">Waiting for state from local API...</td>
+                        <td colspan="4" class="empty-cell">Run Sync to populate actions...</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
+              </article>
+
+              <article class="hud-window">
+                <div class="window-bar">
+                  <div class="window-title-group">
+                    <span class="module-code tabular">ETA</span>
+                    <h2>Nearest Building Reach Times</h2>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" data-goto-page="buildings">
+                    All 21 Buildings →
+                  </button>
+                </div>
+
+                <div class="table-wrap table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Building</th>
+                        <th>Next</th>
+                        <th>Build Time</th>
+                        <th class="col-right">Level Reached</th>
+                      </tr>
+                    </thead>
+                    <tbody id="dash-eta-tbody">
+                      <tr>
+                        <td colspan="4" class="empty-cell">Waiting for economy forecast...</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <!-- ==================== VIEW 2: BUILDINGS & ETAS ==================== -->
+          <section id="view-buildings" class="page-view" aria-label="Buildings and reach ETAs" hidden>
+            <article class="hud-window page-fill">
+              <div class="window-bar window-bar-wrap">
+                <div class="window-title-group">
+                  <span class="module-code tabular">BLD</span>
+                  <h2>Buildings &amp; Research — Level Reach Estimates</h2>
+                  <span class="module-meta tabular" id="bld-planet-meta">[--] · Dev L0 · Lab L0 · x1</span>
+                </div>
+
+                <div class="filter-toolbar">
+                  <div class="tab-group" id="bld-category-filters" role="group" aria-label="Building category filters">
+                    <button type="button" class="chip-btn active" data-bld-cat="all">All 21</button>
+                    <button type="button" class="chip-btn" data-bld-cat="mines">Mines</button>
+                    <button type="button" class="chip-btn" data-bld-cat="energy">Energy</button>
+                    <button type="button" class="chip-btn" data-bld-cat="infra">Infra</button>
+                    <button type="button" class="chip-btn" data-bld-cat="storage">Storage</button>
+                    <button type="button" class="chip-btn" data-bld-cat="special">Special</button>
+                    <button type="button" class="chip-btn" data-bld-cat="research">Research r1–15</button>
+                  </div>
+
+                  <div class="inline-actions">
+                    <button type="button" class="btn btn-warning btn-sm" id="btn-b2-pause" title="Set Blast furnace to 0% to boost Pig iron production">
+                      Blast Furnace 0% (+Pig)
+                    </button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-b2-resume" title="Resume Blast furnace smelting to 100%">
+                      100% (Metal)
+                    </button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-sync-economy" title="Read internalEconomy select rates from Chrome">
+                      Sync %
+                    </button>
+                  </div>
+                </div>
               </div>
 
-              <div class="tab-panel" id="panel-fleet" hidden>
-                <div class="subpanel">
-                  <h3>Escape Flight Value Packer</h3>
-                  <p class="muted">
-                    Computes SpaceInvasion optimal fleet-save load order (<strong>Spice → Metal → Kryptonite → Pig iron</strong>), holding back fuel reserve, ready for Asteroid-invisible transit.
-                  </p>
-                  <div class="inline-form">
-                    <div class="control-field">
-                      <label for="fs-target">Target Coordinates (optional)</label>
-                      <input id="fs-target" type="text" placeholder="e.g. 02:380:13" />
-                    </div>
-                    <button type="button" class="btn btn-primary" id="btn-calc-fleetsave">Calculate Save Cargo</button>
-                  </div>
-                  <pre class="code-readout" id="fleetsave-output">Click "Calculate Save Cargo" to inspect docked ship capacity and optimal load.</pre>
+              <div class="split-workspace">
+                <div class="table-wrap table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Unit</th>
+                        <th class="col-right">Lvl</th>
+                        <th class="col-right">Next</th>
+                        <th>Missing Resources</th>
+                        <th class="col-right">Build Time</th>
+                        <th class="col-right">Res Ready</th>
+                        <th class="col-right">Level Reached</th>
+                        <th class="col-right">Control</th>
+                      </tr>
+                    </thead>
+                    <tbody id="eta-table-tbody">
+                      <tr>
+                        <td colspan="8" class="empty-cell">Waiting for building catalog...</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
 
-                <div class="subpanel">
-                  <h3>Navigate Live Chrome Frame</h3>
-                  <p class="muted">Switch the attached Chrome viewport directly through the single-mutex API lock.</p>
-                  <div class="nav-button-grid">
-                    <button type="button" class="btn btn-secondary nav-jump" data-action="internalHome">Command Central</button>
-                    <button type="button" class="btn btn-secondary nav-jump" data-action="internalBuildings">Buildings</button>
-                    <button type="button" class="btn btn-secondary nav-jump" data-action="internalResearch">Research</button>
-                    <button type="button" class="btn btn-secondary nav-jump" data-action="internalWeaponFactory">Weapons Factory</button>
-                    <button type="button" class="btn btn-secondary nav-jump" data-action="internalEconomy">Industry / Upgrades</button>
-                    <button type="button" class="btn btn-secondary nav-jump" data-action="internalFleet">Fleet Commands</button>
-                    <button type="button" class="btn btn-secondary nav-jump" data-action="internalMessages">Messages</button>
-                    <button type="button" class="btn btn-secondary nav-jump" data-action="internalUniverse">Universe &amp; AZ</button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="tab-panel" id="panel-levels" hidden>
-                <div class="levels-split">
-                  <div>
-                    <h3>Buildings (<span id="levels-planet-label">—</span>)</h3>
-                    <div class="table-wrap compact-wrap">
-                      <table class="data-table">
-                        <thead>
-                          <tr>
-                            <th>Structure</th>
-                            <th class="col-right">Level</th>
-                          </tr>
-                        </thead>
-                        <tbody id="buildings-tbody"></tbody>
-                      </table>
+                <aside class="inspector-pane" aria-label="Selected level forecast">
+                  <div class="inspector-head">
+                    <span class="module-code tabular" id="insp-key">B1</span>
+                    <div>
+                      <h3 id="insp-title">Select a Building or Research</h3>
+                      <p class="action-sub tabular" id="insp-subtitle">Click any row to inspect L+1 to L+4 arrival estimates</p>
                     </div>
                   </div>
-                  <div>
-                    <h3>Account Research</h3>
-                    <div class="table-wrap compact-wrap">
-                      <table class="data-table">
-                        <thead>
-                          <tr>
-                            <th>Technology</th>
-                            <th class="col-right">Level</th>
-                          </tr>
-                        </thead>
-                        <tbody id="research-tbody"></tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-              </div>
 
-              <div class="tab-panel" id="panel-ranking" hidden>
-                <div class="rank-kpi-grid" aria-label="Current rank and score summary">
-                  <div class="rank-kpi-cell">
-                    <div class="rank-kpi-label tabular">Server Rank &amp; Score</div>
-                    <div class="rank-kpi-value tabular" id="rnk-server-pos">—</div>
-                    <div class="rank-kpi-sub tabular" id="rnk-est-pts">—</div>
+                  <div class="inspector-stats tabular" id="insp-meta-box">
+                    <span>No item selected.</span>
                   </div>
-                  <div class="rank-kpi-cell">
-                    <div class="rank-kpi-label tabular">Attack Zone &amp; Shield</div>
-                    <div class="rank-kpi-value tabular" id="rnk-az-label">—</div>
-                    <div class="rank-kpi-sub tabular" id="rnk-az-range">—</div>
-                  </div>
-                  <div class="rank-kpi-cell">
-                    <div class="rank-kpi-label tabular">Steady Empire Pace</div>
-                    <div class="rank-kpi-value tabular" id="rnk-rate-hr">—</div>
-                    <div class="rank-kpi-sub tabular" id="rnk-res-hr">—</div>
-                  </div>
-                  <div class="rank-kpi-cell">
-                    <div class="rank-kpi-label tabular">Investment Split</div>
-                    <div class="rank-kpi-value tabular" id="rnk-breakdown">—</div>
-                    <div class="rank-kpi-sub tabular" id="rnk-spice-val">—</div>
-                  </div>
-                </div>
 
-                <div class="subpanel">
-                  <div class="subpanel-head">
-                    <h3>Score &amp; Attack Zone Horizons</h3>
-                    <span class="module-meta tabular" id="rnk-model-note">Steady Mines vs. Active Bot Compounding</span>
-                  </div>
+                  <div class="inspector-bf-hint" id="insp-bf-hint" hidden></div>
+
                   <div class="table-wrap">
-                    <table class="data-table">
+                    <table>
                       <thead>
                         <tr>
-                          <th>Horizon</th>
-                          <th class="col-right">Steady Rate Score</th>
-                          <th class="col-right">Steady AZ</th>
-                          <th class="col-right">Compounding Est.</th>
-                          <th class="col-right">Compound AZ</th>
+                          <th>Target</th>
+                          <th>Cost</th>
+                          <th class="col-right">Build</th>
+                          <th class="col-right">Reached</th>
                         </tr>
                       </thead>
-                      <tbody id="rnk-horizons-tbody">
-                        <tr><td colspan="5" class="empty-cell">Waiting for state...</td></tr>
+                      <tbody id="insp-horizons-tbody">
+                        <tr>
+                          <td colspan="4" class="empty-cell">Select a row for multi-level schedule.</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div class="inspector-actions">
+                    <button type="button" class="btn btn-primary btn-sm" id="btn-insp-build" hidden>
+                      Queue Next Level Live
+                    </button>
+                  </div>
+                </aside>
+              </div>
+            </article>
+          </section>
+
+          <!-- ==================== VIEW 3: COMBAT & FLEET ==================== -->
+          <section id="view-combat" class="page-view" aria-label="Combat simulator and fleet overview" hidden>
+            <div class="combat-top-cards">
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Attack Zone &amp; Bash</span>
+                <strong class="kpi-value tabular" id="cmb-az-val">AZ —</strong>
+                <span class="kpi-sub tabular" id="cmb-az-rule">±2 AZ · Max 3/24h active</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Combat Techs (r8 / r9 / r10)</span>
+                <strong class="kpi-value tabular" id="cmb-tech-val">L0 / L0 / L0</strong>
+                <span class="kpi-sub tabular" id="cmb-tech-sub">Spy L0 · Targeting L0</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Stationed Power (Colony)</span>
+                <strong class="kpi-value tabular" id="cmb-power-val">0 / 0</strong>
+                <span class="kpi-sub tabular" id="cmb-cargo-val">Cargo 0 · Weapons Fac L0</span>
+              </div>
+              <div class="kpi-card">
+                <span class="kpi-label tabular">Combat Navigation</span>
+                <div class="combat-jumps">
+                  <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalWeaponFactory">Shipyard</button>
+                  <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalFleet">Fleet</button>
+                  <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalGalaxy">Galaxy</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-combat">Sync Shipyard</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="combat-main-grid">
+              <!-- Left Column: Stationed Fleet, Defenses & Escape Flight -->
+              <article class="hud-window">
+                <div class="window-bar">
+                  <div class="window-title-group">
+                    <span class="module-code tabular">FLT</span>
+                    <h2>Stationed Fleet, Defenses &amp; Escape Flight</h2>
+                  </div>
+                  <div class="tab-group" role="tablist" aria-label="Fleet subtabs">
+                    <button type="button" class="tab-btn active" data-cmb-tab="ships">Ships &amp; Build</button>
+                    <button type="button" class="tab-btn" data-cmb-tab="defense">Defense</button>
+                    <button type="button" class="tab-btn" data-cmb-tab="escape">Escape Flight</button>
+                  </div>
+                </div>
+
+                <div class="combat-subpane" id="cmb-pane-ships">
+                  <div class="table-wrap table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Ship Class</th>
+                          <th class="col-right">Owned</th>
+                          <th class="col-right">ATK / SHD</th>
+                          <th class="col-right">Cargo</th>
+                          <th class="col-right">Order</th>
+                        </tr>
+                      </thead>
+                      <tbody id="cmb-ships-tbody">
+                        <tr>
+                          <td colspan="5" class="empty-cell">No shipyard telemetry yet.</td>
+                        </tr>
                       </tbody>
                     </table>
                   </div>
                 </div>
 
-                <div class="subpanel">
-                  <div class="levels-split rank-split">
-                    <div>
-                      <h3>Upcoming Thresholds</h3>
-                      <div class="table-wrap compact-wrap">
-                        <table class="data-table">
-                          <thead>
-                            <tr>
-                              <th>Milestone</th>
-                              <th class="col-right">Need</th>
-                              <th class="col-right">Steady ETA</th>
-                              <th class="col-right">Bot ETA</th>
-                            </tr>
-                          </thead>
-                          <tbody id="rnk-milestones-tbody"></tbody>
-                        </table>
+                <div class="combat-subpane" id="cmb-pane-defense" hidden>
+                  <div class="table-wrap table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Defense Structure</th>
+                          <th class="col-right">Owned</th>
+                          <th class="col-right">ATK / SHD</th>
+                          <th class="col-right">Hull</th>
+                        </tr>
+                      </thead>
+                      <tbody id="cmb-def-tbody">
+                        <tr>
+                          <td colspan="4" class="empty-cell">No defense data.</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div class="combat-subpane fleet-pane" id="cmb-pane-escape" hidden>
+                  <p class="muted">Computes zero-scanner-visible Escape Flight resource packing from current colony reserves.</p>
+                  <div class="fleetsave-form">
+                    <div class="control-field">
+                      <label for="fs-target">Destination Coords (blank = next colony)</label>
+                      <input type="text" id="fs-target" placeholder="e.g. 02:381:05" />
+                    </div>
+                    <button type="button" class="btn btn-primary btn-sm" id="btn-calc-fleetsave">Pack Escape Flight</button>
+                  </div>
+                  <pre id="fleetsave-output" class="console-box">Click "Pack Escape Flight" to calculate optimal cargo distribution.</pre>
+                </div>
+              </article>
+
+              <!-- Right Column: 1:1 Zero-Rapidfire Combat Simulator -->
+              <article class="hud-window">
+                <div class="window-bar">
+                  <div class="window-title-group">
+                    <span class="module-code tabular">SIM</span>
+                    <h2>1:1 Zero-Rapidfire Raid Simulator</h2>
+                  </div>
+                  <div class="inline-actions">
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-sim-use-owned">Use Owned Fleet</button>
+                    <button type="button" class="btn btn-primary btn-sm" id="btn-run-sim">Simulate Raid</button>
+                  </div>
+                </div>
+
+                <div class="sim-body">
+                  <div class="sim-inputs-grid">
+                    <div class="sim-group">
+                      <h3>Attacker Ships</h3>
+                      <div class="sim-fields">
+                        <label>Small Fighter (s4) <input type="number" id="sim-atk-s4" min="0" value="10" /></label>
+                        <label>Starcruiser (s6) <input type="number" id="sim-atk-s6" min="0" value="0" /></label>
+                        <label>Phoenix (s7) <input type="number" id="sim-atk-s7" min="0" value="0" /></label>
+                        <label>Battleship (s13) <input type="number" id="sim-atk-s13" min="0" value="0" /></label>
+                        <label>Small Transp. (s1) <input type="number" id="sim-atk-s1" min="0" value="4" /></label>
+                        <label>Large Transp. (s2) <input type="number" id="sim-atk-s2" min="0" value="0" /></label>
                       </div>
                     </div>
-                    <div>
-                      <h3>Observed History (<span id="rnk-trend-meta">0 samples</span>)</h3>
-                      <div class="rank-chart-wrap">
-                        <svg id="rnk-chart-svg" class="rank-chart-svg" viewBox="0 0 420 110" preserveAspectRatio="none" aria-label="Observed score progression chart"></svg>
-                        <div class="rank-chart-caption tabular" id="rnk-trend-caption">Collecting snapshots over time...</div>
+
+                    <div class="sim-group">
+                      <h3>Defender Fleet &amp; Turrets</h3>
+                      <div class="sim-fields">
+                        <label>Missile Turret (d1) <input type="number" id="sim-def-d1" min="0" value="2" /></label>
+                        <label>Laser Battery (d2) <input type="number" id="sim-def-d2" min="0" value="0" /></label>
+                        <label>Rocket Dome (d4) <input type="number" id="sim-def-d4" min="0" value="0" /></label>
+                        <label>Small Fighter (s4) <input type="number" id="sim-def-s4" min="0" value="0" /></label>
+                        <label>Target Total Loot <input type="number" id="sim-loot-total" min="0" value="20000" step="1000" /></label>
+                        <label>Safety Margin <input type="number" id="sim-margin" min="1.0" max="5.0" step="0.1" value="1.4" /></label>
                       </div>
+                    </div>
+                  </div>
+
+                  <div class="sim-result-card" id="sim-result-box">
+                    <div class="sim-verdict-row">
+                      <span class="run-badge tabular" id="sim-verdict-badge">READY</span>
+                      <span class="tabular" id="sim-ratio-text">Configure forces and run 1:1 combat estimation.</span>
+                    </div>
+                    <div class="sim-metrics-grid tabular" id="sim-metrics-grid">
+                      <div><span>Attacker Power</span><strong id="sim-atk-pwr">—</strong></div>
+                      <div><span>Defender Power</span><strong id="sim-def-pwr">—</strong></div>
+                      <div><span>Cargo Capacity</span><strong id="sim-cargo">—</strong></div>
+                      <div><span>Est. 50% Plunder</span><strong id="sim-plunder">—</strong></div>
+                    </div>
+                    <p class="action-sub" id="sim-notes">No rapidfire: units resolve 1:1 against attacker weapon/shield/defense tech levels.</p>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <!-- ==================== VIEW 4: OPERATIONS QUEUE ==================== -->
+          <section id="view-operations" class="page-view" aria-label="Operations priority queue" hidden>
+            <article class="hud-window page-fill">
+              <div class="window-bar window-bar-wrap">
+                <div class="window-title-group">
+                  <span class="module-code tabular">OPS</span>
+                  <h2>Priority Action Queue (P0 → P3)</h2>
+                  <span class="module-meta tabular" id="plan-count-badge">0 TASKS</span>
+                </div>
+
+                <div class="filter-toolbar">
+                  <div class="filter-chips">
+                    <button type="button" class="chip-btn active" data-filter="all">All Planned</button>
+                    <button type="button" class="chip-btn" data-filter="ready">Executable Only</button>
+                  </div>
+
+                  <div class="inline-actions nav-matrix-inline">
+                    <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalHome">Home</button>
+                    <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalBuildings">Buildings</button>
+                    <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalEconomy">Economy</button>
+                    <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalResearch">Research</button>
+                    <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalGalaxy">Galaxy</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="table-wrap table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Priority</th>
+                      <th>Action</th>
+                      <th>Cost / Missing</th>
+                      <th>Reason</th>
+                      <th class="col-right">Execute</th>
+                    </tr>
+                  </thead>
+                  <tbody id="plan-tbody">
+                    <tr>
+                      <td colspan="5" class="empty-cell">Waiting for plan...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </section>
+
+          <!-- ==================== VIEW 5: RANKING EVOLUTION ==================== -->
+          <section id="view-ranking" class="page-view" aria-label="Ranking evolution and forecast" hidden>
+            <article class="hud-window page-fill">
+              <div class="window-bar">
+                <div class="window-title-group">
+                  <span class="module-code tabular">RNK</span>
+                  <h2>Ranking Evolution, Attack Zone &amp; Growth Forecast</h2>
+                </div>
+                <span class="module-meta tabular" id="rnk-trend-meta">0 samples</span>
+              </div>
+
+              <div class="ranking-pane">
+                <div class="ranking-kpi-grid">
+                  <div class="kpi-card">
+                    <span class="kpi-label tabular">Server Rank &amp; Score</span>
+                    <strong class="kpi-value tabular" id="rnk-server-pos">—</strong>
+                    <span class="kpi-sub tabular" id="rnk-est-pts">—</span>
+                  </div>
+                  <div class="kpi-card">
+                    <span class="kpi-label tabular">Attack Zone Tier</span>
+                    <strong class="kpi-value tabular" id="rnk-az-label">—</strong>
+                    <span class="kpi-sub tabular" id="rnk-az-range">—</span>
+                  </div>
+                  <div class="kpi-card">
+                    <span class="kpi-label tabular">Hourly Growth Pace</span>
+                    <strong class="kpi-value tabular" id="rnk-rate-hr">—</strong>
+                    <span class="kpi-sub tabular" id="rnk-res-hr">—</span>
+                  </div>
+                  <div class="kpi-card">
+                    <span class="kpi-label tabular">Empire Breakdown</span>
+                    <strong class="kpi-value tabular" id="rnk-breakdown">—</strong>
+                    <span class="kpi-sub tabular" id="rnk-spice-val">—</span>
+                  </div>
+                </div>
+
+                <div class="ranking-grid">
+                  <div class="ranking-chart-card">
+                    <div class="card-subhead">
+                      <h3>Trajectory Curve</h3>
+                      <span class="tabular" id="rnk-observed-rate">Trend collecting...</span>
+                    </div>
+                    <svg id="rnk-chart" viewBox="0 0 420 130" role="img" aria-label="Estimated empire points over recent observations"></svg>
+                    <p class="action-sub tabular" id="rnk-observed-summary">Snapshots recorded in state/rank_history.json.</p>
+                  </div>
+
+                  <div class="ranking-tables-stack">
+                    <div class="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Horizon</th>
+                            <th class="col-right">Steady</th>
+                            <th class="col-right">AZ</th>
+                            <th class="col-right">Reinvested</th>
+                            <th class="col-right">AZ</th>
+                          </tr>
+                        </thead>
+                        <tbody id="rnk-horizons-tbody">
+                          <tr>
+                            <td colspan="5" class="empty-cell">Waiting for ranking forecast...</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div class="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Next Milestone</th>
+                            <th class="col-right">Remaining</th>
+                            <th class="col-right">Steady ETA</th>
+                            <th class="col-right">Compound ETA</th>
+                          </tr>
+                        </thead>
+                        <tbody id="rnk-milestones-tbody">
+                          <tr>
+                            <td colspan="4" class="empty-cell">Calculating milestones...</td>
+                          </tr>
+                        </tbody>
+                      </table>
                     </div>
                   </div>
                 </div>
               </div>
-            </div>
-
-            <div class="window-foot">
-              <span class="foot-tag tabular">WIN // OPS-DECISION</span>
-              <span class="foot-bar" aria-hidden="true"></span>
-              <span class="foot-tag tabular">SINGLE-MUTEX LOCK</span>
-            </div>
+            </article>
           </section>
 
-          <!-- Strategy Profile Window -->
-          <aside class="hud-window pane-config" id="section-config" aria-label="Strategy configuration">
-            <div class="window-bar">
-              <div class="window-title-group">
-                <span class="module-code tabular">CFG</span>
-                <h2>Strategy Profile</h2>
-              </div>
-              <button type="button" class="btn btn-primary btn-sm" id="btn-save-config">Save YAML</button>
-            </div>
-
-            <form id="config-form" class="config-form">
-              <div class="control-field">
-                <label for="cfg-playstyle">Doctrine Preset</label>
-                <select id="cfg-playstyle" name="playstyle">
-                  <option value="fleeter">Aggressive Fleeter</option>
-                  <option value="hybrid">Hybrid Eco + Raid</option>
-                  <option value="miner">Pacifist Miner</option>
-                </select>
+          <!-- ==================== VIEW 6: STRATEGY CONFIG ==================== -->
+          <section id="view-config" class="page-view" aria-label="Strategy configuration" hidden>
+            <article class="hud-window page-fill">
+              <div class="window-bar">
+                <div class="window-title-group">
+                  <span class="module-code tabular">CFG</span>
+                  <h2>Strategy Profile &amp; Decision Buckets (config.yaml)</h2>
+                </div>
+                <button type="button" class="btn btn-primary btn-sm" id="btn-save-config">Save &amp; Apply</button>
               </div>
 
-              <div class="toggle-grid">
-                <label class="toggle-row"><input type="checkbox" id="cfg-allow_research" /> <span>Auto Research (r1–r15)</span></label>
-                <label class="toggle-row"><input type="checkbox" id="cfg-allow_shipyard" /> <span>Auto Shipyard Wings</span></label>
-                <label class="toggle-row"><input type="checkbox" id="cfg-allow_multi_planet" /> <span>Multi-Planet Colonies</span></label>
-                <label class="toggle-row"><input type="checkbox" id="cfg-merchant_mode" /> <span>Merchant Mode (skip Blast furnace)</span></label>
-                <label class="toggle-row"><input type="checkbox" id="cfg-allow_fleetsave" /> <span>Live P0 Escape Flight</span></label>
-                <label class="toggle-row"><input type="checkbox" id="cfg-allow_galaxy_scan" /> <span>Live Galaxy Scanning</span></label>
-                <label class="toggle-row"><input type="checkbox" id="cfg-allow_raids" /> <span>Auto Raids (Yellow &amp; Spacia)</span></label>
-                <label class="toggle-row"><input type="checkbox" id="cfg-allow_pvp_in_az" /> <span>Allow PvP Attacks (Light Red AZ)</span></label>
-                <label class="toggle-row"><input type="checkbox" id="cfg-allow_colonize" /> <span>Auto Colonize (&gt;=230 fields)</span></label>
+              <div class="config-body">
+                <div class="config-grid">
+                  <div class="control-field">
+                    <label for="cfg-playstyle">Playstyle Doctrine</label>
+                    <select id="cfg-playstyle">
+                      <option value="fleeter">fleeter — Combat &amp; Techs</option>
+                      <option value="hybrid">hybrid — Balanced</option>
+                      <option value="miner">miner — Economy ROI</option>
+                    </select>
+                  </div>
+
+                  <div class="control-field">
+                    <label for="cfg-storage_warn_ratio">Storage Warn Threshold</label>
+                    <input type="number" id="cfg-storage_warn_ratio" step="0.05" min="0.5" max="0.98" />
+                  </div>
+
+                  <div class="control-field">
+                    <label for="cfg-combat_safety_margin">Combat Safety Margin</label>
+                    <input type="number" id="cfg-combat_safety_margin" step="0.1" min="1.1" max="5.0" />
+                  </div>
+
+                  <div class="control-field">
+                    <label for="cfg-fleet_save_fuel_reserve_spice">Escape Flight Fuel Reserve (Spice)</label>
+                    <input type="number" id="cfg-fleet_save_fuel_reserve_spice" step="50" min="0" />
+                  </div>
+
+                  <div class="control-field">
+                    <label for="cfg-max_actions_per_hour">Max Live Actions / Hour</label>
+                    <input type="number" id="cfg-max_actions_per_hour" min="1" max="120" />
+                  </div>
+                </div>
+
+                <div class="config-toggles">
+                  <label class="toggle-chip"><input type="checkbox" id="cfg-auto_throttle_blast_furnace" /> Auto-pause Blast furnace (0%) when Iron-starved</label>
+                  <label class="toggle-chip"><input type="checkbox" id="cfg-allow_research" /> Auto Research</label>
+                  <label class="toggle-chip"><input type="checkbox" id="cfg-allow_shipyard" /> Auto Shipyard</label>
+                  <label class="toggle-chip"><input type="checkbox" id="cfg-allow_multi_planet" /> Multi-Planet Control</label>
+                  <label class="toggle-chip"><input type="checkbox" id="cfg-merchant_mode" /> Merchant Mode (Skip b2)</label>
+                  <label class="toggle-chip"><input type="checkbox" id="cfg-allow_fleetsave" /> P0 Auto Escape Flight</label>
+                  <label class="toggle-chip"><input type="checkbox" id="cfg-allow_galaxy_scan" /> Galaxy Scanner</label>
+                  <label class="toggle-chip"><input type="checkbox" id="cfg-allow_raids" /> Auto Raids (Inactive/Spacia)</label>
+                  <label class="toggle-chip"><input type="checkbox" id="cfg-allow_pvp_in_az" /> Allow PvP inside AZ</label>
+                  <label class="toggle-chip"><input type="checkbox" id="cfg-allow_colonize" /> Auto Colonize</label>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <!-- ==================== VIEW 7: LIVE LOGS ==================== -->
+          <section id="view-logs" class="page-view" aria-label="Live runtime logs" hidden>
+            <article class="hud-window page-fill">
+              <div class="window-bar">
+                <div class="window-title-group">
+                  <span class="module-code tabular">LOG</span>
+                  <h2>Live Runtime Terminal Output</h2>
+                </div>
+                <div class="inline-actions">
+                  <div class="tab-group">
+                    <button type="button" class="tab-btn active" data-log="commander">commander.log</button>
+                    <button type="button" class="tab-btn" data-log="game_api">game_api.log</button>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-logs">Refresh</button>
+                </div>
               </div>
 
-              <div class="numeric-grid">
-                <div class="control-field">
-                  <label for="cfg-storage_warn_ratio">Storage Guard</label>
-                  <input type="number" step="0.05" min="0.1" max="0.99" id="cfg-storage_warn_ratio" />
-                </div>
-                <div class="control-field">
-                  <label for="cfg-combat_safety_margin">Combat Ratio</label>
-                  <input type="number" step="0.1" min="1.0" max="5.0" id="cfg-combat_safety_margin" />
-                </div>
-                <div class="control-field">
-                  <label for="cfg-fleet_save_fuel_reserve_spice">Fuel Reserve</label>
-                  <input type="number" step="50" min="0" id="cfg-fleet_save_fuel_reserve_spice" />
-                </div>
-                <div class="control-field">
-                  <label for="cfg-max_actions_per_hour">Click Cap / Hr</label>
-                  <input type="number" step="5" min="1" max="240" id="cfg-max_actions_per_hour" />
-                </div>
+              <div class="logs-fill">
+                <pre id="logs-pre" class="console-box console-fill">Waiting for runtime log output...</pre>
               </div>
-            </form>
-
-            <div class="window-foot">
-              <span class="foot-tag tabular">WIN // CONFIG.YAML</span>
-              <span class="foot-bar" aria-hidden="true"></span>
-              <span class="foot-tag tabular">LIVE RELOAD</span>
-            </div>
-          </aside>
+            </article>
+          </section>
         </main>
-
-        <!-- Row 3: Execution Log Window -->
-        <section class="hud-window logs-section" id="section-logs" aria-label="Execution activity log">
-          <div class="window-bar">
-            <div class="window-title-group">
-              <span class="module-code tabular">LOG</span>
-              <h2>Telemetry Stream</h2>
-            </div>
-            <div class="pane-controls">
-              <div class="filter-pills" role="tablist" aria-label="Log sources">
-                <button type="button" class="chip active" data-log="commander">Commander Log</button>
-                <button type="button" class="chip" data-log="api">Game API Log</button>
-              </div>
-              <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-logs">Refresh</button>
-            </div>
-          </div>
-          <pre class="log-stream tabular" id="log-output">Loading logs...</pre>
-        </section>
       </div>
     </div>
   </div>
-  <script src="/app.js" type="module"></script>
+
+  <script src="/app.js"></script>
 </body>
 </html>

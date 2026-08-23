@@ -14,11 +14,13 @@ from selenium.common.exceptions import (
     StaleElementReferenceException,
 )
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import Select
 
 from spaceinvasion.client import GameBrowserClient
 from spaceinvasion.state import (
     GameState,
     parse_buildings_page,
+    parse_economy_rates,
     parse_research_page,
     parse_unit_factory_page,
 )
@@ -51,6 +53,7 @@ class ActionExecutor:
         self.action_delay_range = action_delay_range
         self.allow_fleetsave = allow_fleetsave
         self._recent_timestamps: Deque[float] = deque()
+        self.last_economy_rates: dict[int, dict[str, int]] = {}
 
     def _prune_hour_window(self, now: float) -> None:
         cutoff = now - 3600.0
@@ -302,13 +305,78 @@ class ActionExecutor:
             message=f"Ordered {qty}x {action.target_name} on [{action.planet_coords}].",
         )
 
+    def _execute_throttle_building(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+    ) -> ExecutionResult:
+        bid = int(action.target_id or 2)
+        if bid not in (1, 2, 3, 4, 5, 6):
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: building b{bid} does not support internalEconomy rate control.",
+            )
+
+        field_name = f"resource{bid}" if bid <= 4 else "resource5"
+        raw_pct = 0 if action.target_level is None else int(action.target_level)
+        target_pct = max(0, min(100, (raw_pct // 10) * 10))
+
+        html = self._navigate_and_select_planet(client, state, "internalEconomy", action.planet_id)
+        cur_rates = parse_economy_rates(html)
+        if cur_rates:
+            self.last_economy_rates[action.planet_id] = dict(cur_rates)
+        if field_name in cur_rates and cur_rates[field_name] == target_pct:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"No-op: {action.target_name} ({field_name}) is already at {target_pct}% on [{action.planet_coords}].",
+            )
+
+        client._switch_frame("F_Hauptframe")
+        try:
+            select_el = client.driver.find_element(By.NAME, field_name)
+            Select(select_el).select_by_value(str(target_pct))
+            submit_btn = client.driver.find_element(
+                By.CSS_SELECTOR,
+                'form#ress input[type="submit"], form[action*="internalEconomy"] input[type="submit"], form input[type="submit"]',
+            )
+            time.sleep(random.uniform(*self.action_delay_range))
+            submit_btn.click()
+        except NoSuchElementException:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: internalEconomy control {field_name} not found.",
+            )
+
+        updated_html = client._wait_frame_ready("F_Hauptframe")
+        updated_rates = parse_economy_rates(updated_html)
+        if not updated_rates:
+            updated_rates = dict(cur_rates)
+        updated_rates[field_name] = target_pct
+        self.last_economy_rates[action.planet_id] = dict(updated_rates)
+
+        self._recent_timestamps.append(time.monotonic())
+        client.read_planets_overview(refresh=True)
+        return ExecutionResult(
+            executed=True,
+            dry_run=False,
+            action=action,
+            message=f"Set {action.target_name} ({field_name}) to {target_pct}% on [{action.planet_coords}].",
+        )
+
     def execute_action(
         self,
         client: GameBrowserClient,
         state: GameState,
         action: PlannedAction,
     ) -> ExecutionResult:
-        """Execute one approved action (`BUILD`, `CLAIM_TUTORIAL`, `RESEARCH`, `BUILD_SHIP`)."""
+        """Execute one approved action (`BUILD`, `CLAIM_TUTORIAL`, `RESEARCH`, `BUILD_SHIP`, `THROTTLE_BUILDING`)."""
         if not action.executable_now:
             return ExecutionResult(
                 executed=False,
@@ -317,7 +385,14 @@ class ActionExecutor:
                 message="Skipped: action is not currently executable.",
             )
 
-        supported = ("BUILD", "CLAIM_TUTORIAL", "RESEARCH", "BUILD_SHIP", "ESCAPE_FLIGHT")
+        supported = (
+            "BUILD",
+            "CLAIM_TUTORIAL",
+            "RESEARCH",
+            "BUILD_SHIP",
+            "THROTTLE_BUILDING",
+            "ESCAPE_FLIGHT",
+        )
         if action.kind not in supported:
             return ExecutionResult(
                 executed=False,
@@ -325,7 +400,10 @@ class ActionExecutor:
                 action=action,
                 message=f"Skipped: unsupported live action kind {action.kind}.",
             )
-        if action.kind in ("BUILD", "RESEARCH", "BUILD_SHIP") and action.target_id is None:
+        if (
+            action.kind in ("BUILD", "RESEARCH", "BUILD_SHIP", "THROTTLE_BUILDING")
+            and action.target_id is None
+        ):
             return ExecutionResult(
                 executed=False,
                 dry_run=self.dry_run,
@@ -334,9 +412,13 @@ class ActionExecutor:
             )
 
         if self.dry_run:
-            suffix = f" -> L{action.target_level}" if action.target_level and action.kind != "BUILD_SHIP" else ""
-            if action.kind == "BUILD_SHIP" and action.target_level:
+            suffix = ""
+            if action.kind == "THROTTLE_BUILDING" and action.target_level is not None:
+                suffix = f" -> {action.target_level}%"
+            elif action.kind == "BUILD_SHIP" and action.target_level:
                 suffix = f" x{action.target_level}"
+            elif action.target_level:
+                suffix = f" -> L{action.target_level}"
             return ExecutionResult(
                 executed=False,
                 dry_run=True,
@@ -368,6 +450,8 @@ class ActionExecutor:
             return self._execute_research(client, state, action)
         if action.kind == "BUILD_SHIP":
             return self._execute_build_ship(client, state, action)
+        if action.kind == "THROTTLE_BUILDING":
+            return self._execute_throttle_building(client, state, action)
 
         return ExecutionResult(
             executed=False,

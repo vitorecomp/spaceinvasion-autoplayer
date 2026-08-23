@@ -964,6 +964,128 @@ def _plan_economy_for_planet(
     return mine_actions, priority_builds, advisories
 
 
+def _plan_blast_furnace_throttle(
+    state: GameState,
+    planet: PlanetState,
+    existing_plan: list[PlannedAction],
+    cfg: StrategyConfig,
+) -> Optional[PlannedAction]:
+    """Pause Blast furnace (`0%`) to stop 2:1 Pig iron drain when Iron-starved, or resume (`100%`)."""
+    if planet.planet_type in ("asteroid", "raid"):
+        return None
+    b2_lvl = planet.building_level(BLAST_FURNACE)
+    if b2_lvl <= 0:
+        return None
+
+    rates = getattr(planet, "economy_rates", None) or {}
+    cur_b2_pct = int(rates.get("resource2", 100))
+    cur_b1_pct = int(rates.get("resource1", 100))
+
+    mining_tech = int((state.researches or {}).get("r1", 0) or 0)
+    speedup = float(state.speedup_factor or 1.0)
+    if speedup <= 0:
+        speedup = 1.0
+    prod_ratio = 1.0
+    if planet.energy.used > 0 and planet.energy.produced < planet.energy.used:
+        prod_ratio = max(0.0, planet.energy.produced / planet.energy.used)
+    factor = speedup * prod_ratio
+
+    p_pig_gross = (
+        game_data.mine_production_per_hour(
+            PIG_IRON_MINE,
+            planet.building_level(PIG_IRON_MINE),
+            temperature=planet.temperature,
+            mining_tech_level=mining_tech,
+        )
+        * factor
+        * (max(0, cur_b1_pct) / 100.0)
+    )
+    bf_pig_used_full = game_data.blast_furnace_pig_iron_used(b2_lvl) * factor
+    net_pig_at_100 = p_pig_gross - bf_pig_used_full
+
+    p_acts = [
+        a
+        for a in existing_plan
+        if a.planet_id == planet.planet_id
+        and a.kind in ("WAIT_RESOURCES", "BUILD", "RESEARCH", "BUILD_SHIP")
+    ]
+    prio_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+    p_acts.sort(key=lambda a: prio_order.get(a.priority, 9))
+
+    blocking_on_pig = any(
+        a.kind == "WAIT_RESOURCES" and a.missing.pig_iron > 0 and a.missing.metal == 0
+        for a in p_acts[:2]
+    )
+    needs_metal = any(a.missing.metal > 0 for a in p_acts[:3])
+    metal_cap_pct = (planet.resources.metal / planet.storage.metal) if planet.storage.metal > 0 else 0.0
+
+    if cur_b2_pct > 0:
+        if not needs_metal and (
+            blocking_on_pig
+            or (net_pig_at_100 < 0 and planet.resources.pig_iron < max(500.0, bf_pig_used_full * 0.5))
+        ):
+            return PlannedAction(
+                priority="P1",
+                kind="THROTTLE_BUILDING",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=BLAST_FURNACE,
+                target_name="Blast furnace 0%",
+                target_level=0,
+                reason=(
+                    f"Pause Blast furnace (currently {cur_b2_pct}%) to save "
+                    f"+{bf_pig_used_full:.0f} Pig iron/h while Pig iron is the bottleneck"
+                ),
+                executable_now=True,
+            )
+        if not needs_metal and (
+            metal_cap_pct >= cfg.storage_warn_ratio
+            or (net_pig_at_100 < 0 and planet.resources.pig_iron < bf_pig_used_full)
+        ):
+            return PlannedAction(
+                priority="P2",
+                kind="THROTTLE_BUILDING",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=BLAST_FURNACE,
+                target_name="Blast furnace 0%",
+                target_level=0,
+                reason=(
+                    f"Blast furnace drains {bf_pig_used_full:.0f} Pig iron/h; "
+                    "pause to 0% to prioritize Pig iron stockpiling"
+                ),
+                executable_now=True,
+            )
+        return None
+
+    # Currently paused (0%): resume when Metal is needed or Pig iron is abundant
+    if needs_metal:
+        return PlannedAction(
+            priority="P1",
+            kind="THROTTLE_BUILDING",
+            planet_id=planet.planet_id,
+            planet_coords=planet.coords,
+            target_id=BLAST_FURNACE,
+            target_name="Blast furnace 100%",
+            target_level=100,
+            reason="Metal needed for upcoming build/research: resume Blast furnace to 100%",
+            executable_now=True,
+        )
+    if planet.resources.pig_iron >= max(2500, planet.resources.metal * 2) and net_pig_at_100 >= 0:
+        return PlannedAction(
+            priority="P2",
+            kind="THROTTLE_BUILDING",
+            planet_id=planet.planet_id,
+            planet_coords=planet.coords,
+            target_id=BLAST_FURNACE,
+            target_name="Blast furnace 100%",
+            target_level=100,
+            reason="Pig iron reserves healthy: resume Blast furnace smelting to 100%",
+            executable_now=True,
+        )
+    return None
+
+
 def plan_actions(
     state: GameState,
     *,
@@ -1152,6 +1274,13 @@ def plan_actions(
         all_mines.sort(key=lambda pair: pair[0])
         plan.extend(act for _, act in all_mines)
         plan.extend(all_advisories)
+
+    # Bucket: Blast furnace (b2) 0% / 100% auto-throttling to protect Pig iron flow
+    if cfg.auto_throttle_blast_furnace and not cfg.merchant_mode:
+        for planet in planets_to_check:
+            throttle_act = _plan_blast_furnace_throttle(state, planet, plan, cfg)
+            if throttle_act is not None:
+                plan.append(throttle_act)
 
     # Sort strictly by priority band, executable actions first within each band
     priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}

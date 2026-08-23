@@ -39,7 +39,7 @@ All detailed game mechanics, scaling formulas, checkpoint tables, unit stats, an
 ```
 
 - **Tier 1 (`spaceinvasion/browser.py`, `spaceinvasion/auth.py`, `login.py`)**: BitMeUp login + detached DevTools session on `127.0.0.1:9222`.
-- **Tier 2 (`game_api.py`, `spaceinvasion/api_server.py`, `spaceinvasion/ui/`, `spaceinvasion/client.py`, `spaceinvasion/executor.py`)**: Single-mutex JSON HTTP facade + embedded Operator Control UI (`http://127.0.0.1:8787/`) exposing static UI routes (`/`, `/index.html`, `/styles.css`, `/app.js`), `GET /health`, `GET /state`, `GET /bot_status`, `GET /dashboard`, and `POST /command` (`plan`, `ranking_evolution`, `tick_once`, `build`, `research`, `build_ship`, `claim_tutorial`, `fleetsave_plan`, `navigate`, `menu`, `config`, `update_config`, `bot_control`, `ensure_session`).
+- **Tier 2 (`game_api.py`, `spaceinvasion/api_server.py`, `spaceinvasion/ui/`, `spaceinvasion/client.py`, `spaceinvasion/executor.py`)**: Single-mutex JSON HTTP facade + single-screen multi-view Operator Control UI (`http://127.0.0.1:8787/`, default **Dashboard**, **Buildings & ETAs**, **Combat & Fleet**, **Operations**, **Ranking**, **Config**, **Logs**) exposing static UI routes (`/`, `/index.html`, `/styles.css`, `/app.js`), `GET /health`, `GET /state`, `GET /bot_status`, `GET /dashboard`, and `POST /command` (`plan`, `buildings_eta`, `combat_overview`, `simulate_combat`, `throttle_building`, `ranking_evolution`, `tick_once`, `build`, `research`, `build_ship`, `claim_tutorial`, `fleetsave_plan`, `navigate`, `menu`, `config`, `update_config`, `bot_control`, `ensure_session`).
 - **Tier 3 (`commander.py`, `spaceinvasion/commander_client.py`, `spaceinvasion/strategy.py`, `spaceinvasion/fleet.py`, `spaceinvasion/ranking.py`)**: Zero-Selenium decision loop & progression analytics supporting **Full-Auto Aggressive Fleeter** (or `hybrid`/`miner`) configured via optional `config.yaml` ([config.example.yaml](config.example.yaml)), Attack Zone/score growth forecasting, polling `/bot_status` for live pause/mode overrides, and reloading `config.yaml` per tick while logging both `ACTUAL` and `NEXT` actions to `logs/`.
 
 ---
@@ -47,7 +47,7 @@ All detailed game mechanics, scaling formulas, checkpoint tables, unit stats, an
 ## 3. Decision Priority Hierarchy (`spaceinvasion/strategy.py`)
 
 - **P0 (Survival)**: Detect incoming attacks -> emit alert and compute optimal **Escape flight** (`Spice → Metal → Kryptonite → Pig iron`, fuel reserved; live launch gated on `allow_fleetsave`).
-- **P1 (Health Guards)**: Promote *Fusion plant* (`b5`), *Thermosolar plant* (`b6`), or `0-field` warm orbital *Solar cells* (`s9`) on negative/starving projected energy, and upgrade warehouses (`b11`–`b14`) at `>= 85%` capacity.
+- **P1 (Health Guards & Pig Iron Recovery)**: Promote *Fusion plant* (`b5`), *Thermosolar plant* (`b6`), or `0-field` warm orbital *Solar cells* (`s9`) on negative/starving projected energy, upgrade warehouses (`b11`–`b14`) at `>= 85%` capacity, and throttle *Blast furnace* (`b2 -> 0%` via `THROTTLE_BUILDING` in `internalEconomy`, controlled by `auto_throttle_blast_furnace`) when Pig iron is the bottleneck and Metal is not needed (resuming `100%` when Metal is needed or reserves recover).
 - **P2 (Tutorial & Multi-Planet Fleeter Economy)**: Complete tutorial building + research tasks (deferring non-urgent Fusion upgrades to `bucket = 4` behind mines when net energy is ample); run cross-colony ROI mines (capped *Blast furnace* `<= 70%` Pig iron or skipped via `merchant_mode`); unlock `b8`/`b9`; queue research (`r1`–`r15`) & Fleeter shipyard wings (`s1, s4, s10, s8, s11, s3, s7, s13, s14, s15`).
 - **P3 (Expansion & Farming — [spaceinvasion/fleet.py](spaceinvasion/fleet.py))**: Rank uninhabited `>= 230`-field (`pos 7–12`) vs. cold *Spice* (`pos 13–16`) colony slots; score Yellow inactive & distant *Spacia* raid targets (`allow_pvp_in_az: false` default, `>= 1.4x` combat safety, `3/24h` active bash tracking).
 
@@ -56,7 +56,7 @@ All detailed game mechanics, scaling formulas, checkpoint tables, unit stats, an
 ## 4. Configuration & Secrets Boundary
 
 - **`.env`** (`chmod 600`, git-ignored): Credentials only.
-- **`config.yaml`** (`spaceinvasion/config.py`, optional, hot-reloaded): Strategy toggles (`playstyle`, `merchant_mode`, `allow_research`, `allow_shipyard`, `allow_multi_planet`, `allow_fleetsave`, `allow_galaxy_scan`, `allow_raids`, `allow_pvp_in_az`, `allow_colonize`, `shipyard_targets`, safety ratios).
+- **`config.yaml`** (`spaceinvasion/config.py`, optional, hot-reloaded): Strategy toggles (`playstyle`, `merchant_mode`, `auto_throttle_blast_furnace`, `allow_research`, `allow_shipyard`, `allow_multi_planet`, `allow_fleetsave`, `allow_galaxy_scan`, `allow_raids`, `allow_pvp_in_az`, `allow_colonize`, `shipyard_targets`, safety ratios).
 - **Logging Security**: `redact_sensitive` in [spaceinvasion/logging_utils.py](spaceinvasion/logging_utils.py) strips `sid=<token>` from all logs before disk write.
 
 ---

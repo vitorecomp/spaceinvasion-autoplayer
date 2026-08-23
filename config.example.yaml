@@ -3,6 +3,7 @@
 
 playstyle: fleeter                # "fleeter" | "hybrid" | "miner"
 merchant_mode: false              # Set true if Merchant assistant is active (skips Blast furnace post-tutorial)
+auto_throttle_blast_furnace: true # Auto-pause Blast furnace (0%) when Pig iron is the bottleneck; resume (100%) when Metal is needed
 allow_research: true              # Auto-queue global research when Research lab is ready
 allow_shipyard: true              # Scale utility + Diffusion/Warp combat wings as unlocked
 allow_multi_planet: true          # Plan & build across all colonies instead of active planet only

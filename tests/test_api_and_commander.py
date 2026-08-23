@@ -182,7 +182,23 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertIsNotNone(dash["state"])
             self.assertGreaterEqual(len(dash["plan"]), 1)
             self.assertIn("ranking", dash)
+            self.assertIn("buildings_eta", dash)
+            self.assertIn("combat", dash)
+            self.assertEqual(len(dash["buildings_eta"]["buildings"]), 21)
             self.assertEqual(len(dash["ranking"]["horizons"]), 5)
+
+            eta_cmd = api.send_command({"command": "buildings_eta"})
+            self.assertTrue(eta_cmd["ok"])
+            self.assertEqual(len(eta_cmd["buildings_eta"]["researches"]), 15)
+
+            sim_cmd = api.send_command({
+                "command": "simulate_combat",
+                "attacker_ships": {"s4": 20, "s1": 4},
+                "defender_defense": {"d1": 2},
+                "target_resources": {"pig_iron": 10000, "metal": 10000},
+            })
+            self.assertTrue(sim_cmd["ok"])
+            self.assertTrue(sim_cmd["simulation"]["safe_to_attack"])
 
             rnk_cmd = api.send_command({"command": "ranking_evolution"})
             self.assertTrue(rnk_cmd["ok"])
@@ -296,6 +312,26 @@ class TestApiAndCommander(unittest.TestCase):
             sanitized["action_href"],
             "indexInternal.es?action=internalBuildItem&buildingID=1&sid=REDACTED",
         )
+
+    def test_commander_maps_throttle_building_command_payload(self) -> None:
+        from spaceinvasion.strategy import PlannedAction
+
+        act = PlannedAction(
+            priority="P1",
+            kind="THROTTLE_BUILDING",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=2,
+            target_name="Blast furnace 0%",
+            target_level=0,
+            reason="Pause Blast furnace to boost Pig iron",
+            executable_now=True,
+        )
+        payload = commander._action_to_command_payload(act, dry_run=False)
+        self.assertEqual(payload["command"], "throttle_building")
+        self.assertEqual(payload["building_id"], 2)
+        self.assertEqual(payload["percentage"], 0)
+        self.assertFalse(payload["dry_run"])
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ class TestStrategyConfig(unittest.TestCase):
         cfg = load_strategy_config(Path("/nonexistent/does_not_exist.yaml"))
         self.assertEqual(cfg, StrategyConfig())
         self.assertFalse(cfg.merchant_mode)
+        self.assertTrue(cfg.auto_throttle_blast_furnace)
         self.assertFalse(cfg.allow_fleetsave)
         self.assertTrue(cfg.allow_research)
 
@@ -21,6 +22,7 @@ class TestStrategyConfig(unittest.TestCase):
         yaml_text = """
 # Strategy override
 merchant_mode: true   # Skip Blast furnace post-tutorial
+auto_throttle_blast_furnace: false
 allow_fleetsave: false
 combat_safety_margin: 1.55
 shipyard_targets:
@@ -32,6 +34,7 @@ shipyard_targets:
             p.write_text(yaml_text, encoding="utf-8")
             cfg = load_strategy_config(p)
             self.assertTrue(cfg.merchant_mode)
+            self.assertFalse(cfg.auto_throttle_blast_furnace)
             self.assertFalse(cfg.allow_fleetsave)
             self.assertAlmostEqual(cfg.combat_safety_margin, 1.55)
             self.assertEqual(cfg.shipyard_targets["small-transport"], 10)

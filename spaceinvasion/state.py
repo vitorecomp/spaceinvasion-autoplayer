@@ -225,6 +225,7 @@ class PlanetState:
     building_offers: tuple[BuildingOffer, ...] = field(default_factory=tuple)
     ship_offers: tuple[UnitOffer, ...] = field(default_factory=tuple)
     defense_offers: tuple[UnitOffer, ...] = field(default_factory=tuple)
+    economy_rates: dict[str, int] = field(default_factory=dict)
 
     @property
     def fields_remaining(self) -> int:
@@ -822,6 +823,22 @@ def parse_menu_status(html: str) -> tuple[dict[str, int], Optional[int], Optiona
     return counts, points, rank
 
 
+def parse_economy_rates(html: str) -> dict[str, int]:
+    """Extract per-building percentage throttle values (`resource1`..`resource5`) from `internalEconomy`."""
+    soup = BeautifulSoup(html, "html.parser")
+    rates: dict[str, int] = {}
+    for sel in soup.find_all("select", attrs={"name": re.compile(r"^resource\d+$")}):
+        name = str(sel.get("name") or "")
+        selected = sel.find("option", selected=True)
+        if selected is None:
+            options = sel.find_all("option")
+            selected = options[0] if options else None
+        if selected is not None:
+            raw_val = str(selected.get("value") or selected.get_text(strip=True))
+            rates[name] = parse_si_int(raw_val)
+    return rates
+
+
 def parse_menu_messages(html: str) -> dict[str, int]:
     """Extract unread message counts per category from `F_Navi` (`internalMenu`)."""
     counts, _, _ = parse_menu_status(html)
@@ -893,6 +910,7 @@ def game_state_from_dict(data: dict[str, Any]) -> GameState:
                 building_offers=offers,
                 ship_offers=ship_offers,
                 defense_offers=defense_offers,
+                economy_rates={str(k): int(v) for k, v in (raw_p.get("economy_rates") or {}).items()},
             )
         )
 

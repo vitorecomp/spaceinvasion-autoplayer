@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from selenium.common.exceptions import StaleElementReferenceException
 
@@ -245,6 +245,57 @@ class TestActionExecutor(unittest.TestCase):
         fs_out = ex.execute_action(client, state, fs_action)
         self.assertFalse(fs_out.executed)
         self.assertIn("allow_fleetsave", fs_out.message)
+
+    def test_throttle_building_dry_and_live_internal_economy(self) -> None:
+        state, _ = _make_state_and_action()
+        throttle_action = PlannedAction(
+            priority="P1",
+            kind="THROTTLE_BUILDING",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=2,
+            target_name="Blast furnace 0%",
+            target_level=0,
+            reason="Pause Blast furnace to boost Pig iron",
+            executable_now=True,
+        )
+
+        # Dry-run formats -> 0% cleanly (including target_level == 0)
+        dry_ex = ActionExecutor(dry_run=True)
+        dry_out = dry_ex.execute_action(MagicMock(spec=GameBrowserClient), state, throttle_action)
+        self.assertFalse(dry_out.executed)
+        self.assertIn("-> 0%", dry_out.message)
+
+        econ_before = """
+        <form id="ress"><select name="resource2">
+          <option value="100" selected="selected">100%</option>
+          <option value="0">0%</option>
+        </select><input type="submit" value="Calculate"></form>
+        """
+        econ_after = """
+        <form id="ress"><select name="resource2">
+          <option value="100">100%</option>
+          <option value="0" selected="selected">0%</option>
+        </select></form>
+        """
+        sel_mock = MagicMock()
+        submit_mock = MagicMock()
+        driver = MagicMock()
+        driver.find_element.side_effect = [sel_mock, submit_mock]
+        client = MagicMock(spec=GameBrowserClient)
+        client.driver = driver
+        client.navigate_menu.return_value = econ_before
+        client._wait_frame_ready.return_value = econ_after
+        client.read_planets_overview.return_value = state
+
+        live_ex = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
+        with patch("spaceinvasion.executor.Select") as mock_select_cls:
+            res = live_ex.execute_action(client, state, throttle_action)
+
+        self.assertTrue(res.executed)
+        mock_select_cls.return_value.select_by_value.assert_called_once_with("0")
+        submit_mock.click.assert_called_once()
+        self.assertEqual(live_ex.last_economy_rates[12476]["resource2"], 0)
 
 
 if __name__ == "__main__":

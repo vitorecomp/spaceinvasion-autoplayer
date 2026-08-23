@@ -8,10 +8,14 @@ import unittest
 
 from spaceinvasion.ranking import (
     attack_zone_for_points,
+    build_buildings_eta,
+    build_combat_overview,
     build_ranking_evolution,
     estimate_account_points,
     estimate_hourly_economy,
+    estimate_planet_hourly_economy,
     record_rank_snapshot,
+    simulate_combat_matchup,
 )
 from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
 
@@ -107,6 +111,77 @@ class TestRankingEvolution(unittest.TestCase):
             self.assertEqual(evo["observed_trend"]["rank_climbed"], 33)
             self.assertGreater(len(evo["milestones"]), 0)
             self.assertEqual(evo["milestones"][0]["label"], "AZ 2 Entry")
+
+    def test_buildings_eta_and_blast_furnace_pause_effect(self) -> None:
+        st_full = _sample_ranking_state()
+        p_full = estimate_planet_hourly_economy(st_full, st_full.planets[0])
+        self.assertGreater(p_full["metal_per_hr"], 0)
+        self.assertGreater(p_full["blast_furnace_pig_used_per_hr"], 0)
+
+        paused_planet = PlanetState(
+            planet_id=st_full.planets[0].planet_id,
+            name=st_full.planets[0].name,
+            coords=st_full.planets[0].coords,
+            planet_type=st_full.planets[0].planet_type,
+            temperature=st_full.planets[0].temperature,
+            fields_used=st_full.planets[0].fields_used,
+            fields_max=st_full.planets[0].fields_max,
+            resources=Resources(100, 5000, 5000, 2600),
+            storage=st_full.planets[0].storage,
+            energy=st_full.planets[0].energy,
+            buildings=st_full.planets[0].buildings,
+            economy_rates={"resource2": 0},
+        )
+        st_paused = GameState(
+            universe_id=st_full.universe_id,
+            user_id=st_full.user_id,
+            nickname=st_full.nickname,
+            timestamp=st_full.timestamp,
+            planets=(paused_planet,),
+            active_planet_id=paused_planet.planet_id,
+            speedup_factor=st_full.speedup_factor,
+        )
+        p_paused = estimate_planet_hourly_economy(st_paused, paused_planet)
+        self.assertEqual(p_paused["metal_per_hr"], 0.0)
+        self.assertEqual(p_paused["blast_furnace_pig_used_per_hr"], 0.0)
+        self.assertGreater(p_paused["pig_iron_per_hr"], p_full["pig_iron_per_hr"])
+
+        eta = build_buildings_eta(st_paused)
+        self.assertEqual(len(eta["buildings"]), 21)
+        self.assertEqual(len(eta["researches"]), 15)
+        b1 = next(b for b in eta["buildings"] if b["building_id"] == 1)
+        self.assertEqual(b1["current_level"], 11)
+        self.assertEqual(b1["next_level"], 12)
+        self.assertEqual(len(b1["horizons"]), 4)
+        self.assertIsNotNone(b1["reach_hours"])
+        self.assertNotEqual(b1["reach_eta"], "—")
+
+    def test_combat_overview_and_simulation(self) -> None:
+        st = _sample_ranking_state()
+        cmb = build_combat_overview(st, safety_margin=1.4)
+        self.assertIn("attack_zone", cmb)
+        self.assertGreater(len(cmb["ships"]), 10)
+        self.assertGreater(len(cmb["defenses"]), 5)
+
+        win = simulate_combat_matchup(
+            st,
+            attacker_ships={"s4": 25, "s1": 5},
+            defender_defense={"d1": 2},
+            target_resources={"pig_iron": 10000, "metal": 10000},
+            safety_margin=1.4,
+        )
+        self.assertTrue(win["safe_to_attack"])
+        self.assertGreater(win["win_ratio"], 1.4)
+        self.assertGreater(win["total_plunder"], 0)
+
+        lose = simulate_combat_matchup(
+            st,
+            attacker_ships={"s4": 1},
+            defender_ships={"s10": 5},
+            defender_defense={"d1": 20},
+            safety_margin=1.4,
+        )
+        self.assertFalse(lose["safe_to_attack"])
 
 
 if __name__ == "__main__":

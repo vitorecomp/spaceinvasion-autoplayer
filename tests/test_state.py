@@ -6,8 +6,10 @@ import json
 import unittest
 
 from spaceinvasion.state import (
+    game_state_from_dict,
     parse_building_queue,
     parse_buildings_page,
+    parse_economy_rates,
     parse_home_metadata,
     parse_menu_messages,
     parse_menu_status,
@@ -252,6 +254,58 @@ class TestStateParsers(unittest.TestCase):
         self.assertEqual(counts["total"], 0)
         self.assertEqual(pts, 1250)
         self.assertEqual(rank, 393)
+
+    def test_parse_economy_rates_extracts_selects_and_roundtrips(self) -> None:
+        econ_html = """
+        <form id="ress" action="indexInternal.es?action=internalEconomy" method="POST">
+          <select name="resource1">
+            <option value="100" selected="selected">100%</option>
+            <option value="0">0%</option>
+          </select>
+          <select name="resource2">
+            <option value="100">100%</option>
+            <option value="0" selected="selected">0%</option>
+          </select>
+          <select name="resource3">
+            <option value="80" selected>80%</option>
+          </select>
+          <select name="resource4">
+            <option value="100" selected>100%</option>
+          </select>
+        </form>
+        """
+        rates = parse_economy_rates(econ_html)
+        self.assertEqual(
+            rates,
+            {"resource1": 100, "resource2": 0, "resource3": 80, "resource4": 100},
+        )
+        gs = parse_planets_overview_json(SAMPLE_JSON_CONTAINER)
+        raw = {
+            "universe_id": gs.universe_id,
+            "user_id": gs.user_id,
+            "nickname": gs.nickname,
+            "timestamp": gs.timestamp,
+            "planets": [
+                {
+                    **{
+                        "planet_id": gs.planets[0].planet_id,
+                        "name": gs.planets[0].name,
+                        "coords": gs.planets[0].coords,
+                        "planet_type": gs.planets[0].planet_type,
+                        "temperature": gs.planets[0].temperature,
+                        "fields_used": gs.planets[0].fields_used,
+                        "fields_max": gs.planets[0].fields_max,
+                        "resources": gs.planets[0].resources.__dict__,
+                        "storage": gs.planets[0].storage.__dict__,
+                        "energy": gs.planets[0].energy.__dict__,
+                        "buildings": gs.planets[0].buildings,
+                        "economy_rates": rates,
+                    }
+                }
+            ],
+        }
+        rt = game_state_from_dict(raw)
+        self.assertEqual(rt.planets[0].economy_rates["resource2"], 0)
 
 
 if __name__ == "__main__":

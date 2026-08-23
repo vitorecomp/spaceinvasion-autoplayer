@@ -489,6 +489,56 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(actions[0].target_id, SPICE_MINE)
         self.assertEqual(actions[-1].target_id, FUSION_PLANT)
 
+    def test_auto_throttle_blast_furnace_bucket_pauses_and_resumes(self) -> None:
+        # Scenario 1: Waiting on Pig iron for next mine with Blast furnace running -> P1 THROTTLE_BUILDING 0%
+        p_starved = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=20,
+            fields_max=230,
+            resources=Resources(50, 2000, 2000, 1000),
+            storage=Resources(100000, 100000, 100000, 100000),
+            energy=EnergyBalance(200, 120),
+            buildings={"b1": 4, "b2": 6, "b3": 4, "b4": 3, "b5": 8},
+            economy_rates={"resource2": 100},
+        )
+        st_starved = GameState(31, 1, "u", 0.0, (p_starved,), speedup_factor=1.0)
+        acts_pause = plan_actions(st_starved, config=StrategyConfig(auto_throttle_blast_furnace=True))
+        th_pause = [a for a in acts_pause if a.kind == "THROTTLE_BUILDING"]
+        self.assertTrue(th_pause)
+        self.assertEqual(th_pause[0].priority, "P1")
+        self.assertEqual(th_pause[0].target_level, 0)
+        self.assertTrue(th_pause[0].executable_now)
+
+        # Disabled via config flag -> omitted
+        acts_off = plan_actions(st_starved, config=StrategyConfig(auto_throttle_blast_furnace=False))
+        self.assertFalse(any(a.kind == "THROTTLE_BUILDING" for a in acts_off))
+
+        # Scenario 2: Paused at 0%, now missing Metal -> P1 THROTTLE_BUILDING 100%
+        p_need_metal = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=20,
+            fields_max=230,
+            resources=Resources(4000, 10, 4000, 4000),
+            storage=Resources(100000, 100000, 100000, 100000),
+            energy=EnergyBalance(200, 120),
+            buildings={"b1": 8, "b2": 6, "b3": 6, "b4": 4, "b5": 9, "b7": 1},
+            economy_rates={"resource2": 0},
+        )
+        st_need_met = GameState(31, 1, "u", 0.0, (p_need_metal,), speedup_factor=1.0)
+        acts_resume = plan_actions(st_need_met, config=StrategyConfig(auto_throttle_blast_furnace=True))
+        th_resume = [a for a in acts_resume if a.kind == "THROTTLE_BUILDING"]
+        self.assertTrue(th_resume)
+        self.assertEqual(th_resume[0].target_level, 100)
+        self.assertTrue(th_resume[0].executable_now)
+
 
 if __name__ == "__main__":
     unittest.main()

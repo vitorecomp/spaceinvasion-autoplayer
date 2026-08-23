@@ -116,6 +116,14 @@ def _action_to_command_payload(action: PlannedAction, *, dry_run: bool) -> dict:
             "planet_id": action.planet_id,
             "dry_run": dry_run,
         }
+    if action.kind == "THROTTLE_BUILDING" and action.target_id is not None:
+        return {
+            "command": "throttle_building",
+            "building_id": action.target_id,
+            "percentage": 0 if action.target_level is None else int(action.target_level),
+            "planet_id": action.planet_id,
+            "dry_run": dry_run,
+        }
     if action.kind == "ESCAPE_FLIGHT":
         return {"command": "fleetsave_plan", "planet_id": action.planet_id}
     return {"command": "plan", "dry_run": True}

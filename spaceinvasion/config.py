@@ -28,6 +28,7 @@ class StrategyConfig:
 
     playstyle: str = "fleeter"  # "fleeter" | "hybrid" | "miner"
     merchant_mode: bool = False
+    auto_throttle_blast_furnace: bool = True
     allow_research: bool = True
     allow_shipyard: bool = True
     allow_multi_planet: bool = True
@@ -125,6 +126,7 @@ def strategy_config_from_dict(data: dict[str, Any]) -> StrategyConfig:
     return StrategyConfig(
         playstyle=str(data.get("playstyle", "fleeter")).strip().lower() or "fleeter",
         merchant_mode=bool(data.get("merchant_mode", False)),
+        auto_throttle_blast_furnace=bool(data.get("auto_throttle_blast_furnace", True)),
         allow_research=bool(data.get("allow_research", True)),
         allow_shipyard=bool(data.get("allow_shipyard", True)),
         allow_multi_planet=bool(data.get("allow_multi_planet", True)),
@@ -167,6 +169,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Path = Path("config.yaml")) 
         "# SpaceInvasion Autoplayer runtime strategy configuration",
         f"playstyle: {cfg.playstyle}",
         f"merchant_mode: {'true' if cfg.merchant_mode else 'false'}",
+        f"auto_throttle_blast_furnace: {'true' if cfg.auto_throttle_blast_furnace else 'false'}",
         f"allow_research: {'true' if cfg.allow_research else 'false'}",
         f"allow_shipyard: {'true' if cfg.allow_shipyard else 'false'}",
         f"allow_multi_planet: {'true' if cfg.allow_multi_planet else 'false'}",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -31,11 +31,14 @@ from spaceinvasion.executor import ActionExecutor
 from spaceinvasion.fleet import plan_escape_flight
 from spaceinvasion.logging_utils import append_api_log, redact_sensitive
 from spaceinvasion.ranking import (
+    build_buildings_eta,
+    build_combat_overview,
     build_ranking_evolution,
     load_rank_history,
     record_rank_snapshot,
+    simulate_combat_matchup,
 )
-from spaceinvasion.state import GameState, PlanetState
+from spaceinvasion.state import GameState, PlanetState, parse_economy_rates
 from spaceinvasion.strategy import PlannedAction, plan_actions
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
@@ -125,6 +128,7 @@ class GameApiBridge:
         self._lock = threading.Lock()
         self._last_state: Optional[GameState] = None
         self._last_url: Optional[str] = None
+        self._economy_rates: dict[int, dict[str, int]] = {}
         self._rank_history_path: Optional[Path] = (
             (log_dir.parent / "state" / "rank_history.json") if log_dir is not None else None
         )
@@ -195,12 +199,34 @@ class GameApiBridge:
         raw_lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
         return str(redact_sensitive("\n".join(raw_lines[-lines:])))
 
-    def _record_state(self, state: GameState) -> None:
-        self._last_state = state
-        self._rank_samples = record_rank_snapshot(self._rank_history_path, state)
+    def _merge_economy_rates(self, state: GameState) -> GameState:
+        for pid, rates in getattr(self._live_executor, "last_economy_rates", {}).items():
+            if rates:
+                self._economy_rates[int(pid)] = dict(rates)
+
+        changed = False
+        updated_planets: list[PlanetState] = []
+        for planet in state.planets:
+            if planet.economy_rates:
+                self._economy_rates[planet.planet_id] = dict(planet.economy_rates)
+                updated_planets.append(planet)
+            elif planet.planet_id in self._economy_rates:
+                changed = True
+                updated_planets.append(
+                    replace(planet, economy_rates=dict(self._economy_rates[planet.planet_id]))
+                )
+            else:
+                updated_planets.append(planet)
+        return replace(state, planets=tuple(updated_planets)) if changed else state
+
+    def _record_state(self, state: GameState) -> GameState:
+        merged = self._merge_economy_rates(state)
+        self._last_state = merged
+        self._rank_samples = record_rank_snapshot(self._rank_history_path, merged)
+        return merged
 
     def dashboard(self, *, refresh: bool = False) -> dict[str, Any]:
-        """Return combined UI telemetry, plan, ranking evolution, config, and logs."""
+        """Return combined UI telemetry, plan, buildings ETAs, combat, ranking, config, and logs."""
         with self._lock:
             port_open = is_debug_port_open(self.debug_port)
             in_game = self._last_state is not None
@@ -226,6 +252,19 @@ class GameApiBridge:
                 if self._last_state is not None
                 else None
             )
+            buildings_eta = (
+                build_buildings_eta(self._last_state)
+                if self._last_state is not None
+                else None
+            )
+            combat = (
+                build_combat_overview(
+                    self._last_state,
+                    safety_margin=self.strategy_config.combat_safety_margin,
+                )
+                if self._last_state is not None
+                else None
+            )
             return {
                 "ok": True,
                 "health": {
@@ -240,6 +279,8 @@ class GameApiBridge:
                 "config": asdict(self.strategy_config),
                 "state": redact_sensitive(asdict(self._last_state)) if self._last_state else None,
                 "plan": redact_sensitive([asdict(a) for a in actions]),
+                "buildings_eta": buildings_eta,
+                "combat": combat,
                 "ranking": ranking,
                 "logs": {
                     "commander": self._read_log_tail("commander.log"),
@@ -251,8 +292,8 @@ class GameApiBridge:
         with self._lock:
             with self._client_factory(self.debug_port) as client:
                 state = client.read_full_snapshot(include_buildings=include_buildings)
-                self._record_state(state)
-            return asdict(state)
+                merged = self._record_state(state)
+            return asdict(merged)
 
     def _pick_executor(self, dry_run: bool) -> ActionExecutor:
         return self._dry_executor if dry_run else self._live_executor
@@ -396,14 +437,20 @@ class GameApiBridge:
         planned: PlannedAction,
         dry_run: bool,
     ) -> dict[str, Any]:
-        res = self._pick_executor(dry_run).execute_action(client, state, planned)
+        executor = self._pick_executor(dry_run)
+        res = executor.execute_action(client, state, planned)
+        if not dry_run:
+            for pid, rates in getattr(executor, "last_economy_rates", {}).items():
+                if rates:
+                    self._economy_rates[int(pid)] = dict(rates)
         if res.executed:
-            after_state = client.read_full_snapshot(include_buildings=True, return_home=False)
-            self._last_state = after_state
+            after_state = self._record_state(
+                client.read_full_snapshot(include_buildings=True, return_home=False)
+            )
             after_plan = plan_actions(after_state, config=self.strategy_config)
         else:
-            self._last_state = state
-            after_plan = plan_actions(state, config=self.strategy_config)
+            merged_state = self._record_state(state)
+            after_plan = plan_actions(merged_state, config=self.strategy_config)
         next_action = asdict(after_plan[0]) if after_plan else None
         client.navigate_menu("internalHome")
         return {
@@ -449,10 +496,61 @@ class GameApiBridge:
                 self._live_executor.allow_fleetsave = new_cfg.allow_fleetsave
             return {"ok": True, "command": cmd, "config": asdict(new_cfg)}
 
+        if cmd == "simulate_combat":
+            with self._lock:
+                state_for_sim = self._last_state or GameState(
+                    universe_id=0,
+                    user_id=0,
+                    nickname="simulator",
+                    timestamp=0.0,
+                )
+                atk_ships = payload.get("attacker_ships") or {}
+                def_ships = payload.get("defender_ships") or {}
+                def_defense = payload.get("defender_defense") or {}
+                def_researches = payload.get("defender_researches") or {}
+                tgt_resources = payload.get("target_resources") or {}
+                tgt_coords = str(payload.get("target_coords") or "01:001:01")
+                margin = float(
+                    payload.get("safety_margin", self.strategy_config.combat_safety_margin)
+                )
+                sim = simulate_combat_matchup(
+                    state_for_sim,
+                    attacker_ships=atk_ships,
+                    defender_ships=def_ships,
+                    defender_defense=def_defense,
+                    defender_researches=def_researches,
+                    target_resources=tgt_resources,
+                    target_coords=tgt_coords,
+                    safety_margin=margin,
+                )
+            return {"ok": True, "command": cmd, "simulation": sim}
+
         with self._lock:
             if cmd == "ensure_session":
                 self._ensure_session_fn()
                 return {"ok": True, "command": cmd, "message": "Session verified."}
+
+            if cmd == "buildings_eta" and not bool(payload.get("refresh", False)) and self._last_state is not None:
+                pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                planet = self._resolve_planet(self._last_state, pid) if pid is not None else self._last_state.active_planet()
+                return {
+                    "ok": True,
+                    "command": cmd,
+                    "buildings_eta": build_buildings_eta(self._last_state, planet),
+                }
+
+            if cmd == "combat_overview" and not bool(payload.get("refresh", False)) and self._last_state is not None:
+                pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                planet = self._resolve_planet(self._last_state, pid) if pid is not None else self._last_state.active_planet()
+                return {
+                    "ok": True,
+                    "command": cmd,
+                    "combat": build_combat_overview(
+                        self._last_state,
+                        planet,
+                        safety_margin=self.strategy_config.combat_safety_margin,
+                    ),
+                }
 
             with self._client_factory(self.debug_port) as client:
                 if cmd == "plan":
@@ -465,9 +563,38 @@ class GameApiBridge:
                         "actions": [asdict(a) for a in actions],
                     }
 
+                if cmd == "buildings_eta":
+                    state = self._record_state(client.read_full_snapshot(include_buildings=True))
+                    pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                    planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
+                    return {
+                        "ok": True,
+                        "command": cmd,
+                        "buildings_eta": build_buildings_eta(state, planet),
+                    }
+
+                if cmd == "combat_overview":
+                    state = self._record_state(
+                        client.read_full_snapshot(
+                            include_buildings=True,
+                            include_shipyard=True,
+                            return_home=True,
+                        )
+                    )
+                    pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                    planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
+                    return {
+                        "ok": True,
+                        "command": cmd,
+                        "combat": build_combat_overview(
+                            state,
+                            planet,
+                            safety_margin=self.strategy_config.combat_safety_margin,
+                        ),
+                    }
+
                 if cmd == "ranking_evolution":
-                    state = client.read_full_snapshot(include_buildings=True)
-                    self._record_state(state)
+                    state = self._record_state(client.read_full_snapshot(include_buildings=True))
                     return {
                         "ok": True,
                         "command": cmd,
@@ -518,6 +645,13 @@ class GameApiBridge:
                         )
                     client.ensure_in_game()
                     html = client.navigate_menu(action)
+                    if action == "internalEconomy":
+                        rates = parse_economy_rates(html)
+                        if rates and self._last_state is not None:
+                            active_p = self._last_state.active_planet()
+                            if active_p is not None:
+                                self._economy_rates[active_p.planet_id] = dict(rates)
+                                self._record_state(self._last_state)
                     res_payload: dict[str, Any] = {
                         "ok": True,
                         "command": cmd,
@@ -566,6 +700,33 @@ class GameApiBridge:
                         return_home=False,
                     )
                     planned = self._find_ship_action(state, int(raw_sid), qty, pid)
+                    return self._execute_and_summarize(client, state, cmd, planned, dry_run)
+
+                if cmd == "throttle_building":
+                    bid = int(payload.get("building_id", 2))
+                    if payload.get("percentage") is None:
+                        raise ApiRequestError("'throttle_building' command requires 'percentage' (0..100).")
+                    pct = max(0, min(100, (int(payload["percentage"]) // 10) * 10))
+                    pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                    state = client.read_full_snapshot(
+                        include_buildings=False,
+                        include_research=False,
+                        include_shipyard=False,
+                        return_home=False,
+                    )
+                    planet = self._resolve_planet(state, pid)
+                    label = "Blast furnace" if bid == 2 else planet.building_names.get(f"b{bid}", f"Building b{bid}")
+                    planned = PlannedAction(
+                        priority="P1",
+                        kind="THROTTLE_BUILDING",
+                        planet_id=planet.planet_id,
+                        planet_coords=planet.coords,
+                        target_id=bid,
+                        target_name=f"{label} {pct}%",
+                        target_level=pct,
+                        reason=f"Set {label} rate to {pct}% in internalEconomy",
+                        executable_now=True,
+                    )
                     return self._execute_and_summarize(client, state, cmd, planned, dry_run)
 
                 if cmd == "fleetsave_plan":
