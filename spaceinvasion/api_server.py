@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import secrets
 import threading
+import time
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -43,12 +46,34 @@ from spaceinvasion.storage import GameDatabase
 from spaceinvasion.strategy import PlannedAction, plan_actions
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
+_SERVER_BOOT_ID = secrets.token_hex(4)
 _UI_ASSETS: dict[str, tuple[str, str]] = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
 }
+
+
+def compute_ui_assets_state(ui_dir: Path = UI_DIR) -> dict[str, str]:
+    """Return lightweight digest tokens for hot-reloading UI CSS and code assets."""
+    def _file_sig(name: str) -> str:
+        p = ui_dir / name
+        try:
+            st = p.stat()
+            return f"{st.st_mtime_ns:x}-{st.st_size:x}"
+        except OSError:
+            return "missing"
+
+    css_version = _file_sig("styles.css")
+    code_raw = f"{_file_sig('index.html')}|{_file_sig('app.js')}".encode("utf-8")
+    code_version = hashlib.sha1(code_raw).hexdigest()[:12]
+    ui_version = f"{code_version}:{css_version}"
+    return {
+        "ui_version": ui_version,
+        "code_version": code_version,
+        "css_version": css_version,
+    }
 
 ALLOWED_MENU_ACTIONS = frozenset(
     {
@@ -286,6 +311,8 @@ class GameApiBridge:
             )
             return {
                 "ok": True,
+                "server_boot_id": _SERVER_BOOT_ID,
+                **compute_ui_assets_state(),
                 "health": {
                     "ok": port_open,
                     "debug_port": self.debug_port,
@@ -834,6 +861,7 @@ def create_api_server(
             raw = json.dumps(body).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
@@ -860,6 +888,17 @@ def create_api_server(
                 if parsed.path in _UI_ASSETS:
                     filename, ctype = _UI_ASSETS[parsed.path]
                     self._send_static(filename, ctype)
+                    return
+                if parsed.path == "/ui-version":
+                    self._send_json(
+                        HTTPStatus.OK,
+                        {
+                            "ok": True,
+                            "server_boot_id": _SERVER_BOOT_ID,
+                            "ts": round(time.time(), 3),
+                            **compute_ui_assets_state(),
+                        },
+                    )
                     return
                 if parsed.path == "/health":
                     self._send_json(HTTPStatus.OK, bridge.health())

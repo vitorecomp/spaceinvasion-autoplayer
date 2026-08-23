@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css" />
+  <link id="ui-stylesheet" rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <div class="hud-canvas">
@@ -36,8 +36,12 @@
 
         <div class="sidebar-body" id="sidebar-body">
           <!-- Session Health -->
-          <section class="sidebar-section" aria-label="Browser session status">
+          <section class="sidebar-section" aria-label="Browser and API session status">
             <div class="session-card">
+              <div class="session-row">
+                <span class="status-pip" id="api-pip" aria-hidden="true"></span>
+                <span id="api-status-text" class="tabular">API :8787 CONNECTING...</span>
+              </div>
               <div class="session-row">
                 <span class="status-pip" id="chrome-pip" aria-hidden="true"></span>
                 <span id="chrome-status-text" class="tabular">Connecting Chrome :9222...</span>

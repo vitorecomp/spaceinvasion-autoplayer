@@ -6,7 +6,7 @@ Guide for coding agents working in `spaceinvasion-autoplayer`. Read [SPEC.md](SP
 
 - **3-Tier Live Runtime**:
   - `login.py` / `spaceinvasion/browser.py` / `spaceinvasion/auth.py` — BitMeUp login, `.env` credential profiles, persistent Chrome profile (`.browser_profile/`), and detached Chrome DevTools debug port (`127.0.0.1:9222`).
-  - `game_api.py` / `spaceinvasion/api_server.py` — Thread-locked local HTTP JSON bridge (`http://127.0.0.1:8787`) exposing `GET /health`, `GET /state`, and `POST /command` (`plan`, `build`, `research`, `build_ship`, `claim_tutorial`, `fleetsave_plan`, `navigate`, `menu`, `config`, `ensure_session`).
+  - `game_api.py` / `spaceinvasion/api_server.py` — Thread-locked local HTTP JSON bridge (`http://127.0.0.1:8787`) exposing `GET /health`, `GET /ui-version`, `GET /state`, `GET /dashboard`, and `POST /command` (`plan`, `build`, `research`, `build_ship`, `claim_tutorial`, `throttle_building`, `buildings_eta`, `combat_overview`, `simulate_combat`, `ranking_evolution`, `db_summary`, `fleetsave_plan`, `navigate`, `menu`, `config`, `ensure_session`).
   - `commander.py` / `spaceinvasion/commander_client.py` — Pure-HTTP decision loop with zero Selenium imports.
   - `run_stack.py` — Starts/monitors Chrome debug port, `game_api.py --reload`, and `commander.py --loop --reload`.
 - **Core Game Logic**:

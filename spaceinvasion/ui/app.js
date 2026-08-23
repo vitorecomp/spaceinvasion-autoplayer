@@ -1,3 +1,5 @@
+const SESSION_STATE_KEY = "si_console_ui_state";
+
 const state = {
   dashboard: null,
   selectedPlanetId: null,
@@ -11,7 +13,55 @@ const state = {
   queueFilter: "all",
   activeLogSource: "commander",
   simPopulatedOnce: false,
+  apiOnline: false,
+  reconnectAttempts: 0,
+  uiVersions: {
+    code_version: null,
+    css_version: null,
+    server_boot_id: null,
+  },
+  inFlightVersionCheck: false,
+  inFlightDashboard: false,
+  feedbackTimer: null,
 };
+
+function savePersistedUiState() {
+  try {
+    sessionStorage.setItem(
+      SESSION_STATE_KEY,
+      JSON.stringify({
+        activePage: state.activePage,
+        selectedPlanetId: state.selectedPlanetId,
+        bldCategory: state.bldCategory,
+        selectedUnitKey: state.selectedUnitKey,
+        combatSubTab: state.combatSubTab,
+        queueFilter: state.queueFilter,
+        activeLogSource: state.activeLogSource,
+      })
+    );
+  } catch {
+    // Ignore storage restriction
+  }
+}
+
+function restorePersistedUiState() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_STATE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (saved.selectedPlanetId != null) state.selectedPlanetId = Number(saved.selectedPlanetId);
+    if (saved.bldCategory) state.bldCategory = String(saved.bldCategory);
+    if (saved.selectedUnitKey) state.selectedUnitKey = String(saved.selectedUnitKey);
+    if (saved.combatSubTab) state.combatSubTab = String(saved.combatSubTab);
+    if (saved.queueFilter) state.queueFilter = String(saved.queueFilter);
+    if (saved.activeLogSource) state.activeLogSource = String(saved.activeLogSource);
+    if (!window.location.hash && saved.activePage && PAGE_TITLES[saved.activePage]) {
+      state.activePage = saved.activePage;
+    }
+  } catch {
+    // Ignore malformed saved state
+  }
+}
 
 const PAGE_TITLES = {
   dashboard: "DASHBOARD // OVERVIEW",
@@ -42,16 +92,62 @@ function fmtClock(tsSec) {
   return `SYNC ${d.toTimeString().slice(0, 8)}`;
 }
 
-function showFeedback(message, kind = "ok") {
+function showFeedback(message, kind = "ok", { autoHideMs = 0 } = {}) {
   const banner = el("feedback-banner");
   if (!banner) return;
+  if (state.feedbackTimer) {
+    clearTimeout(state.feedbackTimer);
+    state.feedbackTimer = null;
+  }
   banner.textContent = message;
-  banner.className = `feedback-banner ${kind === "error" ? "is-error" : "is-ok"}`;
+  const cls = kind === "error" ? "is-error" : kind === "warn" ? "is-warn" : "is-ok";
+  banner.className = `feedback-banner ${cls}`;
   banner.hidden = false;
+  if (autoHideMs > 0) {
+    state.feedbackTimer = setTimeout(() => {
+      if (state.apiOnline) banner.hidden = true;
+    }, autoHideMs);
+  }
 }
 
-async function apiGet(url) {
-  const res = await fetch(url, { cache: "no-store" });
+function setApiStatus(online, note = "") {
+  const wasOnline = state.apiOnline;
+  state.apiOnline = online;
+  const pip = el("api-pip");
+  const txt = el("api-status-text");
+  const port = state.dashboard?.health?.debug_port ? "8787" : window.location.port || "8787";
+
+  if (online) {
+    const recovered = !wasOnline && state.reconnectAttempts > 0;
+    state.reconnectAttempts = 0;
+    if (pip) pip.className = "status-pip online";
+    if (txt) txt.textContent = `API :${port} ONLINE · HOT`;
+    if (recovered) {
+      showFeedback(`Reconnected to Game API :${port}.`, "ok", { autoHideMs: 3200 });
+    }
+  } else {
+    state.reconnectAttempts += 1;
+    if (pip) pip.className = "status-pip offline";
+    if (txt) txt.textContent = `API :${port} RECONNECTING (#${state.reconnectAttempts})`;
+    showFeedback(
+      `API offline (${note || "connection lost"}) — auto-reconnecting every 1.2s...`,
+      "warn"
+    );
+  }
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 4000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: ctrl.signal, cache: "no-store" });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function apiGet(url, timeoutMs = 6000) {
+  const res = await fetchWithTimeout(url, {}, timeoutMs);
   const data = await res.json();
   if (!res.ok || data.ok === false) {
     throw new Error(data.error || `HTTP ${res.status}`);
@@ -60,15 +156,27 @@ async function apiGet(url) {
 }
 
 async function apiCommand(payload) {
-  const res = await fetch("/command", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  let res;
+  try {
+    res = await fetchWithTimeout(
+      "/command",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      12000
+    );
+  } catch (err) {
+    const msg = err?.name === "AbortError" ? "timeout" : err?.message || "unreachable";
+    setApiStatus(false, msg);
+    throw err;
+  }
   const data = await res.json();
   if (!res.ok || data.ok === false) {
     throw new Error(data.error || `HTTP ${res.status}`);
   }
+  setApiStatus(true);
   return data;
 }
 
@@ -111,6 +219,7 @@ function syncModeButtons(modeVal) {
 function setActivePage(pageKey) {
   const target = PAGE_TITLES[pageKey] ? pageKey : "dashboard";
   state.activePage = target;
+  savePersistedUiState();
 
   document.querySelectorAll(".page-view").forEach((view) => {
     view.hidden = view.id !== `view-${target}`;
@@ -143,6 +252,65 @@ function setActivePage(pageKey) {
     refreshBuildingsEtaForSelectedPlanet();
   } else if (target === "combat") {
     refreshCombatForSelectedPlanet({ refresh: false });
+  }
+}
+
+function applyVersionSnapshot(vData) {
+  if (!vData) return false;
+  const prev = state.uiVersions;
+  if (prev.code_version == null) {
+    state.uiVersions = {
+      code_version: vData.code_version || null,
+      css_version: vData.css_version || null,
+      server_boot_id: vData.server_boot_id || null,
+    };
+    return false;
+  }
+
+  const codeChanged = Boolean(vData.code_version && vData.code_version !== prev.code_version);
+  const bootChanged = Boolean(
+    vData.server_boot_id && prev.server_boot_id && vData.server_boot_id !== prev.server_boot_id
+  );
+  if (codeChanged || bootChanged) {
+    savePersistedUiState();
+    showFeedback(
+      codeChanged
+        ? "UI update detected — hot-reloading console..."
+        : "Game API restarted — hot-reloading console...",
+      "ok"
+    );
+    setTimeout(() => window.location.reload(), 120);
+    return true;
+  }
+
+  if (vData.css_version && vData.css_version !== prev.css_version) {
+    state.uiVersions.css_version = vData.css_version;
+    const link = el("ui-stylesheet");
+    if (link) {
+      link.href = `/styles.css?v=${encodeURIComponent(vData.css_version)}`;
+    }
+    showFeedback("Hot-reloaded styles.css live.", "ok", { autoHideMs: 2600 });
+  }
+  return false;
+}
+
+async function checkApiHealthAndHotReload() {
+  if (state.inFlightVersionCheck) return;
+  state.inFlightVersionCheck = true;
+  try {
+    const vData = await apiGet("/ui-version", 2500);
+    const reloading = applyVersionSnapshot(vData);
+    if (reloading) return;
+    const wasOffline = !state.apiOnline;
+    setApiStatus(true);
+    if (wasOffline) {
+      await loadDashboard({ refresh: false, preserveConfig: true });
+    }
+  } catch (err) {
+    const msg = err?.name === "AbortError" ? "timeout" : err?.message || "unreachable";
+    setApiStatus(false, msg);
+  } finally {
+    state.inFlightVersionCheck = false;
   }
 }
 
@@ -816,6 +984,7 @@ function renderBuildingsView(dash) {
         if (row.key === state.selectedUnitKey) tr.classList.add("row-selected");
         tr.addEventListener("click", () => {
           state.selectedUnitKey = row.key;
+          savePersistedUiState();
           renderBuildingsView(state.dashboard);
         });
 
@@ -1329,8 +1498,12 @@ function onPlanetChanged() {
 }
 
 async function loadDashboard({ refresh = false, preserveConfig = true } = {}) {
+  if (state.inFlightDashboard && !refresh) return;
+  state.inFlightDashboard = true;
   try {
-    const dash = await apiGet(`/dashboard?refresh=${refresh ? 1 : 0}`);
+    const dash = await apiGet(`/dashboard?refresh=${refresh ? 1 : 0}`, 8000);
+    if (applyVersionSnapshot(dash)) return;
+    setApiStatus(true);
     state.dashboard = dash;
     if (dash.buildings_eta) {
       if (!state.selectedPlanetId || state.selectedPlanetId === dash.buildings_eta.planet?.planet_id) {
@@ -1357,7 +1530,10 @@ async function loadDashboard({ refresh = false, preserveConfig = true } = {}) {
       state.configDirty = false;
     }
   } catch (err) {
-    showFeedback(`API offline or unreachable: ${err.message}`, "error");
+    const msg = err?.name === "AbortError" ? "timeout" : err?.message || "unreachable";
+    setApiStatus(false, msg);
+  } finally {
+    state.inFlightDashboard = false;
   }
 }
 
@@ -1450,6 +1626,7 @@ function wireEvents() {
   el("planet-select").addEventListener("change", (e) => {
     state.selectedPlanetId = Number(e.target.value);
     state.simPopulatedOnce = false;
+    savePersistedUiState();
     onPlanetChanged();
   });
 
@@ -1485,6 +1662,7 @@ function wireEvents() {
   document.querySelectorAll("[data-bld-cat]").forEach((btn) => {
     btn.addEventListener("click", () => {
       state.bldCategory = btn.dataset.bldCat;
+      savePersistedUiState();
       if (state.dashboard) renderBuildingsView(state.dashboard);
     });
   });
@@ -1493,6 +1671,7 @@ function wireEvents() {
   document.querySelectorAll("[data-cmb-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
       state.combatSubTab = btn.dataset.cmbTab;
+      savePersistedUiState();
       document.querySelectorAll("[data-cmb-tab]").forEach((b) => b.classList.toggle("active", b === btn));
       el("cmb-pane-ships").hidden = state.combatSubTab !== "ships";
       el("cmb-pane-defense").hidden = state.combatSubTab !== "defense";
@@ -1542,6 +1721,7 @@ function wireEvents() {
   document.querySelectorAll("[data-filter]").forEach((chip) => {
     chip.addEventListener("click", () => {
       state.queueFilter = chip.dataset.filter;
+      savePersistedUiState();
       document.querySelectorAll("[data-filter]").forEach((c) => c.classList.toggle("active", c === chip));
       if (state.dashboard) renderPlanTable(state.dashboard);
     });
@@ -1550,6 +1730,7 @@ function wireEvents() {
   document.querySelectorAll("[data-log]").forEach((tabBtn) => {
     tabBtn.addEventListener("click", () => {
       state.activeLogSource = tabBtn.dataset.log;
+      savePersistedUiState();
       document.querySelectorAll("[data-log]").forEach((b) => b.classList.toggle("active", b === tabBtn));
       if (state.dashboard) renderLogs(state.dashboard.logs, state.dashboard.db_summary);
     });
@@ -1603,12 +1784,42 @@ function wireEvents() {
   }
 }
 
+function applySavedTabButtons() {
+  document.querySelectorAll("[data-cmb-tab]").forEach((b) => b.classList.toggle("active", b.dataset.cmbTab === state.combatSubTab));
+  el("cmb-pane-ships").hidden = state.combatSubTab !== "ships";
+  el("cmb-pane-defense").hidden = state.combatSubTab !== "defense";
+  el("cmb-pane-escape").hidden = state.combatSubTab !== "escape";
+
+  document.querySelectorAll("[data-filter]").forEach((c) => c.classList.toggle("active", c.dataset.filter === state.queueFilter));
+  document.querySelectorAll("[data-log]").forEach((b) => b.classList.toggle("active", b.dataset.log === state.activeLogSource));
+}
+
+restorePersistedUiState();
 wireEvents();
+applySavedTabButtons();
 const initialHash = window.location.hash.replace(/^#/, "");
-setActivePage(PAGE_TITLES[initialHash] ? initialHash : "dashboard");
+setActivePage(PAGE_TITLES[initialHash] ? initialHash : state.activePage);
+checkApiHealthAndHotReload();
 loadDashboard({ refresh: false, preserveConfig: false });
+
+// Fast auto-reconnect + live UI asset hot-reload watcher (1.2s)
 setInterval(() => {
-  if (document.visibilityState === "visible") {
+  checkApiHealthAndHotReload();
+}, 1200);
+
+// Live dashboard telemetry refresh when visible & connected (5s)
+setInterval(() => {
+  if (document.visibilityState === "visible" && state.apiOnline) {
     loadDashboard({ refresh: false, preserveConfig: true });
   }
 }, 5000);
+
+window.addEventListener("online", () => {
+  checkApiHealthAndHotReload();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    checkApiHealthAndHotReload();
+    loadDashboard({ refresh: false, preserveConfig: true });
+  }
+});

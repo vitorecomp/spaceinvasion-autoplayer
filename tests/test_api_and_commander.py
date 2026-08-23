@@ -165,6 +165,14 @@ class TestApiAndCommander(unittest.TestCase):
             self.assertEqual(ui_css.status_code, 200)
             ui_js = requests.get(f"http://127.0.0.1:{port}/app.js", timeout=5)
             self.assertEqual(ui_js.status_code, 200)
+            self.assertIn("no-store", ui_html.headers.get("Cache-Control", ""))
+
+            ver = requests.get(f"http://127.0.0.1:{port}/ui-version", timeout=5).json()
+            self.assertTrue(ver["ok"])
+            self.assertTrue(ver["ui_version"])
+            self.assertTrue(ver["code_version"])
+            self.assertTrue(ver["css_version"])
+            self.assertTrue(ver["server_boot_id"])
 
             ctrl = api.send_command({"command": "bot_control", "paused": True, "mode_override": "dry-run"})
             self.assertTrue(ctrl["bot_control"]["paused"])
@@ -340,6 +348,26 @@ class TestApiAndCommander(unittest.TestCase):
         self.assertEqual(payload["building_id"], 2)
         self.assertEqual(payload["percentage"], 0)
         self.assertFalse(payload["dry_run"])
+
+    def test_ui_version_detects_css_and_code_changes(self) -> None:
+        from spaceinvasion.api_server import compute_ui_assets_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ui_dir = Path(tmp)
+            (ui_dir / "index.html").write_text("<html>v1</html>", encoding="utf-8")
+            (ui_dir / "app.js").write_text("console.log(1);", encoding="utf-8")
+            (ui_dir / "styles.css").write_text("body{color:#fff;}", encoding="utf-8")
+
+            s1 = compute_ui_assets_state(ui_dir)
+            (ui_dir / "styles.css").write_text("body{color:#16ec98;background:#000;}", encoding="utf-8")
+            s2 = compute_ui_assets_state(ui_dir)
+            self.assertEqual(s1["code_version"], s2["code_version"])
+            self.assertNotEqual(s1["css_version"], s2["css_version"])
+            self.assertNotEqual(s1["ui_version"], s2["ui_version"])
+
+            (ui_dir / "app.js").write_text("console.log('reloaded');", encoding="utf-8")
+            s3 = compute_ui_assets_state(ui_dir)
+            self.assertNotEqual(s2["code_version"], s3["code_version"])
 
 
 if __name__ == "__main__":
