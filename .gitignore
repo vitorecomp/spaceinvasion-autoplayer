@@ -15,6 +15,7 @@ config.yaml
 # Runtime state snapshots & local crash/debug traces (never committed)
 state/
 logs/crash_debug.*
+logs/watchdog.log
 crash_debug.*
 
 # Python artifacts
