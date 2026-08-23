@@ -2185,6 +2185,7 @@ class _SimState:
         "raid_targets_info",
         "raid_target_res",
         "depleted_targets",
+        "spied_targets",
         "raids_loot_spice_eq",
         "unique_raids_loot_spice_eq",
         "raid_risk_penalty",
@@ -2221,6 +2222,7 @@ class _SimState:
         raid_targets_info: dict[str, dict[str, Any]],
         raid_target_res: dict[str, Resources],
         depleted_targets: Optional[set[str]] = None,
+        spied_targets: Optional[set[str]] = None,
         raids_loot_spice_eq: float,
         unique_raids_loot_spice_eq: float = 0.0,
         raid_risk_penalty: float,
@@ -2254,6 +2256,7 @@ class _SimState:
         self.raid_targets_info = raid_targets_info
         self.raid_target_res = raid_target_res
         self.depleted_targets = depleted_targets if depleted_targets is not None else set()
+        self.spied_targets = spied_targets if spied_targets is not None else set()
         self.raids_loot_spice_eq = raids_loot_spice_eq
         self.unique_raids_loot_spice_eq = unique_raids_loot_spice_eq
         self.raid_risk_penalty = raid_risk_penalty
@@ -2442,6 +2445,9 @@ class _SimState:
                 "fleet": {_safe_action_str(k): max(0, _safe_int(v, 0)) for k, v in raw_fleet.items()},
                 "defense": {_safe_action_str(k): max(0, _safe_int(v, 0)) for k, v in raw_defense.items()},
                 "dug_in": raw.get("dug_in"),
+                "has_spy_intel": bool(raw.get("has_spy_intel")),
+                "last_spied_ts": _safe_float_any(raw.get("last_spied_ts"), 0.0),
+                "last_scanned_ts": _safe_float_any(raw.get("last_scanned_ts"), 0.0),
             }
             raid_target_res[coords] = res_obj
 
@@ -2467,6 +2473,7 @@ class _SimState:
             raid_targets_info=raid_targets_info,
             raid_target_res=raid_target_res,
             depleted_targets=set(),
+            spied_targets=set(),
             raids_loot_spice_eq=0.0,
             unique_raids_loot_spice_eq=0.0,
             raid_risk_penalty=0.0,
@@ -2535,6 +2542,7 @@ class _SimState:
             raid_targets_info=self.raid_targets_info,
             raid_target_res=dict(self.raid_target_res),
             depleted_targets=set(self.depleted_targets),
+            spied_targets=set(self.spied_targets),
             raids_loot_spice_eq=self.raids_loot_spice_eq,
             unique_raids_loot_spice_eq=self.unique_raids_loot_spice_eq,
             raid_risk_penalty=self.raid_risk_penalty,
@@ -3233,23 +3241,164 @@ def _wait_for_prereqs(
     return False, "Prerequisite wait limit reached"
 
 
+def _opt_tutorial_fight_task(tut: Any) -> Optional[Any]:
+    if tut is None or getattr(tut, "can_complete", False):
+        return None
+    for task in getattr(tut, "tasks", ()) or ():
+        if getattr(task, "completed", False) or getattr(task, "category", "") != "milestone":
+            continue
+        desc = _safe_action_str(getattr(task, "description", "")).lower()
+        if any(w in desc for w in ("fight", "attack", "combat", "battle")):
+            return task
+    return None
+
+
+def _opt_tutorial_spy_task(tut: Any) -> Optional[Any]:
+    if tut is None or getattr(tut, "can_complete", False):
+        return None
+    for task in getattr(tut, "tasks", ()) or ():
+        if getattr(task, "completed", False) or getattr(task, "category", "") != "milestone":
+            continue
+        desc = _safe_action_str(getattr(task, "description", "")).lower()
+        if any(w in desc for w in ("spy", "espionage", "spionage", "probe")):
+            return task
+    return None
+
+
+def _opt_milestone_helper_ship_id(desc_lower: str) -> Optional[int]:
+    if any(w in desc_lower for w in ("spy", "espionage", "spionage", "probe")):
+        return 10
+    if any(w in desc_lower for w in ("recycle", "recycler", "debris", "rubble")):
+        return 11
+    if any(w in desc_lower for w in ("colonize", "colony", "colonisation", "colonization")):
+        return 8
+    return None
+
+
+def _opt_resolve_prereq_chain(
+    category: str,
+    slug_or_id: int | str,
+    goal_label: str,
+    eff_buildings: Mapping[str, int],
+    researches: Mapping[str, int],
+    visited: Optional[set[tuple[str, str]]] = None,
+) -> list[dict[str, Any]]:
+    if visited is None:
+        visited = set()
+    key = (category, str(slug_or_id))
+    if key in visited:
+        return []
+    visited.add(key)
+    unmet = game_data.missing_prerequisites(
+        category,
+        slug_or_id,
+        buildings=eff_buildings,
+        researches=researches,
+    )
+    steps: list[dict[str, Any]] = []
+    for req in unmet:
+        sub = _opt_resolve_prereq_chain(
+            str(req["category"]),
+            req["slug"],
+            goal_label,
+            eff_buildings,
+            researches,
+            visited,
+        )
+        if sub:
+            steps.extend(sub)
+        else:
+            steps.append({**req, "goal": goal_label})
+    return steps
+
+
+def _next_unscanned_system(
+    origin_coords: str,
+    scanned: set[tuple[int, int]],
+    *,
+    radius: int = 15,
+) -> Optional[tuple[int, int]]:
+    gal, sys_num = _parse_gal_sys(origin_coords)
+    if (gal, sys_num) not in scanned:
+        return (gal, sys_num)
+    for delta in range(1, max(1, radius) + 1):
+        for cand_sys in (sys_num + delta, sys_num - delta):
+            if 1 <= cand_sys <= 400 and (gal, cand_sys) not in scanned:
+                return (gal, cand_sys)
+    return None
+
+
+def _sim_tutorial_fight_pending(sim: _SimState) -> bool:
+    src = getattr(sim, "_source_state", None)
+    tut = getattr(src, "tutorial", None) if src is not None else None
+    if _opt_tutorial_fight_task(tut) is None:
+        return False
+    if sim.fleet_jobs:
+        return False
+    if any(getattr(q, "category", "") == "fleet" for q in (getattr(src, "active_queues", ()) or ())):
+        return False
+    return True
+
+
+def _sim_tutorial_spy_pending(sim: _SimState) -> bool:
+    src = getattr(sim, "_source_state", None)
+    tut = getattr(src, "tutorial", None) if src is not None else None
+    if _opt_tutorial_spy_task(tut) is None:
+        return False
+    return not bool(sim.spied_targets)
+
+
 def _tutorial_progress_match(sim: _SimState, kind: str, target_id: Optional[int | str]) -> int:
     tut = sim._source_state.tutorial
     if not tut or tut.can_complete:
         return 0
+    ap = sim.active_planet()
+    eff_b = ap.projected_buildings() if ap is not None else {}
     for task in tut.tasks:
         if task.completed:
             continue
-        if kind == "BUILD" and task.category == "building" and task.building_id == target_id:
+        t_bid = game_data.safe_optional_int(task.building_id, None)
+        if kind == "BUILD" and task.category == "building" and t_bid == target_id:
             return 1
-        if kind == "RESEARCH" and task.category == "research" and task.research_id == target_id:
+        if kind == "RESEARCH" and task.category == "research" and _safe_action_str(task.research_id) == _safe_action_str(target_id):
             return 1
-        if kind == "BUILD_SHIP" and task.category == "ship" and task.building_id == target_id:
+        if kind == "BUILD_SHIP" and task.category == "ship" and t_bid == target_id:
             return 1
         if kind == "ATTACK" and task.category == "milestone":
             desc = _safe_action_str(task.description).lower()
             if any(w in desc for w in ("fight", "attack", "combat", "battle")):
                 return 1
+        if kind == "SPY" and task.category == "milestone":
+            desc = _safe_action_str(task.description).lower()
+            if any(w in desc for w in ("spy", "espionage", "spionage", "probe")):
+                return 1
+        if kind == "BUILD_SHIP" and task.category == "milestone":
+            helper_sid = _opt_milestone_helper_ship_id(_safe_action_str(task.description).lower())
+            if helper_sid is not None and helper_sid == target_id:
+                return 1
+        if kind in ("BUILD", "RESEARCH"):
+            goal_cat: Optional[str] = None
+            goal_key: Optional[int | str] = None
+            if task.category == "building" and t_bid is not None and t_bid > 0:
+                goal_cat, goal_key = "buildings", t_bid
+            elif task.category == "research" and task.research_id:
+                goal_cat, goal_key = "research", _safe_action_str(task.research_id)
+            elif task.category == "ship" and t_bid is not None and t_bid > 0:
+                goal_cat, goal_key = "ships", SHIP_SLUG_BY_KEY.get(f"s{t_bid}")
+            elif task.category == "milestone":
+                h_sid = _opt_milestone_helper_ship_id(_safe_action_str(task.description).lower())
+                if h_sid is not None:
+                    goal_cat, goal_key = "ships", SHIP_SLUG_BY_KEY.get(f"s{h_sid}")
+            if goal_cat and goal_key:
+                for step in _opt_resolve_prereq_chain(goal_cat, goal_key, "tutorial", eff_b, sim.researches):
+                    if kind == "BUILD" and step["category"] == "buildings":
+                        b_unit = game_data.resolve_unit("buildings", step["slug"])
+                        if b_unit and b_unit.get("id") == target_id:
+                            return 1
+                    elif kind == "RESEARCH" and step["category"] == "research":
+                        r_unit = game_data.resolve_unit("research", step["slug"])
+                        if r_unit and str(r_unit.get("id")) == _safe_action_str(target_id):
+                            return 1
     return 0
 
 
@@ -3944,6 +4093,7 @@ def _execute_sim_step(
         if not combat.safe_to_attack:
             return SimStepOutcome(idx, action, False, combat.reason, planet_id=planet.planet_id, target_name=t_coords)
 
+        tut_fight_ok = _sim_tutorial_fight_pending(sim)
         is_depleted = (t_coords in sim.depleted_targets) or (combat.loot_spice_equivalent <= 0.0)
         exp_loot_sp, eff_win_prob, t_hist = _compute_effective_raid_expectation(
             combat.loot_spice_equivalent,
@@ -3952,27 +4102,28 @@ def _execute_sim_step(
             sim.attack_history_stats,
             target_depleted=is_depleted,
         )
-        if is_depleted or exp_loot_sp <= 0.0:
-            return SimStepOutcome(
-                idx,
-                action,
-                False,
-                f"Target {t_coords} depleted or yields 0 loot",
-                planet_id=planet.planet_id,
-                target_name=t_coords,
-            )
-        min_req = max(0.0, _safe_float_any(getattr(cfg, "raid_min_loot_spice_eq", 1500.0), 1500.0))
-        if exp_loot_sp < min_req - 1e-6:
-            return SimStepOutcome(
-                idx,
-                action,
-                False,
-                f"Expected raid loot {exp_loot_sp:.0f} SpEq below min {min_req:.0f}",
-                planet_id=planet.planet_id,
-                target_name=t_coords,
-            )
+        if not tut_fight_ok:
+            if is_depleted or exp_loot_sp <= 0.0:
+                return SimStepOutcome(
+                    idx,
+                    action,
+                    False,
+                    f"Target {t_coords} depleted or yields 0 loot",
+                    planet_id=planet.planet_id,
+                    target_name=t_coords,
+                )
+            min_req = max(0.0, _safe_float_any(getattr(cfg, "raid_min_loot_spice_eq", 1500.0), 1500.0))
+            if exp_loot_sp < min_req - 1e-6:
+                return SimStepOutcome(
+                    idx,
+                    action,
+                    False,
+                    f"Expected raid loot {exp_loot_sp:.0f} SpEq below min {min_req:.0f}",
+                    planet_id=planet.planet_id,
+                    target_name=t_coords,
+                )
 
-        scale = exp_loot_sp / combat.loot_spice_equivalent
+        scale = (exp_loot_sp / combat.loot_spice_equivalent) if combat.loot_spice_equivalent > 1e-6 else 0.0
         loot = Resources(
             pig_iron=game_data.safe_scale_round_int(
                 combat.expected_loot.pig_iron, scale, max_result=game_data.MAX_JSON_SAFE_INT
@@ -3987,7 +4138,7 @@ def _execute_sim_step(
                 combat.expected_loot.spice, scale, max_result=game_data.MAX_JSON_SAFE_INT
             ),
         )
-        if loot.is_zero():
+        if loot.is_zero() and not tut_fight_ok:
             return SimStepOutcome(
                 idx,
                 action,
@@ -4059,11 +4210,42 @@ def _execute_sim_step(
             raid_loot_spice_eq=round(exp_loot_sp, 3),
         )
 
+    if kind == "SPY":
+        if ptype == "raid":
+            return SimStepOutcome(idx, action, False, "Raid colony cannot dispatch tutorial spy", planet_id=planet.planet_id)
+        if _safe_int(planet.ships.get("s10", 0), 0) <= 0:
+            return SimStepOutcome(idx, action, False, "No Spy probe (s10) stationed on origin", planet_id=planet.planet_id)
+        raw_tc = _safe_action_str(action.target_coords).strip()
+        t_coords = normalize_coords(raw_tc) if raw_tc else ""
+        own_coords = {normalize_coords(op.coords) for op in sim.planets}
+        if not t_coords or t_coords in own_coords:
+            return SimStepOutcome(idx, action, False, "Invalid spy target coordinates", planet_id=planet.planet_id)
+        if t_coords in sim.spied_targets:
+            return SimStepOutcome(idx, action, False, f"Target {t_coords} already spied", planet_id=planet.planet_id)
+        meta = sim.raid_targets_info.get(t_coords)
+        if meta is None:
+            return SimStepOutcome(idx, action, False, f"Unknown spy target {t_coords}", planet_id=planet.planet_id)
+        sim.spied_targets.add(t_coords)
+        sim.tutorial_tasks_advanced += _tutorial_progress_match(sim, "SPY", 10)
+        return SimStepOutcome(
+            index=idx,
+            action=action,
+            valid=True,
+            planet_id=planet.planet_id,
+            target_name=t_coords,
+            target_level=1,
+            start_t=sim.clock_s,
+            finish_t=sim.clock_s,
+            executable_at_t0=(entry_clock <= 1e-6 and cfg.allow_galaxy_scan),
+        )
+
     if kind == "SCAN_GALAXY":
         gal, sys_num = _parse_gal_sys(_safe_action_str(action.target_coords) or planet.coords)
         if (gal, sys_num) in sim.scanned_systems:
             return SimStepOutcome(idx, action, False, f"System {gal:02d}:{sys_num:03d} already scanned", planet_id=planet.planet_id)
         sim.scanned_systems.add((gal, sys_num))
+        if _sim_tutorial_fight_pending(sim) or _sim_tutorial_spy_pending(sim):
+            sim.tutorial_tasks_advanced += 1
         return SimStepOutcome(
             index=idx,
             action=action,
@@ -4224,7 +4406,7 @@ def _compute_composite_growth(
         w_pts * d_pts * 0.5
         + w_inc * (d_inc + 0.85 * d_bal) * 0.4
         + w_flt * d_raid_fleet
-        + 2.0 * sim.tutorial_tasks_advanced
+        + 35.0 * sim.tutorial_tasks_advanced
         + tel_bonus
         - penalties
     )
@@ -5433,13 +5615,28 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
             tut_st = getattr(src_st, "tutorial", None) if src_st is not None else None
             if tut_st is not None and not getattr(tut_st, "can_complete", False):
                 for t_task in getattr(tut_st, "tasks", ()) or ():
-                    if getattr(t_task, "completed", False) or getattr(t_task, "category", "") != "ship":
+                    if getattr(t_task, "completed", False):
                         continue
-                    t_bid = game_data.safe_optional_int(getattr(t_task, "building_id", None), None)
-                    if t_bid is not None and t_bid > 0:
-                        t_slug = SHIP_SLUG_BY_KEY.get(f"s{t_bid}")
-                        if t_slug and t_slug not in ship_slugs:
-                            ship_slugs.append(t_slug)
+                    t_cat = getattr(t_task, "category", "")
+                    if t_cat == "ship":
+                        t_bid = game_data.safe_optional_int(getattr(t_task, "building_id", None), None)
+                        if t_bid is not None and t_bid > 0:
+                            t_slug = SHIP_SLUG_BY_KEY.get(f"s{t_bid}")
+                            if t_slug and t_slug not in ship_slugs:
+                                ship_slugs.append(t_slug)
+                    elif t_cat == "milestone":
+                        h_sid = _opt_milestone_helper_ship_id(_safe_action_str(getattr(t_task, "description", "")).lower())
+                        if h_sid is not None:
+                            h_skey = f"s{h_sid}"
+                            has_any_h = any(
+                                max(0, _safe_int(pl.ships.get(h_skey, 0), 0)) > 0
+                                for pl in planets
+                                if not is_raid_planet(pl)
+                            )
+                            if not has_any_h:
+                                h_slug = SHIP_SLUG_BY_KEY.get(h_skey)
+                                if h_slug and h_slug not in ship_slugs:
+                                    ship_slugs.append(h_slug)
             if cfg.playstyle == "fleeter":
                 for fs in ("small-fighter", "small-transport", "starcruiser", "phoenix", "battleship", "stealth-bomber"):
                     if fs not in ship_slugs:
@@ -5459,6 +5656,27 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
                     SimAction("BUILD_SHIP", p.planet_id, target_id=sid, quantity=1, reason=f"Build {game_data.SHIPS[slug]['name']}")
                 )
 
+        if cfg.allow_galaxy_scan and ptype != "raid" and _safe_int(p.ships.get("s10", 0), 0) > 0 and _sim_tutorial_spy_pending(sim):
+            own_coords_spy = {normalize_coords(op.coords) for op in sim.planets}
+            for t_coords, meta in sim.raid_targets_info.items():
+                norm_t = normalize_coords(t_coords)
+                if norm_t in own_coords_spy or norm_t in sim.spied_targets:
+                    continue
+                is_spacia = bool(meta["is_spacia"])
+                scolor = _safe_action_str(meta["status_color"]).lower()
+                if not (scolor == "yellow" or is_spacia or (cfg.allow_pvp_in_az and scolor == "light_red")):
+                    continue
+                candidates.append(
+                    SimAction(
+                        "SPY",
+                        p.planet_id,
+                        target_id=10,
+                        quantity=1,
+                        target_coords=t_coords,
+                        reason=f"Tutorial spy: Send Spy probe (s10) to scout {t_coords} before raiding",
+                    )
+                )
+
         if cfg.allow_raids:
             atk_ships = {
                 k: max(0, _safe_int(p.ships.get(k, 0), 0))
@@ -5468,12 +5686,13 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
             if atk_ships and sim.fleet_busy_until.get(p.planet_id, 0.0) <= sim.clock_s + 1e-6:
                 sim_now = sim.sim_base_ts + sim.clock_s
                 min_req = max(0.0, _safe_float_any(getattr(cfg, "raid_min_loot_spice_eq", 1500.0), 1500.0))
+                tut_fight_ok = _sim_tutorial_fight_pending(sim)
                 own_coords = {normalize_coords(op.coords) for op in sim.planets}
                 for t_coords, meta in sim.raid_targets_info.items():
                     norm_t = normalize_coords(t_coords)
                     if norm_t in own_coords:
                         continue
-                    if norm_t in sim.depleted_targets or t_coords in sim.depleted_targets:
+                    if not tut_fight_ok and (norm_t in sim.depleted_targets or t_coords in sim.depleted_targets):
                         continue
                     if any(normalize_coords(fj.target_coords) == norm_t for fj in sim.fleet_jobs):
                         continue
@@ -5500,7 +5719,7 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
                     combat = simulate_raid_outcome(
                         atk_ships, rep, attacker_researches=sim.researches, safety_margin=cfg.combat_safety_margin
                     )
-                    if combat.safe_to_attack and combat.loot_spice_equivalent > 0.0:
+                    if combat.safe_to_attack and (combat.loot_spice_equivalent > 0.0 or tut_fight_ok):
                         exp_loot_sp, eff_win_prob, _ = _compute_effective_raid_expectation(
                             combat.loot_spice_equivalent,
                             combat.cargo_capacity,
@@ -5508,13 +5727,17 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
                             sim.attack_history_stats,
                             target_depleted=(t_coords in sim.depleted_targets),
                         )
-                        if exp_loot_sp >= min_req - 1e-6:
+                        if tut_fight_ok or exp_loot_sp >= min_req - 1e-6:
                             candidates.append(
                                 SimAction(
                                     "ATTACK",
                                     p.planet_id,
                                     target_coords=t_coords,
-                                    reason=f"Raid {t_coords} (~{_fmt_sp_int(exp_loot_sp)} SpEq, p={eff_win_prob:.0%})",
+                                    reason=(
+                                        f"Tutorial fight raid -> {t_coords}"
+                                        if (tut_fight_ok and exp_loot_sp < min_req - 1e-6)
+                                        else f"Raid {t_coords} (~{_fmt_sp_int(exp_loot_sp)} SpEq, p={eff_win_prob:.0%})"
+                                    ),
                                 )
                             )
 
@@ -5546,11 +5769,24 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
                 )
 
     if cfg.allow_galaxy_scan:
-        gal, sys_num = _parse_gal_sys(active.coords)
-        if (gal, sys_num) not in sim.scanned_systems:
-            candidates.append(
-                SimAction("SCAN_GALAXY", active.planet_id, target_coords=f"{gal:02d}:{sys_num:03d}", reason="Scan home system")
-            )
+        if _sim_tutorial_fight_pending(sim) or _sim_tutorial_spy_pending(sim):
+            nxt_scan = _next_unscanned_system(active.coords, sim.scanned_systems)
+            if nxt_scan is not None:
+                s_gal, s_sys = nxt_scan
+                candidates.append(
+                    SimAction(
+                        "SCAN_GALAXY",
+                        active.planet_id,
+                        target_coords=f"{s_gal:02d}:{s_sys:03d}",
+                        reason=f"Scan system {s_gal:02d}:{s_sys:03d} for tutorial milestone",
+                    )
+                )
+        else:
+            gal, sys_num = _parse_gal_sys(active.coords)
+            if (gal, sys_num) not in sim.scanned_systems:
+                candidates.append(
+                    SimAction("SCAN_GALAXY", active.planet_id, target_coords=f"{gal:02d}:{sys_num:03d}", reason="Scan home system")
+                )
 
     return candidates
 
@@ -6624,6 +6860,675 @@ def _materialize_planned_actions(
                         )
                     )
 
+    own_fleet_in_flight = any(getattr(q, "category", "") == "fleet" for q in (state.active_queues or ()))
+    tut_obj = state.tutorial if (state.tutorial is not None and not state.tutorial.can_complete) else None
+    tutorial_fight_task = _opt_tutorial_fight_task(tut_obj)
+    tutorial_spy_task = _opt_tutorial_spy_task(tut_obj)
+    tutorial_ship_ids: set[int] = set()
+    deferred_non_urgent_fusion_pids: set[int] = set()
+    if tut_obj is not None:
+        for t_item in tut_obj.tasks:
+            if t_item.completed:
+                continue
+            if t_item.category == "ship":
+                t_sid = game_data.safe_optional_int(t_item.building_id, None)
+                if t_sid is not None and t_sid > 0:
+                    tutorial_ship_ids.add(t_sid)
+            elif t_item.category == "milestone":
+                h_sid = _opt_milestone_helper_ship_id(_safe_action_str(t_item.description).lower())
+                if h_sid is not None:
+                    tutorial_ship_ids.add(h_sid)
+
+    def _emit_opt_build_step(
+        tgt_planet: PlanetState,
+        bid_val: int,
+        reason_str: str,
+        prio_str: str = "P2",
+    ) -> Optional["PlannedAction"]:
+        b_info = game_data.BUILDING_BY_ID.get(bid_val)
+        if not b_info:
+            return None
+        p_t = normalize_planet_type(tgt_planet)
+        b8_ok = bid_val == 8 and any(
+            game_data.safe_optional_int(o.building_id, None) == 8
+            for o in tgt_planet.building_offers
+        )
+        if not is_building_allowed_on_planet_type(p_t, bid_val, has_b8_offer=b8_ok):
+            return None
+        is_p_act = tgt_planet.planet_id == active.planet_id
+        p_offers_m = b_offers_by_p.get(tgt_planet.planet_id, {})
+        b_offer = p_offers_m.get(bid_val)
+        base_e = int(live_eff_b[tgt_planet.planet_id].get(f"b{bid_val}", tgt_planet.building_level(bid_val)))
+        cur_s_lvl = sim_step_b_lvl.get((tgt_planet.planet_id, bid_val), base_e)
+        nxt_s_lvl = cur_s_lvl + 1
+        sim_step_b_lvl[(tgt_planet.planet_id, bid_val)] = nxt_s_lvl
+        o_tgt_b = game_data.safe_optional_int(b_offer.target_level, None) if b_offer else None
+        b_label = (
+            _safe_action_str(b_offer.name)
+            if (b_offer and b_offer.name and o_tgt_b == nxt_s_lvl)
+            else ""
+        ) or str(b_info["name"])
+        av_p = avail_res_by_p.get(tgt_planet.planet_id, tgt_planet.resources)
+        c_q = queued_cnt_by_p.get(tgt_planet.planet_id, 0)
+        m_s = max_slots_by_p.get(tgt_planet.planet_id, 5)
+        f_u = max(0, _safe_int(tgt_planet.fields_used, 0))
+        f_m = max(0, _safe_int(tgt_planet.fields_max, 0))
+        free_f = f_m > 0 and (f_u + c_q) < f_m
+        slot_ok = c_q < m_s
+        prereq_ok_now = not game_data.missing_prerequisites(
+            "buildings", bid_val, buildings=tgt_planet.buildings, researches=state.researches
+        )
+        if b_offer is not None and o_tgt_b == nxt_s_lvl:
+            c_res = b_offer.cost
+            can_ex = bool(
+                allow_build
+                and free_f
+                and slot_ok
+                and prereq_ok_now
+                and b_offer.can_build
+                and av_p.can_afford(c_res)
+            )
+            if can_ex:
+                avail_res_by_p[tgt_planet.planet_id] = _sub_resources(av_p, c_res)
+                queued_cnt_by_p[tgt_planet.planet_id] = c_q + 1
+            act_out = _make_planned_action(
+                priority=prio_str,
+                kind="BUILD" if can_ex else "WAIT_RESOURCES",
+                planet_id=tgt_planet.planet_id,
+                planet_coords=_safe_action_str(tgt_planet.coords),
+                target_id=bid_val,
+                target_name=b_label,
+                target_level=nxt_s_lvl,
+                cost=c_res,
+                missing=av_p.missing(c_res),
+                reason=reason_str if can_ex else f"{reason_str} (waiting/queued)",
+                executable_now=can_ex,
+                action_href=(_safe_action_str(b_offer.build_href) or None) if can_ex else None,
+            )
+        else:
+            c_res = _resources_from_dict(game_data.building_cost(bid_val, nxt_s_lvl))
+            rem_ok = bool(
+                not is_p_act
+                and cfg.allow_multi_planet
+                and p_t != "raid"
+                and allow_build
+                and free_f
+                and slot_ok
+                and nxt_s_lvl == base_e + 1
+                and not c_res.is_zero()
+                and av_p.can_afford(c_res)
+                and prereq_ok_now
+            )
+            if rem_ok:
+                avail_res_by_p[tgt_planet.planet_id] = _sub_resources(av_p, c_res)
+                queued_cnt_by_p[tgt_planet.planet_id] = c_q + 1
+            act_out = _make_planned_action(
+                priority=prio_str,
+                kind="BUILD" if rem_ok else "WAIT_RESOURCES",
+                planet_id=tgt_planet.planet_id,
+                planet_coords=_safe_action_str(tgt_planet.coords),
+                target_id=bid_val,
+                target_name=b_label,
+                target_level=nxt_s_lvl,
+                cost=c_res,
+                missing=av_p.missing(c_res),
+                reason=reason_str if rem_ok else f"{reason_str} (future/queued upgrade)",
+                executable_now=rem_ok,
+                action_href=None,
+            )
+        plan.append(act_out)
+        p1_done_builds.add((tgt_planet.planet_id, bid_val))
+        return act_out
+
+    def _emit_opt_research_step(
+        tgt_planet: PlanetState,
+        rkey_val: str,
+        reason_str: str,
+        prio_str: str = "P2",
+    ) -> Optional["PlannedAction"]:
+        nonlocal research_queue_busy
+        r_info = game_data.RESEARCH_BY_ID.get(rkey_val)
+        if not r_info:
+            return None
+        rid_v = int(rkey_val[1:])
+        cur_rv = int(sim_step_r_lvl.get(rkey_val, _safe_int((state.researches or {}).get(rkey_val, 0), 0)))
+        tgt_rv = cur_rv + 1
+        sim_step_r_lvl[rkey_val] = tgt_rv
+        r_off = r_offers.get(rkey_val)
+        r_label = (_safe_action_str(r_off.name) if r_off and r_off.name else "") or str(r_info["name"])
+        av_p = avail_res_by_p.get(tgt_planet.planet_id, tgt_planet.resources)
+        o_tgt_r = game_data.safe_optional_int(r_off.target_level, None) if r_off is not None else None
+        is_p_act = tgt_planet.planet_id == active.planet_id
+        p_t = normalize_planet_type(tgt_planet)
+        has_lab_v = tgt_planet.building_level(8) >= 1
+        prereq_r_v = not _fast_unmet_prereqs("research", rkey_val, tgt_planet.buildings, state.researches)
+        if r_off is not None and o_tgt_r == tgt_rv:
+            c_res = r_off.cost
+            can_ex = bool(
+                is_p_act
+                and p_t != "raid"
+                and has_lab_v
+                and prereq_r_v
+                and bool(cfg.allow_research)
+                and r_off.can_research
+                and not research_queue_busy
+                and av_p.can_afford(c_res)
+            )
+            href_v = (_safe_action_str(r_off.research_href) or None) if can_ex else None
+        else:
+            c_res = _resources_from_dict(_research_level_stats(r_info, tgt_rv).get("cost") or {})
+            can_ex = False
+            href_v = None
+        if can_ex:
+            avail_res_by_p[tgt_planet.planet_id] = _sub_resources(av_p, c_res)
+            research_queue_busy = True
+        act_out = _make_planned_action(
+            priority=prio_str,
+            kind="RESEARCH",
+            planet_id=tgt_planet.planet_id,
+            planet_coords=_safe_action_str(tgt_planet.coords),
+            target_id=rid_v,
+            target_name=r_label,
+            target_level=tgt_rv,
+            cost=c_res,
+            missing=av_p.missing(c_res),
+            reason=reason_str,
+            executable_now=can_ex,
+            action_href=href_v,
+        )
+        plan.append(act_out)
+        return act_out
+
+    if tut_obj is not None:
+        tut_step_s = game_data.fmt_compact_int(tut_obj.step)
+        tut_total_s = game_data.fmt_compact_int(tut_obj.total_steps)
+        queued_b_by_id: dict[int, int] = {}
+        for q_item in state.active_queues:
+            if q_item.category == "building":
+                q_bid_i = game_data.safe_optional_int(q_item.building_id, None)
+                if q_bid_i is not None:
+                    queued_b_by_id[q_bid_i] = queued_b_by_id.get(q_bid_i, 0) + 1
+        active_r_inc: dict[str, int] = {}
+        for rk_i, sim_rl in sim_step_r_lvl.items():
+            base_rl = max(0, _safe_int((state.researches or {}).get(rk_i, 0), 0))
+            if sim_rl > base_rl:
+                active_r_inc[rk_i] = sim_rl - base_rl
+
+        emitted_prereq_b: set[tuple[int, int]] = set()
+        emitted_prereq_r: set[str] = set()
+
+        def _emit_prereq_steps_for(
+            tgt_p: PlanetState,
+            cat_s: str,
+            slug_or_id_v: int | str,
+            goal_lbl: str,
+        ) -> int:
+            eff_b_map = dict(live_eff_b.get(tgt_p.planet_id, {}))
+            for (sp_pid, sp_bid), sp_lvl in sim_step_b_lvl.items():
+                if sp_pid == tgt_p.planet_id:
+                    eff_b_map[f"b{sp_bid}"] = max(eff_b_map.get(f"b{sp_bid}", 0), sp_lvl)
+            steps_req = _opt_resolve_prereq_chain(cat_s, slug_or_id_v, goal_lbl, eff_b_map, sim_step_r_lvl)
+            cnt_emitted = 0
+            for req_s in steps_req:
+                if req_s["category"] == "buildings":
+                    b_u = game_data.resolve_unit("buildings", req_s["slug"])
+                    req_bid = int(b_u["id"]) if (b_u and b_u.get("id") is not None) else 0
+                    if req_bid <= 0 or (tgt_p.planet_id, req_bid) in emitted_prereq_b:
+                        continue
+                    emitted_prereq_b.add((tgt_p.planet_id, req_bid))
+                    pr_reason = (
+                        f"Tutorial {tut_step_s}/{tut_total_s}: unlock {req_s['name']} "
+                        f"({game_data.fmt_compact_int(req_s['current'])}/{game_data.fmt_compact_int(req_s['required'])}) for {goal_lbl}"
+                    )
+                    if _emit_opt_build_step(tgt_p, req_bid, pr_reason) is not None:
+                        cnt_emitted += 1
+                elif req_s["category"] == "research":
+                    r_u = game_data.resolve_unit("research", req_s["slug"])
+                    req_rk = str(r_u["id"]) if (r_u and r_u.get("id")) else ""
+                    if not req_rk or req_rk in emitted_prereq_r:
+                        continue
+                    emitted_prereq_r.add(req_rk)
+                    pr_reason = (
+                        f"Tutorial {tut_step_s}/{tut_total_s}: unlock {req_s['name']} "
+                        f"({game_data.fmt_compact_int(req_s['current'])}/{game_data.fmt_compact_int(req_s['required'])}) for {goal_lbl}"
+                    )
+                    if _emit_opt_research_step(tgt_p, req_rk, pr_reason) is not None:
+                        cnt_emitted += 1
+            return cnt_emitted
+
+        # 1) Building & Research tutorial tasks on eligible planet
+        for tut_p in planets_to_check:
+            p_t_tut = normalize_planet_type(tut_p)
+            if p_t_tut == "raid":
+                continue
+            is_tut_act = tut_p.planet_id == active.planet_id
+            eff_b_tut = live_eff_b.get(tut_p.planet_id, {})
+            lab_eff_tut = eff_b_tut.get("b8", tut_p.building_level(8))
+            b8_off_tut = any(game_data.safe_optional_int(o.building_id, None) == 8 for o in tut_p.building_offers)
+            can_res_tut = p_t_tut != "asteroid" or lab_eff_tut >= 1 or b8_off_tut
+
+            b_tasks_tut: list[tuple[Any, int]] = []
+            r_tasks_tut: list[tuple[Any, int]] = []
+            for t_item in tut_obj.tasks:
+                if t_item.completed:
+                    continue
+                t_c = max(0, _safe_int(t_item.current, 0))
+                t_g = max(0, _safe_int(t_item.target, 0))
+                if t_item.category == "research" and t_item.research_id:
+                    rk_t = _safe_action_str(t_item.research_id).strip()
+                    eff_rc = t_c + active_r_inc.get(rk_t, 0)
+                    if can_res_tut and eff_rc < t_g:
+                        r_tasks_tut.append((t_item, eff_rc))
+                elif t_item.category == "building" and t_item.building_id is not None:
+                    t_bid_v = game_data.safe_optional_int(t_item.building_id, None)
+                    if t_bid_v is not None and t_bid_v > 0 and is_building_allowed_on_planet_type(
+                        p_t_tut, t_bid_v, has_b8_offer=(t_bid_v == 8 and b8_off_tut)
+                    ):
+                        eff_bc = t_c + (queued_b_by_id.get(t_bid_v, 0) if is_tut_act else 0)
+                        if eff_bc < t_g:
+                            b_tasks_tut.append((t_item, eff_bc))
+
+            if not b_tasks_tut and not r_tasks_tut:
+                continue
+
+            proj_e_net = _safe_int(tut_p.energy.net, 0)
+            if is_tut_act:
+                sim_e_lvls: dict[int, int] = {}
+                for q_j in state.active_queues:
+                    if q_j.category == "building" and q_j.building_id is not None:
+                        qb_i = game_data.safe_optional_int(q_j.building_id, None)
+                        if qb_i is not None:
+                            c_l = sim_e_lvls.get(qb_i, tut_p.building_level(qb_i))
+                            q_tl = game_data.safe_optional_int(q_j.target_level, None)
+                            n_l = q_tl if (q_tl is not None and q_tl > c_l) else c_l + 1
+                            for st_l in range(c_l + 1, min(n_l, 101) + 1):
+                                proj_e_net += game_data.building_energy_delta(qb_i, st_l)
+                            sim_e_lvls[qb_i] = n_l
+
+            starving_mine = False
+            for t_item, _ in b_tasks_tut:
+                bid_chk = game_data.safe_optional_int(t_item.building_id, 0) or 0
+                if bid_chk in (5, 6):
+                    continue
+                nxt_chk = eff_b_tut.get(f"b{bid_chk}", tut_p.building_level(bid_chk)) + 1
+                ed_chk = game_data.building_energy_delta(bid_chk, nxt_chk)
+                if ed_chk < 0 and (proj_e_net + ed_chk) < 0:
+                    starving_mine = True
+                    break
+
+            need_pwr_first = proj_e_net <= 0 or starving_mine
+            has_non_fusion_b = any(
+                (game_data.safe_optional_int(ti.building_id, 0) or 0) != 5 for ti, _ in b_tasks_tut
+            )
+            if not need_pwr_first and has_non_fusion_b:
+                deferred_non_urgent_fusion_pids.add(tut_p.planet_id)
+
+            def _tut_b_key(pair: tuple[Any, int]) -> tuple[int, int, int]:
+                ti, ef = pair
+                b_v = game_data.safe_optional_int(ti.building_id, 99) or 99
+                if b_v == 5 and need_pwr_first:
+                    bkt = 0
+                elif b_v == 7:
+                    bkt = 1
+                elif b_v == 5:
+                    bkt = 4
+                else:
+                    bkt = 3
+                return (bkt, ef, b_v)
+
+            ordered_b_tut = sorted(b_tasks_tut, key=_tut_b_key)
+            has_fusion_t = any((game_data.safe_optional_int(ti.building_id, 0) or 0) == 5 for ti, _ in b_tasks_tut)
+            if (
+                need_pwr_first
+                and not has_fusion_t
+                and b_tasks_tut
+                and _safe_int(tut_p.energy.net, 0) >= 0
+                and is_building_allowed_on_planet_type(p_t_tut, 5)
+            ):
+                _emit_opt_build_step(tut_p, 5, "Proactive power before tutorial mines")
+
+            for t_item, eff_bc in ordered_b_tut:
+                bid_t = game_data.safe_optional_int(t_item.building_id, None)
+                if bid_t is None:
+                    continue
+                b_goal = _safe_action_str(t_item.building_name) or f"Building {bid_t}"
+                emitted_pr = _emit_prereq_steps_for(tut_p, "buildings", bid_t, b_goal)
+                if emitted_pr > 0 and game_data.missing_prerequisites(
+                    "buildings", bid_t, buildings=tut_p.buildings, researches=state.researches
+                ):
+                    continue
+                t_reason = (
+                    f"Tutorial {tut_step_s}/{tut_total_s}: {_safe_action_str(t_item.description)} "
+                    f"(progress {game_data.fmt_compact_int(eff_bc)}/{game_data.fmt_compact_int(t_item.target)})"
+                )
+                _emit_opt_build_step(tut_p, bid_t, t_reason)
+
+            for r_item, eff_rc in r_tasks_tut:
+                rk_t = _safe_action_str(r_item.research_id).strip()
+                if not rk_t:
+                    continue
+                r_goal = _safe_action_str(r_item.building_name) or rk_t
+                _emit_prereq_steps_for(tut_p, "research", rk_t, r_goal)
+                if rk_t not in emitted_prereq_r:
+                    r_reason = (
+                        f"Tutorial {tut_step_s}/{tut_total_s}: {_safe_action_str(r_item.description)} "
+                        f"(progress {game_data.fmt_compact_int(eff_rc)}/{game_data.fmt_compact_int(r_item.target)})"
+                    )
+                    _emit_opt_research_step(tut_p, rk_t, r_reason)
+            break
+
+        # 2) Ship tasks & fleet/milestone tasks (Steps 5-11)
+        non_raid_p = [pl for pl in planets_to_check if not is_raid_planet(pl)]
+
+        def _best_ship_planet_opt(sid_v: int) -> Optional[PlanetState]:
+            if not non_raid_p:
+                return None
+            slug_v = SHIP_SLUG_BY_KEY.get(f"s{sid_v}")
+            best_p: Optional[PlanetState] = None
+            best_r: Optional[tuple[bool, bool, bool, int, bool]] = None
+            for cand_p in non_raid_p:
+                s_off_c = s_offers_by_p.get(cand_p.planet_id, {}).get(sid_v)
+                unmet_c = _fast_unmet_prereqs("ships", slug_v, cand_p.buildings, state.researches) if slug_v else ()
+                wf_l = cand_p.building_level(9)
+                has_wf_c = wf_l >= 1 and not any(m.get("category") == "buildings" for m in unmet_c)
+                can_ex_c = bool(
+                    has_wf_c
+                    and cfg.allow_shipyard
+                    and s_off_c is not None
+                    and s_off_c.can_build
+                    and avail_res_by_p.get(cand_p.planet_id, cand_p.resources).can_afford(s_off_c.cost)
+                )
+                rnk = (can_ex_c, not unmet_c, has_wf_c, wf_l, cand_p.planet_id == active.planet_id)
+                if best_r is None or rnk > best_r:
+                    best_r = rnk
+                    best_p = cand_p
+            return best_p
+
+        def _emit_opt_ship_with_prereqs(sid_v: int, qty_v: int, reason_str: str) -> None:
+            cand_p = _best_ship_planet_opt(sid_v)
+            if cand_p is None:
+                return
+            slug_v = SHIP_SLUG_BY_KEY.get(f"s{sid_v}")
+            if not slug_v or slug_v not in game_data.SHIPS:
+                return
+            s_info = game_data.SHIPS[slug_v]
+            s_off = s_offers_by_p.get(cand_p.planet_id, {}).get(sid_v)
+            s_lbl = (_safe_action_str(s_off.name) if s_off and s_off.name else "") or str(s_info["name"])
+            _emit_prereq_steps_for(cand_p, "ships", slug_v, s_lbl)
+            u_cost = s_off.cost if (s_off is not None and not s_off.cost.is_zero()) else _resources_from_dict(s_info.get("base_cost") or {})
+            q_eff = 1 if s_off is not None else max(1, qty_v)
+            tot_cost = Resources(
+                pig_iron=u_cost.pig_iron * q_eff,
+                metal=u_cost.metal * q_eff,
+                kryptonite=u_cost.kryptonite * q_eff,
+                spice=u_cost.spice * q_eff,
+            )
+            av_p = avail_res_by_p.get(cand_p.planet_id, cand_p.resources)
+            ship_avail_before.setdefault((cand_p.planet_id, sid_v), av_p)
+            unmet_now = _fast_unmet_prereqs("ships", slug_v, cand_p.buildings, state.researches)
+            can_ex = bool(
+                not is_raid_planet(cand_p)
+                and cand_p.building_level(9) >= 1
+                and not unmet_now
+                and bool(cfg.allow_shipyard)
+                and s_off is not None
+                and s_off.can_build
+                and av_p.can_afford(tot_cost)
+            )
+            if can_ex:
+                avail_res_by_p[cand_p.planet_id] = _sub_resources(av_p, tot_cost)
+            p1_done_ships.add((cand_p.planet_id, sid_v))
+            plan.append(
+                _make_planned_action(
+                    priority="P2",
+                    kind="BUILD_SHIP",
+                    planet_id=cand_p.planet_id,
+                    planet_coords=_safe_action_str(cand_p.coords),
+                    target_id=sid_v,
+                    target_name=s_lbl,
+                    target_level=q_eff,
+                    cost=tot_cost,
+                    missing=av_p.missing(tot_cost),
+                    reason=reason_str,
+                    executable_now=can_ex,
+                )
+            )
+
+        for t_item in tut_obj.tasks:
+            if t_item.completed:
+                continue
+            if t_item.category == "ship":
+                sid_t = game_data.safe_optional_int(t_item.building_id, None)
+                if sid_t is not None and sid_t > 0:
+                    need_q = max(1, _safe_int(t_item.target, 1) - _safe_int(t_item.current, 0))
+                    _emit_opt_ship_with_prereqs(
+                        sid_t,
+                        need_q,
+                        f"Tutorial {tut_step_s}/{tut_total_s}: {_safe_action_str(t_item.description)}",
+                    )
+            elif t_item.category == "milestone":
+                desc_s = _safe_action_str(t_item.description)
+                desc_l = desc_s.lower()
+                if any(w in desc_l for w in ("fight", "attack", "combat", "battle")):
+                    continue
+                helper_sid = _opt_milestone_helper_ship_id(desc_l)
+                if helper_sid == 10:
+                    has_probe_any = any(_safe_int(pl.ships.get("s10", 0), 0) > 0 for pl in non_raid_p)
+                    if not has_probe_any:
+                        _emit_opt_ship_with_prereqs(
+                            10,
+                            1,
+                            f"Tutorial {tut_step_s}/{tut_total_s}: build Spy probe for {desc_s}",
+                        )
+                    continue
+                if helper_sid in (8, 11):
+                    has_helper_any = any(_safe_int(pl.ships.get(f"s{helper_sid}", 0), 0) > 0 for pl in non_raid_p)
+                    if not has_helper_any:
+                        h_name = "Colony ship" if helper_sid == 8 else "Recycler"
+                        _emit_opt_ship_with_prereqs(
+                            helper_sid,
+                            1,
+                            f"Tutorial {tut_step_s}/{tut_total_s}: build {h_name} for {desc_s}",
+                        )
+                plan.append(
+                    _make_planned_action(
+                        priority="P3",
+                        kind="TUTORIAL_TASK",
+                        planet_id=active.planet_id,
+                        planet_coords=active_coords_s,
+                        target_name=desc_s,
+                        reason=f"Tutorial {tut_step_s}/{tut_total_s}: {desc_s}",
+                        executable_now=False,
+                        action_href=None,
+                    )
+                )
+
+        # 3) Tutorial Spy / Fight fleet execution & galaxy spiral
+        merged_scans_tut = set(recent_scans)
+        for raw_rt in state.raid_targets or ():
+            if isinstance(raw_rt, Mapping):
+                rt_sc = _safe_float_any(raw_rt.get("last_scanned_ts"), 0.0)
+                if rt_sc > 0.0 and (live_now_ts - rt_sc) < 1800.0:
+                    rc_s = _safe_action_str(raw_rt.get("coords") or raw_rt.get("target_coords")).strip()
+                    if rc_s:
+                        merged_scans_tut.add(_parse_gal_sys(rc_s))
+
+        if tutorial_spy_task is not None:
+            probe_p = (
+                active
+                if _safe_int(active.ships.get("s10", 0), 0) > 0
+                else next((pl for pl in non_raid_p if _safe_int(pl.ships.get("s10", 0), 0) > 0), None)
+            )
+            if probe_p is not None:
+                emitted_spy = False
+                for raw_rt in state.raid_targets or ():
+                    if not isinstance(raw_rt, Mapping):
+                        continue
+                    tc_raw = _safe_action_str(raw_rt.get("coords") or raw_rt.get("target_coords")).strip()
+                    if not tc_raw or normalize_coords(tc_raw) in own_coords:
+                        continue
+                    norm_tc = normalize_coords(tc_raw)
+                    is_sp = bool(raw_rt.get("is_spacia", False))
+                    sc_col = _resolve_raid_target_status_color(raw_rt)
+                    if not (sc_col == "yellow" or is_sp or (bool(cfg.allow_pvp_in_az) and sc_col == "light_red")):
+                        continue
+                    ow_s = _safe_action_str(raw_rt.get("owner"))
+                    pn_s = _safe_action_str(raw_rt.get("planet_name"))
+                    tg_s = "Spacia" if is_sp else ("Inactive" if sc_col == "yellow" else sc_col.title())
+                    plan.append(
+                        _make_planned_action(
+                            priority="P2",
+                            kind="SPY",
+                            planet_id=probe_p.planet_id,
+                            planet_coords=_safe_action_str(probe_p.coords),
+                            target_id=10,
+                            target_level=1,
+                            target_name=f"{norm_tc} ({ow_s or pn_s or tg_s})",
+                            reason=f"Tutorial spy: Send Spy probe (s10) to scout {tg_s} {norm_tc} before raiding",
+                            executable_now=bool(cfg.allow_galaxy_scan),
+                        )
+                    )
+                    emitted_spy = True
+                    break
+                if not emitted_spy:
+                    nxt_sc = _next_unscanned_system(_safe_action_str(probe_p.coords), merged_scans_tut)
+                    if nxt_sc is not None:
+                        sg, ss = nxt_sc
+                        plan.append(
+                            _make_planned_action(
+                                priority="P2",
+                                kind="SCAN_GALAXY",
+                                planet_id=probe_p.planet_id,
+                                planet_coords=_safe_action_str(probe_p.coords),
+                                target_name=f"Galaxy [{sg:02d}:{ss:03d}]",
+                                reason=f"Scan system {sg:02d}:{ss:03d} for tutorial spy target",
+                                executable_now=bool(cfg.allow_galaxy_scan),
+                            )
+                        )
+
+        if tutorial_fight_task is not None:
+            atk_p = (
+                active
+                if any(_safe_int(active.ships.get(k, 0), 0) > 0 for k in _COMBAT_AND_RAID_SHIP_KEYS)
+                else next(
+                    (
+                        pl
+                        for pl in planets_to_check
+                        if any(_safe_int(pl.ships.get(k, 0), 0) > 0 for k in _COMBAT_AND_RAID_SHIP_KEYS)
+                    ),
+                    active,
+                )
+            )
+            atk_fl = {
+                k: max(0, _safe_int(atk_p.ships.get(k, 0), 0))
+                for k in _COMBAT_AND_RAID_SHIP_KEYS
+                if _safe_int(atk_p.ships.get(k, 0), 0) > 0
+            }
+            emitted_fight_atk = False
+            for raw_rt in state.raid_targets or ():
+                if not isinstance(raw_rt, Mapping):
+                    continue
+                tc_raw = _safe_action_str(raw_rt.get("coords") or raw_rt.get("target_coords")).strip()
+                if not tc_raw or normalize_coords(tc_raw) in own_coords:
+                    continue
+                norm_tc = normalize_coords(tc_raw)
+                is_sp = bool(raw_rt.get("is_spacia", False))
+                sc_col = _resolve_raid_target_status_color(raw_rt)
+                is_in = sc_col == "yellow"
+                if not (is_in or is_sp or (bool(cfg.allow_pvp_in_az) and sc_col == "light_red")):
+                    continue
+                b_ok = bash_tracker.can_attack(norm_tc, is_inactive=is_in, is_spacia=is_sp, timestamp=live_now_ts)
+                if not b_ok:
+                    continue
+                rf_m = raw_rt.get("fleet") if isinstance(raw_rt.get("fleet"), Mapping) else {}
+                rd_m = raw_rt.get("defense") if isinstance(raw_rt.get("defense"), Mapping) else {}
+                rep_t = SpyReport(
+                    target_coords=norm_tc,
+                    owner=_safe_action_str(raw_rt.get("owner")),
+                    resources=sim_target_res.get(norm_tc, Resources()),
+                    fleet={_safe_action_str(k): max(0, _safe_int(v, 0)) for k, v in rf_m.items()},
+                    defense={_safe_action_str(k): max(0, _safe_int(v, 0)) for k, v in rd_m.items()},
+                    dug_in=raw_rt.get("dug_in"),
+                    is_spacia=is_sp,
+                )
+                sim_fl_t = atk_fl if atk_fl else {"s1": 1}
+                cmb_t = simulate_raid_outcome(
+                    sim_fl_t, rep_t, attacker_researches=state.researches, safety_margin=cfg.combat_safety_margin
+                )
+                if not cmb_t.safe_to_attack:
+                    continue
+                ow_s = _safe_action_str(raw_rt.get("owner"))
+                pn_s = _safe_action_str(raw_rt.get("planet_name"))
+                tg_s = "Spacia" if is_sp else ("Inactive" if is_in else sc_col.title())
+                can_ex_f = bool(cfg.allow_raids and atk_fl and not own_fleet_in_flight)
+                f_reason = f"Tutorial {tut_step_s}/{tut_total_s}: {_safe_action_str(tutorial_fight_task.description)}"
+                if own_fleet_in_flight:
+                    f_reason += " [Hold: Tutorial attack already in flight]"
+                elif not cfg.allow_raids:
+                    f_reason += " [Hold: allow_raids=false in Config]"
+                elif not atk_fl:
+                    f_reason += " [Hold: Build attack/transport ship first]"
+                if can_ex_f:
+                    raided_coords_this_tick.add(norm_tc)
+                    if not (is_in or is_sp):
+                        bash_tracker.record_attack(norm_tc, timestamp=live_now_ts)
+                plan.append(
+                    _make_planned_action(
+                        priority="P2" if can_ex_f else "P3",
+                        kind="ATTACK",
+                        planet_id=atk_p.planet_id,
+                        planet_coords=_safe_action_str(atk_p.coords),
+                        target_name=f"{norm_tc} ({ow_s or pn_s or tg_s})",
+                        reason=f_reason,
+                        executable_now=can_ex_f,
+                    )
+                )
+                emitted_fight_atk = True
+                break
+            if not emitted_fight_atk and not own_fleet_in_flight:
+                nxt_sc = _next_unscanned_system(_safe_action_str(atk_p.coords), merged_scans_tut)
+                if nxt_sc is not None:
+                    sg, ss = nxt_sc
+                    plan.append(
+                        _make_planned_action(
+                            priority="P2",
+                            kind="SCAN_GALAXY",
+                            planet_id=atk_p.planet_id,
+                            planet_coords=_safe_action_str(atk_p.coords),
+                            target_name=f"Galaxy [{sg:02d}:{ss:03d}]",
+                            reason=f"Scan system {sg:02d}:{ss:03d} for tutorial fight target",
+                            executable_now=bool(cfg.allow_galaxy_scan),
+                        )
+                    )
+
+        # 4) Expand warehouse if any tutorial WAIT_RESOURCES exceeds current storage cap
+        for w_p in planets_to_check:
+            p_t_w = normalize_planet_type(w_p)
+            if p_t_w in ("asteroid", "raid"):
+                continue
+            w_wait = [
+                a for a in plan
+                if a.planet_id == w_p.planet_id and a.priority in ("P1", "P2") and a.kind == "WAIT_RESOURCES"
+            ]
+            for w_act in w_wait:
+                for rk_w in _RESOURCE_KEYS:
+                    c_v = _safe_int(getattr(w_act.cost, rk_w, 0), 0)
+                    s_v = _safe_int(getattr(w_p.storage, rk_w, 0), 0)
+                    if s_v <= 0 or c_v <= s_v:
+                        continue
+                    wh_id_v, _ = _WAREHOUSE_ID_BY_RES[rk_w]
+                    if any(
+                        a.planet_id == w_p.planet_id and a.target_id == wh_id_v and a.kind in ("BUILD", "WAIT_RESOURCES")
+                        for a in plan
+                    ):
+                        continue
+                    _emit_opt_build_step(
+                        w_p,
+                        wh_id_v,
+                        f"Expand {rk_w.replace('_', ' ')} cap ({game_data.fmt_compact_int(s_v)}) for {w_act.target_name} ({game_data.fmt_compact_int(c_v)} needed)",
+                        prio_str=w_act.priority,
+                    )
+
     for step in best_chrom:
         planet = (
             planet_map.get(step.planet_id)
@@ -6652,6 +7557,8 @@ def _materialize_planned_actions(
 
         if kind == "BUILD":
             bid = _parse_building_target_id(step.target_id, 0)
+            if bid == 5 and planet.planet_id in deferred_non_urgent_fusion_pids:
+                continue
             if (planet.planet_id, bid) in p1_done_builds:
                 p1_done_builds.discard((planet.planet_id, bid))
                 continue
@@ -6664,6 +7571,15 @@ def _materialize_planned_actions(
             )
             if not is_building_allowed_on_planet_type(ptype, bid, has_b8_offer=b8_offer_ok):
                 continue
+            if tut_obj is not None:
+                sim_p_blds = dict(live_eff_b.get(planet.planet_id, {}))
+                for (sp_pid, sp_bid), sp_lvl in sim_step_b_lvl.items():
+                    if sp_pid == planet.planet_id:
+                        sim_p_blds[f"b{sp_bid}"] = max(sim_p_blds.get(f"b{sp_bid}", 0), sp_lvl)
+                if game_data.missing_prerequisites(
+                    "buildings", bid, buildings=sim_p_blds, researches=sim_step_r_lvl
+                ):
+                    continue
             offers = b_offers_by_p.get(planet.planet_id, {})
             offer = offers.get(bid)
             base_eff = int(live_eff_b[planet.planet_id].get(f"b{bid}", planet.building_level(bid)))
@@ -6842,8 +7758,14 @@ def _materialize_planned_actions(
                 m.get("category") == "buildings"
                 for m in _fast_unmet_prereqs("ships", slug, planet.buildings, state.researches)
             )
+            hold_for_in_flight = (
+                own_fleet_in_flight
+                and sid not in tutorial_ship_ids
+                and sid in (1, 2, 3, 4, 5, 6, 7, 13, 14, 15, 16)
+            )
             can_exec = bool(
                 ptype != "raid"
+                and not hold_for_in_flight
                 and has_wf_now
                 and bool(cfg.allow_shipyard)
                 and offer is not None
@@ -6852,6 +7774,9 @@ def _materialize_planned_actions(
             )
             if can_exec:
                 avail_res_by_p[planet.planet_id] = _sub_resources(avail_p, cost)
+            ship_reason = _safe_action_str(step.reason) or f"GA+NN shipyard build {sname}"
+            if hold_for_in_flight and "in transit" not in ship_reason:
+                ship_reason = f"{ship_reason} (hold while own fleet is in transit)"
             plan.append(
                 _make_planned_action(
                     priority="P2",
@@ -6863,7 +7788,7 @@ def _materialize_planned_actions(
                     target_level=qty,
                     cost=cost,
                     missing=avail_p.missing(cost),
-                    reason=_safe_action_str(step.reason) or f"GA+NN shipyard build {sname}",
+                    reason=ship_reason,
                     executable_now=can_exec,
                 )
             )
@@ -7024,19 +7949,26 @@ def _materialize_planned_actions(
                 and "Rounded raid loot" not in full_reason
             ):
                 full_reason = f"{full_reason} [Hold: Rounded raid loot is 0]"
-            if already_raided_t0 or is_depleted_now:
+            hold_tut_inflight = (tutorial_fight_task is not None) and own_fleet_in_flight
+            tut_zero_loot_ok = (tutorial_fight_task is not None) and not hold_tut_inflight and not already_raided_t0
+            if hold_tut_inflight and "already in flight" not in full_reason:
+                full_reason = f"{full_reason} [Hold: Tutorial attack already in flight]"
+            if already_raided_t0 or (is_depleted_now and not tut_zero_loot_ok) or hold_tut_inflight:
                 can_exec = False
             else:
+                loot_ok = tut_zero_loot_ok or (
+                    combat_loot_sp > 0.0
+                    and exp_loot_sp > 0.0
+                    and not rounded_loot.is_zero()
+                    and exp_loot_sp >= min_req - 1e-6
+                )
                 can_exec = bool(
                     cfg.allow_raids
                     and atk_ships
                     and safe
                     and policy_ok
                     and bash_ok
-                    and combat_loot_sp > 0.0
-                    and exp_loot_sp > 0.0
-                    and not rounded_loot.is_zero()
-                    and exp_loot_sp >= min_req - 1e-6
+                    and loot_ok
                 )
             if can_exec:
                 raided_coords_this_tick.add(norm_step_coords)
@@ -7065,6 +7997,44 @@ def _materialize_planned_actions(
                     target_name=target_label,
                     reason=full_reason,
                     executable_now=can_exec,
+                )
+            )
+
+        elif kind == "SPY":
+            raw_coords = _safe_action_str(step.target_coords).strip()
+            if not raw_coords or ptype == "raid":
+                continue
+            norm_spy_coords = normalize_coords(raw_coords)
+            if norm_spy_coords in own_coords or any(a.kind == "SPY" for a in plan):
+                continue
+            meta_spy = next(
+                (
+                    r
+                    for r in (state.raid_targets or ())
+                    if normalize_coords(_safe_action_str(r.get("coords") or r.get("target_coords"))) == norm_spy_coords
+                ),
+                None,
+            )
+            if meta_spy is None:
+                continue
+            ow_spy = _safe_action_str(meta_spy.get("owner"))
+            pn_spy = _safe_action_str(meta_spy.get("planet_name"))
+            is_sp_spy = bool(meta_spy.get("is_spacia", False))
+            sc_spy = _resolve_raid_target_status_color(meta_spy)
+            pol_spy = sc_spy == "yellow" or is_sp_spy or (bool(cfg.allow_pvp_in_az) and sc_spy == "light_red")
+            tg_spy = "Spacia" if is_sp_spy else ("Inactive" if sc_spy == "yellow" else sc_spy.title())
+            can_exec_spy = bool(cfg.allow_galaxy_scan and _safe_int(planet.ships.get("s10", 0), 0) > 0 and pol_spy)
+            plan.append(
+                _make_planned_action(
+                    priority="P2",
+                    kind="SPY",
+                    planet_id=planet.planet_id,
+                    planet_coords=_safe_action_str(planet.coords),
+                    target_id=10,
+                    target_level=1,
+                    target_name=f"{norm_spy_coords} ({ow_spy or pn_spy or tg_spy})",
+                    reason=_safe_action_str(step.reason) or f"Send Spy probe (s10) to scout {tg_spy} {norm_spy_coords}",
+                    executable_now=can_exec_spy,
                 )
             )
 

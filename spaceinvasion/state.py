@@ -1196,8 +1196,41 @@ def parse_tutorial_from_home(html: str) -> Optional[TutorialStatus]:
     tut_div = soup.find(id="tutorial.text")
     tut_text = " ".join(tut_div.get_text(" ", strip=True).split()) if tut_div else full_text
 
+    def _parse_tut_counter(raw_cnt: str) -> int:
+        txt = raw_cnt.strip()
+        if "." in txt:
+            txt = txt.replace(".", "")
+        return _parse_bounded_int(txt, 0)
+
+    def _unit_singular_plural_variants(raw_name: str) -> list[str]:
+        clean = " ".join(raw_name.split()).strip()
+        if not clean:
+            return []
+        variants: list[str] = [clean]
+        low = clean.lower()
+        if low.endswith("ies") and len(clean) > 3:
+            variants.append(f"{clean[:-3]}y")
+        if low.endswith("s") and len(clean) > 2:
+            variants.append(clean[:-1])
+        if low.endswith("es") and len(clean) > 3:
+            variants.append(clean[:-2])
+        if not low.endswith("s"):
+            variants.append(f"{clean}s")
+        dedup_v: list[str] = []
+        for cand in variants:
+            if cand and cand not in dedup_v:
+                dedup_v.append(cand)
+        return dedup_v
+
+    def _resolve_catalog_unit(category: str, raw_name: str) -> Optional[dict]:
+        for cand in _unit_singular_plural_variants(raw_name):
+            unit = game_data.resolve_unit(category, cand)
+            if unit:
+                return unit
+        return None
+
     def _resolve_ship_id(slug_or_name: str) -> Optional[int]:
-        unit = game_data.resolve_unit("ships", slug_or_name)
+        unit = _resolve_catalog_unit("ships", slug_or_name)
         if not unit:
             return None
         from spaceinvasion.fleet import SHIP_SLUG_BY_KEY
@@ -1208,45 +1241,72 @@ def parse_tutorial_from_home(html: str) -> Optional[TutorialStatus]:
                 return int(skey[1:])
         return None
 
+    def _resolve_building_name_and_id(raw_name: str) -> tuple[Optional[str], Optional[int]]:
+        for cand in _unit_singular_plural_variants(raw_name):
+            bid = BUILDING_ID_BY_NAME.get(cand.lower())
+            if bid is not None:
+                binfo = game_data.BUILDING_BY_ID.get(bid)
+                return str((binfo or {}).get("name") or cand), bid
+            unit = game_data.resolve_unit("buildings", cand)
+            if unit and unit.get("id") is not None:
+                return str(unit.get("name") or cand), int(unit["id"])
+        return None, None
+
     def _classify_task(label: str, cur: int, tgt: int) -> TutorialTask:
         desc = f"{label} {cur} / {tgt}"
-        inc_m = re.match(r"Increase your\s+([A-Za-z ]+?)\s+level$", label, re.IGNORECASE)
+        inc_m = re.match(r"Increase your\s+([A-Za-z -]+?)\s+level$", label, re.IGNORECASE)
         if inc_m:
             bname = " ".join(inc_m.group(1).split())
+            canon_bname, bid = _resolve_building_name_and_id(bname)
             return TutorialTask(
                 description=desc,
-                building_name=bname,
-                building_id=BUILDING_ID_BY_NAME.get(bname.lower()),
+                building_name=canon_bname or bname,
+                building_id=bid,
                 current=cur,
                 target=tgt,
                 category="building",
             )
-        upg_m = re.match(r"Upgrade your\s+([A-Za-z ]+?)$", label, re.IGNORECASE)
+        upg_m = re.match(r"(?:Upgrade|Research)\s+(?:your\s+)?([A-Za-z -]+?)(?:\s+level)?$", label, re.IGNORECASE)
         if upg_m:
             rname = " ".join(upg_m.group(1).split())
-            unit = game_data.resolve_unit("research", rname)
-            rid = str(unit["id"]) if unit and unit.get("id") else None
-            return TutorialTask(
-                description=desc,
-                building_name=rname,
-                building_id=None,
-                current=cur,
-                target=tgt,
-                category="research",
-                research_id=rid,
-            )
-        bld_ship_m = re.match(r"Build\s+(?:an?\s+)?([A-Za-z ]+?)$", label, re.IGNORECASE)
-        if bld_ship_m:
-            sname = " ".join(bld_ship_m.group(1).split())
-            unit = game_data.resolve_unit("ships", sname)
-            if unit:
+            unit = _resolve_catalog_unit("research", rname)
+            if unit or label.lower().startswith("upgrade your "):
+                rid = str(unit["id"]) if unit and unit.get("id") else None
                 return TutorialTask(
                     description=desc,
-                    building_name=str(unit["name"]),
-                    building_id=_resolve_ship_id(str(unit["slug"])),
+                    building_name=str(unit["name"]) if unit and unit.get("name") else rname,
+                    building_id=None,
+                    current=cur,
+                    target=tgt,
+                    category="research",
+                    research_id=rid,
+                )
+        bld_m = re.match(
+            r"(?:Build|Construct|Produce)\s+(?:(?:an?|\d+)\s+)?([A-Za-z][A-Za-z -]*?)(?:\s+level)?$",
+            label,
+            re.IGNORECASE,
+        )
+        if bld_m:
+            uname = " ".join(bld_m.group(1).split())
+            ship_unit = _resolve_catalog_unit("ships", uname)
+            if ship_unit:
+                return TutorialTask(
+                    description=desc,
+                    building_name=str(ship_unit["name"]),
+                    building_id=_resolve_ship_id(str(ship_unit["slug"])),
                     current=cur,
                     target=tgt,
                     category="ship",
+                )
+            canon_bname, bid = _resolve_building_name_and_id(uname)
+            if bid is not None:
+                return TutorialTask(
+                    description=desc,
+                    building_name=canon_bname or uname,
+                    building_id=bid,
+                    current=cur,
+                    target=tgt,
+                    category="building",
                 )
         return TutorialTask(
             description=desc,
@@ -1260,65 +1320,100 @@ def parse_tutorial_from_home(html: str) -> Optional[TutorialStatus]:
     tasks: list[TutorialTask] = []
     # Pattern matches lines like "Increase your Fusion plant level 0 / 3"
     for m in re.finditer(
-        r"(Increase your\s+([A-Za-z ]+?)\s+level\s+(\d+)\s*/\s*(\d+))",
+        r"(Increase your\s+([A-Za-z -]+?)\s+level)\s+(\d+(?:\.\d{3})*)\s*/\s*(\d+(?:\.\d{3})*)",
         full_text,
         re.IGNORECASE | re.ASCII,
     ):
         tasks.append(
             _classify_task(
-                f"Increase your {m.group(2).strip()} level",
-                _parse_bounded_int(m.group(3), 0),
-                _parse_bounded_int(m.group(4), 0),
+                " ".join(m.group(1).split()),
+                _parse_tut_counter(m.group(3)),
+                _parse_tut_counter(m.group(4)),
             )
         )
 
     # Tutorial 4+ research lines like "Upgrade your Energy technology 0 / 2"
     for m in re.finditer(
-        r"(Upgrade your\s+([A-Za-z ]+?)\s+(\d+)\s*/\s*(\d+))",
+        r"(Upgrade your\s+([A-Za-z -]+?))\s+(\d+(?:\.\d{3})*)\s*/\s*(\d+(?:\.\d{3})*)",
         full_text,
         re.IGNORECASE | re.ASCII,
     ):
         tasks.append(
             _classify_task(
-                f"Upgrade your {m.group(2).strip()}",
-                _parse_bounded_int(m.group(3), 0),
-                _parse_bounded_int(m.group(4), 0),
+                " ".join(m.group(1).split()),
+                _parse_tut_counter(m.group(3)),
+                _parse_tut_counter(m.group(4)),
             )
         )
 
-    # Tutorial ship build lines like "Build a Small transport 1 / 2"
+    # Tutorial ship/building/defense build lines like "Build a Small transport 1 / 2" or "Build Spy probes 0 / 2"
     for m in re.finditer(
-        r"(Build\s+(?:an?\s+)?([A-Za-z ]+?)\s+(\d+)\s*/\s*(\d+))",
+        r"\b((?:Build|Construct|Produce)\s+(?:(?:an?|\d+)\s+)?([A-Za-z][A-Za-z -]{1,45}?))\s+(\d+(?:\.\d{3})*)\s*/\s*(\d+(?:\.\d{3})*)",
         full_text,
         re.IGNORECASE | re.ASCII,
     ):
-        sname = " ".join(m.group(2).split())
-        if game_data.resolve_unit("ships", sname):
+        uname = " ".join(m.group(2).split())
+        if (
+            _resolve_catalog_unit("ships", uname)
+            or _resolve_building_name_and_id(uname)[1] is not None
+            or _resolve_catalog_unit("defenses", uname)
+        ):
             tasks.append(
                 _classify_task(
-                    f"Build a {sname}",
-                    _parse_bounded_int(m.group(3), 0),
-                    _parse_bounded_int(m.group(4), 0),
+                    " ".join(m.group(1).split()),
+                    _parse_tut_counter(m.group(3)),
+                    _parse_tut_counter(m.group(4)),
                 )
             )
 
-    # Parse structured 2-column task rows inside `#tutorial.text` (captures combat/fleet milestones)
+    # Parse structured task rows and `<br>`/newline lines inside `#tutorial.text` (captures combat/spy/recycle/colonize/escape milestones)
     if tut_div is not None:
         for tr in tut_div.find_all("tr"):
-            tds = tr.find_all("td", recursive=False)
-            if len(tds) != 2:
+            if tr.find("tr") is not None:
                 continue
-            label = " ".join(tds[0].get_text(" ", strip=True).split())
-            cnt_txt = " ".join(tds[1].get_text(" ", strip=True).split())
-            cnt_m = re.match(r"^(\d+)\s*/\s*(\d+)$", cnt_txt, re.ASCII)
-            if label and cnt_m:
+            tds = tr.find_all("td", recursive=False)
+            if len(tds) < 2:
+                continue
+            cnt_txt = " ".join(tds[-1].get_text(" ", strip=True).split())
+            cnt_m = re.match(r"^(\d+(?:\.\d{3})*)\s*/\s*(\d+(?:\.\d{3})*)$", cnt_txt, re.ASCII)
+            if not cnt_m:
+                continue
+            label_parts = [
+                " ".join(td.get_text(" ", strip=True).split())
+                for td in tds[:-1]
+            ]
+            label = " ".join(p for p in label_parts if p).strip()
+            if label and not re.match(r"^Tutorial\s+\d+", label, re.IGNORECASE | re.ASCII):
                 tasks.append(
                     _classify_task(
                         label,
-                        _parse_bounded_int(cnt_m.group(1), 0),
-                        _parse_bounded_int(cnt_m.group(2), 0),
+                        _parse_tut_counter(cnt_m.group(1)),
+                        _parse_tut_counter(cnt_m.group(2)),
                     )
                 )
+
+        for raw_line in tut_div.get_text("\n", strip=True).splitlines():
+            line = " ".join(raw_line.split()).strip()
+            if not line:
+                continue
+            low_line = line.lower()
+            if low_line.startswith("tutorial ") or "you receive the following" in low_line:
+                continue
+            line_m = re.match(
+                r"^([A-Za-z][A-Za-z0-9 ()'+-]{2,80}?)\s+(\d+(?:\.\d{3})*)\s*/\s*(\d+(?:\.\d{3})*)$",
+                line,
+                re.ASCII,
+            )
+            if line_m:
+                lbl = line_m.group(1).strip()
+                if lbl and not lbl.lower().startswith("tutorial"):
+                    tasks.append(
+                        _classify_task(
+                            lbl,
+                            _parse_tut_counter(line_m.group(2)),
+                            _parse_tut_counter(line_m.group(3)),
+                        )
+                    )
 
     # Deduplicate identical task strings if duplicated across tutorial summary & body
     deduped: list[TutorialTask] = []

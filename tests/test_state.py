@@ -917,6 +917,54 @@ class TestStateParsers(unittest.TestCase):
         self.assertIsNotNone(plain_dag)
         self.assertLess(elapsed_ms, 100.0)
 
+    def test_parse_tutorial_steps_7_to_11_variants(self) -> None:
+        html_step7 = """
+        <div>Tutorial 7 / 11</div>
+        <div id="tutorial.text">
+          <table>
+            <tr><td><img src="r7.png"/></td><td>Upgrade your Spy technology</td><td>0 / 2</td></tr>
+            <tr><td><img src="s10.png"/></td><td>Build Spy probes</td><td>0 / 2</td></tr>
+            <tr><td><img src="spy.png"/></td><td>Spy on another planet</td><td>0 / 1</td></tr>
+          </table>
+          You receive the following resources: 5.000 Pig iron 2.500 Kryptonite
+        </div>
+        """
+        tut7 = parse_tutorial_from_home(html_step7)
+        self.assertIsNotNone(tut7)
+        assert tut7 is not None
+        self.assertEqual(tut7.step, 7)
+        self.assertEqual(len(tut7.tasks), 3)
+        self.assertEqual((tut7.tasks[0].category, tut7.tasks[0].research_id), ("research", "r7"))
+        self.assertEqual((tut7.tasks[1].category, tut7.tasks[1].building_id), ("ship", 10))
+        self.assertEqual(tut7.tasks[2].category, "milestone")
+
+        html_steps_8_11 = """
+        <div>Tutorial 10 / 11</div>
+        <div id="tutorial.text">
+          Build a Fleet base 0 / 1<br/>
+          Build a Solar cell 0 / 5<br/>
+          Build 2 Recyclers 0 / 2<br/>
+          Build a Colony ship 0 / 1<br/>
+          Build a Mortar 0 / 5<br/>
+          Recycle a debris field 0 / 1<br/>
+          Colonize a planet 0 / 1<br/>
+          Send an escape flight 0 / 1
+        </div>
+        """
+        tut10 = parse_tutorial_from_home(html_steps_8_11)
+        self.assertIsNotNone(tut10)
+        assert tut10 is not None
+        by_cat = [(t.category, t.building_id, t.building_name) for t in tut10.tasks]
+        self.assertIn(("building", 10, "Fleet base"), by_cat)
+        self.assertIn(("ship", 9, "Solar cells"), by_cat)
+        self.assertIn(("ship", 11, "Recycler"), by_cat)
+        self.assertIn(("ship", 8, "Colony ship"), by_cat)
+        milestones = [t.building_name for t in tut10.tasks if t.category == "milestone"]
+        self.assertIn("Build a Mortar", milestones)
+        self.assertIn("Recycle a debris field", milestones)
+        self.assertIn("Colonize a planet", milestones)
+        self.assertIn("Send an escape flight", milestones)
+
 
 if __name__ == "__main__":
     unittest.main()

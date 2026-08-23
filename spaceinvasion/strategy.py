@@ -603,6 +603,125 @@ def _make_research_action(
     )
 
 
+def _active_research_increments(state: GameState) -> dict[str, int]:
+    """Return in-flight research increments (+1) keyed by canonical research ID (`r1`..`r16`)."""
+    inc: dict[str, int] = {}
+    for r_off in state.research_offers or ():
+        if getattr(r_off, "active", False):
+            rk = _safe_strategy_str(getattr(r_off, "research_key", "")).strip()
+            if rk:
+                inc[rk] = max(inc.get(rk, 0), 1)
+    for q in state.active_queues or ():
+        if getattr(q, "category", "") != "research":
+            continue
+        raw_name = _safe_strategy_str(getattr(q, "name", ""))
+        clean_name = re.sub(r"\(.*?\)", "", raw_name)
+        clean_name = re.sub(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", "", clean_name)
+        clean_name = re.sub(r"\b(?:level|lvl|l)\s*\d+\b", "", clean_name, flags=re.IGNORECASE).strip()
+        if not clean_name:
+            continue
+        r_unit = game_data.resolve_unit("research", clean_name)
+        if r_unit and r_unit.get("id"):
+            rk = str(r_unit["id"])
+            inc[rk] = max(inc.get(rk, 0), 1)
+            continue
+        low_clean = clean_name.lower()
+        for r_off in state.research_offers or ():
+            if _safe_strategy_str(getattr(r_off, "name", "")).strip().lower() == low_clean:
+                rk = _safe_strategy_str(getattr(r_off, "research_key", "")).strip()
+                if rk:
+                    inc[rk] = max(inc.get(rk, 0), 1)
+                break
+    return inc
+
+
+def _emit_tutorial_prereq_actions(
+    *,
+    tut_step_s: str,
+    tut_total_s: str,
+    category: str,
+    slug_or_id: int | str,
+    goal_label: str,
+    state: GameState,
+    build_planet: PlanetState,
+    build_offers: dict[int, BuildingOffer],
+    eff_buildings: dict[str, int],
+    queue_full: bool,
+    allow_remote_colony_build: bool,
+    research_planet: Optional[PlanetState],
+    research_offers: dict[str, ResearchOffer],
+    research_queue_busy: bool,
+    allow_live_research: bool,
+    config: StrategyConfig,
+    emitted_build_ids: set[tuple[int, int]],
+    emitted_res_keys: set[str],
+    eff_researches: Optional[dict[str, int]] = None,
+) -> list[PlannedAction]:
+    """Resolve leaf building/research prerequisites for a tutorial target and emit actionable P2 unlocks."""
+    res_map = eff_researches if eff_researches is not None else dict(state.researches or {})
+    steps = _resolve_prereq_chain(
+        category,
+        slug_or_id,
+        goal_label,
+        eff_buildings,
+        res_map,
+    )
+    out: list[PlannedAction] = []
+    for req in steps:
+        req_cat = str(req.get("category") or "")
+        if req_cat == "buildings":
+            req_info = game_data.resolve_unit("buildings", req["slug"])
+            if not req_info or req_info.get("id") is None:
+                continue
+            req_bid = int(req_info["id"])
+            if (build_planet.planet_id, req_bid) in emitted_build_ids:
+                continue
+            if not _is_building_allowed_on_planet(build_planet, req_bid, build_offers):
+                continue
+            if not _planet_has_free_building_fields(build_planet):
+                continue
+            emitted_build_ids.add((build_planet.planet_id, req_bid))
+            pr_reason = (
+                f"Tutorial {tut_step_s}/{tut_total_s}: unlock {req['name']} "
+                f"({game_data.fmt_compact_int(req['current'])}/{game_data.fmt_compact_int(req['required'])}) for {goal_label}"
+            )
+            act = _make_build_action(
+                "P2",
+                build_planet,
+                req_bid,
+                str(req["name"]),
+                pr_reason,
+                build_offers,
+                effective_level=_eff_level(build_planet, eff_buildings, req_bid),
+                researches=state.researches,
+                allow_remote_colony_build=allow_remote_colony_build,
+            )
+            out.append(_apply_queue_cap_if_full(act, queue_full))
+        elif req_cat == "research" and research_planet is not None:
+            res_info = game_data.resolve_unit("research", req["slug"])
+            rkey = str((res_info or {}).get("id") or "")
+            if not rkey or rkey in emitted_res_keys:
+                continue
+            emitted_res_keys.add(rkey)
+            pr_reason = (
+                f"Tutorial {tut_step_s}/{tut_total_s}: unlock {req['name']} "
+                f"({game_data.fmt_compact_int(req['current'])}/{game_data.fmt_compact_int(req['required'])}) for {goal_label}"
+            )
+            out.append(
+                _make_research_action(
+                    "P2",
+                    research_planet,
+                    state,
+                    rkey,
+                    pr_reason,
+                    research_offers,
+                    research_queue_busy,
+                    allow_live=config.allow_research and allow_live_research,
+                )
+            )
+    return out
+
+
 def _plan_tutorial_actions(
     state: GameState,
     planet: PlanetState,
@@ -618,7 +737,7 @@ def _plan_tutorial_actions(
     allow_remote_colony_build: bool = False,
     allow_live_research: bool = True,
 ) -> list[PlannedAction]:
-    """Order incomplete tutorial building & research tasks with proactive power lookahead."""
+    """Order incomplete tutorial building & research tasks with proactive power & prerequisite lookahead."""
     if not state.tutorial:
         return []
 
@@ -629,17 +748,26 @@ def _plan_tutorial_actions(
         or lab_eff >= 1
         or _is_building_allowed_on_planet(planet, RESEARCH_LAB, offers)
     )
+    active_r_inc = _active_research_increments(state)
+    eff_researches: dict[str, int] = {
+        game_data.safe_key(k): max(0, _safe_strategy_int(v, 0))
+        for k, v in (state.researches or {}).items()
+    }
+    for rk_i, delta_i in active_r_inc.items():
+        eff_researches[rk_i] = eff_researches.get(rk_i, 0) + delta_i
 
     building_tasks = []
-    research_tasks = []
+    research_tasks: list[tuple[Any, int]] = []
     for t in state.tutorial.tasks:
         if t.completed:
             continue
         t_cur = _safe_strategy_int(t.current, 0)
         t_tgt = _safe_strategy_int(t.target, 0)
         if t.category == "research" and t.research_id:
-            if can_research_planet and t_cur < t_tgt:
-                research_tasks.append(t)
+            rk_s = _safe_strategy_str(t.research_id).strip()
+            eff_r_progress = t_cur + active_r_inc.get(rk_s, 0)
+            if can_research_planet and eff_r_progress < t_tgt:
+                research_tasks.append((t, eff_r_progress))
         elif t.category == "building" and t.building_id is not None:
             t_bid = game_data.safe_optional_int(t.building_id, None)
             if (
@@ -691,6 +819,8 @@ def _plan_tutorial_actions(
     actions: list[PlannedAction] = []
     tut_step_s = game_data.fmt_compact_int(state.tutorial.step)
     tut_total_s = game_data.fmt_compact_int(state.tutorial.total_steps)
+    emitted_build_ids: set[tuple[int, int]] = set()
+    emitted_res_keys: set[str] = set()
 
     if (
         need_power_first
@@ -712,11 +842,42 @@ def _plan_tutorial_actions(
             allow_remote_colony_build=allow_remote_colony_build,
         )
         actions.append(_apply_queue_cap_if_full(fusion_act, queue_full))
+        emitted_build_ids.add((planet.planet_id, FUSION_PLANT))
 
     for task, eff in ordered:
         bid = game_data.safe_optional_int(task.building_id, None)
         if bid is None:
             continue
+        b_label = _safe_strategy_str(task.building_name) or f"Building {bid}"
+        prereq_acts = _emit_tutorial_prereq_actions(
+            tut_step_s=tut_step_s,
+            tut_total_s=tut_total_s,
+            category="buildings",
+            slug_or_id=bid,
+            goal_label=b_label,
+            state=state,
+            build_planet=planet,
+            build_offers=offers,
+            eff_buildings=eff_buildings,
+            queue_full=queue_full,
+            allow_remote_colony_build=allow_remote_colony_build,
+            research_planet=planet if can_research_planet else None,
+            research_offers=research_offers,
+            research_queue_busy=research_queue_busy,
+            allow_live_research=allow_live_research,
+            config=config,
+            emitted_build_ids=emitted_build_ids,
+            emitted_res_keys=emitted_res_keys,
+            eff_researches=eff_researches,
+        )
+        actions.extend(prereq_acts)
+        if prereq_acts and game_data.missing_prerequisites(
+            "buildings", bid, buildings=planet.buildings, researches=state.researches
+        ):
+            continue
+        if (planet.planet_id, bid) in emitted_build_ids:
+            continue
+        emitted_build_ids.add((planet.planet_id, bid))
         reason = (
             f"Tutorial {tut_step_s}/{tut_total_s}: "
             f"{_safe_strategy_str(task.description)} (progress {game_data.fmt_compact_int(eff)}/{game_data.fmt_compact_int(task.target)})"
@@ -727,7 +888,7 @@ def _plan_tutorial_actions(
             "P2",
             planet,
             bid,
-            _safe_strategy_str(task.building_name) or f"Building {bid}",
+            b_label,
             reason,
             offers,
             effective_level=_eff_level(planet, eff_buildings, bid),
@@ -737,14 +898,40 @@ def _plan_tutorial_actions(
         actions.append(_apply_queue_cap_if_full(act, queue_full))
 
     if can_research_planet:
-        for rtask in research_tasks:
+        for rtask, eff_r in research_tasks:
             rid = _safe_strategy_str(rtask.research_id).strip()
             if not rid:
                 continue
+            r_label = _safe_strategy_str(rtask.building_name) or rid
+            prereq_acts = _emit_tutorial_prereq_actions(
+                tut_step_s=tut_step_s,
+                tut_total_s=tut_total_s,
+                category="research",
+                slug_or_id=rid,
+                goal_label=r_label,
+                state=state,
+                build_planet=planet,
+                build_offers=offers,
+                eff_buildings=eff_buildings,
+                queue_full=queue_full,
+                allow_remote_colony_build=allow_remote_colony_build,
+                research_planet=planet,
+                research_offers=research_offers,
+                research_queue_busy=research_queue_busy,
+                allow_live_research=allow_live_research,
+                config=config,
+                emitted_build_ids=emitted_build_ids,
+                emitted_res_keys=emitted_res_keys,
+                eff_researches=eff_researches,
+            )
+            actions.extend(prereq_acts)
+            if rid in emitted_res_keys:
+                continue
+            emitted_res_keys.add(rid)
             desc_s = _safe_strategy_str(rtask.description)
             reason = (
                 f"Tutorial {tut_step_s}/{tut_total_s}: "
-                f"{desc_s} (progress {game_data.fmt_compact_int(rtask.current)}/{game_data.fmt_compact_int(rtask.target)})"
+                f"{desc_s} (progress {game_data.fmt_compact_int(eff_r)}/{game_data.fmt_compact_int(rtask.target)})"
             )
             actions.append(
                 _make_research_action(
@@ -788,14 +975,26 @@ def _tutorial_spy_task(state: GameState) -> Optional[object]:
     return None
 
 
+def _milestone_helper_ship_id(desc_lower: str) -> Optional[int]:
+    if any(word in desc_lower for word in ("spy", "espionage", "spionage", "probe")):
+        return 10
+    if any(word in desc_lower for word in ("recycle", "recycler", "debris", "rubble")):
+        return 11
+    if any(word in desc_lower for word in ("colonize", "colony", "colonisation", "colonization")):
+        return 8
+    return None
+
+
 def _plan_tutorial_fleet_milestones(
     state: GameState,
     active: PlanetState,
     config: StrategyConfig,
     *,
     planets_to_check: Optional[list[PlanetState]] = None,
+    emitted_build_ids: Optional[set[tuple[int, int]]] = None,
+    emitted_res_keys: Optional[set[str]] = None,
 ) -> list[PlannedAction]:
-    """Emit ship build and non-combat milestone actions for later tutorial steps (e.g. Tutorial 6/11)."""
+    """Emit ship build, prerequisite unlock, and non-combat milestone actions for Tutorial Steps 5–11."""
     if state.tutorial is None:
         return []
     tut = state.tutorial
@@ -810,98 +1009,160 @@ def _plan_tutorial_fleet_milestones(
         candidates_all = [active]
     non_raid_candidates = [p for p in candidates_all if _norm_planet_type(p) != "raid"]
     active_coords_s = _safe_strategy_str(active.coords)
+    queued_b_cnt = sum(1 for q in state.active_queues if q.category == "building")
+    active_queue_full = queued_b_cnt >= _max_build_slots(active, state)
+    research_queue_busy = any(q.category == "research" for q in state.active_queues) or any(
+        o.active for o in state.research_offers
+    )
+    active_r_offers = {o.research_key: o for o in state.research_offers if o.research_key}
+    active_r_inc = _active_research_increments(state)
+    eff_researches: dict[str, int] = {
+        game_data.safe_key(k): max(0, _safe_strategy_int(v, 0))
+        for k, v in (state.researches or {}).items()
+    }
+    for rk_i, delta_i in active_r_inc.items():
+        eff_researches[rk_i] = eff_researches.get(rk_i, 0) + delta_i
+    seen_build_ids = emitted_build_ids if emitted_build_ids is not None else set()
+    seen_res_keys = emitted_res_keys if emitted_res_keys is not None else set()
+
+    def _emit_ship_and_prereqs(sid_num: int, needed_qty: int, base_reason: str, fallback_ship_name: str) -> None:
+        if not non_raid_candidates:
+            return
+        slug = SHIP_SLUG_BY_KEY.get(f"s{sid_num}")
+        info = game_data.SHIPS.get(slug or "") if slug else None
+        best_rank: Optional[tuple[bool, bool, bool, bool, bool, bool, bool, bool]] = None
+        best_tuple: Optional[tuple[PlanetState, Optional[Any], list[dict[str, Any]], bool, str, Resources, bool]] = None
+        for cand in non_raid_candidates:
+            is_active = cand.planet_id == active.planet_id
+            c_ship_offers = _ship_offer_map(cand)
+            c_offer = c_ship_offers.get(sid_num)
+            c_missing_all = (
+                game_data.missing_prerequisites(
+                    "ships",
+                    slug,
+                    buildings=cand.buildings,
+                    researches=state.researches,
+                )
+                if slug
+                else []
+            )
+            c_missing_b = [m for m in c_missing_all if m.get("category") == "buildings"]
+            c_wf_lvl = cand.building_level(WEAPONS_FACTORY)
+            c_has_wf = c_wf_lvl >= 1 and not c_missing_b
+            c_prereqs_ok = not c_missing_all
+            if c_offer is not None:
+                c_ship_name = _safe_strategy_str(c_offer.name) or f"Ship s{sid_num}"
+                c_cost = c_offer.cost
+                c_can_exec = bool(
+                    c_has_wf
+                    and c_prereqs_ok
+                    and config.allow_shipyard
+                    and c_offer.can_build
+                    and cand.resources.can_afford(c_cost)
+                )
+            else:
+                c_ship_name = fallback_ship_name or str((info or {}).get("name") or f"Ship s{sid_num}")
+                c_cost = _resources_from_dict((info or {}).get("base_cost", {}))
+                c_can_exec = False
+            rank = (
+                c_can_exec,
+                c_prereqs_ok and c_offer is not None,
+                c_has_wf and c_offer is not None,
+                c_prereqs_ok,
+                c_has_wf,
+                c_offer is not None,
+                c_wf_lvl >= 1,
+                is_active,
+            )
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best_tuple = (
+                    cand,
+                    c_offer,
+                    c_missing_b,
+                    c_has_wf,
+                    c_ship_name,
+                    c_cost,
+                    c_can_exec,
+                )
+        assert best_tuple is not None
+        cand, offer, missing_b, _, ship_name, cost, can_exec = best_tuple
+        if slug:
+            is_cand_active = cand.planet_id == active.planet_id
+            cand_offers = _offer_map(cand)
+            cand_eff, _ = _effective_building_levels_and_energy(
+                state, cand, is_active_planet=is_cand_active
+            )
+            res_planet: Optional[PlanetState] = None
+            cand_ptype = _norm_planet_type(cand)
+            if cand_ptype != "raid" and (
+                cand_ptype != "asteroid"
+                or _eff_level(cand, cand_eff, RESEARCH_LAB) >= 1
+                or _is_building_allowed_on_planet(cand, RESEARCH_LAB, cand_offers)
+            ):
+                res_planet = cand
+            elif _norm_planet_type(active) not in ("raid", "asteroid"):
+                res_planet = active
+            out.extend(
+                _emit_tutorial_prereq_actions(
+                    tut_step_s=tut_step_s,
+                    tut_total_s=tut_total_s,
+                    category="ships",
+                    slug_or_id=slug,
+                    goal_label=ship_name,
+                    state=state,
+                    build_planet=cand,
+                    build_offers=cand_offers,
+                    eff_buildings=cand_eff,
+                    queue_full=active_queue_full if is_cand_active else False,
+                    allow_remote_colony_build=config.allow_multi_planet and not is_cand_active,
+                    research_planet=res_planet,
+                    research_offers=active_r_offers if (res_planet and res_planet.planet_id == active.planet_id) else {},
+                    research_queue_busy=research_queue_busy,
+                    allow_live_research=bool(res_planet and res_planet.planet_id == active.planet_id),
+                    config=config,
+                    emitted_build_ids=seen_build_ids,
+                    emitted_res_keys=seen_res_keys,
+                    eff_researches=eff_researches,
+                )
+            )
+        reason = base_reason
+        if cand.building_level(WEAPONS_FACTORY) < 1:
+            reason += " (Weapons factory b9 required)"
+        elif missing_b:
+            first_req = missing_b[0]
+            reason += (
+                f" (requires {first_req['name']} "
+                f"{game_data.fmt_compact_int(first_req['current'])}/{game_data.fmt_compact_int(first_req['required'])})"
+            )
+        out.append(
+            PlannedAction(
+                priority="P2",
+                kind="BUILD_SHIP",
+                planet_id=cand.planet_id,
+                planet_coords=_safe_strategy_str(cand.coords),
+                target_id=sid_num,
+                target_name=ship_name,
+                target_level=max(1, needed_qty) if offer is None else 1,
+                cost=cost,
+                missing=cand.resources.missing(cost),
+                reason=reason,
+                executable_now=can_exec,
+            )
+        )
+
     for task in tut.tasks:
         if task.completed:
             continue
         sid = game_data.safe_optional_int(task.building_id, None)
         if task.category == "ship" and sid is not None and sid > 0:
-            if not non_raid_candidates:
-                continue
             t_cur = _safe_strategy_int(task.current, 0)
             t_tgt = _safe_strategy_int(task.target, 0)
-            slug = SHIP_SLUG_BY_KEY.get(f"s{sid}")
-            info = game_data.SHIPS.get(slug or "") if slug else None
-            best_rank: Optional[tuple[bool, bool, bool, bool, bool, bool, bool, bool]] = None
-            best_tuple: Optional[tuple[PlanetState, Optional[Any], list[dict[str, Any]], bool, str, Resources, bool]] = None
-            for cand in non_raid_candidates:
-                is_active = cand.planet_id == active.planet_id
-                c_ship_offers = _ship_offer_map(cand)
-                c_offer = c_ship_offers.get(sid)
-                c_missing_all = (
-                    game_data.missing_prerequisites(
-                        "ships",
-                        slug,
-                        buildings=cand.buildings,
-                        researches=state.researches,
-                    )
-                    if slug
-                    else []
-                )
-                c_missing_b = [m for m in c_missing_all if m.get("category") == "buildings"]
-                c_wf_lvl = cand.building_level(WEAPONS_FACTORY)
-                c_has_wf = c_wf_lvl >= 1 and not c_missing_b
-                c_prereqs_ok = not c_missing_all
-                if c_offer is not None:
-                    c_ship_name = _safe_strategy_str(c_offer.name) or f"Ship s{sid}"
-                    c_cost = c_offer.cost
-                    c_can_exec = bool(
-                        c_has_wf
-                        and config.allow_shipyard
-                        and c_offer.can_build
-                        and cand.resources.can_afford(c_cost)
-                    )
-                else:
-                    c_ship_name = _safe_strategy_str(task.building_name) or str(
-                        (info or {}).get("name") or f"Ship s{sid}"
-                    )
-                    c_cost = _resources_from_dict((info or {}).get("base_cost", {}))
-                    c_can_exec = False
-                rank = (
-                    c_can_exec,
-                    c_prereqs_ok and c_offer is not None,
-                    c_has_wf and c_offer is not None,
-                    c_prereqs_ok,
-                    c_has_wf,
-                    c_offer is not None,
-                    c_wf_lvl >= 1,
-                    is_active,
-                )
-                if best_rank is None or rank > best_rank:
-                    best_rank = rank
-                    best_tuple = (
-                        cand,
-                        c_offer,
-                        c_missing_b,
-                        c_has_wf,
-                        c_ship_name,
-                        c_cost,
-                        c_can_exec,
-                    )
-            assert best_tuple is not None
-            cand, offer, missing_b, _, ship_name, cost, can_exec = best_tuple
-            reason = f"Tutorial {tut_step_s}/{tut_total_s}: {_safe_strategy_str(task.description)}"
-            if cand.building_level(WEAPONS_FACTORY) < 1:
-                reason += " (Weapons factory b9 required)"
-            elif missing_b:
-                first_req = missing_b[0]
-                reason += (
-                    f" (requires {first_req['name']} "
-                    f"{game_data.fmt_compact_int(first_req['current'])}/{game_data.fmt_compact_int(first_req['required'])})"
-                )
-            out.append(
-                PlannedAction(
-                    priority="P2",
-                    kind="BUILD_SHIP",
-                    planet_id=cand.planet_id,
-                    planet_coords=_safe_strategy_str(cand.coords),
-                    target_id=sid,
-                    target_name=ship_name,
-                    target_level=max(1, t_tgt - t_cur) if offer is None else 1,
-                    cost=cost,
-                    missing=cand.resources.missing(cost),
-                    reason=reason,
-                    executable_now=can_exec,
-                )
+            _emit_ship_and_prereqs(
+                sid,
+                max(1, t_tgt - t_cur),
+                f"Tutorial {tut_step_s}/{tut_total_s}: {_safe_strategy_str(task.description)}",
+                _safe_strategy_str(task.building_name),
             )
         elif task.category == "milestone":
             desc_s = _safe_strategy_str(task.description)
@@ -909,7 +1170,8 @@ def _plan_tutorial_fleet_milestones(
             if any(word in desc_l for word in ("fight", "attack", "combat", "battle")):
                 # Handled at P2 as SCAN_GALAXY / ATTACK by `_plan_combat_and_raid_actions`
                 continue
-            if any(word in desc_l for word in ("spy", "espionage", "spionage", "probe")):
+            helper_sid = _milestone_helper_ship_id(desc_l)
+            if helper_sid == 10:
                 has_any_probe = any(
                     _safe_strategy_int(p.ships.get("s10", 0), 0) > 0
                     for p in non_raid_candidates
@@ -918,39 +1180,26 @@ def _plan_tutorial_fleet_milestones(
                     # Handled at P2 as SCAN_GALAXY / SPY by `_plan_combat_and_raid_actions`
                     continue
                 if non_raid_candidates:
-                    probe_cand = non_raid_candidates[0]
-                    p_offer = _ship_offer_map(probe_cand).get(10)
-                    p_info = game_data.SHIPS.get("spy-probe") or {}
-                    p_cost = p_offer.cost if p_offer is not None else _resources_from_dict(p_info.get("base_cost", {}))
-                    p_can_exec = bool(
-                        p_offer is not None
-                        and probe_cand.building_level(WEAPONS_FACTORY) >= 1
-                        and not game_data.missing_prerequisites(
-                            "ships",
-                            "spy-probe",
-                            buildings=probe_cand.buildings,
-                            researches=state.researches,
-                        )
-                        and config.allow_shipyard
-                        and p_offer.can_build
-                        and probe_cand.resources.can_afford(p_cost)
-                    )
-                    out.append(
-                        PlannedAction(
-                            priority="P2",
-                            kind="BUILD_SHIP",
-                            planet_id=probe_cand.planet_id,
-                            planet_coords=_safe_strategy_str(probe_cand.coords),
-                            target_id=10,
-                            target_name=_safe_strategy_str(p_offer.name) if p_offer is not None else "Spy probe",
-                            target_level=1,
-                            cost=p_cost,
-                            missing=probe_cand.resources.missing(p_cost),
-                            reason=f"Tutorial {tut_step_s}/{tut_total_s}: build Spy probe for {desc_s}",
-                            executable_now=p_can_exec,
-                        )
+                    _emit_ship_and_prereqs(
+                        10,
+                        1,
+                        f"Tutorial {tut_step_s}/{tut_total_s}: build Spy probe for {desc_s}",
+                        "Spy probe",
                     )
                     continue
+            elif helper_sid in (8, 11) and non_raid_candidates:
+                has_any_helper = any(
+                    _safe_strategy_int(p.ships.get(f"s{helper_sid}", 0), 0) > 0
+                    for p in non_raid_candidates
+                )
+                if not has_any_helper:
+                    helper_name = "Colony ship" if helper_sid == 8 else "Recycler"
+                    _emit_ship_and_prereqs(
+                        helper_sid,
+                        1,
+                        f"Tutorial {tut_step_s}/{tut_total_s}: build {helper_name} for {desc_s}",
+                        helper_name,
+                    )
             out.append(
                 PlannedAction(
                     priority="P3",
@@ -1563,7 +1812,7 @@ def _plan_unlock_and_advisory_actions(
             )
 
         goal_ships = (
-            ("small-transport", "colony-ship", "phoenix", "transmitter", "battleship", "stealth-bomber")
+            ("small-transport", "spy-probe", "recycler", "colony-ship", "phoenix", "transmitter", "battleship", "stealth-bomber")
             if config.playstyle == "fleeter"
             else ("small-transport", "colony-ship")
         )
@@ -1607,7 +1856,7 @@ def _plan_unlock_and_advisory_actions(
                 if first_res:
                     res_info = game_data.resolve_unit("research", first_res["slug"])
                     rkey = str((res_info or {}).get("id") or "")
-                    if rkey:
+                    if rkey and int(rkey[1:]) not in {a.target_id for a in advisories if a.kind == "RESEARCH"}:
                         advisories.append(
                             _make_research_action(
                                 "P3",
@@ -1620,6 +1869,28 @@ def _plan_unlock_and_advisory_actions(
                                 allow_live=config.allow_research,
                             )
                         )
+                else:
+                    first_bld = next((s for s in steps if s["category"] == "buildings"), None)
+                    if first_bld and base_ready and _planet_has_free_building_fields(planet):
+                        bld_info = game_data.resolve_unit("buildings", first_bld["slug"])
+                        req_bid = int(bld_info["id"]) if (bld_info and bld_info.get("id") is not None) else 0
+                        if (
+                            req_bid > 0
+                            and _is_building_allowed_on_planet(planet, req_bid, offers)
+                            and req_bid not in {a.target_id for a in build_unlocks}
+                        ):
+                            act = _make_build_action(
+                                "P3",
+                                planet,
+                                req_bid,
+                                str(first_bld["name"]),
+                                f"Building step ({game_data.fmt_compact_int(first_bld['current'])}/{game_data.fmt_compact_int(first_bld['required'])}) toward {first_bld['goal']}",
+                                offers,
+                                effective_level=_eff_level(planet, eff_buildings, req_bid),
+                                researches=state.researches,
+                                allow_remote_colony_build=allow_remote_build,
+                            )
+                            advisories.append(_apply_queue_cap_if_full(act, queue_full))
 
     # Utility & Colony Shipyard targets whenever Weapons factory is built (`wf >= 1`)
     if wf >= 1 and config.allow_shipyard and not is_raid:
@@ -1627,9 +1898,15 @@ def _plan_unlock_and_advisory_actions(
         tutorial_ship_ids: set[int] = set()
         if state.tutorial and not state.tutorial.can_complete:
             for t in state.tutorial.tasks:
+                if t.completed:
+                    continue
                 t_bid = game_data.safe_optional_int(t.building_id, None)
-                if not t.completed and t.category == "ship" and t_bid is not None:
+                if t.category == "ship" and t_bid is not None:
                     tutorial_ship_ids.add(t_bid)
+                elif t.category == "milestone":
+                    h_sid = _milestone_helper_ship_id(_safe_strategy_str(t.description).lower())
+                    if h_sid is not None:
+                        tutorial_ship_ids.add(h_sid)
 
         waiting_ships: list[tuple[float, PlannedAction]] = []
         norm_shipyard_targets_2 = _resolve_shipyard_targets(config.shipyard_targets)
@@ -2600,6 +2877,29 @@ def _build_pre_throttle_plan(
         plan.extend(act for _, act in all_mines)
         plan.extend(all_advisories)
 
+    if not (state.tutorial and state.tutorial.can_complete):
+        if state.tutorial is not None:
+            tut_emitted_b = {
+                (a.planet_id, int(a.target_id))
+                for a in tutorial_actions
+                if a.kind in ("BUILD", "WAIT_RESOURCES") and a.target_id is not None
+            }
+            tut_emitted_r = {
+                f"r{int(a.target_id)}"
+                for a in tutorial_actions
+                if a.kind == "RESEARCH" and a.target_id is not None
+            }
+            plan.extend(
+                _plan_tutorial_fleet_milestones(
+                    state,
+                    active,
+                    cfg,
+                    planets_to_check=planets_to_check,
+                    emitted_build_ids=tut_emitted_b,
+                    emitted_res_keys=tut_emitted_r,
+                )
+            )
+
         # Expand warehouse when a P1/P2 planned upgrade exceeds current warehouse capacity
         for planet in planets_to_check:
             if _norm_planet_type(planet) in ("asteroid", "raid") or not _planet_has_free_building_fields(planet):
@@ -2651,17 +2951,11 @@ def _build_pre_throttle_plan(
                         )
                     )
 
-        if state.tutorial is not None and not state.tutorial.can_complete:
-            plan.extend(
-                _plan_tutorial_fleet_milestones(
-                    state,
-                    active,
-                    cfg,
-                    planets_to_check=planets_to_check,
-                )
-            )
-
-        if include_combat:
+        if include_combat and (
+            not tutorial_actions
+            or _tutorial_fight_task(state) is not None
+            or _tutorial_spy_task(state) is not None
+        ):
             plan.extend(
                 _plan_combat_and_raid_actions(
                     state,

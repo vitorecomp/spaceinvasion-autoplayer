@@ -3352,6 +3352,206 @@ class TestIteration3Wave2Regressions(unittest.TestCase):
         self.assertEqual(len(mat), 1)
         self.assertFalse(mat[0].executable_now)
 
+    def test_ga_nn_tutorial_steps_6_to_11_end_to_end_progression(self) -> None:
+        from dataclasses import replace as dc_replace
+        from spaceinvasion.state import (
+            BuildingOffer,
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            QueueJob,
+            ResearchOffer,
+            Resources,
+            TutorialStatus,
+            TutorialTask,
+            UnitOffer,
+        )
+        from spaceinvasion.strategy import plan_actions
+
+        ga_cfg = StrategyConfig(
+            planner_mode="ga_nn",
+            ga_population_size=6,
+            ga_generations=2,
+            ga_horizon_steps=3,
+            ga_seed=42,
+            allow_raids=True,
+            allow_research=True,
+            allow_shipyard=True,
+            allow_galaxy_scan=True,
+            shipyard_targets={"small-fighter": 10},
+        )
+
+        # Step 6a: 0-resource galaxy-scanned Spacia/Yellow target executes ATTACK in ga_nn when fleet idle
+        tut6 = TutorialStatus(
+            step=6,
+            total_steps=11,
+            can_complete=False,
+            tasks=(
+                TutorialTask("Build a Small transport 2 / 2", "Small transport", 1, 2, 2, "ship"),
+                TutorialTask("Have a successful fight 0 / 1", "Have a successful fight", None, 0, 1, "milestone"),
+            ),
+        )
+        p_home = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=110,
+            fields_max=230,
+            resources=Resources(120_000, 35_000, 200_000, 45_000),
+            storage=Resources(500_000, 500_000, 800_000, 500_000),
+            energy=EnergyBalance(3500, 2500),
+            buildings={"b1": 18, "b2": 18, "b3": 18, "b4": 13, "b5": 20, "b6": 8, "b7": 6, "b8": 1, "b9": 2},
+            ships={"s1": 6, "s4": 12},
+            building_offers=(
+                BuildingOffer(8, "Research lab", 1, 2, Resources(400, 800, 400, 0), True, "Build", "?b=8"),
+                BuildingOffer(9, "Weapons factory", 2, 3, Resources(1_600, 800, 400, 0), True, "Build", "?b=9"),
+                BuildingOffer(4, "Spice mine", 13, 14, Resources(0, 20_000, 10_000, 0), True, "Build", "?b=4"),
+                BuildingOffer(5, "Fusion plant", 20, 21, Resources(50_000, 0, 20_000, 0), True, "Build", "?b=5"),
+                BuildingOffer(12, "Metal warehouse", 1, 2, Resources(2_000, 2_000, 0, 0), True, "Build", "?b=12"),
+            ),
+            ship_offers=(
+                UnitOffer("ship", 4, "Small fighter", 12, Resources(3_000, 1_000, 0, 0), True, "ship[4]"),
+                UnitOffer("ship", 10, "Spy probe", 0, Resources(0, 0, 1_000, 0), True, "ship[10]"),
+            ),
+        )
+        st6_idle = GameState(
+            31,
+            103603,
+            "u",
+            1000.0,
+            (p_home,),
+            active_planet_id=12476,
+            researches={"r2": 4, "r3": 2, "r4": 4},
+            tutorial=tut6,
+            raid_targets=({"coords": "02:383:02", "owner": "Spacia", "is_spacia": True, "status_color": "purple"},),
+        )
+        acts6_idle = plan_actions(st6_idle, config=ga_cfg, now_ts=1000.0)
+        self.assertTrue(any(a.kind == "ATTACK" and "02:383:02" in a.target_name and a.executable_now for a in acts6_idle))
+
+        # Step 6b: While raid fleet is in flight, ga_nn holds duplicate ATTACK and non-tutorial combat ships
+        st6_inflight = dc_replace(
+            st6_idle,
+            planets=(dc_replace(p_home, ships={"s1": 1, "s4": 2}),),
+            active_queues=(QueueJob("fleet", "Attack 02:383:02 00:04:12"),),
+        )
+        acts6_hold = plan_actions(st6_inflight, config=ga_cfg, now_ts=1000.0)
+        self.assertFalse(any(a.kind == "ATTACK" and a.executable_now for a in acts6_hold))
+        self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 4 and a.executable_now for a in acts6_hold))
+
+        # Step 6c: Raid lands -> CLAIM_TUTORIAL executable immediately in ga_nn
+        st6_claim = dc_replace(
+            st6_idle,
+            tutorial=dc_replace(tut6, can_complete=True, reward_text="10.000 Pig iron 5.000 Metal"),
+        )
+        acts6_claim = plan_actions(st6_claim, config=ga_cfg, now_ts=1000.0)
+        self.assertTrue(any(a.kind == "CLAIM_TUTORIAL" and a.executable_now for a in acts6_claim[:2]))
+
+        # Step 7: b8=1 -> unlocks b8 toward L3 -> researches r7 -> builds s10 -> spirals SCAN_GALAXY -> dispatches SPY
+        tut7 = TutorialStatus(
+            step=7,
+            total_steps=11,
+            can_complete=False,
+            tasks=(
+                TutorialTask("Upgrade your Spy technology 0 / 2", "Spy technology", None, 0, 2, "research", "r7"),
+                TutorialTask("Build Spy probes 0 / 2", "Spy probe", 10, 0, 2, "ship"),
+                TutorialTask("Spy on another planet 0 / 1", "Spy on another planet", None, 0, 1, "milestone"),
+            ),
+        )
+        st7_b8 = dc_replace(st6_idle, tutorial=tut7, raid_targets=())
+        acts7_b8 = plan_actions(st7_b8, config=ga_cfg, now_ts=1100.0)
+        self.assertTrue(any(a.kind == "BUILD" and a.target_id == 8 and a.executable_now for a in acts7_b8))
+        self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 10 and a.executable_now for a in acts7_b8))
+
+        p7_b8_3 = dc_replace(p_home, buildings={**p_home.buildings, "b8": 3})
+        st7_r7 = dc_replace(
+            st7_b8,
+            planets=(p7_b8_3,),
+            research_offers=(ResearchOffer(7, "r7", "Spy technology", 0, 1, Resources(200, 1000, 200, 0), True, "Research", "?r=7"),),
+        )
+        acts7_r7 = plan_actions(st7_r7, config=ga_cfg, now_ts=1200.0)
+        self.assertTrue(any(a.kind == "RESEARCH" and a.target_id == 7 and a.executable_now for a in acts7_r7))
+
+        p7_probes = dc_replace(p7_b8_3, ships={"s10": 2})
+        tut7_spy_only = TutorialStatus(
+            step=7,
+            total_steps=11,
+            can_complete=False,
+            tasks=(TutorialTask("Spy on another planet 0 / 1", "Spy on another planet", None, 0, 1, "milestone"),),
+        )
+        st7_spiral = dc_replace(st7_b8, planets=(p7_probes,), researches={"r2": 4, "r3": 2, "r4": 4, "r7": 2}, tutorial=tut7_spy_only)
+        acts7_spiral = plan_actions(st7_spiral, config=ga_cfg, scanned_systems={"02:380": 1290.0}, now_ts=1300.0)
+        self.assertTrue(any(a.kind == "SCAN_GALAXY" and "02:381" in a.target_name and a.executable_now for a in acts7_spiral))
+
+        st7_spy = dc_replace(
+            st7_spiral,
+            raid_targets=({"coords": "02:381:04", "owner": "IdleY", "status_color": "yellow", "last_scanned_ts": 1295.0},),
+        )
+        acts7_spy = plan_actions(st7_spy, config=ga_cfg, scanned_systems={"02:380": 1290.0, "02:381": 1295.0}, now_ts=1300.0)
+        self.assertTrue(any(a.kind == "SPY" and "02:381:04" in a.target_name and a.executable_now for a in acts7_spy))
+
+        # Steps 8–11: Recycle & Colonize unlock b9/r3/r4, Defense & Escape keep executable_now=False,
+        # non-urgent Fusion deferred behind Spice mine, and storage-capped tutorial task expands Metal warehouse
+        tut_late = TutorialStatus(
+            step=10,
+            total_steps=11,
+            can_complete=False,
+            tasks=(
+                TutorialTask("Increase your Fusion plant level 0 / 2", "Fusion plant", 5, 0, 2, "building"),
+                TutorialTask("Increase your Spice mine level 0 / 2", "Spice mine", 4, 0, 2, "building"),
+                TutorialTask("Recycle a debris field 0 / 1", "Recycle a debris field", None, 0, 1, "milestone"),
+                TutorialTask("Colonize a planet 0 / 1", "Colonize a planet", None, 0, 1, "milestone"),
+                TutorialTask("Build a Mortar 0 / 5", "Build a Mortar", None, 0, 5, "milestone"),
+                TutorialTask("Send an escape flight 0 / 1", "Send an escape flight", None, 0, 1, "milestone"),
+            ),
+        )
+        p_late_mine_first = dc_replace(p7_probes)
+        st_late_mine_first = dc_replace(
+            st7_b8,
+            planets=(p_late_mine_first,),
+            researches={"r2": 4, "r3": 2, "r4": 4, "r7": 2},
+            research_offers=(
+                ResearchOffer(3, "r3", "Engine research", 2, 3, Resources(0, 1_000, 500, 0), True, "Research", "?r=3"),
+                ResearchOffer(4, "r4", "Rocket engine", 4, 5, Resources(2_000, 0, 0, 1_000), True, "Research", "?r=4"),
+            ),
+            tutorial=tut_late,
+        )
+        acts_late = plan_actions(st_late_mine_first, config=ga_cfg, now_ts=1400.0)
+        exec_b_ids = [a.target_id for a in acts_late if a.kind == "BUILD" and a.executable_now]
+        self.assertIn(4, exec_b_ids)
+        self.assertIn(5, exec_b_ids)
+        self.assertLess(exec_b_ids.index(4), exec_b_ids.index(5))
+        self.assertIn(9, exec_b_ids)
+        self.assertTrue(any(a.kind == "RESEARCH" and a.target_id in (3, 4) and a.executable_now for a in acts_late))
+        tut_adv = [a for a in acts_late if a.kind == "TUTORIAL_TASK"]
+        self.assertEqual(len(tut_adv), 4)
+        self.assertTrue(all(not a.executable_now and a.action_href is None for a in tut_adv))
+
+        # Storage-capped tutorial upgrade triggers warehouse expansion in ga_nn (even when fill ratio < 85%)
+        p_capped = dc_replace(
+            p7_probes,
+            resources=Resources(120_000, 5_000, 200_000, 45_000),
+            storage=Resources(500_000, 15_000, 800_000, 500_000),
+            buildings={**p7_probes.buildings, "b12": 1},
+            building_offers=(
+                BuildingOffer(4, "Spice mine", 13, 14, Resources(0, 20_000, 10_000, 0), False, "Cap"),
+                BuildingOffer(12, "Metal warehouse", 1, 2, Resources(2_000, 2_000, 0, 0), True, "Build", "?b=12"),
+            ),
+        )
+        st_capped = dc_replace(
+            st7_b8,
+            planets=(p_capped,),
+            tutorial=TutorialStatus(
+                step=9,
+                total_steps=11,
+                can_complete=False,
+                tasks=(TutorialTask("Increase your Spice mine level 0 / 1", "Spice mine", 4, 0, 1, "building"),),
+            ),
+        )
+        acts_capped = plan_actions(st_capped, config=ga_cfg, now_ts=1500.0)
+        self.assertTrue(any(a.kind == "BUILD" and a.target_id == 12 and a.executable_now for a in acts_capped))
+
 
 if __name__ == "__main__":
     unittest.main()

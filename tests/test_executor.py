@@ -3301,6 +3301,92 @@ class TestActionExecutor(unittest.TestCase):
         self.assertFalse(res_err.executed)
         self.assertIn("fleetErr.noFleet", res_err.message)
 
+    def test_claim_tutorial_fallback_selector_and_build_ship_onblur_js_recovery(self) -> None:
+        planet = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=100,
+            fields_max=230,
+            resources=Resources(100_000, 30_000, 200_000, 45_000),
+            storage=Resources(500_000, 500_000, 800_000, 500_000),
+            energy=EnergyBalance(3075, 2532),
+            buildings={"b9": 3},
+        )
+        st = GameState(31, 103603, "u", 1000.0, (planet,), active_planet_id=12476)
+
+        # 1. CLAIM_TUTORIAL succeeds when form action="" and submit is a nested button
+        claim_html = (
+            '<html><body><div>Tutorial 6 / 11</div>'
+            '<form action="" method="POST">'
+            '<input type="hidden" name="tutorialComplete" value="1"/>'
+            '<div><button type="submit">Mission complete</button></div>'
+            '</form></body></html>'
+        )
+        submit_btn = MagicMock()
+        driver_claim = MagicMock()
+        driver_claim.find_element.return_value = submit_btn
+        client_claim = MagicMock(spec=GameBrowserClient)
+        client_claim.driver = driver_claim
+        client_claim.navigate_menu.return_value = claim_html
+        client_claim._wait_frame_ready.return_value = '<html><body><div>Tutorial 7 / 11</div></body></html>'
+        client_claim.read_planets_overview.return_value = st
+
+        ex = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
+        claim_act = PlannedAction(
+            priority="P2",
+            kind="CLAIM_TUTORIAL",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_name="Tutorial 6/11 Reward",
+            reason="Claim reward",
+            executable_now=True,
+        )
+        res_claim = ex.execute_action(client_claim, st, claim_act)
+        self.assertTrue(res_claim.executed, msg=res_claim.message)
+        submit_btn.click.assert_called_once()
+
+        # 2. BUILD_SHIP recovers via JS value assignment when send_keys leaves value="0" (onblur/maxlength)
+        wf_html = (
+            '<html><body><form action="indexInternal.es?action=internalBuildItem&buildShip=1" method="POST">'
+            '<table><tr><td><a href="indexInternal.es?action=internalDetail&type=ship&id=10">Spy probe</a> '
+            'Available: 0 Required: 1.000 Kryptonite '
+            '<input type="text" name="ship_10" value="0" maxlength="2"/></td></tr></table>'
+            '<input type="submit" value="Build"/></form></body></html>'
+        )
+        qty_el = MagicMock()
+        qty_el.get_attribute.return_value = "0"  # Simulates onblur reset after clear/send_keys
+        wf_form = MagicMock()
+        wf_submit = MagicMock()
+        wf_form.find_element.return_value = wf_submit
+        driver_wf = MagicMock()
+        driver_wf.find_element.side_effect = [qty_el, wf_form]
+        client_wf = MagicMock(spec=GameBrowserClient)
+        client_wf.driver = driver_wf
+        client_wf.navigate_menu.return_value = wf_html
+        client_wf._wait_frame_ready.return_value = wf_html
+        client_wf.read_planets_overview.return_value = st
+
+        ship_act = PlannedAction(
+            priority="P2",
+            kind="BUILD_SHIP",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=10,
+            target_level=2,
+            target_name="Spy probe",
+            reason="Tutorial 7/11: Build Spy probes 0 / 2",
+            executable_now=True,
+        )
+        res_ship = ex.execute_action(client_wf, st, ship_act)
+        self.assertTrue(res_ship.executed, msg=res_ship.message)
+        self.assertTrue(
+            any("arguments[0].value = arguments[1]" in str(c.args[0]) and c.args[2] == "2" for c in driver_wf.execute_script.call_args_list)
+        )
+        wf_submit.click.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

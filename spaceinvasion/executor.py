@@ -289,7 +289,11 @@ class ActionExecutor:
         el.send_keys(value)
         with contextlib.suppress(Exception):
             cur_val = el.get_attribute("value")
-            if cur_val is not None and str(cur_val) != value:
+            if (
+                isinstance(cur_val, (str, int, float))
+                and not isinstance(cur_val, bool)
+                and str(cur_val) != value
+            ):
                 client.driver.execute_script(
                     "arguments[0].value = arguments[1]; "
                     "arguments[0].dispatchEvent(new Event('input', {bubbles: true})); "
@@ -771,21 +775,37 @@ class ActionExecutor:
                 self._record_observed_planet(home_pid, confirmed=True)
         client._switch_frame("F_Hauptframe")
 
+        submit_css = 'form[action*="internalHome"] input[name="tutorialComplete"] ~ input[type="submit"]'
+        has_tut_div_in_html = True
+        has_complete_in_html = False
+        if isinstance(home_html, str) and home_html:
+            home_soup = BeautifulSoup(home_html, "html.parser")
+            has_tut_div_in_html = home_soup.find(id="tutorial.text") is not None
+            has_complete_in_html = home_soup.select_one('input[name="tutorialComplete"]') is not None
+            if has_complete_in_html and home_soup.select_one(submit_css) is None:
+                submit_css = (
+                    'form:has(input[name="tutorialComplete"]) input[type="submit"], '
+                    'form:has(input[name="tutorialComplete"]) button[type="submit"], '
+                    'input[name="tutorialComplete"] ~ input[type="submit"], '
+                    'input[name="tutorialComplete"] ~ button[type="submit"]'
+                )
+
         nav_token = self._mark_frame_nav(client)
         paced = False
         for attempt in range(2):
             try:
-                tut_div = client.driver.find_element(By.ID, "tutorial.text")
-                if not tut_div.is_displayed():
-                    try:
-                        self._safe_click(client, client.driver.find_element(By.ID, "tutorial.show"))
-                        time.sleep(0.3)
-                    except (NoSuchElementException, ElementNotInteractableException, WebDriverException):
-                        client.driver.execute_script("arguments[0].style.display='block';", tut_div)
+                if has_tut_div_in_html or not has_complete_in_html:
+                    tut_div = client.driver.find_element(By.ID, "tutorial.text")
+                    if not tut_div.is_displayed():
+                        try:
+                            self._safe_click(client, client.driver.find_element(By.ID, "tutorial.show"))
+                            time.sleep(0.3)
+                        except (NoSuchElementException, ElementNotInteractableException, WebDriverException):
+                            client.driver.execute_script("arguments[0].style.display='block';", tut_div)
 
                 submit_btn = client.driver.find_element(
                     By.CSS_SELECTOR,
-                    'form[action*="internalHome"] input[name="tutorialComplete"] ~ input[type="submit"]',
+                    submit_css,
                 )
                 if not paced:
                     self._pace_action(client, priority="interactive")
@@ -1046,8 +1066,7 @@ class ActionExecutor:
         for attempt in range(2):
             try:
                 qty_input = client.driver.find_element(By.NAME, matching.input_name)
-                qty_input.clear()
-                qty_input.send_keys(str(qty))
+                self._set_text_input_value(client, qty_input, str(qty))
                 form = client.driver.find_element(By.CSS_SELECTOR, 'form[action*="buildShip=1"]')
                 if not paced:
                     self._pace_action(client, priority="interactive")

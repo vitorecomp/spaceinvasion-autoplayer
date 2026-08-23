@@ -1856,6 +1856,224 @@ class TestStrategyPlanner(unittest.TestCase):
         acts_spy = plan_actions(st_has_probe, config=StrategyConfig(allow_galaxy_scan=True), now_ts=1000.0)
         self.assertTrue(any(a.kind == "SPY" and a.executable_now for a in acts_spy))
 
+    def test_tutorial_steps_6_to_11_end_to_end_progression_without_stalling(self) -> None:
+        from spaceinvasion.state import QueueJob
+
+        # Step 6a: Raid fleet in flight (12x s4, 6x s1 -> 02:383:02) holds duplicate ATTACK and non-tutorial ships
+        tut6_active = TutorialStatus(
+            step=6,
+            total_steps=11,
+            can_complete=False,
+            tasks=(
+                TutorialTask("Build a Small transport 2 / 2", "Small transport", 1, 2, 2, "ship"),
+                TutorialTask("Have a successful fight 0 / 1", "Have a successful fight", None, 0, 1, "milestone"),
+            ),
+        )
+        p6 = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=110,
+            fields_max=230,
+            resources=Resources(120_000, 35_000, 200_000, 45_000),
+            storage=Resources(500_000, 500_000, 800_000, 500_000),
+            energy=EnergyBalance(3500, 2500),
+            buildings={"b1": 18, "b2": 18, "b3": 18, "b4": 13, "b5": 20, "b6": 8, "b7": 6, "b8": 1, "b9": 2},
+            ships={"s1": 2, "s4": 4},
+            building_offers=(
+                BuildingOffer(8, "Research lab", 1, 2, Resources(400, 800, 400, 0), True, "Build", "?b=8"),
+                BuildingOffer(4, "Spice mine", 13, 14, Resources(0, 46_680, 16_975, 0), False, "Need Metal"),
+                BuildingOffer(12, "Metal warehouse", 1, 2, Resources(2_000, 2_000, 0, 0), True, "Build", "?b=12"),
+            ),
+            ship_offers=(
+                UnitOffer("ship", 4, "Small fighter", 4, Resources(3_000, 1_000, 0, 0), True, "ship[4]"),
+                UnitOffer("ship", 10, "Spy probe", 0, Resources(0, 0, 1_000, 0), True, "ship[10]"),
+            ),
+        )
+        st6_inflight = GameState(
+            31,
+            103603,
+            "u",
+            1000.0,
+            (p6,),
+            active_planet_id=12476,
+            researches={"r2": 4, "r3": 2, "r4": 4},
+            tutorial=tut6_active,
+            active_queues=(QueueJob("fleet", "Attack 02:383:02 00:04:12"),),
+            raid_targets=({"coords": "02:383:02", "owner": "Spacia", "is_spacia": True, "status_color": "purple"},),
+        )
+        acts6_hold = plan_actions(
+            st6_inflight,
+            config=StrategyConfig(allow_raids=True, allow_shipyard=True, shipyard_targets={"small-fighter": 10}),
+            now_ts=1000.0,
+        )
+        self.assertFalse(any(a.kind == "ATTACK" and a.executable_now for a in acts6_hold))
+        self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 4 and a.executable_now for a in acts6_hold))
+
+        # Step 6b: Raid lands -> tutorialComplete becomes True -> CLAIM_TUTORIAL executable immediately
+        tut6_done = replace(
+            tut6_active,
+            can_complete=True,
+            reward_text="10.000 Pig iron 5.000 Metal",
+            tasks=(
+                TutorialTask("Build a Small transport 2 / 2", "Small transport", 1, 2, 2, "ship"),
+                TutorialTask("Have a successful fight 1 / 1", "Have a successful fight", None, 1, 1, "milestone"),
+            ),
+        )
+        st6_claim = replace(st6_inflight, tutorial=tut6_done, active_queues=())
+        acts6_claim = plan_actions(st6_claim, config=StrategyConfig(allow_raids=True))
+        self.assertEqual(acts6_claim[0].kind, "CLAIM_TUTORIAL")
+        self.assertTrue(acts6_claim[0].executable_now)
+
+        # Step 7: Mixed Spy tech (0/2) + Build Spy probes (0/2) + Spy milestone starting from b8=1, r7=0
+        tut7 = TutorialStatus(
+            step=7,
+            total_steps=11,
+            can_complete=False,
+            tasks=(
+                TutorialTask("Upgrade your Spy technology 0 / 2", "Spy technology", None, 0, 2, "research", "r7"),
+                TutorialTask("Build Spy probes 0 / 2", "Spy probe", 10, 0, 2, "ship"),
+                TutorialTask("Spy on another planet 0 / 1", "Spy on another planet", None, 0, 1, "milestone"),
+            ),
+        )
+        st7_need_b8 = GameState(
+            31,
+            103603,
+            "u",
+            1100.0,
+            (p6,),
+            active_planet_id=12476,
+            researches={"r2": 4, "r3": 2, "r4": 4, "r7": 0},
+            tutorial=tut7,
+        )
+        acts7_b8 = plan_actions(st7_need_b8, config=StrategyConfig(allow_research=True, allow_shipyard=True))
+        self.assertTrue(any(a.kind == "BUILD" and a.target_id == 8 and a.executable_now for a in acts7_b8))
+        self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 10 and a.executable_now for a in acts7_b8))
+
+        # Once b8=3, Spy tech r7 L1 executes; when r7 L2 is active in lab (1/2 + 1 active), research doesn't block mines
+        p7_b8_3 = replace(p6, buildings={**p6.buildings, "b8": 3})
+        r7_offer = ResearchOffer(7, "r7", "Spy technology", 0, 1, Resources(200, 1000, 200, 0), True, "Research", "?r=7")
+        st7_r7 = GameState(
+            31,
+            103603,
+            "u",
+            1200.0,
+            (p7_b8_3,),
+            active_planet_id=12476,
+            researches={"r2": 4, "r3": 2, "r4": 4, "r7": 0},
+            research_offers=(r7_offer,),
+            tutorial=tut7,
+        )
+        acts7_r7 = plan_actions(st7_r7, config=StrategyConfig(allow_research=True, allow_shipyard=True))
+        self.assertTrue(any(a.kind == "RESEARCH" and a.target_id == 7 and a.executable_now for a in acts7_r7))
+
+        # Once r7=2, builds Spy probe s10; once s10>=1 with home system scanned, spirals SCAN_GALAXY to 02:379, then SPY
+        st7_build_probe = GameState(
+            31,
+            103603,
+            "u",
+            1300.0,
+            (p7_b8_3,),
+            active_planet_id=12476,
+            researches={"r2": 4, "r3": 2, "r4": 4, "r7": 2},
+            tutorial=replace(
+                tut7,
+                tasks=(
+                    TutorialTask("Upgrade your Spy technology 2 / 2", "Spy technology", None, 2, 2, "research", "r7"),
+                    TutorialTask("Build Spy probes 0 / 2", "Spy probe", 10, 0, 2, "ship"),
+                    TutorialTask("Spy on another planet 0 / 1", "Spy on another planet", None, 0, 1, "milestone"),
+                ),
+            ),
+        )
+        acts7_probe = plan_actions(st7_build_probe, config=StrategyConfig(allow_shipyard=True, allow_galaxy_scan=True))
+        self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == 10 and a.executable_now for a in acts7_probe))
+
+        p7_with_probes = replace(p7_b8_3, ships={"s10": 2})
+        st7_spiral = replace(
+            st7_build_probe,
+            planets=(p7_with_probes,),
+            tutorial=replace(
+                tut7,
+                tasks=(
+                    TutorialTask("Build Spy probes 2 / 2", "Spy probe", 10, 2, 2, "ship"),
+                    TutorialTask("Spy on another planet 0 / 1", "Spy on another planet", None, 0, 1, "milestone"),
+                ),
+            ),
+        )
+        acts7_spiral = plan_actions(
+            st7_spiral,
+            config=StrategyConfig(allow_galaxy_scan=True),
+            scanned_systems={"02:380": 1290.0},
+            now_ts=1300.0,
+        )
+        self.assertTrue(any(a.kind == "SCAN_GALAXY" and "02:381" in a.target_name and a.executable_now for a in acts7_spiral))
+
+        # Steps 8–11: Recycle -> s11 prereq unlock (b9 L4 + r3 L6 + r5 L4), Colonize -> s8 prereq unlock (b9 L4 + r4 L8),
+        # Defense/Escape advisories keep executable_now=False, non-urgent Fusion stays after mines (bucket=4),
+        # and storage-capped tutorial build triggers warehouse expansion!
+        tut_late = TutorialStatus(
+            step=10,
+            total_steps=11,
+            can_complete=False,
+            tasks=(
+                TutorialTask("Increase your Fusion plant level 0 / 2", "Fusion plant", 5, 0, 2, "building"),
+                TutorialTask("Increase your Spice mine level 0 / 2", "Spice mine", 4, 0, 2, "building"),
+                TutorialTask("Recycle a debris field 0 / 1", "Recycle a debris field", None, 0, 1, "milestone"),
+                TutorialTask("Colonize a planet 0 / 1", "Colonize a planet", None, 0, 1, "milestone"),
+                TutorialTask("Build a Mortar 0 / 5", "Build a Mortar", None, 0, 5, "milestone"),
+                TutorialTask("Send an escape flight 0 / 1", "Send an escape flight", None, 0, 1, "milestone"),
+            ),
+        )
+        p_late = replace(
+            p7_with_probes,
+            resources=Resources(120_000, 10_000, 200_000, 45_000),
+            storage=Resources(500_000, 40_000, 800_000, 500_000),  # Spice mine needs 46,680 Metal > 40,000 cap (fill 25% < 85%)!
+            buildings={**p7_with_probes.buildings, "b12": 1},
+            building_offers=(
+                BuildingOffer(4, "Spice mine", 13, 14, Resources(0, 46_680, 16_975, 0), False, "Cap"),
+                BuildingOffer(5, "Fusion plant", 20, 21, Resources(50_000, 0, 20_000, 0), True, "Build", "?b=5"),
+                BuildingOffer(9, "Weapons factory", 2, 3, Resources(1_600, 800, 400, 0), True, "Build", "?b=9"),
+                BuildingOffer(12, "Metal warehouse", 1, 2, Resources(2_000, 2_000, 0, 0), True, "Build", "?b=12"),
+            ),
+        )
+        st_late = GameState(
+            31,
+            103603,
+            "u",
+            1400.0,
+            (p_late,),
+            active_planet_id=12476,
+            researches={"r2": 4, "r3": 2, "r4": 4, "r7": 2},
+            research_offers=(
+                ResearchOffer(3, "r3", "Engine research", 2, 3, Resources(0, 1_000, 500, 0), True, "Research", "?r=3"),
+                ResearchOffer(4, "r4", "Rocket engine", 4, 5, Resources(2_000, 0, 0, 1_000), True, "Research", "?r=4"),
+            ),
+            tutorial=tut_late,
+        )
+        acts_late = plan_actions(st_late, config=StrategyConfig(allow_research=True, allow_shipyard=True))
+        # Non-urgent Fusion is ordered behind Spice mine in tutorial_actions (and Metal warehouse expands cap!)
+        b_ids_ordered = [a.target_id for a in acts_late if a.kind in ("BUILD", "WAIT_RESOURCES")]
+        self.assertIn(4, b_ids_ordered)
+        self.assertIn(5, b_ids_ordered)
+        self.assertIn(9, b_ids_ordered)  # Unlocks Weapons factory toward L4 for Recycler/Colony ship
+        self.assertIn(12, b_ids_ordered)  # Expands Metal warehouse for storage-capped Spice mine!
+        # Compare raw bucket ordering in _plan_tutorial_actions: Spice mine (4) before non-urgent Fusion (5)
+        from spaceinvasion.strategy import _effective_building_levels_and_energy, _offer_map, _plan_tutorial_actions
+
+        eff_late, proj_late = _effective_building_levels_and_energy(st_late, p_late, is_active_planet=True)
+        raw_tut_b = _plan_tutorial_actions(
+            st_late, p_late, _offer_map(p_late), {}, {}, eff_late, proj_late, False, False, StrategyConfig()
+        )
+        self.assertEqual([a.target_id for a in raw_tut_b], [4, 5])
+        # Research prerequisites r3/r4 unlocked for s11/s8
+        self.assertTrue(any(a.kind == "RESEARCH" and a.target_id in (3, 4) and a.executable_now for a in acts_late))
+        # Every TUTORIAL_TASK advisory strictly preserves executable_now=False and action_href=None
+        tut_advisories = [a for a in acts_late if a.kind == "TUTORIAL_TASK"]
+        self.assertEqual(len(tut_advisories), 4)
+        self.assertTrue(all(not a.executable_now and a.action_href is None for a in tut_advisories))
+
 
 if __name__ == "__main__":
     unittest.main()
