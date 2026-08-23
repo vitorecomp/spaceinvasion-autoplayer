@@ -443,7 +443,7 @@ def _is_win_entry(
     if loot_sp_eq > 0.0:
         return True
     s = _safe_action_str(outcome).strip().lower()
-    return any(tok in s for tok in ("win", "won", "vict", "succ", "loot", "plunder", "captur", "ok"))
+    return any(tok in s for tok in ("win", "won", "vict", "succ", "loot", "plunder", "captur", "ok", "dispatch"))
 
 
 def _load_attack_history_from_sqlite(db_path: Path) -> dict[str, Any]:

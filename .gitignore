@@ -1,34 +1,68 @@
-# Environment & secrets
+# Agent, design-audit & workspace scratch metadata
+.agents/
+.agent/
+.impeccable/
+
+# Environment, credentials & secrets
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.crt
+credentials.json
+token.json
 
-# Saved authenticated sessions, browser profiles & cookies
+# Saved authenticated sessions, browser profiles, cookies & WebDrivers
 .sessions/
 .browser_profile/
 *.cookies
 cookies.json
+chromedriver*
+geckodriver*
 
 # Local strategy overrides (copy from config.example.yaml)
 config.yaml
 
-# Runtime state snapshots & local crash/debug traces (never committed)
+# Runtime SQLite databases, backups, logs & sidecar stores (never committed)
 state/
-logs/crash_debug.*
-logs/watchdog.log
+logs/
+data/
+backups/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.log
+*.jsonl
 crash_debug.*
 
-# Python artifacts
+# Jupyter & Python build/test/typecheck artifacts
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
 __pycache__/
 *.py[cod]
 *$py.class
 .venv/
 venv/
+env/
+build/
+dist/
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 
 # Editor / OS
 .DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
 .vscode/
 .idea/
