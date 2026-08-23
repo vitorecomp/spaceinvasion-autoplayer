@@ -1,6 +1,7 @@
 :root {
   color-scheme: dark;
   --bg-void: #070b0c;
+  --bg-hud-deep: #06090b;
   --bg-sidebar: #0a1012;
   --bg-panel: #0e1416;
   --bg-panel-alt: #131b1e;
@@ -12,6 +13,7 @@
   --ink: #e8eff1;
   --ink-muted: #9eb3b8;
   --mint: #16ec98;
+  --cyan: #32e8ff;
   --mint-ink: #03150d;
   --red: #e82c3a;
   --red-surface: #361318;
@@ -542,6 +544,7 @@ input {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -563,7 +566,9 @@ input {
 .window-title-group {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
 }
 
 .module-code {
@@ -620,6 +625,10 @@ input {
   font-size: 0.85rem;
 }
 
+.dashboard-view {
+  overflow-y: auto;
+}
+
 .dash-upper-grid {
   flex: 0 0 auto;
   display: grid;
@@ -629,10 +638,231 @@ input {
 
 .dash-lower-grid {
   flex: 1 1 0;
-  min-height: 0;
+  min-height: 220px;
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
   gap: 12px;
+}
+
+.mode-badge {
+  padding: 2px 8px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.mode-badge.is-ga {
+  border-color: var(--mint);
+  background: #09271d;
+  color: var(--mint);
+}
+
+/* ==================== GA + NEURAL CALCULATION HUD (F21) ==================== */
+.gann-hud {
+  flex: 0 0 auto;
+  border-color: var(--line-mid);
+}
+
+.gann-state-pill {
+  padding: 2px 8px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  border: 1px solid var(--mint);
+  background: #09271d;
+  color: var(--mint);
+  border-radius: var(--radius);
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out;
+}
+
+.gann-hud.is-calculating .gann-state-pill {
+  border-color: var(--amber);
+  background: var(--amber-surface);
+  color: var(--amber);
+}
+
+.gann-hud-body {
+  background:
+    radial-gradient(circle at 96px 50%, rgba(22, 236, 152, 0.08) 0%, rgba(50, 232, 255, 0.03) 34%, transparent 62%),
+    #06090b;
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.gann-scanner-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+  border-right: 1px solid var(--line-dim);
+  background: #06090b;
+}
+
+.gann-radial-svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.gann-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line-dim);
+}
+
+.gann-metric-cell {
+  background: #06090b;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.gann-metric-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.gann-mini-arc {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  position: relative;
+  --arc-pct: 0;
+  background: conic-gradient(var(--arc-color, var(--mint)) calc(var(--arc-pct) * 1%), #1b2b30 0);
+}
+
+.gann-mini-arc::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: #06090b;
+}
+
+.gann-mini-arc.is-cyan {
+  --arc-color: var(--cyan);
+}
+
+.gann-mini-arc.is-mint {
+  --arc-color: var(--mint);
+}
+
+.gann-mini-arc.is-gold {
+  --arc-color: var(--amber);
+}
+
+.gann-metric-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gann-metric-label {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gann-metric-val {
+  font-size: 0.96rem;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gann-metric-sub {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gann-hud .module-meta,
+#gann-meta-line {
+  font-size: 0.86rem;
+}
+
+@keyframes siRingSpinCw {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes siRingSpinCcw {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes siCorePulse {
+  0%,
+  100% {
+    opacity: 0.82;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+}
+
+.gann-ring-outer,
+.gann-ring-mid,
+.gann-ring-gold,
+.gann-scan-sweep,
+.gann-core-pulse {
+  transform-origin: 0 0;
+}
+
+.gann-hud.is-active .gann-ring-outer {
+  animation: siRingSpinCw 22s linear infinite;
+}
+
+.gann-hud.is-active .gann-ring-mid {
+  animation: siRingSpinCcw 28s linear infinite;
+}
+
+.gann-hud.is-active .gann-ring-gold {
+  animation: siRingSpinCw 16s linear infinite;
+}
+
+.gann-hud.is-active .gann-scan-sweep {
+  animation: siRingSpinCw 9s linear infinite;
+}
+
+.gann-hud.is-active .gann-core-pulse {
+  animation: siCorePulse 3.2s ease-in-out infinite;
+}
+
+.gann-hud.is-calculating .gann-ring-outer {
+  animation: siRingSpinCw 4.5s linear infinite;
+}
+
+.gann-hud.is-calculating .gann-scan-sweep {
+  animation: siRingSpinCw 1.8s linear infinite;
 }
 
 .telemetry-core {
@@ -697,6 +927,18 @@ input {
 
 .meter-fill.high {
   background: var(--red);
+}
+
+.meter-fill.gann-bar-cyan {
+  background: var(--cyan);
+}
+
+.meter-fill.gann-bar-mint {
+  background: var(--mint);
+}
+
+.meter-fill.gann-bar-gold {
+  background: var(--amber);
 }
 
 .track-values {
@@ -874,7 +1116,7 @@ input {
 }
 
 .eta-pill.is-blocked {
-  color: var(--red);
+  color: #ff6873;
 }
 
 .eta-pill.is-wait {
@@ -1385,6 +1627,12 @@ tbody tr:hover {
 }
 
 /* Responsive Breakpoints (release 100vh lock on narrow viewports) */
+@media (max-width: 1260px) {
+  .gann-metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 1100px) {
   .app-layout {
     grid-template-columns: 1fr;
@@ -1399,6 +1647,32 @@ tbody tr:hover {
   .hud-window {
     height: auto;
     overflow: visible;
+  }
+
+  .view-stage,
+  .page-view,
+  .page-fill,
+  .dash-lower-grid,
+  .split-workspace,
+  .combat-main-grid,
+  .combat-subpane,
+  .sim-body,
+  .logs-fill,
+  .console-fill,
+  .ranking-pane,
+  .ranking-grid,
+  .config-body {
+    flex: 0 0 auto;
+    min-height: 0;
+    height: auto;
+  }
+
+  .table-scroll {
+    flex: 0 0 auto;
+    min-height: 0;
+    height: auto;
+    overflow-x: auto;
+    overflow-y: visible;
   }
 
   .hud-sidebar {
@@ -1440,6 +1714,15 @@ tbody tr:hover {
 }
 
 @media (max-width: 680px) {
+  .window-bar {
+    flex-wrap: wrap;
+  }
+
+  .tutorial-banner,
+  .tutorial-copy {
+    flex-wrap: wrap;
+  }
+
   .track-row {
     grid-template-columns: 1fr;
     gap: 4px;
@@ -1450,13 +1733,33 @@ tbody tr:hover {
   }
 
   .digital-readout-row,
-  .sim-fields {
+  .sim-fields,
+  .gann-metrics-grid {
     grid-template-columns: 1fr;
+  }
+
+  .gann-hud-body {
+    grid-template-columns: 1fr;
+  }
+
+  .gann-scanner-stage {
+    border-right: 0;
+    border-bottom: 1px solid var(--line-dim);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .meter-fill {
     transition: none;
+  }
+
+  .gann-hud.is-active .gann-ring-outer,
+  .gann-hud.is-active .gann-ring-mid,
+  .gann-hud.is-active .gann-ring-gold,
+  .gann-hud.is-active .gann-scan-sweep,
+  .gann-hud.is-active .gann-core-pulse,
+  .gann-hud.is-calculating .gann-ring-outer,
+  .gann-hud.is-calculating .gann-scan-sweep {
+    animation: none;
   }
 }

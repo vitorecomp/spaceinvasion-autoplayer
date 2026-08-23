@@ -317,17 +317,208 @@
               </article>
             </div>
 
+            <!-- GA + Neural Network Radial-Ring Calculation HUD (F21) -->
+            <article
+              class="hud-window gann-hud"
+              id="gann-calc-hud"
+              aria-label="Genetic algorithm and neural network search telemetry"
+              hidden
+            >
+              <div class="window-bar window-bar-wrap">
+                <div class="window-title-group">
+                  <span class="module-code tabular">GNN</span>
+                  <h2>GA + Neural Search Scanner</h2>
+                  <span class="gann-state-pill tabular" id="gann-status-pill" role="status">STANDBY</span>
+                </div>
+                <div class="inline-actions">
+                  <span class="module-meta tabular" id="gann-meta-line">POP -- · NN --</span>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-gann-recalc">
+                    Recalculate
+                  </button>
+                </div>
+              </div>
+
+              <div class="gann-hud-body" id="gann-hud-body">
+                <div class="gann-scanner-stage" aria-hidden="true">
+                  <svg
+                    id="gann-radial-svg"
+                    class="gann-radial-svg"
+                    viewBox="0 0 220 160"
+                    width="180"
+                    height="130"
+                    focusable="false"
+                  >
+                    <path
+                      class="gann-axis-rail"
+                      d="M 110 14 L 110 146"
+                      fill="none"
+                      stroke="#244249"
+                      stroke-width="1"
+                      stroke-dasharray="3 3"
+                    />
+
+                    <!-- Plane 3: Lower harmonic base rings -->
+                    <g transform="translate(110, 120) scale(1, 0.52)">
+                      <circle cx="0" cy="0" r="80" fill="none" stroke="#18343b" stroke-width="1" />
+                      <g class="gann-ring-mid">
+                        <circle
+                          cx="0"
+                          cy="0"
+                          r="66"
+                          fill="none"
+                          stroke="#16ec98"
+                          stroke-opacity="0.48"
+                          stroke-width="2"
+                          stroke-dasharray="42 16 18 14"
+                        />
+                        <circle
+                          cx="0"
+                          cy="0"
+                          r="46"
+                          fill="none"
+                          stroke="#32e8ff"
+                          stroke-opacity="0.38"
+                          stroke-width="1.5"
+                          stroke-dasharray="20 12"
+                        />
+                      </g>
+                    </g>
+
+                    <!-- Plane 2: Middle catalyst core dial -->
+                    <g transform="translate(110, 80) scale(1, 0.52)">
+                      <circle cx="0" cy="0" r="84" fill="none" stroke="#243135" stroke-width="1" />
+                      <g class="gann-ring-gold">
+                        <circle
+                          cx="0"
+                          cy="0"
+                          r="52"
+                          fill="none"
+                          stroke="#efb03b"
+                          stroke-width="2.4"
+                          stroke-dasharray="22 8 10 8 34 10"
+                        />
+                        <circle cx="52" cy="0" r="3" fill="#efb03b" />
+                        <circle cx="-52" cy="0" r="3" fill="#efb03b" />
+                        <circle cx="0" cy="52" r="2.5" fill="#ffcf5c" />
+                        <circle cx="0" cy="-52" r="2.5" fill="#ffcf5c" />
+                      </g>
+                      <g class="gann-core-pulse">
+                        <circle cx="0" cy="0" r="26" fill="#091518" stroke="#16ec98" stroke-width="1.8" />
+                        <circle cx="0" cy="0" r="14" fill="none" stroke="#ffcf5c" stroke-opacity="0.7" stroke-width="1.2" />
+                        <circle cx="0" cy="0" r="7" fill="#efb03b" />
+                      </g>
+                    </g>
+
+                    <!-- Plane 1: Upper telemetry perimeter & orbital sweeper -->
+                    <g transform="translate(110, 42) scale(1, 0.52)">
+                      <circle
+                        cx="0"
+                        cy="0"
+                        r="84"
+                        fill="none"
+                        stroke="#2f6670"
+                        stroke-width="4"
+                        stroke-dasharray="1.5 6.0"
+                      />
+                      <g class="gann-ring-outer">
+                        <circle
+                          cx="0"
+                          cy="0"
+                          r="72"
+                          fill="none"
+                          stroke="#32e8ff"
+                          stroke-width="2"
+                          stroke-dasharray="58 14 26 12 44 18"
+                        />
+                        <circle cx="0" cy="-72" r="3" fill="#32e8ff" />
+                        <circle cx="0" cy="72" r="3" fill="#16ec98" />
+                      </g>
+                      <g class="gann-scan-sweep">
+                        <path
+                          d="M 0 -60 A 60 60 0 0 1 60 0"
+                          fill="none"
+                          stroke="#16ec98"
+                          stroke-width="3"
+                          stroke-linecap="round"
+                        />
+                        <path
+                          d="M 0 -46 L 0 -22 M 0 22 L 0 46 M -46 0 L -22 0 M 22 0 L 46 0"
+                          fill="none"
+                          stroke="#32e8ff"
+                          stroke-opacity="0.72"
+                          stroke-width="1.2"
+                        />
+                      </g>
+                    </g>
+                  </svg>
+                </div>
+
+                <div class="gann-metrics-grid">
+                  <div class="gann-metric-cell">
+                    <div class="gann-metric-head">
+                      <div class="gann-mini-arc is-cyan" id="gann-arc-gen" aria-hidden="true"></div>
+                      <div class="gann-metric-titles">
+                        <span class="gann-metric-label">Generation Progress</span>
+                        <strong class="gann-metric-val tabular" id="gann-gen-val">0 / --</strong>
+                      </div>
+                    </div>
+                    <div class="meter-track"><div class="meter-fill gann-bar-cyan" id="gann-gen-bar"></div></div>
+                    <span class="gann-metric-sub tabular" id="gann-gen-sub">Waiting for optimizer pass</span>
+                  </div>
+
+                  <div class="gann-metric-cell">
+                    <div class="gann-metric-head">
+                      <div class="gann-mini-arc is-mint" id="gann-arc-nn" aria-hidden="true"></div>
+                      <div class="gann-metric-titles">
+                        <span class="gann-metric-label">Neural Eval Pass</span>
+                        <strong class="gann-metric-val tabular" id="gann-nn-val">0 evals</strong>
+                      </div>
+                    </div>
+                    <div class="meter-track"><div class="meter-fill gann-bar-mint" id="gann-nn-bar"></div></div>
+                    <span class="gann-metric-sub tabular" id="gann-nn-sub">MSE Loss --</span>
+                  </div>
+
+                  <div class="gann-metric-cell">
+                    <div class="gann-metric-head">
+                      <div class="gann-mini-arc is-gold" id="gann-arc-fit" aria-hidden="true"></div>
+                      <div class="gann-metric-titles">
+                        <span class="gann-metric-label">Fitness Improvement</span>
+                        <strong class="gann-metric-val tabular" id="gann-fit-val">--%</strong>
+                      </div>
+                    </div>
+                    <div class="meter-track"><div class="meter-fill gann-bar-gold" id="gann-fit-bar"></div></div>
+                    <span class="gann-metric-sub tabular" id="gann-fit-sub">Base -- · Best --</span>
+                  </div>
+
+                  <div class="gann-metric-cell">
+                    <div class="gann-metric-head">
+                      <div class="gann-mini-arc is-cyan" id="gann-arc-genome" aria-hidden="true"></div>
+                      <div class="gann-metric-titles">
+                        <span class="gann-metric-label">Genome Search</span>
+                        <strong class="gann-metric-val tabular" id="gann-genome-val">0 genes</strong>
+                      </div>
+                    </div>
+                    <div class="meter-track"><div class="meter-fill gann-bar-cyan" id="gann-genome-bar"></div></div>
+                    <span class="gann-metric-sub tabular" id="gann-genome-sub">Sequence standby</span>
+                  </div>
+                </div>
+              </div>
+            </article>
+
             <!-- Lower Row: Immediate Next Actions + Upcoming Building Reach ETAs -->
             <div class="dash-lower-grid">
               <article class="hud-window">
-                <div class="window-bar">
+                <div class="window-bar window-bar-wrap">
                   <div class="window-title-group">
                     <span class="module-code tabular">NXQ</span>
                     <h2>Top Planned Actions</h2>
                   </div>
-                  <button type="button" class="btn btn-secondary btn-sm" data-goto-page="operations">
-                    Full Queue →
-                  </button>
+                  <div class="inline-actions">
+                    <span class="module-meta tabular mode-badge" id="dash-planner-mode-badge">MODE: PRIORITY</span>
+                    <button type="button" class="btn btn-secondary btn-sm" data-goto-page="operations">
+                      Full Queue →
+                    </button>
+                  </div>
                 </div>
 
                 <div class="table-wrap table-scroll">
@@ -337,12 +528,14 @@
                         <th>Prio</th>
                         <th>Action</th>
                         <th>Missing / Cost</th>
+                        <th class="col-right">Wait ETA</th>
+                        <th class="col-right">Total ETA</th>
                         <th class="col-right">Ops</th>
                       </tr>
                     </thead>
                     <tbody id="dash-plan-tbody">
                       <tr>
-                        <td colspan="4" class="empty-cell">Run Sync to populate actions...</td>
+                        <td colspan="6" class="empty-cell">Run Sync to populate actions...</td>
                       </tr>
                     </tbody>
                   </table>
@@ -506,6 +699,7 @@
                   <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalWeaponFactory">Shipyard</button>
                   <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalFleet">Fleet</button>
                   <button type="button" class="btn btn-secondary btn-sm nav-jump" data-action="internalGalaxy">Galaxy</button>
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-scan-galaxy">Scan Galaxy</button>
                   <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-combat">Sync Shipyard</button>
                 </div>
               </div>
@@ -522,6 +716,7 @@
                   <div class="tab-group" role="tablist" aria-label="Fleet subtabs">
                     <button type="button" class="tab-btn active" data-cmb-tab="ships">Ships &amp; Build</button>
                     <button type="button" class="tab-btn" data-cmb-tab="defense">Defense</button>
+                    <button type="button" class="tab-btn" id="cmb-targets-tab" data-cmb-tab="targets">Targets (0)</button>
                     <button type="button" class="tab-btn" data-cmb-tab="escape">Escape Flight</button>
                   </div>
                 </div>
@@ -561,6 +756,27 @@
                       <tbody id="cmb-def-tbody">
                         <tr>
                           <td colspan="4" class="empty-cell">No defense data.</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div class="combat-subpane" id="cmb-pane-targets" hidden>
+                  <div class="table-wrap table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Coords</th>
+                          <th>Planet / Owner</th>
+                          <th>Type</th>
+                          <th class="col-right">Loot (SpEq)</th>
+                          <th class="col-right">Ops</th>
+                        </tr>
+                      </thead>
+                      <tbody id="cmb-targets-tbody">
+                        <tr>
+                          <td colspan="5" class="empty-cell">Click "Scan Galaxy" to populate yellow inactive &amp; Spacia targets.</td>
                         </tr>
                       </tbody>
                     </table>
@@ -646,6 +862,7 @@
                   <span class="module-code tabular">OPS</span>
                   <h2>Priority Action Queue (P0 → P3)</h2>
                   <span class="module-meta tabular" id="plan-count-badge">0 TASKS</span>
+                  <span class="module-meta tabular mode-badge" id="ops-planner-mode-badge">MODE: PRIORITY</span>
                 </div>
 
                 <div class="filter-toolbar">
@@ -671,13 +888,15 @@
                       <th>Priority</th>
                       <th>Action</th>
                       <th>Cost / Missing</th>
+                      <th class="col-right">Wait ETA</th>
+                      <th class="col-right">Total ETA</th>
                       <th>Reason</th>
                       <th class="col-right">Execute</th>
                     </tr>
                   </thead>
                   <tbody id="plan-tbody">
                     <tr>
-                      <td colspan="5" class="empty-cell">Waiting for plan...</td>
+                      <td colspan="7" class="empty-cell">Waiting for plan...</td>
                     </tr>
                   </tbody>
                 </table>
@@ -787,6 +1006,14 @@
               <div class="config-body">
                 <div class="config-grid">
                   <div class="control-field">
+                    <label for="cfg-planner_mode">Planner Mode</label>
+                    <select id="cfg-planner_mode">
+                      <option value="priority">priority — Rule-Based Heuristic</option>
+                      <option value="ga_nn">ga_nn — GA + Neural Network</option>
+                    </select>
+                  </div>
+
+                  <div class="control-field">
                     <label for="cfg-playstyle">Playstyle Doctrine</label>
                     <select id="cfg-playstyle">
                       <option value="fleeter">fleeter — Combat &amp; Techs</option>
@@ -813,6 +1040,26 @@
                   <div class="control-field">
                     <label for="cfg-max_actions_per_hour">Max Live Actions / Hour</label>
                     <input type="number" id="cfg-max_actions_per_hour" min="1" max="120" />
+                  </div>
+
+                  <div class="control-field">
+                    <label for="cfg-ga_population_size">GA Population Size</label>
+                    <input type="number" id="cfg-ga_population_size" min="4" max="200" step="1" />
+                  </div>
+
+                  <div class="control-field">
+                    <label for="cfg-ga_generations">GA Generations</label>
+                    <input type="number" id="cfg-ga_generations" min="1" max="200" step="1" />
+                  </div>
+
+                  <div class="control-field">
+                    <label for="cfg-ga_horizon_steps">GA Horizon Steps</label>
+                    <input type="number" id="cfg-ga_horizon_steps" min="1" max="24" step="1" />
+                  </div>
+
+                  <div class="control-field">
+                    <label for="cfg-ga_seed">GA Seed (Blank = Auto)</label>
+                    <input type="number" id="cfg-ga_seed" step="1" placeholder="Auto" />
                   </div>
                 </div>
 

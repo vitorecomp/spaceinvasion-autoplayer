@@ -15,7 +15,7 @@ import re
 import secrets
 import threading
 import time
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
@@ -31,6 +31,7 @@ from spaceinvasion.client import GameBrowserClient, PageViewLimiter, RateLimitEr
 from spaceinvasion.config import (
     StrategyConfig,
     load_strategy_config,
+    normalize_planner_mode,
     save_strategy_config,
     strategy_config_from_dict,
 )
@@ -45,7 +46,9 @@ from spaceinvasion.fleet import (
     simulate_raid_outcome,
 )
 from spaceinvasion.logging_utils import append_api_log, redact_sensitive
+from spaceinvasion.optimizer import get_last_optimizer_summary
 from spaceinvasion.ranking import (
+    attach_action_etas,
     build_buildings_eta,
     build_combat_overview,
     build_ranking_evolution,
@@ -66,6 +69,10 @@ from spaceinvasion.strategy import PlannedAction, plan_actions
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 _SERVER_BOOT_ID = secrets.token_hex(4)
+_GLOBAL_OPTIMIZER_LOCK = threading.Lock()
+_API_SID_RE = re.compile(
+    r"(?i)([?&;]|\b|%3[fb]|%26)(sid(?:=|%3d))((?:(?!%26|%23|%20|%22|%27|%3[ce])[^\s&\"'<>#)])+)"
+)
 _UI_ASSETS: dict[str, tuple[str, str]] = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -116,6 +123,203 @@ ALLOWED_MENU_ACTIONS = frozenset(
 
 class ApiRequestError(ValueError):
     """Raised when an API request payload is malformed or unsupported."""
+
+
+def _redact_api_payload(value: Any) -> Any:
+    """Recursively scrub `sid=` / `SID=` session tokens from API responses."""
+    sanitized = redact_sensitive(value)
+    if isinstance(sanitized, str):
+        return _API_SID_RE.sub(r"\1\2REDACTED", sanitized)
+    if isinstance(sanitized, dict):
+        return {k: _redact_api_payload(v) for k, v in sanitized.items()}
+    if isinstance(sanitized, (list, tuple)):
+        return [_redact_api_payload(v) for v in sanitized]
+    return sanitized
+
+
+def _parse_command_int(
+    name: str,
+    val: Any,
+    *,
+    allow_none: bool = False,
+    min_val: Optional[int] = None,
+    max_val: Optional[int] = None,
+) -> Optional[int]:
+    if allow_none and val is None:
+        return None
+    if isinstance(val, bool) or val is None or isinstance(val, (dict, list, tuple, set)):
+        raise ApiRequestError(f"Command parameter {name!r} must be an integer.")
+    if isinstance(val, int):
+        parsed = val
+    elif isinstance(val, float):
+        if not math.isfinite(val) or not val.is_integer() or abs(val) > (2**53 - 1):
+            raise ApiRequestError(f"Command parameter {name!r} must be a safe finite integer.")
+        parsed = int(val)
+    elif isinstance(val, str):
+        txt = val.strip()
+        if not txt:
+            raise ApiRequestError(f"Command parameter {name!r} must be an integer.")
+        try:
+            parsed = int(txt)
+        except ValueError as exc:
+            raise ApiRequestError(f"Command parameter {name!r} must be an integer.") from exc
+    else:
+        raise ApiRequestError(f"Command parameter {name!r} must be an integer.")
+    if min_val is not None and parsed < min_val:
+        raise ApiRequestError(f"Command parameter {name!r} must be >= {min_val}.")
+    if max_val is not None and parsed > max_val:
+        raise ApiRequestError(f"Command parameter {name!r} must be <= {max_val}.")
+    return parsed
+
+
+def _validate_strict_int(
+    name: str,
+    val: Any,
+    *,
+    min_val: Optional[int] = None,
+    max_val: Optional[int] = None,
+    allow_none: bool = False,
+) -> Optional[int]:
+    if allow_none and val is None:
+        return None
+    if isinstance(val, bool) or val is None or isinstance(val, (dict, list, tuple, set)):
+        raise ApiRequestError(f"Config field {name!r} must be an integer.")
+    if isinstance(val, int):
+        parsed = val
+    elif isinstance(val, float):
+        if not math.isfinite(val) or not val.is_integer() or abs(val) > (2**53 - 1):
+            raise ApiRequestError(f"Config field {name!r} must be a safe finite integer.")
+        parsed = int(val)
+    elif isinstance(val, str):
+        txt = val.strip()
+        if not txt:
+            raise ApiRequestError(f"Config field {name!r} must be an integer.")
+        try:
+            parsed = int(txt)
+        except ValueError as exc:
+            raise ApiRequestError(f"Config field {name!r} must be an integer.") from exc
+    else:
+        raise ApiRequestError(f"Config field {name!r} must be an integer.")
+
+    if min_val is not None and parsed < min_val:
+        raise ApiRequestError(f"Config field {name!r} must be >= {min_val}.")
+    if max_val is not None and parsed > max_val:
+        raise ApiRequestError(f"Config field {name!r} must be <= {max_val}.")
+    return parsed
+
+
+def _validate_strict_float(
+    name: str,
+    val: Any,
+    *,
+    min_val: Optional[float] = None,
+    max_val: Optional[float] = None,
+) -> float:
+    if isinstance(val, bool) or val is None or isinstance(val, (dict, list, tuple, set)):
+        raise ApiRequestError(f"Config field {name!r} must be a finite number.")
+    if isinstance(val, str) and not val.strip():
+        raise ApiRequestError(f"Config field {name!r} must be a finite number.")
+    try:
+        parsed = float(val)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ApiRequestError(f"Config field {name!r} must be a finite number.") from exc
+    if not math.isfinite(parsed):
+        raise ApiRequestError(f"Config field {name!r} must be a finite number.")
+    if min_val is not None and parsed < min_val:
+        raise ApiRequestError(f"Config field {name!r} must be >= {min_val}.")
+    if max_val is not None and parsed > max_val:
+        raise ApiRequestError(f"Config field {name!r} must be <= {max_val}.")
+    return parsed
+
+
+def _validate_config_patch(raw_cfg: dict[str, Any]) -> None:
+    if "planner_mode" in raw_cfg:
+        raw_mode = raw_cfg["planner_mode"]
+        if not isinstance(raw_mode, str) or not raw_mode.strip():
+            raise ApiRequestError(
+                "'planner_mode' must be a non-empty string ('priority' or 'ga_nn')."
+            )
+        try:
+            normalize_planner_mode(raw_mode, strict=True)
+        except ValueError as exc:
+            raise ApiRequestError(str(exc)) from exc
+
+    int_specs: dict[str, tuple[Optional[int], Optional[int], bool]] = {
+        "ga_population_size": (4, 200, False),
+        "ga_generations": (1, 200, False),
+        "ga_horizon_steps": (1, 24, False),
+        "ga_seed": (-2_147_483_648, 2_147_483_647, True),
+        "max_actions_per_hour": (1, 100_000, False),
+        "min_free_fields_warning": (1, 1000, False),
+        "hot_planet_solar_temp_threshold": (-273, 1000, False),
+        "fleet_save_fuel_reserve_spice": (0, 1_000_000_000_000, False),
+    }
+    for key, (lo, hi, allow_none) in int_specs.items():
+        if key in raw_cfg:
+            _validate_strict_int(key, raw_cfg[key], min_val=lo, max_val=hi, allow_none=allow_none)
+
+    float_specs: dict[str, tuple[Optional[float], Optional[float]]] = {
+        "ga_mutation_rate": (0.0, 1.0),
+        "ga_nn_weight": (0.0, 1.0),
+        "storage_warn_ratio": (0.1, 0.99),
+        "blast_pig_iron_max_share": (0.1, 1.0),
+        "combat_safety_margin": (1.0, 1000.0),
+        "raid_min_loot_spice_eq": (0.0, 1e12),
+    }
+    for key, (lo, hi) in float_specs.items():
+        if key in raw_cfg:
+            _validate_strict_float(key, raw_cfg[key], min_val=lo, max_val=hi)
+
+
+def _parse_sim_count_map(field_name: str, raw: Any, *, max_val: int = 1_000_000_000) -> dict[str, int]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ApiRequestError(
+            f"'simulate_combat' field {field_name!r} must be a mapping of unit keys to integer counts."
+        )
+    out: dict[str, int] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str) or not k.strip():
+            raise ApiRequestError(
+                f"'simulate_combat' field {field_name!r} keys must be non-empty strings."
+            )
+        parsed = _parse_command_int(
+            f"{field_name}[{k!r}]",
+            v,
+            min_val=0,
+            max_val=max_val,
+        )
+        assert parsed is not None
+        out[k.strip()] = parsed
+    return out
+
+
+def _sanitize_finite_json(obj: Any) -> Any:
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else 0.0
+    if isinstance(obj, Mapping):
+        return {str(k): _sanitize_finite_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_finite_json(v) for v in obj]
+    return obj
+
+
+def _sanitize_optimizer_summary(raw: Optional[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
+    if not isinstance(raw, Mapping) or not raw:
+        return None
+    clean = _redact_api_payload(_sanitize_finite_json(dict(raw)))
+    if not isinstance(clean, dict):
+        return None
+    if "improvement_pct" in clean:
+        try:
+            imp = float(clean["improvement_pct"])
+        except (TypeError, ValueError):
+            imp = 0.0
+        if not math.isfinite(imp):
+            imp = 0.0
+        clean["improvement_pct"] = round(max(-999.9, min(999.9, imp)), 4)
+    return clean
 
 
 def ensure_debug_browser_ready(
@@ -194,6 +398,7 @@ class GameApiBridge:
         else:
             self._executor_max_limiter_wait = self._max_limiter_wait
         self._last_state: Optional[GameState] = None
+        self._last_optimizer_summary: Optional[dict[str, Any]] = None
         self._last_url: Optional[str] = None
         self._last_snapshot_at: float = 0.0
         self._last_buildings_fetched: bool = False
@@ -310,13 +515,68 @@ class GameApiBridge:
             return self._db.get_last_throttle_timestamps()
         return dict(self._throttle_timestamps)
 
-    def _plan_with_context(self, state: GameState) -> list[PlannedAction]:
-        return plan_actions(
-            state,
-            config=self.strategy_config,
+    def _attach_raid_stats(self, state: GameState) -> GameState:
+        if self._db is None:
+            return state
+        get_stats = getattr(self._db, "get_raid_stats", None)
+        if not callable(get_stats):
+            return state
+        stats = get_stats()
+        if isinstance(stats, Mapping):
+            return replace(state, raid_stats=dict(stats))
+        return state
+
+    def _serialize_action(
+        self,
+        action: PlannedAction,
+        state: Optional[GameState] = None,
+    ) -> dict[str, Any]:
+        enriched = attach_action_etas(state, [action])[0] if state is not None else action
+        raw = asdict(enriched)
+        for key in ("wait_hours", "wait_seconds", "duration_seconds", "total_hours", "total_seconds"):
+            val = raw.get(key)
+            if isinstance(val, float) and not math.isfinite(val):
+                raw[key] = None if key.startswith(("wait_", "total_")) else 0.0
+        return _redact_api_payload(raw)
+
+    def _plan_with_summary(
+        self,
+        state: GameState,
+        *,
+        config: Optional[StrategyConfig] = None,
+    ) -> tuple[list[PlannedAction], Optional[dict[str, Any]]]:
+        cfg = config or self.strategy_config
+        enriched_state = self._attach_raid_stats(state)
+        eff_mode = normalize_planner_mode(getattr(cfg, "planner_mode", "priority"))
+        if eff_mode == "ga_nn":
+            with _GLOBAL_OPTIMIZER_LOCK:
+                actions = plan_actions(
+                    enriched_state,
+                    config=cfg,
+                    scanned_systems=self._get_scanned_systems(),
+                    throttle_cooldowns=self._get_throttle_cooldowns(),
+                )
+                raw_summary = get_last_optimizer_summary()
+            summary = _sanitize_optimizer_summary(raw_summary)
+            if config is None or normalize_planner_mode(self.strategy_config.planner_mode) == "ga_nn":
+                self._last_optimizer_summary = summary
+            return actions, summary
+        actions = plan_actions(
+            enriched_state,
+            config=cfg,
             scanned_systems=self._get_scanned_systems(),
             throttle_cooldowns=self._get_throttle_cooldowns(),
         )
+        return actions, None
+
+    def _plan_with_context(
+        self,
+        state: GameState,
+        *,
+        config: Optional[StrategyConfig] = None,
+    ) -> list[PlannedAction]:
+        actions, _ = self._plan_with_summary(state, config=config)
+        return actions
 
     @staticmethod
     def _supports_kwarg(fn: Callable[..., Any], kwarg_name: str) -> bool:
@@ -426,19 +686,21 @@ class GameApiBridge:
                 "page_views_last_60s": self._page_limiter.views_last_60s(),
                 "page_view_limit_per_minute": self._page_limiter.max_views_per_minute,
                 "rate_limit_hits": self._page_limiter.rate_limit_hits,
-                "url": redact_sensitive(current_url) if current_url else None,
+                "url": _redact_api_payload(current_url) if current_url else None,
                 "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
                 "bot_control": dict(self._bot_control),
             }
 
     def get_bot_control(self) -> dict[str, Any]:
         with self._lock:
-            return {
-                "ok": True,
-                **dict(self._bot_control),
-                "scanned_systems": self._get_scanned_systems(),
-                "throttle_cooldowns": self._get_throttle_cooldowns(),
-            }
+            return _redact_api_payload(
+                {
+                    "ok": True,
+                    **dict(self._bot_control),
+                    "scanned_systems": self._get_scanned_systems(),
+                    "throttle_cooldowns": self._get_throttle_cooldowns(),
+                }
+            )
 
     def _read_log_tail(self, filename: str, lines: int = 40) -> str:
         if self.log_dir is None:
@@ -447,7 +709,7 @@ class GameApiBridge:
         if not target.exists():
             return ""
         raw_lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
-        return str(redact_sensitive("\n".join(raw_lines[-lines:])))
+        return str(_redact_api_payload("\n".join(raw_lines[-lines:])))
 
     def _merge_cached_offers(self, state: GameState) -> GameState:
         prev = self._last_state
@@ -773,27 +1035,33 @@ class GameApiBridge:
                 except SpaceInvasionAuthError:
                     in_game = False
 
-            actions = (
-                self._plan_with_context(self._last_state)
-                if self._last_state is not None
-                else []
-            )
-            ranking = (
-                build_ranking_evolution(self._last_state, self._rank_samples)
+            dash_state = (
+                self._attach_raid_stats(self._last_state)
                 if self._last_state is not None
                 else None
             )
+            eff_mode = normalize_planner_mode(self.strategy_config.planner_mode)
+            if dash_state is not None:
+                actions, opt_summary = self._plan_with_summary(dash_state)
+            else:
+                actions = []
+                opt_summary = self._last_optimizer_summary if eff_mode == "ga_nn" else None
+            ranking = (
+                build_ranking_evolution(dash_state, self._rank_samples)
+                if dash_state is not None
+                else None
+            )
             buildings_eta = (
-                build_buildings_eta(self._last_state)
-                if self._last_state is not None
+                build_buildings_eta(dash_state)
+                if dash_state is not None
                 else None
             )
             combat = (
                 build_combat_overview(
-                    self._last_state,
+                    dash_state,
                     safety_margin=self.strategy_config.combat_safety_margin,
                 )
-                if self._last_state is not None
+                if dash_state is not None
                 else None
             )
             rate_rem = self._page_limiter.rate_limit_remaining()
@@ -811,17 +1079,19 @@ class GameApiBridge:
                     "page_views_last_60s": self._page_limiter.views_last_60s(),
                     "page_view_limit_per_minute": self._page_limiter.max_views_per_minute,
                     "rate_limit_hits": self._page_limiter.rate_limit_hits,
-                    "url": redact_sensitive(current_url) if current_url else None,
+                    "url": _redact_api_payload(current_url) if current_url else None,
                     "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
                 },
                 "bot_control": dict(self._bot_control),
-                "config": asdict(self.strategy_config),
-                "state": redact_sensitive(asdict(self._last_state)) if self._last_state else None,
-                "plan": redact_sensitive([asdict(a) for a in actions]),
-                "buildings_eta": buildings_eta,
-                "combat": combat,
-                "ranking": ranking,
-                "db_summary": self._db.summary() if self._db is not None else None,
+                "planner_mode": eff_mode,
+                "config": _redact_api_payload(asdict(self.strategy_config)),
+                "state": _redact_api_payload(asdict(dash_state)) if dash_state else None,
+                "plan": [self._serialize_action(a) for a in actions],
+                "optimizer_summary": opt_summary if eff_mode == "ga_nn" else None,
+                "buildings_eta": _redact_api_payload(buildings_eta) if buildings_eta is not None else None,
+                "combat": _redact_api_payload(combat) if combat is not None else None,
+                "ranking": _redact_api_payload(ranking) if ranking is not None else None,
+                "db_summary": _redact_api_payload(self._db.summary()) if self._db is not None else None,
                 "logs": {
                     "commander": self._read_log_tail("commander.log"),
                     "game_api": self._read_log_tail("game_api.log"),
@@ -845,7 +1115,8 @@ class GameApiBridge:
                     or self._last_state is not self._last_recorded_state_obj
                 )
             ):
-                return asdict(self._refresh_cached_economy(self._last_state))
+                cached = self._refresh_cached_economy(self._last_state)
+                return _redact_api_payload(asdict(self._attach_raid_stats(cached)))
 
             research_due = self._last_research_sync_at <= 0.0 or (now - self._last_research_sync_at) >= self.RESEARCH_SYNC_TTL_S
             shipyard_due = self._last_shipyard_sync_at <= 0.0 or (now - self._last_shipyard_sync_at) >= self.SHIPYARD_SYNC_TTL_S
@@ -896,7 +1167,7 @@ class GameApiBridge:
             except RateLimitError as exc:
                 self._record_server_rate_limit(exc)
                 raise
-            return asdict(merged)
+            return _redact_api_payload(asdict(self._attach_raid_stats(merged)))
 
     def _pick_executor(self, dry_run: bool) -> ActionExecutor:
         return self._dry_executor if dry_run else self._live_executor
@@ -1402,6 +1673,7 @@ class GameApiBridge:
         *,
         return_home: bool = False,
     ) -> dict[str, Any]:
+        planned = attach_action_etas(state, [planned])[0]
         executor = self._pick_executor(dry_run)
         res = None
         try:
@@ -1662,18 +1934,18 @@ class GameApiBridge:
                 priority="interactive",
             )
 
-        next_action = asdict(after_plan[0]) if after_plan else None
+        next_action = self._serialize_action(after_plan[0]) if after_plan else None
         summary: dict[str, Any] = {
             "ok": True,
             "command": cmd,
             "executed": res.executed,
             "dry_run": res.dry_run,
-            "message": res.message,
-            "action": asdict(res.action),
+            "message": _redact_api_payload(res.message),
+            "action": self._serialize_action(res.action),
             "next_action": next_action,
         }
         if after_state is not None:
-            summary["state"] = redact_sensitive(asdict(after_state))
+            summary["state"] = _redact_api_payload(asdict(self._attach_raid_stats(after_state)))
         return summary
 
     def handle_command(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1684,14 +1956,19 @@ class GameApiBridge:
         dry_run = bool(payload.get("dry_run", False))
 
         if cmd == "config":
-            return {"ok": True, "command": cmd, "config": asdict(self.strategy_config)}
+            with self._lock:
+                return {
+                    "ok": True,
+                    "command": cmd,
+                    "config": _redact_api_payload(asdict(self.strategy_config)),
+                }
 
         if cmd == "db_summary":
             with self._lock:
                 return {
                     "ok": True,
                     "command": cmd,
-                    "db": self._db.summary() if self._db is not None else None,
+                    "db": _redact_api_payload(self._db.summary()) if self._db is not None else None,
                 }
 
         if cmd == "bot_control":
@@ -1709,16 +1986,35 @@ class GameApiBridge:
             raw_cfg = payload.get("config")
             if not isinstance(raw_cfg, dict):
                 raise ApiRequestError("'update_config' requires a 'config' dictionary.")
-            merged = {**asdict(self.strategy_config), **raw_cfg}
-            new_cfg = strategy_config_from_dict(merged)
+            _validate_config_patch(raw_cfg)
             with self._lock:
+                prev_cfg = self.strategy_config
+                merged = {**asdict(prev_cfg), **raw_cfg}
+                new_cfg = strategy_config_from_dict(merged)
                 save_strategy_config(new_cfg, self.config_path)
                 self.strategy_config = new_cfg
+                ga_params_changed = any(
+                    getattr(new_cfg, k) != getattr(prev_cfg, k)
+                    for k in (
+                        "ga_population_size",
+                        "ga_generations",
+                        "ga_horizon_steps",
+                        "ga_mutation_rate",
+                        "ga_nn_weight",
+                        "ga_seed",
+                    )
+                )
+                if normalize_planner_mode(new_cfg.planner_mode) != "ga_nn" or ga_params_changed:
+                    self._last_optimizer_summary = None
                 for ex in (self._live_executor, self._dry_executor):
                     ex.allow_fleetsave = new_cfg.allow_fleetsave
                     ex.allow_raids = new_cfg.allow_raids
                     ex.max_actions_per_hour = new_cfg.max_actions_per_hour
-            return {"ok": True, "command": cmd, "config": asdict(new_cfg)}
+                return {
+                    "ok": True,
+                    "command": cmd,
+                    "config": _redact_api_payload(asdict(new_cfg)),
+                }
 
         if cmd == "simulate_combat":
             with self._lock:
@@ -1729,15 +2025,31 @@ class GameApiBridge:
                     timestamp=0.0,
                     planets=(),
                 )
-                atk_ships = payload.get("attacker_ships") or {}
-                def_ships = payload.get("defender_ships") or {}
-                def_defense = payload.get("defender_defense") or {}
-                def_researches = payload.get("defender_researches") or {}
-                tgt_resources = payload.get("target_resources") or {}
-                tgt_coords = str(payload.get("target_coords") or "01:001:01")
-                margin = float(
-                    payload.get("safety_margin", self.strategy_config.combat_safety_margin)
+                atk_ships = _parse_sim_count_map("attacker_ships", payload.get("attacker_ships"))
+                def_ships = _parse_sim_count_map("defender_ships", payload.get("defender_ships"))
+                def_defense = _parse_sim_count_map("defender_defense", payload.get("defender_defense"))
+                def_researches = _parse_sim_count_map("defender_researches", payload.get("defender_researches"))
+                tgt_resources = _parse_sim_count_map(
+                    "target_resources",
+                    payload.get("target_resources"),
+                    max_val=1_000_000_000_000,
                 )
+                raw_coords = payload.get("target_coords")
+                if raw_coords is None:
+                    tgt_coords = "01:001:01"
+                elif not isinstance(raw_coords, str):
+                    raise ApiRequestError("'simulate_combat' field 'target_coords' must be a string.")
+                else:
+                    tgt_coords = raw_coords.strip() or "01:001:01"
+                if "safety_margin" in payload:
+                    margin = _validate_strict_float(
+                        "safety_margin",
+                        payload["safety_margin"],
+                        min_val=1.0,
+                        max_val=1000.0,
+                    )
+                else:
+                    margin = float(self.strategy_config.combat_safety_margin)
                 sim = simulate_combat_matchup(
                     state_for_sim,
                     attacker_ships=atk_ships,
@@ -1748,7 +2060,11 @@ class GameApiBridge:
                     target_coords=tgt_coords,
                     safety_margin=margin,
                 )
-            return {"ok": True, "command": cmd, "simulation": sim}
+            return {
+                "ok": True,
+                "command": cmd,
+                "simulation": _redact_api_payload(_sanitize_finite_json(sim)),
+            }
 
         with self._lock:
             if cmd == "ensure_session":
@@ -1761,24 +2077,38 @@ class GameApiBridge:
                 return {"ok": True, "command": cmd, "message": "Session verified."}
 
             if cmd == "buildings_eta" and not bool(payload.get("refresh", False)) and self._last_state is not None:
-                pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                pid = _parse_command_int(
+                    "planet_id",
+                    payload.get("planet_id"),
+                    allow_none=True,
+                    min_val=1,
+                    max_val=2**63 - 1,
+                )
                 planet = self._resolve_planet(self._last_state, pid) if pid is not None else self._last_state.active_planet()
                 return {
                     "ok": True,
                     "command": cmd,
-                    "buildings_eta": build_buildings_eta(self._last_state, planet),
+                    "buildings_eta": _redact_api_payload(build_buildings_eta(self._last_state, planet)),
                 }
 
             if cmd == "combat_overview" and not bool(payload.get("refresh", False)) and self._last_state is not None:
-                pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                pid = _parse_command_int(
+                    "planet_id",
+                    payload.get("planet_id"),
+                    allow_none=True,
+                    min_val=1,
+                    max_val=2**63 - 1,
+                )
                 planet = self._resolve_planet(self._last_state, pid) if pid is not None else self._last_state.active_planet()
                 return {
                     "ok": True,
                     "command": cmd,
-                    "combat": build_combat_overview(
-                        self._last_state,
-                        planet,
-                        safety_margin=self.strategy_config.combat_safety_margin,
+                    "combat": _redact_api_payload(
+                        build_combat_overview(
+                            self._last_state,
+                            planet,
+                            safety_margin=self.strategy_config.combat_safety_margin,
+                        )
                     ),
                 }
 
@@ -1985,6 +2315,20 @@ class GameApiBridge:
                         )
 
                     if cmd == "plan":
+                        override_cfg: Optional[StrategyConfig] = None
+                        if "planner_mode" in payload and payload["planner_mode"] is not None:
+                            raw_mode = payload["planner_mode"]
+                            if not isinstance(raw_mode, str) or not raw_mode.strip():
+                                raise ApiRequestError(
+                                    "'planner_mode' override must be a non-empty string ('priority' or 'ga_nn')."
+                                )
+                            try:
+                                req_mode = normalize_planner_mode(raw_mode, strict=True)
+                            except ValueError as exc:
+                                raise ApiRequestError(str(exc)) from exc
+                            override_cfg = replace(self.strategy_config, planner_mode=req_mode)
+                        effective_cfg = override_cfg or self.strategy_config
+                        effective_mode = normalize_planner_mode(effective_cfg.planner_mode)
                         state = _cached_or_fetch(
                             include_buildings=True,
                             include_research=False,
@@ -1999,11 +2343,13 @@ class GameApiBridge:
                                 observed_active_planet=False,
                                 update_snapshot_ts=False,
                             )
-                        actions = self._plan_with_context(state)
+                        actions, opt_summary = self._plan_with_summary(state, config=effective_cfg)
                         return {
                             "ok": True,
                             "command": cmd,
-                            "actions": [asdict(a) for a in actions],
+                            "planner_mode": effective_mode,
+                            "actions": [self._serialize_action(a) for a in actions],
+                            "optimizer_summary": opt_summary,
                         }
 
                     if cmd == "buildings_eta":
@@ -2013,12 +2359,18 @@ class GameApiBridge:
                             include_shipyard=False,
                             priority="normal",
                         )
-                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
                         planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
                         return {
                             "ok": True,
                             "command": cmd,
-                            "buildings_eta": build_buildings_eta(state, planet),
+                            "buildings_eta": _redact_api_payload(build_buildings_eta(state, planet)),
                         }
 
                     if cmd == "combat_overview":
@@ -2028,15 +2380,23 @@ class GameApiBridge:
                             include_shipyard=True,
                             priority="normal",
                         )
-                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
                         planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
                         return {
                             "ok": True,
                             "command": cmd,
-                            "combat": build_combat_overview(
-                                state,
-                                planet,
-                                safety_margin=self.strategy_config.combat_safety_margin,
+                            "combat": _redact_api_payload(
+                                build_combat_overview(
+                                    state,
+                                    planet,
+                                    safety_margin=self.strategy_config.combat_safety_margin,
+                                )
                             ),
                         }
 
@@ -2050,7 +2410,7 @@ class GameApiBridge:
                         return {
                             "ok": True,
                             "command": cmd,
-                            "ranking": build_ranking_evolution(state, self._rank_samples),
+                            "ranking": _redact_api_payload(build_ranking_evolution(state, self._rank_samples)),
                         }
 
                     if cmd == "tick_once":
@@ -2091,13 +2451,13 @@ class GameApiBridge:
                                 "command": cmd,
                                 "executed": False,
                                 "dry_run": dry_run,
-                                "message": (
+                                "message": _redact_api_payload(
                                     f"Waiting: {actions[0].target_name} ({actions[0].reason})"
                                     if actions
                                     else "No pending actions."
                                 ),
-                                "action": asdict(actions[0]) if actions else None,
-                                "next_action": asdict(actions[1]) if len(actions) > 1 else None,
+                                "action": self._serialize_action(actions[0], state) if actions else None,
+                                "next_action": self._serialize_action(actions[1], state) if len(actions) > 1 else None,
                             }
                         return self._execute_and_summarize(client, state, cmd, ready, dry_run)
 
@@ -2107,9 +2467,19 @@ class GameApiBridge:
                         nav_soup = BeautifulSoup(client.driver.page_source or "", "html.parser")
                         items = [
                             {
-                                "text": a.get_text(" ", strip=True),
-                                "href": str(a.get("href") or "").split("sid=")[0],
-                                "onclick": str(a.get("onclick") or ""),
+                                "text": _redact_api_payload(a.get_text(" ", strip=True)),
+                                "href": _redact_api_payload(
+                                    re.sub(
+                                        r"(?i)([?&;])sid(?:=|%3d)(?:(?!%26|%23)[^&\s\"'<>#)])*(&?)",
+                                        lambda m: (
+                                            "?"
+                                            if (m.group(1) == "?" and m.group(2))
+                                            else ("" if m.group(1) == "?" else m.group(2))
+                                        ),
+                                        str(a.get("href") or ""),
+                                    ).rstrip("?&;")
+                                ),
+                                "onclick": _redact_api_payload(str(a.get("onclick") or "")),
                             }
                             for a in nav_soup.find_all("a", href=True)
                         ]
@@ -2125,22 +2495,12 @@ class GameApiBridge:
                             raise ApiRequestError(
                                 f"Unsupported menu action {action!r}; allowed: {sorted(ALLOWED_MENU_ACTIONS)}"
                             )
-                        gal_int: Optional[int] = None
-                        sys_int: Optional[int] = None
-                        if payload.get("galaxy") is not None:
-                            try:
-                                gal_int = int(payload["galaxy"])
-                            except (TypeError, ValueError) as exc:
-                                raise ApiRequestError("'galaxy' must be a positive integer.") from exc
-                            if gal_int < 1:
-                                raise ApiRequestError("'galaxy' must be >= 1.")
-                        if payload.get("system") is not None:
-                            try:
-                                sys_int = int(payload["system"])
-                            except (TypeError, ValueError) as exc:
-                                raise ApiRequestError("'system' must be a positive integer.") from exc
-                            if sys_int < 1:
-                                raise ApiRequestError("'system' must be >= 1.")
+                        gal_int = _parse_command_int(
+                            "galaxy", payload.get("galaxy"), allow_none=True, min_val=1, max_val=1000
+                        )
+                        sys_int = _parse_command_int(
+                            "system", payload.get("system"), allow_none=True, min_val=1, max_val=1000
+                        )
 
                         self._call_with_optional_priority(client.ensure_in_game, priority="interactive")
                         if action == "internalGalaxy" and (gal_int is not None or sys_int is not None):
@@ -2269,7 +2629,7 @@ class GameApiBridge:
                             res_payload["galaxy"] = actual_gal
                             res_payload["system"] = actual_sys
                         if payload.get("include_html"):
-                            res_payload["html"] = html
+                            res_payload["html"] = _redact_api_payload(html)
                         if payload.get("return_home", False):
                             self._call_with_optional_priority(
                                 client.navigate_menu,
@@ -2279,7 +2639,13 @@ class GameApiBridge:
                         return res_payload
 
                     if cmd == "scan_galaxy":
-                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
                         if self._last_state is not None and not force_refresh:
                             state = self._last_state
                         else:
@@ -2301,10 +2667,14 @@ class GameApiBridge:
                                 observed_active_planet=obs_active,
                             )
                         planet = self._resolve_planet(state, pid)
-                        gal_arg = payload.get("galaxy")
-                        sys_arg = payload.get("system")
+                        gal_arg = _parse_command_int(
+                            "galaxy", payload.get("galaxy"), allow_none=True, min_val=1, max_val=1000
+                        )
+                        sys_arg = _parse_command_int(
+                            "system", payload.get("system"), allow_none=True, min_val=1, max_val=1000
+                        )
                         if gal_arg is not None and sys_arg is not None:
-                            target_lbl = f"Galaxy [{int(gal_arg):02d}:{int(sys_arg):03d}]"
+                            target_lbl = f"Galaxy [{gal_arg:02d}:{sys_arg:03d}]"
                         else:
                             parts = [p.strip() for p in planet.coords.split(":")]
                             if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
@@ -2337,7 +2707,7 @@ class GameApiBridge:
                             "ok": True,
                             "command": cmd,
                             "synced_reports": synced,
-                            "reports": [asdict(r) for r in reports],
+                            "reports": _redact_api_payload([asdict(r) for r in reports]),
                         }
 
                     if cmd == "spy":
@@ -2346,8 +2716,21 @@ class GameApiBridge:
                             raise ApiRequestError(
                                 "'spy' command requires 'target_coords' formatted as GG:SSS:PP."
                             )
-                        qty = max(1, int(payload.get("quantity", 1)))
-                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        qty_parsed = _parse_command_int(
+                            "quantity",
+                            payload.get("quantity", 1),
+                            min_val=1,
+                            max_val=1_000_000_000,
+                        )
+                        assert qty_parsed is not None
+                        qty = qty_parsed
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
                         state = _resolve_fleet_command_state(pid, is_spy=True)
                         if pid is None:
                             probe_p = next(
@@ -2375,7 +2758,7 @@ class GameApiBridge:
                                 "executed": False,
                                 "dry_run": dry_run,
                                 "message": f"Aborted: {target_coords} is one of your own planets.",
-                                "action": asdict(planned_own),
+                                "action": self._serialize_action(planned_own, state),
                                 "next_action": None,
                             }
                         planned = PlannedAction(
@@ -2397,7 +2780,13 @@ class GameApiBridge:
                             raise ApiRequestError(
                                 "'attack' command requires 'target_coords' formatted as GG:SSS:PP."
                             )
-                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
                         state = _resolve_fleet_command_state(pid, is_spy=False)
                         planet = self._resolve_planet(state, pid)
                         planned = PlannedAction(
@@ -2420,7 +2809,7 @@ class GameApiBridge:
                                 "executed": False,
                                 "dry_run": dry_run,
                                 "message": f"Aborted: {target_coords} is one of your own planets.",
-                                "action": asdict(planned),
+                                "action": self._serialize_action(planned, state),
                                 "next_action": None,
                             }
 
@@ -2444,7 +2833,7 @@ class GameApiBridge:
                                 "executed": False,
                                 "dry_run": dry_run,
                                 "message": f"Aborted: target {target_coords} is protected ({status_color}).",
-                                "action": asdict(planned),
+                                "action": self._serialize_action(planned, state),
                                 "next_action": None,
                             }
                         if (
@@ -2459,7 +2848,7 @@ class GameApiBridge:
                                 "executed": False,
                                 "dry_run": dry_run,
                                 "message": f"Aborted: target {target_coords} is an active player and allow_pvp_in_az=false.",
-                                "action": asdict(planned),
+                                "action": self._serialize_action(planned, state),
                                 "next_action": None,
                             }
 
@@ -2476,7 +2865,7 @@ class GameApiBridge:
                                     "executed": False,
                                     "dry_run": dry_run,
                                     "message": f"Aborted: BashTracker 3/24h limit reached for {target_coords}.",
-                                    "action": asdict(planned),
+                                    "action": self._serialize_action(planned, state),
                                     "next_action": None,
                                 }
 
@@ -2520,7 +2909,7 @@ class GameApiBridge:
                                             "executed": False,
                                             "dry_run": dry_run,
                                             "message": f"Aborted: combat safety check failed ({sim.reason}).",
-                                            "action": asdict(planned),
+                                            "action": self._serialize_action(planned, state),
                                             "next_action": None,
                                         }
 
@@ -2530,7 +2919,16 @@ class GameApiBridge:
                         raw_bid = payload.get("building_id")
                         if raw_bid is None:
                             raise ApiRequestError("'build' command requires 'building_id'.")
-                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        bid = _parse_command_int(
+                            "building_id", raw_bid, min_val=1, max_val=2**31 - 1
+                        )
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
                         state = _cached_or_fetch(
                             include_buildings=bool(dry_run or force_refresh),
                             include_research=False,
@@ -2540,7 +2938,7 @@ class GameApiBridge:
                         )
                         planned = self._find_build_action(
                             state,
-                            int(raw_bid),
+                            bid,
                             pid,
                             allow_live_verify=not dry_run,
                         )
@@ -2550,7 +2948,16 @@ class GameApiBridge:
                         raw_rid = payload.get("research_id")
                         if raw_rid is None:
                             raise ApiRequestError("'research' command requires 'research_id'.")
-                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        rid = _parse_command_int(
+                            "research_id", raw_rid, min_val=1, max_val=2**31 - 1
+                        )
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
                         state = _cached_or_fetch(
                             include_buildings=False,
                             include_research=bool(dry_run or force_refresh),
@@ -2560,7 +2967,7 @@ class GameApiBridge:
                         )
                         planned = self._find_research_action(
                             state,
-                            int(raw_rid),
+                            rid,
                             pid,
                             allow_live_verify=not dry_run,
                         )
@@ -2570,8 +2977,24 @@ class GameApiBridge:
                         raw_sid = payload.get("ship_id")
                         if raw_sid is None:
                             raise ApiRequestError("'build_ship' command requires 'ship_id'.")
-                        qty = max(1, int(payload.get("quantity", 1)))
-                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        sid_int = _parse_command_int(
+                            "ship_id", raw_sid, min_val=1, max_val=2**31 - 1
+                        )
+                        qty_parsed = _parse_command_int(
+                            "quantity",
+                            payload.get("quantity", 1),
+                            min_val=1,
+                            max_val=1_000_000_000,
+                        )
+                        assert qty_parsed is not None
+                        qty = qty_parsed
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
                         state = _cached_or_fetch(
                             include_buildings=False,
                             include_research=False,
@@ -2581,7 +3004,7 @@ class GameApiBridge:
                         )
                         planned = self._find_ship_action(
                             state,
-                            int(raw_sid),
+                            sid_int,
                             qty,
                             pid,
                             allow_live_verify=not dry_run,
@@ -2589,11 +3012,26 @@ class GameApiBridge:
                         return self._execute_and_summarize(client, state, cmd, planned, dry_run)
 
                     if cmd == "throttle_building":
-                        bid = int(payload.get("building_id", 2))
+                        bid = _parse_command_int(
+                            "building_id",
+                            payload.get("building_id", 2),
+                            min_val=1,
+                            max_val=2**31 - 1,
+                        )
                         if payload.get("percentage") is None:
                             raise ApiRequestError("'throttle_building' command requires 'percentage' (0..100).")
-                        pct = max(0, min(100, (int(payload["percentage"]) // 10) * 10))
-                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        pct_raw = _parse_command_int(
+                            "percentage", payload["percentage"], min_val=0, max_val=100
+                        )
+                        assert pct_raw is not None
+                        pct = max(0, min(100, (pct_raw // 10) * 10))
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
                         state = _cached_or_fetch(
                             include_buildings=False,
                             include_research=False,
@@ -2617,7 +3055,13 @@ class GameApiBridge:
                         return self._execute_and_summarize(client, state, cmd, planned, dry_run)
 
                     if cmd == "fleetsave_plan":
-                        pid = int(payload["planet_id"]) if payload.get("planet_id") is not None else None
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
                         state = _cached_or_fetch(
                             include_buildings=False,
                             include_research=False,
@@ -2637,7 +3081,7 @@ class GameApiBridge:
                             target_coords=target_coords,
                             fuel_reserve_spice=self.strategy_config.fleet_save_fuel_reserve_spice,
                         )
-                        return {"ok": True, "command": cmd, "escape_plan": asdict(escape)}
+                        return {"ok": True, "command": cmd, "escape_plan": _redact_api_payload(asdict(escape))}
 
                     if cmd == "claim_tutorial":
                         state = _cached_or_fetch(
@@ -2724,7 +3168,7 @@ def create_api_server(
             "ok": False,
             "rate_limited": True,
             "retry_after": round(rem, 1),
-            "error": err_txt,
+            "error": _redact_api_payload(err_txt),
         }
         headers = {"Retry-After": str(max(1, int(math.ceil(rem))))}
         return body, headers
@@ -2798,7 +3242,7 @@ def create_api_server(
                     inc = qs.get("include_buildings", ["1"])[0].lower() not in ("0", "false", "no")
                     self._send_json(HTTPStatus.OK, bridge.get_state(include_buildings=inc))
                     return
-                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"Unknown route {parsed.path}"})
+                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": _redact_api_payload(f"Unknown route {parsed.path}")})
             except RateLimitError as exc:
                 body, headers = _build_rate_limit_response(exc)
                 self._send_json(
@@ -2807,14 +3251,14 @@ def create_api_server(
                     extra_headers=headers,
                 )
             except SpaceInvasionAuthError as exc:
-                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": str(exc)})
+                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": _redact_api_payload(str(exc))})
             except Exception as exc:
-                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": _redact_api_payload(str(exc))})
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path != "/command":
-                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"Unknown route {parsed.path}"})
+                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": _redact_api_payload(f"Unknown route {parsed.path}")})
                 return
             payload: Optional[dict[str, Any]] = None
             status_code = HTTPStatus.OK
@@ -2827,24 +3271,29 @@ def create_api_server(
                 body = bridge.handle_command(payload)
             except (ValueError, ApiRequestError) as exc:
                 status_code = HTTPStatus.BAD_REQUEST
-                body = {"ok": False, "error": str(exc)}
+                body = {"ok": False, "error": _redact_api_payload(str(exc))}
             except RateLimitError as exc:
                 body, extra_headers = _build_rate_limit_response(exc)
                 status_code = HTTPStatus.TOO_MANY_REQUESTS
             except SpaceInvasionAuthError as exc:
                 status_code = HTTPStatus.SERVICE_UNAVAILABLE
-                body = {"ok": False, "error": str(exc)}
+                body = {"ok": False, "error": _redact_api_payload(str(exc))}
             except Exception as exc:
                 status_code = HTTPStatus.INTERNAL_SERVER_ERROR
-                body = {"ok": False, "error": str(exc)}
+                body = {"ok": False, "error": _redact_api_payload(str(exc))}
 
             if bridge.log_dir is not None:
+                log_payload = (
+                    payload
+                    if isinstance(payload, dict)
+                    else ({"raw_payload": payload} if payload is not None else None)
+                )
                 append_api_log(
                     bridge.log_dir,
                     method="POST",
                     path=parsed.path,
                     status=int(status_code),
-                    payload=payload,
+                    payload=log_payload,
                     response=body,
                 )
             self._send_json(status_code, body, extra_headers=extra_headers)
