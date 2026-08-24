@@ -4,11 +4,11 @@ Guide for coding agents working in `spaceinvasion-autoplayer`. Read [docs/README
 
 ## Repository Layout
 
-- **`bin/` — 3-Tier Live Runtime & CLI Launchers**:
+- **`starter.sh` & `bin/` — 3-Tier Live Runtime & CLI Launchers**:
+  - `starter.sh` / `bin/run_stack.py` — Root supervisor script (`./starter.sh`) and Python stack launcher supervising Chrome debug port, `bin/game_api.py --reload`, and `bin/commander.py --loop --reload` with automatic crash recovery and CAPTCHA exit-code-2 stop safety.
   - `bin/login.py` + `spaceinvasion/browser.py` / `spaceinvasion/auth.py` — BitMeUp login, `.env` credential profiles, persistent Chrome profile (`.browser_profile/`), and detached Chrome DevTools debug port (`127.0.0.1:9222`).
   - `bin/game_api.py` + `spaceinvasion/api_server.py` — Thread-locked local HTTP JSON bridge (`http://127.0.0.1:8787`) serving the Web Operator Console (`spaceinvasion/ui/`) and `GET /health`, `GET /ui-version`, `GET /state`, `GET /dashboard`, and `POST /command`.
   - `bin/commander.py` + `spaceinvasion/commander_client.py` — Pure-HTTP autonomous decision loop with zero Selenium imports.
-  - `bin/run_stack.py` / `bin/run_stack.sh` — Supervises Chrome debug port, `bin/game_api.py --reload`, and `bin/commander.py --loop --reload` with automatic crash recovery and CAPTCHA exit-code-2 stop safety.
   - `bin/advisor.py` / `bin/run_bot.py` — Read-only tactical advisor CLI and single-process runner.
 - **`spaceinvasion/` — Core Python Package**:
   - `spaceinvasion/game_data.py` — Offline catalog scraped from the SpaceInvasion Classic Wiki (21 buildings, 16 researches, 15 ships, 11 defenses, Merchant parity `6:2.5:3:1`, temp curves, prerequisites).

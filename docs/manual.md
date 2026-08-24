@@ -17,13 +17,13 @@ cp config.example.yaml config.yaml
 ### 1.2 Authentication & Stack Supervision
 | Command | Purpose |
 |---|---|
-| `.venv/bin/python3 login.py` | Launches detached Chrome (`127.0.0.1:9222`) and authenticates into BitMeUp / SpaceInvasion Classic (pausing cleanly if 2FA or CAPTCHA user input is required). |
-| `./run_stack.sh` | **Recommended production launcher**: Runs `run_stack.py --live` under an auto-restarting bash supervisor (`5s -> 60s` exponential backoff on crashes; immediate halt on exit code `2` anti-bot/CAPTCHA). |
-| `./run_stack.sh --dry-run` | Runs the supervised stack in dry-run observation mode (plans and logs actions without clicking in-game). |
-| `.venv/bin/python3 run_stack.py --live` | Starts/verifies Chrome `:9222`, hot-reloading `game_api.py` (`127.0.0.1:8787`), and hot-reloading `commander.py --loop --live`. |
-| `.venv/bin/python3 game_api.py --reload` | Runs only the HTTP JSON Bridge and Web Operator Console (`http://127.0.0.1:8787/`). |
-| `.venv/bin/python3 commander.py --once` | Executes a single dry-run planning/inspection tick via HTTP (`--live` to execute). |
-| `.venv/bin/python3 advisor.py` | Prints offline strategy, ETA, and economy diagnostics. |
+| `.venv/bin/python3 bin/login.py` | Launches detached Chrome (`127.0.0.1:9222`) and authenticates into BitMeUp / SpaceInvasion Classic (pausing cleanly if 2FA or CAPTCHA user input is required). |
+| `./starter.sh` | **Recommended production launcher**: Runs `bin/run_stack.py --live` under an auto-restarting bash supervisor (`5s -> 60s` exponential backoff on crashes; immediate halt on exit code `2` anti-bot/CAPTCHA). |
+| `./starter.sh --dry-run` | Runs the supervised stack in dry-run observation mode (plans and logs actions without clicking in-game). |
+| `.venv/bin/python3 bin/run_stack.py --live` | Starts/verifies Chrome `:9222`, hot-reloading `bin/game_api.py` (`127.0.0.1:8787`), and hot-reloading `bin/commander.py --loop --live`. |
+| `.venv/bin/python3 bin/game_api.py --reload` | Runs only the HTTP JSON Bridge and Web Operator Console (`http://127.0.0.1:8787/`). |
+| `.venv/bin/python3 bin/commander.py --once` | Executes a single dry-run planning/inspection tick via HTTP (`--live` to execute). |
+| `.venv/bin/python3 bin/advisor.py` | Prints offline strategy, ETA, and economy diagnostics. |
 | `.venv/bin/python3 scripts/sync_wiki_data.py` | Refreshes `spaceinvasion/game_data.py` from the SpaceInvasion Classic Wiki catalog. |
 
 ---

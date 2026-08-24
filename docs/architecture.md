@@ -9,8 +9,8 @@
 ```mermaid
 flowchart TB
     subgraph Sup["Tier 0 — Process Supervision & Hot Reload"]
-        SH["run_stack.sh (Crash Watchdog & Exit-2 CAPTCHA Guard)"]
-        RS["run_stack.py (Stack Launcher & Health Monitor)"]
+        SH["starter.sh (Crash Watchdog & Exit-2 CAPTCHA Guard)"]
+        RS["bin/run_stack.py (Stack Launcher & Health Monitor)"]
         RL["spaceinvasion/reloader.py (Dependency-Safe Subprocess Reloader)"]
         SH --> RS
         RS --> RL
@@ -64,9 +64,9 @@ flowchart TB
 
 ## 2. Tier Responsibilities & Isolation Boundaries
 
-### Tier 0 — Supervision & Hot-Reload (`run_stack.sh`, `run_stack.py`, `reloader.py`)
-- **`run_stack.sh`**: Outer POSIX/Bash watchdog that restarts `run_stack.py` with exponential backoff (`5s -> 60s` max, resetting after `>= 60s` healthy uptime) if Python crashes, cleans up orphaned port-`8787` children, and **halts immediately without restarting on exit code `2`** (anti-bot / Cloudflare Turnstile challenge).
-- **`run_stack.py`**: Verifies Chrome DevTools readiness on `127.0.0.1:9222`, starts `game_api.py --reload`, waits for `GET /health == 200`, and starts `commander.py --loop --reload`.
+### Tier 0 — Supervision & Hot-Reload (`starter.sh`, `bin/run_stack.py`, `reloader.py`)
+- **`starter.sh`**: Outer POSIX/Bash watchdog at the repository root that restarts `bin/run_stack.py` with exponential backoff (`5s -> 60s` max, resetting after `>= 60s` healthy uptime) if Python crashes, cleans up orphaned port-`8787` children, and **halts immediately without restarting on exit code `2`** (anti-bot / Cloudflare Turnstile challenge).
+- **`bin/run_stack.py`**: Verifies Chrome DevTools readiness on `127.0.0.1:9222`, starts `bin/game_api.py --reload`, waits for `GET /health == 200`, and starts `bin/commander.py --loop --reload`.
 - **Bottom-Up Hot-Reload Invariant**: `reloader.py` watches leaf domain modules (`game_data.py`, `state.py`, `fleet.py`, `ranking.py`, `action_graph.py`, `storage.py`) and restarts `game_api.py` / `commander.py` cleanly without closing Chrome.
 
 ### Tier 1 — Browser & Session Layer (`login.py`, `browser.py`, `auth.py`, `client.py`)

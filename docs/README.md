@@ -10,7 +10,7 @@ Welcome to the unified technical documentation suite for **`spaceinvasion-autopl
 |---|---|
 | **[Architecture Guide](./architecture.md)** | 3-tier runtime topology, concurrency/locking model, heuristic (`priority`) vs. evolutionary (`ga_nn`) planners, Kahn Action Graph DAG engine, Web Operator Console, hot-reload order, and anti-bot/security guardrails. |
 | **[System Specification](./specification.md)** | Core runtime specification, API contracts, safety boundaries, and component design. |
-| **[Operator & System Manual](./manual.md)** | Installation, CLI launchers (`bin/run_stack.sh`, `bin/run_stack.py`, `bin/game_api.py`, `bin/commander.py`, `bin/login.py`), `StrategyConfig` reference, HTTP API & `POST /command` catalog, and verification suites. |
+| **[Operator & System Manual](./manual.md)** | Installation, CLI launchers (`./starter.sh`, `bin/run_stack.py`, `bin/game_api.py`, `bin/commander.py`, `bin/login.py`), `StrategyConfig` reference, HTTP API & `POST /command` catalog, and verification suites. |
 | **[Database MER & Migrations](./database-mer.md)** | Entity-Relationship Diagram (`erDiagram`), append-only retention model, column-by-column dictionary across all **22 SQLite tables**, **20 secondary indexes**, and forward-only `V001..V006` schema migrations (`scripts/db_migrate.py`). |
 | **[Project Overview & Roadmap](./project.md)** | Milestone history, capability matrix, and current operational status. |
 

@@ -8,7 +8,8 @@ See [docs/README.md](docs/README.md) for the full documentation portal, [docs/ar
 
 ```text
 spaceinvasion-autoplayer/
-├── bin/                   # 3-tier runtime launchers (run_stack.sh, run_stack.py, game_api.py, commander.py, login.py)
+├── starter.sh             # Supervised live stack launcher with crash auto-restart & CAPTCHA stop guard
+├── bin/                   # 3-tier runtime launchers (run_stack.py, game_api.py, commander.py, login.py)
 ├── spaceinvasion/         # Core Python package (state, strategy, optimizer, migrations, storage, fleet, executor, ui/)
 ├── scripts/               # Maintenance & DB utilities (db_migrate.py, sync_wiki_data.py)
 ├── docs/                  # Unified documentation hub (architecture, MER, manual, specifications/, testing/, notes/)
@@ -53,7 +54,7 @@ SPACEINVASION_UNIVERSE=RETRO
 4. **Launch the full hot-reloadable stack**:
 
 ```bash
-./bin/run_stack.sh                        # Supervised live stack with crash auto-restart
+./starter.sh                              # Supervised live stack with crash auto-restart
 .venv/bin/python3 bin/run_stack.py        # Dry-run commander
 .venv/bin/python3 bin/run_stack.py --live # Live execution in visible Chrome
 ```

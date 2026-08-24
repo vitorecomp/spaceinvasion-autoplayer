@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Auto-restarting supervisor wrapper for `run_stack.py`.
+# Auto-restarting supervisor wrapper (`starter.sh`) for `bin/run_stack.py`.
 #
 # Behavior:
-# - Runs `.venv/bin/python3 run_stack.py` (defaults to `--live` when called with no args;
+# - Runs `.venv/bin/python3 bin/run_stack.py` (defaults to `--live` when called with no args;
 #   pass `--dry-run` for dry-run mode, or pass any `run_stack.py` flags directly).
 # - Automatically restarts the Python stack with exponential backoff (5s -> 60s max)
 #   whenever `run_stack.py` exits with a crash/error code.
@@ -12,8 +12,8 @@
 
 set -u
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+BIN_DIR="$REPO_DIR/bin"
 cd "$REPO_DIR" || exit 1
 
 if [[ -n "${PYTHON_BIN:-}" ]]; then
@@ -29,7 +29,7 @@ if [[ -z "$PY_BIN" ]]; then
   exit 1
 fi
 
-STACK_SCRIPT="${STACK_SCRIPT:-$SCRIPT_DIR/run_stack.py}"
+STACK_SCRIPT="${STACK_SCRIPT:-$BIN_DIR/run_stack.py}"
 WATCHDOG_LOG="${WATCHDOG_LOG:-$REPO_DIR/logs/watchdog.log}"
 WATCHDOG_PID_FILE="${WATCHDOG_PID_FILE:-$REPO_DIR/state/run_stack_watchdog.pid}"
 INITIAL_BACKOFF_SEC="${INITIAL_BACKOFF_SEC:-5}"
@@ -39,14 +39,14 @@ MAX_RAPID_RESTARTS="${MAX_RAPID_RESTARTS:-0}"
 
 print_usage() {
   cat <<'EOF'
-Usage: ./bin/run_stack.sh [--dry-run | run_stack.py options...]
+Usage: ./starter.sh [--dry-run | run_stack.py options...]
 
-Supervises `run_stack.py` and automatically restarts it if Python crashes or exits unexpectedly.
+Supervises `bin/run_stack.py` and automatically restarts it if Python crashes or exits unexpectedly.
 
 Defaults & Options:
-  (no arguments)   Starts `run_stack.py --live`
-  --dry-run        Starts `run_stack.py` in dry-run mode (without `--live`)
-  -h, --help       Show this help message and `run_stack.py --help`
+  (no arguments)   Starts `bin/run_stack.py --live`
+  --dry-run        Starts `bin/run_stack.py` in dry-run mode (without `--live`)
+  -h, --help       Show this help message and `bin/run_stack.py --help`
 
 Environment Overrides:
   INITIAL_BACKOFF_SEC       Initial restart delay in seconds (default: 5)
@@ -109,8 +109,8 @@ if [[ -f "$WATCHDOG_PID_FILE" ]]; then
   existing_pid="$(cat "$WATCHDOG_PID_FILE" 2>/dev/null || true)"
   if [[ "$existing_pid" =~ ^[0-9]+$ ]] && [[ "$existing_pid" != "$$" ]] && kill -0 "$existing_pid" 2>/dev/null; then
     existing_cmd="$(tr '\0' ' ' <"/proc/$existing_pid/cmdline" 2>/dev/null || true)"
-    if [[ "$existing_cmd" == *"run_stack.sh"* ]]; then
-      echo "[WATCHDOG] Another run_stack.sh instance is already active (PID $existing_pid)." >&2
+    if [[ "$existing_cmd" == *"starter.sh"* ]]; then
+      echo "[WATCHDOG] Another starter.sh instance is already active (PID $existing_pid)." >&2
       exit 1
     fi
   fi
@@ -150,13 +150,13 @@ terminate_child_tree() {
 }
 
 cleanup_orphaned_stack_procs() {
-  # Only clean up orphaned repo game_api/commander processes when supervising the real run_stack.py
+  # Only clean up orphaned repo game_api/commander processes when supervising the real bin/run_stack.py
   # (never in isolated unit tests and never touching Chrome on port 9222).
-  if [[ "$STACK_SCRIPT" != "$SCRIPT_DIR/run_stack.py" ]]; then
+  if [[ "$STACK_SCRIPT" != "$BIN_DIR/run_stack.py" ]]; then
     return
   fi
-  pkill -TERM -f "$SCRIPT_DIR/commander.py --api-url http://127.0.0.1:${API_PORT}" 2>/dev/null || true
-  pkill -TERM -f "$SCRIPT_DIR/game_api.py --port ${API_PORT}" 2>/dev/null || true
+  pkill -TERM -f "$BIN_DIR/commander.py --api-url http://127.0.0.1:${API_PORT}" 2>/dev/null || true
+  pkill -TERM -f "$BIN_DIR/game_api.py --port ${API_PORT}" 2>/dev/null || true
 }
 
 on_stop_signal() {
@@ -202,7 +202,7 @@ while [[ $STOP_REQUESTED -eq 0 ]]; do
 
   # Exit 2 = CAPTCHA / Turnstile / anti-bot challenge; NEVER auto-restart into an anti-bot gate.
   if [[ $rc -eq 2 ]]; then
-    log_msg "Anti-bot / CAPTCHA challenge detected (exit code 2). Not restarting automatically — complete verification in Chrome (port 9222), then re-run ./run_stack.sh."
+    log_msg "Anti-bot / CAPTCHA challenge detected (exit code 2). Not restarting automatically — complete verification in Chrome (port 9222), then re-run ./starter.sh."
     exit 2
   fi
 

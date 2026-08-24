@@ -1,4 +1,4 @@
-"""Unit tests for `run_stack.sh` crash-restart supervisor."""
+"""Unit tests for `starter.sh` crash-restart supervisor."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import unittest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RUN_STACK_SH = REPO_ROOT / "bin" / "run_stack.sh"
+STARTER_SH = REPO_ROOT / "starter.sh"
 
 
 class TestWatchdogScript(unittest.TestCase):
@@ -48,7 +48,7 @@ class TestWatchdogScript(unittest.TestCase):
                 encoding="utf-8",
             )
             res = subprocess.run(
-                ["bash", str(RUN_STACK_SH)],
+                ["bash", str(STARTER_SH)],
                 env=self._base_env(tmp, fake_stack),
                 capture_output=True,
                 text=True,
@@ -76,7 +76,7 @@ class TestWatchdogScript(unittest.TestCase):
                 encoding="utf-8",
             )
             res = subprocess.run(
-                ["bash", str(RUN_STACK_SH), "--dry-run"],
+                ["bash", str(STARTER_SH), "--dry-run"],
                 env=self._base_env(tmp, fake_stack),
                 capture_output=True,
                 text=True,
@@ -99,7 +99,7 @@ class TestWatchdogScript(unittest.TestCase):
                 encoding="utf-8",
             )
             proc = subprocess.Popen(
-                ["bash", str(RUN_STACK_SH), "--dry-run"],
+                ["bash", str(STARTER_SH), "--dry-run"],
                 env=self._base_env(tmp, fake_stack),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -128,14 +128,14 @@ class TestWatchdogScript(unittest.TestCase):
                 encoding="utf-8",
             )
             res = subprocess.run(
-                ["bash", str(RUN_STACK_SH), "--help"],
+                ["bash", str(STARTER_SH), "--help"],
                 env=self._base_env(tmp, fake_stack),
                 capture_output=True,
                 text=True,
                 timeout=5.0,
             )
             self.assertEqual(res.returncode, 0)
-            self.assertIn("Usage: ./bin/run_stack.sh", res.stdout)
+            self.assertIn("Usage: ./starter.sh", res.stdout)
             self.assertIn("FAKE_STACK_HELP ['--help']", res.stdout)
 
 
