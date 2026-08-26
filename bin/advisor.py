@@ -307,10 +307,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip navigating to Buildings tab (reads F_planets + internalHome only).",
     )
     parser.add_argument(
+        "--save-db",
+        action="store_true",
+        help="Persist the full state + action plan snapshot into SQLite (state/spaceinvasion.db).",
+    )
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="Explicit SQLite database path for persisting the advisor snapshot (e.g. state/spaceinvasion.db).",
+    )
+    parser.add_argument(
         "--snapshot-out",
         type=Path,
         default=None,
-        help="Optional path to save the full JSON snapshot (e.g. state/snapshot.json).",
+        help="Optional path to export a standalone JSON copy (or .db SQLite path).",
     )
     parser.add_argument(
         "--json",
@@ -424,9 +435,24 @@ def main(argv: list[str] | None = None) -> int:
             "state": asdict(state),
             "plan": [asdict(a) for a in actions],
         }
+        target_db_path: Path | None = args.db
+        if target_db_path is None and getattr(args, "save_db", False):
+            target_db_path = Path("state") / "spaceinvasion.db"
         if args.snapshot_out:
-            args.snapshot_out.parent.mkdir(parents=True, exist_ok=True)
-            args.snapshot_out.write_text(_safe_cli_json(payload), encoding="utf-8")
+            if args.snapshot_out.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+                target_db_path = args.snapshot_out
+            else:
+                args.snapshot_out.parent.mkdir(parents=True, exist_ok=True)
+                args.snapshot_out.write_text(_safe_cli_json(payload), encoding="utf-8")
+        if target_db_path is not None:
+            from spaceinvasion.storage import GameDatabase
+
+            db = GameDatabase(target_db_path)
+            try:
+                db.record_state_snapshot(state)
+                db.record_full_state_snapshot(state, actions, source="advisor")
+            finally:
+                db.close()
 
         if args.json:
             print(_safe_cli_json(payload))

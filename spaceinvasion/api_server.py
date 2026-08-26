@@ -1158,16 +1158,23 @@ class GameApiBridge:
         self._dash_static_cache_json: Optional[str] = None
         self._dash_ag_cache_key: Optional[Any] = None
         self._dash_ag_cache_json: Optional[str] = None
-        self._rank_history_path: Optional[Path] = (
-            (log_dir.parent / "state" / "rank_history.json") if log_dir is not None else None
-        )
         resolved_db = (
             db_path
             if db_path is not None
             else ((log_dir.parent / "state" / "spaceinvasion.db") if log_dir is not None else None)
         )
+        legacy_rank_path: Optional[Path] = (
+            (resolved_db.parent / "rank_history.json")
+            if (
+                resolved_db is not None
+                and str(resolved_db) != ":memory:"
+                and (resolved_db.parent / "rank_history.json").is_file()
+            )
+            else None
+        )
+        self._rank_history_path: Optional[Path] = None
         self._db: Optional[GameDatabase] = (
-            GameDatabase(resolved_db, legacy_rank_json=self._rank_history_path)
+            GameDatabase(resolved_db, legacy_rank_json=legacy_rank_path)
             if resolved_db is not None
             else None
         )
@@ -1180,7 +1187,7 @@ class GameApiBridge:
             self._scanned_systems.update(self._db.get_galaxy_scans())
             self._throttle_timestamps.update(self._db.get_last_throttle_timestamps())
         else:
-            self._rank_samples = load_rank_history(self._rank_history_path)
+            self._rank_samples = []
             self._raid_targets = ()
         self._bot_control: dict[str, Any] = {
             "paused": False,
@@ -1678,7 +1685,7 @@ class GameApiBridge:
         """Inspect Blast furnace Metal production vs pinned queue position on `planet_id`."""
         if self._last_state is None or not pending_mq:
             return {"checked": False, "summary": ""}
-        enriched = self._enrich_state(self._last_state)
+        enriched = self._attach_raid_stats(self._last_state)
         planet = (
             next((p for p in enriched.planets if p.planet_id == planet_id), None)
             if planet_id > 0
@@ -2276,6 +2283,12 @@ class GameApiBridge:
             self._last_shipyard_sync_sig = (pid_sig, b9_lvl, res_sig)
         if self._db is not None:
             self._rank_samples = self._db.record_state_snapshot(merged)
+            self._db.record_full_state_snapshot(
+                merged,
+                (),
+                source="bridge",
+                min_interval_seconds=600.0,
+            )
             self._persist_runtime_state()
         else:
             self._rank_samples = record_rank_snapshot(self._rank_history_path, merged)
@@ -4287,6 +4300,29 @@ class GameApiBridge:
                         "ok": bool(ver.get("ok", False)),
                         "command": cmd,
                         "verification": _redact_api_payload(ver),
+                    }
+                )
+
+        if cmd == "state_snapshots":
+            snap_limit = _parse_command_int(
+                "limit",
+                payload.get("limit", 20),
+                min_val=1,
+                max_val=200,
+            ) or 20
+            inc_payload = bool(payload.get("include_payload", False))
+            with self._lock:
+                snaps = (
+                    self._db.get_state_snapshots(limit=snap_limit, include_payload=inc_payload)
+                    if self._db is not None
+                    else []
+                )
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "count": len(snaps),
+                        "snapshots": _redact_api_payload(snaps),
                     }
                 )
 

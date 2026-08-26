@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import contextlib
 from dataclasses import dataclass, fields as dataclass_fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
 import json
@@ -10,6 +11,9 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
+import sqlite3
+import tempfile
 import time
 from typing import Any, Optional
 
@@ -561,10 +565,73 @@ def _solve_compound_eta_hours(
     return None
 
 
+def _is_sqlite_rank_store(path: Path) -> bool:
+    if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+        return True
+    if not path.is_file():
+        return False
+    try:
+        with path.open("rb") as fh:
+            return fh.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
+def _load_rank_history_from_sqlite(db_path: Path) -> list[dict[str, Any]]:
+    if not db_path.is_file():
+        return []
+    try:
+        with tempfile.TemporaryDirectory(prefix="si_rk_ro_") as tmp_dir:
+            tmp_db = Path(tmp_dir) / db_path.name
+            shutil.copy2(db_path, tmp_db)
+            for suffix in ("-wal", "-shm", "-journal"):
+                sidecar = Path(f"{db_path}{suffix}")
+                if sidecar.is_file():
+                    with contextlib.suppress(OSError):
+                        shutil.copy2(sidecar, Path(f"{tmp_db}{suffix}"))
+            with contextlib.closing(sqlite3.connect(str(tmp_db), timeout=5.0)) as conn:
+                conn.row_factory = sqlite3.Row
+                has_tbl = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rank_snapshots' LIMIT 1"
+                ).fetchone()
+                if has_tbl is None:
+                    return []
+                rows = conn.execute(
+                    """
+                    SELECT ts, server_points, server_rank, estimated_points,
+                           pts_per_hr, spice_value, planets
+                    FROM rank_snapshots
+                    ORDER BY ts ASC, id ASC
+                    """
+                ).fetchall()
+    except (OSError, sqlite3.Error):
+        return []
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        out.append(
+            game_data.sanitize_json_tree(
+                {
+                    "ts": _safe_finite_float(r["ts"], 0.0),
+                    "server_points": _safe_optional_finite_int(r["server_points"]),
+                    "server_rank": _safe_optional_finite_int(r["server_rank"]),
+                    "estimated_points": _safe_finite_float(r["estimated_points"], 0.0),
+                    "pts_per_hr": _safe_finite_float(r["pts_per_hr"], 0.0),
+                    "spice_value": _safe_finite_float(r["spice_value"], 0.0),
+                    "planets": max(1, _safe_nonneg_int(r["planets"], 1)),
+                },
+                max_int=_MAX_JSON_SAFE_INT,
+                nonfinite_float=None,
+            )
+        )
+    return out
+
+
 def load_rank_history(history_path: Optional[Path]) -> list[dict[str, Any]]:
-    """Load persisted rank evolution samples safely."""
+    """Load persisted rank evolution samples safely from SQLite (`rank_snapshots`) or JSON."""
     if history_path is None or not history_path.exists():
         return []
+    if _is_sqlite_rank_store(history_path):
+        return _load_rank_history_from_sqlite(history_path)
     try:
         raw = json.loads(history_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -585,7 +652,16 @@ def record_rank_snapshot(
     max_entries: int = 240,
     min_interval_seconds: float = 300.0,
 ) -> list[dict[str, Any]]:
-    """Append a deduplicated rank/points observation to `history_path` and return all samples."""
+    """Append a deduplicated rank/points observation to `history_path` (SQLite or JSON) and return samples."""
+    if history_path is not None and _is_sqlite_rank_store(history_path):
+        from spaceinvasion.storage import GameDatabase
+
+        db = GameDatabase(history_path)
+        try:
+            return db.record_state_snapshot(state, rank_min_interval_seconds=min_interval_seconds)[-max_entries:]
+        finally:
+            db.close()
+
     samples = load_rank_history(history_path)
     est = estimate_account_points(state)
     econ = estimate_hourly_economy(state)

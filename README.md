@@ -1,8 +1,8 @@
 # SpaceInvasion Classic Autoplayer
 
-Autonomous strategy engine (`priority` + evolutionary `ga_nn`), topological Action Graph (`DAG`), append-only SQLite universe observatory (`V001..V006` migrations), local HTTP API, and Web Operator Console for **SpaceInvasion Classic** (`https://spaceinvasion.bitmeup.com/?locale=en`).
+Autonomous strategy engine (`priority` + evolutionary `ga_nn`), topological Action Graph (`DAG`), append-only SQLite universe observatory (`V001..V007` migrations), local HTTP API, and Web Operator Console for **SpaceInvasion Classic** (`https://spaceinvasion.bitmeup.com/?locale=en`).
 
-See [docs/README.md](docs/README.md) for the full documentation portal, [docs/architecture.md](docs/architecture.md) for the 3-tier runtime design, [docs/database-mer.md](docs/database-mer.md) for the 22-table SQLite MER & migration architecture, [docs/specifications/README.md](docs/specifications/README.md) for the game-mechanics SRS, and [AGENTS.md](AGENTS.md) for contributor/agent rules.
+See [docs/README.md](docs/README.md) for the full documentation portal, [docs/architecture.md](docs/architecture.md) for the 3-tier runtime design, [docs/database-mer.md](docs/database-mer.md) for the 23-table SQLite MER & migration architecture, [docs/specifications/README.md](docs/specifications/README.md) for the game-mechanics SRS, and [AGENTS.md](AGENTS.md) for contributor/agent rules.
 
 ## Repository Structure
 
@@ -73,7 +73,7 @@ Open the **Web Operator Console** at `http://127.0.0.1:8787/`:
 
 ## Database Versioning & Migrations
 
-All telemetry, espionage reports, battle/recycle reports, galaxy history, and manual command queues are persisted append-only in `state/spaceinvasion.db` (`V001..V006`):
+All telemetry, espionage reports, battle/recycle reports, galaxy history, rank history, full state/plan snapshots, and manual command queues are persisted append-only in `state/spaceinvasion.db` (`V001..V007`):
 
 ```bash
 .venv/bin/python3 scripts/db_migrate.py status

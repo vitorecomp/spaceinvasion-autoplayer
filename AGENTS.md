@@ -16,7 +16,7 @@ Guide for coding agents working in `spaceinvasion-autoplayer`. Read [docs/README
   - `spaceinvasion/config.py` / `config.example.yaml` — Non-secret `StrategyConfig` (`config.yaml`, optional).
   - `spaceinvasion/strategy.py` / `spaceinvasion/optimizer.py` / `spaceinvasion/action_graph.py` — Priority-sorted `P0`–`P3` heuristic planner, GA + Neural Network (`ga_nn`) rollout optimizer, manual command queue with queue-position Metal production review, and Kahn DAG builder.
   - `spaceinvasion/executor.py` / `spaceinvasion/fleet.py` — Safe Selenium click/form executor, Escape flight packer, `1:1` zero-rapidfire combat simulator (`>=1.4x`), Bash tracker (`3/24h`), Galaxy/Spy/Inbox parsers, and `300+`-field colony grader.
-  - `spaceinvasion/migrations.py` / `spaceinvasion/storage.py` — Versioned forward-only SQLite migration engine (`V001..V006`, SHA-256 checksums, online `.backup()` snapshots) and append-only WAL database (`state/spaceinvasion.db`).
+  - `spaceinvasion/migrations.py` / `spaceinvasion/storage.py` — Versioned forward-only SQLite migration engine (`V001..V007`, SHA-256 checksums, online `.backup()` snapshots) and append-only WAL database (`state/spaceinvasion.db`).
   - `spaceinvasion/ui/` — Web Operator Console (`index.html`, `styles.css`, `app.js`).
 - **`scripts/` — Maintenance & Admin Utilities**:
   - `scripts/db_migrate.py` — Database versioning, migration, online backup, and integrity verification CLI.

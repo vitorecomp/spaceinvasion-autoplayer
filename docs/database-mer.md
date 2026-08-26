@@ -339,6 +339,7 @@ erDiagram
 | `config_history` | Append-only | `id` | Immutable audit log of every `StrategyConfig` snapshot (`config_json`). |
 | `rank_snapshots` | Append-only | `id` | Time-series account progression: server points/rank, estimated build+tech+fleet points, `pts_per_hr`, total `spice_value`, and colony count. |
 | `planet_snapshots` | Append-only | `id` | Time-series colony snapshots: resources, energy (`energy_produced`, `energy_used`), field usage, `buildings_json`, `ships_json`, `defense_json`, `economy_rates_json`, and `researches_json`. |
+| `state_snapshots` | Append-only | `id` | Full `GameState` + planned-action snapshots (`source`, `universe_id`, `user_id`, `nickname`, `active_planet_id`, `planet_count`, `planned_action_count`, `state_json`, `plan_json`), consolidating legacy `state/snapshot.json` into SQLite. |
 | `economy_rates_cache` | Upsert State | `planet_id` | Latest persisted `internalEconomy` slider percentages (`resource1..resource6` in `rates_json`) per owned colony. |
 | `tutorial_progress` | Upsert State | `step` | Tutorial steps `1..11`, task checklist (`tasks_json`), reward text, claim readiness, and completion timestamps. |
 
@@ -402,27 +403,28 @@ erDiagram
 | `idx_spy_targets_colony_filter` | `spy_targets(is_own_planet, merged_into, is_spacia, is_inactive)` | Colony candidate & active raid target filtering |
 | `idx_battle_reports_ts` | `battle_reports(ts)` | Chronological attack result feeds |
 | `idx_recycle_reports_ts` | `recycle_reports(ts)` | Chronological recycler harvest feeds |
+| `idx_state_snapshots_ts` | `state_snapshots(ts)` | Chronological full-state & plan snapshot lookups |
 
 ---
 
 ## 5. Schema Versioning & Forward-Only Migrations (`spaceinvasion/migrations.py`)
 
-All SQLite databases (`state/spaceinvasion.db` plus any auxiliary `state/*.db` stores) and JSON sidecar mirrors (`data/attack_history.json`) are versioned and migrated non-destructively via `MigrationRunner` and `DatabaseMigrationRegistry` (`spaceinvasion/migrations.py`, CLI `scripts/db_migrate.py`):
+All SQLite databases (`state/spaceinvasion.db` plus any auxiliary `state/*.db` stores) are versioned and migrated non-destructively via `MigrationRunner` and `DatabaseMigrationRegistry` (`spaceinvasion/migrations.py`, CLI `scripts/db_migrate.py`):
 
 | Ledger Table | Pattern | Primary Key | Description |
 |---|---|---|---|
-| `schema_migrations` | Append-only | `version` | Authoritative ledger of applied forward migrations (`V001..V005`), storing `version_tag`, `name`, `description`, deterministic SHA-256 DDL `checksum`, `applied_ts`, `duration_ms`, and `details_json` (e.g. `added_columns`). |
+| `schema_migrations` | Append-only | `version` | Authoritative ledger of applied forward migrations (`V001..V007`), storing `version_tag`, `name`, `description`, deterministic SHA-256 DDL `checksum`, `applied_ts`, `duration_ms`, and `details_json` (e.g. `added_columns`). |
 | `schema_migration_events` | Append-only | `id` | Immutable audit log of every `migration_applied` and `backup_created` event (`from_version`, `to_version`, `backup_path`, `details_json`). |
 
-- **Triple-Synced Version Markers**: Every applied migration synchronizes `schema_migrations.version`, `meta` (`schema_version`, `schema_version_tag`, `schema_checksum`), and SQLite's binary header `PRAGMA user_version = 5`.
+- **Triple-Synced Version Markers**: Every applied migration synchronizes `schema_migrations.version`, `meta` (`schema_version`, `schema_version_tag`, `schema_checksum`), and SQLite's binary header `PRAGMA user_version = 7`.
 - **Savepoint-Isolated Execution & Online Backups**: Individual migrations execute via `conn.execute(...)` inside per-version SQLite `SAVEPOINT`s (preserving transactional DDL rollback on failure) and automatically create hot WAL-consistent backups in `state/backups/` via `sqlite3.Connection.backup` before upgrading `state/spaceinvasion.db`.
 - **CLI & HTTP API Commands**:
   - CLI: `.venv/bin/python3 scripts/db_migrate.py {status,migrate,verify,backup,history} [--all] [--dry-run] [--backup] [--json]`
-  - HTTP `POST /command`: `db_migrations`, `db_migrate`, `db_backup`, `db_verify`.
+  - HTTP `POST /command`: `db_migrations`, `db_migrate`, `db_backup`, `db_verify`, `state_snapshots`.
 
 ---
 
-## 6. Legacy `attack_history.json` Retirement & Safe Offline Access
+## 6. Legacy JSON Sidecar Retirement & Safe Offline Access
 
-- **SQLite-Only Raid & Telemetry Storage**: `data/attack_history.json` has been retired (`V006` `v006_absorb_legacy_attack_json_and_retire_mirror` non-destructively imports any legacy JSON rows into `raid_history`, `bash_blocks`, and `meta['legacy_attack_history_import']`). `spaceinvasion/optimizer.py` (`load_attack_history_stats`) now reads historical raid priors, bash blocks, and telemetry counters directly from an isolated temporary copy of `state/spaceinvasion.db`.
+- **SQLite-Only Persistence (`V006` & `V007`)**: All three legacy JSON sidecars (`data/attack_history.json`, `state/rank_history.json`, and `state/snapshot.json`) have been retired into SQLite (`raid_history`, `bash_blocks`, `rank_snapshots`, `state_snapshots`, and `planet_snapshots`, with audit metadata recorded in `meta`). `spaceinvasion/optimizer.py` (`load_attack_history_stats`) and `spaceinvasion/ranking.py` (`load_rank_history`) read directly from isolated temporary copies of `state/spaceinvasion.db`.
 - **Read-Only Notebook Pattern**: When inspecting `state/spaceinvasion.db` from external scripts or Jupyter notebooks (`notebooks/optimizer_experimentation.ipynb`, `notebooks/full_planner.ipynb`), always copy `spaceinvasion.db` plus `-wal`, `-shm`, and `-journal` sidecars into a `tempfile.TemporaryDirectory()` before opening SQLite so the live `GameApiBridge` WAL writer is never blocked or mutated.

@@ -41,6 +41,8 @@ from spaceinvasion.migrations import (
     SCHEMA_VERSION,
     create_sqlite_backup,
     import_legacy_attack_history_json,
+    import_legacy_rank_history_json,
+    import_legacy_snapshot_json,
 )
 from spaceinvasion.state import GameState, game_state_from_dict, normalize_planet_type
 
@@ -554,6 +556,21 @@ CREATE TABLE IF NOT EXISTS planet_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_planet_snapshots_pid_ts ON planet_snapshots(planet_id, ts);
 
+CREATE TABLE IF NOT EXISTS state_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'advisor',
+    universe_id INTEGER NOT NULL DEFAULT 0,
+    user_id INTEGER NOT NULL DEFAULT 0,
+    nickname TEXT NOT NULL DEFAULT '',
+    active_planet_id INTEGER NOT NULL DEFAULT 0,
+    planet_count INTEGER NOT NULL DEFAULT 0,
+    planned_action_count INTEGER NOT NULL DEFAULT 0,
+    state_json TEXT NOT NULL DEFAULT '{}',
+    plan_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_state_snapshots_ts ON state_snapshots(ts);
+
 CREATE TABLE IF NOT EXISTS economy_rates_cache (
     planet_id INTEGER PRIMARY KEY,
     coords TEXT NOT NULL,
@@ -954,6 +971,8 @@ class GameDatabase:
                     self._conn.execute("PRAGMA synchronous=NORMAL;")
                 self._conn.execute("PRAGMA foreign_keys=ON;")
                 self._last_slot_history_sig: Optional[tuple[float, tuple[str, ...]]] = None
+                self._summary_cache_ver: Optional[tuple[int, int, int]] = None
+                self._summary_cache_json: Optional[str] = None
                 now_ts = time.time()
                 self._migration_result = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
                     self._conn,
@@ -966,14 +985,25 @@ class GameDatabase:
                 )
                 if legacy_rank_json is not None and legacy_rank_json.exists():
                     self._migrate_legacy_rank_json(legacy_rank_json)
-                if (
-                    not self._is_memory
-                    and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "raid_history")
-                    and self.db_path.resolve() == DEFAULT_DB_PATH.resolve()
-                ):
-                    legacy_atk = self.db_path.parent.parent / "data" / "attack_history.json"
-                    if legacy_atk.is_file():
-                        import_legacy_attack_history_json(self._conn, legacy_atk, now_ts=now_ts)
+                if not self._is_memory and self.db_path.resolve() == DEFAULT_DB_PATH.resolve():
+                    if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "raid_history"):
+                        legacy_atk = self.db_path.parent.parent / "data" / "attack_history.json"
+                        if legacy_atk.is_file():
+                            import_legacy_attack_history_json(
+                                self._conn, legacy_atk, now_ts=now_ts, remove_after_import=True
+                            )
+                    if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "rank_snapshots"):
+                        legacy_rk = self.db_path.parent / "rank_history.json"
+                        if legacy_rk.is_file():
+                            import_legacy_rank_history_json(
+                                self._conn, legacy_rk, now_ts=now_ts, remove_after_import=True
+                            )
+                    if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "state_snapshots"):
+                        legacy_snap = self.db_path.parent / "snapshot.json"
+                        if legacy_snap.is_file():
+                            import_legacy_snapshot_json(
+                                self._conn, legacy_snap, now_ts=now_ts, remove_after_import=True
+                            )
                 if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "game_messages"):
                     self._backfill_reports_from_game_messages_locked(now_ts)
                 self._conn.commit()
@@ -1268,42 +1298,14 @@ class GameDatabase:
         )
 
     def _migrate_legacy_rank_json(self, legacy_path: Path) -> None:
-        count = self._conn.execute("SELECT COUNT(*) FROM rank_snapshots").fetchone()[0]
-        if count > 0:
+        if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "rank_snapshots"):
             return
-        try:
-            raw = json.loads(legacy_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return
-        if not isinstance(raw, list):
-            return
-        rows = []
-        for item in raw:
-            if not isinstance(item, Mapping):
-                continue
-            rows.append(
-                (
-                    _safe_float(item.get("ts"), 0.0),
-                    _sql_int(item.get("universe_id"), 0),
-                    _sanitize_text(item.get("nickname")),
-                    _sql_optional_int(item.get("server_points")),
-                    _sql_optional_int(item.get("server_rank")),
-                    _safe_float(item.get("estimated_points"), 0.0),
-                    _safe_float(item.get("pts_per_hr"), 0.0),
-                    _safe_float(item.get("spice_value"), 0.0),
-                    max(1, _sql_int(item.get("planets"), 1)),
-                )
-            )
-        if rows:
-            self._conn.executemany(
-                """
-                INSERT INTO rank_snapshots(
-                    ts, universe_id, nickname, server_points, server_rank,
-                    estimated_points, pts_per_hr, spice_value, planets
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                rows,
-            )
+        import_legacy_rank_history_json(
+            self._conn,
+            legacy_path,
+            now_ts=time.time(),
+            remove_after_import=False,
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -1676,6 +1678,98 @@ class GameDatabase:
                 )
             )
         return out_samples
+
+    def record_full_state_snapshot(
+        self,
+        state: GameState,
+        plan: Sequence[Any] = (),
+        *,
+        source: str = "advisor",
+        min_interval_seconds: float = 0.0,
+    ) -> Optional[int]:
+        """Persist a full `GameState` + action `plan` snapshot into append-only `state_snapshots`."""
+        now_ts = _safe_float(state.timestamp, 0.0)
+        if now_ts <= 0:
+            now_ts = time.time()
+        state_payload = _sanitize_obj(asdict(state) if is_dataclass(state) else dict(state))
+        plan_payload = _sanitize_obj(
+            [asdict(a) if is_dataclass(a) else (dict(a) if isinstance(a, Mapping) else str(a)) for a in plan]
+        )
+        src_clean = _sanitize_text(source or "advisor")[:32]
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "state_snapshots"):
+                return None
+            if min_interval_seconds > 0.0:
+                last_row = self._conn.execute(
+                    "SELECT id, ts FROM state_snapshots WHERE source = ? ORDER BY id DESC LIMIT 1",
+                    (src_clean,),
+                ).fetchone()
+                if last_row is not None:
+                    last_ts = _safe_optional_float(last_row["ts"])
+                    if last_ts is not None and abs(now_ts - last_ts) < min_interval_seconds:
+                        return _sql_int(last_row["id"], 0)
+            cur = self._conn.execute(
+                """
+                INSERT INTO state_snapshots(
+                    ts, source, universe_id, user_id, nickname, active_planet_id,
+                    planet_count, planned_action_count, state_json, plan_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    round(now_ts, 3),
+                    src_clean,
+                    _sql_int(state.universe_id, 0),
+                    _sql_int(state.user_id, 0),
+                    _sanitize_text(state.nickname)[:120],
+                    _sql_int(state.active_planet_id or 0, 0),
+                    _sql_int(len(state.planets), 0),
+                    _sql_int(len(plan_payload), 0),
+                    _json_dumps(state_payload),
+                    _json_dumps(plan_payload),
+                ),
+            )
+            row_id = int(cur.lastrowid or 0)
+            self._conn.commit()
+            return row_id
+
+    def get_state_snapshots(self, *, limit: int = 20, include_payload: bool = False) -> list[dict[str, Any]]:
+        """Return recent full state/plan snapshots from `state_snapshots`."""
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "state_snapshots"):
+                return []
+            cols = (
+                "id, ts, source, universe_id, user_id, nickname, active_planet_id, "
+                "planet_count, planned_action_count"
+                + (", state_json, plan_json" if include_payload else "")
+            )
+            rows = self._conn.execute(
+                f"SELECT {cols} FROM state_snapshots ORDER BY id DESC LIMIT ?",
+                (max(1, min(200, _sql_int(limit, 20))),),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            item: dict[str, Any] = {
+                "id": _sql_int(r["id"], 0),
+                "ts": _safe_float(r["ts"], 0.0),
+                "source": _sanitize_text(_raw_text(r["source"], "advisor")),
+                "universe_id": _sql_int(r["universe_id"], 0),
+                "user_id": _sql_int(r["user_id"], 0),
+                "nickname": _sanitize_text(_raw_text(r["nickname"], "")),
+                "active_planet_id": _sql_int(r["active_planet_id"], 0),
+                "planet_count": _sql_int(r["planet_count"], 0),
+                "planned_action_count": _sql_int(r["planned_action_count"], 0),
+            }
+            if include_payload:
+                try:
+                    item["state"] = json.loads(_raw_text(r["state_json"], "{}"))
+                except ValueError:
+                    item["state"] = {}
+                try:
+                    item["plan"] = json.loads(_raw_text(r["plan_json"], "[]"))
+                except ValueError:
+                    item["plan"] = []
+            out.append(_sanitize_obj(item))
+        return out
 
     def save_economy_rates(
         self,
@@ -4728,9 +4822,21 @@ class GameDatabase:
         return _sanitize_obj(res)
 
     def summary(self) -> dict[str, Any]:
+        size_bytes = (
+            self.db_path.stat().st_size
+            if (not self._is_memory and self.db_path.exists())
+            else 0
+        )
+        with self._lock:
+            data_ver_row = self._conn.execute("PRAGMA data_version").fetchone()
+            data_ver = int(data_ver_row[0]) if data_ver_row is not None else 0
+            cur_ver = (int(self._conn.total_changes), data_ver, int(size_bytes))
+            if self._summary_cache_json is not None and self._summary_cache_ver == cur_ver:
+                return json.loads(self._summary_cache_json)
         tables = (
             "rank_snapshots",
             "planet_snapshots",
+            "state_snapshots",
             "economy_rates_cache",
             "tutorial_progress",
             "action_history",
@@ -4789,12 +4895,7 @@ class GameDatabase:
         tut_rows = self.get_tutorial_history() if "tutorial_progress" in existing_tables else []
         recent_actions = self.get_recent_actions(limit=12) if "action_history" in existing_tables else []
         spy_targets = self.get_spy_targets(limit=25) if "spy_targets" in existing_tables else []
-        size_bytes = (
-            self.db_path.stat().st_size
-            if (not self._is_memory and self.db_path.exists())
-            else 0
-        )
-        return _sanitize_obj(
+        out_summary = _sanitize_obj(
             {
                 "db_path": ":memory:" if self._is_memory else _sanitize_text(self.db_path),
                 "size_bytes": size_bytes,
@@ -4828,3 +4929,7 @@ class GameDatabase:
                 "spy_targets": spy_targets,
             }
         )
+        with self._lock:
+            self._summary_cache_ver = cur_ver
+            self._summary_cache_json = json.dumps(out_summary, allow_nan=False)
+        return out_summary

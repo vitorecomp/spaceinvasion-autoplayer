@@ -30,8 +30,7 @@ flowchart TB
         GANN["optimizer.py (GA + 46D NeuralValueNetwork)"]
         DAG["action_graph.py (Kahn Multi-Lane DAG & Sim Merger)"]
         FLT["fleet.py (1:1 Combat Sim, Escape Packer, Galaxy/Spy/Message Parsers)"]
-        DB[("state/spaceinvasion.db (SQLite WAL, 20 Append-Only Tables)")]
-        MIR["data/attack_history.json (Sanitized Raid Mirror)"]
+        DB[("state/spaceinvasion.db (SQLite WAL, 23 Append-Only Tables, V001..V007)")]
 
         API --> CL
         API --> EX
@@ -40,7 +39,6 @@ flowchart TB
         API --> DAG
         API --> FLT
         API --> DB
-        DB --> MIR
         CL <--> CH
         EX <--> CH
     end
@@ -53,7 +51,6 @@ flowchart TB
         CMD <-->|"HTTP JSON"| API
         UI <-->|"HTTP JSON"| API
         NB -.->|"Temp-Copy Read-Only"| DB
-        NB -.->|"Read-Only"| MIR
     end
 
     RL --> API

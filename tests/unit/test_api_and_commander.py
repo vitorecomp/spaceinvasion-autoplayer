@@ -426,11 +426,16 @@ class TestApiAndCommander(unittest.TestCase):
 
     def test_bridge_limiter_wait_defaults_and_dynamic_raid_stats_isolated_from_repo_file(self) -> None:
         from dataclasses import replace as dc_replace
-        import hashlib
+        import sqlite3
         from spaceinvasion.storage import GameDatabase
 
         repo_hist = Path("data") / "attack_history.json"
-        before_sha = hashlib.sha256(repo_hist.read_bytes()).hexdigest()
+        self.assertFalse(repo_hist.exists())
+        repo_db = Path("state") / "spaceinvasion.db"
+        before_raids = 0
+        if repo_db.is_file():
+            with sqlite3.connect(f"file:{repo_db}?mode=ro", uri=True) as rconn:
+                before_raids = int(rconn.execute("SELECT COUNT(*) FROM raid_history").fetchone()[0])
 
         state = _sample_state()
         p = state.planets[0]
@@ -500,8 +505,11 @@ class TestApiAndCommander(unittest.TestCase):
                 if bridge._db is not None:
                     bridge._db.close()
 
-        after_sha = hashlib.sha256(repo_hist.read_bytes()).hexdigest()
-        self.assertEqual(after_sha, before_sha)
+        self.assertFalse(repo_hist.exists())
+        if repo_db.is_file():
+            with sqlite3.connect(f"file:{repo_db}?mode=ro", uri=True) as rconn:
+                after_raids = int(rconn.execute("SELECT COUNT(*) FROM raid_history").fetchone()[0])
+            self.assertEqual(after_raids, before_raids)
 
     def test_update_config_validation_and_executor_sync(self) -> None:
         import requests
@@ -1860,7 +1868,7 @@ class TestApiAndCommander(unittest.TestCase):
                 [
                     sys.executable,
                     "-c",
-                    "import sys, commander; assert not any(m == 'selenium' or m.startswith('selenium.') for m in sys.modules)",
+                    "import sys; sys.path.insert(0, 'bin'); import commander; assert not any(m == 'selenium' or m.startswith('selenium.') for m in sys.modules)",
                 ],
                 env=env_no_reexec,
                 capture_output=True,
@@ -2001,7 +2009,7 @@ class TestApiAndCommander(unittest.TestCase):
             [
                 sys.executable,
                 "-c",
-                "import sys, commander; assert not any(m == 'selenium' or m.startswith('selenium.') for m in sys.modules)",
+                "import sys; sys.path.insert(0, 'bin'); import commander; assert not any(m == 'selenium' or m.startswith('selenium.') for m in sys.modules)",
             ],
             env=env_clean,
             capture_output=True,
@@ -2937,7 +2945,7 @@ class TestApiAndCommander(unittest.TestCase):
             [
                 sys.executable,
                 "-c",
-                "import sys, commander, spaceinvasion.commander_client, spaceinvasion.logging_utils; "
+                "import sys; sys.path.insert(0, 'bin'); import commander, spaceinvasion.commander_client, spaceinvasion.logging_utils; "
                 "assert not any(m == 'selenium' or m.startswith('selenium.') for m in sys.modules)",
             ],
             env=env,

@@ -30,7 +30,7 @@ DEFAULT_ATTACK_HISTORY_JSON_PATH = Path("data") / "attack_history.json"
 DEFAULT_RANK_HISTORY_JSON_PATH = Path("state") / "rank_history.json"
 DEFAULT_SNAPSHOT_JSON_PATH = Path("state") / "snapshot.json"
 
-LATEST_SCHEMA_VERSION: int = 6
+LATEST_SCHEMA_VERSION: int = 7
 SCHEMA_VERSION: str = str(LATEST_SCHEMA_VERSION)
 ATTACK_HISTORY_SCHEMA_VERSION: int = 2
 
@@ -646,12 +646,36 @@ CREATE INDEX IF NOT EXISTS idx_bash_blocks_until_ts
     ON bash_blocks(blocked_until_ts);
 """,
     ),
+    Migration(
+        version=7,
+        name="v007_consolidate_rank_and_state_snapshots_in_sqlite",
+        description="Add append-only state_snapshots table and retire legacy state/rank_history.json and state/snapshot.json into SQLite.",
+        sql="""
+CREATE TABLE IF NOT EXISTS state_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'advisor',
+    universe_id INTEGER NOT NULL DEFAULT 0,
+    user_id INTEGER NOT NULL DEFAULT 0,
+    nickname TEXT NOT NULL DEFAULT '',
+    active_planet_id INTEGER NOT NULL DEFAULT 0,
+    planet_count INTEGER NOT NULL DEFAULT 0,
+    planned_action_count INTEGER NOT NULL DEFAULT 0,
+    state_json TEXT NOT NULL DEFAULT '{}',
+    plan_json TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE INDEX IF NOT EXISTS idx_state_snapshots_ts
+    ON state_snapshots(ts);
+""",
+    ),
 )
 
 GAME_REQUIRED_TABLES: tuple[str, ...] = (
     "meta",
     "rank_snapshots",
     "planet_snapshots",
+    "state_snapshots",
     "economy_rates_cache",
     "tutorial_progress",
     "action_history",
@@ -1590,6 +1614,367 @@ def import_legacy_attack_history_json(
     )
 
 
+def import_legacy_rank_history_json(
+    conn: sqlite3.Connection,
+    json_path: Path,
+    *,
+    now_ts: Optional[float] = None,
+    remove_after_import: bool = False,
+) -> dict[str, Any]:
+    """Non-destructively absorb a legacy `rank_history.json` file into `rank_snapshots`."""
+    p = Path(json_path)
+    ts_ref = float(now_ts) if now_ts is not None else time.time()
+    if not p.exists() or not p.is_file():
+        return _clean_json_obj(
+            {
+                "exists": False,
+                "imported_samples": 0,
+                "removed_json": False,
+                "path": str(p),
+            }
+        )
+
+    try:
+        raw_obj = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return _clean_json_obj(
+            {
+                "exists": True,
+                "imported_samples": 0,
+                "removed_json": False,
+                "path": str(p),
+                "error": str(exc),
+            }
+        )
+
+    samples = (
+        raw_obj
+        if isinstance(raw_obj, list)
+        else (
+            raw_obj.get("samples") or raw_obj.get("history") or []
+            if isinstance(raw_obj, Mapping)
+            else []
+        )
+    )
+    imported_samples = 0
+    if isinstance(samples, list) and MigrationRunner._table_exists(conn, "rank_snapshots"):
+        for item in samples:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                sample_ts = round(float(item.get("ts") or 0.0), 3)
+            except (TypeError, ValueError):
+                sample_ts = 0.0
+            if sample_ts <= 0.0:
+                continue
+            dup = conn.execute(
+                """
+                SELECT 1 FROM rank_snapshots
+                WHERE ABS(ts - ?) < 0.002
+                LIMIT 1
+                """,
+                (sample_ts,),
+            ).fetchone()
+            if dup is not None:
+                continue
+            try:
+                uni_id = int(item.get("universe_id") or 0)
+            except (TypeError, ValueError):
+                uni_id = 0
+            nick = str(redact_sensitive(str(item.get("nickname") or "")))[:120]
+            srv_pts_raw = item.get("server_points")
+            try:
+                srv_pts = int(srv_pts_raw) if srv_pts_raw is not None else None
+            except (TypeError, ValueError):
+                srv_pts = None
+            srv_rk_raw = item.get("server_rank")
+            try:
+                srv_rk = int(srv_rk_raw) if srv_rk_raw is not None else None
+            except (TypeError, ValueError):
+                srv_rk = None
+            try:
+                est_pts = float(item.get("estimated_points") or 0.0)
+                if not math.isfinite(est_pts):
+                    est_pts = 0.0
+            except (TypeError, ValueError):
+                est_pts = 0.0
+            try:
+                pph = float(item.get("pts_per_hr") or 0.0)
+                if not math.isfinite(pph):
+                    pph = 0.0
+            except (TypeError, ValueError):
+                pph = 0.0
+            try:
+                sp_val = float(item.get("spice_value") or 0.0)
+                if not math.isfinite(sp_val):
+                    sp_val = 0.0
+            except (TypeError, ValueError):
+                sp_val = 0.0
+            try:
+                p_cnt = max(1, int(item.get("planets") or 1))
+            except (TypeError, ValueError):
+                p_cnt = 1
+            conn.execute(
+                """
+                INSERT INTO rank_snapshots(
+                    ts, universe_id, nickname, server_points, server_rank,
+                    estimated_points, pts_per_hr, spice_value, planets
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (sample_ts, uni_id, nick, srv_pts, srv_rk, est_pts, pph, sp_val, p_cnt),
+            )
+            imported_samples += 1
+
+    if MigrationRunner._table_exists(conn, "meta"):
+        meta_val = _safe_json_dumps(
+            {
+                "source_path": str(p),
+                "imported_samples": imported_samples,
+                "imported_ts": round(ts_ref, 3),
+            }
+        )
+        conn.execute(
+            """
+            INSERT INTO meta(key, value, updated_ts) VALUES(?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_ts = excluded.updated_ts
+            """,
+            ("legacy_rank_history_import", meta_val, round(ts_ref, 3)),
+        )
+
+    removed_json = False
+    if remove_after_import:
+        conn.commit()
+        try:
+            p.unlink(missing_ok=True)
+            removed_json = not p.exists()
+        except OSError:
+            removed_json = False
+
+    return _clean_json_obj(
+        {
+            "exists": True,
+            "imported_samples": imported_samples,
+            "removed_json": removed_json,
+            "path": str(p),
+        }
+    )
+
+
+def import_legacy_snapshot_json(
+    conn: sqlite3.Connection,
+    json_path: Path,
+    *,
+    now_ts: Optional[float] = None,
+    remove_after_import: bool = False,
+) -> dict[str, Any]:
+    """Non-destructively absorb a legacy `snapshot.json` / `state.json` file into `state_snapshots` and `planet_snapshots`."""
+    p = Path(json_path)
+    ts_ref = float(now_ts) if now_ts is not None else time.time()
+    if not p.exists() or not p.is_file():
+        return _clean_json_obj(
+            {
+                "exists": False,
+                "imported_snapshots": 0,
+                "imported_planets": 0,
+                "removed_json": False,
+                "path": str(p),
+            }
+        )
+
+    try:
+        raw_obj = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return _clean_json_obj(
+            {
+                "exists": True,
+                "imported_snapshots": 0,
+                "imported_planets": 0,
+                "removed_json": False,
+                "path": str(p),
+                "error": str(exc),
+            }
+        )
+
+    if not isinstance(raw_obj, Mapping):
+        return _clean_json_obj(
+            {
+                "exists": True,
+                "imported_snapshots": 0,
+                "imported_planets": 0,
+                "removed_json": False,
+                "path": str(p),
+                "error": "Expected JSON object in snapshot file",
+            }
+        )
+
+    state_raw = raw_obj.get("state") if isinstance(raw_obj.get("state"), Mapping) else raw_obj
+    plan_raw = raw_obj.get("plan") if isinstance(raw_obj.get("plan"), list) else []
+    clean_state = _clean_json_obj(dict(state_raw))
+    clean_plan = _clean_json_obj(list(plan_raw))
+
+    try:
+        snap_ts = round(float(clean_state.get("timestamp") or 0.0), 3)
+    except (TypeError, ValueError):
+        snap_ts = 0.0
+    if snap_ts <= 0.0:
+        try:
+            snap_ts = round(float(p.stat().st_mtime), 3)
+        except OSError:
+            snap_ts = round(ts_ref, 3)
+
+    planets_list = clean_state.get("planets") if isinstance(clean_state.get("planets"), list) else []
+    imported_snapshots = 0
+    if MigrationRunner._table_exists(conn, "state_snapshots"):
+        dup_s = conn.execute(
+            """
+            SELECT 1 FROM state_snapshots
+            WHERE ABS(ts - ?) < 0.002 AND source = ?
+            LIMIT 1
+            """,
+            (snap_ts, "legacy_snapshot_json"),
+        ).fetchone()
+        if dup_s is None:
+            try:
+                uni_id = int(clean_state.get("universe_id") or 0)
+            except (TypeError, ValueError):
+                uni_id = 0
+            try:
+                usr_id = int(clean_state.get("user_id") or 0)
+            except (TypeError, ValueError):
+                usr_id = 0
+            nick = str(redact_sensitive(str(clean_state.get("nickname") or "")))[:120]
+            try:
+                act_pid = int(clean_state.get("active_planet_id") or 0)
+            except (TypeError, ValueError):
+                act_pid = 0
+            conn.execute(
+                """
+                INSERT INTO state_snapshots(
+                    ts, source, universe_id, user_id, nickname, active_planet_id,
+                    planet_count, planned_action_count, state_json, plan_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snap_ts,
+                    "legacy_snapshot_json",
+                    uni_id,
+                    usr_id,
+                    nick,
+                    act_pid,
+                    len(planets_list),
+                    len(clean_plan),
+                    _safe_json_dumps(clean_state),
+                    _safe_json_dumps(clean_plan),
+                ),
+            )
+            imported_snapshots += 1
+
+    imported_planets = 0
+    if MigrationRunner._table_exists(conn, "planet_snapshots") and isinstance(planets_list, list):
+        researches_obj = clean_state.get("researches") if isinstance(clean_state.get("researches"), Mapping) else {}
+        res_json = _safe_json_dumps(researches_obj)
+        try:
+            uni_id_p = int(clean_state.get("universe_id") or 0)
+        except (TypeError, ValueError):
+            uni_id_p = 0
+        for pl in planets_list:
+            if not isinstance(pl, Mapping):
+                continue
+            try:
+                pid_val = int(pl.get("planet_id") or 0)
+            except (TypeError, ValueError):
+                pid_val = 0
+            if pid_val <= 0:
+                continue
+            dup_p = conn.execute(
+                """
+                SELECT 1 FROM planet_snapshots
+                WHERE planet_id = ? AND ABS(ts - ?) < 0.002
+                LIMIT 1
+                """,
+                (pid_val, snap_ts),
+            ).fetchone()
+            if dup_p is not None:
+                continue
+            res_map = pl.get("resources") if isinstance(pl.get("resources"), Mapping) else {}
+            eng_map = pl.get("energy") if isinstance(pl.get("energy"), Mapping) else {}
+            conn.execute(
+                """
+                INSERT INTO planet_snapshots(
+                    ts, universe_id, planet_id, coords, name, planet_type,
+                    temperature, fields_used, fields_max,
+                    pig_iron, metal, kryptonite, spice,
+                    energy_produced, energy_used,
+                    buildings_json, ships_json, defense_json,
+                    economy_rates_json, researches_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snap_ts,
+                    uni_id_p,
+                    pid_val,
+                    str(redact_sensitive(str(pl.get("coords") or "")))[:32],
+                    str(redact_sensitive(str(pl.get("name") or "")))[:80],
+                    str(pl.get("planet_type") or "normal")[:24],
+                    int(pl.get("temperature") or 0),
+                    int(pl.get("fields_used") or 0),
+                    int(pl.get("fields_max") or 0),
+                    int(res_map.get("pig_iron") or 0),
+                    int(res_map.get("metal") or 0),
+                    int(res_map.get("kryptonite") or 0),
+                    int(res_map.get("spice") or 0),
+                    int(eng_map.get("produced") or 0),
+                    int(eng_map.get("used") or 0),
+                    _safe_json_dumps(pl.get("buildings") if isinstance(pl.get("buildings"), Mapping) else {}),
+                    _safe_json_dumps(pl.get("ships") if isinstance(pl.get("ships"), Mapping) else {}),
+                    _safe_json_dumps(pl.get("defense") if isinstance(pl.get("defense"), Mapping) else {}),
+                    _safe_json_dumps(pl.get("economy_rates") if isinstance(pl.get("economy_rates"), Mapping) else {}),
+                    res_json,
+                ),
+            )
+            imported_planets += 1
+
+    if MigrationRunner._table_exists(conn, "meta"):
+        meta_val = _safe_json_dumps(
+            {
+                "source_path": str(p),
+                "imported_snapshots": imported_snapshots,
+                "imported_planets": imported_planets,
+                "imported_ts": round(ts_ref, 3),
+            }
+        )
+        conn.execute(
+            """
+            INSERT INTO meta(key, value, updated_ts) VALUES(?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_ts = excluded.updated_ts
+            """,
+            ("legacy_snapshot_import", meta_val, round(ts_ref, 3)),
+        )
+
+    removed_json = False
+    if remove_after_import:
+        conn.commit()
+        try:
+            p.unlink(missing_ok=True)
+            removed_json = not p.exists()
+        except OSError:
+            removed_json = False
+
+    return _clean_json_obj(
+        {
+            "exists": True,
+            "imported_snapshots": imported_snapshots,
+            "imported_planets": imported_planets,
+            "removed_json": removed_json,
+            "path": str(p),
+        }
+    )
+
+
 class DatabaseMigrationRegistry:
     """Multi-database registry managing schema versioning across SQLite databases."""
 
@@ -1646,7 +2031,11 @@ class DatabaseMigrationRegistry:
                 databases[alias] = st
 
         legacy_atk_path = self.root_dir / DEFAULT_ATTACK_HISTORY_JSON_PATH
+        legacy_rank_path = self.root_dir / DEFAULT_RANK_HISTORY_JSON_PATH
+        legacy_snap_path = self.root_dir / DEFAULT_SNAPSHOT_JSON_PATH
         legacy_atk_retired = not legacy_atk_path.exists()
+        legacy_rank_retired = not legacy_rank_path.exists()
+        legacy_snap_retired = not legacy_snap_path.exists()
         json_stores = {
             "attack_history_retired": {
                 "store_kind": "attack_history",
@@ -1655,17 +2044,27 @@ class DatabaseMigrationRegistry:
                 "retired_to_sqlite": legacy_atk_retired,
                 "up_to_date": legacy_atk_retired,
             },
-            "rank_history": inspect_json_store(
-                self.root_dir / DEFAULT_RANK_HISTORY_JSON_PATH, store_kind="rank_history"
-            ),
-            "snapshot": inspect_json_store(
-                self.root_dir / DEFAULT_SNAPSHOT_JSON_PATH, store_kind="snapshot"
-            ),
+            "rank_history_retired": {
+                "store_kind": "rank_history",
+                "path": str(legacy_rank_path),
+                "exists": legacy_rank_path.exists(),
+                "retired_to_sqlite": legacy_rank_retired,
+                "up_to_date": legacy_rank_retired,
+            },
+            "snapshot_retired": {
+                "store_kind": "snapshot",
+                "path": str(legacy_snap_path),
+                "exists": legacy_snap_path.exists(),
+                "retired_to_sqlite": legacy_snap_retired,
+                "up_to_date": legacy_snap_retired,
+            },
         }
-        all_ok = all(
-            (not d["exists"]) or bool(d.get("up_to_date"))
-            for d in databases.values()
-        ) and legacy_atk_retired
+        all_ok = (
+            all((not d["exists"]) or bool(d.get("up_to_date")) for d in databases.values())
+            and legacy_atk_retired
+            and legacy_rank_retired
+            and legacy_snap_retired
+        )
         return _clean_json_obj(
             {
                 "ok": all_ok,
@@ -1683,9 +2082,13 @@ class DatabaseMigrationRegistry:
         target_version: Optional[int] = None,
         create_missing_primary: bool = False,
         remove_legacy_attack_json: bool = True,
+        remove_legacy_rank_json: bool = True,
+        remove_legacy_snapshot_json: bool = True,
     ) -> dict[str, Any]:
         db_results: dict[str, Any] = {}
         legacy_atk_path = self.root_dir / DEFAULT_ATTACK_HISTORY_JSON_PATH
+        legacy_rank_path = self.root_dir / DEFAULT_RANK_HISTORY_JSON_PATH
+        legacy_snap_path = self.root_dir / DEFAULT_SNAPSHOT_JSON_PATH
         atk_import_res: dict[str, Any] = {
             "exists": legacy_atk_path.exists(),
             "imported_raids": 0,
@@ -1693,8 +2096,26 @@ class DatabaseMigrationRegistry:
             "removed_json": False,
             "dry_run": bool(dry_run),
         }
+        rank_import_res: dict[str, Any] = {
+            "exists": legacy_rank_path.exists(),
+            "imported_samples": 0,
+            "removed_json": False,
+            "dry_run": bool(dry_run),
+        }
+        snap_import_res: dict[str, Any] = {
+            "exists": legacy_snap_path.exists(),
+            "imported_snapshots": 0,
+            "imported_planets": 0,
+            "removed_json": False,
+            "dry_run": bool(dry_run),
+        }
+        has_any_legacy_json = (
+            legacy_atk_path.exists()
+            or legacy_rank_path.exists()
+            or legacy_snap_path.exists()
+        )
         for alias, (db_p, family) in self.discover_sqlite_databases().items():
-            if not db_p.exists() and not (alias == "primary" and (create_missing_primary or legacy_atk_path.exists())):
+            if not db_p.exists() and not (alias == "primary" and (create_missing_primary or has_any_legacy_json)):
                 continue
             db_p.parent.mkdir(parents=True, exist_ok=True)
             runner = self._runners[family]
@@ -1709,12 +2130,25 @@ class DatabaseMigrationRegistry:
                     dry_run=dry_run,
                     backup=backup,
                 )
-                if alias == "primary" and legacy_atk_path.exists() and not dry_run:
-                    atk_import_res = import_legacy_attack_history_json(
-                        conn,
-                        legacy_atk_path,
-                        remove_after_import=remove_legacy_attack_json,
-                    )
+                if alias == "primary" and not dry_run:
+                    if legacy_atk_path.exists():
+                        atk_import_res = import_legacy_attack_history_json(
+                            conn,
+                            legacy_atk_path,
+                            remove_after_import=remove_legacy_attack_json,
+                        )
+                    if legacy_rank_path.exists():
+                        rank_import_res = import_legacy_rank_history_json(
+                            conn,
+                            legacy_rank_path,
+                            remove_after_import=remove_legacy_rank_json,
+                        )
+                    if legacy_snap_path.exists():
+                        snap_import_res = import_legacy_snapshot_json(
+                            conn,
+                            legacy_snap_path,
+                            remove_after_import=remove_legacy_snapshot_json,
+                        )
                     conn.commit()
 
         return _clean_json_obj(
@@ -1723,6 +2157,8 @@ class DatabaseMigrationRegistry:
                 "dry_run": bool(dry_run),
                 "databases": db_results,
                 "legacy_attack_json": atk_import_res,
+                "legacy_rank_json": rank_import_res,
+                "legacy_snapshot_json": snap_import_res,
             }
         )
 
@@ -1812,8 +2248,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     state_lbl = "UP-TO-DATE" if d.get("up_to_date") else ("MISSING" if not d.get("exists") else f"PENDING ({d.get('pending_count', 0)})")
                     print(f"  [SQLite:{alias}] {d['db_path']} -> {d.get('version_tag')} / {d.get('target_version_tag')} [{state_lbl}]")
                 for jname, j in payload.get("json_stores", {}).items():
-                    jlbl = "UP-TO-DATE" if j.get("up_to_date") else "NEEDS-UPGRADE"
-                    print(f"  [JSON:{jname}]   {j['path']} -> v{j.get('schema_version')} (exists={j.get('exists')}) [{jlbl}]")
+                    jlbl = (
+                        "RETIRED-TO-SQLITE"
+                        if j.get("retired_to_sqlite")
+                        else ("UP-TO-DATE" if j.get("up_to_date") else "PENDING-IMPORT")
+                    )
+                    print(f"  [JSON:{jname}]   {j['path']} (exists={j.get('exists')}) [{jlbl}]")
             else:
                 print(
                     f"{payload.get('db_path')}: {payload.get('version_tag', 'V000')} / "

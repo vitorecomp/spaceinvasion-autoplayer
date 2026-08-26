@@ -316,11 +316,76 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            # Legacy rank_history.json + snapshot.json in state/ to absorb & retire
+            rk_json = root / "state" / "rank_history.json"
+            rk_json.write_text(
+                json.dumps(
+                    [
+                        {
+                            "ts": 1699999500.0,
+                            "server_points": 3200,
+                            "server_rank": 240,
+                            "estimated_points": 3180.0,
+                            "pts_per_hr": 55.0,
+                            "spice_value": 64000.0,
+                            "planets": 2,
+                        }
+                    ],
+                    allow_nan=False,
+                ),
+                encoding="utf-8",
+            )
+            snap_json = root / "state" / "snapshot.json"
+            snap_json.write_text(
+                json.dumps(
+                    {
+                        "state": {
+                            "universe_id": 31,
+                            "user_id": 103603,
+                            "nickname": "ventkx86",
+                            "timestamp": 1699999600.0,
+                            "active_planet_id": 12476,
+                            "researches": {"r1": 4},
+                            "planets": [
+                                {
+                                    "planet_id": 12476,
+                                    "name": "Colony",
+                                    "coords": "02:380:12",
+                                    "planet_type": "normal",
+                                    "temperature": 22,
+                                    "fields_used": 35,
+                                    "fields_max": 250,
+                                    "resources": {"pig_iron": 9000, "metal": 6000, "kryptonite": 4000, "spice": 2000},
+                                    "energy": {"produced": 400, "used": 250},
+                                    "buildings": {"b1": 8, "b5": 9},
+                                    "ships": {"s10": 5},
+                                    "defense": {},
+                                    "economy_rates": {"resource1": 100},
+                                }
+                            ],
+                        },
+                        "plan": [
+                            {
+                                "priority": "P2",
+                                "kind": "UPGRADE_BUILDING",
+                                "planet_id": 12476,
+                                "planet_coords": "02:380:12",
+                                "target_name": "Pig iron mine",
+                                "target_level": 9,
+                                "reason": "ROI sid=secret1234567890",
+                            }
+                        ],
+                    },
+                    allow_nan=False,
+                ),
+                encoding="utf-8",
+            )
+
             # Secondary SQLite DB in state/archive.db pinned at V002
             sec_db = GameDatabase(root / "state" / "archive.db", attack_history_path="", target_schema_version=2)
             sec_db.close()
 
-            # CLI status --json detects missing primary, pending archive.db (V002/V006), and unretired attack_history.json
+            # CLI status --json detects missing primary, pending archive.db (V002/V007), and unretired JSON files
             buf_st = io.StringIO()
             with contextlib.redirect_stdout(buf_st):
                 rc = migrations_cli_main(["--root", str(root), "--json", "status"])
@@ -329,8 +394,10 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             self.assertFalse(st_payload["ok"])
             self.assertEqual(st_payload["databases"]["archive"]["version"], 2)
             self.assertFalse(st_payload["json_stores"]["attack_history_retired"]["retired_to_sqlite"])
+            self.assertFalse(st_payload["json_stores"]["rank_history_retired"]["retired_to_sqlite"])
+            self.assertFalse(st_payload["json_stores"]["snapshot_retired"]["retired_to_sqlite"])
 
-            # CLI migrate --all --create --backup upgrades primary + archive.db to V006, absorbs & removes attack_history.json!
+            # CLI migrate --all --create --backup upgrades primary + archive.db to V007, absorbs & removes all 3 JSON stores!
             buf_mig = io.StringIO()
             with contextlib.redirect_stdout(buf_mig):
                 rc_m = migrations_cli_main(["--root", str(root), "--json", "migrate", "--all", "--create", "--backup"])
@@ -342,14 +409,25 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             self.assertEqual(mig_payload["legacy_attack_json"]["imported_raids"], 2)
             self.assertEqual(mig_payload["legacy_attack_json"]["imported_bash_blocks"], 1)
             self.assertTrue(mig_payload["legacy_attack_json"]["removed_json"])
+            self.assertEqual(mig_payload["legacy_rank_json"]["imported_samples"], 1)
+            self.assertTrue(mig_payload["legacy_rank_json"]["removed_json"])
+            self.assertEqual(mig_payload["legacy_snapshot_json"]["imported_snapshots"], 1)
+            self.assertEqual(mig_payload["legacy_snapshot_json"]["imported_planets"], 1)
+            self.assertTrue(mig_payload["legacy_snapshot_json"]["removed_json"])
             self.assertFalse(atk_json.exists())
+            self.assertFalse(rk_json.exists())
+            self.assertFalse(snap_json.exists())
 
             from spaceinvasion.optimizer import load_attack_history_stats
+            from spaceinvasion.ranking import load_rank_history
 
             db_stats = load_attack_history_stats(root / "state" / "spaceinvasion.db")
             self.assertEqual(db_stats["overall"]["attempts"], 2)
             self.assertEqual(db_stats["overall"]["wins"], 1)
             self.assertEqual(len(db_stats["bash_blocks"]), 1)
+            rk_loaded = load_rank_history(root / "state" / "spaceinvasion.db")
+            self.assertEqual(len(rk_loaded), 1)
+            self.assertEqual(rk_loaded[0]["server_points"], 3200)
 
             # CLI verify --full-integrity & backup
             buf_ver = io.StringIO()
@@ -431,6 +509,15 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 ).json()
                 self.assertTrue(r_ver["ok"])
                 self.assertTrue(r_ver["verification"]["sqlite_integrity_ok"])
+
+                r_snaps = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "state_snapshots", "include_payload": True},
+                    timeout=5,
+                ).json()
+                self.assertTrue(r_snaps["ok"])
+                self.assertEqual(r_snaps["count"], 1)
+                self.assertNotIn("secret1234567890", json.dumps(r_snaps, allow_nan=False))
             finally:
                 server.shutdown()
                 server.server_close()

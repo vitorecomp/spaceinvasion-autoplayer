@@ -3504,7 +3504,7 @@ function renderRankingChart(samples) {
     txt.setAttribute("text-anchor", "middle");
     txt.setAttribute("fill", "#9eb3b8");
     txt.setAttribute("font-size", "11");
-    txt.textContent = "Collecting samples into state/rank_history.json...";
+    txt.textContent = "Collecting samples into SQLite (rank_snapshots)...";
     svg.appendChild(txt);
     return;
   }
