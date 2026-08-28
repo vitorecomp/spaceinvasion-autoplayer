@@ -30,13 +30,13 @@ def _maybe_reexec_venv() -> None:
 
 _maybe_reexec_venv()
 
-from spaceinvasion import game_data  # noqa: E402
-from spaceinvasion.auth import SpaceInvasionAuthError  # noqa: E402
-from spaceinvasion.browser import DEFAULT_DEBUG_PORT  # noqa: E402
-from spaceinvasion.client import GameBrowserClient  # noqa: E402
-from spaceinvasion.logging_utils import redact_sensitive  # noqa: E402
-from spaceinvasion.state import GameState  # noqa: E402
-from spaceinvasion.strategy import PlannedAction, plan_actions  # noqa: E402
+from spaceinvasion.core import game_data # noqa: E402
+from spaceinvasion.session.auth import SpaceInvasionAuthError  # noqa: E402
+from spaceinvasion.session.browser import DEFAULT_DEBUG_PORT  # noqa: E402
+from spaceinvasion.session.client import GameBrowserClient  # noqa: E402
+from spaceinvasion.core.logging_utils import redact_sensitive  # noqa: E402
+from spaceinvasion.core.state import GameState  # noqa: E402
+from spaceinvasion.planner.strategy import PlannedAction, plan_actions  # noqa: E402
 
 
 def _safe_cli_str(
@@ -445,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.snapshot_out.parent.mkdir(parents=True, exist_ok=True)
                 args.snapshot_out.write_text(_safe_cli_json(payload), encoding="utf-8")
         if target_db_path is not None:
-            from spaceinvasion.storage import GameDatabase
+            from spaceinvasion.db.storage import GameDatabase
 
             db = GameDatabase(target_db_path)
             try:

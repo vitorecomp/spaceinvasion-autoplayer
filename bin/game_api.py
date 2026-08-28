@@ -33,16 +33,16 @@ def _maybe_reexec_venv() -> None:
 
 _maybe_reexec_venv()
 
-from spaceinvasion import game_data  # noqa: E402
-from spaceinvasion.auth import SpaceInvasionAuthError  # noqa: E402
-from spaceinvasion.browser import DEFAULT_DEBUG_PORT  # noqa: E402
-from spaceinvasion.api_server import (  # noqa: E402
+from spaceinvasion.core import game_data # noqa: E402
+from spaceinvasion.session.auth import SpaceInvasionAuthError  # noqa: E402
+from spaceinvasion.session.browser import DEFAULT_DEBUG_PORT  # noqa: E402
+from spaceinvasion.runtime.api_server import (  # noqa: E402
     GameApiBridge,
     create_api_server,
     ensure_debug_browser_ready,
 )
-from spaceinvasion.logging_utils import redact_sensitive  # noqa: E402
-from spaceinvasion.reloader import (  # noqa: E402
+from spaceinvasion.core.logging_utils import redact_sensitive  # noqa: E402
+from spaceinvasion.runtime.reloader import (  # noqa: E402
     current_python_cmd,
     should_spawn_reloader,
     watch_and_run,
@@ -51,22 +51,22 @@ from spaceinvasion.reloader import (  # noqa: E402
 WATCH_PATHS = (
     Path(__file__).resolve(),
     Path("config.yaml"),
-    Path("spaceinvasion/action_graph.py"),
-    Path("spaceinvasion/auth.py"),
-    Path("spaceinvasion/browser.py"),
-    Path("spaceinvasion/config.py"),
-    Path("spaceinvasion/fleet.py"),
-    Path("spaceinvasion/game_data.py"),
-    Path("spaceinvasion/migrations.py"),
-    Path("spaceinvasion/ranking.py"),
-    Path("spaceinvasion/state.py"),
-    Path("spaceinvasion/storage.py"),
-    Path("spaceinvasion/strategy.py"),
-    Path("spaceinvasion/optimizer.py"),
-    Path("spaceinvasion/client.py"),
-    Path("spaceinvasion/executor.py"),
-    Path("spaceinvasion/api_server.py"),
-    Path("spaceinvasion/logging_utils.py"),
+    Path("spaceinvasion/planner/action_graph.py"),
+    Path("spaceinvasion/session/auth.py"),
+    Path("spaceinvasion/session/browser.py"),
+    Path("spaceinvasion/core/config.py"),
+    Path("spaceinvasion/combat/fleet.py"),
+    Path("spaceinvasion/core/game_data.py"),
+    Path("spaceinvasion/db/migrations.py"),
+    Path("spaceinvasion/combat/ranking.py"),
+    Path("spaceinvasion/core/state.py"),
+    Path("spaceinvasion/db/storage.py"),
+    Path("spaceinvasion/planner/strategy.py"),
+    Path("spaceinvasion/planner/optimizer.py"),
+    Path("spaceinvasion/session/client.py"),
+    Path("spaceinvasion/session/executor.py"),
+    Path("spaceinvasion/runtime/api_server.py"),
+    Path("spaceinvasion/core/logging_utils.py"),
 )
 
 

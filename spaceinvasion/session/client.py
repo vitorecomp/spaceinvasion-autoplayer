@@ -23,18 +23,18 @@ from selenium.common.exceptions import (
 )
 from selenium.webdriver.common.by import By
 
-from spaceinvasion import game_data
-from spaceinvasion.auth import AntiBotChallengeError, SpaceInvasionAuthError, detect_antibot_challenge
-from spaceinvasion.logging_utils import append_crash_debug_log
-from spaceinvasion.browser import (
+from spaceinvasion.core import game_data
+from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError, detect_antibot_challenge
+from spaceinvasion.core.logging_utils import append_crash_debug_log
+from spaceinvasion.session.browser import (
     DEFAULT_DEBUG_PORT,
     attach_chrome_driver,
     close_or_detach_driver,
     find_and_switch_game_tab,
     is_debug_port_open,
 )
-from spaceinvasion.fleet import extract_galaxy_system_coords
-from spaceinvasion.state import (
+from spaceinvasion.combat.fleet import extract_galaxy_system_coords
+from spaceinvasion.core.state import (
     GameState,
     QueueJob,
     normalize_planet_type,

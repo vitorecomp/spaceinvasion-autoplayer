@@ -2385,8 +2385,8 @@ class TestApiAndCommander(unittest.TestCase):
         from spaceinvasion.client import RateLimitError
         import commander
 
-        # Verify commander.py and spaceinvasion/commander_client.py remain 100% selenium-free
-        for fname in ("bin/commander.py", "spaceinvasion/commander_client.py"):
+        # Verify commander.py and spaceinvasion/runtime/commander_client.py remain 100% selenium-free
+        for fname in ("bin/commander.py", "spaceinvasion/runtime/commander_client.py"):
             tree = ast.parse(Path(fname).read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):

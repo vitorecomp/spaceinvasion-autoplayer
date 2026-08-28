@@ -2199,7 +2199,7 @@ async (url) => {
                 "defenses": game_data.DEFENSES,
             }
         )
-        self.assertEqual(rendered_gd, Path("spaceinvasion/game_data.py").read_text(encoding="utf-8"))
+        self.assertEqual(rendered_gd, Path("spaceinvasion/core/game_data.py").read_text(encoding="utf-8"))
 
         # GAP-05: YAML roundtrip preserves '#' and ':' in playstyle without truncating comments
         with tempfile.TemporaryDirectory() as tmp_cfg:

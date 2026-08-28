@@ -8,9 +8,9 @@ import os
 from typing import Any, Optional
 import requests
 
-from spaceinvasion import game_data
-from spaceinvasion.logging_utils import redact_sensitive
-from spaceinvasion.state import GameState, game_state_from_dict
+from spaceinvasion.core import game_data
+from spaceinvasion.core.logging_utils import redact_sensitive
+from spaceinvasion.core.state import GameState, game_state_from_dict
 
 
 def _enable_pool_dispose(pm: Any) -> None:

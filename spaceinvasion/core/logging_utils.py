@@ -11,9 +11,9 @@ from pathlib import Path
 import re
 from typing import Any, Optional, Sequence
 
-from spaceinvasion import game_data
-from spaceinvasion.state import GameState
-from spaceinvasion.strategy import PlannedAction
+from spaceinvasion.core import game_data
+from spaceinvasion.core.state import GameState
+from spaceinvasion.planner.strategy import PlannedAction
 
 _SECRET_DICT_KEYS: frozenset[str] = frozenset(
     {"sid", "password", "passwd", "cookie", "api_key", "secret", "authorization"}
@@ -831,7 +831,7 @@ def append_api_log(
     return jsonl_path, text_path
 
 
-DEFAULT_CRASH_LOG_DIR: Path = Path(__file__).resolve().parent.parent / "state"
+DEFAULT_CRASH_LOG_DIR: Path = Path(__file__).resolve().parents[2] / "state"
 
 
 def append_crash_debug_log(

@@ -6,17 +6,17 @@ Guide for coding agents working in `spaceinvasion-autoplayer`. Read [docs/README
 
 - **`starter.sh` & `bin/` — 3-Tier Live Runtime & CLI Launchers**:
   - `starter.sh` / `bin/run_stack.py` — Root supervisor script (`./starter.sh`) and Python stack launcher supervising Chrome debug port, `bin/game_api.py --reload`, and `bin/commander.py --loop --reload` with automatic crash recovery and CAPTCHA exit-code-2 stop safety.
-  - `bin/login.py` + `spaceinvasion/browser.py` / `spaceinvasion/auth.py` — BitMeUp login, `.env` credential profiles, persistent Chrome profile (`.browser_profile/`), and detached Chrome DevTools debug port (`127.0.0.1:9222`).
-  - `bin/game_api.py` + `spaceinvasion/api_server.py` — Thread-locked local HTTP JSON bridge (`http://127.0.0.1:8787`) serving the Web Operator Console (`spaceinvasion/ui/`) and `GET /health`, `GET /ui-version`, `GET /state`, `GET /dashboard`, and `POST /command`.
-  - `bin/commander.py` + `spaceinvasion/commander_client.py` — Pure-HTTP autonomous decision loop with zero Selenium imports.
+  - `bin/login.py` + `spaceinvasion/session/{browser,auth}.py` — BitMeUp login, `.env` credential profiles, persistent Chrome profile (`.browser_profile/`), and detached Chrome DevTools debug port (`127.0.0.1:9222`).
+  - `bin/game_api.py` + `spaceinvasion/runtime/api_server.py` — Thread-locked local HTTP JSON bridge (`http://127.0.0.1:8787`) serving the Web Operator Console (`spaceinvasion/ui/`) and `GET /health`, `GET /ui-version`, `GET /state`, `GET /dashboard`, and `POST /command`.
+  - `bin/commander.py` + `spaceinvasion/runtime/commander_client.py` — Pure-HTTP autonomous decision loop with zero Selenium imports.
   - `bin/advisor.py` / `bin/run_bot.py` — Read-only tactical advisor CLI and single-process runner.
-- **`spaceinvasion/` — Core Python Package**:
-  - `spaceinvasion/game_data.py` — Offline catalog scraped from the SpaceInvasion Classic Wiki (21 buildings, 16 researches, 15 ships, 11 defenses, Merchant parity `6:2.5:3:1`, temp curves, prerequisites).
-  - `spaceinvasion/state.py` — Typed `GameState` / `PlanetState` / offer dataclasses and HTML/JSON parsers (`#json-container`, `internalBuildings`, `internalResearch`, `internalWeaponFactory`, `internalHome`, `F_Navi`).
-  - `spaceinvasion/config.py` / `config.example.yaml` — Non-secret `StrategyConfig` (`config.yaml`, optional).
-  - `spaceinvasion/strategy.py` / `spaceinvasion/optimizer.py` / `spaceinvasion/action_graph.py` — Priority-sorted `P0`–`P3` heuristic planner, GA + Neural Network (`ga_nn`) rollout optimizer, manual command queue with queue-position Metal production review, and Kahn DAG builder.
-  - `spaceinvasion/executor.py` / `spaceinvasion/fleet.py` — Safe Selenium click/form executor, Escape flight packer, `1:1` zero-rapidfire combat simulator (`>=1.4x`), Bash tracker (`3/24h`), Galaxy/Spy/Inbox parsers, and `300+`-field colony grader.
-  - `spaceinvasion/migrations.py` / `spaceinvasion/storage.py` — Versioned forward-only SQLite migration engine (`V001..V007`, SHA-256 checksums, online `.backup()` snapshots) and append-only WAL database (`state/spaceinvasion.db`).
+- **`spaceinvasion/` — Modular Python Package**:
+  - `spaceinvasion/core/` (`game_data.py`, `state.py`, `config.py`, `logging_utils.py`) — Offline SpaceInvasion Classic Wiki catalog, `GameState`/`PlanetState` DOM/JSON parsers, `StrategyConfig` (`config.yaml`), and `sid=<token>` redaction.
+  - `spaceinvasion/session/` (`auth.py`, `browser.py`, `client.py`, `executor.py`) — BitMeUp auth, Chrome `:9222` management, frame-aware Selenium client, and safe click/form executor.
+  - `spaceinvasion/combat/` (`fleet.py`, `ranking.py`) — `1:1` zero-rapidfire combat simulator (`>=1.4x`), Escape flight packer, Bash tracker (`3/24h`), Galaxy/Spy/Inbox parsers, `300+`-field colony grader, and building/action ETA + AZ ranking engine.
+  - `spaceinvasion/planner/` (`strategy.py`, `optimizer.py`, `action_graph.py`) — Priority-sorted `P0`–`P3` heuristic planner, GA + 46D Neural Network (`ga_nn`) rollout optimizer, manual command queue with queue-position Metal production review, and Kahn DAG builder.
+  - `spaceinvasion/db/` (`migrations.py`, `storage.py`) — Versioned forward-only SQLite migration engine (`V001..V007`, SHA-256 checksums, online `.backup()` snapshots) and append-only WAL database (`state/spaceinvasion.db`).
+  - `spaceinvasion/runtime/` (`api_server.py`, `commander_client.py`, `reloader.py`) — Thread-locked HTTP JSON bridge, Selenium-free HTTP client, and subprocess hot-reloader.
   - `spaceinvasion/ui/` — Web Operator Console (`index.html`, `styles.css`, `app.js`).
 - **`scripts/` — Maintenance & Admin Utilities**:
   - `scripts/db_migrate.py` — Database versioning, migration, online backup, and integrity verification CLI.
@@ -29,10 +29,10 @@ Guide for coding agents working in `spaceinvasion-autoplayer`. Read [docs/README
 
 1. **Never bypass anti-bot or auth gates**: Abort on CAPTCHAs, Turnstile, or missing 2FA codes and let the user handle them in Chrome.
 2. **Never race a running Chrome debug session**: When `bin/run_stack.py` or `bin/game_api.py` is running on `127.0.0.1:8787`, never open a second Selenium client directly against Chrome port `9222`. Query or navigate through `http://127.0.0.1:8787` so `GameApiBridge._lock` serializes browser actions.
-3. **Keep hot-reload safe**: Always write/generate dependencies (`spaceinvasion/game_data.py`, `spaceinvasion/migrations.py`, `spaceinvasion/state.py`, `spaceinvasion/fleet.py`, `spaceinvasion/storage.py`) **before** editing `spaceinvasion/strategy.py`, `spaceinvasion/api_server.py`, or `bin/commander.py` so `--reload` subprocesses never boot on broken imports.
+3. **Keep hot-reload safe**: Always write/generate leaf dependencies (`spaceinvasion/core/`, `spaceinvasion/db/`, `spaceinvasion/combat/`) **before** editing `spaceinvasion/planner/`, `spaceinvasion/runtime/`, or `bin/commander.py` so `--reload` subprocesses never boot on broken imports.
 4. **Never leak secrets, session IDs, or scratch state**:
    - Never read, print, or commit `.env`, `.sessions/`, `.browser_profile/`, `.agents/`, `state/`, or `logs/`.
-   - Keep `sid=<token>` redaction active in `spaceinvasion/logging_utils.py` (`redact_sensitive`).
+   - Keep `sid=<token>` redaction active in `spaceinvasion/core/logging_utils.py` (`redact_sensitive`).
    - Never execute `DELETE FROM` or `DROP TABLE` on `state/spaceinvasion.db`; keep all telemetry and queue ledgers strictly append-only.
 5. **Preserve SpaceInvasion Classic invariants**:
    - No rapidfire in combat (`1:1` targeting); *Blast furnace* uses `2:1` Pig iron and is **not** boosted by *Mining technology*; **Escape flights** are invisible to Asteroid *Galaxy scanners*; Bash limit is **3/24h** on active planets and exempt on yellow inactives / *Spacia* (unless overridden by server bash-block banners).

@@ -187,8 +187,8 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
             server.server_close()
 
     def test_commander_backs_off_at_least_retry_after_on_rate_limit(self) -> None:
-        self.assertIn(Path("spaceinvasion/optimizer.py"), commander.WATCH_PATHS)
-        self.assertIn(Path("spaceinvasion/ranking.py"), commander.WATCH_PATHS)
+        self.assertIn(Path("spaceinvasion/planner/optimizer.py"), commander.WATCH_PATHS)
+        self.assertIn(Path("spaceinvasion/combat/ranking.py"), commander.WATCH_PATHS)
         snaps = snapshot_mtimes(commander.WATCH_PATHS)
         self.assertIn(str(Path("bin/commander.py").resolve()), snaps)
         # Missing watch paths are skipped safely without crashing reloader
@@ -3675,6 +3675,105 @@ class TestR2ThrottleAndGalaxy(unittest.TestCase):
                 self.assertTrue(bridge_x._find_research_action(merged_cancel, 8, 12476).executable_now)
             finally:
                 bridge_x._db.close()
+
+    def test_commander_fleet_slot_busy_wakes_promptly_and_continues_non_fleet_batch(self) -> None:
+        from spaceinvasion.core.state import UnitOffer
+
+        p = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=95,
+            fields_max=230,
+            resources=Resources(270_000, 15_000, 570_000, 280_000),
+            storage=Resources(1_500_000, 1_500_000, 1_500_000, 1_500_000),
+            energy=EnergyBalance(5200, 4600),
+            buildings={"b1": 21, "b2": 20, "b5": 22, "b8": 4, "b9": 4, "b10": 5},
+            ships={"s1": 6, "s4": 12, "s10": 11, "s11": 3},
+            ship_offers=(
+                UnitOffer("ship", 11, "Recycler", 3, Resources(10_000, 6_000, 2_000, 0), True, "ship_11", "Build"),
+            ),
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=103603,
+            nickname="ventkx86",
+            timestamp=1700000500.0,
+            planets=(p,),
+            active_planet_id=12476,
+            researches={"r1": 4, "r2": 6, "r5": 4, "r6": 3},
+            speedup_factor=10.0,
+            raid_targets=(
+                {
+                    "coords": "02:380:16",
+                    "owner": "Spacia",
+                    "is_spacia": True,
+                    "is_inactive": True,
+                    "status_color": "purple",
+                    "has_spy_intel": True,
+                    "last_spied_ts": 1700000100.0,
+                    "resources": {"pig_iron": 90_000, "metal": 40_000, "kryptonite": 30_000, "spice": 10_000},
+                    "fleet": {},
+                    "defense": {},
+                },
+            ),
+        )
+        fake_api = MagicMock()
+        fake_api.get_state.return_value = st
+
+        def _fake_send(payload: dict) -> dict:
+            if payload.get("command") in ("attack", "spy", "recycle"):
+                return {
+                    "ok": True,
+                    "command": payload["command"],
+                    "executed": False,
+                    "dry_run": False,
+                    "message": "Aborted: no ship input fields found on internalFleet.",
+                }
+            if payload.get("command") == "build_ship":
+                return {
+                    "ok": True,
+                    "command": "build_ship",
+                    "executed": True,
+                    "dry_run": False,
+                    "message": "Ordered 1x Recycler on [02:380:12].",
+                }
+            return {"ok": True, "executed": False, "dry_run": False, "message": "noop"}
+
+        fake_api.send_command.side_effect = _fake_send
+        cfg = StrategyConfig(allow_raids=True, allow_shipyard=True, shipyard_targets={"recycler": 4})
+        out_st, actual, res, nxt, outcomes = commander.run_commander_tick(
+            fake_api,
+            live=True,
+            max_actions=5,
+            config=cfg,
+        )
+        # Even after ATTACK hit busy fleet slots, BUILD_SHIP Recycler still ran in the same batch!
+        self.assertTrue(any(o.get("command") == "build_ship" and o.get("executed") for o in outcomes))
+        # Even if next_action is a 900s WAIT_RESOURCES building, wakeup stays <= 120s due to fleet slot cooldown!
+        wait_fusion = commander.PlannedAction(
+            priority="P1",
+            kind="WAIT_RESOURCES",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=5,
+            target_name="Fusion plant",
+            target_level=23,
+            reason="Proactive power",
+            executable_now=False,
+            wait_seconds=902.0,
+        )
+        wake_s, wake_reason = commander.compute_next_wakeup_seconds(
+            out_st,
+            wait_fusion,
+            outcomes,
+            min_interval_s=120.0,
+            max_idle_s=900.0,
+        )
+        self.assertLessEqual(wake_s, 120.0)
+        self.assertIn("fleet slot", wake_reason)
 
 
 if __name__ == "__main__":

@@ -33,11 +33,11 @@ def _maybe_reexec_venv() -> None:
 
 _maybe_reexec_venv()
 
-from spaceinvasion import game_data  # noqa: E402
-from spaceinvasion.api_server import ensure_debug_browser_ready  # noqa: E402
-from spaceinvasion.auth import SpaceInvasionAuthError  # noqa: E402
-from spaceinvasion.browser import DEFAULT_DEBUG_PORT  # noqa: E402
-from spaceinvasion.logging_utils import redact_sensitive  # noqa: E402
+from spaceinvasion.core import game_data # noqa: E402
+from spaceinvasion.runtime.api_server import ensure_debug_browser_ready  # noqa: E402
+from spaceinvasion.session.auth import SpaceInvasionAuthError  # noqa: E402
+from spaceinvasion.session.browser import DEFAULT_DEBUG_PORT  # noqa: E402
+from spaceinvasion.core.logging_utils import redact_sensitive  # noqa: E402
 
 
 def _build_parser() -> argparse.ArgumentParser:

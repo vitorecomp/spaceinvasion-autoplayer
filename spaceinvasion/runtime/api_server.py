@@ -22,28 +22,28 @@ from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
-from spaceinvasion import game_data
-from spaceinvasion.action_graph import (
+from spaceinvasion.core import game_data
+from spaceinvasion.planner.action_graph import (
     build_action_graph,
     merge_strategy_config_overrides,
 )
-from spaceinvasion.auth import AntiBotChallengeError, SpaceInvasionAuthError, load_credentials
-from spaceinvasion.browser import (
+from spaceinvasion.session.auth import AntiBotChallengeError, SpaceInvasionAuthError, load_credentials
+from spaceinvasion.session.browser import (
     DEFAULT_DEBUG_PORT,
     BrowserConfig,
     is_debug_port_open,
     login_with_browser,
 )
-from spaceinvasion.client import GameBrowserClient, PageViewLimiter, RateLimitError, is_server_rate_limit_html
-from spaceinvasion.config import (
+from spaceinvasion.session.client import GameBrowserClient, PageViewLimiter, RateLimitError, is_server_rate_limit_html
+from spaceinvasion.core.config import (
     StrategyConfig,
     load_strategy_config,
     normalize_planner_mode,
     save_strategy_config,
     strategy_config_from_dict,
 )
-from spaceinvasion.executor import ActionExecutor
-from spaceinvasion.fleet import (
+from spaceinvasion.session.executor import ActionExecutor
+from spaceinvasion.combat.fleet import (
     SHIP_SLUG_BY_KEY,
     InboxMessage,
     SpyReport,
@@ -56,7 +56,7 @@ from spaceinvasion.fleet import (
     plan_escape_flight,
     simulate_raid_outcome,
 )
-from spaceinvasion.logging_utils import (
+from spaceinvasion.core.logging_utils import (
     _SECRET_DICT_KEYS,
     _SID_RE as _LOG_SID_RE,
     _sub_sid_kv as _sub_log_sid_kv,
@@ -65,8 +65,8 @@ from spaceinvasion.logging_utils import (
     is_secret_dict_key,
     redact_sensitive,
 )
-from spaceinvasion.optimizer import get_last_optimizer_summary, run_optimizer
-from spaceinvasion.ranking import (
+from spaceinvasion.planner.optimizer import get_last_optimizer_summary, run_optimizer
+from spaceinvasion.combat.ranking import (
     attach_action_etas,
     build_buildings_eta,
     build_combat_overview,
@@ -75,7 +75,7 @@ from spaceinvasion.ranking import (
     record_rank_snapshot,
     simulate_combat_matchup,
 )
-from spaceinvasion.state import (
+from spaceinvasion.core.state import (
     GameState,
     PlanetState,
     Resources,
@@ -86,16 +86,16 @@ from spaceinvasion.state import (
     parse_tutorial_from_home,
     parse_unread_banner_count,
 )
-from spaceinvasion.migrations import DatabaseMigrationRegistry, LATEST_SCHEMA_VERSION
-from spaceinvasion.storage import GameDatabase
-from spaceinvasion.strategy import (
+from spaceinvasion.db.migrations import DatabaseMigrationRegistry, LATEST_SCHEMA_VERSION
+from spaceinvasion.db.storage import GameDatabase
+from spaceinvasion.planner.strategy import (
     PlannedAction,
     _tutorial_colonize_task,
     merge_manual_queue_actions,
     plan_actions,
 )
 
-UI_DIR = Path(__file__).resolve().parent / "ui"
+UI_DIR = Path(__file__).resolve().parents[1] / "ui"
 MAX_REQUEST_BYTES = 1_048_576
 _SERVER_BOOT_ID = secrets.token_hex(4)
 _GLOBAL_OPTIMIZER_LOCK = threading.Lock()
@@ -1972,8 +1972,8 @@ class GameApiBridge:
             if any(q.category == "research" for q in state.active_queues):
                 res_offers = prev.research_offers
             elif any(o.active for o in prev.research_offers):
-                from spaceinvasion import game_data
-                from spaceinvasion.strategy import _resources_from_dict
+                from spaceinvasion.core import game_data
+                from spaceinvasion.planner.strategy import _resources_from_dict
 
                 active_p = state.active_planet()
                 has_lab = active_p is not None and active_p.building_level(8) >= 1
@@ -2647,8 +2647,8 @@ class GameApiBridge:
         *,
         allow_live_verify: bool = False,
     ) -> PlannedAction:
-        from spaceinvasion import game_data
-        from spaceinvasion.strategy import _resources_from_dict
+        from spaceinvasion.core import game_data
+        from spaceinvasion.planner.strategy import _resources_from_dict
 
         planet = self._resolve_planet(state, planet_id)
         nxt_lvl = planet.building_level(building_id) + 1
@@ -2774,7 +2774,7 @@ class GameApiBridge:
         *,
         allow_live_verify: bool = False,
     ) -> PlannedAction:
-        from spaceinvasion.strategy import _resources_from_dict
+        from spaceinvasion.planner.strategy import _resources_from_dict
 
         planet = self._resolve_planet(state, planet_id)
         rkey = f"r{research_id}"
@@ -2952,8 +2952,8 @@ class GameApiBridge:
         *,
         allow_live_verify: bool = False,
     ) -> PlannedAction:
-        from spaceinvasion import game_data
-        from spaceinvasion.strategy import _resources_from_dict
+        from spaceinvasion.core import game_data
+        from spaceinvasion.planner.strategy import _resources_from_dict
 
         planet = self._resolve_planet(state, planet_id)
         qty = max(1, quantity)

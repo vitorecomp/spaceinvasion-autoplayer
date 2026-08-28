@@ -98,7 +98,7 @@ def watch_and_run(
             if rc is not None:
                 if rc != 0:
                     try:
-                        from spaceinvasion.logging_utils import append_crash_debug_log
+                        from spaceinvasion.core.logging_utils import append_crash_debug_log
 
                         append_crash_debug_log(
                             component=f"reloader.{label}",

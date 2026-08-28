@@ -15,8 +15,8 @@ import urllib.request
 
 from bs4 import BeautifulSoup
 
-from spaceinvasion import game_data
-from spaceinvasion.auth import (
+from spaceinvasion.core import game_data
+from spaceinvasion.session.auth import (
     BASE_URL,
     AntiBotChallengeError,
     ConfigurationError,
@@ -228,7 +228,7 @@ def launch_chrome_with_debug_port(config: BrowserConfig, port: int) -> subproces
 
 
 def _safe_browser_err(exc: BaseException) -> str:
-    from spaceinvasion.logging_utils import redact_sensitive
+    from spaceinvasion.core.logging_utils import redact_sensitive
 
     res = redact_sensitive(exc)
     if isinstance(res, str):

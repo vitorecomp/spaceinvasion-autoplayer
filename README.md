@@ -10,7 +10,14 @@ See [docs/README.md](docs/README.md) for the full documentation portal, [docs/ar
 spaceinvasion-autoplayer/
 ├── starter.sh             # Supervised live stack launcher with crash auto-restart & CAPTCHA stop guard
 ├── bin/                   # 3-tier runtime launchers (run_stack.py, game_api.py, commander.py, login.py)
-├── spaceinvasion/         # Core Python package (state, strategy, optimizer, migrations, storage, fleet, executor, ui/)
+├── spaceinvasion/         # Modular Python package:
+│   ├── core/              #   game_data.py, state.py, config.py, logging_utils.py
+│   ├── session/           #   auth.py, browser.py, client.py, executor.py
+│   ├── combat/            #   fleet.py, ranking.py
+│   ├── planner/           #   strategy.py, optimizer.py, action_graph.py
+│   ├── db/                #   migrations.py (V001..V007), storage.py
+│   ├── runtime/           #   api_server.py, commander_client.py, reloader.py
+│   └── ui/                #   Web Operator Console (index.html, styles.css, app.js)
 ├── scripts/               # Maintenance & DB utilities (db_migrate.py, sync_wiki_data.py)
 ├── docs/                  # Unified documentation hub (architecture, MER, manual, specifications/, testing/, notes/)
 ├── notebooks/             # Offline analytics & GA+NN experimentation notebooks

@@ -25,15 +25,15 @@ from selenium.common.exceptions import (
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 
-from spaceinvasion import game_data
-from spaceinvasion.client import GameBrowserClient, PageViewLimiter
-from spaceinvasion.fleet import (
+from spaceinvasion.core import game_data
+from spaceinvasion.session.client import GameBrowserClient, PageViewLimiter
+from spaceinvasion.combat.fleet import (
     GalaxySlot,
     parse_galaxy_system_html,
     parse_send_fleet_mission_block,
 )
-from spaceinvasion.logging_utils import append_crash_debug_log, redact_sensitive
-from spaceinvasion.state import (
+from spaceinvasion.core.logging_utils import append_crash_debug_log, redact_sensitive
+from spaceinvasion.core.state import (
     GameState,
     QueueJob,
     normalize_planet_type,
@@ -45,7 +45,7 @@ from spaceinvasion.state import (
     parse_tutorial_from_home,
     parse_unit_factory_page,
 )
-from spaceinvasion.strategy import PlannedAction
+from spaceinvasion.planner.strategy import PlannedAction
 
 
 def _call_with_optional_priority(

@@ -19,9 +19,9 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
 
-from spaceinvasion import game_data
-from spaceinvasion.config import StrategyConfig
-from spaceinvasion.fleet import (
+from spaceinvasion.core import game_data
+from spaceinvasion.core.config import StrategyConfig
+from spaceinvasion.combat.fleet import (
     DEFENSE_SLUG_BY_KEY,
     SHIP_SLUG_BY_KEY,
     BashTracker,
@@ -34,8 +34,8 @@ from spaceinvasion.fleet import (
     score_raid_target,
     simulate_raid_outcome,
 )
-from spaceinvasion.ranking import POINTS_PER_RESOURCE_DIVISOR, _research_level_stats
-from spaceinvasion.state import (
+from spaceinvasion.combat.ranking import POINTS_PER_RESOURCE_DIVISOR, _research_level_stats
+from spaceinvasion.core.state import (
     BUILDING_ID_BY_NAME,
     RAID_COLONY_FORBIDDEN_BUILDINGS,
     BuildingOffer,
@@ -54,7 +54,7 @@ from spaceinvasion.state import (
 )
 
 if TYPE_CHECKING:
-    from spaceinvasion.strategy import PlannedAction
+    from spaceinvasion.planner.strategy import PlannedAction
 
 try:
     import torch
@@ -111,7 +111,7 @@ _GAL_SYS_RE = re.compile(r"(\d{1,2}):(\d{1,3})(?::(\d{1,2}))?", re.ASCII)
 
 def _make_planned_action(**kwargs: Any) -> "PlannedAction":
     """Construct `PlannedAction` without importing `strategy` at module import time."""
-    from spaceinvasion.strategy import PlannedAction
+    from spaceinvasion.planner.strategy import PlannedAction
 
     return PlannedAction(**kwargs)
 

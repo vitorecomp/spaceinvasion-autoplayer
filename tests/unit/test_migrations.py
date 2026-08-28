@@ -36,7 +36,7 @@ from spaceinvasion.storage import GameDatabase
 
 class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
     def test_staged_forward_migrations_dry_run_user_version_and_append_only_invariants(self) -> None:
-        for src_path in (Path("spaceinvasion/migrations.py"), Path("spaceinvasion/storage.py")):
+        for src_path in (Path("spaceinvasion/db/migrations.py"), Path("spaceinvasion/db/storage.py")):
             txt = src_path.read_text(encoding="utf-8")
             self.assertIsNone(re.search(r"\bDELETE\s+FROM\b", txt, re.IGNORECASE), str(src_path))
             self.assertIsNone(re.search(r"\bDROP\s+TABLE\b", txt, re.IGNORECASE), str(src_path))

@@ -36,40 +36,40 @@ def _maybe_reexec_venv() -> None:
 
 _maybe_reexec_venv()
 
-from spaceinvasion import game_data  # noqa: E402
-from spaceinvasion.commander_client import GameApiClient, GameApiError  # noqa: E402
-from spaceinvasion.config import StrategyConfig, load_strategy_config  # noqa: E402
-from spaceinvasion.logging_utils import (  # noqa: E402
+from spaceinvasion.core import game_data # noqa: E402
+from spaceinvasion.runtime.commander_client import GameApiClient, GameApiError  # noqa: E402
+from spaceinvasion.core.config import StrategyConfig, load_strategy_config  # noqa: E402
+from spaceinvasion.core.logging_utils import (  # noqa: E402
     append_tick_logs,
     format_action_summary,
     pick_next_action,
     redact_sensitive,
 )
-from spaceinvasion.reloader import (  # noqa: E402
+from spaceinvasion.runtime.reloader import (  # noqa: E402
     current_python_cmd,
     should_spawn_reloader,
     watch_and_run,
 )
-from spaceinvasion.state import (  # noqa: E402
+from spaceinvasion.core.state import (  # noqa: E402
     GameState,
     game_state_from_dict,
     is_asteroid_planet,
     normalize_planet_type,
 )
-from spaceinvasion.strategy import PlannedAction, merge_manual_queue_actions, plan_actions  # noqa: E402
+from spaceinvasion.planner.strategy import PlannedAction, merge_manual_queue_actions, plan_actions  # noqa: E402
 
 WATCH_PATHS = (
     Path(__file__).resolve(),
     Path("config.yaml"),
-    Path("spaceinvasion/config.py"),
-    Path("spaceinvasion/fleet.py"),
-    Path("spaceinvasion/game_data.py"),
-    Path("spaceinvasion/optimizer.py"),
-    Path("spaceinvasion/ranking.py"),
-    Path("spaceinvasion/strategy.py"),
-    Path("spaceinvasion/commander_client.py"),
-    Path("spaceinvasion/state.py"),
-    Path("spaceinvasion/logging_utils.py"),
+    Path("spaceinvasion/core/config.py"),
+    Path("spaceinvasion/combat/fleet.py"),
+    Path("spaceinvasion/core/game_data.py"),
+    Path("spaceinvasion/planner/optimizer.py"),
+    Path("spaceinvasion/combat/ranking.py"),
+    Path("spaceinvasion/planner/strategy.py"),
+    Path("spaceinvasion/runtime/commander_client.py"),
+    Path("spaceinvasion/core/state.py"),
+    Path("spaceinvasion/core/logging_utils.py"),
 )
 
 _RATE_LIMIT_MARKERS = (
@@ -483,6 +483,7 @@ def run_commander_tick(
                     raise
     is_ga_nn = str(getattr(cfg, "planner_mode", "priority") or "priority").strip().lower() == "ga_nn"
     cur_mq: Optional[Sequence[Mapping[str, Any]]] = manual_queue
+    active_fsc: dict[int, float] = dict(fleet_slot_cooldowns) if fleet_slot_cooldowns else {}
 
     def _compute_tick_actions(cur_st: GameState, mq_items: Optional[Sequence[Mapping[str, Any]]]) -> list[PlannedAction]:
         base = _hold_busy_fleet_slots(
@@ -492,12 +493,12 @@ def run_commander_tick(
                 scanned_systems=scanned_systems,
                 throttle_cooldowns=throttle_cooldowns,
             ),
-            fleet_slot_cooldowns,
+            active_fsc,
             re_sort_priority=not is_ga_nn,
         )
         if mq_items:
             merged, _ = merge_manual_queue_actions(cur_st, base, mq_items, config=cfg)
-            return _hold_busy_fleet_slots(merged, fleet_slot_cooldowns, re_sort_priority=False)
+            return _hold_busy_fleet_slots(merged, active_fsc, re_sort_priority=False)
         return base
 
     actions = _compute_tick_actions(state, cur_mq)
@@ -587,9 +588,23 @@ def run_commander_tick(
         if not live:
             break
         if not res_dict.get("executed"):
+            fail_msg_l = _safe_cmd_str(res_dict.get("message", "")).lower()
+            if (
+                ready.kind in ("ATTACK", "SPY", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE")
+                and ("no ship input fields found on internalfleet" in fail_msg_l or "nofleet" in fail_msg_l)
+            ):
+                pid_busy = _safe_cmd_int(ready.planet_id, 0)
+                if pid_busy > 0:
+                    active_fsc[pid_busy] = max(active_fsc.get(pid_busy, 0.0), 90.0)
+                if isinstance(res_dict.get("state"), Mapping):
+                    state = game_state_from_dict(res_dict["state"])
+                actions = _compute_tick_actions(state, cur_mq)
+                continue
             if isinstance(res_dict.get("state"), Mapping):
                 state = game_state_from_dict(res_dict["state"])
                 actions = _compute_tick_actions(state, cur_mq)
+                continue
+            if ready.kind in ("ATTACK", "SPY", "RECYCLE", "COLONIZE"):
                 continue
             break
         after_live = True
@@ -613,6 +628,14 @@ def run_commander_tick(
         outcomes.append(actual_result)
 
     next_action = pick_next_action(actions, actual_action, after_live_execution=after_live)
+    if (
+        next_action is not None
+        and not next_action.executable_now
+        and any(a.executable_now for a in actions)
+    ):
+        next_ready = next((a for a in actions if a.executable_now), None)
+        if next_ready is not None:
+            next_action = next_ready
     return state, actual_action, actual_result, next_action, outcomes
 
 
@@ -646,25 +669,43 @@ def compute_next_wakeup_seconds(
     *,
     min_interval_s: float = 120.0,
     max_idle_s: float = 900.0,
+    fleet_slot_cooldowns: Optional[Mapping[int, float]] = None,
 ) -> tuple[float, str]:
     """Compute exact seconds until next batch wakeup so pages are only visited when ready to act."""
     floor_s = max(0.01, float(min_interval_s))
     cap_s = max(floor_s, float(max_idle_s))
 
+    slot_busy_seen = False
     for out in outcomes or ():
-        if not isinstance(out, Mapping) or not bool(out.get("executed")):
+        if not isinstance(out, Mapping):
             continue
-        cmd_s = _safe_cmd_str(out.get("command")).lower()
-        act_m = out.get("action")
-        kind_s = _safe_cmd_str(act_m.get("kind") if isinstance(act_m, Mapping) else "").upper()
-        if cmd_s == "spy" or kind_s == "SPY":
-            return floor_s, "awaiting spy report & next batch"
+        if bool(out.get("executed")):
+            cmd_s = _safe_cmd_str(out.get("command")).lower()
+            act_m = out.get("action")
+            kind_s = _safe_cmd_str(act_m.get("kind") if isinstance(act_m, Mapping) else "").upper()
+            if cmd_s == "spy" or kind_s == "SPY":
+                return floor_s, "awaiting spy report & next batch"
+        else:
+            out_msg_l = _safe_cmd_str(out.get("message", "")).lower()
+            if "no ship input fields found on internalfleet" in out_msg_l or "nofleet" in out_msg_l or "fleet slots busy" in out_msg_l:
+                slot_busy_seen = True
 
     cand_waits: list[tuple[float, str]] = []
+    if slot_busy_seen or (fleet_slot_cooldowns and any((_safe_finite_float(v) or 0.0) > 0.0 for v in fleet_slot_cooldowns.values())):
+        fsc_vals = [
+            fv
+            for v in (fleet_slot_cooldowns or {}).values()
+            if (fv := _safe_finite_float(v)) is not None and fv > 0.0
+        ]
+        slot_s = min(fsc_vals) + 2.0 if fsc_vals else max(floor_s, 90.0)
+        cand_waits.append((slot_s, "fleet slot cooldown / returning ships"))
+
     if next_action is not None:
         t_lbl = _safe_cmd_str(next_action.target_name, next_action.kind)
         if next_action.executable_now:
             cand_waits.append((floor_s, f"next batch ({next_action.kind}: {t_lbl})"))
+        elif "[Hold: fleet slots busy / returning]" in _safe_cmd_str(next_action.reason):
+            cand_waits.append((max(floor_s, 90.0), f"fleet slots returning ({t_lbl})"))
         else:
             w_sec = _safe_finite_float(getattr(next_action, "wait_seconds", None))
             if w_sec is not None and w_sec > 0.0:
@@ -944,6 +985,7 @@ def main(argv: list[str] | None = None) -> int:
                             outcomes,
                             min_interval_s=eff_min_interval_s,
                             max_idle_s=eff_max_idle_s,
+                            fleet_slot_cooldowns=fleet_slot_cooldowns,
                         )
                         jitter_s = random.uniform(0.5, 2.5) if wake_s >= 5.0 else 0.0
                         loop_sleep = wake_s + jitter_s

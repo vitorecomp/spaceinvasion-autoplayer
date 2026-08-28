@@ -30,23 +30,23 @@ def _maybe_reexec_venv() -> None:
 
 _maybe_reexec_venv()
 
-from spaceinvasion import game_data  # noqa: E402
-from spaceinvasion.auth import SpaceInvasionAuthError, load_credentials  # noqa: E402
-from spaceinvasion.browser import (  # noqa: E402
+from spaceinvasion.core import game_data # noqa: E402
+from spaceinvasion.session.auth import SpaceInvasionAuthError, load_credentials  # noqa: E402
+from spaceinvasion.session.browser import (  # noqa: E402
     DEFAULT_DEBUG_PORT,
     BrowserConfig,
     is_debug_port_open,
     login_with_browser,
 )
-from spaceinvasion.client import GameBrowserClient, RateLimitError  # noqa: E402
-from spaceinvasion.executor import ActionExecutor, ExecutionResult  # noqa: E402
-from spaceinvasion.logging_utils import (  # noqa: E402
+from spaceinvasion.session.client import GameBrowserClient, RateLimitError  # noqa: E402
+from spaceinvasion.session.executor import ActionExecutor, ExecutionResult  # noqa: E402
+from spaceinvasion.core.logging_utils import (  # noqa: E402
     append_tick_logs,
     format_action_summary,
     pick_next_action,
     redact_sensitive,
 )
-from spaceinvasion.strategy import PlannedAction, plan_actions  # noqa: E402
+from spaceinvasion.planner.strategy import PlannedAction, plan_actions  # noqa: E402
 
 
 def _safe_bot_str(

@@ -15,9 +15,9 @@ from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
-from spaceinvasion import game_data
-from spaceinvasion.logging_utils import redact_sensitive
-from spaceinvasion.state import PlanetState, Resources, parse_si_int
+from spaceinvasion.core import game_data
+from spaceinvasion.core.logging_utils import redact_sensitive
+from spaceinvasion.core.state import PlanetState, Resources, parse_si_int
 
 # Map `#json-container` / form ship keys (`s1`..) to wiki slugs
 SHIP_SLUG_BY_KEY: dict[str, str] = {

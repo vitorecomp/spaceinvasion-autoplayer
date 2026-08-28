@@ -8,15 +8,15 @@ import math
 import re
 from typing import Any, Optional
 
-from spaceinvasion import game_data
-from spaceinvasion.config import (
+from spaceinvasion.core import game_data
+from spaceinvasion.core.config import (
     StrategyConfig,
     normalize_planner_mode,
     strategy_config_from_dict,
 )
-from spaceinvasion.ranking import attach_action_etas
-from spaceinvasion.state import GameState, PlanetState, normalize_planet_type
-from spaceinvasion.strategy import PlannedAction
+from spaceinvasion.combat.ranking import attach_action_etas
+from spaceinvasion.core.state import GameState, PlanetState, normalize_planet_type
+from spaceinvasion.planner.strategy import PlannedAction
 
 _SHIP_SLUG_BY_ID: dict[int, str] = {
     1: "small-transport",

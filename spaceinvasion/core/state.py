@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from bs4 import BeautifulSoup
 
-from spaceinvasion import game_data
+from spaceinvasion.core import game_data
 
 BUILDING_ID_BY_NAME: dict[str, int] = {
     "pig iron mine": 1,
@@ -1243,7 +1243,7 @@ def parse_tutorial_from_home(html: str) -> Optional[TutorialStatus]:
         unit = _resolve_catalog_unit("ships", slug_or_name)
         if not unit:
             return None
-        from spaceinvasion.fleet import SHIP_SLUG_BY_KEY
+        from spaceinvasion.combat.fleet import SHIP_SLUG_BY_KEY
 
         slug = str(unit.get("slug") or "")
         for skey, sslug in SHIP_SLUG_BY_KEY.items():

@@ -23,7 +23,7 @@ import tempfile
 import time
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from spaceinvasion.logging_utils import redact_sensitive
+from spaceinvasion.core.logging_utils import redact_sensitive
 
 DEFAULT_GAME_DB_PATH = Path("state") / "spaceinvasion.db"
 DEFAULT_ATTACK_HISTORY_JSON_PATH = Path("data") / "attack_history.json"

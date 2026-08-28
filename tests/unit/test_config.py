@@ -556,7 +556,7 @@ shipyard_targets:
             def __bool__(self) -> bool:
                 raise RuntimeError("bool boom")
 
-        tree_ast = ast.parse(Path("spaceinvasion/config.py").read_text(encoding="utf-8"))
+        tree_ast = ast.parse(Path("spaceinvasion/core/config.py").read_text(encoding="utf-8"))
         internal_imports = [
             ast.dump(node)
             for node in ast.walk(tree_ast)

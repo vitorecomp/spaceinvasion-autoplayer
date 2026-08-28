@@ -14,8 +14,8 @@ import threading
 import time
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-from spaceinvasion import game_data
-from spaceinvasion.fleet import (
+from spaceinvasion.core import game_data
+from spaceinvasion.combat.fleet import (
     BashTracker,
     GalaxySlot,
     InboxMessage,
@@ -24,14 +24,14 @@ from spaceinvasion.fleet import (
     grade_colony_candidate,
     normalize_coords,
 )
-from spaceinvasion.logging_utils import (
+from spaceinvasion.core.logging_utils import (
     _SECRET_DICT_KEYS,
     _SID_RE as _LOG_SID_RE,
     _sub_sid_kv as _sub_log_sid_kv,
     is_secret_dict_key,
     redact_sensitive,
 )
-from spaceinvasion.migrations import (
+from spaceinvasion.db.migrations import (
     ATTACK_HISTORY_SCHEMA_VERSION,
     DEFAULT_GAME_MIGRATION_RUNNER,
     GAME_DB_MIGRATIONS,
@@ -44,7 +44,7 @@ from spaceinvasion.migrations import (
     import_legacy_rank_history_json,
     import_legacy_snapshot_json,
 )
-from spaceinvasion.state import GameState, game_state_from_dict, normalize_planet_type
+from spaceinvasion.core.state import GameState, game_state_from_dict, normalize_planet_type
 
 DEFAULT_DB_PATH = Path("state") / "spaceinvasion.db"
 DEFAULT_ATTACK_HISTORY_PATH: Optional[Path] = None
@@ -1319,7 +1319,7 @@ class GameDatabase:
         rank_min_interval_seconds: float = 300.0,
     ) -> list[dict[str, Any]]:
         """Persist rank, colony, economy-rate, and tutorial snapshots atomically; return rank history."""
-        from spaceinvasion.ranking import estimate_account_points, estimate_hourly_economy
+        from spaceinvasion.combat.ranking import estimate_account_points, estimate_hourly_economy
 
         est = estimate_account_points(state)
         econ = estimate_hourly_economy(state)

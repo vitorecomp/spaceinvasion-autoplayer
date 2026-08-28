@@ -11,26 +11,26 @@ flowchart TB
     subgraph Sup["Tier 0 — Process Supervision & Hot Reload"]
         SH["starter.sh (Crash Watchdog & Exit-2 CAPTCHA Guard)"]
         RS["bin/run_stack.py (Stack Launcher & Health Monitor)"]
-        RL["spaceinvasion/reloader.py (Dependency-Safe Subprocess Reloader)"]
+        RL["spaceinvasion/runtime/reloader.py (Dependency-Safe Subprocess Reloader)"]
         SH --> RS
         RS --> RL
     end
 
     subgraph T1["Tier 1 — Persistent Browser Session"]
         CH["Detached Chrome (127.0.0.1:9222, .browser_profile/)"]
-        AU["login.py / auth.py / browser.py (BitMeUp Auth & Turnstile Guard)"]
+        AU["bin/login.py + spaceinvasion/session/{auth,browser}.py (BitMeUp Auth & Turnstile Guard)"]
         AU --> CH
     end
 
     subgraph T2["Tier 2 — Thread-Locked HTTP Bridge & Planners (127.0.0.1:8787)"]
-        API["game_api.py / GameApiBridge (RLock Serialized)"]
-        CL["client.py + state.py (DOM/JSON Parsers & Frame Navigation)"]
-        EX["executor.py (Safe Click/Form Executor & Rate Guard)"]
-        PRIO["strategy.py (Heuristic P0-P3 Planner)"]
-        GANN["optimizer.py (GA + 46D NeuralValueNetwork)"]
-        DAG["action_graph.py (Kahn Multi-Lane DAG & Sim Merger)"]
-        FLT["fleet.py (1:1 Combat Sim, Escape Packer, Galaxy/Spy/Message Parsers)"]
-        DB[("state/spaceinvasion.db (SQLite WAL, 23 Append-Only Tables, V001..V007)")]
+        API["bin/game_api.py + spaceinvasion/runtime/api_server.py (RLock Serialized)"]
+        CL["spaceinvasion/session/client.py + spaceinvasion/core/state.py"]
+        EX["spaceinvasion/session/executor.py (Safe Click/Form Executor & Rate Guard)"]
+        PRIO["spaceinvasion/planner/strategy.py (Heuristic P0-P3 Planner)"]
+        GANN["spaceinvasion/planner/optimizer.py (GA + 46D NeuralValueNetwork)"]
+        DAG["spaceinvasion/planner/action_graph.py (Kahn Multi-Lane DAG & Sim Merger)"]
+        FLT["spaceinvasion/combat/{fleet,ranking}.py (1:1 Combat Sim, Escape, Galaxy/Spy/Inbox, ETAs)"]
+        DB[("state/spaceinvasion.db + spaceinvasion/db/{storage,migrations}.py (23 Tables, V001..V007)")]
 
         API --> CL
         API --> EX

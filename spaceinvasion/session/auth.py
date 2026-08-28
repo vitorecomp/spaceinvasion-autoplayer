@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from dotenv import dotenv_values
 import requests
 
-from spaceinvasion import game_data
+from spaceinvasion.core import game_data
 
 BASE_URL = "https://spaceinvasion.bitmeup.com"
 DEFAULT_USER_AGENT = (

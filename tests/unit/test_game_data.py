@@ -239,7 +239,7 @@ class TestGameData(unittest.TestCase):
             "defenses": game_data.DEFENSES,
         }
         rendered = sync_wiki_data.render_module(payload)
-        disk = Path("spaceinvasion/game_data.py").read_text(encoding="utf-8")
+        disk = Path("spaceinvasion/core/game_data.py").read_text(encoding="utf-8")
         self.assertEqual(rendered, disk)
 
     def test_r10_safe_key_tuple_frozenset_bytes_and_wiki_ascii(self) -> None:
@@ -350,7 +350,7 @@ class TestGameData(unittest.TestCase):
         }
         self.assertEqual(
             sync_wiki_data.render_module(payload),
-            Path("spaceinvasion/game_data.py").read_text(encoding="utf-8"),
+            Path("spaceinvasion/core/game_data.py").read_text(encoding="utf-8"),
         )
 
 

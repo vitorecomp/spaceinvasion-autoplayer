@@ -17,15 +17,15 @@ import tempfile
 import time
 from typing import Any, Optional
 
-from spaceinvasion import game_data
-from spaceinvasion.fleet import (
+from spaceinvasion.core import game_data
+from spaceinvasion.combat.fleet import (
     DEFENSE_SLUG_BY_KEY,
     SHIP_SLUG_BY_KEY,
     SpyReport,
     plan_escape_flight,
     simulate_raid_outcome,
 )
-from spaceinvasion.state import GameState, PlanetState, Resources, normalize_planet_type
+from spaceinvasion.core.state import GameState, PlanetState, Resources, normalize_planet_type
 
 NEWBIE_PROTECTION_POINTS = 10_000
 POINTS_PER_RESOURCE_DIVISOR = 1_000.0
@@ -654,7 +654,7 @@ def record_rank_snapshot(
 ) -> list[dict[str, Any]]:
     """Append a deduplicated rank/points observation to `history_path` (SQLite or JSON) and return samples."""
     if history_path is not None and _is_sqlite_rank_store(history_path):
-        from spaceinvasion.storage import GameDatabase
+        from spaceinvasion.db.storage import GameDatabase
 
         db = GameDatabase(history_path)
         try:

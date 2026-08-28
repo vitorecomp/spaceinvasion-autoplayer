@@ -23,7 +23,7 @@ import requests
 
 WIKI_INDEX_URL = "https://spaceinvasion.bitmeup.com/wiki/en/"
 MERCHANT_URL = "https://spaceinvasion.bitmeup.com/wiki/en/economy/merchant"
-OUTPUT_PATH = Path(__file__).resolve().parent.parent / "spaceinvasion" / "game_data.py"
+OUTPUT_PATH = Path(__file__).resolve().parent.parent / "spaceinvasion" / "core" / "game_data.py"
 
 BUILDING_ID_BY_SLUG: dict[str, int] = {
     "pig-iron-mine": 1,

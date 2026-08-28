@@ -9,9 +9,9 @@ import re
 import time
 from typing import Any, Mapping, Optional, Sequence
 
-from spaceinvasion import game_data
-from spaceinvasion.config import StrategyConfig, normalize_planner_mode
-from spaceinvasion.state import (
+from spaceinvasion.core import game_data
+from spaceinvasion.core.config import StrategyConfig, normalize_planner_mode
+from spaceinvasion.core.state import (
     RAID_COLONY_FORBIDDEN_BUILDINGS,
     BuildingOffer,
     EnergyBalance,
@@ -116,14 +116,14 @@ _fleet_mod: Any = None
 def _get_fleet() -> Any:
     global _fleet_mod
     if _fleet_mod is None:
-        from spaceinvasion import fleet as _loaded_fleet
+        from spaceinvasion.combat import fleet as _loaded_fleet
 
         _fleet_mod = _loaded_fleet
     return _fleet_mod
 
 
 def attach_action_etas(state: GameState, actions: list[PlannedAction]) -> list[PlannedAction]:
-    from spaceinvasion.ranking import attach_action_etas as _attach_etas
+    from spaceinvasion.combat.ranking import attach_action_etas as _attach_etas
 
     return _attach_etas(state, actions)
 
@@ -2026,15 +2026,17 @@ def _plan_combat_and_raid_actions(
         if colonize_actions:
             colonize_actions.sort(key=lambda item: item[0])
             out_actions.extend(act for _, act in colonize_actions[:1])
-        elif colony_spy_actions:
-            colony_spy_actions.sort(key=lambda item: item[0])
-            out_actions.extend(act for _, act in colony_spy_actions[:2])
+        if scored_attacks:
+            scored_attacks.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in scored_attacks[:2])
         if recycle_actions:
             recycle_actions.sort(key=lambda item: item[0])
             out_actions.extend(act for _, act in recycle_actions[:2])
-        if scored_attacks:
-            scored_attacks.sort(key=lambda item: item[0])
-            out_actions.extend(act for _, act in scored_attacks[:3])
+        if not colonize_actions and colony_spy_actions:
+            colony_spy_actions.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in colony_spy_actions[:2])
+        if len(scored_attacks) > 2:
+            out_actions.extend(act for _, act in scored_attacks[2:3])
         if spy_actions:
             spy_actions.sort(key=lambda item: item[0])
             out_actions.extend(act for _, act in spy_actions[:2])
@@ -3760,7 +3762,7 @@ def plan_actions(
     warn_ratio = _resolve_storage_warn_ratio(cfg, storage_warn_ratio)
 
     if normalize_planner_mode(getattr(cfg, "planner_mode", "priority")) == "ga_nn":
-        from spaceinvasion.optimizer import optimize_plan_actions
+        from spaceinvasion.planner.optimizer import optimize_plan_actions
 
         opt_kwargs: dict[str, Any] = {
             "storage_warn_ratio": warn_ratio,
@@ -3862,7 +3864,7 @@ def merge_manual_queue_actions(
     if not manual_queue or not state.planets:
         return list(planned_actions), []
 
-    from spaceinvasion.ranking import attach_action_etas
+    from spaceinvasion.combat.ranking import attach_action_etas
 
     cfg = config or StrategyConfig()
     active_p = state.active_planet() or state.planets[0]
