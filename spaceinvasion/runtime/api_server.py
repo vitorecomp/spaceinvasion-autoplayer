@@ -84,6 +84,7 @@ from spaceinvasion.core.state import (
     count_allocated_normal_planets,
     is_building_allowed_on_planet_type,
     is_in_flight_fleet_job,
+    is_undersized_fresh_colony,
     normalize_planet_type,
     parse_economy_rates,
     parse_home_metadata,
@@ -157,6 +158,7 @@ ALLOWED_MENU_ACTIONS = frozenset(
         "internalUniverse",
         "internalStatistics",
         "internalToplist",
+        "internalSettings",
     }
 )
 
@@ -5015,6 +5017,7 @@ class GameApiBridge:
                 "ATTACK",
                 "RECYCLE",
                 "COLONIZE",
+                "ABANDON_COLONY",
                 "SCAN_GALAXY",
                 "CLAIM_TUTORIAL",
             }
@@ -6713,7 +6716,7 @@ class GameApiBridge:
                             except (RateLimitError, AntiBotChallengeError, SpaceInvasionAuthError):
                                 raise
                             except Exception:
-                                if action not in ("internalStatistics", "internalToplist", "internalUniverse"):
+                                if action not in ("internalStatistics", "internalToplist", "internalUniverse", "internalSettings"):
                                     raise
                                 build_url = getattr(client, "_build_internal_url", None)
                                 res_sid = getattr(client, "_resolve_sid_query", None)
@@ -7422,6 +7425,89 @@ class GameApiBridge:
                                 )
                             )
                         return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
+
+                    if cmd == "abandon_colony":
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
+                        raw_tc = payload.get("target_coords")
+                        norm_tc = (
+                            normalize_coords(raw_tc.strip())
+                            if isinstance(raw_tc, str) and re.fullmatch(r"\d{1,2}:\d{1,3}:\d{1,2}", raw_tc.strip(), re.ASCII)
+                            else ""
+                        )
+                        if pid is None and not norm_tc:
+                            raise ApiRequestError(
+                                "'abandon_colony' command requires 'planet_id' or 'target_coords'."
+                            )
+                        min_col_f = _parse_command_int(
+                            "min_colony_fields",
+                            payload.get("min_colony_fields"),
+                            allow_none=True,
+                            min_val=50,
+                            max_val=1000,
+                        ) or max(50, _safe_api_int(getattr(self._config, "min_colony_fields", 300), 300))
+                        state = _cached_or_fetch(
+                            include_buildings=False,
+                            include_research=False,
+                            include_shipyard=False,
+                            include_home=False,
+                            priority="interactive",
+                        )
+                        if pid is not None:
+                            planet = self._resolve_planet(state, pid)
+                        else:
+                            p_found = next(
+                                (p for p in state.planets if normalize_coords(p.coords) == norm_tc),
+                                None,
+                            )
+                            if p_found is None:
+                                raise ApiRequestError(f"Unknown colony coordinates {norm_tc}.")
+                            planet = p_found
+                        safe_ab = is_undersized_fresh_colony(planet, state, min_col_f)
+                        planned = PlannedAction(
+                            priority="P1",
+                            kind="ABANDON_COLONY",
+                            planet_id=planet.planet_id,
+                            planet_coords=planet.coords,
+                            target_level=min_col_f,
+                            target_name=f"Delete colony {planet.coords} ({planet.fields_max}/{min_col_f} fields)",
+                            reason=(
+                                f"Delete undersized colony {planet.coords} ({planet.fields_max} < {min_col_f} fields)"
+                                if safe_ab
+                                else f"Safety check blocked deleting {planet.coords} ({planet.fields_used}/{planet.fields_max} fields)"
+                            ),
+                            executable_now=True,
+                        )
+                        if not dry_run and not self._live_executor.allow_colonize:
+                            return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
+                        if not safe_ab:
+                            blocked_plan = replace(planned, executable_now=False)
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "dry_run": dry_run,
+                                        "message": (
+                                            f"Aborted safety check: refusing to delete [{planet.coords}] "
+                                            f"({planet.fields_used}/{planet.fields_max} fields) — Homeworld, developed, stationed fleet/defense, or >= {min_col_f} fields."
+                                        ),
+                                        "action": self._serialize_action(blocked_plan, state),
+                                        "next_action": None,
+                                    }
+                                )
+                            )
+                        res_ab = self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
+                        if isinstance(res_ab, Mapping) and res_ab.get("executed"):
+                            self._fetched_buildings_planets.discard(planet.planet_id)
+                            self._fetched_shipyard_planets.discard(planet.planet_id)
+                        return res_ab
 
                     if cmd == "attack":
                         raw_target_coords = payload.get("target_coords")

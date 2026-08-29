@@ -36,6 +36,8 @@ from spaceinvasion.core.logging_utils import append_crash_debug_log, redact_sens
 from spaceinvasion.core.state import (
     GameState,
     QueueJob,
+    homeworld_planet_id,
+    is_undersized_fresh_colony,
     normalize_planet_type,
     parse_building_queue,
     parse_buildings_page,
@@ -3123,6 +3125,7 @@ class ActionExecutor:
         supported = (
             "BUILD",
             "DEMOLISH_BUILDING",
+            "ABANDON_COLONY",
             "CLAIM_TUTORIAL",
             "ACTIVATE_TRANSMITTER",
             "RESEARCH",
@@ -3166,6 +3169,9 @@ class ActionExecutor:
                 suffix = f" ({max(1, game_data.cap_json_int(game_data.safe_int(action.target_level, 1)))}x s11)"
             elif action.kind == "COLONIZE":
                 suffix = " (1x s8)"
+            elif action.kind == "ABANDON_COLONY":
+                min_f_dry = max(50, game_data.safe_int(action.target_level, 300))
+                suffix = f" (< {game_data.fmt_compact_int(min_f_dry)} fields)"
             elif tgt_lvl_opt is not None and action.kind == "DEMOLISH_BUILDING":
                 suffix = f" -> L{game_data.fmt_compact_int(tgt_lvl_opt)}"
             elif tgt_lvl_opt:
@@ -3191,6 +3197,14 @@ class ActionExecutor:
                 dry_run=False,
                 action=action,
                 message="Guarded: live COLONIZE requires allow_colonize=true in config.",
+            )
+
+        if action.kind == "ABANDON_COLONY" and not self.allow_colonize:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message="Guarded: live ABANDON_COLONY requires allow_colonize=true in config.",
             )
 
         if action.kind == "ATTACK" and not self.allow_raids:
@@ -3225,6 +3239,8 @@ class ActionExecutor:
             res = self._execute_build(client, state, action)
         elif action.kind == "DEMOLISH_BUILDING":
             res = self._execute_demolish_building(client, state, action)
+        elif action.kind == "ABANDON_COLONY":
+            res = self._execute_abandon_colony(client, state, action)
         elif action.kind == "RESEARCH":
             res = self._execute_research(client, state, action)
         elif action.kind == "BUILD_SHIP":
@@ -3269,6 +3285,184 @@ class ActionExecutor:
                 active_planet_confirmed=active_planet_confirmed,
             )
         return self._attach_observed_planet(res)
+
+    def _execute_abandon_colony(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+    ) -> ExecutionResult:
+        """Delete an undersized newly settled secondary colony (`< min_colony_fields`, 0 buildings/ships) via `internalSettings`."""
+        planet = next((p for p in state.planets if p.planet_id == action.planet_id), None)
+        if planet is None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: colony planet_id={action.planet_id} no longer exists in empire state.",
+            )
+        raw_min = game_data.safe_optional_int(action.target_level, None)
+        min_fields = max(50, int(raw_min)) if (raw_min is not None and raw_min >= 50) else 300
+        coords_s = _safe_str(planet.coords or action.planet_coords)
+        if not is_undersized_fresh_colony(planet, state, min_fields):
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=(
+                    f"Aborted safety check: refusing to delete planet [{coords_s}] "
+                    f"({planet.fields_used}/{planet.fields_max} fields) — Homeworld, developed, stationed fleet/defense, or >= {min_fields} fields."
+                ),
+            )
+
+        settings_html = _call_with_optional_priority(
+            client.navigate_menu,
+            "internalSettings",
+            priority="interactive",
+        )
+        soup = BeautifulSoup(settings_html if isinstance(settings_html, str) else "", "html.parser")
+        inp = soup.find("input", attrs={"name": f"planet_{planet.planet_id}"})
+        if inp is None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: input planet_{planet.planet_id} ([{coords_s}]) not found on internalSettings.",
+            )
+        row_tr = inp.find_parent("tr")
+        row_text = " ".join(row_tr.get_text(" ", strip=True).split()) if row_tr is not None else ""
+        if re.search(r"\bpos\.?\s*1\b", row_text, re.IGNORECASE):
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted safety check: refusing to delete Pos. 1 Homeworld ([{coords_s}]) on internalSettings.",
+            )
+        m_fields = re.search(r"(\d+)\s*/\s*(\d+)\s*(?:fields|felder)", row_text, re.IGNORECASE | re.ASCII)
+        if m_fields is not None:
+            dom_used = int(m_fields.group(1))
+            dom_max = int(m_fields.group(2))
+            if dom_used > 0 or dom_max <= 0 or dom_max >= min_fields:
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=(
+                        f"Aborted safety check: internalSettings reports {dom_used}/{dom_max} Fields on [{coords_s}] "
+                        f"(expected 0/{planet.fields_max} < {min_fields})."
+                    ),
+                )
+        if coords_s:
+            m_rc = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", row_text, re.ASCII)
+            m_pc = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", coords_s, re.ASCII)
+            if m_rc and m_pc:
+                norm_dom_c = f"{int(m_rc.group(1)):02d}:{int(m_rc.group(2)):03d}:{int(m_rc.group(3)):02d}"
+                norm_pl_c = f"{int(m_pc.group(1)):02d}:{int(m_pc.group(2)):03d}:{int(m_pc.group(3)):02d}"
+                if norm_dom_c != norm_pl_c:
+                    return ExecutionResult(
+                        executed=False,
+                        dry_run=False,
+                        action=action,
+                        message=f"Aborted safety check: planet_{planet.planet_id} coords mismatch on internalSettings ({norm_dom_c} != {norm_pl_c}).",
+                    )
+
+        pid_token_re = re.compile(rf"\b{int(planet.planet_id)}\b", re.ASCII)
+        client._switch_frame("F_Hauptframe")
+        nav_token = self._mark_frame_nav(client)
+        try:
+            del_candidates = client.driver.find_elements(
+                By.CSS_SELECTOR,
+                '[onclick*="confirmPlanetDeletion"], [onclick*="deletePlanet"]',
+            )
+            del_trigger = None
+            for el in del_candidates:
+                oc = str(el.get_attribute("onclick") or "")
+                if pid_token_re.search(oc):
+                    del_trigger = el
+                    break
+            if del_trigger is None:
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=action,
+                    message=f"Aborted: confirmPlanetDeletion control for planet_{planet.planet_id} ([{coords_s}]) not found on internalSettings.",
+                )
+            oc_trigger = str(del_trigger.get_attribute("onclick") or "")
+            if "confirmPlanetDeletion" in oc_trigger:
+                self._safe_click(client, del_trigger)
+                confirm_btn = None
+                deadline = time.monotonic() + 1.5
+                while time.monotonic() < deadline:
+                    btns = client.driver.find_elements(
+                        By.CSS_SELECTOR,
+                        '#delete-confirm [onclick*="executeDeletePlanet"]',
+                    )
+                    if btns:
+                        confirm_btn = btns[0]
+                        break
+                    time.sleep(0.05)
+                if confirm_btn is None:
+                    return ExecutionResult(
+                        executed=False,
+                        dry_run=False,
+                        action=action,
+                        message=f"Aborted: #delete-confirm executeDeletePlanet button did not appear for [{coords_s}].",
+                    )
+                self._pace_action(client, priority="interactive")
+                nav_token = self._mark_frame_nav(client)
+                time.sleep(random.uniform(*self.action_delay_range))
+                self._safe_click(client, confirm_btn)
+            else:
+                self._pace_action(client, priority="interactive")
+                nav_token = self._mark_frame_nav(client)
+                time.sleep(random.uniform(*self.action_delay_range))
+                self._safe_click(client, del_trigger)
+        except (StaleElementReferenceException, NoSuchElementException, ElementNotInteractableException, WebDriverException) as exc:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: internalSettings planet deletion controls failed for [{coords_s}] ({type(exc).__name__}).",
+            )
+
+        after_html = client._wait_frame_ready(
+            "F_Hauptframe",
+            expected_action="internalSettings",
+            nav_token=nav_token,
+        )
+        self._recent_timestamps.append(time.monotonic())
+        after_soup = BeautifulSoup(after_html if isinstance(after_html, str) else "", "html.parser")
+        gone_on_settings = after_soup.find("input", attrs={"name": f"planet_{planet.planet_id}"}) is None
+
+        hw_pid = homeworld_planet_id(state)
+        if hw_pid is not None and hw_pid != planet.planet_id and hasattr(client, "select_planet"):
+            with contextlib.suppress(Exception):
+                _call_with_optional_priority(client.select_planet, hw_pid, priority="interactive")
+
+        updated = _call_with_optional_priority(
+            client.read_planets_overview,
+            refresh=True,
+            priority="interactive",
+        )
+        gone_in_overview = all(p.planet_id != planet.planet_id for p in (updated.planets or ()))
+        deleted_ok = bool(gone_on_settings and gone_in_overview)
+        return ExecutionResult(
+            executed=deleted_ok,
+            dry_run=False,
+            action=action,
+            message=(
+                f"Deleted undersized colony [{coords_s}] ({planet.fields_max} fields < {min_fields} target) to re-colonize."
+                if deleted_ok
+                else f"Failed to verify deletion of colony [{coords_s}] (planet_{planet.planet_id} still present)."
+            ),
+            updated_state=updated,
+            validated=deleted_ok,
+            validation_error=(
+                None
+                if deleted_ok
+                else f"Colony planet_{planet.planet_id} ([{coords_s}]) still present after executeDeletePlanet."
+            ),
+        )
 
 
 def _is_unattackable_target_html(html_or_text: str) -> bool:

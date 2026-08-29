@@ -732,6 +732,268 @@ class TestSweepAndTransmitter(unittest.TestCase):
         self.assertEqual(sent_cmds, ["throttle_building", "spy"])
         self.assertTrue(any(o.get("executed") for o in tick_outcomes))
 
+    def test_undersized_colony_auto_deletion_and_top_queue_colony_priority(self) -> None:
+        from dataclasses import replace
+        from spaceinvasion.core.state import (
+            EnergyBalance,
+            QueueJob,
+            homeworld_planet_id,
+            is_undersized_fresh_colony,
+        )
+
+        # Homeworld has 138/230 fields (< 300!), plus a fresh 215-field roll at 02:380:08 and a developed 240-field colony
+        homeworld = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=15,
+            fields_used=138,
+            fields_max=230,
+            resources=Resources(80_000, 80_000, 80_000, 80_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(500, 400),
+            buildings={"b1": 18, "b2": 14, "b3": 16, "b4": 14, "b5": 16, "b6": 4, "b7": 8, "b8": 6, "b9": 5, "b10": 5},
+            ships={"s1": 10, "s8": 1, "s10": 5, "s11": 3},
+        )
+        fresh_undersized = PlanetState(
+            planet_id=12999,
+            name="Colony",
+            coords="02:380:08",
+            planet_type="normal",
+            temperature=28,
+            fields_used=0,
+            fields_max=215,
+            resources=Resources(500, 500, 0, 0),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(0, 0),
+            buildings={},
+            ships={},
+            defense={},
+        )
+        developed_small = replace(
+            fresh_undersized,
+            planet_id=13000,
+            coords="02:380:07",
+            fields_used=1,
+            buildings={"b1": 1},
+        )
+        good_colony = replace(
+            fresh_undersized,
+            planet_id=13001,
+            coords="02:380:06",
+            fields_max=318,
+        )
+        st_check = GameState(
+            31,
+            7,
+            "cmdr",
+            1_700_000_200.0,
+            (homeworld, fresh_undersized, developed_small, good_colony),
+            active_planet_id=12476,
+            researches={"r1": 4, "r2": 4, "r3": 4, "r4": 8, "r7": 4},
+        )
+        self.assertEqual(homeworld_planet_id(st_check), 12476)
+        self.assertFalse(is_undersized_fresh_colony(homeworld, st_check, 300))
+        self.assertFalse(is_undersized_fresh_colony(replace(homeworld, fields_used=0, buildings={}, ships={}), st_check, 300))
+        self.assertTrue(is_undersized_fresh_colony(fresh_undersized, st_check, 300))
+        self.assertFalse(is_undersized_fresh_colony(developed_small, st_check, 300))
+        self.assertFalse(is_undersized_fresh_colony(good_colony, st_check, 300))
+        self.assertFalse(is_undersized_fresh_colony(replace(fresh_undersized, ships={"s1": 1}), st_check, 300))
+
+        # 2. Both priority and ga_nn put ABANDON_COLONY -> COLONIZE at the VERY TOP of P1 (even with 3/6 fleets in flight
+        #    and Thermosolar demolition + raid/recycle/spy available), and NEVER plan buildings on planet 12999!
+        in_flight_three = tuple(
+            QueueJob(category="fleet", name=f"Attack -> [02:381:0{i}]", remaining_seconds=120.0, detail="Outbound")
+            for i in (1, 2, 3)
+        )
+        raid_targets = (
+            {
+                "coords": "02:380:09",
+                "owner": "",
+                "status_color": "free",
+                "colonize_min_fields": 140,
+                "colonize_max_fields": 340,
+                "temperature": 12,
+                "last_scanned_ts": 1_700_000_195.0,
+            },
+            {
+                "coords": "02:380:10",
+                "owner": "",
+                "status_color": "free",
+                "last_scanned_ts": 1_700_000_190.0,
+            },
+            {
+                "coords": "02:380:04",
+                "owner": "IdlePlayer",
+                "status_color": "yellow",
+                "is_inactive": True,
+                "has_debris": True,
+                "has_spy_intel": True,
+                "last_spied_ts": 1_700_000_180.0,
+                "pig_iron": 50_000,
+                "metal": 30_000,
+                "kryptonite": 20_000,
+                "spice": 10_000,
+            },
+        )
+        st_col_top = GameState(
+            31,
+            7,
+            "cmdr",
+            1_700_000_200.0,
+            (homeworld, fresh_undersized),
+            active_planet_id=12476,
+            researches={"r1": 4, "r2": 4, "r3": 4, "r4": 8, "r7": 4},
+            active_queues=in_flight_three,
+            raid_targets=raid_targets,
+        )
+        for mode in ("priority", "ga_nn"):
+            cfg_top = StrategyConfig(
+                planner_mode=mode,
+                playstyle="fleeter",
+                allow_multi_planet=True,
+                allow_shipyard=True,
+                allow_raids=True,
+                allow_galaxy_scan=True,
+                allow_colonize=True,
+                forbid_planetary_solar=True,
+                min_colony_fields=300,
+                max_planets=11,
+                reserved_spy_slots=1,
+                ga_population_size=6,
+                ga_generations=2,
+            )
+            acts_top = plan_actions(st_col_top, config=cfg_top, now_ts=1_700_000_200.0)
+            self.assertGreaterEqual(len(acts_top), 3, mode)
+            # #0 = ABANDON_COLONY (delete 215-field roll), #1 = COLONIZE -> 02:380:09 (executable even with 3/6 fleets in flight!)
+            self.assertEqual((acts_top[0].priority, acts_top[0].kind, acts_top[0].planet_id, acts_top[0].executable_now), ("P1", "ABANDON_COLONY", 12999, True), mode)
+            self.assertEqual((acts_top[1].priority, acts_top[1].kind, acts_top[1].executable_now), ("P1", "COLONIZE", True), mode)
+            self.assertIn("02:380:09", acts_top[1].target_name, mode)
+            # Zero buildings/ships planned on undersized colony 12999 slated for deletion
+            self.assertFalse(
+                any(a.planet_id == 12999 and a.kind != "ABANDON_COLONY" for a in acts_top),
+                mode,
+            )
+
+        # When 0 Colony ships (s8) are stationed, P1 BUILD_SHIP Colony ship (target_id=8) is emitted at the top of the queue!
+        st_need_s8 = replace(st_col_top, planets=(replace(homeworld, ships={"s1": 10, "s10": 5}),))
+        for mode in ("priority", "ga_nn"):
+            acts_s8 = plan_actions(
+                st_need_s8,
+                config=StrategyConfig(
+                    planner_mode=mode,
+                    allow_colonize=True,
+                    allow_shipyard=True,
+                    allow_galaxy_scan=True,
+                    min_colony_fields=300,
+                    max_planets=11,
+                    ga_population_size=6,
+                    ga_generations=2,
+                ),
+                now_ts=1_700_000_200.0,
+            )
+            s8_act = next((a for a in acts_s8 if a.kind == "BUILD_SHIP" and a.target_id == 8), None)
+            self.assertIsNotNone(s8_act, mode)
+            assert s8_act is not None
+            self.assertEqual((s8_act.priority, s8_act.executable_now), ("P1", True), mode)
+
+        # 3. _execute_abandon_colony clicks confirmPlanetDeletion -> executeDeletePlanet on internalSettings & blocks Pos. 1!
+        settings_before = """
+        <html><body>
+          <form method="POST">
+            <table>
+              <tr>
+                <td><b>Pos. 1</b></td>
+                <td><input name="planet_12476" type="text" value="Colony"/></td>
+                <td>02:380:12</td>
+                <td>138 / 230 Fields</td>
+                <td><a onclick="confirmPlanetDeletion('02:380:12', 12476)">Delete</a></td>
+              </tr>
+              <tr>
+                <td><b>Pos. 2</b></td>
+                <td><input name="planet_12999" type="text" value="Colony"/></td>
+                <td>02:380:08</td>
+                <td>0 / 215 Fields</td>
+                <td><a onclick="confirmPlanetDeletion('02:380:08', 12999)">Delete</a></td>
+              </tr>
+            </table>
+          </form>
+          <div id="delete-confirm" style="display:block">
+            <div onclick="executeDeletePlanet();">delete planet 02:380:08</div>
+          </div>
+        </body></html>
+        """
+        settings_after = """
+        <html><body>
+          <form method="POST">
+            <table>
+              <tr>
+                <td><b>Pos. 1</b></td>
+                <td><input name="planet_12476" type="text" value="Colony"/></td>
+                <td>02:380:12</td>
+                <td>138 / 230 Fields</td>
+              </tr>
+            </table>
+          </form>
+        </body></html>
+        """
+        clicked_els: list[str] = []
+
+        class _FakeEl:
+            def __init__(self, oc: str) -> None:
+                self._oc = oc
+
+            def get_attribute(self, name: str) -> str:
+                return self._oc if name == "onclick" else ""
+
+            def click(self) -> None:
+                clicked_els.append(self._oc)
+
+        fake_client = MagicMock()
+        fake_client.navigate_menu.return_value = settings_before
+        fake_client._wait_frame_ready.return_value = settings_after
+        fake_client.read_planets_overview.return_value = replace(st_col_top, planets=(homeworld,))
+
+        def _find_els(_by, sel: str):
+            if "confirmPlanetDeletion" in sel:
+                return [
+                    _FakeEl("confirmPlanetDeletion('02:380:12', 12476)"),
+                    _FakeEl("confirmPlanetDeletion('02:380:08', 12999)"),
+                ]
+            if "executeDeletePlanet" in sel:
+                return [_FakeEl("executeDeletePlanet();")]
+            return []
+
+        fake_client.driver.find_elements.side_effect = _find_els
+        exec_ab = ActionExecutor(dry_run=False, allow_colonize=True, action_delay_range=(0.0, 0.0))
+        ab_act = plan_actions(
+            st_col_top,
+            config=StrategyConfig(allow_colonize=True, min_colony_fields=300, max_planets=11),
+            now_ts=1_700_000_200.0,
+        )[0]
+        res_ab = exec_ab.execute_action(fake_client, st_col_top, ab_act)
+        self.assertTrue(res_ab.executed)
+        self.assertTrue(res_ab.validated)
+        self.assertEqual(clicked_els, ["confirmPlanetDeletion('02:380:08', 12999)", "executeDeletePlanet();"])
+
+        # Attempting to execute ABANDON_COLONY against Homeworld 12476 is strictly blocked!
+        bad_hw_act = replace(ab_act, planet_id=12476, planet_coords="02:380:12")
+        res_hw = exec_ab.execute_action(fake_client, st_col_top, bad_hw_act)
+        self.assertFalse(res_hw.executed)
+        self.assertIn("Aborted safety check", res_hw.message)
+
+        # Commander maps ABANDON_COLONY -> {"command": "abandon_colony", ...}
+        import importlib.util
+        spec_c = importlib.util.spec_from_file_location("commander_cli_ab", Path(__file__).resolve().parents[2] / "bin" / "commander.py")
+        assert spec_c is not None and spec_c.loader is not None
+        cmd_mod_ab = importlib.util.module_from_spec(spec_c)
+        spec_c.loader.exec_module(cmd_mod_ab)
+        cmd_payload = cmd_mod_ab._action_to_command_payload(ab_act, dry_run=False)
+        self.assertEqual(cmd_payload["command"], "abandon_colony")
+        self.assertEqual(cmd_payload["planet_id"], 12999)
+        self.assertEqual(cmd_payload["min_colony_fields"], 300)
+
 
 if __name__ == "__main__":
     unittest.main()

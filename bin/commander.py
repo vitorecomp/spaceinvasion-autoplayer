@@ -374,6 +374,13 @@ def _action_to_command_payload(action: PlannedAction, *, dry_run: bool) -> dict:
             "planet_id": pid,
             "dry_run": dry_run,
         }
+    if action.kind == "ABANDON_COLONY":
+        return {
+            "command": "abandon_colony",
+            "planet_id": pid,
+            "min_colony_fields": max(50, _safe_cmd_int(action.target_level, 300)),
+            "dry_run": dry_run,
+        }
     if action.kind == "ACTIVATE_TRANSMITTER":
         return {
             "command": "activate_transmitter",

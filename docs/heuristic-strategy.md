@@ -214,6 +214,24 @@ To preserve scarce planetary building fields for late-game mines and infrastruct
    - If `avail_e_buffer - safe_b6_loss >= 0`, emits `P1` `DEMOLISH_BUILDING` (`Thermosolar plant`, `target_level = cur_b6 - 1`).
    - Otherwise, emits `P1` `BUILD` (`Fusion plant` `b5`) first so tearing down `b6` never causes negative energy.
 
+### 4.5 `P1` Colony Expansion Frontier & Undersized Colony Auto-Deletion (`ABANDON_COLONY` + `COLONIZE`)
+
+Whenever `effective_allocated_normal < max_planets` (default `11`) and `allow_colonize=true` (or an active colonization tutorial task is pending), **Colony Expansion tasks always sit at the very top of `P1` (`_band_subrank == (0, 0..5)`)**, strictly ahead of routine `P1` warehouse/demolition/throttle maintenance and all `P2` economy/raid actions in both `priority` and `ga_nn` modes:
+
+1. **`ABANDON_COLONY` (`< min_colony_fields` Fresh-Roll Auto-Deletion, Top of `P1`)**:
+   - Because SpaceInvasion RETRO free slots roll fields stochastically from a range (`planet.colonize = [minFields, maxFields, bonus]`, e.g. `140–340` fields), a newly settled colony that rolls `< min_colony_fields` (default **`300`** fields) is immediately queued for deletion via `action=internalSettings` (`confirmPlanetDeletion('<coords>', <pid>)` -> `#delete-confirm [onclick*="executeDeletePlanet"]`, `POST /command {"command": "abandon_colony", "planet_id": <pid>}`).
+   - **Multi-Layer Homeworld & Developed-Colony Safety Invariant (`is_undersized_fresh_colony`)**: `ABANDON_COLONY` is strictly forbidden unless **all** of the following hold simultaneously:
+     1. `planet_type == "normal"` and `len(normal_planets) >= 2` (`planet_id != homeworld_planet_id(state)`, never `Pos. 1` on `internalSettings`).
+     2. `0 < fields_max < min_colony_fields` (`300`).
+     3. **Zero development & zero stationed fleet/defenses**: `fields_used == 0`, `sum(buildings) == 0`, `sum(ships except s9) == 0`, `sum(defense) == 0`, and zero active construction jobs.
+     4. All building/shipyard planning on `undersized_pids` is suppressed so no building is ever started on an undersized roll prior to deletion.
+2. **`COLONIZE` (`s8` *Colony ship* — Top `P1` Fleet Dispatch & Slot Reservation)**:
+   - Dispatches a stationed `Colony ship` (`s8`) to the highest-graded non-discarded candidate meeting `>= min_colony_fields` (either exact `uninhabited_fields >= 300` or RETRO 2D Galaxy `colonize_max_fields >= 300` in prime `Pos 7–12`), skipping coordinates that already have an outbound `COLONIZE` flight in transit (`extract_in_flight_colonize_coords`).
+   - Uses full `1 + b10` concurrent fleet-slot capacity (`used_fleet_slots < max_fleet_slots`), is **never** held back by `reserved_spy_slots`, and reserves `1` fleet slot on the `Colony ship`'s origin planet so lower-priority `P2` `ATTACK`, `RECYCLE`, and player `SPY` missions never steal the last open flight slot from `COLONIZE`.
+3. **`BUILD_SHIP Colony ship` (`s8`), Free-Slot Colony `SPY`, and Colony `SCAN_GALAXY` (`P1`)**:
+   - When `open_colony_slots > 0` and no `Colony ship` (`s8`) is stationed, emits `P1` `BUILD_SHIP Colony ship` (`10k Pig, 20k Metal, 10k Krypt, 5k Spice`, treated as a top Metal consumer by `_plan_blast_furnace_throttle`).
+   - While `qualified_candidates_count < needed_colonies`, free-slot `SPY` probes (`1x s10`, `02:380:08 (Free slot)`) and spiral `SCAN_GALAXY` colony discovery also run at **`P1`**.
+
 ---
 
 ## 5. `P2` Tutorial, Economy ROI, Tech/Shipyard & Autonomous Fleet Dispatch Rules

@@ -650,6 +650,86 @@ def is_raid_planet(planet_or_type: Any) -> bool:
     return normalize_planet_type(planet_or_type) == "raid"
 
 
+def homeworld_planet_id(state: Any) -> Optional[int]:
+    """Return the Pos. 1 Homeworld `planet_id` (first normal planet in `state.planets`)."""
+    planets = getattr(state, "planets", ()) or ()
+    for p in planets:
+        if normalize_planet_type(p) == "normal":
+            pid = _safe_state_int(getattr(p, "planet_id", 0), 0)
+            if pid > 0:
+                return pid
+    if planets:
+        pid0 = _safe_state_int(getattr(planets[0], "planet_id", 0), 0)
+        return pid0 if pid0 > 0 else None
+    return None
+
+
+def is_undersized_fresh_colony(
+    planet: Any,
+    state: Any,
+    min_colony_fields: int = 300,
+) -> bool:
+    """Return True iff `planet` is a newly settled secondary normal colony with `< min_colony_fields` and zero development/ships."""
+    if planet is None or state is None:
+        return False
+    if normalize_planet_type(planet) != "normal":
+        return False
+    planets = list(getattr(state, "planets", ()) or ())
+    normal_planets = [p for p in planets if normalize_planet_type(p) == "normal"]
+    if len(normal_planets) < 2:
+        return False
+    pid = _safe_state_int(getattr(planet, "planet_id", 0), 0)
+    hw_id = homeworld_planet_id(state)
+    if pid <= 0 or (hw_id is not None and pid == hw_id):
+        return False
+    pname_l = _safe_state_str(getattr(planet, "name", "")).strip().lower()
+    if "homeworld" in pname_l or "heimatplanet" in pname_l:
+        return False
+    min_tgt = max(50, game_data.safe_int(min_colony_fields, 300))
+    f_max = max(0, _safe_state_int(getattr(planet, "fields_max", 0), 0))
+    if f_max <= 0 or f_max >= min_tgt:
+        return False
+    f_used = max(0, _safe_state_int(getattr(planet, "fields_used", 0), 0))
+    if f_used > 0:
+        return False
+    b_map = getattr(planet, "buildings", None)
+    if isinstance(b_map, Mapping) and sum(max(0, _safe_state_int(v, 0)) for v in b_map.values()) > 0:
+        return False
+    s_map = getattr(planet, "ships", None)
+    if isinstance(s_map, Mapping) and sum(
+        max(0, _safe_state_int(v, 0)) for k, v in s_map.items() if game_data.safe_key(k) != "s9"
+    ) > 0:
+        return False
+    d_map = getattr(planet, "defense", None)
+    if isinstance(d_map, Mapping) and sum(max(0, _safe_state_int(v, 0)) for v in d_map.values()) > 0:
+        return False
+    if pid == _safe_state_int(getattr(state, "active_planet_id", 0), 0):
+        for q in getattr(state, "active_queues", ()) or ():
+            if getattr(q, "category", None) == "building":
+                return False
+    return True
+
+
+def extract_in_flight_colonize_coords(state: Any) -> set[str]:
+    """Return normalized `GG:SSS:PP` coordinates of outbound in-flight `COLONIZE` missions."""
+    out: set[str] = set()
+    for q in getattr(state, "active_queues", ()) or ():
+        if not is_in_flight_fleet_job(q):
+            continue
+        name_s = _safe_state_str(getattr(q, "name", ""))
+        detail_s = _safe_state_str(getattr(q, "detail", ""))
+        combined_l = f"{name_s} {detail_s}".lower()
+        if "return" in combined_l or "rück" in combined_l or "rueck" in combined_l:
+            continue
+        if not any(tok in combined_l for tok in ("coloniz", "koloni", "siedel")):
+            continue
+        for m in re.finditer(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", f"{name_s} {detail_s}", re.ASCII):
+            g, s, p = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if 1 <= g <= 14 and 1 <= s <= 400 and 1 <= p <= 16:
+                out.add(f"{g:02d}:{s:03d}:{p:02d}")
+    return out
+
+
 def is_building_allowed_on_planet_type(
     planet_or_type: Any,
     building_id: int,

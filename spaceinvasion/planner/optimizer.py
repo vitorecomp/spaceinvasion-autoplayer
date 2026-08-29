@@ -47,10 +47,12 @@ from spaceinvasion.core.state import (
     Resources,
     UnitOffer,
     _parse_cost_from_text,
+    extract_in_flight_colonize_coords,
     is_asteroid_planet,
     is_building_allowed_on_planet_type,
     is_in_flight_fleet_job,
     is_raid_planet,
+    is_undersized_fresh_colony,
     normalize_planet_type,
 )
 
@@ -7040,7 +7042,39 @@ def _materialize_planned_actions(
     p1_done_builds: set[tuple[int, int]] = set()
     p1_done_ships: set[tuple[int, int]] = set()
     ship_avail_before: dict[tuple[int, int], Resources] = {}
-    planets_to_check = list(state.planets) if cfg.allow_multi_planet else [active]
+    min_col_f_early = max(50, min(600, _safe_int(getattr(cfg, "min_colony_fields", 300), 300)))
+    undersized_colonies_opt = [
+        pl for pl in state.planets if is_undersized_fresh_colony(pl, state, min_col_f_early)
+    ]
+    undersized_pids_opt = {pl.planet_id for pl in undersized_colonies_opt}
+    tut_col_early = _opt_tutorial_colonize_task(
+        state.tutorial if (state.tutorial is not None and not state.tutorial.can_complete) else None
+    )
+    if undersized_colonies_opt and (bool(getattr(cfg, "allow_colonize", False)) or tut_col_early is not None):
+        for uc_opt in undersized_colonies_opt:
+            uc_c_s = _safe_action_str(uc_opt.coords)
+            hold_uc_o = "" if getattr(cfg, "allow_colonize", False) else " [Hold: allow_colonize=false in Config]"
+            plan.append(
+                _make_planned_action(
+                    priority="P1",
+                    kind="ABANDON_COLONY",
+                    planet_id=uc_opt.planet_id,
+                    planet_coords=uc_c_s,
+                    target_level=min_col_f_early,
+                    target_name=f"Delete colony {uc_c_s} ({uc_opt.fields_max}/{min_col_f_early} fields)",
+                    reason=(
+                        f"Settled colony {uc_c_s} rolled {uc_opt.fields_max} fields "
+                        f"(< {min_col_f_early} minimum) — delete in Settings to re-colonize{hold_uc_o}"
+                    ),
+                    executable_now=bool(getattr(cfg, "allow_colonize", False)),
+                )
+            )
+    raw_planets_to_check = list(state.planets) if cfg.allow_multi_planet else [active]
+    planets_to_check = [pl for pl in raw_planets_to_check if pl.planet_id not in undersized_pids_opt]
+    if not planets_to_check and state.planets:
+        fb_opt_p = next((pl for pl in state.planets if pl.planet_id not in undersized_pids_opt), None)
+        if fb_opt_p is not None:
+            planets_to_check = [fb_opt_p]
     for p in planets_to_check:
         if is_raid_planet(p):
             continue
@@ -8256,9 +8290,16 @@ def _materialize_planned_actions(
         if req_spy_pid_opt > 0
         else None
     )
-    allocated_norm_opt = sum(1 for pl in state.planets if normalize_planet_type(pl) == "normal")
+    raw_alloc_norm_opt = sum(1 for pl in state.planets if normalize_planet_type(pl) == "normal")
+    allocated_norm_opt = (
+        max(1, raw_alloc_norm_opt - len(undersized_colonies_opt))
+        if raw_alloc_norm_opt > 0
+        else 0
+    )
+    in_flight_col_opt = extract_in_flight_colonize_coords(state)
     max_p_opt = max(1, _safe_int(getattr(cfg, "max_planets", 11), 11))
     needed_col_opt = max(0, max_p_opt - allocated_norm_opt)
+    open_col_slots_opt = max(0, needed_col_opt - len(in_flight_col_opt))
     min_col_f = max(50, min(600, _safe_int(getattr(cfg, "min_colony_fields", 300), 300)))
     qualified_col_coords_opt: set[str] = set()
     for raw_qc in state.raid_targets or ():
@@ -8301,7 +8342,7 @@ def _materialize_planned_actions(
                 )
                 plan.append(
                     _make_planned_action(
-                        priority="P2",
+                        priority="P1" if want_col_probes_opt else "P2",
                         kind="BUILD_SHIP",
                         planet_id=designated_spy_opt.planet_id,
                         planet_coords=_safe_action_str(designated_spy_opt.coords),
@@ -8316,12 +8357,13 @@ def _materialize_planned_actions(
                 )
 
     if allocated_norm_opt < max_p_opt and bool(
-        getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None or want_col_probes_opt
+        (open_col_slots_opt > 0 and (getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None))
+        or want_col_probes_opt
     ):
         non_raid_col_p = [pl for pl in planets_to_check if not is_raid_planet(pl)]
         col_ship_p = (
             active
-            if _safe_int(active.ships.get("s8", 0), 0) > 0
+            if _safe_int(active.ships.get("s8", 0), 0) > 0 and active.planet_id not in undersized_pids_opt
             else next((pl for pl in non_raid_col_p if _safe_int(pl.ships.get("s8", 0), 0) > 0), None)
         )
         if designated_spy_opt is not None:
@@ -8336,7 +8378,14 @@ def _materialize_planned_actions(
             )
             probe_col_has_s10 = probe_col_p is not None
             probe_col_missing_designated = False
-        if col_ship_p is None and bool(getattr(cfg, "allow_colonize", False)) and tutorial_colonize_task is None:
+        has_hostile_opt = any(bool(getattr(fa, "is_hostile", False)) for fa in (state.fleet_alerts or ()))
+        if (
+            open_col_slots_opt > 0
+            and col_ship_p is None
+            and bool(getattr(cfg, "allow_colonize", False))
+            and tutorial_colonize_task is None
+            and not has_hostile_opt
+        ):
             wf_col_p = next((pl for pl in non_raid_col_p if pl.building_level(9) >= 1), None)
             if wf_col_p is not None and not any(a.kind == "BUILD_SHIP" and a.target_id == 8 for a in plan):
                 s8_off = s_offers_by_p.get(wf_col_p.planet_id, {}).get(8)
@@ -8351,15 +8400,15 @@ def _materialize_planned_actions(
                 can_ex_s8 = bool(
                     cfg.allow_shipyard
                     and not unmet_s8
-                    and s8_off is not None
-                    and s8_off.can_build
+                    and (s8_off is None or s8_off.can_build)
                     and av_col.can_afford(s8_cost)
                 )
                 if can_ex_s8:
                     avail_res_by_p[wf_col_p.planet_id] = _sub_resources(av_col, s8_cost)
+                    p1_done_ships.add((wf_col_p.planet_id, 8))
                 plan.append(
                     _make_planned_action(
-                        priority="P2",
+                        priority="P1",
                         kind="BUILD_SHIP",
                         planet_id=wf_col_p.planet_id,
                         planet_coords=_safe_action_str(wf_col_p.coords),
@@ -8416,10 +8465,19 @@ def _materialize_planned_actions(
                 min_fields_target=min_col_f,
             )
             sp_ts_c = _safe_float_any(raw_rt.get("last_spied_ts"), 0.0)
-            if bool(gr_info["meets_target"]) and (getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None):
+            if (
+                open_col_slots_opt > 0
+                and bool(gr_info["meets_target"])
+                and (getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None)
+            ):
+                if norm_tc in in_flight_col_opt:
+                    continue
                 exec_col_p = col_ship_p if col_ship_p is not None else active
                 has_cs = col_ship_p is not None
-                can_ex_col = bool(getattr(cfg, "allow_colonize", False) and has_cs and not own_fleet_in_flight)
+                max_col_sl_o = 1 + max(0, exec_col_p.building_level(10))
+                hold_col_inflight_o = bool(tutorial_colonize_task is not None and in_flight_col_opt)
+                hold_col_sl_o = (used_fleet_slots_opt >= max_col_sl_o) or hold_col_inflight_o
+                can_ex_col = bool(getattr(cfg, "allow_colonize", False) and has_cs and not hold_col_sl_o)
                 c_prefix = "Tutorial colonize: " if tutorial_colonize_task is not None else ""
                 f_disp_o = str(gr_info.get("fields_display") or (f"{uf_val} fields" if uf_val is not None else f"{cmax_opt} fields"))
                 eff_f_o = int(uf_val if uf_val is not None else (cmax_opt or 0))
@@ -8429,15 +8487,17 @@ def _materialize_planned_actions(
                 )
                 if not has_cs:
                     c_reason += " [Hold: Build Colony ship (s8) first]"
-                elif own_fleet_in_flight:
-                    c_reason += " [Hold: Own fleet in transit]"
+                elif hold_col_inflight_o:
+                    c_reason += " [Hold: Colony ship already in transit]"
+                elif used_fleet_slots_opt >= max_col_sl_o:
+                    c_reason += f" [Hold: Fleet slots full ({used_fleet_slots_opt}/{max_col_sl_o} in flight)]"
                 elif not getattr(cfg, "allow_colonize", False):
                     c_reason += " [Hold: allow_colonize=false in Config]"
                 opt_col_ready.append(
                     (
                         (0 if can_ex_col else 1, 0, -int(gr_info["score"]), -eff_f_o, int(gr_info["distance"])),
                         _make_planned_action(
-                            priority="P2",
+                            priority="P1",
                             kind="COLONIZE",
                             planet_id=exec_col_p.planet_id,
                             planet_coords=_safe_action_str(exec_col_p.coords),
@@ -8490,7 +8550,7 @@ def _materialize_planned_actions(
                     (
                         (0 if can_ex_ps else 1, zone_p, dist_p_c, pos_c),
                         _make_planned_action(
-                            priority="P2",
+                            priority="P1",
                             kind="SPY",
                             planet_id=probe_col_p.planet_id,
                             planet_coords=_safe_action_str(probe_col_p.coords),
@@ -8504,18 +8564,15 @@ def _materialize_planned_actions(
                 )
         if opt_col_spy:
             opt_col_spy.sort(key=lambda item: item[0])
-            insert_p2_idx = 0
-            while insert_p2_idx < len(plan) and plan[insert_p2_idx].priority in ("P0", "P1"):
-                insert_p2_idx += 1
-            for offset_cs, (_, spy_act_c) in enumerate(opt_col_spy[:2]):
-                plan.insert(insert_p2_idx + offset_cs, spy_act_c)
+            for _, spy_act_c in opt_col_spy[:2]:
+                plan.append(spy_act_c)
         if opt_col_ready:
             opt_col_ready.sort(key=lambda item: item[0])
             plan.append(opt_col_ready[0][1])
         elif (
-            (getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None)
+            open_col_slots_opt > 0
+            and (getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None)
             and not opt_col_spy
-            and not own_fleet_in_flight
             and (col_ship_p is not None or probe_col_p is not None)
         ):
             nxt_sc_col = _next_unscanned_system(_safe_action_str(ref_col_origin.coords), merged_scans_col, radius=25)
@@ -8523,7 +8580,7 @@ def _materialize_planned_actions(
                 sg_c, ss_c = nxt_sc_col
                 plan.append(
                     _make_planned_action(
-                        priority="P2",
+                        priority="P1",
                         kind="SCAN_GALAXY",
                         planet_id=ref_col_origin.planet_id,
                         planet_coords=_safe_action_str(ref_col_origin.coords),
@@ -8539,7 +8596,7 @@ def _materialize_planned_actions(
             if isinstance(step.planet_id, int) and not isinstance(step.planet_id, bool)
             else None
         )
-        if planet is None:
+        if planet is None or planet.planet_id in undersized_pids_opt:
             continue
         is_active = planet.planet_id == active.planet_id
         if not is_active and not cfg.allow_multi_planet:
@@ -9400,23 +9457,47 @@ def _materialize_planned_actions(
         for a_s in plan
         if a_s.kind == "SPY" and (a_s.executable_now or cfg.allow_galaxy_scan or getattr(cfg, "allow_colonize", False))
     }
+    col_ready_pids_opt = {
+        a_c.planet_id
+        for a_c in plan
+        if a_c.kind == "COLONIZE"
+        and getattr(cfg, "allow_colonize", False)
+        and _safe_int((planet_map.get(a_c.planet_id, active).ships or {}).get("s8", 0), 0) > 0
+    }
     for idx_pl, act_pl in enumerate(plan):
-        if act_pl.kind not in ("ATTACK", "RECYCLE", "COLONIZE") or act_pl.priority == "P3":
+        if act_pl.kind not in ("ATTACK", "RECYCLE", "COLONIZE", "SPY") or act_pl.priority == "P3":
+            continue
+        if act_pl.kind == "SPY" and "(free slot)" in _safe_action_str(act_pl.target_name).lower():
             continue
         p_pl = planet_map.get(act_pl.planet_id, active)
         max_sl_pl = 1 + max(0, p_pl.building_level(10))
-        has_spy_dem_pl = (
-            res_spy_opt > 0
-            and _safe_int(p_pl.ships.get("s10", 0), 0) > 0
-            and p_pl.planet_id in spy_pids_opt
-        )
-        eff_res_pl = min(res_spy_opt, max(0, max_sl_pl - 1)) if has_spy_dem_pl else 0
         if used_fleet_slots_opt >= max_sl_pl:
             rsn_pl = act_pl.reason
             if "in flight" not in rsn_pl.lower() and "in transit" not in rsn_pl.lower():
                 rsn_pl = f"{rsn_pl} [Hold: Fleet slots full ({used_fleet_slots_opt}/{max_sl_pl} in flight)]"
             plan[idx_pl] = replace(act_pl, executable_now=False, reason=rsn_pl)
-        elif eff_res_pl > 0 and used_fleet_slots_opt >= max_sl_pl - eff_res_pl:
+            continue
+        if act_pl.kind == "COLONIZE":
+            continue
+        col_res_o = 1 if (p_pl.planet_id in col_ready_pids_opt and max_sl_pl > 1) else 0
+        if col_res_o > 0 and used_fleet_slots_opt >= max_sl_pl - col_res_o:
+            rsn_pl = act_pl.reason
+            if "reserved for colony" not in rsn_pl.lower():
+                rsn_pl = (
+                    f"{rsn_pl} [Hold: Fleet slot reserved for Colony ship "
+                    f"({used_fleet_slots_opt}/{max_sl_pl} in flight)]"
+                )
+            plan[idx_pl] = replace(act_pl, executable_now=False, reason=rsn_pl)
+            continue
+        if act_pl.kind == "SPY":
+            continue
+        has_spy_dem_pl = (
+            res_spy_opt > 0
+            and _safe_int(p_pl.ships.get("s10", 0), 0) > 0
+            and p_pl.planet_id in spy_pids_opt
+        )
+        eff_res_pl = min(res_spy_opt, max(0, max_sl_pl - 1 - col_res_o)) if has_spy_dem_pl else 0
+        if eff_res_pl > 0 and used_fleet_slots_opt >= max_sl_pl - col_res_o - eff_res_pl:
             rsn_pl = act_pl.reason
             if "reserved for spy" not in rsn_pl.lower():
                 rsn_pl = (
@@ -9427,11 +9508,37 @@ def _materialize_planned_actions(
 
     # Stable priority-band sort + deduplication matching `strategy.py`
     priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+    def _opt_band_subrank(a: "PlannedAction") -> tuple[int, int]:
+        if a.priority == "P1":
+            if a.kind == "ABANDON_COLONY":
+                return (0, 0)
+            if a.kind == "COLONIZE":
+                return (0, 1)
+            if a.kind == "BUILD_SHIP" and game_data.safe_optional_int(a.target_id, None) == 8:
+                return (0, 2)
+            if a.kind == "BUILD_SHIP" and game_data.safe_optional_int(a.target_id, None) == 10 and "designated spy" in _safe_action_str(a.reason).lower():
+                return (0, 3)
+            if a.kind == "SPY" and "(free slot)" in _safe_action_str(a.target_name).lower():
+                return (0, 4)
+            if a.kind == "SCAN_GALAXY":
+                return (0, 5)
+            if "negative energy" in _safe_action_str(a.reason).lower():
+                return (1, 0)
+            return (2, 0)
+        if a.priority != "P2":
+            return (0, 0)
+        if a.kind == "CLAIM_TUTORIAL":
+            return (0, 0)
+        if a.kind == "SPY":
+            return (1 if "(free slot)" in _safe_action_str(a.target_name).lower() else 2, 0)
+        return (3, 0)
+
     plan.sort(
         key=lambda a: (
             priority_rank.get(a.priority, 9),
             0 if a.executable_now else 1,
-            0 if (a.priority == "P2" and a.kind == "CLAIM_TUTORIAL") else (1 if (a.priority == "P2" and a.kind == "SPY") else 2),
+            _opt_band_subrank(a),
         )
     )
     deduped: list["PlannedAction"] = []

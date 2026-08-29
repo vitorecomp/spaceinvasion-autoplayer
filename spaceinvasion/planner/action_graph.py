@@ -307,7 +307,7 @@ def _classify_node_category(kind: str, bid: Optional[int], sid: Optional[int]) -
         return "tutorial"
     if kind == "RESEARCH":
         return "research"
-    if kind in ("SCAN_GALAXY", "SPY", "RECYCLE", "COLONIZE"):
+    if kind in ("SCAN_GALAXY", "SPY", "RECYCLE", "COLONIZE", "ABANDON_COLONY"):
         return "recon"
     if kind == "ATTACK":
         return "combat"
@@ -365,7 +365,7 @@ def _slot_key_for_action(kind: str, planet_id: int) -> Optional[str]:
         return f"planet:{planet_id}:build"
     if kind == "BUILD_SHIP":
         return f"planet:{planet_id}:shipyard"
-    if kind in ("ESCAPE_FLIGHT", "SCAN_GALAXY", "SPY", "ATTACK", "RECYCLE", "COLONIZE"):
+    if kind in ("ESCAPE_FLIGHT", "SCAN_GALAXY", "SPY", "ATTACK", "RECYCLE", "COLONIZE", "ABANDON_COLONY"):
         return f"planet:{planet_id}:fleet"
     return None
 
