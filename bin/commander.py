@@ -374,6 +374,12 @@ def _action_to_command_payload(action: PlannedAction, *, dry_run: bool) -> dict:
             "planet_id": pid,
             "dry_run": dry_run,
         }
+    if action.kind == "ACTIVATE_TRANSMITTER":
+        return {
+            "command": "activate_transmitter",
+            "planet_id": pid,
+            "dry_run": dry_run,
+        }
     if action.kind == "ATTACK":
         t_name = _safe_cmd_str(action.target_name)
         m = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", t_name, re.ASCII)
@@ -446,6 +452,7 @@ def run_commander_tick(
     economy_sync_timestamps: Optional[Mapping[int, float]] = None,
     fleet_slot_cooldowns: Optional[Mapping[int, float]] = None,
     manual_queue: Optional[Sequence[Mapping[str, Any]]] = None,
+    transmitter_status: Optional[Mapping[str, Any]] = None,
 ) -> tuple[GameState, Optional[PlannedAction], Optional[dict], Optional[PlannedAction], list[dict]]:
     """Fetch state via HTTP, compute `plan_actions`, and send commands.
 
@@ -492,6 +499,7 @@ def run_commander_tick(
                 config=cfg,
                 scanned_systems=scanned_systems,
                 throttle_cooldowns=throttle_cooldowns,
+                transmitter_status=transmitter_status,
             ),
             active_fsc,
             re_sort_priority=not is_ga_nn,
@@ -814,6 +822,7 @@ def main(argv: list[str] | None = None) -> int:
                 economy_sync_timestamps: Optional[dict[int, float]] = None
                 fleet_slot_cooldowns: Optional[dict[int, float]] = None
                 manual_queue: Optional[list[Mapping[str, Any]]] = None
+                transmitter_status: Optional[Mapping[str, Any]] = None
                 paused_via_ui = False
                 try:
                     bot_ctrl = api.get_bot_control()
@@ -895,6 +904,9 @@ def main(argv: list[str] | None = None) -> int:
                         raw_mq = bot_ctrl.get("manual_queue")
                         if isinstance(raw_mq, list):
                             manual_queue = [x for x in raw_mq if isinstance(x, Mapping)]
+                        raw_tm = bot_ctrl.get("transmitter_status")
+                        if isinstance(raw_tm, Mapping):
+                            transmitter_status = dict(raw_tm)
                 except (requests.RequestException, GameApiError):
                     pass
 
@@ -921,6 +933,7 @@ def main(argv: list[str] | None = None) -> int:
                         economy_sync_timestamps=economy_sync_timestamps,
                         fleet_slot_cooldowns=fleet_slot_cooldowns,
                         manual_queue=manual_queue,
+                        transmitter_status=transmitter_status,
                     )
                     refreshed_buildings = need_buildings or (
                         effective_live

@@ -442,6 +442,7 @@ class StrategyConfig:
     allow_raids: bool = False
     allow_pvp_in_az: bool = False
     allow_colonize: bool = False
+    allow_transmitter: bool = False
     forbid_planetary_solar: bool = False
     storage_warn_ratio: float = 0.85
     blast_pig_iron_max_share: float = 0.70
@@ -453,6 +454,9 @@ class StrategyConfig:
     hot_planet_solar_temp_threshold: int = 40
     min_free_fields_warning: int = 20
     min_colony_fields: int = 300
+    max_planets: int = 11
+    galaxy_sweep_interval_seconds: int = 270
+    galaxy_sweep_pages: int = 100
     planner_mode: str = "priority"  # "priority" | "ga_nn"
     ga_population_size: int = 24
     ga_generations: int = 12
@@ -1115,6 +1119,7 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         allow_raids=_safe_cfg_bool(data.get("allow_raids"), False),
         allow_pvp_in_az=_safe_cfg_bool(data.get("allow_pvp_in_az"), False),
         allow_colonize=_safe_cfg_bool(data.get("allow_colonize"), False),
+        allow_transmitter=_safe_cfg_bool(data.get("allow_transmitter"), False),
         forbid_planetary_solar=_safe_cfg_bool(data.get("forbid_planetary_solar"), False),
         storage_warn_ratio=max(0.1, min(0.99, _safe_cfg_float(data.get("storage_warn_ratio"), 0.85))),
         blast_pig_iron_max_share=max(0.1, min(1.0, _safe_cfg_float(data.get("blast_pig_iron_max_share"), 0.70))),
@@ -1126,6 +1131,11 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         hot_planet_solar_temp_threshold=_safe_cfg_int(data.get("hot_planet_solar_temp_threshold"), 40),
         min_free_fields_warning=max(1, _safe_cfg_int(data.get("min_free_fields_warning"), 20)),
         min_colony_fields=max(50, min(600, _safe_cfg_int(data.get("min_colony_fields"), 300))),
+        max_planets=max(1, min(50, _safe_cfg_int(data.get("max_planets"), 11))),
+        galaxy_sweep_interval_seconds=max(
+            30, min(86400, _safe_cfg_int(data.get("galaxy_sweep_interval_seconds"), 270))
+        ),
+        galaxy_sweep_pages=max(1, min(400, _safe_cfg_int(data.get("galaxy_sweep_pages"), 100))),
         planner_mode=normalize_planner_mode(raw_mode),
         ga_population_size=max(4, min(200, _safe_cfg_int(data.get("ga_population_size"), 24))),
         ga_generations=max(1, min(200, _safe_cfg_int(data.get("ga_generations"), 12))),
@@ -1341,6 +1351,9 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
     hot_temp = _safe_cfg_int(cfg.hot_planet_solar_temp_threshold, 40)
     min_fields = max(1, _safe_cfg_int(cfg.min_free_fields_warning, 20))
     min_colony = max(50, min(600, _safe_cfg_int(cfg.min_colony_fields, 300)))
+    max_planets = max(1, min(50, _safe_cfg_int(cfg.max_planets, 11)))
+    sweep_interval = max(30, min(86400, _safe_cfg_int(cfg.galaxy_sweep_interval_seconds, 270)))
+    sweep_pages = max(1, min(400, _safe_cfg_int(cfg.galaxy_sweep_pages, 100)))
     planner_mode = normalize_planner_mode(cfg.planner_mode)
     ga_pop = max(4, min(200, _safe_cfg_int(cfg.ga_population_size, 24)))
     ga_gen = max(1, min(200, _safe_cfg_int(cfg.ga_generations, 12)))
@@ -1377,6 +1390,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         f"allow_raids: {'true' if _safe_cfg_bool(cfg.allow_raids, False) else 'false'}",
         f"allow_pvp_in_az: {'true' if _safe_cfg_bool(cfg.allow_pvp_in_az, False) else 'false'}",
         f"allow_colonize: {'true' if _safe_cfg_bool(cfg.allow_colonize, False) else 'false'}",
+        f"allow_transmitter: {'true' if _safe_cfg_bool(cfg.allow_transmitter, False) else 'false'}",
         f"forbid_planetary_solar: {'true' if _safe_cfg_bool(cfg.forbid_planetary_solar, False) else 'false'}",
         f"storage_warn_ratio: {storage_warn_ratio}",
         f"blast_pig_iron_max_share: {blast_share}",
@@ -1388,6 +1402,9 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         f"hot_planet_solar_temp_threshold: {hot_temp}",
         f"min_free_fields_warning: {min_fields}",
         f"min_colony_fields: {min_colony}",
+        f"max_planets: {max_planets}",
+        f"galaxy_sweep_interval_seconds: {sweep_interval}",
+        f"galaxy_sweep_pages: {sweep_pages}",
         f"planner_mode: {planner_mode}",
         f"ga_population_size: {ga_pop}",
         f"ga_generations: {ga_gen}",

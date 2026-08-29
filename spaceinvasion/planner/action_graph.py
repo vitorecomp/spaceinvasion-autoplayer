@@ -440,8 +440,8 @@ def _match_ga_steps(
                 if so_pid in (0, pid) and (bid is None or so_bid is None or so_bid == bid):
                     lvl_rank = 0 if (tgt_lvl is not None and so_tlvl == tgt_lvl) else 1
                     candidates.append((valid_rank, lvl_rank * 1000 + pos, so))
-            elif kind in ("ATTACK", "SPY", "SCAN_GALAXY", "RECYCLE", "COLONIZE", "CLAIM_TUTORIAL") and so_kind == kind:
-                if kind == "CLAIM_TUTORIAL" or so_pid in (0, pid):
+            elif kind in ("ATTACK", "SPY", "SCAN_GALAXY", "RECYCLE", "COLONIZE", "CLAIM_TUTORIAL", "ACTIVATE_TRANSMITTER") and so_kind == kind:
+                if kind in ("CLAIM_TUTORIAL", "ACTIVATE_TRANSMITTER") or so_pid in (0, pid):
                     candidates.append((valid_rank, pos, so))
 
         if not candidates:
@@ -517,7 +517,7 @@ def build_action_graph(
             a
             for a in raw_list
             if _clean_int(getattr(a, "planet_id", 0), 0) in (0, clean_pfilter)
-            or _clean_str(getattr(a, "kind", "")).upper() in ("RESEARCH", "CLAIM_TUTORIAL")
+            or _clean_str(getattr(a, "kind", "")).upper() in ("RESEARCH", "CLAIM_TUTORIAL", "ACTIVATE_TRANSMITTER")
         ]
 
     # Enrich synthetic unit-test PlannedActions if ETAs have not been attached yet
@@ -605,7 +605,7 @@ def build_action_graph(
             else (None, None)
         )
 
-        lane_id = "lane:global" if (kind in ("RESEARCH", "CLAIM_TUTORIAL") or pid <= 0) else f"lane:planet:{pid}"
+        lane_id = "lane:global" if (kind in ("RESEARCH", "CLAIM_TUTORIAL", "ACTIVATE_TRANSMITTER") or pid <= 0) else f"lane:planet:{pid}"
         lane_counts[lane_id] = lane_counts.get(lane_id, 0) + 1
 
         category = _classify_node_category(kind, bid, sid)

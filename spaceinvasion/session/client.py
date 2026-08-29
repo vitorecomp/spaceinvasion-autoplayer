@@ -1489,6 +1489,122 @@ class GameBrowserClient:
         )
         return html
 
+    def step_galaxy_system(
+        self,
+        *,
+        galaxy: int,
+        system: int,
+        pace: bool = False,
+        priority: str = "normal",
+    ) -> tuple[str, int, int]:
+        """Step to `(galaxy, system)` via in-page `si.navigate(g, s)` XHR when already on `internalGalaxy`."""
+        gal_arg = game_data.cap_json_int(max(1, min(1000, game_data.safe_int(galaxy, 1))))
+        sys_arg = game_data.cap_json_int(max(1, min(1000, game_data.safe_int(system, 1))))
+        can_ajax_step = False
+        try:
+            self._switch_frame("F_Hauptframe")
+            probe = self.driver.execute_script(
+                "if (document.getElementById('si-captcha-gate')) return 'captcha';"
+                "if (window.si && typeof window.si.navigate === 'function' && typeof window.si.getData === 'function') {"
+                "  return {ok: true, g: Number(window.si.galaxy || 0), s: Number(window.si.sun || 0), busy: Boolean(window.si._getStatus)};"
+                "}"
+                "return null;"
+            )
+            if probe == "captcha":
+                html_cap = self.driver.page_source or ""
+                self._check_page_guards(html_cap)
+            if isinstance(probe, dict) and probe.get("ok"):
+                can_ajax_step = True
+        except SpaceInvasionAuthError:
+            raise
+        except Exception:
+            can_ajax_step = False
+
+        if not can_ajax_step:
+            return self.open_galaxy_with_coords(
+                galaxy=gal_arg,
+                system=sys_arg,
+                priority=priority,
+            )
+
+        if pace:
+            self._pace(priority=priority)
+
+        self._switch_frame("F_Hauptframe")
+        self.driver.execute_script(
+            "window.__siSweepDone = false;"
+            "var targetG = Number(arguments[0]), targetS = Number(arguments[1]);"
+            "if (Number(window.si.galaxy) === targetG && Number(window.si.sun) === targetS && !window.si._getStatus && window.si.result) {"
+            "  window.si.getData();"
+            "} else {"
+            "  window.si.navigate(targetG, targetS);"
+            "}",
+            gal_arg,
+            sys_arg,
+        )
+        deadline = time.monotonic() + min(4.0, max(0.4, self.timeout * 0.35))
+        landed = False
+        while time.monotonic() < deadline:
+            time.sleep(0.08)
+            self._switch_frame("F_Hauptframe")
+            try:
+                status = self.driver.execute_script(
+                    "var pvErr = document.getElementById('pageview-error');"
+                    "var pvAmt = document.getElementById('pageview-amount');"
+                    "if (pvErr && pvErr.style && pvErr.style.display !== 'none' && pvAmt && (pvAmt.textContent || '').trim()) {"
+                    "  return {throttled: true};"
+                    "}"
+                    "if (!window.si) return {missing: true};"
+                    "return {"
+                    "  busy: Boolean(window.si._getStatus),"
+                    "  g: Number(window.si.galaxy || 0),"
+                    "  s: Number(window.si.sun || 0),"
+                    "  resG: window.si.result && window.si.result.position ? Number(window.si.result.position.galaxy || 0) : 0,"
+                    "  resS: window.si.result && window.si.result.position ? Number(window.si.result.position.system || 0) : 0"
+                    "};"
+                )
+            except Exception:
+                break
+            if isinstance(status, dict):
+                if status.get("throttled"):
+                    html_err = self.driver.page_source or ""
+                    self._check_page_guards(html_err)
+                    raise RateLimitError(
+                        "SpaceInvasion 2D Galaxy AJAX per-minute page-view throttle hit.",
+                        server_throttle=True,
+                    )
+                if status.get("missing"):
+                    break
+                if (
+                    not status.get("busy")
+                    and status.get("resG") == gal_arg
+                    and status.get("resS") == sys_arg
+                ):
+                    landed = True
+                    break
+
+        if not landed:
+            return self.open_galaxy_with_coords(
+                galaxy=gal_arg,
+                system=sys_arg,
+                priority=priority,
+            )
+
+        self._switch_frame("F_Hauptframe")
+        html = self.driver.page_source or ""
+        self._check_page_guards(html)
+        try:
+            cur_url = str(self.driver.execute_script("return location.href;") or "")
+        except Exception:
+            cur_url = ""
+        actual_gal, actual_sys = extract_galaxy_system_coords(
+            html,
+            url=cur_url,
+            default=(gal_arg, sys_arg),
+        )
+        self.last_galaxy_coords = (actual_gal, actual_sys)
+        return html, actual_gal, actual_sys
+
     def open_messages(
         self,
         msg_type: str = "spio",

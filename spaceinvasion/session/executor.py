@@ -42,6 +42,7 @@ from spaceinvasion.core.state import (
     parse_economy_rates,
     parse_home_metadata,
     parse_research_page,
+    parse_transmitter_page,
     parse_tutorial_from_home,
     parse_unit_factory_page,
 )
@@ -201,6 +202,7 @@ class ActionExecutor:
         allow_fleetsave: bool = False,
         allow_raids: bool = False,
         allow_colonize: bool = False,
+        allow_transmitter: bool = True,
         page_limiter: Optional[PageViewLimiter] = None,
         max_limiter_wait: Optional[float] = None,
     ) -> None:
@@ -211,11 +213,13 @@ class ActionExecutor:
         self.allow_fleetsave = allow_fleetsave
         self.allow_raids = allow_raids
         self.allow_colonize = allow_colonize
+        self.allow_transmitter = allow_transmitter
         self.page_limiter = page_limiter
         self.max_limiter_wait: Optional[float] = _safe_optional_wait_limit(max_limiter_wait)
         self._recent_timestamps: Deque[float] = deque()
         self.last_economy_rates: dict[int, dict[str, int]] = {}
         self.last_galaxy_slots: list[GalaxySlot] = []
+        self.last_transmitter_info: Optional[dict[str, Any]] = None
         self.last_observed_active_planet_id: Optional[int] = None
         self.last_observed_active_planet_confirmed: Optional[bool] = None
 
@@ -2674,6 +2678,199 @@ class ActionExecutor:
             active_planet_confirmed=active_planet_confirmed,
         )
 
+    def _execute_activate_transmitter(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+    ) -> ExecutionResult:
+        self.last_transmitter_info = None
+        _call_with_optional_priority(client.ensure_in_game, priority="interactive")
+        html = _call_with_optional_priority(
+            client.navigate_menu,
+            "internalTransmitter",
+            priority="interactive",
+        )
+        info = parse_transmitter_page(html)
+        if info.get("needs_src_switch_to_free") and info.get("free_src_href"):
+            build_url_fn = getattr(client, "_build_internal_url", None)
+            raw_href = _safe_str(info["free_src_href"]).strip()
+            target_url = (
+                build_url_fn(raw_href.split("?", 1)[1])
+                if callable(build_url_fn) and "?" in raw_href
+                else raw_href
+            )
+            self._pace_action(client, priority="interactive")
+            nav_tok_sw = self._mark_frame_nav(client, "F_Hauptframe")
+            switch_fn = getattr(client, "_switch_frame", None)
+            if callable(switch_fn):
+                switch_fn("F_Hauptframe")
+            client.driver.execute_script("location.href = arguments[0];", target_url)
+            wait_fn = getattr(client, "_wait_frame_ready", None)
+            if callable(wait_fn):
+                html = wait_fn(
+                    "F_Hauptframe",
+                    expected_action="internalTransmitter",
+                    nav_token=nav_tok_sw,
+                )
+            else:
+                html = str(getattr(client.driver, "page_source", "") or html)
+            info = parse_transmitter_page(html)
+
+        self.last_transmitter_info = {**info, "activated": False}
+        free_before = int(info.get("free_spins") or 0)
+        if free_before <= 0:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message="Skipped: 0 free Interdimensional Transmitter charges available today (Urplasma spin blocked).",
+                validated=True,
+            )
+
+        if not info.get("can_activate_free") or info.get("has_urplasma_cost"):
+            err_msg = (
+                "Interdimensional Transmitter spin is not free "
+                f"(idt_src={info.get('idt_src')}, button={info.get('button_label')!r}); blocked to protect Urplasma."
+            )
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: {err_msg}",
+                validated=False,
+                validation_error=err_msg,
+            )
+
+        switch_fn = getattr(client, "_switch_frame", None)
+        if callable(switch_fn):
+            switch_fn("F_Hauptframe")
+
+        dom_check = None
+        with contextlib.suppress(Exception):
+            dom_check = client.driver.execute_script(
+                "var form = document.getElementById('tm.form');"
+                "var btn = document.getElementById('tm.submit');"
+                "if (!form || !btn) return {ok: false, reason: 'missing_form_or_btn'};"
+                "var src = form.querySelector('input[name=\"idtSrc\"]');"
+                "var play = document.getElementById('tm.play') || form.querySelector('input[name=\"play\"]');"
+                "var hasUp = Boolean(btn.querySelector('.urplasma-icon-30, .urplasma-base, [class*=\"urplasma\"]'));"
+                "var txt = (btn.innerText || btn.textContent || '').toLowerCase();"
+                "if (src && String(src.value) !== '1') return {ok: false, reason: 'idtSrc=' + src.value};"
+                "if (play && String(play.value) !== '1') play.value = '1';"
+                "if (hasUp || txt.indexOf('urplasma') !== -1 || txt.indexOf('activate for') !== -1) {"
+                "  return {ok: false, reason: 'urplasma_button'};"
+                "}"
+                "return {ok: true};"
+            )
+        if isinstance(dom_check, dict) and not dom_check.get("ok", True):
+            err_dom = f"Live DOM guard blocked Interdimensional Transmitter ({dom_check.get('reason')})."
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: {err_dom}",
+                validated=False,
+                validation_error=err_dom,
+            )
+
+        self._pace_action(client, priority="interactive")
+        nav_token = self._mark_frame_nav(client, "F_Hauptframe")
+        clicked = False
+        with contextlib.suppress(Exception):
+            btn_el = client.driver.find_element(By.ID, "tm.submit")
+            self._safe_click(client, btn_el)
+            clicked = True
+        if not clicked:
+            with contextlib.suppress(Exception):
+                submitted_js = client.driver.execute_script(
+                    "var f = document.getElementById('tm.form');"
+                    "if (!f) return false;"
+                    "var src = f.querySelector('input[name=\"idtSrc\"]');"
+                    "if (src && String(src.value) !== '1') return false;"
+                    "var p = document.getElementById('tm.play') || f.querySelector('input[name=\"play\"]');"
+                    "if (p) p.value = '1';"
+                    "f.submit(); return true;"
+                )
+                clicked = bool(submitted_js)
+        if not clicked:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message="Aborted: could not find free #tm.submit control on internalTransmitter.",
+                validated=False,
+                validation_error="Missing #tm.submit button on internalTransmitter.",
+            )
+
+        wait_fn = getattr(client, "_wait_frame_ready", None)
+        if callable(wait_fn):
+            after_html = wait_fn(
+                "F_Hauptframe",
+                expected_action="internalTransmitter",
+                nav_token=nav_token,
+            )
+        else:
+            after_html = str(getattr(client.driver, "page_source", "") or "")
+        after_info = parse_transmitter_page(after_html)
+        free_after = int(after_info.get("free_spins") or 0)
+        reward_txt = _safe_str(after_info.get("latest_reward") or "").strip()
+        prev_reward = _safe_str(info.get("latest_reward") or "").strip()
+        prev_date = _safe_str(info.get("latest_date") or "").strip()
+        after_date = _safe_str(after_info.get("latest_date") or "").strip()
+
+        spin_verified = (
+            not after_html
+            or free_after < free_before
+            or (bool(reward_txt) and (reward_txt != prev_reward or after_date != prev_date))
+        )
+        if not spin_verified:
+            self.last_transmitter_info = {**after_info, "activated": False}
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=(
+                    f"Aborted: Interdimensional Transmitter free charges did not decrease "
+                    f"(before={free_before}, after={free_after})."
+                ),
+                validated=False,
+                validation_error=f"Free spin count unchanged ({free_before} -> {free_after}).",
+            )
+
+        self.last_transmitter_info = {
+            **after_info,
+            "activated": True,
+            "before_free_spins": free_before,
+        }
+        self._recent_timestamps.append(time.monotonic())
+        updated_state: Optional[GameState] = None
+        if hasattr(client, "read_planets_overview"):
+            with contextlib.suppress(Exception):
+                updated_planets = _call_with_optional_priority(
+                    client.read_planets_overview,
+                    refresh=True,
+                    priority="interactive",
+                )
+                updated_state = self._build_updated_state(
+                    client,
+                    state,
+                    action,
+                    updated_planets,
+                )
+        reward_note = f" — Won: {reward_txt}" if reward_txt else ""
+        return ExecutionResult(
+            executed=True,
+            dry_run=False,
+            action=action,
+            message=(
+                f"Activated free daily Interdimensional Transmitter spin "
+                f"(charges {free_before} -> {free_after}){reward_note}."
+            ),
+            updated_state=updated_state,
+            validated=True,
+        )
+
     def execute_action(
         self,
         client: GameBrowserClient,
@@ -2696,6 +2893,7 @@ class ActionExecutor:
             "BUILD",
             "DEMOLISH_BUILDING",
             "CLAIM_TUTORIAL",
+            "ACTIVATE_TRANSMITTER",
             "RESEARCH",
             "BUILD_SHIP",
             "THROTTLE_BUILDING",
@@ -2772,6 +2970,14 @@ class ActionExecutor:
                 message="Guarded: live ATTACK requires allow_raids=true in config.",
             )
 
+        if action.kind == "ACTIVATE_TRANSMITTER" and not self.allow_transmitter:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message="Guarded: live ACTIVATE_TRANSMITTER requires allow_transmitter=true in config.",
+            )
+
         if self.enforce_hourly_cap and action.kind != "SCAN_GALAXY" and self.remaining_hourly_budget() <= 0:
             return ExecutionResult(
                 executed=False,
@@ -2782,6 +2988,8 @@ class ActionExecutor:
 
         if action.kind == "CLAIM_TUTORIAL":
             res = self._execute_claim_tutorial(client, action, state=state)
+        elif action.kind == "ACTIVATE_TRANSMITTER":
+            res = self._execute_activate_transmitter(client, state, action)
         elif action.kind == "BUILD":
             res = self._execute_build(client, state, action)
         elif action.kind == "DEMOLISH_BUILDING":

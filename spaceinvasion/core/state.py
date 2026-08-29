@@ -1837,3 +1837,149 @@ def game_state_from_dict(data: Mapping[str, Any]) -> GameState:
         raid_targets=tuple(_deep_plain_value(t) for t in _safe_state_seq(data.get("raid_targets")) if isinstance(t, Mapping)),
         raid_stats=raid_stats,
     )
+
+
+def count_allocated_normal_planets(state: Optional[GameState]) -> int:
+    """Return the count of owned normal colonies (excluding asteroids and `[RK]` raid colonies)."""
+    if state is None:
+        return 0
+    planets = getattr(state, "planets", ()) or ()
+    return sum(1 for p in planets if normalize_planet_type(p) == "normal")
+
+
+_IDT_FREE_SPINS_JS_RE = re.compile(r"\b_freeSpins\s*=\s*(\d+)", re.ASCII)
+_IDT_CHARGES_TEXT_RE = re.compile(
+    r"\b(?:charges|ladungen|free\s*spins?|freidrehs?)\s*:\s*(\d+)",
+    re.IGNORECASE,
+)
+_IDT_AUTO_ADD_SPIN_RE = re.compile(r"\bautoAddSpin\s*:\s*true\b", re.IGNORECASE)
+_IDT_FREE_LABEL_TOKENS: tuple[str, ...] = ("free", "gratis", "kostenlos", "frei")
+
+
+def parse_transmitter_page(html: Any) -> dict[str, Any]:
+    """Parse `action=internalTransmitter` HTML with strict zero-Urplasma free-spin safety checks."""
+    raw_html = _safe_state_str(html) if html is not None else ""
+    if not raw_html:
+        return {
+            "has_form": False,
+            "free_spins": 0,
+            "charges": 0,
+            "idt_src": 1,
+            "play_count": 1,
+            "auto_add_spin": False,
+            "has_urplasma_cost": False,
+            "button_label": "",
+            "free_src_href": None,
+            "needs_src_switch_to_free": False,
+            "can_activate_free": False,
+            "latest_reward": "",
+            "latest_date": "",
+        }
+
+    soup = BeautifulSoup(raw_html, "html.parser")
+    tm_form = soup.find(id="tm.form")
+    tm_submit = soup.find(id="tm.submit")
+
+    m_js_free = _IDT_FREE_SPINS_JS_RE.search(raw_html)
+    js_free_spins: Optional[int] = (
+        game_data.cap_json_int(int(m_js_free.group(1))) if m_js_free else None
+    )
+
+    body_text = " ".join(soup.get_text(" ", strip=True).split())
+    m_chg = _IDT_CHARGES_TEXT_RE.search(body_text)
+    charges = game_data.cap_json_int(int(m_chg.group(1))) if m_chg else 0
+
+    if js_free_spins is not None:
+        free_spins = max(0, js_free_spins)
+    else:
+        free_spins = max(0, charges)
+
+    auto_add_spin = bool(_IDT_AUTO_ADD_SPIN_RE.search(raw_html))
+
+    idt_src = 1
+    play_count = 1
+    if tm_form is not None:
+        src_inp = tm_form.find("input", attrs={"name": "idtSrc"})
+        if src_inp is not None and src_inp.get("value") is not None:
+            idt_src = _safe_state_int(src_inp.get("value"), 1)
+        play_inp = tm_form.find(id="tm.play") or tm_form.find("input", attrs={"name": "play"})
+        if play_inp is not None and play_inp.get("value") is not None:
+            play_count = _safe_state_int(play_inp.get("value"), 1)
+
+    free_src_href: Optional[str] = None
+    for a_el in soup.select("a.idt-srcpick__opt[href], a[href*='idtSrc=1']"):
+        href_v = _safe_state_str(a_el.get("href") or "").strip()
+        if "idtSrc=1" in href_v:
+            free_src_href = href_v
+            break
+
+    btn_text = ""
+    has_urplasma_icon = False
+    if tm_submit is not None:
+        btn_text = " ".join(tm_submit.get_text(" ", strip=True).split())
+        has_urplasma_icon = (
+            tm_submit.select_one(".urplasma-icon-30, .urplasma-base, [class*='urplasma']")
+            is not None
+        )
+
+    btn_low = btn_text.lower()
+    has_free_label = any(tok in btn_low for tok in _IDT_FREE_LABEL_TOKENS)
+    has_urplasma_cost = (
+        has_urplasma_icon
+        or "urplasma" in btn_low
+        or "activate for" in btn_low
+        or "aktivieren für" in btn_low
+        or "aktivieren fuer" in btn_low
+        or idt_src == 3
+    )
+
+    needs_src_switch_to_free = bool(
+        tm_form is not None
+        and free_spins >= 1
+        and idt_src != 1
+        and free_src_href is not None
+    )
+    can_activate_free = bool(
+        tm_form is not None
+        and tm_submit is not None
+        and free_spins >= 1
+        and idt_src == 1
+        and play_count == 1
+        and not auto_add_spin
+        and not has_urplasma_cost
+        and has_free_label
+    )
+
+    latest_reward = ""
+    latest_date = ""
+    for tbl in soup.find_all("table"):
+        rows = tbl.find_all("tr")
+        if len(rows) < 2:
+            continue
+        hdr_txt = " ".join(rows[0].get_text(" ", strip=True).lower().split())
+        if not any(k in hdr_txt for k in ("winning", "gewinn", "free activation", "freidreh")):
+            continue
+        for tr in rows[1:]:
+            cells = [" ".join(td.get_text(" ", strip=True).split()) for td in tr.find_all("td")]
+            if len(cells) >= 2 and cells[0] and cells[0] != "---" and cells[1] and cells[1] != "---":
+                latest_date = cells[0][:64]
+                latest_reward = cells[1][:160]
+                break
+        if latest_reward:
+            break
+
+    return {
+        "has_form": tm_form is not None,
+        "free_spins": free_spins,
+        "charges": max(0, charges),
+        "idt_src": idt_src,
+        "play_count": play_count,
+        "auto_add_spin": auto_add_spin,
+        "has_urplasma_cost": has_urplasma_cost,
+        "button_label": btn_text[:160],
+        "free_src_href": free_src_href,
+        "needs_src_switch_to_free": needs_src_switch_to_free,
+        "can_activate_free": can_activate_free,
+        "latest_reward": latest_reward,
+        "latest_date": latest_date,
+    }

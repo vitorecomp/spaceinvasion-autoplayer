@@ -209,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         server = create_api_server(bridge, host=args.host, port=args.port)
+        bridge.start_galaxy_sweep_worker()
         if is_main:
             signal.signal(signal.SIGTERM, _shutdown_handler)
         print(
@@ -220,13 +221,10 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n[API] Shutting down (Chrome remains open on debug port).")
     finally:
+        bridge.stop_galaxy_sweep_worker()
         if server is not None:
             server.server_close()
-        db = getattr(bridge, "_db", None)
-        if db is not None:
-            close_db = getattr(db, "close", None)
-            if callable(close_db):
-                close_db()
+        bridge.close()
         if is_main and prev_sigterm is not None:
             signal.signal(signal.SIGTERM, prev_sigterm)
     return 0

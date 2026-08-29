@@ -1689,6 +1689,7 @@
                     <label class="toggle-chip"><input type="checkbox" id="ag-cfg-allow_raids" /> Auto Raids (Inactive/Spacia)</label>
                     <label class="toggle-chip"><input type="checkbox" id="ag-cfg-allow_pvp_in_az" /> Allow PvP inside AZ</label>
                     <label class="toggle-chip"><input type="checkbox" id="ag-cfg-allow_colonize" /> Auto Colonize</label>
+                    <label class="toggle-chip"><input type="checkbox" id="ag-cfg-allow_transmitter" checked /> Daily Free Transmitter</label>
                     <label class="toggle-chip"><input type="checkbox" id="ag-cfg-forbid_planetary_solar" /> Forbid Solar on Planets (Asteroid Only)</label>
                   </div>
                 </div>
@@ -1810,7 +1811,11 @@
                   <span class="module-code tabular">CFG</span>
                   <h2>Strategy Profile &amp; Decision Buckets (SQLite)</h2>
                 </div>
-                <button type="button" class="btn btn-primary btn-sm" id="btn-save-config">Save &amp; Apply</button>
+                <div class="inline-actions">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-claim-transmitter">Claim Free IDT</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-galaxy-sweep">Sweep 100 Pages</button>
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-save-config">Save &amp; Apply</button>
+                </div>
               </div>
 
               <div class="config-body">
@@ -1858,6 +1863,21 @@
                   </div>
 
                   <div class="control-field">
+                    <label for="cfg-max_planets">Max Empire Planets Cap</label>
+                    <input type="number" id="cfg-max_planets" min="1" max="50" step="1" />
+                  </div>
+
+                  <div class="control-field">
+                    <label for="cfg-galaxy_sweep_pages">Galaxy Sweep Pages / Cycle</label>
+                    <input type="number" id="cfg-galaxy_sweep_pages" min="1" max="400" step="10" />
+                  </div>
+
+                  <div class="control-field">
+                    <label for="cfg-galaxy_sweep_interval_seconds">Max Galaxy Sweep Interval (s)</label>
+                    <input type="number" id="cfg-galaxy_sweep_interval_seconds" min="30" max="86400" step="15" />
+                  </div>
+
+                  <div class="control-field">
                     <label for="cfg-ga_population_size">GA Population Size</label>
                     <input type="number" id="cfg-ga_population_size" min="4" max="200" step="1" />
                   </div>
@@ -1889,6 +1909,7 @@
                   <label class="toggle-chip"><input type="checkbox" id="cfg-allow_raids" /> Auto Raids (Inactive/Spacia)</label>
                   <label class="toggle-chip"><input type="checkbox" id="cfg-allow_pvp_in_az" /> Allow PvP inside AZ</label>
                   <label class="toggle-chip"><input type="checkbox" id="cfg-allow_colonize" /> Auto Colonize</label>
+                  <label class="toggle-chip"><input type="checkbox" id="cfg-allow_transmitter" /> Daily Free Interdimensional Transmitter</label>
                   <label class="toggle-chip"><input type="checkbox" id="cfg-forbid_planetary_solar" /> Forbid Solar on Planets (Asteroid Only)</label>
                 </div>
               </div>

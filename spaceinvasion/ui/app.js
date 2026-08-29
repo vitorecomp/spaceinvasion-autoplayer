@@ -2504,6 +2504,7 @@ function renderConfigForm(cfg) {
     "allow_raids",
     "allow_pvp_in_az",
     "allow_colonize",
+    "allow_transmitter",
     "forbid_planetary_solar",
   ]) {
     const box = el(`cfg-${field}`);
@@ -2517,6 +2518,15 @@ function renderConfigForm(cfg) {
   }
   if (el("cfg-min_colony_fields")) {
     el("cfg-min_colony_fields").value = cfg.min_colony_fields ?? 300;
+  }
+  if (el("cfg-max_planets")) {
+    el("cfg-max_planets").value = cfg.max_planets ?? 11;
+  }
+  if (el("cfg-galaxy_sweep_pages")) {
+    el("cfg-galaxy_sweep_pages").value = cfg.galaxy_sweep_pages ?? 100;
+  }
+  if (el("cfg-galaxy_sweep_interval_seconds")) {
+    el("cfg-galaxy_sweep_interval_seconds").value = cfg.galaxy_sweep_interval_seconds ?? 270;
   }
   if (el("cfg-max_actions_per_hour")) {
     el("cfg-max_actions_per_hour").value = cfg.max_actions_per_hour ?? 60;
@@ -2546,6 +2556,7 @@ const AG_BOOL_FIELDS = [
   "allow_raids",
   "allow_pvp_in_az",
   "allow_colonize",
+  "allow_transmitter",
   "forbid_planetary_solar",
 ];
 
@@ -2562,6 +2573,9 @@ const AG_NUM_DEFAULTS = {
   hot_planet_solar_temp_threshold: 40,
   min_free_fields_warning: 20,
   min_colony_fields: 300,
+  max_planets: 11,
+  galaxy_sweep_interval_seconds: 270,
+  galaxy_sweep_pages: 100,
   fleet_save_fuel_reserve_spice: 500,
   action_batch_interval_seconds: 120,
   max_actions_per_hour: 60,
@@ -5097,6 +5111,7 @@ function wireEvents() {
       allow_raids: el("cfg-allow_raids").checked,
       allow_pvp_in_az: el("cfg-allow_pvp_in_az").checked,
       allow_colonize: el("cfg-allow_colonize").checked,
+      allow_transmitter: Boolean(el("cfg-allow_transmitter")?.checked ?? true),
       forbid_planetary_solar: Boolean(el("cfg-forbid_planetary_solar")?.checked),
     };
     for (const numField of [
@@ -5105,6 +5120,9 @@ function wireEvents() {
       "fleet_save_fuel_reserve_spice",
       "action_batch_interval_seconds",
       "min_colony_fields",
+      "max_planets",
+      "galaxy_sweep_pages",
+      "galaxy_sweep_interval_seconds",
       "max_actions_per_hour",
       "ga_population_size",
       "ga_generations",
@@ -5170,6 +5188,39 @@ function wireEvents() {
       }
     }
   });
+
+  if (el("btn-claim-transmitter")) {
+    el("btn-claim-transmitter").addEventListener("click", async () => {
+      try {
+        showFeedback("Checking daily free Interdimensional Transmitter spin...", "info");
+        const res = await apiCommand({ command: "activate_transmitter", dry_run: false });
+        showFeedback(
+          res.message || "Interdimensional Transmitter check completed.",
+          res.executed ? "ok" : "info"
+        );
+        await loadDashboard({ refresh: false, force: true });
+      } catch (err) {
+        showFeedback(`Transmitter check failed: ${err.message}`, feedbackKindForError(err));
+      }
+    });
+  }
+
+  if (el("btn-galaxy-sweep")) {
+    el("btn-galaxy-sweep").addEventListener("click", async () => {
+      const pagesVal = finiteNum(el("cfg-galaxy_sweep_pages")?.value, 100) || 100;
+      try {
+        showFeedback(`Starting ${pagesVal}-page randomized galaxy sweep...`, "info");
+        const res = await apiCommand(
+          { command: "galaxy_sweep", pages: pagesVal, dry_run: false },
+          { timeoutMs: 300000 }
+        );
+        showFeedback(res.message || "Galaxy sweep finished.", "ok");
+        await loadDashboard({ refresh: false, force: true });
+      } catch (err) {
+        showFeedback(`Galaxy sweep failed: ${err.message}`, feedbackKindForError(err));
+      }
+    });
+  }
 
   // Action Graph mode switch, edge filter, right-side parameter simulation, reset & explicit apply
   document.querySelectorAll("[data-ag-mode]").forEach((btn) => {

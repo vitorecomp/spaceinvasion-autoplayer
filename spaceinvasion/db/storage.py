@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -13,6 +14,7 @@ import tempfile
 import threading
 import time
 from typing import Any, Iterable, Mapping, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 from spaceinvasion.core import game_data
 from spaceinvasion.combat.fleet import (
@@ -49,6 +51,21 @@ from spaceinvasion.core.state import GameState, game_state_from_dict, normalize_
 
 DEFAULT_DB_PATH = Path("state") / "spaceinvasion.db"
 DEFAULT_ATTACK_HISTORY_PATH: Optional[Path] = None
+
+
+def server_day_key(ts: Optional[float] = None) -> str:
+    """Return the SpaceInvasion server calendar date (`YYYY-MM-DD`, Europe/Berlin with UTC fallback)."""
+    eff_ts = _safe_float(ts, time.time()) if ts is not None else time.time()
+    if eff_ts <= 0.0:
+        eff_ts = time.time()
+    try:
+        tz = ZoneInfo("Europe/Berlin")
+    except Exception:
+        tz = timezone.utc
+    try:
+        return datetime.fromtimestamp(eff_ts, tz=tz).strftime("%Y-%m-%d")
+    except (OSError, OverflowError, ValueError):
+        return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
 _RESOURCE_KEYS: tuple[str, ...] = ("pig_iron", "metal", "kryptonite", "spice")
 _EXTRA_SID_RE = re.compile(_LOG_SID_RE.pattern, _LOG_SID_RE.flags)
@@ -5206,3 +5223,117 @@ class GameDatabase:
             self._summary_cache_ver = cur_ver
             self._summary_cache_json = json.dumps(out_summary, allow_nan=False)
         return out_summary
+
+    def get_transmitter_status(self, *, now_ts: Optional[float] = None) -> dict[str, Any]:
+        """Return persisted Interdimensional Transmitter daily free-spin status."""
+        eff_now = _safe_float(now_ts, time.time()) if now_ts is not None else time.time()
+        today = server_day_key(eff_now)
+        raw = self.load_meta_json("transmitter_state")
+        data = raw if isinstance(raw, Mapping) else {}
+        last_activated_day = _sanitize_text(data.get("last_activated_day") or "").strip()
+        last_checked_day = _sanitize_text(data.get("last_checked_day") or "").strip()
+        last_activated_ts = _safe_float(data.get("last_activated_ts"), 0.0)
+        last_checked_ts = _safe_float(data.get("last_checked_ts"), 0.0)
+        free_spins_rem = data.get("free_spins_remaining")
+        free_spins_opt = (
+            game_data.cap_json_int(max(0, _safe_int(free_spins_rem, 0)))
+            if free_spins_rem is not None
+            else None
+        )
+        last_reward = _sanitize_text(data.get("last_reward") or "").strip()[:160]
+        total_activations = game_data.cap_json_int(max(0, _safe_int(data.get("total_activations"), 0)))
+        already_done_today = (last_activated_day == today) or (
+            last_checked_day == today and free_spins_opt == 0
+        )
+        return _sanitize_obj(
+            {
+                "today_day_key": today,
+                "due": not already_done_today,
+                "last_activated_day": last_activated_day,
+                "last_checked_day": last_checked_day,
+                "last_activated_ts": last_activated_ts,
+                "last_checked_ts": last_checked_ts,
+                "free_spins_remaining": free_spins_opt,
+                "last_reward": last_reward,
+                "total_activations": total_activations,
+            }
+        )
+
+    def record_transmitter_state(
+        self,
+        *,
+        activated: bool,
+        free_spins_remaining: Optional[int] = None,
+        reward: str = "",
+        ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Persist Interdimensional Transmitter daily check or activation outcome into `meta`."""
+        eff_now = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        today = server_day_key(eff_now)
+        cur = self.get_transmitter_status(now_ts=eff_now)
+        payload: dict[str, Any] = {
+            "last_activated_day": today if activated else cur["last_activated_day"],
+            "last_checked_day": today,
+            "last_activated_ts": eff_now if activated else cur["last_activated_ts"],
+            "last_checked_ts": eff_now,
+            "free_spins_remaining": (
+                game_data.cap_json_int(max(0, _safe_int(free_spins_remaining, 0)))
+                if free_spins_remaining is not None
+                else cur["free_spins_remaining"]
+            ),
+            "last_reward": (
+                _sanitize_text(reward).strip()[:160]
+                if reward
+                else cur["last_reward"]
+            ),
+            "total_activations": (
+                game_data.cap_json_int(int(cur["total_activations"]) + 1)
+                if activated
+                else cur["total_activations"]
+            ),
+        }
+        self.save_meta_json("transmitter_state", payload, ts=eff_now)
+        return self.get_transmitter_status(now_ts=eff_now)
+
+    def get_galaxy_sweep_state(self, *, now_ts: Optional[float] = None) -> dict[str, Any]:
+        """Return persisted periodic 100-page galaxy sweep cursor and telemetry."""
+        eff_now = _safe_float(now_ts, time.time()) if now_ts is not None else time.time()
+        raw = self.load_meta_json("galaxy_sweep_state")
+        data = raw if isinstance(raw, Mapping) else {}
+        next_due_ts = _safe_float(data.get("next_sweep_due_ts"), 0.0)
+        return _sanitize_obj(
+            {
+                "cursor_galaxy": game_data.cap_json_int(max(1, min(14, _safe_int(data.get("cursor_galaxy"), 1)))),
+                "cursor_system": game_data.cap_json_int(max(1, min(400, _safe_int(data.get("cursor_system"), 1)))),
+                "last_sweep_started_ts": _safe_float(data.get("last_sweep_started_ts"), 0.0),
+                "last_sweep_completed_ts": _safe_float(data.get("last_sweep_completed_ts"), 0.0),
+                "next_sweep_due_ts": next_due_ts,
+                "due": eff_now >= next_due_ts,
+                "last_pages_scanned": game_data.cap_json_int(max(0, _safe_int(data.get("last_pages_scanned"), 0))),
+                "last_players_found": game_data.cap_json_int(max(0, _safe_int(data.get("last_players_found"), 0))),
+                "last_colonies_found": game_data.cap_json_int(max(0, _safe_int(data.get("last_colonies_found"), 0))),
+                "last_debris_found": game_data.cap_json_int(max(0, _safe_int(data.get("last_debris_found"), 0))),
+                "total_sweeps": game_data.cap_json_int(max(0, _safe_int(data.get("total_sweeps"), 0))),
+                "total_pages_scanned": game_data.cap_json_int(
+                    max(0, _safe_int(data.get("total_pages_scanned"), 0))
+                ),
+            }
+        )
+
+    def save_galaxy_sweep_state(
+        self,
+        updates: Mapping[str, Any],
+        *,
+        ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Update and persist galaxy sweep cursor/telemetry in SQLite `meta`."""
+        eff_now = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        cur = self.get_galaxy_sweep_state(now_ts=eff_now)
+        merged = dict(cur)
+        merged.pop("due", None)
+        for k, v in updates.items():
+            if k == "due":
+                continue
+            merged[str(k)] = v
+        self.save_meta_json("galaxy_sweep_state", merged, ts=eff_now)
+        return self.get_galaxy_sweep_state(now_ts=eff_now)

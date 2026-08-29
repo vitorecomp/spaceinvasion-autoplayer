@@ -1428,7 +1428,15 @@ def _plan_combat_and_raid_actions(
     tutorial_escape_pending = tut_escape is not None
     tutorial_recycle_pending = tut_recycle is not None
     tutorial_colonize_pending = tut_colonize is not None
-    want_colonize = bool(cfg.allow_colonize or tutorial_colonize_pending)
+    max_planets_cap = max(1, _safe_strategy_int(getattr(cfg, "max_planets", 11), 11))
+    allocated_normal_planets = sum(
+        1 for p in state.planets if _norm_planet_type(p) == "normal"
+    )
+    planets_fully_allocated = allocated_normal_planets >= max_planets_cap
+    want_colonize = bool(
+        (cfg.allow_colonize or tutorial_colonize_pending)
+        and not planets_fully_allocated
+    )
     min_colony_fields = max(50, _safe_strategy_int(getattr(cfg, "min_colony_fields", 300), 300))
 
     def _planet_attack_ships(planet: PlanetState) -> dict[str, int]:
@@ -3754,6 +3762,49 @@ def _build_pre_throttle_plan(
     return plan, planets_to_check
 
 
+def _plan_transmitter_action(
+    state: GameState,
+    cfg: StrategyConfig,
+    transmitter_status: Optional[Mapping[str, Any]] = None,
+) -> Optional[PlannedAction]:
+    """Emit once-a-day free Interdimensional Transmitter (`ACTIVATE_TRANSMITTER`) action when due."""
+    if state.tutorial is not None and state.tutorial.can_complete:
+        return None
+    eff_tm: Optional[Mapping[str, Any]] = (
+        transmitter_status if isinstance(transmitter_status, Mapping) else None
+    )
+    if eff_tm is None:
+        state_rs = getattr(state, "raid_stats", None)
+        if isinstance(state_rs, Mapping):
+            cand_tm = state_rs.get("transmitter_status")
+            if isinstance(cand_tm, Mapping):
+                eff_tm = cand_tm
+    if eff_tm is None or not bool(eff_tm.get("due", False)):
+        return None
+    active = state.active_planet() or (state.planets[0] if state.planets else None)
+    if active is None:
+        return None
+    can_exec = bool(getattr(cfg, "allow_transmitter", False))
+    if not can_exec:
+        return None
+    free_rem = eff_tm.get("free_spins_remaining")
+    charges_hint = (
+        f" ({_safe_strategy_int(free_rem, 1)} free charge(s) ready)"
+        if isinstance(free_rem, int) and not isinstance(free_rem, bool) and free_rem > 0
+        else ""
+    )
+    hold_note = "" if can_exec else " [Hold: allow_transmitter=false in Config]"
+    return PlannedAction(
+        priority="P2",
+        kind="ACTIVATE_TRANSMITTER",
+        planet_id=active.planet_id,
+        planet_coords=_safe_strategy_str(active.coords),
+        target_name="Interdimensional Transmitter",
+        reason=f"Activate daily free Interdimensional Transmitter spin{charges_hint} (0 Urplasma){hold_note}",
+        executable_now=can_exec,
+    )
+
+
 def plan_actions(
     state: GameState,
     *,
@@ -3763,10 +3814,17 @@ def plan_actions(
     throttle_cooldowns: Optional[Mapping[int, float]] = None,
     now_ts: Optional[float] = None,
     raid_stats: Optional[Mapping[str, Any]] = None,
+    transmitter_status: Optional[Mapping[str, Any]] = None,
 ) -> list[PlannedAction]:
     """Generate an ETA-annotated action plan via the configured planner (`priority` or `ga_nn`)."""
     cfg = config or StrategyConfig()
     warn_ratio = _resolve_storage_warn_ratio(cfg, storage_warn_ratio)
+    state_for_plan = (
+        replace(state, raid_stats=dict(raid_stats))
+        if isinstance(raid_stats, Mapping)
+        else state
+    )
+    tm_act = _plan_transmitter_action(state_for_plan, cfg, transmitter_status=transmitter_status)
 
     if normalize_planner_mode(getattr(cfg, "planner_mode", "priority")) == "ga_nn":
         from spaceinvasion.planner.optimizer import optimize_plan_actions
@@ -3787,14 +3845,14 @@ def plan_actions(
             opt_kwargs["scanned_systems"] = scanned_systems
         if throttle_cooldowns is not None:
             opt_kwargs["throttle_cooldowns"] = throttle_cooldowns
-        ga_actions = optimize_plan_actions(state, **opt_kwargs)
+        ga_actions = list(optimize_plan_actions(state, **opt_kwargs))
+        if tm_act is not None and not any(a.kind == "ACTIVATE_TRANSMITTER" for a in ga_actions):
+            insert_idx = 0
+            while insert_idx < len(ga_actions) and ga_actions[insert_idx].priority in ("P0", "P1"):
+                insert_idx += 1
+            ga_actions.insert(insert_idx, tm_act)
         return attach_action_etas(state, ga_actions)
 
-    state_for_plan = (
-        replace(state, raid_stats=dict(raid_stats))
-        if isinstance(raid_stats, Mapping)
-        else state
-    )
     plan, planets_to_check = _build_pre_throttle_plan(
         state_for_plan,
         warn_ratio=warn_ratio,
@@ -3803,6 +3861,8 @@ def plan_actions(
         now_ts=now_ts,
         include_combat=True,
     )
+    if tm_act is not None:
+        plan.append(tm_act)
     if not planets_to_check:
         return attach_action_etas(state, plan)
 
@@ -4271,6 +4331,24 @@ def merge_manual_queue_actions(
                 missing=Resources(),
                 reason=f"{base_tag}: Claim completed tutorial step{note_suffix}" + ("" if tut_ok else " (tasks incomplete)"),
                 executable_now=tut_ok,
+                manual_queue_id=qid,
+                manual_sort_rank=srank,
+            )
+
+        elif kind == "ACTIVATE_TRANSMITTER":
+            can_tm = bool(getattr(cfg, "allow_transmitter", True))
+            built_act = PlannedAction(
+                priority=prio,
+                kind="ACTIVATE_TRANSMITTER",
+                planet_id=planet.planet_id,
+                planet_coords=planet.coords,
+                target_id=None,
+                target_name="Interdimensional Transmitter",
+                target_level=None,
+                cost=Resources(),
+                missing=Resources(),
+                reason=f"{base_tag}: Claim free Interdimensional Transmitter spin{note_suffix}",
+                executable_now=can_tm,
                 manual_queue_id=qid,
                 manual_sort_rank=srank,
             )
