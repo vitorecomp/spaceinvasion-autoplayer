@@ -1,11 +1,14 @@
-"""Tests for `notebooks/optimizer_experimentation.ipynb` (F20)."""
+"""Tests for `notebooks/optimizer_experimentation.ipynb` (F20) and `notebooks/full_planner.ipynb`."""
 
 from __future__ import annotations
 
 import ast
 import contextlib
+import dataclasses
+import datetime
 import gc
 import hashlib
+import importlib
 import io
 import json
 import math
@@ -1624,301 +1627,4029 @@ class TestExperimentationNotebook(unittest.TestCase):
         self.assertEqual(si(frozenset({1})), 0)
         self.assertEqual(si(10**5000), 10**5000)
 
-    def test_full_planner_notebook_attack_stats_time_and_success_rate(self) -> None:
-        fp_path = REPO_ROOT / "notebooks" / "full_planner.ipynb"
-        self.assertTrue(fp_path.is_file(), f"Missing {fp_path}")
-        raw = fp_path.read_text(encoding="utf-8")
-        nb = json.loads(raw)
-        self.assertEqual((nb.get("nbformat"), nb.get("nbformat_minor")), (4, 5))
 
-        cells = nb.get("cells") or []
-        self.assertGreaterEqual(len(cells), 13)
-        md_cells = [c for c in cells if c.get("cell_type") == "markdown"]
-        code_cells = [c for c in cells if c.get("cell_type") == "code"]
-        self.assertGreaterEqual(len(md_cells), 7)
-        self.assertGreaterEqual(len(code_cells), 6)
+# ---------------------------------------------------------------------------
+# notebooks/full_planner.ipynb
+# ---------------------------------------------------------------------------
 
-        for idx, cell in enumerate(code_cells):
-            self.assertEqual(cell.get("outputs"), [])
-            self.assertIsNone(cell.get("execution_count"))
+FULL_PLANNER_PATH = REPO_ROOT / "notebooks" / "full_planner.ipynb"
+FULL_PLANNER_METADATA_DIR = REPO_ROOT / "notebooks" / "metadata"
+FULL_PLANNER_METADATA_FILES = (
+    "buildings.json",
+    "technologies.json",
+    "ships.json",
+    "defenses.json",
+    "resources.json",
+    "planner_settings.json",
+)
+# Sections whose code cell generates data, in notebook order. Section 10 prints each one in its own cell.
+FULL_PLANNER_DATA_SECTIONS = [
+    "1.1", "1.6", "2.3", "3", "4", "5", "6", "6.1", "6.2", "6.3", "6.4", "7.2", "7.3", "8.1", "8.2", "9",
+]
+# Sections after the print section, in notebook order. Each of their code cells prints its own data.
+FULL_PLANNER_SELF_PRINTING_SECTIONS = ["11.1", "11.2", "11.3", "11.4", "11.5", "11.6"]
+# requirements.txt distributions whose import name differs from the distribution name.
+REQUIREMENT_IMPORT_NAMES = {"python-dotenv": "dotenv", "beautifulsoup4": "bs4"}
+
+# Runs the notebook in a fresh interpreter with some modules made unimportable, then reports what was imported.
+# argv: notebook path, working directory, JSON list of blocked top-level module names.
+FULL_PLANNER_SUBPROCESS_DRIVER = """
+import contextlib, importlib.abc, io, json, os, sys
+
+blocked = set(json.loads(sys.argv[3]))
+
+
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] in blocked:
+            raise ImportError("blocked for this test: " + fullname)
+        return None
+
+
+sys.meta_path.insert(0, Blocker())
+with open(sys.argv[1], encoding="utf-8") as handle:
+    cells = json.load(handle)["cells"]
+os.chdir(sys.argv[2])
+namespace = {"__name__": "__main__"}
+with contextlib.redirect_stdout(io.StringIO()):
+    for cell in cells:
+        source = "".join(cell["source"])
+        if cell["cell_type"] == "code" and not source.lstrip().startswith("!"):
+            exec(compile(source, "full_planner", "exec"), namespace, namespace)
+print(json.dumps(sorted({name.split(".")[0] for name in sys.modules})))
+"""
+
+
+def _full_planner_meta_parameters() -> dict[str, object]:
+    """The meta parameters of Section 11.1 that the tests plan with.
+
+    The values in the notebook's own cell are the user's to tune. Every test run therefore replaces them
+    with these, the values that the expectations of the tests were worked out for.
+    """
+    return {
+        "TARGET_SHIP_KEY": "s16",
+        "PRODUCTION_MONTH_DAYS": 30.0,
+        "RESEARCH_PERCENT_OF_UNIVERSE_MAX": 100.0,
+        "MIN_FLEET_PER_PLANET": {"s2": 10, "s10": 10, "s11": 10},
+        "MISC_BUILDING_LEVELS": {
+            "b6": 0, "b7": 12, "b8": 0, "b10": 5, "b11": 0, "b12": 0, "b13": 0, "b14": 0,
+            "b15": 0, "b16": 0, "b18": 0, "b19": 0, "b20": 0, "b21": 0,
+        },
+        "MISC_BUILDING_LEVELS_BY_SLOT": {1: {"b8": 12}},
+        "WAREHOUSE_HOURS_OF_PRODUCTION": 24.0,
+        "CENTRAL_PLANET_SLOT": 1,
+        "CENTRAL_PLANET_MIN_WAREHOUSE_LEVEL": 15,
+        "OPTIMIZED_BUILDING_MAX_LEVELS": {"b1": 50, "b2": 50, "b3": 50, "b4": 50, "b5": 50, "b9": 50, "b17": 50},
+        "CATALOGUE_GRID_SIZE": 100_000,
+        "CATALOGUE_PRIORITY_STEPS": 4,
+        "HILL_CLIMB_STEP_SIZES": (1, 2, 4, 8),
+        "GA_POPULATION_SIZE": 400,
+        "GA_GENERATIONS": 300,
+        "GA_TOURNAMENT_SIZE": 3,
+        "GA_CROSSOVER_RATE": 0.9,
+        "GA_MUTATION_RATE": 0.1,
+        "GA_ELITE_COUNT": 4,
+        "GA_RANDOM_SEED": 20261117,
+    }
+
+
+def _is_generated_data(name: str, value: object) -> bool:
+    """True for a public notebook global that holds data: not a callable, a module, or a static source constant."""
+    return not (
+        name.startswith("_")
+        or callable(value)
+        or isinstance(value, types.ModuleType)
+        or name.startswith("SQL_")
+        or name.endswith("_COLUMNS")
+    )
+
+
+def _last_heading_number(markdown: str) -> str | None:
+    """Section number of the last `##` or `###` heading of a markdown cell (`"6.1"` for `### 6.1 Buildings`)."""
+    numbers = re.findall(r"(?m)^#{2,3} (\d+(?:\.\d+)*)\.? ", markdown)
+    return numbers[-1] if numbers else None
+
+
+def _requirement_name(spec: str) -> str:
+    """Distribution name of a requirement such as `pandas>=2.2,<4`."""
+    return re.split(r"[<>=!~ ]", spec.strip(), maxsplit=1)[0].lower()
+
+
+def _undominated_rows(points: np.ndarray) -> np.ndarray:
+    """The distinct rows of `points` that no other row matches or beats in every column."""
+    unique = np.unique(points, axis=0)
+    beaten = [bool(((unique >= row).all(axis=1) & (unique > row).any(axis=1)).any()) for row in unique]
+    return unique[~np.array(beaten)]
+
+
+def _three_planet_state() -> GameState:
+    """The sample account with a Research lab and Weapons factory at home, a second, colder colony and an asteroid."""
+    state = _sample_snapshot_state()
+    home = dataclasses.replace(state.planets[0], buildings={**state.planets[0].buildings, "b8": 1, "b9": 2})
+    cold_colony = dataclasses.replace(
+        home,
+        planet_id=20001,
+        name="Cold Colony",
+        coords="02:381:15",
+        temperature=-40,
+        fields_used=15,
+        buildings={"b4": 5, "b7": 3, "b8": 2, "b9": 4, "b17": 1},
+        ships={"s4": 12, "s9": 3},
+        defense={"d1": 7},
+        building_offers=(),
+    )
+    asteroid = dataclasses.replace(
+        home,
+        planet_id=30007,
+        name="Rock",
+        coords="02:380:12A",
+        planet_type="asteroid",
+        temperature=12,
+        fields_used=4,
+        fields_max=40,
+        buildings={"b7": 2, "b9": 2},
+        building_offers=(),
+    )
+    return dataclasses.replace(state, planets=(home, cold_colony, asteroid))
+
+
+def _add_universe_research(db: GameDatabase) -> None:
+    """Fill the bot's `universe_research_max` ledger and archive six spy reports, four of them with researches."""
+    db._conn.executemany(
+        "INSERT INTO universe_research_max(research_key, research_id, slug, name, own_level, spied_max_level, "
+        "server_record_level, universe_max_level, catalog_max_level, holder, holder_coords, updated_ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("r1", 1, "mining-technology", "Mining technology", 0, 14, 27, 27, 40, "TopMiner", "01:010:02", 1.7e9),
+            # The maximum of this row lags behind its own server record: it still says 20.
+            ("r2", 2, "energy-technology", "Energy technology", 1, 12, 21, 20, 40, "TopMiner", "01:010:02", 1.7e9),
+            ("r3", 3, "engine-research", "Engine research", 0, 9, None, 13, 35, "OldRecord", "03:200:11", 1.7e9),
+            ("r7", 7, "spy-technology", "Spy technology", 4, 0, None, 4, 35, "Me", "", 1.7e9),
+            ("urplasma-extraction", 16, "urplasma-extraction", "Urplasma-extraction", 0, 3, None, 3, None,
+             "Raider", "02:383:02", 1.7e9),
+        ],
+    )
+    db._conn.executemany(
+        "INSERT INTO spy_reports(ts, target_coords, owner, researches_json) VALUES (?, ?, ?, ?)",
+        [
+            (1_700_100_000.0, "02:383:02", "Raider", '{"r8": 7, "r13": 11, "r9": 3}'),
+            (1_700_110_000.0, "02:390:04", "Miner", '{"Weapons technology": 9, "shield-technology": 5, "r99": 30}'),
+            (1_700_120_000.0, "02:391:07", "Late", '{"r8": 9, "r1": 15, "r10": 0, "r9": "x"}'),
+            (1_700_130_000.0, "02:392:01", "NoResearch", "{}"),
+            (1_700_140_000.0, "02:393:01", "Broken", "not json"),
+            (1_700_150_000.0, "02:394:01", "", '{"r4": 12, "r13": 4}'),
+        ],
+    )
+    db._conn.commit()
+
+
+def _build_full_planner_workspace(
+    root: Path,
+    *,
+    with_attacks: bool,
+    state: GameState | None = None,
+    universe_research: bool = False,
+) -> Path:
+    """Create `root/state/spaceinvasion.db`: empty, or with one planet, three raid dispatches and three battles.
+
+    `state` replaces the one-planet sample account that is snapshotted when `with_attacks` is set, and
+    `universe_research` adds what `_add_universe_research` records about other players' research.
+    """
+    (root / "state").mkdir(parents=True)
+    db = GameDatabase(root / "state" / "spaceinvasion.db", legacy_rank_json=None)
+    try:
+        if with_attacks:
+            db.record_state_snapshot(state if state is not None else _sample_snapshot_state())
+            for target, attacked_ts in (
+                ("02:383:02", 1_700_000_000.0),
+                ("02:383:02", 1_700_001_000.0),
+                ("02:378:15", 1_700_003_000.0),
+            ):
+                db.record_raid(target, attacked_ts=attacked_ts, is_exempt=True, outcome="Dispatched attack", loot={})
+            db._conn.executemany(
+                "INSERT INTO battle_reports("
+                "ts, msg_uid, server_msg_id, battle_id, msg_date_text, target_coords, "
+                "attacker, defender, outcome, rounds, pig_iron, metal, kryptonite, spice, loot_spice_eq"
+                ") VALUES (?, ?, ?, ?, ?, ?, 'Me', 'Target', ?, 1, ?, ?, ?, ?, ?)",
+                [
+                    (1_700_000_300.0, "m1", "1", "b1", "2023-11-14 22:18:20", "02:383:02", "win", 6000, 2500, 3000, 1000, 4000.0),
+                    (1_700_001_360.0, "m2", "2", "b2", "2023-11-14 22:36:00", "02:383:02", "win", 3000, 1250, 1500, 500, 2000.0),
+                    (1_700_003_200.0, "m3", "3", "b3", "2023-11-14 23:06:40", "02:378:15", "loss", 0, 0, 0, 0, 0.0),
+                ],
+            )
+            db._conn.commit()
+        if universe_research:
+            _add_universe_research(db)
+    finally:
+        db.close()
+    return root
+
+
+def _run_full_planner(
+    code_cells: list[dict],
+    workspace: Path,
+    *,
+    metadata_dir: Path | None = None,
+    last_cell: int | None = None,
+    overrides: dict[str, object] | None = None,
+) -> tuple[dict, dict[int, str], dict[int, set[str]]]:
+    """Execute the notebook's code cells with `workspace` as working directory (the pip cell is skipped).
+
+    Returns the namespace and, per code-cell index, the captured stdout and the global names the cell added.
+    `metadata_dir` replaces the notebook's `METADATA_DIR` as soon as a cell has defined it, and `overrides`
+    does the same for any other global. The meta parameters of Section 11.1 always get the values of
+    `_full_planner_meta_parameters`, unless `overrides` names others. `last_cell` stops the run after that
+    code cell. The pandas display options the notebook sets are restored.
+    """
+    replaced = {**_full_planner_meta_parameters(), **(overrides or {})}
+    ns: dict = {"__name__": "__main__"}
+    stdout: dict[int, str] = {}
+    new_names: dict[int, set[str]] = {}
+    display_options = ("display.max_columns", "display.width", "display.max_colwidth")
+    saved_options = {option: pd.get_option(option) for option in display_options}
+    orig_cwd = Path.cwd()
+    os.chdir(workspace)
+    try:
+        for idx, cell in enumerate(code_cells[1:], start=1):
+            if last_cell is not None and idx > last_cell:
+                break
+            names_before = set(ns)
+            cell_buf = io.StringIO()
+            with contextlib.redirect_stdout(cell_buf):
+                exec(compile(_cell_source(cell), f"full_planner_cell_{idx}", "exec"), ns, ns)
+            stdout[idx] = cell_buf.getvalue()
+            new_names[idx] = set(ns) - names_before
+            if metadata_dir is not None and "METADATA_DIR" in new_names[idx]:
+                ns["METADATA_DIR"] = metadata_dir
+            for name in new_names[idx] & set(replaced):
+                ns[name] = replaced[name]
+    finally:
+        os.chdir(orig_cwd)
+        for option, value in saved_options.items():
+            pd.set_option(option, value)
+    return ns, stdout, new_names
+
+
+class TestFullPlannerNotebook(unittest.TestCase):
+    """`notebooks/full_planner.ipynb`: layout rules, static metadata, generated data, printouts and the planner."""
+
+    _assert_cell_ast_safe = TestExperimentationNotebook._assert_cell_ast_safe
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.nb = json.loads(FULL_PLANNER_PATH.read_text(encoding="utf-8"))
+        cls.cells = cls.nb["cells"]
+        cls.code_positions = [pos for pos, cell in enumerate(cls.cells) if cell.get("cell_type") == "code"]
+        cls.code_cells = [cls.cells[pos] for pos in cls.code_positions]
+        # Section 10 holds the print cells; the code cells after it are Section 11, which prints its own data.
+        cls.print_idxs = [idx for idx, cell in enumerate(cls.code_cells) if cls._is_print_cell(cell)]
+        cls.first_print_idx = cls.print_idxs[0]
+        cls.planner_idxs = list(range(cls.print_idxs[-1] + 1, len(cls.code_cells)))
+        cls.universe_research_cell_idx = next(
+            idx
+            for idx, pos in enumerate(cls.code_positions)
+            if re.search(r"(?m)^## 9\. ", _cell_source(cls.cells[pos - 1]))
+        )
+        cls.metadata_cell_idx = next(
+            idx
+            for idx, cell in enumerate(cls.code_cells)
+            if re.search(r"(?m)^def load_metadata\(", _cell_source(cell))
+        )
+        tmp = tempfile.TemporaryDirectory(prefix="si_fp_test_")
+        cls.addClassCleanup(tmp.cleanup)
+        cls.attack_workspace = _build_full_planner_workspace(Path(tmp.name) / "attacks", with_attacks=True)
+        cls.cold_workspace = _build_full_planner_workspace(Path(tmp.name) / "cold", with_attacks=False)
+        cls.three_planet_workspace = _build_full_planner_workspace(
+            Path(tmp.name) / "three_planets", with_attacks=True, state=_three_planet_state()
+        )
+        cls.universe_workspace = _build_full_planner_workspace(
+            Path(tmp.name) / "universe", with_attacks=True, universe_research=True
+        )
+        cls._attack_run_cache = None
+        cls.attack_workspace_before_after = None
+        cls._other_runs: dict[Path, tuple[dict, dict[int, str], dict[int, set[str]]]] = {}
+
+    @staticmethod
+    def _is_print_cell(cell: dict) -> bool:
+        return cell.get("cell_type") == "code" and _cell_source(cell).lstrip().startswith("print_section_data(")
+
+    @staticmethod
+    def _workspace_fingerprint(workspace: Path) -> dict[str, str]:
+        return {
+            str(path.relative_to(workspace)): _sha256_bytes(path)
+            for path in sorted(workspace.rglob("*"))
+            if path.is_file()
+        }
+
+    @classmethod
+    def _attack_run(cls) -> tuple[dict, dict[int, str], dict[int, set[str]]]:
+        """The notebook executed once on the workspace with three attacks (cached for the whole class)."""
+        if cls._attack_run_cache is None:
+            before = cls._workspace_fingerprint(cls.attack_workspace)
+            run = _run_full_planner(cls.code_cells, cls.attack_workspace)
+            cls.attack_workspace_before_after = (before, cls._workspace_fingerprint(cls.attack_workspace))
+            cls._attack_run_cache = run
+        return cls._attack_run_cache
+
+    @classmethod
+    def _cached_run(cls, workspace: Path) -> tuple[dict, dict[int, str], dict[int, set[str]]]:
+        """The notebook executed once on another workspace of the class (cached like `_attack_run`)."""
+        if workspace not in cls._other_runs:
+            cls._other_runs[workspace] = _run_full_planner(cls.code_cells, workspace)
+        return cls._other_runs[workspace]
+
+    def _rerun_planner(self, ns: dict, changes: dict[str, object]) -> dict:
+        """Section 11 executed again on a copy of a finished run, with other meta parameters.
+
+        Its cells only read what Sections 1 to 9 left behind, so the copy can share those objects.
+        """
+        rerun = {**ns, **changes}
+        with contextlib.redirect_stdout(io.StringIO()):
+            for idx in self.planner_idxs[1:]:
+                exec(compile(_cell_source(self.code_cells[idx]), f"full_planner_cell_{idx}", "exec"), rerun, rerun)
+        return rerun
+
+    def _notebook_meta_parameters(self) -> dict[str, object]:
+        """The meta parameters as the notebook's own Section 11.1 cell sets them."""
+        statements = ast.parse(_cell_source(self.code_cells[self.planner_idxs[0]])).body[:-1]
+        return {statement.target.id: ast.literal_eval(statement.value) for statement in statements}
+
+    def _section_cells(self) -> list[tuple[str, int, int]]:
+        """`(section number, data code-cell index, print code-cell index)` of every data-producing cell, in order."""
+        ns, _, new_names = self._attack_run()
+        data_idxs = [
+            idx
+            for idx in range(2, self.first_print_idx)  # code cells 0 and 1 install packages and import modules
+            if any(_is_generated_data(name, ns[name]) for name in new_names[idx])
+        ]
+        self.assertEqual(
+            len(self.print_idxs),
+            len(data_idxs),
+            "Every data-producing code cell needs exactly one Section 10 print cell, in the same order",
+        )
+        sections: list[tuple[str, int, int]] = []
+        for data_idx, print_idx in zip(data_idxs, self.print_idxs):
+            section = _last_heading_number(_cell_source(self.cells[self.code_positions[data_idx] - 1]))
+            self.assertIsNotNone(section, f"Code cell {data_idx} has no numbered heading above it")
+            sections.append((section, data_idx, print_idx))
+        return sections
+
+    def _edited_metadata_dir(self, parent: Path, edits: dict) -> Path:
+        """Copy `notebooks/metadata/` into `parent` and apply `{file name: function(document)}` edits."""
+        meta_dir = parent / "metadata"
+        shutil.copytree(FULL_PLANNER_METADATA_DIR, meta_dir)
+        for file_name, change in edits.items():
+            document = json.loads((meta_dir / file_name).read_text(encoding="utf-8"))
+            change(document)
+            (meta_dir / file_name).write_text(json.dumps(document), encoding="utf-8")
+        return meta_dir
+
+    # ------------------------------------------------------------------ layout and hygiene
+
+    def test_layout_one_described_code_cell_per_component(self) -> None:
+        self.assertEqual((self.nb.get("nbformat"), self.nb.get("nbformat_minor")), (4, 5))
+        cell_ids = [cell.get("id") for cell in self.cells]
+        self.assertTrue(all(isinstance(cell_id, str) and cell_id.strip() for cell_id in cell_ids))
+        self.assertEqual(len(set(cell_ids)), len(cell_ids), "Cell ids must be unique")
+        for pos, cell in enumerate(self.cells):
+            self.assertIn(cell.get("cell_type"), ("markdown", "code"))
+            self.assertTrue(_cell_source(cell).strip(), f"Cell {pos} is empty")
+
+        for idx, pos in enumerate(self.code_positions):
+            cell = self.cells[pos]
+            self.assertGreater(pos, 0)
+            self.assertEqual(
+                self.cells[pos - 1].get("cell_type"),
+                "markdown",
+                f"Code cell {idx} needs its markdown description directly above it",
+            )
+            self.assertIsNotNone(
+                _last_heading_number(_cell_source(self.cells[pos - 1])),
+                f"The description above code cell {idx} needs a numbered heading",
+            )
             src = _cell_source(cell)
             if idx == 0:
-                pip_lines = [
-                    ln.strip()
-                    for ln in src.splitlines()
-                    if ln.strip() and not ln.strip().startswith("#")
-                ]
-                self.assertGreater(len(pip_lines), 0, "First code cell in full_planner must hold !pip install")
-                for ln in pip_lines:
-                    self.assertTrue(
-                        ln.startswith("!pip install "),
-                        f"First code cell in full_planner must only contain !pip install lines: {ln!r}",
-                    )
-                for pkg in ("numpy", "pandas", "beautifulsoup4", "python-dotenv", "requests"):
-                    self.assertIn(pkg, src)
                 continue
-
+            for ln in src.splitlines():
+                self.assertFalse(
+                    ln.lstrip().startswith(("%", "!")),
+                    f"Only the first code cell may hold shell or magic lines: {ln!r}",
+                )
             self._assert_cell_ast_safe(src, f"full_planner code cell {idx}")
-            parsed_cell = ast.parse(src)
-            import_nodes = [
-                n for n in ast.walk(parsed_cell) if isinstance(n, (ast.Import, ast.ImportFrom))
+
+        # Section 0: the first code cell only installs packages.
+        pip_lines = [
+            ln.strip()
+            for ln in _cell_source(self.code_cells[0]).splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        self.assertGreater(len(pip_lines), 0, "The first code cell must hold the !pip install lines")
+        for ln in pip_lines:
+            self.assertTrue(ln.startswith("!pip install "), f"The first code cell must only install packages: {ln!r}")
+
+        # Section 0.1: every import is in the second code cell, uses the canonical package path, and is used.
+        cells_with_imports = [
+            idx
+            for idx, cell in enumerate(self.code_cells[1:], start=1)
+            if any(
+                isinstance(node, (ast.Import, ast.ImportFrom))
+                for node in ast.walk(ast.parse(_cell_source(cell)))
+            )
+        ]
+        self.assertEqual(cells_with_imports, [1], "Every import belongs in the Imports cell")
+        imported_names: set[str] = set()
+        for node in ast.walk(ast.parse(_cell_source(self.code_cells[1]))):
+            if isinstance(node, ast.Import):
+                imported_names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported_names.update(alias.asname or alias.name for alias in node.names)
+                if (node.module or "").split(".")[0] == "spaceinvasion":
+                    self.assertEqual(
+                        importlib.import_module(node.module).__name__,
+                        node.module,
+                        f"Import {node.module} through its real package path, not a legacy alias",
+                    )
+        used_names = {
+            node.id
+            for cell in self.code_cells[1:]
+            for node in ast.walk(ast.parse(_cell_source(cell)))
+            if isinstance(node, ast.Name)
+        }
+        self.assertEqual(sorted(imported_names - used_names), [], "The Imports cell imports names nothing uses")
+
+        # Section 1: helpers start in the Utils section, with resolve_repo_root in its first cell.
+        self.assertIn("## 1. Utils", _cell_source(self.cells[self.code_positions[2] - 1]))
+        utils_functions = {
+            node.name
+            for node in ast.parse(_cell_source(self.code_cells[2])).body
+            if isinstance(node, ast.FunctionDef)
+        }
+        self.assertIn("resolve_repo_root", utils_functions)
+
+        # Section 10: one block of alternating heading / print cells, one print call per cell.
+        print_positions = [pos for pos, cell in enumerate(self.cells) if self._is_print_cell(cell)]
+        self.assertEqual(
+            print_positions,
+            list(range(print_positions[0], print_positions[-1] + 1, 2)),
+            "Section 10 print cells must form one block, alternating markdown heading / print cell",
+        )
+        self.assertIn("## 10. ", _cell_source(self.cells[print_positions[0] - 1]))
+        for number, pos in enumerate(print_positions, start=1):
+            self.assertRegex(
+                _cell_source(self.cells[pos - 1]),
+                rf"(?m)^### 10\.{number} Section [\d.]+ Data\b",
+                "Section 10 headings must be numbered 10.1, 10.2, ... in order",
+            )
+            print_body = ast.parse(_cell_source(self.cells[pos])).body
+            self.assertEqual(len(print_body), 1, "A Section 10 cell must be one print_section_data(...) call")
+            self.assertIsInstance(print_body[0], ast.Expr)
+            self.assertIsInstance(print_body[0].value, ast.Call)
+            self.assertEqual(print_body[0].value.func.id, "print_section_data")
+
+        # Section 11 is the last section: alternating description / code cell up to the end of the notebook.
+        planner_positions = [self.code_positions[idx] for idx in self.planner_idxs]
+        self.assertEqual(planner_positions, list(range(print_positions[-1] + 2, len(self.cells), 2)))
+        self.assertIn("## 11. ", _cell_source(self.cells[planner_positions[0] - 1]))
+        self.assertEqual(
+            [_last_heading_number(_cell_source(self.cells[pos - 1])) for pos in planner_positions],
+            FULL_PLANNER_SELF_PRINTING_SECTIONS,
+        )
+        for pos in planner_positions:
+            # Each of its cells ends by printing its own data, with print_section_data and nothing else.
+            body = ast.parse(_cell_source(self.cells[pos])).body
+            printers = [
+                node.func.id
+                for node in ast.walk(ast.Module(body=body, type_ignores=[]))
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in ("print", "print_section_data")
             ]
-            func_names = {
-                n.name for n in parsed_cell.body if isinstance(n, ast.FunctionDef)
-            }
-            if idx == 1:
-                self.assertGreater(len(import_nodes), 0, "Imports code cell in full_planner must hold imports")
-                self.assertNotIn("resolve_repo_root", func_names)
-            else:
-                self.assertEqual(
-                    import_nodes,
-                    [],
-                    f"Non-import code cell {idx} in full_planner must not contain imports: {import_nodes}",
-                )
-            if idx == 2:
-                self.assertIn("resolve_repo_root", func_names, "Utils code cell must define resolve_repo_root")
+            self.assertEqual(printers, ["print_section_data"], f"Cell {pos} must print once, with print_section_data")
+            self.assertIsInstance(body[-1], ast.Expr)
+            self.assertEqual(body[-1].value.func.id, "print_section_data")
+        # Its first cell holds the meta parameters and nothing else: assignments, then the printout.
+        meta_parameters = ast.parse(_cell_source(self.cells[planner_positions[0]])).body[:-1]
+        self.assertGreater(len(meta_parameters), 10)
+        for statement in meta_parameters:
+            self.assertIsInstance(statement, ast.AnnAssign, "The meta-parameter cell only assigns annotated constants")
+            self.assertRegex(statement.target.id, r"^[A-Z][A-Z0-9_]+$")
+            try:
+                ast.literal_eval(statement.value)
+            except ValueError:
+                self.fail(f"{statement.target.id} must be a plain value: the cell holds parameters, not results")
+        self.assertEqual(
+            [statement.target.id for statement in meta_parameters],
+            list(_full_planner_meta_parameters()),
+            "The tests replace every meta parameter; keep _full_planner_meta_parameters in step with the cell",
+        )
+        self.assertIn("### 11.1 Meta Parameters", _cell_source(self.cells[planner_positions[0] - 1]))
 
+    def test_notebook_is_saved_without_outputs(self) -> None:
+        # The outputs of a run print game data: planets, coordinates, resources, the research of other players.
+        # The notebook is therefore committed without them. This test fails after every run in the editor, until
+        # the outputs are cleared ("Clear All Outputs") and the notebook is saved.
+        ran = [
+            idx
+            for idx, cell in enumerate(self.code_cells)
+            if cell.get("outputs") != [] or cell.get("execution_count") is not None
+        ]
+        self.assertFalse(
+            ran,
+            f"{len(ran)} code cells of notebooks/full_planner.ipynb hold the outputs or execution counts of a run; "
+            "clear all outputs and save the notebook before committing it",
+        )
+
+    def test_pip_cell_installs_exactly_what_the_notebook_imports(self) -> None:
+        requirements = {
+            _requirement_name(line): line.strip()
+            for line in (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+        installed = {
+            _requirement_name(spec): spec
+            for spec in re.findall(r'"([^"]+)"', _cell_source(self.code_cells[0]))
+        }
+        self.assertGreater(len(installed), 0)
+        for name, spec in installed.items():
+            self.assertEqual(
+                requirements.get(name), spec, f"The pip cell must use the requirements.txt range of {name}"
+            )
+
+        # A fresh interpreter in which every requirement the pip cell leaves out cannot be imported.
+        left_out = sorted(REQUIREMENT_IMPORT_NAMES.get(name, name) for name in set(requirements) - set(installed))
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                FULL_PLANNER_SUBPROCESS_DRIVER,
+                str(FULL_PLANNER_PATH),
+                str(self.cold_workspace),
+                json.dumps(left_out),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT), "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"The notebook needs a package that its pip cell does not install ({left_out} were blocked):\n"
+            f"{result.stderr[-2000:]}",
+        )
+        loaded = set(json.loads(result.stdout.strip().splitlines()[-1]))
+        for name in installed:
+            self.assertIn(
+                REQUIREMENT_IMPORT_NAMES.get(name, name),
+                loaded,
+                f"The pip cell installs {name}, which the notebook never imports",
+            )
+
+    def test_run_is_read_only_and_leaves_no_scratch_globals(self) -> None:
+        ns, _, _ = self._attack_run()
+        before, after = self.attack_workspace_before_after
+        self.assertEqual(after, before, "Running the notebook must not create or change a file in its workspace")
+        self.assertFalse(LEGACY_ATTACK_JSON_PATH.exists())
+        self.assertEqual(ns["LIVE_DB_PATH"], self.attack_workspace.resolve() / "state" / "spaceinvasion.db")
+        self.assertEqual(ns["METADATA_DIR"], FULL_PLANNER_METADATA_DIR.resolve())
+
+        scratch_globals = sorted(
+            name
+            for name, value in ns.items()
+            if name.startswith("_")
+            and not name.startswith("__")
+            and not callable(value)
+            and not isinstance(value, types.ModuleType)
+        )
+        self.assertEqual(
+            [name for name in scratch_globals if name not in ("_", "_cand")],
+            [],
+            "Top-level temporaries belong inside functions, not in the notebook namespace",
+        )
+        self.assertNotIn("statistics", ns)
+
+        # The only database access is a query-only connection to a temporary copy.
+        with ns["open_readonly_db_copy"](ns["LIVE_DB_PATH"]) as conn:
+            self.assertNotEqual(
+                Path(conn.execute("PRAGMA database_list").fetchone()[2]).resolve(),
+                ns["LIVE_DB_PATH"].resolve(),
+            )
+            with self.assertRaises(sqlite3.OperationalError):
+                conn.execute("CREATE TABLE full_planner_probe (x)")
+            plan = " ".join(
+                str(row[-1])
+                for row in conn.execute("EXPLAIN QUERY PLAN " + ns["SQL_RAID_DISPATCH_ORIGIN_JOIN"], ("x",))
+            )
+        self.assertIn("idx_action_history_ts", plan, "The raid/action join must use the timestamp index")
+        self.assertEqual(self._workspace_fingerprint(self.attack_workspace), before)
+
+        # resolve_repo_root's last resort: package importable, repository neither in cwd nor on sys.path.
+        saved_sys_path = list(sys.path)
         orig_cwd = Path.cwd()
+        os.chdir(self.attack_workspace)
         try:
-            with tempfile.TemporaryDirectory(prefix="si_fp_test_") as tmp:
-                tmp_path = Path(tmp)
-                (tmp_path / "data").mkdir()
-                (tmp_path / "state").mkdir()
-                db = GameDatabase(tmp_path / "state" / "spaceinvasion.db", legacy_rank_json=None)
-                try:
-                    db.record_state_snapshot(_sample_snapshot_state())
-                    db.record_raid(
-                        "02:383:02",
-                        attacked_ts=1_700_000_000.0,
-                        is_exempt=True,
-                        outcome="Dispatched attack",
-                        loot={},
-                    )
-                    db.record_raid(
-                        "02:383:02",
-                        attacked_ts=1_700_001_000.0,
-                        is_exempt=True,
-                        outcome="Dispatched attack",
-                        loot={},
-                    )
-                    db.record_raid(
-                        "02:378:15",
-                        attacked_ts=1_700_003_000.0,
-                        is_exempt=True,
-                        outcome="Dispatched attack",
-                        loot={},
-                    )
-                    db._conn.executemany(
-                        "INSERT INTO battle_reports("
-                        "ts, msg_uid, server_msg_id, battle_id, msg_date_text, target_coords, "
-                        "attacker, defender, outcome, rounds, pig_iron, metal, kryptonite, spice, loot_spice_eq"
-                        ") VALUES (?, ?, ?, ?, ?, ?, 'Me', 'Target', ?, 1, ?, ?, ?, ?, ?)",
-                        [
-                            (1_700_000_300.0, "m1", "1", "b1", "2023-11-14 22:18:20", "02:383:02", "win", 6000, 2500, 3000, 1000, 4000.0),
-                            (1_700_001_360.0, "m2", "2", "b2", "2023-11-14 22:36:00", "02:383:02", "win", 3000, 1250, 1500, 500, 2000.0),
-                            (1_700_003_200.0, "m3", "3", "b3", "2023-11-14 23:06:40", "02:378:15", "loss", 0, 0, 0, 0, 0.0),
-                        ],
-                    )
-                    db._conn.commit()
-                finally:
-                    db.close()
-
-                os.chdir(tmp_path)
-                ns: dict = {"__name__": "__main__"}
-                with contextlib.redirect_stdout(io.StringIO()):
-                    for idx, cell in enumerate(code_cells[1:], start=1):
-                        exec(compile(_cell_source(cell), f"fp_{idx}", "exec"), ns, ns)
-
-                self.assertAlmostEqual(ns["attack_resource_mean"]["spice_eq"], 2000.0, places=2)
-                self.assertAlmostEqual(ns["attack_resource_std"]["spice_eq"], 2000.0, places=2)
-                self.assertAlmostEqual(ns["winning_attack_resource_mean"]["spice_eq"], 3000.0, places=2)
-                self.assertGreater(ns["attack_time_mean_sec"], 0.0)
-                self.assertGreater(ns["attack_time_std_sec"], 0.0)
-                self.assertAlmostEqual(ns["inter_attack_time_mean_sec"], 1500.0, places=2)
-                self.assertAlmostEqual(ns["attack_success_rate"], 2.0 / 3.0, places=4)
-                self.assertEqual(ns["ATTACK_SIM_PARAMS"]["attempts"], 3)
-
-                # Sections 2-5: Vectorized pandas & numpy attack telemetry DataFrames & arrays
-                self.assertNotIn("statistics", ns)
-                self.assertIsInstance(ns["one_way_times_arr"], np.ndarray)
-                self.assertIsInstance(ns["round_trip_times_arr"], np.ndarray)
-                self.assertIsInstance(ns["inter_attack_intervals_arr"], np.ndarray)
-                attack_tables = ns["ATTACK_STATS_TABLES"]
-                self.assertEqual(
-                    set(attack_tables.keys()),
-                    {
-                        "attacks",
-                        "recycles",
-                        "attack_resource_stats",
-                        "attack_time_stats",
-                        "attack_summary_stats",
-                        "attack_class_stats",
-                        "attack_target_stats",
-                    },
-                )
-                for at_name, at_df in attack_tables.items():
-                    self.assertIsInstance(at_df, pd.DataFrame, f"{at_name} must be a pandas DataFrame")
-                    self.assertFalse(at_df.isna().any().any(), f"{at_name} must not contain NaNs")
-                res_df = ns["attack_resource_stats_df"].set_index("metric")
-                self.assertAlmostEqual(float(res_df.loc["spice_eq", "mean_all"]), 2000.0, places=2)
-                self.assertAlmostEqual(float(res_df.loc["spice_eq", "sample_std_all"]), 2000.0, places=2)
-                self.assertAlmostEqual(float(res_df.loc["spice_eq", "mean_wins"]), 3000.0, places=2)
-                self.assertEqual(len(ns["attack_target_stats_df"]), 2)
-
-                # Section 6, 7 & 8: Game Parameters, In-Memory Tech Graph & Empire Planet States verification
-                tables = ns["GAME_PARAMS_TABLES"]
-                self.assertEqual(
-                    set(tables.keys()),
-                    {
-                        "merchant_rates",
-                        "buildings_catalog",
-                        "buildings_levels",
-                        "technologies_catalog",
-                        "technologies_levels",
-                        "ships",
-                        "defenses",
-                        "tech_graph_nodes",
-                        "tech_graph_edges",
-                        "unlock_targets_summary",
-                        "empire_planets",
-                        "empire_planet_buildings",
-                    },
-                )
-                for tname, df in tables.items():
-                    self.assertIsInstance(df, pd.DataFrame, f"{tname} must be a pandas DataFrame")
-                    self.assertGreater(len(df), 0, f"{tname} must not be empty")
-
-                self.assertEqual(len(ns["merchant_rates_df"]), 4)
-                self.assertEqual(len(ns["buildings_catalog_df"]), 21)
-                self.assertEqual(len(ns["buildings_levels_df"]), 975)
-                self.assertEqual(len(ns["technologies_catalog_df"]), 15)
-                self.assertEqual(len(ns["technologies_levels_df"]), 445)
-                self.assertEqual(len(ns["ships_df"]), 15)
-                self.assertEqual(len(ns["defenses_df"]), 11)
-                self.assertEqual(len(ns["tech_graph_nodes_df"]), 62)
-                self.assertEqual(len(ns["tech_graph_edges_df"]), 101)
-                self.assertEqual(len(ns["unlock_targets_summary_df"]), 62)
-
-                # Blast furnace (b2) 2:1 Pig iron feedstock invariant & monotonic build times
-                bld_lvls = ns["buildings_levels_df"]
-                b2_rows = bld_lvls[bld_lvls["key"] == "b2"]
-                for _, row in b2_rows.iterrows():
-                    self.assertAlmostEqual(
-                        float(row["pig_iron_consumed_hr_effective"]),
-                        2.0 * float(row["hourly_prod_effective"]),
-                        places=2,
-                    )
-                for bkey, grp in bld_lvls.groupby("key"):
-                    times = list(grp.sort_values("level")["base_time_s"])
-                    self.assertEqual(times, sorted(times), f"Non-monotonic base_time_s in {bkey}")
-
-                # Technology quantitative effects checks (r1 +2%, r2 +1%, r4..r6 & r8..r10 +10%)
-                tech_cat = ns["technologies_catalog_df"].set_index("key")
-                self.assertEqual(float(tech_cat.loc["r1", "per_level_bonus_pct"]), 2.0)
-                self.assertEqual(float(tech_cat.loc["r2", "per_level_bonus_pct"]), 1.0)
-                for rk in ("r4", "r5", "r6", "r8", "r9", "r10"):
-                    self.assertEqual(float(tech_cat.loc[rk, "per_level_bonus_pct"]), 10.0)
-
-                # Spaceships & orbital solar cell (s9) checks
-                ships_by_key = ns["ships_df"].set_index("key")
-                self.assertGreater(float(ships_by_key.loc["s9", "energy_output_effective"]), 0.0)
-                self.assertEqual(int(ships_by_key.loc["s9", "fields_used"]), 0)
-                self.assertEqual(int(ships_by_key.loc["s3", "cargo"]), 250_000)
-
-                # Section 7: In-memory TechnologyRequirementGraph DAG & unlock path invariants
-                tech_graph = ns["TECH_GRAPH"]
-                self.assertEqual(len(tech_graph.nodes), 62)
-                self.assertEqual(len(tech_graph.topological_order), 62)
-                for _, edge_row in ns["tech_graph_edges_df"].iterrows():
-                    src_k = str(edge_row["source_key"])
-                    tgt_k = str(edge_row["target_key"])
-                    self.assertLess(
-                        tech_graph.topological_layer[src_k],
-                        tech_graph.topological_layer[tgt_k],
-                    )
-
-                # Diamond prerequisite resolution on s7 Phoenix
-                s7_reqs = tech_graph.transitive_requirements("s7")
-                self.assertEqual(
-                    s7_reqs,
-                    {"b7": 3, "b8": 5, "r2": 1, "r3": 6, "b9": 7, "r5": 8, "r10": 5},
-                )
-
-                # Applying plan_unlock_sequence from cold start unlocks every single entity legally
-                for target_key, node_meta in tech_graph.nodes.items():
-                    plan_df = tech_graph.plan_unlock_sequence(target_key, {}, {}, speedup_factor=5.0)
-                    sim_b: dict[str, int] = {}
-                    sim_r: dict[str, int] = {}
-                    for _, step_row in plan_df.iterrows():
-                        sk = str(step_row["key"])
-                        # Every prerequisite of sk must ALREADY be satisfied before sk upgrades!
-                        self.assertTrue(
-                            tech_graph.is_unlocked(sk, sim_b, sim_r),
-                            f"Step {sk} executed before its own prerequisites in {target_key} plan",
-                        )
-                        if str(step_row["category"]) == "buildings":
-                            sim_b[sk] = int(step_row["to_level"])
-                        else:
-                            sim_r[sk] = int(step_row["to_level"])
-                    self.assertTrue(tech_graph.is_unlocked(target_key, sim_b, sim_r))
-                    unmet = game_data.missing_prerequisites(
-                        node_meta["category"],
-                        node_meta["slug"],
-                        buildings=sim_b,
-                        researches=sim_r,
-                    )
-                    self.assertEqual(unmet, [], f"Unmet prereqs after unlock plan for {target_key}: {unmet}")
-
-                # Section 8: Planet sizes, live states & 300-field empty colony padding
-                self.assertEqual(ns["MAX_EMPIRE_PLANETS"], 11)
-                self.assertEqual(ns["EMPTY_COLONY_SIZE_FIELDS"], 300)
-                self.assertEqual(len(ns["live_planet_states"]), 1)
-                self.assertEqual(len(ns["empire_planet_states"]), 11)
-                ep_df = ns["empire_planets_df"]
-                eb_df = ns["empire_planet_buildings_df"]
-                self.assertEqual(len(ep_df), 11)
-                self.assertEqual(len(eb_df), 11)
-                self.assertEqual(int((~ep_df["is_empty_slot"]).sum()), 1)
-                self.assertEqual(int(ep_df["is_empty_slot"].sum()), 10)
-                self.assertEqual(int(ep_df.loc[~ep_df["is_empty_slot"], "fields_max"].iloc[0]), 230)
-                empty_rows = ep_df[ep_df["is_empty_slot"]]
-                self.assertTrue((empty_rows["fields_max"] == 300).all())
-                self.assertTrue((empty_rows["fields_used"] == 0).all())
-                self.assertTrue((empty_rows["fields_remaining"] == 300).all())
-                self.assertTrue((eb_df.loc[eb_df["status"] == "empty_colony_slot", [f"b{i}" for i in range(1, 22)]] == 0).all().all())
-                self.assertEqual(ns["EMPIRE_PLANET_STATE_SUMMARY"]["total_fields_capacity"], 230 + 10 * 300)
-
-                # When already at MAX_EMPIRE_PLANETS, zero empty slots are added
-                full_roster = [ns["live_planet_states"][0]] * 11
-                full_states, full_df, _ = ns["build_padded_empire_planets"](full_roster)
-                self.assertEqual(len(full_states), 11)
-                self.assertEqual(int(full_df["is_empty_slot"].sum()), 0)
-
-            # Cold-start empty workspace check (0 attacks -> zero NaNs, zero RuntimeWarnings)
-            os.chdir(orig_cwd)
-            with tempfile.TemporaryDirectory(prefix="si_fp_cold_") as cold_tmp:
-                cold_path = Path(cold_tmp)
-                (cold_path / "state").mkdir()
-                cold_db = GameDatabase(cold_path / "state" / "spaceinvasion.db", legacy_rank_json=None)
-                cold_db.close()
-                os.chdir(cold_path)
-                cold_ns: dict = {"__name__": "__main__"}
-                with warnings.catch_warnings():
-                    warnings.simplefilter("error", RuntimeWarning)
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        for idx, cell in enumerate(code_cells[1:], start=1):
-                            exec(compile(_cell_source(cell), f"fp_cold_{idx}", "exec"), cold_ns, cold_ns)
-                self.assertEqual(cold_ns["ATTACK_SIM_PARAMS"]["attempts"], 0)
-                self.assertEqual(cold_ns["attack_success_rate"], 0.0)
-                self.assertAlmostEqual(cold_ns["attack_success_rate_smoothed"], 0.5, places=4)
-                self.assertEqual(len(cold_ns["live_planet_states"]), 0)
-                self.assertEqual(len(cold_ns["empire_planet_states"]), 11)
-                self.assertTrue((cold_ns["empire_planets_df"]["fields_max"] == 300).all())
-                self.assertEqual(cold_ns["EMPIRE_PLANET_STATE_SUMMARY"]["total_fields_capacity"], 3300)
-                for at_name, at_df in cold_ns["ATTACK_STATS_TABLES"].items():
-                    self.assertFalse(at_df.isna().any().any(), f"Cold-start {at_name} contained NaNs")
+            sys.path[:] = [
+                entry
+                for entry in sys.path
+                if entry and not (Path(entry).resolve() / "spaceinvasion" / "__init__.py").is_file()
+            ]
+            self.assertEqual(ns["resolve_repo_root"](), REPO_ROOT.resolve())
         finally:
             os.chdir(orig_cwd)
+            sys.path[:] = saved_sys_path
+
+    # ------------------------------------------------------------------ static metadata
+
+    def test_metadata_files_agree_with_the_game_catalog(self) -> None:
+        from spaceinvasion.combat.fleet import DEFENSE_SLUG_BY_KEY, SHIP_SLUG_BY_KEY
+        from spaceinvasion.core.config import StrategyConfig
+
+        docs = {
+            name: json.loads((FULL_PLANNER_METADATA_DIR / name).read_text(encoding="utf-8"))
+            for name in FULL_PLANNER_METADATA_FILES
+        }
+        for name, doc in docs.items():
+            self.assertIsInstance(doc.get("description"), str, f"{name} needs a top-level description")
+            self.assertTrue(doc["description"].strip())
+
+        def measured_cost_scale(levels: dict) -> float:
+            """Geometric mean of the Spice-equivalent cost ratio between consecutive levels (first 20 levels)."""
+            last = min(20, len(levels))
+            first_cost = game_data.spice_equivalent(levels[1]["cost"])
+            last_cost = game_data.spice_equivalent(levels[last]["cost"])
+            return (last_cost / first_cost) ** (1.0 / (last - 1))
+
+        buildings = docs["buildings.json"]["buildings"]
+        self.assertEqual(
+            {key: entry["name"] for key, entry in buildings.items()},
+            {f"b{building_id}": info["name"] for building_id, info in game_data.BUILDING_BY_ID.items()},
+        )
+        for key, entry in buildings.items():
+            measured = measured_cost_scale(game_data.BUILDING_BY_ID[int(key[1:])]["levels"])
+            self.assertAlmostEqual(
+                entry["cost_scale_factor"] / measured,
+                1.0,
+                delta=0.005,
+                msg=f"{key}: cost_scale_factor {entry['cost_scale_factor']} vs catalog {measured:.4f}",
+            )
+
+        technologies = docs["technologies.json"]["technologies"]
+        self.assertEqual(
+            {key: entry["name"] for key, entry in technologies.items()},
+            {key: info["name"] for key, info in game_data.RESEARCH_BY_ID.items()},
+        )
+        for key, info in game_data.RESEARCH_BY_ID.items():
+            self.assertAlmostEqual(
+                docs["technologies.json"]["cost_scale_factor"] / measured_cost_scale(info["levels"]),
+                1.0,
+                delta=0.005,
+                msg=f"{key}: research costs do not scale by the documented factor",
+            )
+        self.assertEqual(
+            technologies["r1"]["per_level_bonus_pct"],
+            game_data.MINING_TECH_BONUS_PER_LEVEL * 100.0,
+        )
+        for key in ("r4", "r5", "r6"):  # each engine research lists exactly the ships that fly with that engine
+            ships_with_engine = {
+                ship_key
+                for ship_key, slug in SHIP_SLUG_BY_KEY.items()
+                if (game_data.SHIPS[slug].get("stats") or {}).get("engine") == technologies[key]["name"]
+            }
+            self.assertEqual(set(re.findall(r"\bs\d+\b", technologies[key]["applies_to"])), ships_with_engine)
+
+        self.assertEqual(
+            {key: entry["name"] for key, entry in docs["ships.json"]["ships"].items()},
+            {key: game_data.SHIPS[slug]["name"] for key, slug in SHIP_SLUG_BY_KEY.items()},
+        )
+        defenses = docs["defenses.json"]["defenses"]
+        self.assertEqual(
+            {key: entry["name"] for key, entry in defenses.items()},
+            {key: game_data.DEFENSES[slug]["name"] for key, slug in DEFENSE_SLUG_BY_KEY.items()},
+        )
+        for key, entry in defenses.items():  # REQ-CMB-004: every defense except the shield domes can dig in
+            self.assertEqual(entry["can_dig_in"], "dome" not in DEFENSE_SLUG_BY_KEY[key], key)
+
+        resources = docs["resources.json"]["resources"]
+        self.assertEqual(list(resources), ["pig_iron", "metal", "kryptonite", "spice"])
+        for resource, entry in resources.items():
+            mine_id = int(entry["mine_building_key"][1:])
+            base_output = game_data.mine_production_per_hour(mine_id, 5, mining_tech_level=0)
+            boosted_output = game_data.mine_production_per_hour(mine_id, 5, mining_tech_level=10)
+            self.assertGreater(base_output, 0.0, f"{entry['mine_building_key']} does not produce {resource}")
+            self.assertEqual(entry["boosted_by_mining_tech"], boosted_output > base_output, resource)
+            warehouse = game_data.BUILDING_BY_ID[int(entry["warehouse_building_key"][1:])]
+            self.assertEqual(warehouse["name"], f"{resource.replace('_', ' ').capitalize()} warehouse")
+            for level, row in warehouse["levels"].items():
+                self.assertEqual(row["storage_capacity"], 100_000 * 2**level)
+
+        settings = docs["planner_settings.json"]
+        expected_settings = {
+            "cold_start_colony": {"origin_coords": str, "speedup_factor": float},
+            "table_level_caps": {"buildings": int, "researches": int},
+            "empire": {
+                "max_planets": int,
+                "empty_colony_fields": int,
+                "empty_colony_temperature_c": int,
+                "fallback_planet_fields": int,
+            },
+            "flight_time_fallback": {"min_ship_speed": float, "fleet_speed_factor": float},
+        }
+        self.assertEqual(set(settings) - {"description"}, set(expected_settings))
+        for group, fields in expected_settings.items():
+            self.assertEqual(set(settings[group]) - {"description"}, set(fields), group)
+            for field, kind in fields.items():
+                self.assertIs(type(settings[group][field]), kind, f"{group}.{field}")
+        self.assertRegex(settings["cold_start_colony"]["origin_coords"], r"^\d{2}:\d{3}:\d{2}$")
+        for group, field in (
+            ("cold_start_colony", "speedup_factor"),
+            ("table_level_caps", "buildings"),
+            ("table_level_caps", "researches"),
+            ("empire", "max_planets"),
+            ("empire", "empty_colony_fields"),
+            ("empire", "fallback_planet_fields"),
+            ("flight_time_fallback", "min_ship_speed"),
+            ("flight_time_fallback", "fleet_speed_factor"),
+        ):
+            self.assertGreater(settings[group][field], 0, f"{group}.{field}")
+        self.assertEqual(
+            settings["empire"]["max_planets"],
+            StrategyConfig().max_planets,
+            "planner_settings.json documents max_planets as the default of the bot's colony cap "
+            "(StrategyConfig.max_planets); update one of the two",
+        )
+
+    def test_metadata_values_reach_the_generated_tables(self) -> None:
+        def edit_planner_settings(doc: dict) -> None:
+            doc["table_level_caps"].update(buildings=12, researches=9)
+            doc["empire"].update(
+                max_planets=7, empty_colony_fields=250, empty_colony_temperature_c=-5, fallback_planet_fields=180
+            )
+            doc["cold_start_colony"].update(origin_coords="09:123:04", speedup_factor=2.0)
+            doc["flight_time_fallback"].update(min_ship_speed=48000.0)
+
+        def edit_technologies(doc: dict) -> None:
+            doc["cost_scale_factor"] = 7.5
+            doc["technologies"]["r2"].update(per_level_bonus_pct=3.0, domain="probe_domain")
+
+        edits = {
+            "buildings.json": lambda doc: doc["buildings"]["b1"].update(
+                category="probe_category", cost_scale_factor=9.5, primary_effect="probe effect"
+            ),
+            "technologies.json": edit_technologies,
+            "ships.json": lambda doc: doc["ships"]["s7"].update(role="probe_role"),
+            "defenses.json": lambda doc: doc["defenses"]["d1"].update(role="probe_role", can_dig_in=False),
+            "resources.json": lambda doc: doc["resources"]["spice"].update(notes="probe note"),
+            "planner_settings.json": edit_planner_settings,
+        }
+        default_ns, _, _ = self._attack_run()
+        with tempfile.TemporaryDirectory(prefix="si_fp_meta_") as tmp:
+            meta_dir = self._edited_metadata_dir(Path(tmp), edits)
+            ns, _, _ = _run_full_planner(self.code_cells, self.attack_workspace, metadata_dir=meta_dir)
+            cold_ns, _, _ = _run_full_planner(self.code_cells, self.cold_workspace, metadata_dir=meta_dir)
+
+        buildings = ns["buildings_catalog_df"].set_index("key")
+        self.assertEqual(buildings.loc["b1", "category"], "probe_category")
+        self.assertEqual(buildings.loc["b1", "cost_scale_factor"], 9.5)
+        self.assertEqual(buildings.loc["b1", "primary_effect"], "probe effect")
+        levels = ns["buildings_levels_df"]
+        self.assertEqual(set(levels.loc[levels["key"] == "b1", "category"]), {"probe_category"})
+        self.assertEqual(int(levels["level"].max()), 12)
+        self.assertEqual(int(ns["technologies_levels_df"]["level"].max()), 9)
+
+        technologies = ns["technologies_catalog_df"].set_index("key")
+        self.assertEqual(set(technologies["cost_scale_factor"]), {7.5})
+        self.assertEqual(technologies.loc["r2", "per_level_bonus_pct"], 3.0)
+        self.assertEqual(technologies.loc["r2", "domain"], "probe_domain")
+        tech_levels = ns["technologies_levels_df"]
+        r2_l4 = tech_levels[(tech_levels["key"] == "r2") & (tech_levels["level"] == 4)].iloc[0]
+        self.assertEqual((r2_l4["bonus_pct_total"], r2_l4["multiplier_at_level"]), (12.0, 1.12))
+        # The account has Energy technology 1: with +3 % per level, energy producers yield 1.03x their base.
+        self.assertEqual(ns["GAME_PARAM_CONTEXT"]["r2_energy_tech"], 1)
+        fusion = levels[levels["key"] == "b5"]
+        for base, effective in zip(fusion["energy_at_level_base"], fusion["energy_at_level_effective"]):
+            self.assertEqual(effective, round(base * 1.03, 2))
+        ships = ns["ships_df"].set_index("key")
+        self.assertEqual(ships.loc["s7", "role"], "probe_role")
+        self.assertEqual(
+            ships.loc["s9", "energy_output_effective"], round(ships.loc["s9", "energy_output_base"] * 1.03, 2)
+        )
+        defenses = ns["defenses_df"].set_index("key")
+        self.assertEqual(defenses.loc["d1", "role"], "probe_role")
+        self.assertFalse(defenses.loc["d1", "can_dig_in"])
+        merchant = ns["merchant_rates_df"].set_index("resource")
+        self.assertEqual(merchant.loc["spice", "notes"], "probe note")
+
+        self.assertEqual(
+            (ns["MAX_EMPIRE_PLANETS"], ns["EMPTY_COLONY_SIZE_FIELDS"], ns["EMPTY_COLONY_DEFAULT_TEMP_C"]),
+            (7, 250, -5),
+        )
+        empire = ns["empire_planets_df"]
+        self.assertEqual(len(empire), 7)
+        empty_rows = empire[empire["is_empty_slot"]]
+        self.assertEqual(len(empty_rows), 6)
+        self.assertEqual(set(empty_rows["fields_max"]), {250})
+        self.assertEqual(set(empty_rows["temperature_c"]), {-5})
+        # Section 6 works on the same roster: one colony and six generic planets at the generic temperature.
+        contexts = ns["planet_contexts_df"]
+        self.assertEqual(list(contexts["planet_status"]), ["colonized"] + ["empty_colony_slot"] * 6)
+        self.assertEqual(list(contexts["temperature_c"]), [31] + [-5] * 6)
+        self.assertEqual(ns["GENERIC_PLANET_CONTEXT"]["planet_temperature_c"], -5)
+        self.assertEqual(ns["planet_buildings_df"]["slot_index"].nunique(), 7)
+        self.assertEqual(ships.loc["s9", "energy_output_base"], ns["solar_cell_energy_per_unit"](-5))
+        self.assertEqual(ns["planet_state_from_fields"]({}).fields_max, 180)
+        self.assertEqual(default_ns["planet_state_from_fields"]({}).fields_max, 230)
+
+        # Without a planet snapshot the attack origin and the universe speed come from `cold_start_colony`,
+        # and every planet of the roster is generic.
+        self.assertEqual(cold_ns["origin_planet_coords"], "09:123:04")
+        self.assertEqual(cold_ns["GAME_PARAM_CONTEXT"]["speedup_factor"], 2.0)
+        self.assertEqual(list(cold_ns["planet_contexts_df"]["planet_status"]), ["empty_colony_slot"] * 7)
+        self.assertEqual(set(cold_ns["planet_contexts_df"]["building_time_divisor"]), {2.0})
+        # Four times the assumed ship speed halves the travel part of the fallback flight time.
+        slow = default_ns["estimate_physics_one_way_seconds"]("02:380:12", "02:383:02")
+        fast = ns["estimate_physics_one_way_seconds"]("02:380:12", "02:383:02")
+        self.assertAlmostEqual((slow - 10.0) / (fast - 10.0), 2.0, delta=0.05)
+
+    def test_metadata_loading_fails_fast_on_inconsistent_files(self) -> None:
+        cases = [
+            ("buildings.json", lambda doc: doc["buildings"].pop("b21"), r"buildings\.json: missing \['b21'\]"),
+            (
+                "buildings.json",
+                lambda doc: doc["buildings"].update(b99=dict(doc["buildings"]["b1"])),
+                r"unknown \['b99'\]",
+            ),
+            (
+                "buildings.json",
+                lambda doc: doc["buildings"]["b1"].update(name="Iron mine"),
+                r"b1 is named 'Iron mine', but game_data calls it 'Pig iron mine'",
+            ),
+            (
+                "technologies.json",
+                lambda doc: doc["technologies"]["r3"].pop("applies_to"),
+                r"r3 lacks \['applies_to'\]",
+            ),
+            ("ships.json", lambda doc: doc["ships"]["s1"].pop("role"), r"ships\.json: s1 lacks \['role'\]"),
+            ("defenses.json", lambda doc: doc["defenses"].pop("d11"), r"defenses\.json: missing \['d11'\]"),
+            ("resources.json", lambda doc: doc["resources"].pop("metal"), r"resources\.json: missing \['metal'\]"),
+            (
+                "resources.json",
+                lambda doc: doc["resources"]["spice"].pop("warehouse_building_key"),
+                r"spice lacks \['warehouse_building_key'\]",
+            ),
+        ]
+        for file_name, change, message in cases:
+            with self.subTest(file=file_name, error=message), tempfile.TemporaryDirectory(prefix="si_fp_meta_") as tmp:
+                meta_dir = self._edited_metadata_dir(Path(tmp), {file_name: change})
+                with self.assertRaisesRegex(ValueError, message):
+                    _run_full_planner(
+                        self.code_cells, self.cold_workspace, metadata_dir=meta_dir, last_cell=self.metadata_cell_idx
+                    )
+
+    # ------------------------------------------------------------------ generated data
+
+    def test_attack_statistics_of_three_recorded_attacks(self) -> None:
+        ns, _, _ = self._attack_run()
+        self.assertAlmostEqual(ns["attack_resource_mean"]["spice_eq"], 2000.0, places=2)
+        self.assertAlmostEqual(ns["attack_resource_std"]["spice_eq"], 2000.0, places=2)
+        self.assertAlmostEqual(ns["winning_attack_resource_mean"]["spice_eq"], 3000.0, places=2)
+        self.assertGreater(ns["attack_time_mean_sec"], 0.0)
+        self.assertGreater(ns["attack_time_std_sec"], 0.0)
+        self.assertAlmostEqual(ns["inter_attack_time_mean_sec"], 1500.0, places=2)
+        self.assertAlmostEqual(ns["attack_success_rate"], 2.0 / 3.0, places=4)
+        self.assertEqual(ns["ATTACK_SIM_PARAMS"]["attempts"], 3)
+
+        # Every battle was paired with its dispatch: 300 s, 360 s and 200 s of flight, doubled for the round trip.
+        attacks = ns["attacks_df"]
+        self.assertEqual(list(attacks["time_source"]), ["observed_dispatch_pair"] * 3)
+        self.assertEqual(list(attacks["one_way_sec"]), [300.0, 360.0, 200.0])
+        self.assertEqual(list(attacks["round_trip_sec"]), [600.0, 720.0, 400.0])
+        self.assertEqual(list(attacks["won"]), [True, True, False])
+        self.assertEqual(ns["fleet_slot_capacity"], 1)
+        self.assertEqual(ns["origin_planet_coords"], "02:380:12")
+
+        for name in (
+            "one_way_times_arr", "round_trip_times_arr", "inter_attack_intervals_arr", "attack_dispatch_ts_arr"
+        ):
+            self.assertIsInstance(ns[name], np.ndarray)
+            self.assertEqual(ns[name].dtype, np.float64)
+        attack_tables = ns["ATTACK_STATS_TABLES"]
+        self.assertEqual(
+            list(attack_tables),
+            [
+                "attacks",
+                "recycles",
+                "attack_resource_stats",
+                "attack_time_stats",
+                "attack_summary_stats",
+                "attack_class_stats",
+                "attack_target_stats",
+            ],
+        )
+        for table_name, table in attack_tables.items():
+            self.assertIs(table, ns[f"{table_name}_df"], f"{table_name} must be the {table_name}_df table itself")
+            self.assertFalse(table.isna().any().any(), f"{table_name} must not contain NaNs")
+        res_df = ns["attack_resource_stats_df"].set_index("metric")
+        self.assertAlmostEqual(float(res_df.loc["spice_eq", "mean_all"]), 2000.0, places=2)
+        self.assertAlmostEqual(float(res_df.loc["spice_eq", "sample_std_all"]), 2000.0, places=2)
+        self.assertAlmostEqual(float(res_df.loc["spice_eq", "mean_wins"]), 3000.0, places=2)
+        self.assertEqual(len(ns["attack_target_stats_df"]), 2)
+        self.assertEqual(ns["per_target_success_rate"]["02:383:02"]["success_rate"], 1.0)
+        self.assertEqual(ns["per_target_success_rate"]["02:378:15"]["losses"], 1)
+
+        # The row lists kept in telemetry_bundle are the rows of the tables and the values of the array.
+        bundle = ns["telemetry_bundle"]
+        self.assertEqual(
+            [record["target_coords"] for record in bundle["records"]], list(attacks["target_coords"])
+        )
+        self.assertEqual(len(bundle["recycle_rows"]), len(ns["recycles_df"]))
+        self.assertEqual(bundle["dispatch_timestamps"], ns["attack_dispatch_ts_arr"].tolist())
+
+    def test_telemetry_record_builders(self) -> None:
+        ns, _, _ = self._attack_run()
+        dispatch_ts = 1_700_000_000.0  # 2023-11-14 22:13:20 UTC
+        raids = [
+            {
+                "target_coords": "02:383:02",
+                "attacked_ts": dispatch_ts,
+                "origin_coords": "02:381:15",
+                "is_exempt": 1,
+                "outcome": "Dispatched attack",
+                "loot_json": '{"metal": 500, "spice": 100}',
+            },
+            {
+                "target_coords": "02:378:15",
+                "attacked_ts": dispatch_ts + 50.0,
+                "origin_coords": "",
+                "is_exempt": 0,
+                "outcome": "Defeat",
+                "loot_json": "",
+            },
+        ]
+
+        def battle(target: str, clock_text: str, outcome: str, **flags: object) -> dict:
+            return {
+                "target_coords": target,
+                "msg_date_text": clock_text,
+                "ts": 0.0,
+                "outcome": outcome,
+                "pig_iron": 600.0,
+                "metal": 250.0,
+                "kryptonite": 300.0,
+                "spice": 100.0,
+                "loot_spice_eq": 400.0,
+                "attacker_lost_spice": 150.0,
+                "debris_spice_eq": 20.0,
+                "target_status_color": "unknown",
+                "target_is_inactive": 0,
+                "target_is_spacia": 0,
+                **flags,
+            }
+
+        # The server clock is one hour ahead of UTC: its 23:18:20 is 22:18:20 UTC, 300 s after the dispatch.
+        battles = [
+            battle("02:383:02", "2023-11-14 23:18:20", "win", target_is_spacia=1),
+            battle("02:390:07", "2023-11-14 23:30:00", "loss", target_status_color="yellow"),
+            battle("02:391:07", "not a date", "victory"),
+        ]
+        clock = [ns["parse_server_clock"](row["msg_date_text"]) for row in battles]
+        self.assertEqual(clock[0], dispatch_ts + 3600.0 + 300.0)
+        self.assertIsNone(clock[2])
+        offset = ns["infer_server_tz_offset_sec"](battles, clock, raids)
+        self.assertEqual(offset, -3600.0)
+        self.assertEqual(ns["infer_server_tz_offset_sec"](battles, clock, []), 0.0)
+
+        records = ns["attack_records_from_battles"](battles, clock, raids, "02:380:12", offset)
+        self.assertEqual(
+            [record["time_source"] for record in records],
+            ["observed_dispatch_pair", "calibrated_distance", "calibrated_distance"],
+        )
+        self.assertEqual(
+            [record["target_class"] for record in records], ["spacia", "yellow_inactive", "active_colony"]
+        )
+        self.assertEqual([record["won"] for record in records], [True, False, True])
+        self.assertEqual([record["origin_coords"] for record in records], ["02:381:15", "02:380:12", "02:380:12"])
+        self.assertEqual(
+            (records[0]["event_ts"], records[0]["one_way_sec"], records[0]["round_trip_sec"]),
+            (dispatch_ts + 300.0, 300.0, 600.0),
+        )
+        self.assertEqual(records[0]["net_spice_eq"], 400.0 - 150.0)
+        self.assertEqual(records[2]["event_ts"], 0.0, "An unreadable server clock falls back to the row's own ts")
+        # A battle without a dispatch gets the observed seconds per sqrt(distance), applied to its own distance.
+        distance = ns["_parse_coords_distance"]
+        calibration = (300.0 - 10.0) / math.sqrt(distance("02:381:15", "02:383:02"))
+        self.assertAlmostEqual(
+            records[1]["one_way_sec"],
+            10.0 + calibration * math.sqrt(distance("02:380:12", "02:390:07")),
+            places=9,
+        )
+        # Without any observed pair, the rough estimate is the only source left.
+        unpaired = ns["attack_records_from_battles"](battles[1:], clock[1:], [], "02:380:12", 0.0)
+        self.assertEqual({record["time_source"] for record in unpaired}, {"physics_formula"})
+        self.assertEqual(
+            unpaired[0]["one_way_sec"], ns["estimate_physics_one_way_seconds"]("02:380:12", "02:390:07")
+        )
+
+        # Dispatches alone (no battle report yet): one record each, loot from loot_json.
+        raid_records = ns["attack_records_from_raids"](raids, "02:380:12")
+        self.assertEqual([record["target_class"] for record in raid_records], ["exempt_farm", "active_colony"])
+        self.assertEqual([record["won"] for record in raid_records], [True, False])
+        self.assertEqual([record["origin_coords"] for record in raid_records], ["02:381:15", "02:380:12"])
+        self.assertEqual(raid_records[0]["spice_eq"], 500.0 / 2.5 + 100.0)
+        self.assertEqual({record["time_source"] for record in raid_records}, {"physics_formula"})
+        self.assertEqual(set(records[0]), set(ns["ATTACK_DF_COLUMNS"]))
+        self.assertEqual(set(raid_records[0]), set(ns["ATTACK_DF_COLUMNS"]))
+
+    def test_game_parameter_tables(self) -> None:
+        ns, _, _ = self._attack_run()
+        tables = ns["GAME_PARAMS_TABLES"]
+        self.assertEqual(
+            list(tables),
+            [
+                "merchant_rates",
+                "planet_contexts",
+                "buildings_catalog",
+                "buildings_levels",
+                "planet_buildings",
+                "technologies_catalog",
+                "technologies_levels",
+                "planet_technologies",
+                "ships",
+                "planet_ships",
+                "defenses",
+                "planet_defenses",
+            ],
+        )
+        for table_name, table in tables.items():
+            self.assertIs(table, ns[f"{table_name}_df"], f"{table_name} must be the {table_name}_df table itself")
+            self.assertGreater(len(table), 0, f"{table_name} must not be empty")
+        self.assertEqual(list(ns["game_params_summary_df"]["table_name"]), list(tables))
+
+        self.assertEqual(len(ns["merchant_rates_df"]), 4)
+        self.assertEqual(len(ns["buildings_catalog_df"]), 21)
+        self.assertEqual(len(ns["buildings_levels_df"]), 975)
+        self.assertEqual(len(ns["technologies_catalog_df"]), 15)
+        self.assertEqual(len(ns["technologies_levels_df"]), 445)
+        self.assertEqual(len(ns["ships_df"]), 15)
+        self.assertEqual(len(ns["defenses_df"]), 11)
+        # One colony and ten generic planets: 11 planets times 21 buildings, 15 researches, 15 ships, 11 defenses.
+        self.assertEqual(len(ns["planet_contexts_df"]), 11)
+        self.assertEqual(len(ns["planet_buildings_df"]), 11 * 21)
+        self.assertEqual(len(ns["planet_technologies_df"]), 11 * 15)
+        self.assertEqual(len(ns["planet_ships_df"]), 11 * 15)
+        self.assertEqual(len(ns["planet_defenses_df"]), 11 * 11)
+
+        # The catalog and level tables are computed for a generic planet: universe speed 5, no accelerators.
+        generic = ns["GENERIC_PLANET_CONTEXT"]
+        self.assertEqual(
+            [generic[key] for key in ("b7_dev_center", "b8_research_lab", "b9_weapons_factory", "b17_microsystem")],
+            [0, 0, 0, 0],
+        )
+        self.assertEqual(generic["planet_temperature_c"], ns["EMPTY_COLONY_DEFAULT_TEMP_C"])
+        self.assertNotIn("b7_dev_center", ns["GAME_PARAM_CONTEXT"], "The account-wide context has no planet values")
+        generic_levels = ns["buildings_levels_df"]
+        for base_time, effective_time in zip(generic_levels["base_time_s"], generic_levels["effective_build_time_s"]):
+            self.assertTrue(
+                math.isclose(effective_time, base_time / 5.0, rel_tol=1e-9, abs_tol=0.006),
+                f"{effective_time} is not {base_time} / 5",
+            )
+
+        # Blast furnace (b2) 2:1 Pig iron feedstock invariant & monotonic build times
+        bld_lvls = ns["buildings_levels_df"]
+        b2_rows = bld_lvls[bld_lvls["key"] == "b2"]
+        for consumed, produced in zip(b2_rows["pig_iron_consumed_hr_effective"], b2_rows["hourly_prod_effective"]):
+            self.assertAlmostEqual(float(consumed), 2.0 * float(produced), places=2)
+        for bkey, grp in bld_lvls.groupby("key"):
+            times = list(grp.sort_values("level")["base_time_s"])
+            self.assertEqual(times, sorted(times), f"Non-monotonic base_time_s in {bkey}")
+
+        # Accelerator multipliers are stored exactly (0.5^L for b17 must never round down to 0)
+        self.assertTrue((bld_lvls["time_reduction_multiplier"] > 0.0).all())
+        b17_l30 = bld_lvls[(bld_lvls["key"] == "b17") & (bld_lvls["level"] == 30)]
+        self.assertEqual(float(b17_l30["time_reduction_multiplier"].iloc[0]), 0.5**30)
+
+        # Energy technology (level 1 in this colony, +1 % per level) boosts producers and leaves consumers alone.
+        self.assertEqual(ns["GAME_PARAM_CONTEXT"]["r2_energy_tech"], 1)
+        for key, factor in (("b5", 1.01), ("b1", 1.0)):
+            rows = bld_lvls[bld_lvls["key"] == key]
+            self.assertTrue(((rows["energy_at_level_base"] > 0) == (key == "b5")).all())
+            for base, effective in zip(rows["energy_at_level_base"], rows["energy_at_level_effective"]):
+                self.assertEqual(effective, round(base * factor, 2), key)
+
+        # Warehouse capacities follow 100,000 * 2^level, the formula the planet loader falls back to.
+        warehouses = bld_lvls[bld_lvls["key"].isin(["b11", "b12", "b13", "b14"])]
+        for level, capacity in zip(warehouses["level"], warehouses["storage_capacity"]):
+            self.assertEqual(int(capacity), ns["warehouse_capacity"](int(level)))
+        self.assertEqual(ns["warehouse_capacity"](0), 100_000)
+
+        # Technology quantitative effects checks (r1 +2%, r2 +1%, r4..r6 & r8..r10 +10%)
+        tech_cat = ns["technologies_catalog_df"].set_index("key")
+        self.assertEqual(float(tech_cat.loc["r1", "per_level_bonus_pct"]), 2.0)
+        self.assertEqual(float(tech_cat.loc["r2", "per_level_bonus_pct"]), 1.0)
+        for rk in ("r4", "r5", "r6", "r8", "r9", "r10"):
+            self.assertEqual(float(tech_cat.loc[rk, "per_level_bonus_pct"]), 10.0)
+        self.assertEqual(ns["technology_multiplier"]("r8", 5), 1.5)
+        self.assertEqual(ns["technology_multiplier"]("none", 9), 1.0)
+
+        # Spaceships & orbital solar cell (s9) checks
+        ships_by_key = ns["ships_df"].set_index("key")
+        self.assertGreater(float(ships_by_key.loc["s9", "energy_output_effective"]), 0.0)
+        self.assertEqual(int(ships_by_key.loc["s9", "fields_used"]), 0)
+        self.assertEqual(int(ships_by_key.loc["s3", "cargo"]), 250_000)
+        self.assertEqual(ships_by_key.loc["s7", "engine_tech_key"], "r5")
+        self.assertEqual(ships_by_key.loc["s9", "engine_tech_key"], "none")
+
+        # A table builder takes the colony context as an argument, so it can be rebuilt for another state.
+        boosted_ships = ns["build_ship_table"]({**ns["GENERIC_PLANET_CONTEXT"], "r8_weapons_tech": 5}).set_index("key")
+        self.assertEqual(
+            float(boosted_ships.loc["s7", "attack_effective"]),
+            round(1.5 * float(ships_by_key.loc["s7", "attack_base"]), 1),
+        )
+        self.assertEqual(
+            float(ships_by_key.loc["s7", "attack_effective"]), float(ships_by_key.loc["s7", "attack_base"])
+        )
+
+    def test_per_planet_tables_use_each_colony_and_generic_planets(self) -> None:
+        ns, _, _ = self._cached_run(self.three_planet_workspace)
+        single_ns, _, _ = self._attack_run()
+
+        # Roster: the three owned planets, then generic planets until there are 11 normal planets.
+        # The asteroid is listed but does not count, so nine generic planets join the two colonies.
+        contexts = ns["planet_contexts_df"]
+        self.assertEqual(list(contexts["slot_index"]), list(range(1, 13)))
+        self.assertEqual(list(contexts["coords"][:4]), ["02:380:12", "02:381:15", "02:380:12A", "EMPTY:01"])
+        self.assertEqual(list(contexts["planet_status"]), ["colonized"] * 3 + ["empty_colony_slot"] * 9)
+        self.assertEqual(list(contexts["planet_type"][:3]), ["normal", "normal", "asteroid"])
+        self.assertEqual(list(contexts["temperature_c"]), [31, -40, 12] + [0] * 9)
+        # Time divisors at universe speed 5: (b7 + 1) * 2^b17 * 5, (b8 + 1) * 5 and max(1, b9) * 2^b17 * 5.
+        self.assertEqual(
+            contexts[["building_time_divisor", "research_time_divisor", "shipyard_time_divisor"]].values.tolist()[:4],
+            [[10.0, 10.0, 10.0], [40.0, 15.0, 40.0], [15.0, 5.0, 10.0], [5.0, 5.0, 5.0]],
+        )
+        self.assertEqual([context["coords"] for context in ns["PLANET_PARAM_CONTEXTS"]], list(contexts["coords"]))
+        self.assertEqual(ns["EMPIRE_PLANET_STATE_SUMMARY"]["colonized_planets"], 3)
+        self.assertEqual(len(ns["empire_planets_df"]), 12)
+
+        def spice_output(level: int, temperature: int) -> float:
+            return 5.0 * game_data.mine_production_per_hour(4, level, temperature=temperature)
+
+        # Buildings. The cold colony has Spice mine 5, so its row describes level 6 at -40 degrees C,
+        # built with Development center 3 and Microsystem accelerator 1.
+        planet_buildings = ns["planet_buildings_df"]
+        buildings = planet_buildings.set_index(["coords", "key"])
+        spice_mine_levels = game_data.BUILDING_BY_ID[4]["levels"]
+        cold_mine = buildings.loc[("02:381:15", "b4")]
+        self.assertEqual((cold_mine["current_level"], cold_mine["next_level"]), (5, 6))
+        self.assertEqual(cold_mine["spice"], game_data.building_cost(4, 6)["spice"])
+        self.assertEqual(cold_mine["effective_build_time_s"], round(spice_mine_levels[6]["base_time_s"] / 40.0, 2))
+        self.assertEqual(cold_mine["hourly_prod_effective"], round(spice_output(6, -40), 2))
+        self.assertEqual(cold_mine["delta_net_spice_eq_hr"], round(spice_output(6, -40) - spice_output(5, -40), 2))
+        self.assertGreater(spice_output(6, -40), spice_output(6, 31), "A colder planet yields more Spice")
+        home_mine = buildings.loc[("02:380:12", "b4")]
+        self.assertEqual((home_mine["current_level"], home_mine["next_level"]), (2, 3))
+        self.assertEqual(home_mine["effective_build_time_s"], round(spice_mine_levels[3]["base_time_s"] / 10.0, 2))
+        self.assertEqual(home_mine["hourly_prod_effective"], round(spice_output(3, 31), 2))
+        # The full level table of one planet, rebuilt on demand, holds the same row.
+        _, cold_levels = ns["build_building_tables"](ns["PLANET_PARAM_CONTEXTS"][1], ns["MAX_BUILDING_TABLE_LEVEL"])
+        cold_level_6 = cold_levels[(cold_levels["key"] == "b4") & (cold_levels["level"] == 6)].iloc[0]
+        for column in cold_levels.columns:
+            if column not in ("key", "level"):
+                self.assertEqual(cold_mine[column], cold_level_6[column], column)
+
+        # A building at the last level of the catalog has no next level, so it has no row.
+        maxed_out = dataclasses.replace(
+            ns["live_planet_states"][0], buildings={"b21": game_data.BUILDING_BY_ID[21]["max_table_level"]}
+        )
+        maxed_out_rows = ns["build_planet_building_table"]([maxed_out], ns["PLANET_PARAM_CONTEXTS"][:1])
+        self.assertEqual(len(maxed_out_rows), 20)
+        self.assertNotIn("b21", set(maxed_out_rows["key"]))
+
+        # An asteroid can only hold the buildings the catalog allows there; every other planet takes them all.
+        on_asteroid = planet_buildings[planet_buildings["coords"] == "02:380:12A"]
+        self.assertEqual(
+            list(on_asteroid.loc[on_asteroid["buildable_on_planet"], "key"]),
+            [
+                f"b{building_id}"
+                for building_id, info in sorted(game_data.BUILDING_BY_ID.items())
+                if info["asteroid_ok"]
+            ],
+        )
+        self.assertTrue(planet_buildings.loc[planet_buildings["coords"] != "02:380:12A", "buildable_on_planet"].all())
+
+        # Generic planets are identical: nothing built, and their next level is level 1 of the level table.
+        generic_tables = [
+            planet_buildings[planet_buildings["slot_index"] == slot]
+            .drop(columns=["slot_index", "planet_id", "coords"])
+            .reset_index(drop=True)
+            for slot in range(4, 13)
+        ]
+        for other_generic in generic_tables[1:]:
+            pd.testing.assert_frame_equal(other_generic, generic_tables[0])
+        self.assertEqual((set(generic_tables[0]["current_level"]), set(generic_tables[0]["next_level"])), ({0}, {1}))
+        levels = ns["buildings_levels_df"]
+        level_1 = levels[levels["level"] == 1].reset_index(drop=True)
+        shared_columns = [column for column in level_1.columns if column != "level"]
+        pd.testing.assert_frame_equal(generic_tables[0][shared_columns], level_1[shared_columns], check_dtype=False)
+
+        # Technologies: research levels belong to the account; only the time depends on the planet's Research lab.
+        planet_technologies = ns["planet_technologies_df"]
+        technologies = planet_technologies.set_index(["coords", "key"])
+        energy_level_2_time = game_data.RESEARCH_BY_ID["r2"]["levels"][2]["base_time_s"]
+        cold_energy = technologies.loc[("02:381:15", "r2")]
+        self.assertEqual(
+            (cold_energy["research_lab_level"], cold_energy["current_level"], cold_energy["next_level"]), (2, 1, 2)
+        )
+        self.assertEqual(cold_energy["effective_research_time_s"], round(energy_level_2_time / 15.0, 2))
+        self.assertEqual(
+            technologies.loc[("EMPTY:01", "r2"), "effective_research_time_s"], round(energy_level_2_time / 5.0, 2)
+        )
+        self.assertEqual(set(planet_technologies.groupby("key")["current_level"].nunique()), {1})
+        self.assertEqual(len(planet_technologies), 12 * 15)
+
+        # Ships: stationed units and build time per planet; Solar cells follow the planet's temperature.
+        planet_ships = ns["planet_ships_df"]
+        ships = planet_ships.set_index(["coords", "key"])
+        fighter_time = game_data.SHIPS[ns["SHIP_SLUG_BY_KEY"]["s4"]]["base_build_time_s"]
+        self.assertEqual(ships.loc[("02:381:15", "s4"), "stationed"], 12)
+        self.assertEqual(int(planet_ships["stationed"].sum()), 15)
+        for coords, divisor in (("02:380:12", 10.0), ("02:381:15", 40.0), ("02:380:12A", 10.0), ("EMPTY:01", 5.0)):
+            self.assertEqual(ships.loc[(coords, "s4"), "effective_build_time_s"], round(fighter_time / divisor, 2))
+        self.assertEqual(
+            ships.loc[("02:381:15", "s9"), ["stationed", "energy_output_base", "energy_output_effective"]].tolist(),
+            [3, 20.0, 20.2],  # 20 energy at -40 degrees C, +1 % for Energy technology 1
+        )
+        self.assertEqual(ships.loc[("EMPTY:01", "s9"), "energy_output_base"], 30.0)
+        self.assertEqual(len(planet_ships), 12 * 15)
+
+        # Defenses: stationed units and build time per planet.
+        planet_defenses = ns["planet_defenses_df"]
+        defenses = planet_defenses.set_index(["coords", "key"])
+        mortar_time = game_data.DEFENSES[ns["DEFENSE_SLUG_BY_KEY"]["d1"]]["base_build_time_s"]
+        self.assertEqual(defenses.loc[("02:381:15", "d1"), "stationed"], 7)
+        self.assertEqual(int(planet_defenses["stationed"].sum()), 7)
+        self.assertEqual(defenses.loc[("02:381:15", "d1"), "effective_build_time_s"], round(mortar_time / 40.0, 2))
+        self.assertEqual(len(planet_defenses), 12 * 11)
+
+        # The catalog and level tables describe a generic planet, so they do not change with the colonies.
+        for name in (
+            "buildings_catalog_df",
+            "buildings_levels_df",
+            "technologies_catalog_df",
+            "technologies_levels_df",
+            "ships_df",
+            "defenses_df",
+        ):
+            pd.testing.assert_frame_equal(ns[name], single_ns[name])
+
+    def test_technology_requirement_graph_and_unlock_plans(self) -> None:
+        ns, _, _ = self._attack_run()
+        tech_graph = ns["TECH_GRAPH"]
+        self.assertEqual(len(tech_graph.nodes), 62)
+        self.assertEqual(len(tech_graph.topological_order), 62)
+        self.assertEqual(repr(tech_graph), "TechnologyRequirementGraph(nodes=62, edges=101)")
+        self.assertEqual(len(ns["tech_graph_nodes_df"]), 62)
+        self.assertEqual(len(ns["tech_graph_edges_df"]), 101)
+        self.assertEqual(len(ns["unlock_targets_summary_df"]), 62)
+        edges = ns["tech_graph_edges_df"]
+        for src_k, tgt_k in zip(edges["source_key"], edges["target_key"]):
+            self.assertLess(tech_graph.topological_layer[src_k], tech_graph.topological_layer[tgt_k])
+
+        graph_tables = ns["TECH_GRAPH_TABLES"]
+        self.assertEqual(
+            list(graph_tables),
+            [
+                "tech_graph_nodes",
+                "tech_graph_edges",
+                "unlock_targets_summary",
+                "phoenix_unlock_plan",
+                "cold_phoenix_unlock_plan",
+            ],
+        )
+        for table_name, table in graph_tables.items():
+            self.assertIs(table, ns[f"{table_name}_df"], f"{table_name} must be the {table_name}_df table itself")
+
+        # Direct requirements: the Weapons factory needs Energy technology 1 and Development center 3.
+        self.assertEqual(
+            [
+                (m["key"], m["required_level"], m["current_level"], m["missing_levels"])
+                for m in tech_graph.direct_missing("b9", {"b7": 2}, {})
+            ],
+            [("r2", 1, 0, 1), ("b7", 3, 2, 1)],
+        )
+        self.assertEqual(tech_graph.direct_missing("b9", {"b7": 3}, {"r2": 1}), [])
+        self.assertTrue(tech_graph.is_unlocked("b9", {"b7": 3}, {"r2": 1}))
+        self.assertFalse(tech_graph.is_unlocked("b9", {"b7": 2}, {"r2": 1}))
+
+        # Diamond prerequisite resolution on s7 Phoenix
+        s7_reqs = tech_graph.transitive_requirements("s7")
+        self.assertEqual(
+            s7_reqs,
+            {"b7": 3, "b8": 5, "r2": 1, "r3": 6, "b9": 7, "r5": 8, "r10": 5},
+        )
+        b9_reqs = tech_graph.transitive_requirements("b9", include_target_level=7)
+        self.assertEqual(b9_reqs, {"b7": 3, "b8": 1, "r2": 1, "b9": 7})
+        self.assertEqual(list(b9_reqs)[-1], "b9", "Requirements are listed in an order that can be built")
+        with self.assertRaises(KeyError):
+            tech_graph.transitive_requirements("b99")
+
+        # The universe speed has no default: a plan must say which speed its times are for.
+        with self.assertRaises(TypeError):
+            tech_graph.plan_unlock_sequence("s7", {}, {})
+        # Times follow the simulated state: the Research lab is built with the Development center already at 2.
+        b8_plan = tech_graph.plan_unlock_sequence("b8", {}, {}, speedup_factor=5.0, include_target_level=1)
+        self.assertEqual(list(b8_plan["key"]), ["b7", "b8"])
+        self.assertEqual(list(b8_plan["to_level"]), [2, 1])
+        dev_center_times = game_data.BUILDING_BY_ID[7]["levels"]
+        research_lab_times = game_data.BUILDING_BY_ID[8]["levels"]
+        self.assertEqual(
+            list(b8_plan["step_effective_time_s"]),
+            [
+                round(dev_center_times[1]["base_time_s"] / 5.0 + dev_center_times[2]["base_time_s"] / 10.0, 2),
+                round(research_lab_times[1]["base_time_s"] / 15.0, 2),
+            ],
+        )
+
+        r2_plan = tech_graph.plan_unlock_sequence("r2", {}, {}, speedup_factor=5.0, include_target_level=1)
+        self.assertEqual(list(r2_plan["key"]), ["b7", "b8", "r2"])
+        energy_technology_times = game_data.RESEARCH_BY_ID["r2"]["levels"]
+        self.assertEqual(
+            float(r2_plan["step_effective_time_s"].iloc[2]),
+            round(energy_technology_times[1]["base_time_s"] / 10.0, 2),  # Research lab 1: (1 + 1) * speed 5
+        )
+        self.assertAlmostEqual(
+            float(r2_plan["cum_effective_time_s"].iloc[2]), float(r2_plan["step_effective_time_s"].sum()), delta=0.02
+        )
+
+        # Applying plan_unlock_sequence from cold start unlocks every single entity legally
+        for target_key, node_meta in tech_graph.nodes.items():
+            plan_df = tech_graph.plan_unlock_sequence(target_key, {}, {}, speedup_factor=5.0)
+            sim_b: dict[str, int] = {}
+            sim_r: dict[str, int] = {}
+            for sk, category, to_level in zip(plan_df["key"], plan_df["category"], plan_df["to_level"]):
+                # Every prerequisite of sk must ALREADY be satisfied before sk upgrades!
+                self.assertTrue(
+                    tech_graph.is_unlocked(sk, sim_b, sim_r),
+                    f"Step {sk} executed before its own prerequisites in {target_key} plan",
+                )
+                if category == "buildings":
+                    sim_b[sk] = int(to_level)
+                else:
+                    sim_r[sk] = int(to_level)
+            self.assertTrue(tech_graph.is_unlocked(target_key, sim_b, sim_r))
+            unmet = game_data.missing_prerequisites(
+                node_meta["category"],
+                node_meta["slug"],
+                buildings=sim_b,
+                researches=sim_r,
+            )
+            self.assertEqual(unmet, [], f"Unmet prereqs after unlock plan for {target_key}: {unmet}")
+
+    def test_planet_roster_pads_empty_colony_slots(self) -> None:
+        ns, _, _ = self._attack_run()
+        self.assertEqual(ns["MAX_EMPIRE_PLANETS"], 11)
+        self.assertEqual(ns["EMPTY_COLONY_SIZE_FIELDS"], 300)
+        self.assertEqual(len(ns["live_planet_states"]), 1)
+        self.assertEqual(len(ns["empire_planet_states"]), 11)
+        ep_df = ns["empire_planets_df"]
+        eb_df = ns["empire_planet_buildings_df"]
+        self.assertEqual(len(ep_df), 11)
+        self.assertEqual(len(eb_df), 11)
+        self.assertEqual(int((~ep_df["is_empty_slot"]).sum()), 1)
+        self.assertEqual(int(ep_df["is_empty_slot"].sum()), 10)
+        self.assertEqual(int(ep_df.loc[~ep_df["is_empty_slot"], "fields_max"].iloc[0]), 230)
+        empty_rows = ep_df[ep_df["is_empty_slot"]]
+        self.assertTrue((empty_rows["fields_max"] == 300).all())
+        self.assertTrue((empty_rows["fields_used"] == 0).all())
+        self.assertTrue((empty_rows["fields_remaining"] == 300).all())
+        self.assertEqual(list(empty_rows["planet_id"]), list(range(-1, -11, -1)))
+        self.assertEqual(list(empty_rows["coords"]), [f"EMPTY:{slot:02d}" for slot in range(1, 11)])
+        building_columns = [f"b{i}" for i in range(1, 22)]
+        self.assertTrue((eb_df.loc[eb_df["status"] == "empty_colony_slot", building_columns] == 0).all().all())
+        self.assertEqual(ns["EMPIRE_PLANET_STATE_SUMMARY"]["total_fields_capacity"], 230 + 10 * 300)
+        self.assertEqual(list(ns["planet_sizes_arr"]), [230] + [300] * 10)
+
+        planet_tables = ns["EMPIRE_PLANET_TABLES"]
+        self.assertEqual(list(planet_tables), ["live_planets", "empire_planets", "empire_planet_buildings"])
+        for table_name, table in planet_tables.items():
+            self.assertIs(table, ns[f"{table_name}_df"], f"{table_name} must be the {table_name}_df table itself")
+        self.assertEqual(list(ns["live_planets_df"].columns), list(ep_df.columns))
+
+        # When already at the planet limit, zero empty slots are added
+        home_planet = ns["live_planet_states"][0]
+        roster_settings = {"max_planets": 11, "empty_planet_size": 300, "empty_temp_c": 0}
+        full_states = ns["build_padded_empire_planets"]([home_planet] * 11, **roster_settings)
+        self.assertEqual([state.planet_id for state in full_states], [home_planet.planet_id] * 11)
+        full_df, _ = ns["build_planet_tables"](full_states, 11)
+        self.assertEqual(int(full_df["is_empty_slot"].sum()), 0)
+        # The roster comes from the settings: none of the three values has a built-in default.
+        for missing in roster_settings:
+            with self.assertRaises(TypeError, msg=f"{missing} must be required"):
+                ns["build_padded_empire_planets"](
+                    [home_planet], **{name: value for name, value in roster_settings.items() if name != missing}
+                )
+
+        # Asteroids are listed but do not count toward the planet limit.
+        asteroid = dataclasses.replace(home_planet, planet_id=99, coords="02:380:12A", planet_type="asteroid")
+        mixed_states = ns["build_padded_empire_planets"](
+            [home_planet, asteroid], max_planets=3, empty_planet_size=120, empty_temp_c=-7
+        )
+        self.assertEqual([state.planet_type for state in mixed_states], ["normal", "asteroid", "normal", "normal"])
+        self.assertEqual([(state.fields_max, state.temperature) for state in mixed_states[2:]], [(120, -7)] * 2)
+        mixed_df, mixed_buildings_df = ns["build_planet_tables"](mixed_states, 2)
+        self.assertEqual(list(mixed_df["is_empty_slot"]), [False, False, True, True])
+        self.assertEqual(list(mixed_buildings_df["status"]), ["colonized"] * 2 + ["empty_colony_slot"] * 2)
+
+        # Without a saved game state, the same planet is rebuilt from its newest planet_snapshots row.
+        with ns["open_readonly_db_copy"](ns["LIVE_DB_PATH"]) as conn:
+            snapshot_rows = list(conn.execute(ns["SQL_LATEST_PLANETS_PER_ID"]))
+        self.assertEqual(len(snapshot_rows), 1)
+        from_snapshot = ns["planet_state_from_fields"](ns["snapshot_row_to_planet_fields"](snapshot_rows[0]))
+        for field in (
+            "planet_id",
+            "name",
+            "coords",
+            "planet_type",
+            "temperature",
+            "fields_used",
+            "fields_max",
+            "resources",
+            "storage",
+            "energy",
+            "buildings",
+        ):
+            self.assertEqual(getattr(from_snapshot, field), getattr(home_planet, field), field)
+        # A warehouse level stands in for a capacity that was not recorded.
+        upgraded = ns["planet_state_from_fields"]({"buildings": {"b12": 3}})
+        self.assertEqual((upgraded.storage.metal, upgraded.storage.spice), (800_000, 100_000))
+
+    def test_cold_start_on_an_empty_database(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            cold_ns, cold_stdout, _ = _run_full_planner(self.code_cells, self.cold_workspace)
+        self.assertEqual(cold_ns["telemetry_source"], "cold_start")
+        self.assertEqual(cold_ns["ATTACK_SIM_PARAMS"]["attempts"], 0)
+        self.assertEqual(cold_ns["attack_success_rate"], 0.0)
+        self.assertAlmostEqual(cold_ns["attack_success_rate_smoothed"], 0.5, places=4)
+        self.assertEqual(len(cold_ns["live_planet_states"]), 0)
+        self.assertEqual(len(cold_ns["empire_planet_states"]), 11)
+        self.assertTrue((cold_ns["empire_planets_df"]["fields_max"] == 300).all())
+        self.assertEqual(cold_ns["EMPIRE_PLANET_STATE_SUMMARY"]["total_fields_capacity"], 3300)
+        for table_name, table in cold_ns["ATTACK_STATS_TABLES"].items():
+            self.assertFalse(table.isna().any().any(), f"Cold-start {table_name} contained NaNs")
+
+        # Every planet of the roster is generic: nothing built, so every next level is level 1.
+        self.assertEqual(list(cold_ns["planet_contexts_df"]["planet_status"]), ["empty_colony_slot"] * 11)
+        cold_buildings = cold_ns["planet_buildings_df"]
+        self.assertEqual(len(cold_buildings), 11 * 21)
+        self.assertEqual(
+            (set(cold_buildings["current_level"]), set(cold_buildings["next_level"])), ({0}, {1})
+        )
+        self.assertEqual(set(cold_ns["planet_ships_df"]["stationed"]), {0})
+
+        # An empty table has the columns of a filled one, in the same order.
+        ns, _, _ = self._attack_run()
+        for table_name, table in cold_ns["ATTACK_STATS_TABLES"].items():
+            self.assertEqual(
+                list(table.columns),
+                list(ns["ATTACK_STATS_TABLES"][table_name].columns),
+                f"Cold-start {table_name} has different columns",
+            )
+
+        # Section 10 on an empty account: empty tables / arrays / lists print cleanly, slots print in full.
+        print_idxs = [*self.print_idxs, *self.planner_idxs]
+        cold_section9 = "".join(cold_stdout[i] for i in self.print_idxs)
+        self.assertNotIn("...", cold_section9)
+        self.assertIn(
+            "[attacks_df] pandas.DataFrame, shape=(0, 17)\n(no rows) columns: ['event_ts', 'origin_coords', ",
+            cold_section9,
+        )
+        self.assertIn(
+            "[attack_dispatch_ts_arr] numpy.ndarray, shape=(0,), dtype=float64\n[]",
+            cold_section9,
+        )
+        self.assertIn("[live_planet_states] list, len=0\n[]", cold_section9)
+        self.assertIn("[per_target_success_rate] dict, len=0\n{}", cold_section9)
+        self.assertEqual(cold_section9.count('"fields_max": 300'), 11)
+        for print_idx in print_idxs:
+            self.assertRegex(cold_stdout[print_idx], r"(?m)^Printed: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4} \| ")
+
+        # The planner works on an empty account too: nothing is known about anybody's research, slot 1 gets the
+        # Research lab, the other ten generic planets are twins, and the search still finds starbases to build.
+        self.assertEqual(int(cold_ns["universe_research_df"]["universe_max_level"].sum()), 0)
+        self.assertEqual(set(cold_ns["universe_research_df"]["max_source"]), {"none"})
+        self.assertEqual(cold_ns["plan_planets_df"]["free_fields"].tolist(), [271] + [283] * 10)
+        self.assertEqual(cold_ns["PRODUCTION_MODEL"].twin_planets, [0] + [1] * 10)
+        self.assertEqual(set(cold_ns["plan_building_levels_df"]["built_level"]), {0})
+        self.assertGreater(cold_ns["BEST_CONFIG_SUMMARY"]["ships_per_month"], 0.0)
+        self.assertEqual(
+            cold_ns["BEST_CONFIG_SUMMARY"]["levels_to_build"],
+            int(cold_ns["best_config_buildings_df"]["fields_used"].sum())
+        )
+
+        # A missing database file is a cold start too.
+        missing_db = self.cold_workspace / "state" / "missing.db"
+        self.assertFalse(cold_ns["has_database"](missing_db))
+        self.assertEqual(cold_ns["load_live_planet_states"](missing_db), [])
+        self.assertEqual(cold_ns["load_attack_telemetry"](missing_db)["source_label"], "cold_start")
+
+    def test_utility_helpers(self) -> None:
+        ns, _, _ = self._attack_run()
+        for seconds, text in ((45, "45s"), (187, "3m 07s"), (20_100, "5h 35m"), (1_051_200, "12d 04h")):
+            self.assertEqual(ns["fmt_duration"](seconds), text)
+        for not_a_duration in (0.0, -3.0, float("nan"), float("inf")):
+            self.assertEqual(ns["fmt_duration"](not_a_duration), "0s")
+
+        mean, sample_std, pop_std = ns["compute_mean_and_std"]([1.0, 2.0, 3.0, float("nan")])
+        self.assertEqual((mean, sample_std), (2.0, 1.0))
+        self.assertAlmostEqual(pop_std, math.sqrt(2.0 / 3.0), places=12)
+        self.assertEqual(ns["compute_mean_and_std"]([]), (0.0, 0.0, 0.0))
+        self.assertEqual(ns["compute_mean_and_std"]([7.0]), (7.0, 0.0, 0.0))
+
+        self.assertEqual(ns["parse_json_object"]('{"a": 1}'), {"a": 1})
+        for not_an_object in ("not json", "[1, 2]", "", None, 7):
+            self.assertEqual(ns["parse_json_object"](not_an_object), {})
+        self.assertEqual(
+            ns["parse_level_map"]('{"b1": 3, "b2": "x", "b3": -2, "b4": 2.9}'),
+            {"b1": 3, "b3": 0, "b4": 2},
+        )
+
+        self.assertEqual(
+            ns["format_prerequisites"](game_data.BUILDING_BY_ID[9]["requirements"]),
+            "r2 L1 (Energy technology), b7 L3 (Development center)",
+        )
+        self.assertEqual(ns["format_prerequisites"]([]), "None")
+        self.assertEqual(ns["full_cost"]({"metal": 5}), {"metal": 5, "pig_iron": 0, "kryptonite": 0, "spice": 0})
+        self.assertEqual(ns["cost_points"]({"pig_iron": 600, "metal": 0, "kryptonite": 400, "spice": 0}), 1.0)
+        # Time divisors of Section 1.3: (b7 + 1) * 2^b17 * speed, (b8 + 1) * speed, max(1, b9) * 2^b17 * speed.
+        self.assertEqual(ns["building_time_divisor"](3, 2, 5.0), 80.0)
+        self.assertEqual(ns["research_time_divisor"](3, 5.0), 20.0)
+        self.assertEqual(ns["shipyard_time_divisor"](0, 2, 5.0), 20.0)
+        self.assertEqual(ns["shipyard_time_divisor"](4, 0, 5.0), 20.0)
+        # Solar cells: the catalog table gives 30 energy at 0 degrees C and 10 at -80 degrees C or colder.
+        self.assertEqual(
+            [ns["solar_cell_energy_per_unit"](temperature) for temperature in (-200, -80, 0, 31, 200, 400)],
+            [10.0, 10.0, 30.0, 37.75, 80.0, 80.0],
+        )
+
+    # ------------------------------------------------------------------ Section 9: universe research
+
+    def test_universe_research_maximum_levels(self) -> None:
+        ns, stdout, _ = self._cached_run(self.universe_workspace)
+        table = ns["universe_research_df"]
+        rows = table.set_index("key")
+        # The 15 researches of the catalog, then the one research that only the bot's ledger tracks.
+        self.assertEqual(list(table["key"]), [f"r{number}" for number in range(1, 16)] + ["urplasma-extraction"])
+        self.assertEqual(list(table["research_id"]), list(range(1, 17)))
+
+        def levels(key: str) -> list:
+            columns = ["own_level", "spied_max_level", "server_record_level", "universe_max_level", "max_source"]
+            return rows.loc[key, columns].tolist()
+
+        # Mining technology: the server record (27) beats the ledger's spied level (14) and a newer report (15).
+        self.assertEqual(levels("r1"), [0, 15, 27, 27, "server_record"])
+        self.assertEqual(rows.loc["r1", ["holder", "holder_coords"]].tolist(), ["TopMiner", "01:010:02"])
+        self.assertEqual(
+            rows.loc["r1", ["gap_to_max", "own_percent_of_max", "catalog_max_level"]].tolist(), [27, 0.0, 40]
+        )
+        self.assertEqual(rows.loc["r1", "ledger_updated_utc"], "2023-11-14 22:13:20")
+        # Energy technology: the account has level 1. The server record (21) counts although the ledger's own
+        # maximum still says 20, and the holder of that 20 is not the holder of the record.
+        self.assertEqual(levels("r2"), [1, 12, 21, 21, "server_record"])
+        self.assertEqual(rows.loc["r2", ["gap_to_max", "own_percent_of_max"]].tolist(), [20, 4.8])
+        self.assertEqual(rows.loc["r2", ["holder", "holder_coords"]].tolist(), ["", ""])
+        # Engine research: the ledger remembers 13, more than any source shows today.
+        self.assertEqual(levels("r3"), [0, 9, 0, 13, "ledger"])
+        self.assertEqual(rows.loc["r3", "holder"], "OldRecord")
+        # Rocket engine: only a spy report, from a planet whose owner is unknown.
+        self.assertEqual(levels("r4"), [0, 12, 0, 12, "spy_report"])
+        self.assertEqual(rows.loc["r4", ["holder", "holder_coords"]].tolist(), ["", "02:394:01"])
+        # Spy technology: nobody is known above the account's own level, which the ledger recorded as 4.
+        self.assertEqual(levels("r7"), [4, 0, 0, 4, "own_level"])
+        self.assertEqual(rows.loc["r7", ["holder", "gap_to_max", "own_percent_of_max"]].tolist(), ["", 0, 100.0])
+        # Weapons technology: three reports (7, then 9 under its name, then 9 again); the newest 9 names the holder.
+        self.assertEqual(levels("r8"), [0, 9, 0, 9, "spy_report"])
+        self.assertEqual(rows.loc["r8", ["holder", "holder_coords"]].tolist(), ["Late", "02:391:07"])
+        # Shield technology: 5 under its slug beats 3; the non-numeric level of the last report is ignored.
+        self.assertEqual(levels("r9"), [0, 5, 0, 5, "spy_report"])
+        self.assertEqual(rows.loc["r9", "holder"], "Miner")
+        # A level of 0 in a report and an unknown key (`r99`) count for nothing.
+        self.assertEqual(levels("r10"), [0, 0, 0, 0, "none"])
+        self.assertEqual(rows.loc["r10", ["holder", "ledger_updated_utc"]].tolist(), ["", ""])
+        # Graviton technology: the 11 of the oldest report stays, although the newest report shows only 4.
+        self.assertEqual(levels("r13"), [0, 11, 0, 11, "spy_report"])
+        self.assertEqual(rows.loc["r13", ["holder", "holder_coords"]].tolist(), ["Raider", "02:383:02"])
+        # The ledger's own row: no level table in the catalog, holder from the ledger.
+        self.assertEqual(levels("urplasma-extraction"), [0, 3, 0, 3, "spy_report"])
+        self.assertEqual(
+            rows.loc["urplasma-extraction", ["name", "holder", "catalog_max_level"]].tolist(),
+            ["Urplasma-extraction", "Raider", 0],
+        )
+
+        self.assertEqual(ns["UNIVERSE_RESEARCH_MAX_LEVELS"]["r1"], 27)
+        self.assertEqual(
+            ns["UNIVERSE_RESEARCH_MAX_LEVELS"], dict(zip(table["key"], table["universe_max_level"]))
+        )
+        self.assertEqual(
+            ns["UNIVERSE_RESEARCH_SUMMARY"],
+            {
+                "researches": 16,
+                "ledger_rows": 5,
+                "spy_reports_with_research": 4,
+                "researches_with_server_record": 2,
+                "researches_seen_in_spy_reports": 8,
+                "researches_above_own_level": 8,
+                "highest_level": 27,
+            },
+        )
+        sources = ns["universe_research_sources"]
+        self.assertEqual([row["research_key"] for row in sources["ledger_rows"]][-1], "urplasma-extraction")
+        self.assertEqual(
+            sources["spied_levels"]["r8"], {"level": 9, "holder": "Late", "holder_coords": "02:391:07"}
+        )
+        self.assertEqual(sorted(sources["spied_levels"]), ["r1", "r13", "r4", "r8", "r9"])
+
+        # Ties: the server record names the source before a spy report does, a spy report before the own level.
+        research_row = ns["universe_research_row"]
+        catalog_entry = dict(ns["research_catalog"]())["r6"]
+        ledger_tie = {"server_record_level": 9, "spied_max_level": 9, "universe_max_level": 9, "holder": "Both"}
+        tie = research_row("r6", catalog_entry, ledger_tie, {}, 9)
+        self.assertEqual((tie["max_source"], tie["holder"], tie["gap_to_max"]), ("server_record", "Both", 0))
+        tie = research_row("r6", catalog_entry, {}, {"level": 9, "holder": "Seen", "holder_coords": "01:002:03"}, 9)
+        self.assertEqual((tie["max_source"], tie["holder"], tie["holder_coords"]), ("spy_report", "Seen", "01:002:03"))
+        # A holder is named for the maximum only: here the ledger's spied level beats the newest report.
+        ledger_ahead = {"spied_max_level": 9, "universe_max_level": 9, "holder": "Ledger", "holder_coords": "01:001:01"}
+        ahead = research_row(
+            "r6", catalog_entry, ledger_ahead, {"level": 6, "holder": "Report", "holder_coords": "02:002:02"}, 0
+        )
+        self.assertEqual(
+            (ahead["max_source"], ahead["spied_max_level"], ahead["holder"], ahead["holder_coords"]),
+            ("spy_report", 9, "Ledger", "01:001:01"),
+        )
+        # The cell says so when nothing is known about other players, and only then.
+        own_levels_note = "every universe maximum is your own level"
+        self.assertNotIn(own_levels_note, stdout[self.universe_research_cell_idx])
+        self.assertIn("5 ledger row(s), 4 spy report(s) with research levels", stdout[self.universe_research_cell_idx])
+
+        # Without a ledger row or a spy report, every maximum is the account's own level.
+        plain_ns, plain_stdout, _ = self._attack_run()
+        self.assertIn(own_levels_note, plain_stdout[self.universe_research_cell_idx])
+        self.assertEqual(
+            plain_ns["universe_research_sources"],
+            {"ledger_rows": [], "spied_levels": {}, "spy_reports_with_research": 0},
+        )
+        plain = plain_ns["universe_research_df"].set_index("key")
+        self.assertEqual(len(plain), 15)
+        self.assertEqual(
+            plain.loc["r2", ["own_level", "universe_max_level", "max_source"]].tolist(), [1, 1, "own_level"]
+        )
+        self.assertEqual(set(plain.drop(index="r2")["max_source"]), {"none"})
+        self.assertEqual(plain_ns["UNIVERSE_RESEARCH_SUMMARY"]["researches_above_own_level"], 0)
+
+        # A source can be missing altogether: an own level beyond everything else on record wins.
+        own_ahead = ns["build_universe_research_table"](
+            {"ledger_rows": [], "spied_levels": {"r5": {"level": 3, "holder": "X", "holder_coords": "01:001:01"}}},
+            {"r5": 7},
+        ).set_index("key")
+        self.assertEqual(
+            own_ahead.loc[
+                "r5", ["own_level", "spied_max_level", "universe_max_level", "max_source", "holder"]
+            ].tolist(),
+            [7, 3, 7, "own_level", ""],
+        )
+        self.assertEqual(
+            ns["load_universe_research_sources"](self.cold_workspace / "state" / "missing.db"),
+            {"ledger_rows": [], "spied_levels": {}, "spy_reports_with_research": 0},
+        )
+        self.assertEqual(ns["research_key_aliases"]()["weapons technology"], "r8")
+
+    # ------------------------------------------------------------------ Section 11: best configuration
+
+    def _toy_model(
+        self,
+        ns: dict,
+        target: str,
+        max_levels: dict[str, int],
+        planets: int,
+        fields: list[int],
+        warehouse_hours: float = 0.0,
+    ):
+        """A small empire of the notebook's roster: its first planets, resized, with tiny level ranges.
+
+        Its buildings cost so little that no warehouse is needed, unless `warehouse_hours` asks for one.
+        """
+        states = [
+            dataclasses.replace(planet, fields_max=size)
+            for planet, size in zip(ns["empire_planet_states"][:planets], fields)
+        ]
+        misc = {f"b{number}": 0 for number in game_data.BUILDING_BY_ID if f"b{number}" not in max_levels}
+        misc["b7"] = 3  # the Weapons factory needs Development center 3
+        ns["check_optimizer_settings"](max_levels, misc, {}, {}, target, warehouse_hours, 0)
+        plans = ns["build_planet_plans"](
+            states,
+            ns["PLANET_PARAM_CONTEXTS"][:planets],
+            optimized_max_levels=max_levels,
+            misc_levels=misc,
+            misc_levels_by_slot={},
+            min_fleet={},
+            central_planet_slot=1,
+            central_min_warehouse_level=0,
+            research_costs=[],
+        )
+        contexts = [
+            ns["planet_param_context"](
+                ns["PLAN_ACCOUNT_CONTEXT"], plan["slot_index"], states[index], is_empty_slot=index > 0
+            )
+            for index, plan in enumerate(plans)
+        ]
+        return ns["EmpireProductionModel"](
+            plans,
+            contexts,
+            optimized_keys=tuple(max_levels),
+            target_ship_key=target,
+            month_days=30.0,
+            warehouse_hours=warehouse_hours,
+        )
+
+    def test_planned_research_and_fixed_planet_parts(self) -> None:
+        ns, _, _ = self._attack_run()
+
+        # Research: a share of the universe maximum (half a level rounds up), never below the current or the
+        # required level, never beyond the catalog.
+        research = ns["plan_research_levels"](
+            {"r1": 27, "r2": 5, "r3": 13, "r4": 100}, {"r2": 4, "r3": 1}, {"r3": 8, "r6": 10}, 50.0
+        ).set_index("key")
+        columns = ["own_level", "universe_max_level", "percent_level", "required_level", "planned_level", "set_by"]
+        self.assertEqual(research.loc["r1", columns].tolist(), [0, 27, 14, 0, 14, "universe maximum"])
+        self.assertEqual(research.loc["r2", columns].tolist(), [4, 5, 3, 0, 4, "current level"])
+        self.assertEqual(research.loc["r3", columns].tolist(), [1, 13, 7, 8, 8, "prerequisite"])
+        self.assertEqual(research.loc["r4", columns].tolist(), [0, 100, 40, 0, 40, "universe maximum"])
+        self.assertEqual(research.loc["r6", columns].tolist(), [0, 0, 0, 10, 10, "prerequisite"])
+        self.assertEqual(research.loc["r5", columns].tolist(), [0, 0, 0, 0, 0, "not needed"])
+        full = ns["plan_research_levels"]({"r1": 27, "r2": 5}, {"r2": 5}, {}, 100.0).set_index("key")
+        self.assertEqual(full.loc["r1", "planned_level"], 27)
+        # A level that you already have is called your current level, even when it is the universe maximum too.
+        self.assertEqual(full.loc["r2", columns].tolist(), [5, 5, 5, 0, 5, "current level"])
+
+        # What a planet itself must have built, and what the account must have researched.
+        building_needs = ns["same_planet_building_requirements"]
+        self.assertEqual(building_needs("s16"), {"b9": 13, "b7": 3})
+        self.assertEqual(building_needs("s1"), {"b9": 2, "b7": 3})
+        self.assertEqual(building_needs("b17", 2), {"b17": 2, "b7": 12})
+        self.assertEqual(building_needs("b17"), {"b7": 12})
+        self.assertEqual(building_needs("b18", 1), {"b18": 1, "b17": 2, "b7": 12})
+        # A building needed through two paths keeps the higher level, whichever path is walked last, and a
+        # building that only a research needs does not have to stand on the same planet.
+        real_graph = ns["TECH_GRAPH"]
+        ns["TECH_GRAPH"] = types.SimpleNamespace(
+            nodes={
+                "x": {"category": "buildings"},
+                "a": {"category": "buildings"},
+                "b": {"category": "buildings"},
+                "c": {"category": "buildings"},
+                "r": {"category": "research"},
+            },
+            prereqs_of={"x": (("b", 1), ("a", 5), ("r", 3)), "b": (("a", 2),), "a": (), "r": (("c", 9),), "c": ()},
+        )
+        try:
+            self.assertEqual(building_needs("x"), {"b": 1, "a": 5})
+            self.assertEqual(building_needs("x", 4), {"x": 4, "b": 1, "a": 5})
+        finally:
+            ns["TECH_GRAPH"] = real_graph
+        research_needs = ns["research_requirements"]
+        self.assertEqual(research_needs(["s16"]), {"r2": 2, "r3": 8, "r13": 10, "r6": 10, "r15": 2})
+        self.assertEqual(research_needs(["s1", "b17"]), {"r2": 10, "r3": 2, "r4": 4})
+        self.assertEqual(research_needs([]), {})
+        self.assertEqual(
+            ns["context_with_research"](
+                {"r1_mining_tech": 0, "speedup_factor": 5.0, "r2_energy_tech": 1}, {"r1": 9, "r2": 3}
+            ),
+            {"r1_mining_tech": 9, "speedup_factor": 5.0, "r2_energy_tech": 3},
+        )
+
+        # One planet: Development center 2 asked, 1 built, 3 needed by the Weapons factory that both the
+        # Large transports (level 6) and the Tunnel system (level 5) require.
+        home = dataclasses.replace(ns["live_planet_states"][0], ships={"s2": 1, "s9": 10})
+        misc = {f"b{number}": 0 for number in game_data.BUILDING_BY_ID if number not in (1, 2, 3, 4, 5, 9, 17)}
+        misc.update(b7=2, b10=1, b20=1)
+        max_levels = {"b1": 30, "b2": 30, "b3": 30, "b4": 30, "b5": 30, "b9": 20, "b17": 20}
+        plan = ns["build_planet_plan"](
+            ns["PLANET_PARAM_CONTEXTS"][0],
+            home,
+            optimized_max_levels=max_levels,
+            misc_levels=misc,
+            min_fleet={"s2": 3, "s9": 4, "s10": 0},
+        )
+        self.assertEqual((plan["slot_index"], plan["coords"], plan["planet_status"]), (1, "02:380:12", "colonized"))
+        self.assertEqual(
+            {key: level for key, level in plan["fixed_levels"].items() if level}, {"b7": 3, "b10": 1, "b20": 1}
+        )
+        self.assertEqual((plan["fixed_fields"], plan["free_fields"], plan["fields_max"]), (5, 225, 230))
+        self.assertEqual(plan["min_levels"], {"b1": 0, "b2": 0, "b3": 0, "b4": 0, "b5": 0, "b9": 6, "b17": 0})
+        # The Microsystem accelerator needs Development center 12, which this planet does not get.
+        self.assertEqual(plan["max_levels"], {"b1": 30, "b2": 30, "b3": 30, "b4": 30, "b5": 30, "b9": 20, "b17": 0})
+        self.assertEqual(plan["locked_by"], {"b17": "b7 L12"})
+        self.assertEqual(plan["built_levels"]["b5"], 7)
+        # Fleet: 1 of 3 Large transports is there; the 10 Solar cells stationed count, not the 4 asked for.
+        self.assertEqual(plan["fleet_missing"], {"s2": 2, "s9": 0, "s10": 0})
+        self.assertEqual(plan["fleet_cost_spice_eq"], 2 * (8000 / 2.5 + 6000 / 3.0))
+        self.assertEqual(plan["solar_cells"], 10)
+        # A ship with a count of 0 asks for nothing: no Weapons factory without the Tunnel system either.
+        no_fleet = ns["build_planet_plan"](
+            ns["PLANET_PARAM_CONTEXTS"][0],
+            home,
+            optimized_max_levels=max_levels,
+            misc_levels={**misc, "b20": 0},
+            min_fleet={"s13": 0},
+        )
+        self.assertEqual((no_fleet["min_levels"]["b9"], no_fleet["fleet_missing"]), (0, {"s13": 0}))
+        # A level already built beyond the meta parameter is kept; a maximum beyond the catalog is cut.
+        built_up = dataclasses.replace(home, buildings={**home.buildings, "b7": 14, "b10": 3})
+        kept = ns["build_planet_plan"](
+            ns["PLANET_PARAM_CONTEXTS"][0],
+            built_up,
+            optimized_max_levels={**max_levels, "b1": 500},
+            misc_levels=misc,
+            min_fleet={},
+        )
+        self.assertEqual((kept["fixed_levels"]["b7"], kept["fixed_levels"]["b10"]), (14, 3))
+        self.assertEqual((kept["max_levels"]["b17"], kept["locked_by"]), (20, {}))
+        self.assertEqual(kept["max_levels"]["b1"], game_data.BUILDING_BY_ID[1]["max_table_level"])
+        self.assertEqual(kept["min_levels"]["b9"], 5)
+
+        # Meta parameters that contradict the catalog or each other stop the run.
+        check = ns["check_optimizer_settings"]
+        check(max_levels, misc, {1: {"b8": 3}}, {"s2": 3}, "s16", 24.0, 15)
+        without_b21 = {key: level for key, level in misc.items() if key != "b21"}
+        for arguments, message in (
+            ((max_levels, without_b21, {}, {}, "s16"), r"missing \['b21'\]"),
+            ((max_levels, {**misc, "b9": 4}, {}, {}, "s16"), r"in both \['b9'\]"),
+            ((max_levels, {**misc, "b99": 1}, {}, {}, "s16"), r"unknown \['b99'\]"),
+            ((max_levels, misc, {2: {"b1": 4}}, {}, "s16"), r"MISC_BUILDING_LEVELS_BY_SLOT\[2\] sets \['b1'\]"),
+            ((max_levels, misc, {}, {"s99": 1}, "s16"), r"need ship keys"),
+            ((max_levels, misc, {}, {}, "b9"), r"need ship keys"),
+            ((max_levels, {**misc, "b10": -1}, {}, {}, "s16"), r"whole numbers of 0 or more"),
+            ((max_levels, misc, {}, {"s2": 1.5}, "s16"), r"whole numbers of 0 or more"),
+            (
+                ({**max_levels, "b6": 9}, {k: v for k, v in misc.items() if k != "b6"}, {}, {}, "s16"),
+                r"b6 needs \['b4'\]",
+            ),
+        ):
+            with self.subTest(error=message), self.assertRaisesRegex(ValueError, message):
+                check(*arguments, 24.0, 15)
+        # A planet too small for its fixed buildings, its minimum levels and their warehouses is an error, not a
+        # silent overflow: 5 fixed fields, Weapons factory 6 for the Large transport, and the 8 warehouse levels
+        # that hold the cost of the Tunnel system need 19.
+        tunnel_cost = game_data.building_cost(20, 1)
+        self.assertEqual(sum(self._warehouse_level_for(amount) for amount in tunnel_cost.values()), 8)
+        for fields, fits in ((18, False), (19, True)):
+            tiny = dataclasses.replace(home, fields_max=fields)
+            tiny_plans = ns["build_planet_plans"](
+                [tiny],
+                ns["PLANET_PARAM_CONTEXTS"][:1],
+                optimized_max_levels=max_levels,
+                misc_levels=misc,
+                misc_levels_by_slot={},
+                min_fleet={"s2": 1},
+                central_planet_slot=1,
+                central_min_warehouse_level=0,
+                research_costs=[],
+            )
+            tiny_model = {
+                "optimized_keys": tuple(max_levels),
+                "target_ship_key": "s16",
+                "month_days": 30.0,
+                "warehouse_hours": 0.0,
+            }
+            tiny_contexts = [ns["planet_param_context"](ns["PLAN_ACCOUNT_CONTEXT"], 1, tiny, is_empty_slot=False)]
+            if fits:
+                self.assertEqual(
+                    ns["EmpireProductionModel"](tiny_plans, tiny_contexts, **tiny_model).free_fields.tolist(), [14]
+                )
+            else:
+                with self.assertRaisesRegex(ValueError, r"Planet 02:380:12 \(slot 1\) has 18 fields, .* need 19"):
+                    ns["EmpireProductionModel"](tiny_plans, tiny_contexts, **tiny_model)
+
+        # The notebook checks the meta parameters before it plans, and the ones it ships with pass.
+        with self.assertRaisesRegex(ValueError, "need ship keys"):
+            self._rerun_planner(ns, {"TARGET_SHIP_KEY": "b9"})
+        own = self._notebook_meta_parameters()
+        check(
+            own["OPTIMIZED_BUILDING_MAX_LEVELS"],
+            own["MISC_BUILDING_LEVELS"],
+            own["MISC_BUILDING_LEVELS_BY_SLOT"],
+            own["MIN_FLEET_PER_PLANET"],
+            own["TARGET_SHIP_KEY"],
+            own["WAREHOUSE_HOURS_OF_PRODUCTION"],
+            own["CENTRAL_PLANET_MIN_WAREHOUSE_LEVEL"],
+        )
+
+        # The notebook's own plan. The account has Energy technology 1 and nothing is known about other players,
+        # so every other planned level comes from a prerequisite of the plan.
+        self.assertEqual(
+            ns["PLAN_REQUIRED_RESEARCH"],
+            {"r2": 10, "r3": 8, "r13": 10, "r6": 10, "r15": 2, "r4": 6, "r7": 2, "r5": 4},
+        )
+        planned = ns["planned_research_df"].set_index("key")
+        self.assertEqual(planned.loc["r2", columns].tolist(), [1, 1, 1, 10, 10, "prerequisite"])
+        self.assertEqual(planned.loc["r1", columns].tolist(), [0, 0, 0, 0, 0, "not needed"])
+        self.assertEqual(ns["PLANNED_RESEARCH_LEVELS"], dict(zip(planned.index, planned["planned_level"])))
+        self.assertEqual(ns["PLAN_ACCOUNT_CONTEXT"]["r2_energy_tech"], 10)
+        self.assertEqual(ns["GAME_PARAM_CONTEXT"]["r2_energy_tech"], 1)
+        self.assertEqual(ns["PLAN_ACCOUNT_CONTEXT"]["speedup_factor"], 5.0)
+
+        plans = ns["PLANET_PLANS"]
+        self.assertEqual([plan["slot_index"] for plan in plans], list(range(1, 12)))
+        planets = ns["plan_planets_df"]
+        # Slot 1 gets the Research lab: 12 + 12 + 5 fixed fields of its 230; a generic planet 17 of 300.
+        # The warehouses are not among them: their fields come out of the free ones.
+        self.assertEqual(planets[["fixed_fields", "free_fields"]].values.tolist(), [[29, 201]] + [[17, 283]] * 10)
+        self.assertEqual(set(planets["min_optimized_fields"]), {6})
+        self.assertEqual(set(planets["solar_cells"]), {0})
+        # 10 Large transports, 10 Spy probes and 10 Recyclers are missing everywhere.
+        self.assertEqual(set(planets["fleet_units_missing"]), {30})
+        self.assertEqual(set(planets["fleet_cost_spice_eq"]), {10 * 5200.0 + 10 * 1200.0 + 10 * 6000.0})
+        levels_table = ns["plan_building_levels_df"]
+        self.assertEqual(len(levels_table), 11 * 21)
+        by_planet = levels_table.set_index(["coords", "key"])
+        self.assertEqual(
+            by_planet.loc[("02:380:12", "b8"), ["role", "built_level", "min_level", "max_level"]].tolist(),
+            ["fixed", 0, 12, 12],
+        )
+        self.assertEqual(by_planet.loc[("EMPTY:01", "b8"), ["min_level", "max_level"]].tolist(), [0, 0])
+        self.assertEqual(
+            by_planet.loc[("02:380:12", "b9"), ["role", "built_level", "min_level", "max_level", "locked_by"]].tolist(),
+            ["optimized", 0, 6, 50, ""],
+        )
+        self.assertEqual(by_planet.loc[("02:380:12", "b5"), "built_level"], 7)
+        self.assertEqual(
+            int((levels_table["role"] == "optimized").sum()), 11 * len(ns["OPTIMIZED_BUILDING_MAX_LEVELS"])
+        )
+
+        # Asteroids take no part: the three-planet account plans its two colonies and nine generic planets.
+        three_ns, _, _ = self._cached_run(self.three_planet_workspace)
+        self.assertEqual([plan["slot_index"] for plan in three_ns["PLANET_PLANS"]], [1, 2, *range(4, 13)])
+        self.assertNotIn("02:380:12A", set(three_ns["best_config_buildings_df"]["coords"]))
+        cold_colony = three_ns["PLANET_PLANS"][1]
+        self.assertEqual((cold_colony["coords"], cold_colony["temperature_c"]), ("02:381:15", -40))
+        # Its 3 Solar cells are counted, and its Microsystem accelerator level is the start of the range.
+        self.assertEqual((cold_colony["solar_cells"], cold_colony["built_levels"]["b17"]), (3, 1))
+        self.assertEqual(three_ns["PRODUCTION_MODEL"].twin_planets, [0, 1, *([2] * 9)])
+
+    def test_production_model_matches_the_game_formulas(self) -> None:
+        ns, _, _ = self._attack_run()
+        model = ns["PRODUCTION_MODEL"]
+        self.assertEqual(model.optimized_keys, ("b1", "b2", "b3", "b4", "b5", "b9", "b17"))
+        self.assertEqual(model.limit_names, ("metal", "kryptonite", "spice", "shipyards"))
+        self.assertEqual(model.ship_cost.tolist(), [3_000_000.0, 2_000_000.0, 500_000.0])
+        self.assertEqual(model.target_requirements, {"b9": 13, "b7": 3})
+        self.assertEqual(model.hours_per_month, 720.0)
+        self.assertEqual(model.free_fields.tolist(), [201] + [283] * 10)
+        self.assertEqual(model.twin_planets, [0] + [1] * 10)
+        self.assertEqual(model.target_ship_key, "s16")
+
+        speed, hours = 5.0, 720.0
+        energy_boost = 1.1  # planned Energy technology 10
+
+        def row(building_id: int, level: int) -> dict:
+            return game_data.BUILDING_BY_ID[building_id]["levels"][level]
+
+        def expected(levels: dict[str, int], temperature: int) -> dict[str, float]:
+            """The model's steps, written out with the catalog numbers."""
+            produced = row(5, levels["b5"])["energy"] * energy_boost
+            used = -sum(row(number, levels[f"b{number}"])["energy"] for number in (1, 2, 3, 4))
+            power = min(1.0, produced / used)
+            pig_iron = speed * game_data.mine_production_per_hour(1, levels["b1"]) * power
+            wanted = speed * row(2, levels["b2"])["pig_iron_used"] * power
+            smelting = min(1.0, pig_iron / wanted)
+            metal = speed * row(2, levels["b2"])["prod"] * power * smelting
+            kryptonite = speed * game_data.mine_production_per_hour(3, levels["b3"]) * power
+            spice = speed * game_data.mine_production_per_hour(4, levels["b4"], temperature=temperature) * power
+            shipyard = 0.0
+            if levels["b9"] >= 13:
+                build_time = 1_633_333.333 / (levels["b9"] * 2 ** levels["b17"] * speed)
+                shipyard = hours * 3600.0 / build_time
+            return {
+                "power": power,
+                "smelting": smelting,
+                "net": [pig_iron - wanted * smelting, metal, kryptonite, spice],
+                "limits": [metal * hours / 3e6, kryptonite * hours / 2e6, spice * hours / 5e5, shipyard],
+                "energy": [produced, used],
+            }
+
+        cases = {
+            "balanced": {"b1": 12, "b2": 8, "b3": 6, "b4": 5, "b5": 12, "b9": 13, "b17": 1},
+            "short of energy": {"b1": 12, "b2": 8, "b3": 6, "b4": 5, "b5": 3, "b9": 14, "b17": 0},
+            "short of pig iron": {"b1": 3, "b2": 9, "b3": 6, "b4": 5, "b5": 12, "b9": 20, "b17": 2},
+            "no shipyard for the starbase": {"b1": 12, "b2": 8, "b3": 6, "b4": 5, "b5": 12, "b9": 12, "b17": 3},
+        }
+        for planet, temperature in ((0, 31), (1, 0)):
+            for label, levels in cases.items():
+                with self.subTest(case=label, planet=planet):
+                    want = expected(levels, temperature)
+                    design = np.array([[[levels[key] for key in model.optimized_keys]]])
+                    got = {name: values[0, 0] for name, values in model.simulate(design, [planet]).items()}
+                    np.testing.assert_allclose(got["planet_limits"], want["limits"], rtol=1e-9)
+                    np.testing.assert_allclose(got["planet_net_per_hour"], want["net"], rtol=1e-9, atol=1e-9)
+                    self.assertAlmostEqual(got["planet_power_ratio"], want["power"], places=12)
+                    self.assertAlmostEqual(got["planet_smelting_ratio"], want["smelting"], places=12)
+                    np.testing.assert_allclose(
+                        [got["planet_energy_produced"], got["planet_energy_used"]], want["energy"], rtol=1e-12
+                    )
+        # The cases cover what they are named for.
+        self.assertEqual(expected(cases["balanced"], 0)["power"], 1.0)
+        self.assertEqual(expected(cases["balanced"], 0)["smelting"], 1.0)
+        self.assertLess(expected(cases["short of energy"], 0)["power"], 0.5)
+        self.assertLess(expected(cases["short of pig iron"], 0)["smelting"], 0.5)
+        self.assertAlmostEqual(expected(cases["short of pig iron"], 0)["net"][0], 0.0, places=9)
+        self.assertEqual(expected(cases["no shipyard for the starbase"], 0)["limits"][3], 0.0)
+        self.assertGreater(expected(cases["balanced"], 0)["limits"][3], 0.0)
+        # A hotter planet mines less Spice from the same mine.
+        self.assertLess(expected(cases["balanced"], 31)["limits"][2], expected(cases["balanced"], 0)["limits"][2])
+
+        # A whole configuration: every limit is added up over the planets, and the smallest sum counts.
+        configuration = np.array([model.min_levels.copy()])
+        configuration[0, 2] = [cases["balanced"][key] for key in model.optimized_keys]
+        configuration[0, 5] = [cases["short of pig iron"][key] for key in model.optimized_keys]
+        totals = np.add(expected(cases["balanced"], 0)["limits"], expected(cases["short of pig iron"], 0)["limits"])
+        np.testing.assert_allclose(model.simulate(configuration)["planet_limits"][0].sum(axis=0), totals, rtol=1e-9)
+        self.assertAlmostEqual(model.ships_per_month(configuration)[0], totals.min(), delta=1e-9 * totals.min())
+        self.assertEqual(model.simulate(configuration)["planet_limits"].shape, (1, 11, 4))
+
+        # Feasible means: inside the level ranges (Weapons factory at least 6 for the fleet) and inside the fields,
+        # warehouses included. The first planet has 201 free fields: 46 + 46 + 42 + 6 levels and warehouses
+        # 17, 15, 15 and 15 fill them exactly.
+        feasible = model.is_feasible
+        self.assertTrue(feasible(configuration)[0])
+        self.assertTrue(feasible(np.array([model.min_levels]))[0])
+        too_low, too_high, too_many = (configuration.copy() for _ in range(3))
+        too_low[0, 3, model.building_index["b9"]] = 5
+        too_high[0, 3, model.building_index["b1"]] = 51
+        too_many[0, 0] = [45, 46, 0, 0, 42, 6, 0]
+        self.assertEqual(model.simulate(too_many)["planet_warehouse_levels"][0, 0].tolist(), [17, 15, 15, 15])
+        self.assertEqual(int(model.simulate(too_many)["planet_fields_needed"][0, 0]), 201)
+        self.assertEqual(feasible(np.concatenate([too_low, too_high, too_many])).tolist(), [False, False, True])
+        too_many[0, 0, 0] = 46
+        self.assertFalse(feasible(too_many)[0])
+        self.assertEqual(feasible(too_many[:, :1], [0]).tolist(), [False])
+        self.assertEqual(feasible(too_many[:, 1:2], [1]).tolist(), [True])
+
+        # Fixed buildings and the fleet's Solar cells feed the planet too: 40 Solar cells give 30 energy each
+        # at 0 degrees C and 37.75 at 31 degrees C, times 1.1 for Energy technology 10.
+        plans = ns["build_planet_plans"](
+            ns["empire_planet_states"][:2],
+            ns["PLANET_PARAM_CONTEXTS"][:2],
+            optimized_max_levels=ns["OPTIMIZED_BUILDING_MAX_LEVELS"],
+            misc_levels={**ns["MISC_BUILDING_LEVELS"], "b6": 4},
+            misc_levels_by_slot={},
+            min_fleet={"s9": 40},
+            central_planet_slot=1,
+            central_min_warehouse_level=0,
+            research_costs=[],
+        )
+        contexts = [
+            ns["planet_param_context"](
+                ns["PLAN_ACCOUNT_CONTEXT"],
+                plan["slot_index"],
+                ns["empire_planet_states"][index],
+                is_empty_slot=index > 0
+            )
+            for index, plan in enumerate(plans)
+        ]
+        solar = ns["EmpireProductionModel"](
+            plans,
+            contexts,
+            optimized_keys=model.optimized_keys,
+            target_ship_key="s16",
+            month_days=30.0,
+            warehouse_hours=24.0,
+        )
+        # The Thermosolar plant 4 needs Spice mine 6, and the Solar cells a Weapons factory.
+        self.assertEqual(solar.min_levels.tolist(), [[0, 0, 0, 6, 0, 1, 0]] * 2)
+        idle = solar.simulate(np.array([solar.min_levels]))
+        thermosolar = row(6, 4)
+        np.testing.assert_allclose(
+            idle["planet_energy_produced"][0],
+            [(40 * 37.75 + thermosolar["energy"]) * 1.1, (40 * 30.0 + thermosolar["energy"]) * 1.1],
+            rtol=1e-12,
+        )
+        self.assertEqual(idle["planet_power_ratio"][0].tolist(), [1.0, 1.0])
+        # The Thermosolar plant burns Spice; the Spice mine 6 that it requires makes more than that.
+        np.testing.assert_allclose(
+            idle["planet_net_per_hour"][0, :, 3],
+            [
+                speed * game_data.mine_production_per_hour(4, 6, temperature=temperature) - thermosolar["spice_used"]
+                for temperature in (31, 0)
+            ],
+            rtol=1e-12,
+        )
+        self.assertGreater(thermosolar["spice_used"], 0)
+        self.assertEqual(solar.twin_planets, [0, 1])
+        # Twins share a design catalogue, so only planets that are equal in every input may be twins.
+        generic_plan, generic_context = ns["PLANET_PLANS"][1], contexts[1]
+        other_fixed_levels = {**generic_plan["fixed_levels"], "b10": 0, "b15": generic_plan["fixed_levels"]["b10"]}
+        self.assertEqual(sum(other_fixed_levels.values()), generic_plan["fixed_fields"])
+        variants = [
+            (generic_plan, generic_context),
+            (dict(generic_plan), dict(generic_context)),  # an equal planet
+            (generic_plan, {**generic_context, "planet_temperature_c": 40}),  # another Spice mine output
+            ({**generic_plan, "solar_cells": 5}, generic_context),  # more energy
+            ({**generic_plan, "min_levels": {**generic_plan["min_levels"], "b9": 7}}, generic_context),
+            ({**generic_plan, "max_levels": {**generic_plan["max_levels"], "b1": 40}}, generic_context),
+            ({**generic_plan, "free_fields": generic_plan["free_fields"] - 1}, generic_context),
+            ({**generic_plan, "fixed_levels": other_fixed_levels}, generic_context),  # the same fields, other buildings
+            # ... and in every input of the warehouses: the lowest levels, what the plan asks the planet to store,
+            # the levels already built (they decide what is left to pay for), and being the central planet.
+            (
+                {**generic_plan, "warehouse_min_levels": {**generic_plan["warehouse_min_levels"], "b13": 1}},
+                generic_context,
+            ),
+            (
+                {**generic_plan, "capacity_needed": {**generic_plan["capacity_needed"], "spice": 5e6}},
+                generic_context,
+            ),
+            ({**generic_plan, "built_levels": {**generic_plan["built_levels"], "b3": 9}}, generic_context),
+            ({**generic_plan, "built_levels": {**generic_plan["built_levels"], "b14": 9}}, generic_context),
+            ({**generic_plan, "is_central_planet": True}, generic_context),
+        ]
+        lookalikes = ns["EmpireProductionModel"](
+            [plan for plan, _ in variants],
+            [context for _, context in variants],
+            optimized_keys=model.optimized_keys,
+            target_ship_key="s16",
+            month_days=30.0,
+            warehouse_hours=24.0,
+        )
+        self.assertEqual(lookalikes.twin_planets, [0, 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+        self.assertEqual(lookalikes.central_planet, 12)
+        # A month of 15 days halves every limit.
+        half = ns["EmpireProductionModel"](
+            ns["PLANET_PLANS"][:2],
+            contexts,
+            optimized_keys=model.optimized_keys,
+            target_ship_key="s16",
+            month_days=15.0,
+            warehouse_hours=24.0,
+        )
+        design = np.array([[[cases["balanced"][key] for key in model.optimized_keys]]])
+        np.testing.assert_allclose(
+            half.simulate(design, [1])["planet_limits"], model.simulate(design, [1])["planet_limits"] / 2.0, rtol=1e-12
+        )
+        # Another target ship brings its own cost and prerequisites: the Small transport needs no Spice.
+        transport = ns["EmpireProductionModel"](
+            ns["PLANET_PLANS"][:2],
+            contexts,
+            optimized_keys=model.optimized_keys,
+            target_ship_key="s1",
+            month_days=30.0,
+            warehouse_hours=24.0,
+        )
+        self.assertEqual(transport.limit_names, ("metal", "kryptonite", "shipyards"))
+        self.assertEqual(
+            (transport.ship_cost.tolist(), transport.target_requirements), ([3000.0, 3000.0], {"b9": 2, "b7": 3})
+        )
+
+    # ------------------------------------------------------------------ Section 11: warehouses
+
+    @staticmethod
+    def _warehouse_level_for(amount: float) -> int:
+        """Lowest warehouse level that holds `amount`: a warehouse of level L holds 100,000 * 2^L."""
+        level = 0
+        while 100_000 * 2**level < amount:
+            level += 1
+        return level
+
+    @staticmethod
+    def _dearest_level(key: str, built_level: int, top_level: int) -> list[float]:
+        """Per resource, the dearest single level of building `key` above `built_level`, up to `top_level`."""
+        costs = [game_data.building_cost(int(key[1:]), level) for level in range(built_level + 1, top_level + 1)]
+        return [
+            max((float(cost.get(resource, 0)) for cost in costs), default=0.0)
+            for resource in ("pig_iron", "metal", "kryptonite", "spice")
+        ]
+
+    def _expected_warehouses(
+        self,
+        plan: dict,
+        levels: dict[str, int],
+        net_per_hour: list[float],
+        *,
+        hours: float,
+        ship_cost: dict | None = None,
+        reserve: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0),
+    ) -> list[int]:
+        """The warehouse rules of Section 11, written out for one planet and one design.
+
+        `levels` are the design's levels of the optimized buildings, `ship_cost` the cost of the target ship
+        when the design's shipyard builds it, and `reserve` what the central planet keeps for the empire.
+        """
+        resources = ("pig_iron", "metal", "kryptonite", "spice")
+        warehouse_keys = ("b11", "b12", "b13", "b14")
+        need = [
+            max(float(plan["capacity_needed"][resource]), hours * max(0.0, float(net)), float(kept))
+            for resource, net, kept in zip(resources, net_per_hour, reserve)
+        ]
+        for key, level in levels.items():
+            need = [max(pair) for pair in zip(need, self._dearest_level(key, plan["built_levels"][key], level))]
+        if ship_cost is not None:
+            need = [max(amount, float(ship_cost.get(resource, 0))) for amount, resource in zip(need, resources)]
+        warehouses = [
+            max(plan["warehouse_min_levels"][key], self._warehouse_level_for(amount))
+            for key, amount in zip(warehouse_keys, need)
+        ]
+        while True:  # a warehouse level has a cost of its own, which the warehouses must hold too
+            own = [0.0] * 4
+            for key, level in zip(warehouse_keys, warehouses):
+                own = [max(pair) for pair in zip(own, self._dearest_level(key, plan["built_levels"][key], level))]
+            raised = [max(level, self._warehouse_level_for(amount)) for level, amount in zip(warehouses, own)]
+            if raised == warehouses:
+                return warehouses
+            warehouses = raised
+
+    def test_warehouse_helpers_and_plan_inputs(self) -> None:
+        ns, _, _ = self._attack_run()
+        self.assertEqual(ns["WAREHOUSE_KEYS"], ("b11", "b12", "b13", "b14"))
+
+        # A warehouse of level L holds 100,000 * 2^L, as the catalog says. An amount needs the first level that
+        # holds it.
+        level_for = ns["warehouse_level_for"]
+        self.assertEqual(
+            [level_for(amount) for amount in (0, 1, 100_000, 100_001, 200_000, 200_001)], [0, 0, 0, 1, 1, 2]
+        )
+        for level in (1, 7, 19, 33, 60):
+            capacity = game_data.BUILDING_BY_ID[12]["levels"][level]["storage_capacity"]
+            self.assertEqual(capacity, 100_000 * 2**level)
+            self.assertEqual(
+                (level_for(capacity), level_for(capacity + 1), level_for(capacity - 1)), (level, level + 1, level)
+            )
+            self.assertEqual(level_for(float(capacity)), self._warehouse_level_for(capacity))
+        self.assertEqual([ns["catalog_top_level"](key) for key in ("b1", "b9", "b11", "b17")], [100, 60, 60, 55])
+
+        # The largest cost per resource, with the label of the first cost that asks for it.
+        amounts, labels = ns["largest_costs"](
+            [("a", {"metal": 5, "spice": 1}), ("b", {"metal": 7}), ("c", {"metal": 7, "pig_iron": 2}), ("d", {})]
+        )
+        self.assertEqual(amounts, {"pig_iron": 2.0, "metal": 7.0, "kryptonite": 0.0, "spice": 1.0})
+        self.assertEqual(labels, {"pig_iron": "c", "metal": "b", "kryptonite": "", "spice": "a"})
+        self.assertEqual(ns["largest_costs"]([]), ({r: 0.0 for r in amounts}, {r: "" for r in amounts}))
+
+        # The levels still to build, each with its cost.
+        upgrades = ns["building_upgrade_costs"]("b2", 48, 50)
+        self.assertEqual([label for label, _ in upgrades], ["b2 L49", "b2 L50"])
+        self.assertEqual(upgrades[1][1], game_data.building_cost(2, 50))
+        self.assertEqual(upgrades[1][1]["pig_iron"], 44_150_000_000)
+        self.assertEqual(
+            (ns["building_upgrade_costs"]("b2", 50, 50), ns["building_upgrade_costs"]("b2", 9, 4)), ([], [])
+        )
+        research = ns["research_upgrade_costs"]({"r2": 4, "r9": 3}, {"r2": 6, "r1": 1, "r3": 0, "r9": 3})
+        self.assertEqual([label for label, _ in research], ["r2 L5", "r2 L6", "r1 L1"])
+        self.assertEqual(research[1][1], game_data.RESEARCH_BY_ID["r2"]["levels"][6]["cost"])
+
+        # upgrade_cost_table: nothing to pay up to the built level, then the dearest level so far.
+        table = ns["upgrade_cost_table"]("b2", 3, 6)
+        self.assertEqual(table.shape, (7, 4))
+        self.assertEqual(table[:4].tolist(), [[0.0] * 4] * 4)
+        for level in (4, 5, 6):
+            self.assertEqual(table[level].tolist(), self._dearest_level("b2", 3, level))
+        self.assertGreater(table[6, 0], table[5, 0])
+        self.assertEqual(ns["upgrade_cost_table"]("b2", 6, 6).tolist(), [[0.0] * 4] * 7)
+        # Beyond the catalog a level costs nothing more: the table keeps the dearest level it knows.
+        beyond = ns["upgrade_cost_table"]("b17", 0, 57)
+        self.assertEqual(beyond[57].tolist(), beyond[55].tolist())
+        self.assertEqual(beyond[55].tolist(), self._dearest_level("b17", 0, 55))
+        plans = ns["PLANET_PLANS"]
+        tables = ns["upgrade_cost_tables"](plans[:2], ("b5", "b9"), 8)
+        self.assertEqual(tables.shape, (2, 2, 9, 4))
+        # The colony has Fusion plant 7: only level 8 is left to pay for there; a generic planet pays for all eight.
+        self.assertEqual(tables[0, 0, 7].tolist(), [0.0] * 4)
+        self.assertEqual(tables[0, 0, 8].tolist(), self._dearest_level("b5", 7, 8))
+        self.assertEqual(tables[1, 0, 7].tolist(), self._dearest_level("b5", 0, 7))
+        self.assertEqual(tables[1, 1, 8].tolist(), self._dearest_level("b9", 0, 8))
+
+        # One planet. Warehouses: Pig iron 4 built, Metal 3 asked by the meta parameter, Kryptonite 2 built and
+        # 1 asked, Spice nothing; as the central planet with a minimum of 2 it gets Spice 2, and the built
+        # Kryptonite 2 is named before the equal minimum.
+        home = ns["live_planet_states"][0]
+        stocked = dataclasses.replace(home, buildings={**home.buildings, "b11": 4, "b13": 2}, ships={"s2": 1})
+        misc = {f"b{number}": 0 for number in game_data.BUILDING_BY_ID if number not in (1, 2, 3, 4, 5, 9, 17)}
+        misc.update(b7=2, b10=1, b20=1, b12=3, b13=1)
+        max_levels = {"b1": 30, "b2": 30, "b3": 30, "b4": 30, "b5": 30, "b9": 20, "b17": 20}
+        arguments = {"optimized_max_levels": max_levels, "misc_levels": misc, "min_fleet": {"s2": 3, "s10": 0}}
+        context = ns["PLANET_PARAM_CONTEXTS"][0]
+        plain = ns["build_planet_plan"](context, stocked, **arguments)
+        central = ns["build_planet_plan"](context, stocked, **arguments, central_min_warehouse_level=2)
+        self.assertEqual(plain["warehouse_min_levels"], {"b11": 4, "b12": 3, "b13": 2, "b14": 0})
+        self.assertEqual(
+            plain["warehouse_min_set_by"],
+            {
+                "b11": "level already built",
+                "b12": "MISC_BUILDING_LEVELS",
+                "b13": "level already built",
+                "b14": "no minimum",
+            },
+        )
+        self.assertEqual(central["warehouse_min_levels"], {"b11": 4, "b12": 3, "b13": 2, "b14": 2})
+        self.assertEqual(central["warehouse_min_set_by"]["b14"], "central planet minimum")
+        self.assertEqual(central["warehouse_min_set_by"]["b13"], "level already built")
+        self.assertEqual((plain["is_central_planet"], central["is_central_planet"]), (False, True))
+        self.assertEqual((plain["pays_for_research"], central["pays_for_research"]), (False, False))
+        # A central planet with a minimum of 0 is still the central planet.
+        self.assertTrue(
+            ns["build_planet_plan"](context, stocked, **arguments, central_min_warehouse_level=0)["is_central_planet"]
+        )
+        # The warehouses are no fixed buildings: they take none of the fixed fields.
+        self.assertEqual(
+            {key: level for key, level in plain["fixed_levels"].items() if level}, {"b7": 3, "b10": 1, "b20": 1}
+        )
+        self.assertEqual(set(plain["fixed_levels"]) & {"b11", "b12", "b13", "b14"}, set())
+        self.assertEqual((plain["fixed_fields"], plain["free_fields"]), (5, 225))
+        # What the planet must be able to store whatever its design: the dearest level of its fixed buildings
+        # (Development center 2 and 3, Fleet base 1, Tunnel system 1) and one Large transport, of which 2 are missing.
+        costs = [
+            game_data.building_cost(7, 2),
+            game_data.building_cost(7, 3),
+            game_data.building_cost(10, 1),
+            game_data.building_cost(20, 1),
+            {"metal": 8000, "kryptonite": 6000},
+        ]
+        labels = ["b7 L2", "b7 L3", "b10 L1", "b20 L1", "s2"]
+        for resource in ("pig_iron", "metal", "kryptonite", "spice"):
+            dearest = max(float(cost.get(resource, 0)) for cost in costs)
+            self.assertEqual(plain["capacity_needed"][resource], dearest, resource)
+            first = next((label for label, cost in zip(labels, costs) if cost.get(resource, 0) == dearest > 0), "")
+            self.assertEqual(plain["capacity_needed_for"][resource], first, resource)
+        # The Tunnel system costs more than a Large transport, which therefore asks for nothing here. A missing
+        # Imperial starbase costs 3 million Metal; one that is already there costs nothing more.
+        self.assertEqual(set(plain["capacity_needed_for"].values()) - {""}, {"b20 L1"})
+        # A fixed building that already stands costs nothing more either: with the Tunnel system built, the
+        # dearest Metal the planet has to store is the Large transport's.
+        tunnelled = dataclasses.replace(stocked, buildings={**stocked.buildings, "b20": 1})
+        with_tunnel = ns["build_planet_plan"](context, tunnelled, **arguments)
+        self.assertEqual(
+            (with_tunnel["capacity_needed"]["metal"], with_tunnel["capacity_needed_for"]["metal"]), (8000.0, "s2")
+        )
+        self.assertNotIn("b20 L1", with_tunnel["capacity_needed_for"].values())
+        starbase_fleet = {**arguments, "min_fleet": {"s16": 1}}
+        missing = ns["build_planet_plan"](context, stocked, **starbase_fleet)
+        present = ns["build_planet_plan"](context, dataclasses.replace(stocked, ships={"s16": 1}), **starbase_fleet)
+        self.assertEqual(
+            (missing["capacity_needed"]["metal"], missing["capacity_needed_for"]["metal"]), (3_000_000.0, "s16")
+        )
+        self.assertLess(present["capacity_needed"]["metal"], 3_000_000.0)
+
+        # warehouse_requirement_rows: what each rule asks of the stocked planet with its minimum design, when it
+        # makes 30,000 Metal an hour and stores 10 hours of it.
+        design = plain["min_levels"]
+        net = np.array([0.0, 30_000.0, 0.0, 0.0])
+        levels = self._expected_warehouses(plain, design, net, hours=10.0)
+        self.assertEqual(levels, [4, 4, 2, 3])
+        planned_levels = {**plain["fixed_levels"], **design, **dict(zip(("b11", "b12", "b13", "b14"), levels))}
+        reasons = pd.DataFrame(
+            ns["warehouse_requirement_rows"](
+                plain, planned_levels, net, warehouse_hours=10.0, ship_built=None, central_reserve=np.zeros(4)
+            )
+        )
+        self.assertEqual(reasons["resource"].tolist(), ["pig_iron", "metal", "kryptonite", "spice"])
+        self.assertEqual(reasons["key"].tolist(), ["b11", "b12", "b13", "b14"])
+        self.assertEqual(set(reasons["slot_index"]) | set(reasons["coords"]), {1, "02:380:12"})
+        self.assertEqual(reasons["built_level"].tolist(), [4, 0, 2, 0])
+        self.assertEqual(reasons["level"].tolist(), levels)
+        self.assertEqual(reasons["capacity"].tolist(), [1_600_000.0, 1_600_000.0, 400_000.0, 800_000.0])
+        # Pig iron: the dearest level is the Metal warehouse 4 itself, far less than a warehouse of level 0 holds.
+        # Metal, Kryptonite and Spice: the Tunnel system costs 1,000,000, 200,000 and 500,000.
+        self.assertEqual(reasons["largest_cost_of"].tolist(), ["b12 L4", "b20 L1", "b20 L1", "b20 L1"])
+        self.assertEqual(reasons["largest_cost"].tolist(), [16_000.0, 1_000_000.0, 200_000.0, 500_000.0])
+        self.assertEqual(reasons["level_for_largest_cost"].tolist(), [0, 4, 1, 3])
+        self.assertEqual(reasons["level_for_own_production"].tolist(), [0, 2, 0, 0])
+        self.assertEqual(reasons["level_for_empire_production"].tolist(), [0, 0, 0, 0])
+        self.assertEqual(reasons["minimum_level"].tolist(), [4, 3, 2, 0])
+        self.assertEqual(
+            reasons["set_by"].tolist(),
+            ["level already built", "cost of b20 L1", "level already built", "cost of b20 L1"],
+        )
+        # With a starbase to pay for, and as a central planet that keeps a billion Spice for the empire.
+        with_ship = pd.DataFrame(
+            ns["warehouse_requirement_rows"](
+                plain,
+                {**planned_levels, "b12": 5, "b13": 5},
+                net,
+                warehouse_hours=10.0,
+                ship_built="s16",
+                central_reserve=np.array([0.0, 0.0, 0.0, 1e9]),
+            )
+        )
+        # The starbase costs as much Spice as the Tunnel system: the cost that comes first keeps the name.
+        self.assertEqual(with_ship["largest_cost_of"].tolist(), ["b12 L5", "s16", "s16", "b20 L1"])
+        self.assertEqual(with_ship["level_for_largest_cost"].tolist(), [0, 5, 5, 3])
+        self.assertEqual(with_ship["level_for_empire_production"].tolist(), [0, 0, 0, 14])
+        self.assertEqual(
+            with_ship["set_by"].tolist(), ["level already built", "cost of s16", "cost of s16", "empire production"]
+        )
+        # Nothing to store: no cost, no production, no minimum.
+        bare = {
+            **plain,
+            "capacity_needed": dict.fromkeys(plain["capacity_needed"], 0.0),
+            "warehouse_min_levels": dict.fromkeys(plain["warehouse_min_levels"], 0),
+        }
+        nothing = ns["warehouse_requirement_rows"](
+            bare,
+            {**dict.fromkeys(planned_levels, 0), "b11": 4, "b13": 2},
+            np.zeros(4),
+            warehouse_hours=10.0,
+            ship_built=None,
+            central_reserve=np.zeros(4),
+        )
+        self.assertEqual([row["set_by"] for row in nothing], ["nothing to store"] * 4)
+
+        # All planets: the central planet is the one in the given slot, and the research is paid for where the
+        # highest Research lab stands (the first one between equals).
+        states, contexts = ns["empire_planet_states"][:3], ns["PLANET_PARAM_CONTEXTS"][:3]
+        research_costs = [("r1 L9", {"pig_iron": 7e9, "kryptonite": 5}), ("r2 L3", {"metal": 6e9, "spice": 1})]
+
+        def plans_with(labs: dict[int, dict[str, int]], slot: int = 2) -> list[dict]:
+            return ns["build_planet_plans"](
+                states,
+                contexts,
+                optimized_max_levels=max_levels,
+                misc_levels={**misc, "b12": 0, "b13": 0},
+                misc_levels_by_slot=labs,
+                min_fleet={},
+                central_planet_slot=slot,
+                central_min_warehouse_level=7,
+                research_costs=research_costs,
+            )
+
+        three = plans_with({2: {"b8": 4}, 3: {"b8": 4}})
+        self.assertEqual([plan["is_central_planet"] for plan in three], [False, True, False])
+        self.assertEqual([plan["warehouse_min_levels"]["b14"] for plan in three], [0, 7, 0])
+        self.assertEqual([plan["pays_for_research"] for plan in three], [False, True, False])
+        self.assertEqual(three[1]["capacity_needed"]["pig_iron"], 7e9)
+        self.assertEqual(three[1]["capacity_needed"]["metal"], 6e9)
+        self.assertEqual(three[1]["capacity_needed_for"]["pig_iron"], "r1 L9")
+        # Kryptonite: the Research lab 4 of the planet itself costs more than the 5 of the research.
+        self.assertGreater(three[1]["capacity_needed"]["kryptonite"], 5)
+        self.assertEqual(three[1]["capacity_needed_for"]["kryptonite"][:1], "b")
+        # The third planet has the same lab but comes second: it stores for its own buildings only.
+        self.assertLess(three[2]["capacity_needed"]["pig_iron"], 7e9)
+        self.assertLess(three[2]["capacity_needed"]["metal"], 6e9)
+        self.assertNotIn("r1 L9", three[2]["capacity_needed_for"].values())
+        # The higher lab pays, wherever it stands; without a lab nobody pays.
+        self.assertEqual(
+            [plan["pays_for_research"] for plan in plans_with({1: {"b8": 2}, 3: {"b8": 5}})], [False, False, True]
+        )
+        self.assertEqual([plan["pays_for_research"] for plan in plans_with({})], [False, False, False])
+        self.assertEqual([plan["is_central_planet"] for plan in plans_with({}, slot=3)], [False, False, True])
+        with self.assertRaisesRegex(
+            ValueError, r"CENTRAL_PLANET_SLOT 9 is not a normal planet of the roster: .*\[1, 2, 3\]"
+        ):
+            plans_with({}, slot=9)
+
+        # The settings check knows the warehouse parameters.
+        check = ns["check_optimizer_settings"]
+        check(max_levels, misc, {}, {}, "s16", 0.0, 0)
+        for arguments, message in (
+            ((max_levels, misc, {}, {}, "s16", -1.0, 0), "WAREHOUSE_HOURS_OF_PRODUCTION"),
+            ((max_levels, misc, {}, {}, "s16", math.inf, 0), "WAREHOUSE_HOURS_OF_PRODUCTION"),
+            ((max_levels, misc, {}, {}, "s16", math.nan, 0), "WAREHOUSE_HOURS_OF_PRODUCTION"),
+            ((max_levels, misc, {}, {}, "s16", 24.0, -1), "whole numbers of 0 or more"),
+            ((max_levels, misc, {}, {}, "s16", 24.0, 2.5), "whole numbers of 0 or more"),
+            (
+                ({**max_levels, "b12": 9}, {k: v for k, v in misc.items() if k != "b12"}, {}, {}, "s16", 24.0, 0),
+                r"The warehouses \['b12'\] belong in MISC_BUILDING_LEVELS",
+            ),
+        ):
+            with self.subTest(error=message), self.assertRaisesRegex(ValueError, message):
+                check(*arguments)
+
+        # The notebook's own plan: slot 1 is the central planet with the minimum 15 and pays for the research.
+        self.assertEqual([plan["is_central_planet"] for plan in plans], [True] + [False] * 10)
+        self.assertEqual([plan["pays_for_research"] for plan in plans], [True] + [False] * 10)
+        self.assertEqual(plans[0]["warehouse_min_levels"], {"b11": 15, "b12": 15, "b13": 15, "b14": 15})
+        self.assertEqual(set(plans[0]["warehouse_min_set_by"].values()), {"central planet minimum"})
+        self.assertEqual(plans[1]["warehouse_min_levels"], {"b11": 0, "b12": 0, "b13": 0, "b14": 0})
+        self.assertEqual(set(plans[1]["warehouse_min_set_by"].values()), {"no minimum"})
+        # A generic planet stores the cost of Development center 12 and of a Recycler; the colony also the
+        # research of the plan: Graviton technology 10, Black hole research 2, ...
+        self.assertEqual(
+            plans[1]["capacity_needed_for"],
+            {"pig_iron": "s11", "metal": "b7 L12", "kryptonite": "b7 L12", "spice": "b7 L12"}
+        )
+        self.assertEqual(plans[1]["capacity_needed"]["metal"], float(game_data.building_cost(7, 12)["metal"]))
+        own, planned = ns["colony_researches"], ns["PLANNED_RESEARCH_LEVELS"]
+        research_levels = [
+            (f"{key} L{level}", game_data.RESEARCH_BY_ID[key]["levels"][level]["cost"])
+            for key, top in planned.items()
+            for level in range(own.get(key, 0) + 1, top + 1)
+        ]
+        self.assertGreater(len(research_levels), 40)
+        for resource in ("metal", "kryptonite"):
+            dearest_label, dearest_cost = max(research_levels, key=lambda entry: entry[1].get(resource, 0))
+            self.assertEqual(plans[0]["capacity_needed"][resource], float(dearest_cost[resource]))
+            self.assertEqual(plans[0]["capacity_needed_for"][resource], dearest_label)
+            self.assertGreater(plans[0]["capacity_needed"][resource], plans[1]["capacity_needed"][resource])
+        self.assertEqual(plans[0]["capacity_needed_for"]["spice"], "b8 L12")
+        planets = ns["plan_planets_df"]
+        self.assertEqual(planets["is_central_planet"].tolist(), [True] + [False] * 10)
+        self.assertEqual(planets["pays_for_research"].tolist(), [True] + [False] * 10)
+        # The lowest warehouses: four times level 15 on the central planet; on a generic planet the levels that
+        # hold Development center 12 (Metal 4, Kryptonite 3, Spice 3).
+        self.assertEqual(planets["min_warehouse_fields"].tolist(), [60] + [10] * 10)
+        levels_table = ns["plan_building_levels_df"].set_index(["coords", "key"])
+        self.assertEqual(
+            levels_table.loc[("02:380:12", "b12"), ["role", "built_level", "min_level", "max_level"]].tolist(),
+            ["warehouse", 0, 15, 60],
+        )
+        self.assertEqual(
+            levels_table.loc[("EMPTY:01", "b14"), ["role", "min_level", "max_level"]].tolist(), ["warehouse", 0, 60]
+        )
+        self.assertEqual(int((ns["plan_building_levels_df"]["role"] == "warehouse").sum()), 11 * 4)
+
+    def test_warehouses_of_a_design(self) -> None:
+        ns, _, _ = self._attack_run()
+        model, plans = ns["PRODUCTION_MODEL"], ns["PLANET_PLANS"]
+        ship_cost = game_data.SHIPS[ns["SHIP_SLUG_BY_KEY"]["s16"]]["base_cost"]
+        self.assertEqual(
+            {resource: amount for resource, amount in ship_cost.items() if amount},
+            {"metal": 3_000_000, "kryptonite": 2_000_000, "spice": 500_000},
+        )
+        self.assertEqual(model.warehouse_hours, 24.0)
+        self.assertEqual((model.central_planet, model.central_reserve.tolist()), (0, [0.0] * 4))
+        self.assertEqual(model.top_warehouse_level, 60)
+        self.assertEqual(model.warehouse_capacities.tolist(), [float(100_000 * 2**level) for level in range(61)])
+        self.assertEqual(model.planet_names[:2], ["02:380:12 (slot 1)", "EMPTY:01 (slot 2)"])
+
+        def simulated(a_model, planet: int, levels: dict[str, int]) -> dict:
+            design = np.array([[[levels[key] for key in a_model.optimized_keys]]])
+            return {name: values[0, 0] for name, values in a_model.simulate(design, [planet]).items()}
+
+        # A Metal planet on a generic planet. Blast furnace 50 costs 44.15 billion Pig iron and 14.72 billion
+        # Kryptonite: Pig iron warehouse 19 and Kryptonite warehouse 18. Pig iron warehouse 19 costs Metal that
+        # only Metal warehouse 12 holds, more than the 24 hours of Metal output ask for. Development center 12
+        # costs Spice that needs Spice warehouse 3.
+        metal_planet = {"b1": 47, "b2": 50, "b3": 0, "b4": 0, "b5": 44, "b9": 6, "b17": 0}
+        outcome = simulated(model, 1, metal_planet)
+        self.assertEqual(outcome["planet_warehouse_levels"].tolist(), [19, 12, 18, 3])
+        self.assertEqual(outcome["planet_fields_needed"], 47 + 50 + 44 + 6 + 19 + 12 + 18 + 3)
+        self.assertTrue(outcome["planet_fits"])
+        self.assertEqual(
+            game_data.building_cost(2, 50),
+            {"pig_iron": 44_150_000_000, "metal": 0, "kryptonite": 14_720_000_000, "spice": 0},
+        )
+        self.assertEqual(
+            (self._warehouse_level_for(44_150_000_000), self._warehouse_level_for(14_720_000_000)), (19, 18)
+        )
+        metal_of_the_warehouse = game_data.building_cost(11, 19)["metal"]
+        self.assertEqual(self._warehouse_level_for(metal_of_the_warehouse), 12)
+        self.assertEqual(self._warehouse_level_for(24.0 * outcome["planet_net_per_hour"][1]), 9)
+        # On the colony the central minimum of 15 lifts the Metal and Spice warehouses: 214 fields, 13 too many.
+        on_colony = simulated(model, 0, metal_planet)
+        self.assertEqual(on_colony["planet_warehouse_levels"].tolist(), [19, 15, 18, 15])
+        self.assertEqual((int(on_colony["planet_fields_needed"]), bool(on_colony["planet_fits"])), (214, False))
+        self.assertEqual(int(model.free_fields[0]), 201)
+
+        # Every rule, for many designs on the colony and on a generic planet, against the rules written out.
+        rng = np.random.default_rng(11)
+        cases = [
+            metal_planet,
+            {"b1": 12, "b2": 8, "b3": 6, "b4": 5, "b5": 12, "b9": 13, "b17": 1},
+            {"b1": 3, "b2": 9, "b3": 6, "b4": 5, "b5": 12, "b9": 20, "b17": 2},
+            {"b1": 50, "b2": 50, "b3": 50, "b4": 50, "b5": 50, "b9": 6, "b17": 0},
+            dict(zip(model.optimized_keys, model.min_levels[1].tolist())),
+        ]
+        for planet in (0, 1):
+            low, high = model.min_levels[planet], model.max_levels[planet]
+            random_cases = [
+                dict(zip(model.optimized_keys, row.tolist())) for row in rng.integers(low, high + 1, size=(60, 7))
+            ]
+            for levels in [*cases, *random_cases]:
+                outcome = simulated(model, planet, levels)
+                expected = self._expected_warehouses(
+                    plans[planet],
+                    levels,
+                    outcome["planet_net_per_hour"],
+                    hours=24.0,
+                    ship_cost=ship_cost if levels["b9"] >= 13 else None,
+                )
+                self.assertEqual(outcome["planet_warehouse_levels"].tolist(), expected, (planet, levels))
+                needed = sum(levels.values()) + sum(expected)
+                self.assertEqual(int(outcome["planet_fields_needed"]), needed)
+                self.assertEqual(bool(outcome["planet_fits"]), needed <= int(model.free_fields[planet]))
+        # The random designs covered designs that fit and designs that do not, shipyards and none.
+        spread = rng.integers(model.min_levels[1], model.max_levels[1] + 1, size=(400, 1, 7))
+        fits = model.simulate(spread, [1])["planet_fits"][:, 0]
+        self.assertTrue(0 < int(fits.sum()) < 400)
+        self.assertTrue(0 < int((spread[:, 0, 5] >= 13).sum()) < 400)
+
+        # The hours of production: none, a day, a hundred days. A hundred days of Metal need Metal warehouse 16.
+        generic_context = ns["planet_param_context"](
+            ns["PLAN_ACCOUNT_CONTEXT"], 2, ns["empire_planet_states"][1], is_empty_slot=True
+        )
+        by_hours = {
+            hours: ns["EmpireProductionModel"](
+                plans[1:2],
+                [generic_context],
+                optimized_keys=model.optimized_keys,
+                target_ship_key="s16",
+                month_days=30.0,
+                warehouse_hours=hours,
+            )
+            for hours in (0.0, 24.0, 2400.0)
+        }
+        self.assertEqual(by_hours[2400.0].central_planet, -1)
+        self.assertEqual(simulated(by_hours[0.0], 0, metal_planet)["planet_warehouse_levels"].tolist(), [19, 12, 18, 3])
+        self.assertEqual(
+            simulated(by_hours[24.0], 0, metal_planet)["planet_warehouse_levels"].tolist(), [19, 12, 18, 3]
+        )
+        long_storage = simulated(by_hours[2400.0], 0, metal_planet)
+        self.assertEqual(long_storage["planet_warehouse_levels"].tolist(), [19, 16, 18, 3])
+        self.assertEqual(self._warehouse_level_for(2400.0 * long_storage["planet_net_per_hour"][1]), 16)
+        # Only what is left over is stored: a design short of Pig iron keeps none, whatever the hours.
+        starved = {"b1": 3, "b2": 9, "b3": 6, "b4": 5, "b5": 12, "b9": 6, "b17": 0}
+        self.assertEqual(simulated(by_hours[2400.0], 0, starved)["planet_net_per_hour"][0], 0.0)
+        self.assertEqual(
+            simulated(by_hours[2400.0], 0, starved)["planet_warehouse_levels"][0],
+            simulated(by_hours[0.0], 0, starved)["planet_warehouse_levels"][0],
+        )
+        self.assertGreater(
+            simulated(by_hours[2400.0], 0, starved)["planet_warehouse_levels"][2],
+            simulated(by_hours[0.0], 0, starved)["planet_warehouse_levels"][2],
+        )
+
+        # A shipyard that builds the starbase must hold its cost: 3 million Metal, 2 million Kryptonite.
+        yard = dict(zip(model.optimized_keys, [0, 0, 0, 0, 0, 13, 0]))
+        no_yard = {**yard, "b9": 12}
+        self.assertEqual(simulated(by_hours[0.0], 0, yard)["planet_warehouse_levels"].tolist(), [4, 5, 5, 4])
+        self.assertEqual(simulated(by_hours[0.0], 0, no_yard)["planet_warehouse_levels"].tolist(), [3, 4, 3, 3])
+        self.assertEqual((self._warehouse_level_for(3_000_000), self._warehouse_level_for(2_000_000)), (5, 5))
+
+        # The central planet's reserve for the empire: a copy of the model, with more room on that planet only.
+        reserve = np.array([0.0, 5e9, 0.0, 3e7])
+        reserved = model.with_central_reserve(reserve)
+        self.assertIsNot(reserved, model)
+        self.assertEqual(
+            (model.central_reserve.tolist(), reserved.central_reserve.tolist()), ([0.0] * 4, reserve.tolist())
+        )
+        self.assertIs(reserved.flow_tables, model.flow_tables)
+        minimum = dict(zip(model.optimized_keys, model.min_levels[0].tolist()))
+        self.assertEqual(simulated(model, 0, minimum)["planet_warehouse_levels"].tolist(), [15, 15, 15, 15])
+        self.assertEqual(simulated(reserved, 0, minimum)["planet_warehouse_levels"].tolist(), [15, 16, 15, 15])
+        self.assertEqual(
+            simulated(reserved, 0, minimum)["planet_warehouse_levels"].tolist(),
+            self._expected_warehouses(plans[0], minimum, [0.0] * 4, hours=24.0, reserve=tuple(reserve)),
+        )
+        self.assertEqual(
+            simulated(reserved, 1, metal_planet)["planet_warehouse_levels"].tolist(),
+            simulated(model, 1, metal_planet)["planet_warehouse_levels"].tolist(),
+        )
+        # A reserve that leaves the planet no room is an error: 29 fixed fields, Weapons factory 6 and four
+        # warehouses of level 49 need 231 of the 230 fields. One level less on one warehouse fits.
+        level_49 = float(100_000 * 2**49)
+        with self.assertRaisesRegex(ValueError, r"Planet 02:380:12 \(slot 1\) has 230 fields, .* need 231: lower"):
+            model.with_central_reserve(np.full(4, level_49))
+        roomy = model.with_central_reserve(np.array([level_49, level_49, level_49, level_49 / 2.0]))
+        self.assertEqual(simulated(roomy, 0, minimum)["planet_warehouse_levels"].tolist(), [49, 49, 49, 48])
+        # So is a reserve that no warehouse of the catalog holds: level 60 is the last one.
+        with self.assertRaisesRegex(ValueError, r"Planet 02:380:12 \(slot 1\) would need a warehouse beyond level 60"):
+            model.with_central_reserve(np.array([0.0, 1e30, 0.0, 0.0]))
+
+        # A planet too small for its fixed buildings, its minimum levels and their warehouses is an error:
+        # 17 fixed fields, Weapons factory 6 for the fleet, and warehouses 0, 4, 3 and 3 make 33.
+        tiny = {**plans[1], "fields_max": 32, "free_fields": 32 - 17}
+        with self.assertRaisesRegex(
+            ValueError, r"Planet EMPTY:01 \(slot 2\) has 32 fields, .* need 33: lower MISC_BUILDING_LEVELS"
+        ):
+            ns["EmpireProductionModel"](
+                [tiny], [generic_context], optimized_keys=model.optimized_keys, target_ship_key="s16", month_days=30.0,
+                warehouse_hours=24.0,
+            )
+        just_enough = ns["EmpireProductionModel"](
+            [{**tiny, "fields_max": 33, "free_fields": 16}],
+            [generic_context],
+            optimized_keys=model.optimized_keys,
+            target_ship_key="s16",
+            month_days=30.0,
+            warehouse_hours=24.0,
+        )
+        self.assertTrue(just_enough.is_feasible(just_enough.min_levels[None])[0])
+        self.assertEqual(
+            simulated(
+                just_enough, 0, dict(zip(model.optimized_keys, just_enough.min_levels[0].tolist()))
+            )["planet_warehouse_levels"].tolist(),
+            [0, 4, 3, 3],
+        )
+
+        # in_range looks at the levels only; is_feasible also at the fields, warehouses included.
+        full = np.array([[[50, 50, 50, 22, 50, 6, 0]]])
+        overfull = np.array([[[50, 50, 50, 23, 50, 6, 0]]])
+        self.assertEqual(int(model.simulate(full, [1])["planet_fields_needed"][0, 0]), 283)
+        self.assertEqual(model.simulate(full, [1])["planet_warehouse_levels"][0, 0].tolist(), [20, 13, 19, 3])
+        self.assertEqual(
+            (model.is_feasible(full, [1]).tolist(), model.is_feasible(overfull, [1]).tolist()), ([True], [False])
+        )
+        self.assertEqual((model.in_range(full, [1]).tolist(), model.in_range(overfull, [1]).tolist()), ([True], [True]))
+        too_high = np.array([[[51, 0, 0, 0, 0, 6, 0]]])
+        too_low = np.array([[[0, 0, 0, 0, 0, 5, 0]]])
+        self.assertEqual(
+            (model.in_range(too_high, [1]).tolist(), model.is_feasible(too_high, [1]).tolist()), ([False], [False])
+        )
+        self.assertEqual(
+            (model.in_range(too_low, [1]).tolist(), model.is_feasible(too_low, [1]).tolist()), ([False], [False])
+        )
+        self.assertEqual(model.planet_index(None).tolist(), list(range(11)))
+        self.assertEqual(model.planet_index([4, 2]).tolist(), [4, 2])
+
+    def test_genetic_algorithm_and_hill_climb(self) -> None:
+        ns, _, _ = self._attack_run()
+        run_ga = ns["run_genetic_algorithm"]
+        settings = {
+            "population_size": 100,
+            "generations": 60,
+            "tournament_size": 2,
+            "crossover_rate": 0.9,
+            "mutation_rate": 0.3,
+            "elite_count": 2,
+        }
+
+        def every_choice_of(counts: np.ndarray) -> np.ndarray:
+            """Every way to pick one design per planet, one row each."""
+            grids = np.meshgrid(*[np.arange(count) for count in counts], indexing="ij")
+            return np.stack(grids, axis=-1).reshape(-1, len(counts))
+
+        # A choice problem small enough to enumerate: 5 planets with 5 to 8 designs each, and 3 limits.
+        rng = np.random.default_rng(12345)
+        design_counts = np.array([8, 6, 7, 8, 5])
+        design_limits = rng.uniform(0.0, 100.0, size=(5, 8, 3))
+        # A design beyond a planet's catalogue would be worth a fortune: the algorithm must never pick one.
+        for planet, count in enumerate(design_counts):
+            design_limits[planet, count:] = 1_000.0
+        every_choice = every_choice_of(design_counts)
+        self.assertEqual(len(every_choice), 13_440)
+        fitness = design_limits[np.arange(5), every_choice].sum(axis=1).min(axis=1)
+        chosen, history = run_ga(design_limits, design_counts, seed=7, **settings)
+        self.assertEqual(chosen.tolist(), every_choice[int(fitness.argmax())].tolist())
+        # The history has one row per generation, starts below the optimum and never loses its best chromosome.
+        self.assertEqual(list(history["generation"]), list(range(61)))
+        best = history["best_ships_per_month"].to_numpy()
+        self.assertEqual(best[-1], fitness.max())
+        self.assertTrue((np.diff(best) >= 0.0).all())
+        self.assertLess(best[0], best[-1])
+        self.assertTrue((history["mean_ships_per_month"] <= history["best_ships_per_month"]).all())
+        self.assertTrue((history["worst_ships_per_month"] <= history["mean_ships_per_month"]).all())
+        # The same seed repeats the run; another seed takes another path.
+        again, again_history = run_ga(design_limits, design_counts, seed=7, **settings)
+        self.assertEqual(again.tolist(), chosen.tolist())
+        pd.testing.assert_frame_equal(again_history, history)
+        other_history = run_ga(design_limits, design_counts, seed=8, **settings)[1]
+        self.assertFalse(other_history["mean_ships_per_month"].equals(history["mean_ships_per_month"]))
+
+        def first_and_last_best(**changes: float) -> tuple[float, float]:
+            """Best fitness of the first and of the last generation of a run with changed settings."""
+            best_per_generation = run_ga(design_limits, design_counts, seed=7, **{**settings, **changes})[1][
+                "best_ships_per_month"
+            ]
+            return float(best_per_generation.iloc[0]), float(best_per_generation.iloc[-1])
+
+        # Selection alone can only spread what the first generation holds. Crossover alone finds something
+        # better, and so does mutation alone.
+        first, last = first_and_last_best(crossover_rate=0.0, mutation_rate=0.0)
+        self.assertEqual(last, first)
+        first, last = first_and_last_best(mutation_rate=0.0)
+        self.assertGreater(last, first)
+        first, last = first_and_last_best(crossover_rate=0.0)
+        self.assertGreater(last, first)
+        # The tournament prefers the fitter chromosome: with larger tournaments the population closes in faster.
+        early_mean = [
+            float(
+                run_ga(design_limits, design_counts, seed=7, **{**settings, "tournament_size": size})[1][
+                    "mean_ships_per_month"
+                ].iloc[3]
+            )
+            for size in (1, 2, 6)
+        ]
+        self.assertLess(early_mean[0], early_mean[1])
+        self.assertLess(early_mean[1], early_mean[2])
+
+        # The history reports the mean. One design in eight is worth 100 ships here and the others nothing:
+        # most of a random first generation scores 0, a few score 100.
+        lottery = np.zeros((1, 8, 3))
+        lottery[0, 0] = 100.0
+        lottery_choice, lottery_history = run_ga(lottery, np.array([8]), seed=7, **{**settings, "generations": 0})
+        self.assertEqual(lottery_choice.tolist(), [0])
+        self.assertEqual(len(lottery_history), 1)
+        first_generation = lottery_history.iloc[0]
+        self.assertEqual(
+            (first_generation["best_ships_per_month"], first_generation["worst_ships_per_month"]), (100.0, 0.0)
+        )
+        self.assertTrue(0.0 < first_generation["mean_ships_per_month"] < 50.0)
+
+        # Scores: the balanced score lies between the smallest limit and a little above it, and rewards the rest.
+        limits = np.array(
+            [[10.0, 10.0, 10.0, 10.0], [10.0, 20.0, 30.0, 40.0], [10.0, 20.0, 30.0, 400.0], [0.0, 5.0, 5.0, 5.0]]
+        )
+        smallest = ns["smallest_limit"](limits)
+        balanced = ns["balanced_score"](limits)
+        self.assertEqual(smallest.tolist(), [10.0, 10.0, 10.0, 0.0])
+        self.assertAlmostEqual(balanced[0], 10.0, places=12)
+        self.assertTrue(10.0 < balanced[1] < balanced[2] < 10.0 * 4 ** (1 / 8))
+        self.assertTrue(0.0 < balanced[3] < 1e-8)
+
+        # Moves of the hill-climb: 6 single, 12 double and 3 field-neutral triple moves for 3 buildings.
+        moves = ns["planet_moves"](3, (1,))
+        self.assertEqual(len(moves), 21)
+        self.assertEqual(len({tuple(move) for move in moves.tolist()}), 21)
+        self.assertEqual(sorted(np.abs(moves).sum(axis=1).tolist()), [1] * 6 + [2] * 12 + [4] * 3)
+        self.assertEqual(sorted(moves[np.abs(moves).sum(axis=1) == 4].sum(axis=1).tolist()), [0, 0, 0])
+        self.assertEqual(len(ns["planet_moves"](7, (1, 2, 4, 8))), 4 * (14 + 84 + 105))
+        self.assertEqual(int(np.abs(ns["planet_moves"](3, (4,))).max()), 8)
+
+        # Toy empires that can be enumerated: Small transports from one to three planets, with mines of at
+        # most level 4 to 6. Each line: highest mine level, fields of each planet, and the share of the best
+        # of all configurations that the search reaches. The search is not exact: where the fields are so few
+        # that every level is a big step, the best design of a planet is none that its catalogue holds.
+        step_sizes = (1, 2, 4, 8)
+        all_moves = ns["planet_moves"](5, step_sizes)
+        toys = [
+            (5, [20, 18], 1.0),
+            (5, [20], 1.0),
+            (4, [16, 14, 12], 1.0),
+            (6, [20, 18, 16], 0.96),
+            (5, [14, 12], 0.91),
+        ]
+        for top_level, fields, share in toys:
+            with self.subTest(top_level=top_level, fields=fields):
+                max_levels = {"b1": top_level, "b2": top_level, "b3": top_level, "b5": top_level + 1, "b9": 3}
+                toy = self._toy_model(ns, "s1", max_levels, len(fields), fields)
+                # Every planet gets Development center 3, and the colony keeps the Spice mine 2 that it has.
+                self.assertEqual(toy.free_fields.tolist(), [fields[0] - 5] + [size - 3 for size in fields[1:]])
+                self.assertEqual(toy.limit_names, ("metal", "kryptonite", "shipyards"))
+
+                # Brute force. A design that another design of its planet matches or beats in every limit
+                # is never needed, so the best configuration combines designs that are left without those.
+                configurations = 1
+                every_limit = []
+                totals = np.zeros((1, 3))
+                for planet in range(len(fields)):
+                    axes = [
+                        np.arange(low, high + 1) for low, high in zip(toy.min_levels[planet], toy.max_levels[planet])
+                    ]
+                    designs = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 5)
+                    designs = designs[toy.is_feasible(designs[:, None, :], [planet])]
+                    configurations *= len(designs)
+                    every_limit.append(toy.simulate(designs[:, None, :], [planet])["planet_limits"][:, 0])
+                    front = _undominated_rows(every_limit[planet])
+                    totals = _undominated_rows((totals[:, None, :] + front[None, :, :]).reshape(-1, 3))
+                best_ships = float(totals.min(axis=1).max())
+                self.assertGreater(best_ships, 0.0)
+                self.assertGreater(configurations, 1_000 ** len(fields))
+
+                # Catalogues: feasible designs without repeats. With every level on the coarse grid, each
+                # planet's catalogue holds the design that is best for each single resource.
+                catalogues = ns["build_design_catalogues"](
+                    toy, grid_size=100_000, priority_steps=4, step_sizes=step_sizes
+                )
+                self.assertEqual(len(catalogues), len(fields))
+                toy_limits, toy_counts = ns["catalogue_limits"](toy, catalogues)
+                self.assertEqual(toy_counts.tolist(), [len(catalogue) for catalogue in catalogues])
+                self.assertEqual(toy_limits.shape, (len(fields), int(toy_counts.max()), 3))
+                for planet, catalogue in enumerate(catalogues):
+                    self.assertTrue(toy.is_feasible(catalogue[:, None, :], [planet]).all())
+                    self.assertEqual(len(np.unique(catalogue, axis=0)), len(catalogue))
+                    own_limits = toy_limits[planet, : toy_counts[planet]]
+                    np.testing.assert_allclose(
+                        own_limits, toy.simulate(catalogue[:, None, :], [planet])["planet_limits"][:, 0]
+                    )
+                    self.assertTrue((toy_limits[planet, toy_counts[planet]:] == 0.0).all())
+                    for resource in range(2):
+                        self.assertAlmostEqual(
+                            own_limits[:, resource].max(), every_limit[planet][:, resource].max(), places=9
+                        )
+
+                # The genetic algorithm finds the best of all the choices that the catalogues allow.
+                chosen, history = run_ga(toy_limits, toy_counts, seed=1, **settings)
+                every_choice = every_choice_of(toy_counts)
+                best_choice_ships = toy_limits[np.arange(len(fields)), every_choice].sum(axis=1).min(axis=1).max()
+                self.assertEqual(history["best_ships_per_month"].iloc[-1], best_choice_ships)
+                ga_levels = np.array([catalogues[planet][design] for planet, design in enumerate(chosen)])
+                ga_ships = float(toy.ships_per_month(ga_levels[None])[0])
+                self.assertAlmostEqual(ga_ships, best_choice_ships, places=9)
+
+                # The polish keeps or raises that, and ends at the promised share of the true optimum.
+                polished = ns["polish_both_ways"](toy, ga_levels, step_sizes)
+                polished_ships = float(toy.ships_per_month(polished[None])[0])
+                self.assertTrue(toy.is_feasible(polished[None])[0])
+                self.assertGreaterEqual(polished_ships, ga_ships)
+                self.assertLessEqual(polished_ships, best_ships * (1.0 + 1e-12))
+                self.assertGreaterEqual(polished_ships, share * best_ships * (1.0 - 1e-12))
+                # It is a local optimum without idle levels: no move of one planet builds more ships, and
+                # none builds as many with fewer levels.
+                for planet in range(len(fields)):
+                    neighbours = polished[planet] + all_moves
+                    neighbours = neighbours[toy.is_feasible(neighbours[:, None, :], [planet])]
+                    changed = np.repeat(polished[None], len(neighbours), axis=0)
+                    changed[:, planet] = neighbours
+                    ships = toy.ships_per_month(changed)
+                    self.assertFalse((ships > polished_ships).any())
+                    self.assertFalse(
+                        ((ships == polished_ships) & (neighbours.sum(axis=1) < polished[planet].sum())).any()
+                    )
+                # Counting ships directly, polish_configuration alone never loses ships either.
+                directly = ns["polish_configuration"](toy, ga_levels, ns["smallest_limit"], step_sizes)
+                self.assertGreaterEqual(float(toy.ships_per_month(directly[None])[0]), ga_ships)
+                self.assertLessEqual(float(toy.ships_per_month(directly[None])[0]), polished_ships + 1e-9)
+
+        # improve_design never makes a design worse, and leaves a local optimum untouched.
+        toy = self._toy_model(ns, "s1", {"b1": 5, "b2": 5, "b3": 5, "b5": 6, "b9": 3}, 2, [20, 18])
+        own_ships = ns["smallest_limit"]
+        # The polish moves by the given step sizes only. One level less on a polished planet costs ships;
+        # steps of 1 level win them back, steps of 8 levels fit no building of this toy.
+        catalogues = ns["build_design_catalogues"](toy, grid_size=100_000, priority_steps=4, step_sizes=step_sizes)
+        chosen = run_ga(*ns["catalogue_limits"](toy, catalogues), seed=1, **settings)[0]
+        polished = ns["polish_both_ways"](
+            toy, np.array([catalogues[planet][design] for planet, design in enumerate(chosen)]), step_sizes
+        )
+        lowered = polished.copy()
+        lowered[1, int(lowered[1].argmax())] -= 1
+        ships_of_levels = toy.ships_per_month
+        self.assertLess(ships_of_levels(lowered[None])[0], ships_of_levels(polished[None])[0])
+        self.assertEqual(ns["polish_configuration"](toy, lowered, own_ships, (8,)).tolist(), lowered.tolist())
+        self.assertGreater(
+            ships_of_levels(ns["polish_configuration"](toy, lowered, own_ships, (1,))[None])[0],
+            ships_of_levels(lowered[None])[0],
+        )
+        # The polish works on a copy: the configuration it is given stays as it was.
+        self.assertEqual(lowered[1].sum(), polished[1].sum() - 1)
+
+        # Following the balanced score first can end higher than counting ships from the start, which is why
+        # polish_both_ways tries both and keeps the better result. Two generic planets of the notebook's empire
+        # show it.
+        trio_plans = ns["PLANET_PLANS"][1:3]
+        trio = ns["EmpireProductionModel"](
+            trio_plans,
+            [
+                ns["planet_param_context"](
+                    ns["PLAN_ACCOUNT_CONTEXT"],
+                    plan["slot_index"],
+                    ns["empire_planet_states"][plan["slot_index"] - 1],
+                    is_empty_slot=plan["planet_status"] == "empty_colony_slot",
+                )
+                for plan in trio_plans
+            ],
+            optimized_keys=ns["PRODUCTION_MODEL"].optimized_keys,
+            target_ship_key="s16",
+            month_days=30.0,
+            warehouse_hours=0.0,
+        )
+        trio_catalogues = ns["build_design_catalogues"](
+            trio, grid_size=100_000, priority_steps=4, step_sizes=step_sizes
+        )
+        trio_choice = run_ga(*ns["catalogue_limits"](trio, trio_catalogues), seed=2, **settings)[0]
+        trio_levels = np.array([trio_catalogues[planet][design] for planet, design in enumerate(trio_choice)])
+        counted_directly = ns["polish_configuration"](trio, trio_levels, own_ships, step_sizes)
+        both_ways = ns["polish_both_ways"](trio, trio_levels, step_sizes)
+        self.assertGreater(
+            trio.ships_per_month(both_ways[None])[0], 1.005 * trio.ships_per_month(counted_directly[None])[0]
+        )
+        self.assertTrue(trio.is_feasible(both_ways[None])[0])
+        # Counting ships from the start can just as well be the better way, and then that result is kept. From
+        # the last design of each catalogue, which has no shipyard, the detour over the balanced score loses.
+        polish = ns["polish_configuration"]
+        last_designs = np.array([catalogue[-1] for catalogue in trio_catalogues])
+        self.assertEqual(trio.ships_per_month(last_designs[None])[0], 0.0)
+        directly = polish(trio, last_designs, own_ships, step_sizes)
+        detour = polish(trio, polish(trio, last_designs, ns["balanced_score"], step_sizes), own_ships, step_sizes)
+        self.assertGreater(trio.ships_per_month(directly[None])[0], 1.2 * trio.ships_per_month(detour[None])[0])
+        self.assertEqual(ns["polish_both_ways"](trio, last_designs, step_sizes).tolist(), directly.tolist())
+
+        # The polish goes round the planets until a whole round changes nothing. Here the first planet starts
+        # as a bare shipyard and the second as the all-rounder of its catalogue, which builds every ship alone.
+        # The first round can only tune the all-rounder. It takes more rounds to make a producer of the first
+        # planet too, and then the two build more than twice what the all-rounder built alone.
+        trio_limits = ns["catalogue_limits"](trio, trio_catalogues)[0]
+        lopsided = np.array([trio_catalogues[0][0], trio_catalogues[1][int(own_ships(trio_limits[1]).argmax())]])
+        self.assertEqual(lopsided[0, :5].tolist(), [0] * 5)
+        alone = float(trio.ships_per_month(lopsided[None])[0])
+        self.assertGreater(alone, 0.0)
+        settled = polish(trio, lopsided, own_ships, step_sizes)
+        self.assertGreater(float(trio.ships_per_month(settled[None])[0]), 2.0 * alone)
+        # What the polish returns, it leaves as it is.
+        self.assertEqual(polish(trio, settled, own_ships, step_sizes).tolist(), settled.tolist())
+
+        def ships_of(design: np.ndarray) -> float:
+            return float(own_ships(toy.simulate(design[None, None, :], [1])["planet_limits"][:, 0])[0])
+
+        def ignore_the_design(limits: np.ndarray) -> np.ndarray:
+            return np.zeros(len(limits))
+
+        start = toy.max_levels[1] // 2
+        improved = ns["improve_design"](toy, 1, start, own_ships, all_moves)
+        self.assertGreater(ships_of(improved), ships_of(start))
+        self.assertEqual(ns["improve_design"](toy, 1, improved, own_ships, all_moves).tolist(), improved.tolist())
+        # Idle levels go: with a score that ignores the design, the hill-climb strips it to the minimum levels.
+        self.assertEqual(
+            ns["improve_design"](toy, 0, toy.max_levels[0] // 2, ignore_the_design, all_moves).tolist(), [0] * 5
+        )
+        # A planet without a single field to move stays as it is.
+        cramped = self._toy_model(ns, "s1", {"b1": 0, "b2": 0, "b3": 0, "b5": 0, "b9": 0}, 1, [5])
+        self.assertEqual(cramped.free_fields.tolist(), [0])
+        self.assertEqual(
+            ns["improve_design"](cramped, 0, np.zeros(5, dtype=np.int64), own_ships, all_moves).tolist(), [0] * 5
+        )
+
+    def test_best_configuration_of_the_notebook(self) -> None:
+        ns, _, _ = self._attack_run()
+        model, plans = ns["BEST_CONFIG_MODEL"], ns["PLANET_PLANS"]
+        best = ns["best_levels_arr"]
+        summary = ns["BEST_CONFIG_SUMMARY"]
+        ga = ns["GA_SUMMARY"]
+        self.assertEqual(best.shape, (11, 7))
+        self.assertTrue(model.is_feasible(best[None])[0])
+        ships = float(model.ships_per_month(best[None])[0])
+        self.assertGreater(ships, 1000.0)
+        self.assertEqual(summary["ships_per_month"], round(ships, 2))
+        self.assertEqual(summary["whole_ships_per_month"], int(ships))
+        self.assertEqual(summary["target_ship"], "Imperial starbase")
+        self.assertEqual((summary["planets"], summary["hours_per_month"]), (11, 720.0))
+
+        # Catalogues: one per planet, the ten generic planets share theirs, and every design is feasible.
+        catalogues = ns["DESIGN_CATALOGUES"]
+        self.assertEqual(len(catalogues), 11)
+        for planet, catalogue in enumerate(catalogues):
+            self.assertTrue(model.is_feasible(catalogue[:, None, :], [planet]).all())
+            self.assertIs(catalogue, catalogues[model.twin_planets[planet]])
+        self.assertIsNot(catalogues[0], catalogues[1])
+        self.assertEqual(ga["designs_per_planet"], [len(catalogue) for catalogue in catalogues])
+        catalogue_table = ns["design_catalogue_df"]
+        self.assertEqual(len(catalogue_table), sum(ga["designs_per_planet"]))
+        first = catalogue_table.iloc[0]
+        self.assertEqual((first["slot_index"], first["coords"], first["design"]), (1, "02:380:12", 0))
+        self.assertEqual(first[list(model.optimized_keys)].tolist(), catalogues[0][0].tolist())
+        # A design takes the fields of its levels and of the warehouses that the model gives it.
+        self.assertEqual(
+            catalogue_table["fields"].tolist(),
+            (catalogue_table[list(model.optimized_keys)].sum(axis=1) + catalogue_table["warehouse_levels"]).tolist(),
+        )
+        for planet in (0, 1):
+            rows = catalogue_table[catalogue_table["slot_index"] == planet + 1]
+            outcome = model.simulate(catalogues[planet][:, None, :], [planet])
+            self.assertEqual(
+                rows["warehouse_levels"].tolist(), outcome["planet_warehouse_levels"][:, 0].sum(axis=1).tolist()
+            )
+            self.assertEqual(rows["fields"].tolist(), outcome["planet_fields_needed"][:, 0].tolist())
+            self.assertTrue((rows["fields"] <= model.free_fields[planet]).all())
+            self.assertGreater(rows["warehouse_levels"].nunique(), 3)
+        self.assertGreater(catalogue_table["fields"].nunique(), 5)
+        np.testing.assert_allclose(
+            first[[f"{limit}_ships_per_month" for limit in model.limit_names]].to_numpy(dtype=float),
+            model.simulate(catalogues[0][:1, None, :], [0])["planet_limits"][0, 0],
+            atol=0.006,
+        )
+        # The catalogue holds specialists: for each resource, a design that makes that one and neither of the others.
+        generic = catalogue_table[catalogue_table["slot_index"] == 2]
+        resource_columns = ["metal_ships_per_month", "kryptonite_ships_per_month", "spice_ships_per_month"]
+        for column in resource_columns:
+            others = [other for other in resource_columns if other != column]
+            self.assertTrue(((generic[column] > 0) & (generic[others] == 0).all(axis=1)).any(), column)
+        # ... and no design wastes its fields on a shipyard that the empire could never feed. The most that
+        # the empire can pay for is what its scarcest resource gives when every planet makes nothing else; a
+        # shipyard doubles with every Microsystem accelerator level, so the smallest one that finishes those
+        # ships finishes less than twice as many.
+        colony = catalogue_table[catalogue_table["slot_index"] == 1]
+        ceiling = float((colony[resource_columns].max() + 10.0 * generic[resource_columns].max()).min())
+        self.assertGreater(ceiling, ships)
+        for rows in (colony, generic):
+            self.assertLess(float(rows["shipyards_ships_per_month"].max()), 2.0 * ceiling)
+            # Some designs pair such a shipyard with a mine: the shipyard does not need a planet of its own.
+            self.assertTrue(
+                ((rows["shipyards_ships_per_month"] >= ceiling) & (rows[resource_columns].max(axis=1) > 0)).any()
+            )
+        peaks = np.array(
+            [
+                ns["resource_peaks"](
+                    model, planet, *ns["coarse_designs"](model, planet, 100_000), ns["planet_moves"](7, (1, 2, 4, 8))
+                )
+                for planet in (0, 1)
+            ]
+        )
+        np.testing.assert_allclose(peaks[0], colony[resource_columns].max().to_numpy(), atol=0.006)
+        np.testing.assert_allclose(peaks[1], generic[resource_columns].max().to_numpy(), atol=0.006)
+        grid, grid_limits = ns["coarse_designs"](model, 1, 100_000)
+        self.assertTrue(model.is_feasible(grid[:, None, :], [1]).all())
+        self.assertEqual(len(np.unique(grid, axis=0)), len(grid))
+        np.testing.assert_array_equal(grid_limits, model.simulate(grid[:, None, :], [1])["planet_limits"][:, 0])
+        # The grid holds five levels of every building; most of their combinations do not fit the planet.
+        self.assertEqual([len(np.unique(grid[:, column])) for column in range(7)], [5, 5, 5, 5, 5, 5, 5])
+        self.assertTrue(1000 < len(grid) < 5**7)
+
+        # The search settings reach the hill-climb. With a grid of only the lowest and the highest level of
+        # every building, and steps of 50 levels, a design can hold no other level; the notebook's own do.
+        corners = ns["build_design_catalogues"](model, grid_size=1, priority_steps=4, step_sizes=(50,))
+        for planet in (0, 1):
+            lowest, highest = model.min_levels[planet], model.max_levels[planet]
+            self.assertTrue(((corners[planet] == lowest) | (corners[planet] == highest)).all())
+            self.assertFalse(((catalogues[planet] == lowest) | (catalogues[planet] == highest)).all())
+
+        # The genetic algorithm chose one design per planet; the polish kept or raised its result.
+        chosen = ns["ga_designs_arr"]
+        self.assertEqual(chosen.shape, (11,))
+        self.assertEqual(
+            ns["ga_levels_arr"].tolist(), [catalogues[planet][design].tolist() for planet, design in enumerate(chosen)]
+        )
+        history = ns["ga_history_df"]
+        self.assertEqual(len(history), ns["GA_GENERATIONS"] + 1)
+        rounds = ns["central_reserve_rounds_df"]
+        self.assertEqual(ga["search_rounds"], len(rounds))
+        self.assertEqual(
+            ga["chromosomes_evaluated"], ns["GA_POPULATION_SIZE"] * (ns["GA_GENERATIONS"] + 1) * len(rounds)
+        )
+        self.assertEqual(ga["ga_ships_per_month"], round(float(history["best_ships_per_month"].iloc[-1]), 2))
+        self.assertEqual(ga["polished_ships_per_month"], round(ships, 2))
+        self.assertGreaterEqual(ga["polished_ships_per_month"], ga["ga_ships_per_month"])
+        self.assertEqual(ga["levels_changed_by_polish"], int(np.abs(best - ns["ga_levels_arr"]).sum()))
+        settled = ga["first_generation_with_the_final_best"]
+        self.assertEqual(history["best_ships_per_month"].iloc[settled], history["best_ships_per_month"].iloc[-1])
+        self.assertTrue(
+            settled == 0 or history["best_ships_per_month"].iloc[settled - 1] < history["best_ships_per_month"].iloc[-1]
+        )
+        self.assertLess(settled, ns["GA_GENERATIONS"], "The run should settle before its last generation")
+        self.assertAlmostEqual(
+            ga["possible_choices_log10"], sum(math.log10(count) for count in ga["designs_per_planet"]), delta=0.006
+        )
+        # The result is a fixed point of the polish: no planet can add ships, or drop a level, on its own.
+        again = ns["polish_configuration"](model, best, ns["smallest_limit"], ns["HILL_CLIMB_STEP_SIZES"])
+        self.assertEqual(again.tolist(), best.tolist())
+        # The algorithm's choice is at least as good as the best choice that gives all generic planets one design.
+        design_limits, design_counts = ns["catalogue_limits"](model, catalogues)
+        uniform = (
+            design_limits[0, : design_counts[0], None, :] + 10.0 * design_limits[1, None, : design_counts[1], :]
+        ).min(axis=2)
+        self.assertGreaterEqual(ga["ga_ships_per_month"], round(float(uniform.max()), 2))
+        # Its run is the run of the meta parameters: the same settings and seed give the same history.
+        rerun = ns["run_genetic_algorithm"](
+            design_limits,
+            design_counts,
+            population_size=ns["GA_POPULATION_SIZE"],
+            generations=ns["GA_GENERATIONS"],
+            tournament_size=ns["GA_TOURNAMENT_SIZE"],
+            crossover_rate=ns["GA_CROSSOVER_RATE"],
+            mutation_rate=ns["GA_MUTATION_RATE"],
+            elite_count=ns["GA_ELITE_COUNT"],
+            seed=ns["GA_RANDOM_SEED"],
+        )
+        self.assertEqual(rerun[0].tolist(), chosen.tolist())
+        pd.testing.assert_frame_equal(rerun[1], history)
+        # The polish ran on the model of the last round, with the reserve that this round started from.
+        last_reserve = rounds.iloc[-1][
+            [f"{resource}_reserved" for resource in ns["RESOURCE_KEYS"]]
+        ].to_numpy(dtype=float)
+        round_model = ns["PRODUCTION_MODEL"].with_central_reserve(last_reserve)
+        self.assertEqual(
+            best.tolist(),
+            ns["polish_both_ways"](round_model, ns["ga_levels_arr"], ns["HILL_CLIMB_STEP_SIZES"]).tolist()
+        )
+
+        # Limits: the bottleneck is used in full, and the result is its number of ships.
+        limits = ns["best_config_limits_df"].set_index("limit")
+        self.assertEqual(list(limits.index), ["metal", "kryptonite", "spice", "shipyards"])
+        self.assertEqual(limits["needed_per_ship"].tolist(), [3e6, 2e6, 5e5, 1.0])
+        totals = model.simulate(best[None])["planet_limits"][0].sum(axis=0)
+        np.testing.assert_allclose(limits["ships_per_month"], totals, atol=0.006)
+        np.testing.assert_allclose(limits["available_per_month"], totals * [3e6, 2e6, 5e5, 1.0], atol=0.06)
+        self.assertEqual(limits["is_bottleneck"].tolist(), (totals == totals.min()).tolist())
+        self.assertEqual(int(limits["is_bottleneck"].sum()), 1)
+        self.assertEqual(summary["bottleneck"], limits.index[limits["is_bottleneck"]][0])
+        self.assertEqual(limits.loc[summary["bottleneck"], "used_percent"], 100.0)
+        self.assertTrue((limits["used_percent"] <= 100.0).all())
+        np.testing.assert_allclose(limits["used_percent"], 100.0 * ships / totals, atol=0.006)
+
+        # Buildings: optimized levels from the search, fixed levels from the plan, and never more than the fields.
+        buildings = ns["best_config_buildings_df"]
+        self.assertEqual(buildings[list(model.optimized_keys)].values.tolist(), best.tolist())
+        building_keys = [f"b{number}" for number in range(1, 22)]
+        self.assertEqual(list(buildings.columns[-21:]), building_keys)
+        self.assertEqual(buildings["fields_used"].tolist(), buildings[building_keys].sum(axis=1).tolist())
+        self.assertTrue((buildings["fields_used"] <= buildings["fields_max"]).all())
+        self.assertEqual(
+            (buildings["fields_max"] - buildings["fields_used"]).tolist(), buildings["fields_free"].tolist()
+        )
+        self.assertEqual(buildings.loc[0, ["b7", "b8", "b10"]].tolist(), [12, 12, 5])
+        self.assertEqual(buildings.loc[1, ["b7", "b8", "b10"]].tolist(), [12, 0, 5])
+        # The warehouses are the ones that the model gives the designs.
+        warehouse_levels = model.simulate(best[None])["planet_warehouse_levels"][0]
+        self.assertEqual(buildings[["b11", "b12", "b13", "b14"]].values.tolist(), warehouse_levels.tolist())
+        self.assertTrue((warehouse_levels[0] >= 15).all(), "The central planet keeps its minimum level")
+        self.assertTrue((warehouse_levels[1:, 0] >= 17).all(), "Mines of level 45 and more need large warehouses")
+        self.assertEqual(list(buildings["coords"]), [plan["coords"] for plan in plans])
+        self.assertEqual(
+            (summary["fields_used"], summary["fields_free"]),
+            (int(buildings["fields_used"].sum()), int(buildings["fields_free"].sum())),
+        )
+        # Every planet can build its fleet, and at least one can build the starbase.
+        self.assertTrue((buildings["b9"] >= 6).all())
+        self.assertTrue((buildings["b9"] >= 13).any())
+
+        # Planets: the model's numbers, the share of the ships each shipyard builds, and the cost of each planet.
+        planets = ns["best_config_planets_df"]
+        outcome = {name: values[0] for name, values in model.simulate(best[None]).items()}
+        np.testing.assert_allclose(planets["power_ratio"], outcome["planet_power_ratio"], atol=6e-5)
+        np.testing.assert_allclose(planets["smelting_ratio"], outcome["planet_smelting_ratio"], atol=6e-5)
+        np.testing.assert_allclose(planets["energy_produced"], outcome["planet_energy_produced"], atol=0.06)
+        np.testing.assert_allclose(planets["energy_used"], outcome["planet_energy_used"], atol=0.06)
+        for column, resource in enumerate(("pig_iron", "metal", "kryptonite", "spice")):
+            np.testing.assert_allclose(
+                planets[f"{resource}_per_hour"], outcome["planet_net_per_hour"][:, column], atol=0.06
+            )
+        np.testing.assert_allclose(planets["shipyard_ships_per_month"], outcome["planet_limits"][:, 3], atol=0.006)
+        self.assertAlmostEqual(float(planets["ships_built_per_month"].sum()), ships, delta=0.06)
+        self.assertTrue((planets["ships_built_per_month"] <= planets["shipyard_ships_per_month"] + 0.006).all())
+        self.assertEqual(
+            (planets["ships_built_per_month"] > 0).tolist(), (planets["shipyard_ships_per_month"] > 0).tolist()
+        )
+        self.assertEqual(planets["warehouse_fields"].tolist(), warehouse_levels.sum(axis=1).tolist())
+        self.assertEqual(summary["warehouse_fields"], int(warehouse_levels.sum()))
+        self.assertEqual(summary["central_planet"], "02:380:12 (slot 1)")
+        # A generic planet starts from nothing: every level of its plan must be built and paid for.
+        generic_levels = buildings.loc[1, building_keys].to_dict()
+        self.assertEqual(planets.loc[1, "levels_to_build"], sum(generic_levels.values()))
+        expected_cost = sum(
+            game_data.spice_equivalent(game_data.building_cost(int(key[1:]), level))
+            for key, top in generic_levels.items()
+            for level in range(1, top + 1)
+        )
+        self.assertAlmostEqual(planets.loc[1, "upgrade_cost_spice_eq"], expected_cost, delta=0.006)
+        # The colony already has Fusion plant 7 and Development center 1: only the levels above count.
+        home_levels = buildings.loc[0, building_keys].to_dict()
+        built = plans[0]["built_levels"]
+        self.assertEqual((built["b5"], built["b7"]), (7, 1))
+        self.assertEqual(
+            planets.loc[0, "levels_to_build"], sum(max(0, level - built[key]) for key, level in home_levels.items())
+        )
+        self.assertLess(planets.loc[0, "levels_to_build"], sum(home_levels.values()))
+        home_cost = sum(
+            game_data.spice_equivalent(game_data.building_cost(int(key[1:]), level))
+            for key, top in home_levels.items()
+            for level in range(built[key] + 1, top + 1)
+        )
+        self.assertAlmostEqual(planets.loc[0, "upgrade_cost_spice_eq"], home_cost, delta=0.006)
+        # The levels that the colony has already built are worth more than that tolerance.
+        self.assertGreater(
+            sum(
+                game_data.spice_equivalent(game_data.building_cost(int(key[1:]), level))
+                for key, top in home_levels.items()
+                for level in range(1, min(built[key], top) + 1)
+            ),
+            1000.0,
+        )
+        self.assertEqual(planets["fleet_cost_spice_eq"].tolist(), [124000.0] * 11)
+
+        cost = ns["building_upgrade_cost_spice_eq"]
+        self.assertEqual(
+            cost("b1", 2, 4),
+            sum(game_data.spice_equivalent(game_data.building_cost(1, level)) for level in (3, 4)),
+        )
+        self.assertEqual((cost("b1", 4, 4), cost("b1", 9, 4)), (0.0, 0.0))
+        research_cost = ns["research_upgrade_cost_spice_eq"]
+        energy_levels = game_data.RESEARCH_BY_ID["r2"]["levels"]
+        self.assertEqual(
+            research_cost("r2", 1, 3),
+            sum(game_data.spice_equivalent(energy_levels[level]["cost"]) for level in (2, 3)),
+        )
+        self.assertEqual(research_cost("r2", 3, 3), 0.0)
+
+        # Summary: the investment is the three costs, set against a month of the finished configuration's output.
+        self.assertAlmostEqual(
+            summary["buildings_cost_spice_eq"], float(planets["upgrade_cost_spice_eq"].sum()), delta=0.006
+        )
+        self.assertEqual(summary["fleet_cost_spice_eq"], 11 * 124000.0)
+        planned, own = ns["PLANNED_RESEARCH_LEVELS"], ns["colony_researches"]
+        self.assertAlmostEqual(
+            summary["research_cost_spice_eq"],
+            sum(research_cost(key, own.get(key, 0), level) for key, level in planned.items()),
+            delta=0.006,
+        )
+        self.assertGreater(summary["research_cost_spice_eq"], research_cost("r2", 1, 10))
+        self.assertAlmostEqual(
+            summary["investment_spice_eq"],
+            summary["buildings_cost_spice_eq"] + summary["fleet_cost_spice_eq"] + summary["research_cost_spice_eq"],
+            delta=0.02,
+        )
+        self.assertAlmostEqual(summary["ship_cost_spice_eq"], 3e6 / 2.5 + 2e6 / 3.0 + 5e5, delta=0.006)
+        self.assertAlmostEqual(summary["monthly_output_spice_eq"], ships * (3e6 / 2.5 + 2e6 / 3.0 + 5e5), delta=1.0)
+        self.assertAlmostEqual(
+            summary["investment_in_months_of_output"],
+            summary["investment_spice_eq"] / summary["monthly_output_spice_eq"],
+            delta=0.006,
+        )
+        self.assertEqual(summary["levels_to_build"], int(planets["levels_to_build"].sum()))
+        self.assertAlmostEqual(
+            summary["pig_iron_left_over_per_month"],
+            720.0 * float(outcome["planet_net_per_hour"][:, 0].sum()),
+            delta=40.0
+        )
+        tables = ns["BEST_CONFIG_TABLES"]
+        self.assertEqual(
+            list(tables),
+            ["best_config_limits", "best_config_buildings", "best_config_planets", "best_config_warehouses"]
+        )
+        for table_name, table in tables.items():
+            self.assertIs(table, ns[f"{table_name}_df"], f"{table_name} must be the {table_name}_df table itself")
+
+        # A configuration that builds nothing still describes itself: no ships, no shares, no payback.
+        idle_tables = ns["build_best_configuration_tables"](model, plans, model.min_levels)
+        self.assertEqual(len(idle_tables), 4)
+        # Only a planet whose shipyard builds the starbase stores the cost of one: Weapons factory 13 does, 12 does not.
+        with_yards = model.min_levels.copy()
+        with_yards[1, model.building_index["b9"]], with_yards[2, model.building_index["b9"]] = 13, 12
+        yard_rows = ns["build_best_configuration_tables"](model, plans, with_yards)[3]
+        yard_rows = yard_rows.set_index(["slot_index", "resource"])
+        self.assertEqual(
+            yard_rows.loc[(2, "metal"), ["largest_cost_of", "level", "set_by"]].tolist(), ["s16", 5, "cost of s16"]
+        )
+        self.assertEqual(yard_rows.loc[(3, "metal"), ["largest_cost_of", "level"]].tolist(), ["b7 L12", 4])
+        self.assertNotIn("s16", set(yard_rows.drop(index=2, level="slot_index")["largest_cost_of"]))
+        self.assertEqual(float(idle_tables[1]["ships_built_per_month"].sum()), 0.0)
+        self.assertEqual(idle_tables[2]["used_percent"].tolist(), [0.0] * 4)
+        idle_summary = ns["summarize_best_configuration"](model, model.min_levels, *idle_tables[:3], own, planned)
+        self.assertEqual(
+            (idle_summary["ships_per_month"], idle_summary["investment_in_months_of_output"]), (0.0, None)
+        )
+        self.assertEqual(idle_summary["bottleneck"], "metal, kryptonite, spice, shipyards")
+
+        # Warehouses: one row per planet and resource, with the level that every rule asks for.
+        warehouses = ns["best_config_warehouses_df"]
+        self.assertEqual(len(warehouses), 11 * 4)
+        self.assertEqual(warehouses["slot_index"].tolist(), [slot for slot in range(1, 12) for _ in range(4)])
+        self.assertEqual(warehouses["resource"].tolist(), ["pig_iron", "metal", "kryptonite", "spice"] * 11)
+        self.assertEqual(warehouses["key"].tolist(), ["b11", "b12", "b13", "b14"] * 11)
+        self.assertEqual(warehouses["level"].tolist(), warehouse_levels.ravel().tolist())
+        self.assertEqual(
+            warehouses["capacity"].tolist(), [float(100_000 * 2**level) for level in warehouse_levels.ravel()]
+        )
+        self.assertEqual(set(warehouses["built_level"]), {0})
+        rule_columns = [
+            "level_for_largest_cost", "level_for_own_production", "level_for_empire_production", "minimum_level"
+        ]
+        # The level is what the most demanding rule asks for: no warehouse is larger or smaller than it has to be.
+        self.assertEqual(warehouses[rule_columns].max(axis=1).tolist(), warehouses["level"].tolist())
+        net = model.simulate(best[None])["planet_net_per_hour"][0]
+        for (_, row), planet_net in zip(warehouses.iterrows(), net.ravel()):
+            self.assertEqual(row["level_for_own_production"], self._warehouse_level_for(24.0 * max(0.0, planet_net)))
+            self.assertEqual(row["level_for_largest_cost"], self._warehouse_level_for(row["largest_cost"]))
+            if row["set_by"].startswith("cost of "):
+                self.assertEqual(row["set_by"], f"cost of {row['largest_cost_of']}")
+                self.assertEqual(row["level_for_largest_cost"], row["level"])
+            self.assertEqual(row["level"] > 0, row["set_by"] != "nothing to store")
+        # The largest cost is the cost of the level or ship that the table names.
+        for _, row in warehouses.iterrows():
+            key, _, level = row["largest_cost_of"].partition(" L")
+            if key.startswith("b"):
+                self.assertEqual(
+                    row["largest_cost"], float(game_data.building_cost(int(key[1:]), int(level))[row["resource"]])
+                )
+        # The whole table is the rules written out, planet by planet.
+        for planet, plan in enumerate(plans):
+            design = dict(zip(model.optimized_keys, best[planet].tolist()))
+            expected = self._expected_warehouses(
+                plan,
+                design,
+                net[planet],
+                hours=24.0,
+                ship_cost=game_data.SHIPS[ns["SHIP_SLUG_BY_KEY"]["s16"]]["base_cost"] if design["b9"] >= 13 else None,
+                reserve=tuple(model.central_reserve) if planet == 0 else (0.0,) * 4,
+            )
+            self.assertEqual(warehouse_levels[planet].tolist(), expected, plan["coords"])
+        # The central planet: its reserve is what the result produces in 24 hours, and its minimum level is 15.
+        np.testing.assert_allclose(model.central_reserve, 24.0 * np.maximum(net.sum(axis=0), 0.0), rtol=1e-12)
+        np.testing.assert_allclose(ns["central_reserve_needed"](model, best), model.central_reserve, rtol=1e-12)
+        central = warehouses[warehouses["slot_index"] == 1].set_index("resource")
+        self.assertEqual(
+            central["level_for_empire_production"].tolist(),
+            [self._warehouse_level_for(amount) for amount in model.central_reserve]
+        )
+        self.assertEqual(central["minimum_level"].tolist(), [15] * 4)
+        self.assertEqual(central.loc["spice", ["level", "set_by"]].tolist(), [15, "central planet minimum"])
+        self.assertTrue(central["level_for_empire_production"].max() > 0)
+        others = warehouses[warehouses["slot_index"] > 1]
+        self.assertEqual(set(others["level_for_empire_production"]) | set(others["minimum_level"]), {0})
+        # On the shipyard planet the starbase is among the costs that the warehouses hold.
+        self.assertTrue(set(warehouses["set_by"]) <= {
+            "central planet minimum", "own production", "empire production", "nothing to store",
+            *(f"cost of {label}" for label in set(warehouses["largest_cost_of"])),
+        })
+        self.assertIn("own production", set(warehouses["set_by"]))
+        # One round was enough here: the minimum level of the central planet already holds the production.
+        self.assertEqual(len(rounds), 1)
+        self.assertEqual(rounds.loc[0, "holds_the_production"], True)
+        for column, resource in enumerate(ns["RESOURCE_KEYS"]):
+            self.assertEqual(rounds.loc[0, f"{resource}_reserved"], 0.0)
+            self.assertAlmostEqual(rounds.loc[0, f"{resource}_needed"], model.central_reserve[column], delta=0.06)
+            self.assertEqual(rounds.loc[0, f"{resource}_held"], float(100_000 * 2 ** warehouse_levels[0, column]))
+            self.assertLessEqual(rounds.loc[0, f"{resource}_needed"], rounds.loc[0, f"{resource}_held"])
+        self.assertEqual(rounds.loc[0, "ships_per_month"], summary["ships_per_month"])
+        self.assertEqual(list(rounds["round"]), [1])
+
+        # Section 11.6: one table per planet, with every building that the planet has or gets.
+        configurations = ns["PLANET_CONFIGURATIONS"]
+        labels = list(configurations)
+        self.assertEqual(len(labels), 11)
+        self.assertRegex(labels[0], r"^slot 1, 02:380:12 \(colonized, \d+ of 230 fields\)$")
+        self.assertRegex(labels[10], r"^slot 11, EMPTY:10 \(empty_colony_slot, \d+ of 300 fields\)$")
+        self.assertIn(f"{int(buildings.loc[0, 'fields_used'])} of 230 fields", labels[0])
+        for index, table in enumerate(configurations.values()):
+            targets = dict(zip(table["key"], table["target_level"]))
+            row, built_here = buildings.loc[index], plans[index]["built_levels"]
+            # Every building with a level today or in the plan is listed, with the level of the plan.
+            self.assertEqual(
+                targets, {key: int(row[key]) for key in building_keys if row[key] > 0 or built_here[key] > 0}
+            )
+            self.assertEqual(table["built_level"].tolist(), [built_here[key] for key in table["key"]])
+            self.assertEqual(
+                table["levels_to_build"].tolist(), [max(0, level - built_here[key]) for key, level in targets.items()]
+            )
+            self.assertEqual(int(table["levels_to_build"].sum()), planets.loc[index, "levels_to_build"])
+            self.assertAlmostEqual(
+                float(table["upgrade_cost_spice_eq"].sum()), planets.loc[index, "upgrade_cost_spice_eq"], delta=0.5
+            )
+            self.assertEqual(set(table["role"]), {"optimized", "fixed", "warehouse"})
+            self.assertEqual(
+                table.loc[table["role"] == "warehouse", "key"].tolist(),
+                [key for key in ("b11", "b12", "b13", "b14") if key in targets],
+            )
+        home_table = configurations[labels[0]].set_index("key")
+        self.assertEqual(home_table.loc["b12", ["role", "built_level"]].tolist(), ["warehouse", 0])
+        self.assertEqual(home_table.loc["b12", "target_level"], warehouse_levels[0, 1])
+        self.assertEqual(
+            home_table.loc["b5", ["building", "role", "built_level"]].tolist(), ["Fusion plant", "optimized", 7]
+        )
+        self.assertEqual(home_table.loc["b7", ["role", "built_level", "target_level"]].tolist(), ["fixed", 1, 12])
+        self.assertGreater(home_table.loc["b5", "upgrade_cost_spice_eq"], 0.0)
+        # A building that is neither built nor planned is left out.
+        self.assertNotIn("b6", home_table.index)
+
+    def test_meta_parameters_steer_the_plan(self) -> None:
+        default_ns, _, _ = self._attack_run()
+        default_summary = default_ns["BEST_CONFIG_SUMMARY"]
+
+        # Run A: lower maximum levels, a fleet with Battleships and Solar cells, more miscellaneous buildings,
+        # and a crude search: a grid of only the lowest and the highest level of every building (300 designs
+        # allow no more), and a hill-climb that moves by 3 levels at a time.
+        caps = {**default_ns["OPTIMIZED_BUILDING_MAX_LEVELS"], "b1": 22, "b2": 20, "b3": 21, "b4": 19, "b5": 25}
+        search = {
+            "CATALOGUE_GRID_SIZE": 300,
+            "CATALOGUE_PRIORITY_STEPS": 2,
+            "HILL_CLIMB_STEP_SIZES": (3,),
+            "GA_POPULATION_SIZE": 80,
+            "GA_GENERATIONS": 60,
+            "GA_TOURNAMENT_SIZE": 2,
+            "GA_CROSSOVER_RATE": 0.7,
+            "GA_MUTATION_RATE": 0.2,
+            "GA_ELITE_COUNT": 3,
+            "GA_RANDOM_SEED": 5,
+        }
+        changed = self._rerun_planner(
+            default_ns,
+            {
+                "OPTIMIZED_BUILDING_MAX_LEVELS": caps,
+                "MIN_FLEET_PER_PLANET": {"s13": 2, "s9": 50},
+                "MISC_BUILDING_LEVELS": {**default_ns["MISC_BUILDING_LEVELS"], "b10": 9, "b15": 1},
+                "MISC_BUILDING_LEVELS_BY_SLOT": {2: {"b8": 7}, 3: {"b18": 1}},
+                **search,
+            },
+        )
+        buildings = changed["best_config_buildings_df"]
+        # No optimized building exceeds its maximum, the Blast furnaces reach theirs, and far fewer ships are built.
+        for key, cap in caps.items():
+            self.assertLessEqual(int(buildings[key].max()), cap, key)
+        self.assertEqual(int(buildings["b2"].max()), 20)
+        self.assertGreater(changed["BEST_CONFIG_SUMMARY"]["ships_per_month"], 0.0)
+        self.assertLess(changed["BEST_CONFIG_SUMMARY"]["ships_per_month"], 0.1 * default_summary["ships_per_month"])
+        self.assertLess(
+            changed["BEST_CONFIG_SUMMARY"]["investment_spice_eq"], 0.01 * default_summary["investment_spice_eq"]
+        )
+        # With maximum levels this low every planet keeps free fields, and its label in Section 11.6 says how
+        # many of its fields it uses.
+        self.assertTrue((buildings["fields_used"] < buildings["fields_max"]).all())
+        self.assertEqual(
+            [label.rsplit(", ", 1)[1] for label in changed["PLANET_CONFIGURATIONS"]],
+            [f"{used} of {size} fields)" for used, size in zip(buildings["fields_used"], buildings["fields_max"])],
+        )
+        # Battleships need Weapons factory 8 on every planet; the Solar cells give every planet energy.
+        self.assertEqual(set(changed["plan_planets_df"]["min_optimized_fields"]) - {10}, {8})
+        self.assertTrue((buildings["b9"] >= 8).all())
+        self.assertEqual(set(changed["plan_planets_df"]["solar_cells"]), {50})
+        energy_row = changed["PRODUCTION_FLOW_KEYS"].index("energy_produced")
+        np.testing.assert_allclose(
+            changed["PRODUCTION_MODEL"].fixed_flows[energy_row], [50 * 37.75 * 1.1] + [50 * 30.0 * 1.1] * 10
+        )
+        # Each planet lacks 2 Battleships (35,000 Metal, 25,000 Kryptonite) and 50 Solar cells.
+        self.assertAlmostEqual(
+            changed["BEST_CONFIG_SUMMARY"]["fleet_cost_spice_eq"],
+            11 * (2 * (35000 / 2.5 + 25000 / 3.0) + 50 * (2000 / 2.5 + 200 / 3.0 + 400.0)),
+            delta=0.02,
+        )
+        # Fleet base 9 and Particle cannon 1 everywhere, a Research lab 7 on slot 2 only, a Teleporter on
+        # slot 3 only, which needs Microsystem accelerator 2 there.
+        self.assertEqual(changed["plan_planets_df"]["fixed_fields"].tolist(), [22, 29, 23] + [22] * 8)
+        self.assertEqual(buildings["b10"].tolist(), [9] * 11)
+        self.assertEqual(buildings["b15"].tolist(), [1] * 11)
+        self.assertEqual(buildings["b8"].tolist(), [0, 7] + [0] * 9)
+        self.assertEqual(buildings["b18"].tolist(), [0, 0, 1] + [0] * 8)
+        self.assertGreaterEqual(int(buildings.loc[2, "b17"]), 2)
+        self.assertEqual(changed["plan_planets_df"]["min_optimized_fields"].tolist(), [8, 8, 10] + [8] * 8)
+        self.assertEqual(changed["PRODUCTION_MODEL"].twin_planets, [0, 1, 2] + [3] * 8)
+        # The research of the plan covers these buildings too: the Particle cannon of every planet needs
+        # Shield technology 5 and Ion technology 5, the Teleporter of slot 3 Hyperspace technology 6.
+        required = changed["PLAN_REQUIRED_RESEARCH"]
+        self.assertEqual({key: required[key] for key in ("r9", "r12", "r14")}, {"r9": 5, "r12": 5, "r14": 6})
+        self.assertEqual(
+            {key for key in ("r9", "r12", "r14") if key in default_ns["PLAN_REQUIRED_RESEARCH"]}, set()
+        )
+        self.assertEqual(changed["PLANNED_RESEARCH_LEVELS"]["r14"], 6)
+        # The only Research lab stands on slot 2 now: that planet pays for the research, and its warehouses
+        # hold the dearest research level, Hyperspace technology 6.
+        self.assertEqual(changed["plan_planets_df"]["pays_for_research"].tolist(), [False, True] + [False] * 9)
+        self.assertEqual(changed["plan_planets_df"]["is_central_planet"].tolist(), [True] + [False] * 10)
+        lab_warehouses = changed["best_config_warehouses_df"]
+        lab_warehouses = lab_warehouses[lab_warehouses["slot_index"] == 2].set_index("resource")
+        self.assertEqual(
+            lab_warehouses.loc["metal", ["largest_cost_of", "set_by"]].tolist(), ["r14 L6", "cost of r14 L6"]
+        )
+        self.assertEqual(
+            lab_warehouses.loc["metal", "largest_cost"],
+            float(game_data.RESEARCH_BY_ID["r14"]["levels"][6]["cost"]["metal"])
+        )
+        self.assertGreater(lab_warehouses.loc["metal", "level"], 4)
+        # The search ran with the changed settings: 10 priority mixes and the all-rounder at most, and the
+        # history of 61 generations of 80 chromosomes is the one these settings and this seed produce.
+        self.assertLessEqual(max(changed["GA_SUMMARY"]["designs_per_planet"]), 11)
+        self.assertLess(
+            max(changed["GA_SUMMARY"]["designs_per_planet"]), max(default_ns["GA_SUMMARY"]["designs_per_planet"])
+        )
+        self.assertEqual(changed["GA_SUMMARY"]["search_rounds"], 1)
+        self.assertEqual(changed["GA_SUMMARY"]["chromosomes_evaluated"], 80 * 61)
+        model = changed["PRODUCTION_MODEL"]
+        catalogues = changed["build_design_catalogues"](model, grid_size=300, priority_steps=2, step_sizes=(3,))
+        self.assertEqual([c.tolist() for c in catalogues], [c.tolist() for c in changed["DESIGN_CATALOGUES"]])
+        rerun = changed["run_genetic_algorithm"](
+            *changed["catalogue_limits"](model, catalogues),
+            population_size=80,
+            generations=60,
+            tournament_size=2,
+            crossover_rate=0.7,
+            mutation_rate=0.2,
+            elite_count=3,
+            seed=5,
+        )
+        pd.testing.assert_frame_equal(rerun[1], changed["ga_history_df"])
+        self.assertEqual(rerun[0].tolist(), changed["ga_designs_arr"].tolist())
+        self.assertEqual(
+            changed["best_levels_arr"].tolist(),
+            changed["polish_both_ways"](model, changed["ga_levels_arr"], (3,)).tolist(),
+        )
+
+        def steps_of_three(levels: np.ndarray, lowest: np.ndarray, highest: np.ndarray) -> np.ndarray:
+            """True where a level is a multiple of 3 away from the lowest or the highest level of its building."""
+            return ((levels - lowest) % 3 == 0) | ((highest - levels) % 3 == 0)
+
+        # From a grid of lowest and highest levels, steps of 3 lead nowhere else: neither in the catalogues
+        # nor in the polished result. The default search, with its finer grid and steps, does get elsewhere.
+        for planet, catalogue in enumerate(changed["DESIGN_CATALOGUES"]):
+            self.assertTrue(steps_of_three(catalogue, model.min_levels[planet], model.max_levels[planet]).all())
+        self.assertTrue(steps_of_three(changed["best_levels_arr"], model.min_levels, model.max_levels).all())
+        default_model = default_ns["PRODUCTION_MODEL"]
+        self.assertFalse(
+            steps_of_three(
+                default_ns["DESIGN_CATALOGUES"][1], default_model.min_levels[1], default_model.max_levels[1]
+            ).all()
+        )
+        self.assertFalse(
+            steps_of_three(default_ns["best_levels_arr"], default_model.min_levels, default_model.max_levels).all()
+        )
+
+        # Run B: no fleet, Development center 5 only, and Battleships over a month of 15 days.
+        other = self._rerun_planner(
+            default_ns,
+            {
+                "MIN_FLEET_PER_PLANET": {},
+                "MISC_BUILDING_LEVELS": {**default_ns["MISC_BUILDING_LEVELS"], "b7": 5},
+                "TARGET_SHIP_KEY": "s13",
+                "PRODUCTION_MONTH_DAYS": 15.0,
+            },
+        )
+        # No Weapons factory is forced on any planet, and nothing is missing from a fleet.
+        self.assertEqual(set(other["plan_planets_df"]["min_optimized_fields"]), {0})
+        self.assertEqual(other["BEST_CONFIG_SUMMARY"]["fleet_cost_spice_eq"], 0.0)
+        self.assertNotIn("r5", other["PLAN_REQUIRED_RESEARCH"])
+        # Without Development center 12 the Microsystem accelerator is locked everywhere.
+        self.assertEqual(set(other["best_config_buildings_df"]["b17"]), {0})
+        level_rows = other["plan_building_levels_df"]
+        self.assertEqual(set(level_rows.loc[level_rows["key"] == "b17", "locked_by"]), {"b7 L12"})
+        self.assertEqual(set(level_rows.loc[level_rows["key"] == "b17", "max_level"]), {0})
+        # The Battleship costs Metal and Kryptonite, needs Weapons factory 8, and is counted over 360 hours.
+        self.assertEqual(other["BEST_CONFIG_SUMMARY"]["target_ship"], "Battleship")
+        self.assertEqual(other["BEST_CONFIG_SUMMARY"]["hours_per_month"], 360.0)
+        self.assertEqual(list(other["best_config_limits_df"]["limit"]), ["metal", "kryptonite", "shipyards"])
+        self.assertEqual(other["best_config_limits_df"]["needed_per_ship"].tolist(), [35000.0, 25000.0, 1.0])
+        # A Weapons factory stands only where it builds Battleships: at level 8 or more, or not at all.
+        factories = other["best_config_buildings_df"]["b9"]
+        self.assertTrue((factories >= 8).any())
+        self.assertTrue(((factories == 0) | (factories >= 8)).all())
+        self.assertEqual(other["PLAN_REQUIRED_RESEARCH"]["r6"], 4)
+        self.assertNotIn("r15", other["PLAN_REQUIRED_RESEARCH"])
+        self.assertGreater(other["BEST_CONFIG_SUMMARY"]["ships_per_month"], default_summary["ships_per_month"])
+        self.assertAlmostEqual(
+            other["BEST_CONFIG_SUMMARY"]["ship_cost_spice_eq"], 35000 / 2.5 + 25000 / 3.0, delta=0.006
+        )
+
+        # Run C: half the universe maximum. Mining technology 27 and Energy technology 21 are known there.
+        universe_ns, _, _ = self._cached_run(self.universe_workspace)
+        half = self._rerun_planner(universe_ns, {"RESEARCH_PERCENT_OF_UNIVERSE_MAX": 50.0})
+        self.assertEqual((half["PLANNED_RESEARCH_LEVELS"]["r1"], half["PLANNED_RESEARCH_LEVELS"]["r2"]), (14, 11))
+        full = half["plan_research_levels"](
+            half["UNIVERSE_RESEARCH_MAX_LEVELS"], half["colony_researches"], half["PLAN_REQUIRED_RESEARCH"], 100.0
+        ).set_index("key")
+        self.assertEqual((full.loc["r1", "planned_level"], full.loc["r2", "planned_level"]), (27, 21))
+        self.assertEqual(half["planned_research_df"].set_index("key").loc["r1", "set_by"], "universe maximum")
+        self.assertEqual(
+            (half["PLAN_ACCOUNT_CONTEXT"]["r1_mining_tech"], half["PLAN_ACCOUNT_CONTEXT"]["r2_energy_tech"]), (14, 11)
+        )
+        # Mining technology 14 adds 28 % to the Kryptonite of a mine, Energy technology 11 adds 11 % to the energy.
+        design = np.array([[[0, 0, 20, 0, 30, 6, 0]]])
+        outcome = {name: values[0, 0] for name, values in half["PRODUCTION_MODEL"].simulate(design, [1]).items()}
+        self.assertEqual(outcome["planet_power_ratio"], 1.0)
+        self.assertAlmostEqual(
+            outcome["planet_net_per_hour"][2],
+            5.0 * 1.28 * game_data.BUILDING_BY_ID[3]["levels"][20]["prod"],
+            delta=1e-6
+        )
+        self.assertAlmostEqual(
+            outcome["planet_energy_produced"], 1.11 * game_data.BUILDING_BY_ID[5]["levels"][30]["energy"], delta=1e-6
+        )
+
+        # Run D: the Microsystem accelerator as a miscellaneous building, at level 2 on slot 1 and nowhere else.
+        fixed_accelerator = self._rerun_planner(
+            default_ns,
+            {
+                "OPTIMIZED_BUILDING_MAX_LEVELS": {key: 50 for key in ("b1", "b2", "b3", "b4", "b5", "b9")},
+                "MISC_BUILDING_LEVELS": {**default_ns["MISC_BUILDING_LEVELS"], "b17": 0},
+                "MISC_BUILDING_LEVELS_BY_SLOT": {1: {"b8": 12, "b17": 2}},
+                **search,
+            },
+        )
+        model = fixed_accelerator["PRODUCTION_MODEL"]
+        self.assertEqual(model.optimized_keys, ("b1", "b2", "b3", "b4", "b5", "b9"))
+        self.assertEqual(fixed_accelerator["best_levels_arr"].shape, (11, 6))
+        self.assertEqual(fixed_accelerator["best_config_buildings_df"]["b17"].tolist(), [2] + [0] * 10)
+        self.assertGreater(fixed_accelerator["BEST_CONFIG_SUMMARY"]["ships_per_month"], 0.0)
+        # With Weapons factory 13 on every planet, the shipyard of slot 1 is four times as fast as the others.
+        factories = np.zeros((1, 11, 6), dtype=np.int64)
+        factories[0, :, model.building_index["b9"]] = 13
+        shipyards = model.simulate(factories)["planet_limits"][0, :, -1]
+        self.assertGreater(shipyards[1], 0.0)
+        np.testing.assert_allclose(shipyards[1:], shipyards[0] / 4.0, rtol=1e-12)
+
+    def test_warehouse_parameters_steer_the_plan(self) -> None:
+        default_ns, _, _ = self._attack_run()
+        default_summary = default_ns["BEST_CONFIG_SUMMARY"]
+        rule_columns = [
+            "level_for_largest_cost", "level_for_own_production", "level_for_empire_production", "minimum_level"
+        ]
+
+        def consistent(ns: dict, hours: float) -> pd.DataFrame:
+            """The warehouses table of a run, checked against the run's own production and reserve."""
+            model, best, table = ns["BEST_CONFIG_MODEL"], ns["best_levels_arr"], ns["best_config_warehouses_df"]
+            self.assertEqual(model.warehouse_hours, hours)
+            outcome = model.simulate(best[None])
+            self.assertTrue(model.is_feasible(best[None])[0])
+            self.assertEqual(table["level"].tolist(), outcome["planet_warehouse_levels"][0].ravel().tolist())
+            self.assertEqual(table[rule_columns].max(axis=1).tolist(), table["level"].tolist())
+            net = outcome["planet_net_per_hour"][0]
+            self.assertEqual(
+                table["level_for_own_production"].tolist(),
+                [self._warehouse_level_for(hours * max(0.0, amount)) for amount in net.ravel()],
+            )
+            np.testing.assert_allclose(model.central_reserve, hours * np.maximum(net.sum(axis=0), 0.0), rtol=1e-12)
+            central = table[table["slot_index"] == ns["CENTRAL_PLANET_SLOT"]]
+            self.assertEqual(
+                central["level_for_empire_production"].tolist(),
+                [self._warehouse_level_for(amount) for amount in model.central_reserve],
+            )
+            self.assertTrue((central["level"] >= central["level_for_empire_production"]).all())
+            # The reason named is the first rule, in this order, that asks for the level.
+            for _, row in table.iterrows():
+                if row["level"] == 0:
+                    self.assertEqual(row["set_by"], "nothing to store")
+                elif row["level_for_largest_cost"] == row["level"]:
+                    self.assertEqual(row["set_by"], f"cost of {row['largest_cost_of']}")
+                elif row["level_for_own_production"] == row["level"]:
+                    self.assertEqual(row["set_by"], "own production")
+                elif row["level_for_empire_production"] == row["level"]:
+                    self.assertEqual(row["set_by"], "empire production")
+                else:
+                    self.assertIn(
+                        row["set_by"], ("central planet minimum", "level already built", "MISC_BUILDING_LEVELS")
+                    )
+            self.assertEqual(
+                set(table.loc[table["slot_index"] != ns["CENTRAL_PLANET_SLOT"], "level_for_empire_production"]), {0}
+            )
+            # The rounds: every round but the last fell short, and each reserved what the one before needed.
+            rounds = ns["central_reserve_rounds_df"]
+            self.assertEqual(rounds["holds_the_production"].tolist(), [False] * (len(rounds) - 1) + [True])
+            self.assertEqual(list(rounds["round"]), list(range(1, len(rounds) + 1)))
+            self.assertEqual(ns["GA_SUMMARY"]["search_rounds"], len(rounds))
+            last = rounds.iloc[-1]
+            for resource, level in zip(ns["RESOURCE_KEYS"], central["level"]):
+                # What the last round held is what the central planet's warehouses of the result hold. (A round
+                # that reserved a whole warehouse level more than its result needs would hold more. None does here.)
+                self.assertEqual(last[f"{resource}_held"], float(100_000 * 2**level))
+                self.assertLessEqual(last[f"{resource}_needed"], last[f"{resource}_held"])
+            self.assertEqual(last["ships_per_month"], ns["BEST_CONFIG_SUMMARY"]["ships_per_month"])
+            for resource in ns["RESOURCE_KEYS"]:
+                self.assertEqual(rounds.loc[0, f"{resource}_reserved"], 0.0)
+                for index in range(1, len(rounds)):
+                    self.assertAlmostEqual(
+                        rounds.loc[index, f"{resource}_reserved"],
+                        max(rounds.loc[index - 1, f"{resource}_reserved"], rounds.loc[index - 1, f"{resource}_needed"]),
+                        delta=0.06,
+                    )
+            return table
+
+        # No hours: nothing is stored but the cost of what is built. More hours: larger warehouses, fewer ships.
+        none = self._rerun_planner(default_ns, {"WAREHOUSE_HOURS_OF_PRODUCTION": 0.0})
+        table = consistent(none, 0.0)
+        self.assertEqual(set(table["level_for_own_production"]) | set(table["level_for_empire_production"]), {0})
+        self.assertEqual(none["BEST_CONFIG_MODEL"].central_reserve.tolist(), [0.0] * 4)
+        self.assertEqual(len(none["central_reserve_rounds_df"]), 1)
+        ten_days = self._rerun_planner(default_ns, {"WAREHOUSE_HOURS_OF_PRODUCTION": 240.0})
+        table = consistent(ten_days, 240.0)
+        self.assertIn("own production", set(table["set_by"]))
+        self.assertGreater(int(table["level_for_own_production"].max()), 12)
+        self.assertLess(none["BEST_CONFIG_SUMMARY"]["warehouse_fields"], default_summary["warehouse_fields"])
+        self.assertLess(default_summary["warehouse_fields"], ten_days["BEST_CONFIG_SUMMARY"]["warehouse_fields"])
+        self.assertGreaterEqual(none["BEST_CONFIG_SUMMARY"]["ships_per_month"], default_summary["ships_per_month"])
+        self.assertLess(ten_days["BEST_CONFIG_SUMMARY"]["ships_per_month"], default_summary["ships_per_month"])
+        # Ten days of the empire's production no longer fit the central planet's minimum level of 15: the
+        # search needed a second round, which reserved the room.
+        self.assertEqual(len(ten_days["central_reserve_rounds_df"]), 2)
+        central = table[table["slot_index"] == 1].set_index("resource")
+        self.assertGreater(central.loc["metal", "level_for_empire_production"], 15)
+        self.assertEqual(central.loc["metal", "set_by"], "empire production")
+        self.assertEqual(ten_days["GA_SUMMARY"]["chromosomes_evaluated"], 2 * 400 * 301)
+
+        # No minimum level on the central planet: its warehouses are what its own buildings and the empire's
+        # production ask for. That takes two rounds, and leaves the planet more fields for mines.
+        no_minimum = self._rerun_planner(default_ns, {"CENTRAL_PLANET_MIN_WAREHOUSE_LEVEL": 0})
+        table = consistent(no_minimum, 24.0)
+        self.assertEqual(len(no_minimum["central_reserve_rounds_df"]), 2)
+        central = table[table["slot_index"] == 1].set_index("resource")
+        self.assertEqual(central["minimum_level"].tolist(), [0] * 4)
+        self.assertEqual(central.loc["spice", "set_by"], "empire production")
+        self.assertLess(int(central.loc["spice", "level"]), 15)
+        self.assertEqual(no_minimum["plan_planets_df"]["min_warehouse_fields"].tolist(), [13] + [10] * 10)
+        self.assertGreater(no_minimum["BEST_CONFIG_SUMMARY"]["ships_per_month"], default_summary["ships_per_month"])
+        # A high minimum: every warehouse of the central planet has it, and fewer ships are built.
+        high_minimum = self._rerun_planner(default_ns, {"CENTRAL_PLANET_MIN_WAREHOUSE_LEVEL": 22})
+        table = consistent(high_minimum, 24.0)
+        central = table[table["slot_index"] == 1]
+        self.assertEqual(central["level"].tolist(), [22] * 4)
+        self.assertEqual(set(central["set_by"]), {"central planet minimum"})
+        self.assertEqual(high_minimum["plan_planets_df"]["min_warehouse_fields"].tolist(), [88] + [10] * 10)
+        self.assertLess(high_minimum["BEST_CONFIG_SUMMARY"]["ships_per_month"], default_summary["ships_per_month"])
+
+        # Another central planet: slot 4, a generic planet. It has no twin any more; the colony still pays
+        # for the research, because the Research lab stands there.
+        moved = self._rerun_planner(default_ns, {"CENTRAL_PLANET_SLOT": 4})
+        table = consistent(moved, 24.0)
+        self.assertEqual(moved["plan_planets_df"]["is_central_planet"].tolist(), [False] * 3 + [True] + [False] * 7)
+        self.assertEqual(moved["plan_planets_df"]["pays_for_research"].tolist(), [True] + [False] * 10)
+        self.assertEqual(moved["plan_planets_df"]["min_warehouse_fields"].tolist(), [13, 10, 10, 60] + [10] * 7)
+        self.assertEqual(moved["PRODUCTION_MODEL"].twin_planets, [0, 1, 1, 3] + [1] * 7)
+        self.assertEqual(moved["PRODUCTION_MODEL"].central_planet, 3)
+        self.assertEqual(moved["BEST_CONFIG_SUMMARY"]["central_planet"], "EMPTY:03 (slot 4)")
+        self.assertTrue((table.loc[table["slot_index"] == 4, "level"] >= 15).all())
+        self.assertEqual(set(table.loc[table["slot_index"] == 4, "minimum_level"]), {15})
+        self.assertEqual(set(table.loc[table["slot_index"] == 1, "minimum_level"]), {0})
+        with self.assertRaisesRegex(ValueError, "CENTRAL_PLANET_SLOT 12 is not a normal planet of the roster"):
+            self._rerun_planner(default_ns, {"CENTRAL_PLANET_SLOT": 12})
+        with self.assertRaisesRegex(ValueError, "WAREHOUSE_HOURS_OF_PRODUCTION must be a number of hours of 0 or more"):
+            self._rerun_planner(default_ns, {"WAREHOUSE_HOURS_OF_PRODUCTION": -24.0})
+        with self.assertRaisesRegex(ValueError, "whole numbers of 0 or more"):
+            self._rerun_planner(default_ns, {"CENTRAL_PLANET_MIN_WAREHOUSE_LEVEL": 1.5})
+
+        # A level for the warehouses in MISC_BUILDING_LEVELS is a minimum on every planet, and no more than that.
+        floors = {**default_ns["MISC_BUILDING_LEVELS"], "b11": 5, "b12": 5, "b13": 5, "b14": 5}
+        with_floors = self._rerun_planner(default_ns, {"MISC_BUILDING_LEVELS": floors})
+        table = consistent(with_floors, 24.0)
+        self.assertTrue((table["level"] >= 5).all())
+        self.assertEqual(set(table.loc[table["slot_index"] > 1, "minimum_level"]), {5})
+        self.assertIn("MISC_BUILDING_LEVELS", set(table["set_by"]))
+        self.assertGreater(int(table["level"].max()), 15)
+        self.assertEqual(with_floors["plan_planets_df"]["min_warehouse_fields"].tolist(), [60] + [20] * 10)
+        default_table = default_ns["best_config_warehouses_df"]
+        self.assertLess(int(default_table["level"].min()), 5)
+        self.assertNotIn("MISC_BUILDING_LEVELS", set(default_table["set_by"]))
+
+    # ------------------------------------------------------------------ printouts
+
+    def _parse_printout(self, out: str) -> tuple[str, dict[str, list[str]]]:
+        """Check the frame of one `print_section_data` printout; return its section number and its item blocks."""
+        rule_eq = "=" * 100
+        item_rule = "\n" + "-" * 100 + "\n"
+        out_lines = out.rstrip("\n").split("\n")
+        self.assertEqual(out_lines[0], rule_eq)
+        self.assertEqual(out_lines[3], rule_eq)
+        title = re.fullmatch(r"Section ([\d.]+) data: \S.*", out_lines[1])
+        self.assertIsNotNone(title, f"Malformed printout title: {out_lines[1]!r}")
+        stamp = re.fullmatch(
+            r"Printed: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}) \| (\d+) item\(s\)",
+            out_lines[2],
+        )
+        self.assertIsNotNone(stamp, f"Missing print date/time header: {out_lines[2]!r}")
+        printed_at = datetime.datetime.strptime(stamp.group(1), "%Y-%m-%d %H:%M:%S %z")
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        self.assertLess(abs((now_utc - printed_at).total_seconds()), 600.0)
+        blocks = "\n".join(out_lines[4:]).split(item_rule)
+        self.assertEqual(len(blocks), int(stamp.group(2)))
+        named: dict[str, list[str]] = {}
+        for block in blocks:
+            block_lines = block.split("\n")
+            head = re.fullmatch(r"\[(?P<name>[^\]]+)\] (?P<desc>.+)", block_lines[0])
+            self.assertIsNotNone(head, f"Malformed item header: {block_lines[0]!r}")
+            self.assertNotIn(head.group("name"), named, "Each object is printed exactly once")
+            named[head.group("name")] = block_lines
+        return title.group(1), named
+
+    def test_every_generated_object_is_printed_in_full(self) -> None:
+        ns, stdout, new_names = self._attack_run()
+        sections = self._section_cells()
+        self.assertEqual([section for section, _, _ in sections], FULL_PLANNER_DATA_SECTIONS)
+        # A cell of Section 11 prints its own data: it is its own print cell.
+        planner_sections = [
+            (_last_heading_number(_cell_source(self.cells[self.code_positions[idx] - 1])), idx, idx)
+            for idx in self.planner_idxs
+        ]
+        self.assertEqual([section for section, _, _ in planner_sections], FULL_PLANNER_SELF_PRINTING_SECTIONS)
+        all_sections = [*sections, *planner_sections]
+
+        printed_text = "".join(stdout[print_idx] for _, _, print_idx in all_sections)
+        self.assertNotIn("...", printed_text, "Printouts must never be truncated")
+        self.assertNotRegex(printed_text, r"\de\+\d", "Large numbers must not print in scientific notation")
+        self.assertEqual(re.findall(r"sid=(?!REDACTED)", printed_text, flags=re.IGNORECASE), [])
+
+        printed_blocks: dict[str, list[str]] = {}
+        section_out: dict[str, str] = {}
+        for section, data_idx, print_idx in all_sections:
+            out = stdout[print_idx]
+            title_section, blocks = self._parse_printout(out)
+            self.assertEqual(
+                title_section,
+                section,
+                f"Print cell {print_idx} is titled Section {title_section} but prints the data of Section {section}",
+            )
+            if print_idx != data_idx:
+                self.assertRegex(
+                    _cell_source(self.cells[self.code_positions[print_idx] - 1]),
+                    rf"(?m)^### 10\.\d+ Section {re.escape(section)} Data\b",
+                    f"The heading above print cell {print_idx} must name Section {section}",
+                )
+            section_out[section] = out
+            for name, block_lines in blocks.items():
+                self.assertNotIn(name, printed_blocks, "Each object is printed exactly once")
+                printed_blocks[name] = block_lines
+
+            # Every data name the matching cell defined must appear in its printout.
+            section_names = sorted(name for name in new_names[data_idx] if _is_generated_data(name, ns[name]))
+            self.assertGreater(len(section_names), 0)
+            for name in section_names:
+                self.assertRegex(
+                    out,
+                    rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])",
+                    f"{name!r} (generated by code cell {data_idx}) is missing from the printout of cell {print_idx}",
+                )
+
+        # Every DataFrame / ndarray the notebook generated is printed row for row / element for element.
+        for name, value in sorted(ns.items()):
+            if name.startswith("_") or not isinstance(value, (pd.DataFrame, np.ndarray)):
+                continue
+            self.assertIn(name, printed_blocks, f"{name} is generated but never printed")
+            block_lines = printed_blocks[name]
+            if isinstance(value, pd.DataFrame):
+                self.assertEqual(
+                    block_lines[0],
+                    f"[{name}] pandas.DataFrame, shape=({value.shape[0]}, {value.shape[1]})",
+                )
+                if value.empty:
+                    self.assertEqual(block_lines[1], f"(no rows) columns: {list(value.columns)}")
+                else:
+                    self.assertEqual(len(block_lines), 2 + len(value), f"{name} was not printed row for row")
+                    self.assertEqual(block_lines[1].split(), [str(col) for col in value.columns])
+            else:
+                self.assertEqual(
+                    block_lines[0],
+                    f"[{name}] numpy.ndarray, shape={value.shape}, dtype={value.dtype}",
+                )
+                tokens = " ".join(block_lines[1:]).replace("[", " ").replace("]", " ").split()
+                printed_vals = [float(tok) for tok in tokens]
+                self.assertEqual(len(printed_vals), value.size)
+                np.testing.assert_allclose(printed_vals, value.astype(np.float64).ravel(), rtol=0.0, atol=1e-6)
+
+        # Spot checks: paths, metadata, fixed-point timestamps, full-digit big integers, graph closure, planets.
+        self.assertIn(str(self.attack_workspace.resolve() / "state" / "spaceinvasion.db"), section_out["1.1"])
+        self.assertIn('  "b1": {"name": "Pig iron mine", ', section_out["1.6"])
+        self.assertIn('"max_planets": 11', section_out["1.6"])
+        self.assertIn(
+            "[attack_dispatch_ts_arr] numpy.ndarray, shape=(3,), dtype=float64\n"
+            "[1700000000 1700001000 1700003000]",
+            section_out["2.3"],
+        )
+        top_b17_metal = game_data.building_cost(17, 50)["metal"]
+        self.assertGreater(top_b17_metal, 10**20)
+        self.assertIn(f" {top_b17_metal} ", section_out["6.1"])
+        s7_closure_line = next(ln for ln in section_out["7.2"].split("\n") if ln.startswith('  "s7": '))
+        s7_closure = json.loads(s7_closure_line.split(": ", 1)[1].rstrip(","))
+        self.assertEqual(
+            set(s7_closure["all_prerequisites"]), set(ns["TECH_GRAPH"].transitive_requirements("s7"))
+        )
+        self.assertEqual(s7_closure["all_unlocks"], [])
+        self.assertIn('"b5": 7', section_out["6"])
+        self.assertEqual(section_out["6"].count('"fields_max": 300'), 10)
+        self.assertIn('"coords": "EMPTY:10"', section_out["6"])
+        # Section 9 and the planner: the research table, the meta parameters as set, and the result in the title.
+        self.assertIn("[universe_research_df] pandas.DataFrame, shape=(15, 15)", section_out["9"])
+        own_meta = self._notebook_meta_parameters()
+        self.assertIn(f"[TARGET_SHIP_KEY] str = {own_meta['TARGET_SHIP_KEY']!r}", section_out["11.1"])
+        self.assertIn(f'"GA_RANDOM_SEED": {own_meta["GA_RANDOM_SEED"]}', section_out["11.1"])
+        for building, level in own_meta["MISC_BUILDING_LEVELS"].items():
+            self.assertIn(f'"{building}": {level}', section_out["11.1"])
+        self.assertIn("[PRODUCTION_MODEL (EmpireProductionModel summary)] dict, len=10", section_out["11.3"])
+        self.assertRegex(
+            section_out["11.5"].split("\n")[1],
+            r"^Section 11\.5 data: best configuration, [\d,]+\.\d\d Imperial starbases per month \(bottleneck: \w+\)$",
+        )
+        self.assertIn(f"{ns['BEST_CONFIG_SUMMARY']['ships_per_month']:,.2f} Imperial starbases", section_out["11.5"])
+        # Section 11.6 prints one table per planet, under the label of that planet.
+        self.assertIn(f"{ns['BEST_CONFIG_SUMMARY']['ships_per_month']:,.2f} Imperial starbases", section_out["11.6"])
+        for label in ns["PLANET_CONFIGURATIONS"]:
+            self.assertIn(f"[PLANET_CONFIGURATIONS: {label}] pandas.DataFrame, shape=(", section_out["11.6"])
+
+    def test_print_helpers_show_full_data_and_redact_session_tokens(self) -> None:
+        ns, _, _ = self._attack_run()
+        # Float formatting used by the printouts: no scientific notation for large values, no float noise.
+        for raw_val, expected_text in (
+            (1794880358.409, "1794880358.409"),
+            (123456789012.34, "123456789012.34"),
+            (8892.061995397919, "8892.061995"),
+            (8.600298e20, "860029799999999967232"),
+            (100.0, "100"),
+            (1.0 / 3.0, "0.333333"),
+            (0.5**21, "4.76837e-07"),
+            (-0.0, "0"),
+            (float("nan"), "nan"),
+        ):
+            self.assertEqual(ns["format_full_float"](raw_val), expected_text)
+
+        # print_section_data on data far beyond the pandas / numpy default display limits:
+        # nothing is elided, a non-default index is kept, and session tokens are redacted.
+        probe_df = pd.DataFrame(
+            {
+                "n": np.arange(2500),
+                "x": np.arange(2500) * 1e9 + 0.25,
+                "txt": ["z" * 150] * 2500,
+            }
+        )
+        probe_df.loc[7, "txt"] = "indexInternal.es?action=internalHome&sid=FAKE0123456789abcdef&x=1"
+        probe_arr = np.arange(3000, dtype=np.float64) + 1_794_880_000.25
+        probe_buf = io.StringIO()
+        with contextlib.redirect_stdout(probe_buf):
+            ns["print_section_data"](
+                "Probe",
+                [
+                    ("probe_df", probe_df),
+                    ("probe_arr", probe_arr),
+                    ("probe_dict", {"href": "indexGame.es?sid=FAKEfedcba9876543210", 7: (1, 2)}),
+                    ("probe_indexed", probe_df.tail(2).set_index("x")[["n"]]),
+                    ("probe_registry", {"probe": probe_df}),
+                ],
+            )
+        probe_out = probe_buf.getvalue()
+        self.assertNotIn("...", probe_out)
+        self.assertNotRegex(probe_out, r"\de\+\d")
+        item_rule = "\n" + "-" * 100 + "\n"
+        probe_blocks = probe_out.rstrip("\n").split("\n", 4)[4].split(item_rule)
+        self.assertEqual(len(probe_blocks), 5)
+        self.assertEqual(len(probe_blocks[0].split("\n")), 2 + 2500)
+        self.assertRegex(probe_blocks[0], r"(?m)^\s*2499\s+2499000000000\.25\s+z{150}$")
+        self.assertEqual(len(probe_blocks[1].replace("[", " ").replace("]", " ").split("\n", 1)[1].split()), 3000)
+        self.assertIn("1794882999.25]", probe_blocks[1])
+        self.assertNotIn("FAKE0123456789abcdef", probe_out)
+        self.assertNotIn("FAKEfedcba9876543210", probe_out)
+        self.assertEqual(probe_out.count("sid=REDACTED"), 2)
+        self.assertIn('  "7": [1, 2]', probe_blocks[2])
+        self.assertRegex(probe_blocks[3], r"(?m)^2499000000000\.25\s+2499$")
+        self.assertEqual(
+            probe_blocks[4].split("\n"),
+            [
+                "[probe_registry] dict, len=1 (registry of DataFrames; each table is printed in full by its own section)",
+                "  probe: shape=(2500, 3)",
+            ],
+        )
 
 
 if __name__ == "__main__":

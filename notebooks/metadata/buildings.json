@@ -1,0 +1,131 @@
+{
+  "description": "Static descriptions of buildings b1-b21 for notebooks/full_planner.ipynb. Costs, build times, production and requirements come from spaceinvasion.core.game_data; this file only adds what that catalog lacks. 'name' must match game_data (checked when the notebook loads the file). 'cost_scale_factor' is the nominal cost ratio between consecutive levels.",
+  "buildings": {
+    "b1": {
+      "name": "Pig iron mine",
+      "category": "resource_mine",
+      "cost_scale_factor": 1.51,
+      "primary_effect": "Mines Pig iron (+2%/lvl r1); consumes energy"
+    },
+    "b2": {
+      "name": "Blast furnace",
+      "category": "smelter",
+      "cost_scale_factor": 1.51,
+      "primary_effect": "Smelts Pig iron -> Metal at 2:1 loss (NOT boosted by r1); consumes energy"
+    },
+    "b3": {
+      "name": "Kryptonite mine",
+      "category": "resource_mine",
+      "cost_scale_factor": 1.51,
+      "primary_effect": "Mines Kryptonite (+2%/lvl r1); consumes energy"
+    },
+    "b4": {
+      "name": "Spice mine",
+      "category": "resource_mine",
+      "cost_scale_factor": 1.51,
+      "primary_effect": "Mines Spice on planet-temperature curve (+2%/lvl r1); consumes energy"
+    },
+    "b5": {
+      "name": "Fusion plant",
+      "category": "power_plant",
+      "cost_scale_factor": 1.51,
+      "primary_effect": "Fuel-free planetary power (+1%/lvl r2); 1 field/level"
+    },
+    "b6": {
+      "name": "Thermosolar plant",
+      "category": "power_plant",
+      "cost_scale_factor": 1.51,
+      "primary_effect": "Spice-burning planetary power (+1%/lvl r2); forbidden on normal planets when forbid_planetary_solar=True"
+    },
+    "b7": {
+      "name": "Development center",
+      "category": "accelerator",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Cuts planetary building construction time by 1 / (L + 1); gates b8, b9, b17, b19"
+    },
+    "b8": {
+      "name": "Research lab",
+      "category": "research_infra",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Unlocks & accelerates global research time by 1 / (L + 1)"
+    },
+    "b9": {
+      "name": "Weapons factory",
+      "category": "shipyard",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Unlocks ships/defenses & cuts unit build time by 1 / max(1, L)"
+    },
+    "b10": {
+      "name": "Fleet base",
+      "category": "fleet_infra",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Grants 1 + L concurrent fleet flight slots & allied fleet support"
+    },
+    "b11": {
+      "name": "Pig iron warehouse",
+      "category": "warehouse",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Pig iron storage capacity 100,000 * 2^L (prevents 5% overflow penalty)"
+    },
+    "b12": {
+      "name": "Metal warehouse",
+      "category": "warehouse",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Metal storage capacity 100,000 * 2^L"
+    },
+    "b13": {
+      "name": "Kryptonite warehouse",
+      "category": "warehouse",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Kryptonite storage capacity 100,000 * 2^L"
+    },
+    "b14": {
+      "name": "Spice warehouse",
+      "category": "warehouse",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Spice storage capacity 100,000 * 2^L"
+    },
+    "b15": {
+      "name": "Particle cannon",
+      "category": "strategic_weapon",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Stores surplus energy to fire remote particle beams at enemy defenses"
+    },
+    "b16": {
+      "name": "Particle shield",
+      "category": "strategic_defense",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Absorbs incoming Particle cannon beams (46% / 31% / 23% priority split)"
+    },
+    "b17": {
+      "name": "Microsystem accelerator",
+      "category": "accelerator",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Halves all building & shipyard build times each level (0.5^L)"
+    },
+    "b18": {
+      "name": "Teleporter",
+      "category": "fleet_infra",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Instant zero-flight-time fleet jump between charged Teleporters"
+    },
+    "b19": {
+      "name": "Galaxy scanner",
+      "category": "asteroid_sensor",
+      "cost_scale_factor": 2.0,
+      "primary_effect": "Asteroid-exclusive sensor scanning enemy fleet flights (5,000 Spice/scan; Escape flights hidden)"
+    },
+    "b20": {
+      "name": "Tunnel system",
+      "category": "strategic_defense",
+      "cost_scale_factor": 1.08,
+      "primary_effect": "Cuts defense dig-in time (60m - 1m/L) & adds L40+ particle fog"
+    },
+    "b21": {
+      "name": "Quantum Array",
+      "category": "endgame_synth",
+      "cost_scale_factor": 1.44,
+      "primary_effect": "Grants +1 Synth Point per level (up to L30, highest planet only)"
+    }
+  }
+}

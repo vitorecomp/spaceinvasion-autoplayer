@@ -1,0 +1,60 @@
+{
+  "description": "Role of each planetary defense for notebooks/full_planner.ipynb, keyed by the d-key that spaceinvasion.combat.fleet.DEFENSE_SLUG_BY_KEY maps to the catalog. 'can_dig_in' is false for shield domes. Costs and stats come from spaceinvasion.core.game_data. 'name' must match game_data (checked when the notebook loads the file).",
+  "defenses": {
+    "d1": {
+      "name": "Mortar",
+      "role": "planetary_turret",
+      "can_dig_in": true
+    },
+    "d2": {
+      "name": "Laser cannon battery",
+      "role": "planetary_turret",
+      "can_dig_in": true
+    },
+    "d3": {
+      "name": "Ion cannon",
+      "role": "planetary_turret",
+      "can_dig_in": true
+    },
+    "d4": {
+      "name": "Positron lighter",
+      "role": "planetary_turret",
+      "can_dig_in": true
+    },
+    "d5": {
+      "name": "Turboflak",
+      "role": "planetary_turret",
+      "can_dig_in": true
+    },
+    "d6": {
+      "name": "Interval cannon",
+      "role": "planetary_turret",
+      "can_dig_in": true
+    },
+    "d7": {
+      "name": "Solar cannon",
+      "role": "planetary_turret",
+      "can_dig_in": true
+    },
+    "d8": {
+      "name": "Light graviton cannon",
+      "role": "planetary_turret",
+      "can_dig_in": true
+    },
+    "d9": {
+      "name": "Heavy graviton cannon",
+      "role": "planetary_turret",
+      "can_dig_in": true
+    },
+    "d10": {
+      "name": "Small shield dome",
+      "role": "shield_dome",
+      "can_dig_in": false
+    },
+    "d11": {
+      "name": "Large shield dome",
+      "role": "shield_dome",
+      "can_dig_in": false
+    }
+  }
+}

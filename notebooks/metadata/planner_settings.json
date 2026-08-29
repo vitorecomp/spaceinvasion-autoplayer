@@ -1,0 +1,25 @@
+{
+  "description": "Settings and fallback assumptions of notebooks/full_planner.ipynb. Change a value here and re-run the notebook.",
+  "cold_start_colony": {
+    "description": "Attack origin and universe speed used only while state/spaceinvasion.db has no planet snapshot.",
+    "origin_coords": "02:380:12",
+    "speedup_factor": 5.0
+  },
+  "table_level_caps": {
+    "description": "Highest level listed per entity in buildings_levels_df and technologies_levels_df.",
+    "buildings": 50,
+    "researches": 30
+  },
+  "empire": {
+    "description": "Planet roster of Sections 6 and 8. 'max_planets' counts normal planets; 11 is the default of the bot's own colony cap (StrategyConfig.max_planets in spaceinvasion/core/config.py) and the 'typically 11 base' of docs/specifications/05-fleet-missions-and-progression.md. Every planet still missing becomes a generic planet (an empty colony slot) with 'empty_colony_fields' fields at 'empty_colony_temperature_c'; the catalog and level tables of Section 6 are computed for such a planet. 'fallback_planet_fields' is the size assumed for an owned planet whose size was not recorded.",
+    "max_planets": 11,
+    "empty_colony_fields": 300,
+    "empty_colony_temperature_c": 0,
+    "fallback_planet_fields": 230
+  },
+  "flight_time_fallback": {
+    "description": "Assumptions of the rough flight-time estimate, which is used only for attacks that have no observed dispatch-to-impact time.",
+    "min_ship_speed": 12000.0,
+    "fleet_speed_factor": 5.0
+  }
+}

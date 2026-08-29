@@ -3379,3 +3379,892 @@ def pick_colony_candidates(
 
     filtered.sort(key=lambda pair: (-pair[0], pair[1].position))
     return [slot for _, slot in filtered]
+
+
+def _parse_gal_sys_pair(raw: Any) -> Optional[tuple[int, int]]:
+    if isinstance(raw, (tuple, list)) and len(raw) >= 2:
+        g = _safe_fleet_int(raw[0], 0)
+        s = _safe_fleet_int(raw[1], 0)
+        if 1 <= g <= 14 and 1 <= s <= 400:
+            return (g, s)
+        return None
+    txt = game_data.safe_key(raw).strip() if raw is not None else ""
+    if not txt:
+        return None
+    m = re.search(r"(\d{1,2})\s*[:/\-]\s*(\d{1,3})", txt, re.ASCII)
+    if not m:
+        return None
+    g = int(m.group(1))
+    s = int(m.group(2))
+    if 1 <= g <= 14 and 1 <= s <= 400:
+        return (g, s)
+    return None
+
+
+def _safe_scan_float(value: Any, default: float = 0.0) -> float:
+    if value is None or isinstance(value, (bool, Mapping, list, tuple, set, frozenset, BaseException)):
+        return default
+    if isinstance(value, (int, float)):
+        f = float(value)
+        return f if math.isfinite(f) else default
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        s = value.strip()
+        if not s or not s.isascii():
+            return default
+        try:
+            f = float(s)
+            return f if math.isfinite(f) else default
+        except Exception:
+            return default
+    return default
+
+
+def galaxy_sector_distance(
+    galaxy: int,
+    system: int,
+    own_colonies: Sequence[tuple[int, int]],
+    *,
+    systems_per_galaxy: int = 400,
+) -> int:
+    """Return minimum circular system distance (`min(|s-own_s|, N-|s-own_s|)`) or cross-galaxy penalized distance."""
+    n_sys = max(1, _safe_fleet_int(systems_per_galaxy, 400))
+    if not own_colonies:
+        return 0
+    best: Optional[int] = None
+    for col_g, col_s in own_colonies:
+        delta = abs(int(system) - int(col_s))
+        circ = min(delta, max(0, n_sys - delta))
+        dist = circ if int(col_g) == int(galaxy) else (250 * abs(int(galaxy) - int(col_g)) + circ)
+        if best is None or dist < best:
+            best = dist
+    return best if best is not None else 0
+
+
+def order_sectors_for_smooth_walk(
+    sectors: Sequence[Mapping[str, Any]],
+    *,
+    primary_colony_by_galaxy: Optional[Mapping[int, int]] = None,
+    systems_per_galaxy: int = 400,
+) -> list[dict[str, Any]]:
+    """Order selected `(galaxy, system)` sector dicts along the shortest forward circular arc per galaxy."""
+    n_sys = max(1, _safe_fleet_int(systems_per_galaxy, 400))
+    by_gal: dict[int, dict[int, dict[str, Any]]] = {}
+    gal_order: list[int] = []
+    for item in sectors:
+        if not isinstance(item, Mapping):
+            continue
+        g = _safe_fleet_int(item.get("galaxy"), 0)
+        s = _safe_fleet_int(item.get("system"), 0)
+        if not (1 <= g <= 14 and 1 <= s <= n_sys):
+            continue
+        if g not in by_gal:
+            by_gal[g] = {}
+            gal_order.append(g)
+        if s not in by_gal[g]:
+            by_gal[g][s] = dict(item)
+
+    col_map = primary_colony_by_galaxy if isinstance(primary_colony_by_galaxy, Mapping) else {}
+    ordered: list[dict[str, Any]] = []
+    for g in gal_order:
+        sys_map = by_gal[g]
+        sys_sorted = sorted(sys_map.keys())
+        k = len(sys_sorted)
+        if k <= 1:
+            ordered.extend(sys_map[s] for s in sys_sorted)
+            continue
+        anchor_sys = _safe_fleet_int(col_map.get(g), sys_sorted[0])
+        if not (1 <= anchor_sys <= n_sys):
+            anchor_sys = sys_sorted[0]
+        if k >= n_sys:
+            start_idx = sys_sorted.index(anchor_sys) if anchor_sys in sys_map else 0
+        else:
+            best_gap_key: Optional[tuple[int, int, int]] = None
+            start_idx = 0
+            for idx in range(k):
+                cur_s = sys_sorted[idx]
+                nxt_s = sys_sorted[(idx + 1) % k]
+                gap = (nxt_s - cur_s) if idx + 1 < k else ((nxt_s + n_sys) - cur_s)
+                delta_anchor = abs(nxt_s - anchor_sys)
+                circ_anchor = min(delta_anchor, max(0, n_sys - delta_anchor))
+                cand_key = (gap, -circ_anchor, -nxt_s)
+                if best_gap_key is None or cand_key > best_gap_key:
+                    best_gap_key = cand_key
+                    start_idx = (idx + 1) % k
+        for offset in range(k):
+            s_val = sys_sorted[(start_idx + offset) % k]
+            ordered.append(sys_map[s_val])
+    return ordered
+
+
+def _extract_own_colonies_and_coords(
+    own_coords: Sequence[str] | str,
+    *,
+    systems_per_galaxy: int = 400,
+) -> tuple[list[tuple[int, int]], set[str]]:
+    raw_items: Sequence[Any]
+    if isinstance(own_coords, (str, bytes, bytearray)):
+        raw_items = [own_coords]
+    elif isinstance(own_coords, Sequence):
+        raw_items = own_coords
+    elif isinstance(own_coords, Iterable):
+        raw_items = list(own_coords)
+    else:
+        raw_items = ()
+
+    colonies: list[tuple[int, int]] = []
+    seen_gs: set[tuple[int, int]] = set()
+    norm_set: set[str] = set()
+    for raw in raw_items:
+        txt = game_data.safe_key(raw).strip() if raw is not None else ""
+        if not txt:
+            continue
+        nc = normalize_coords(txt)
+        if re.fullmatch(r"\d{2}:\d{3}:\d{2}", nc, re.ASCII):
+            norm_set.add(nc)
+        pair = _parse_gal_sys_pair(nc or txt)
+        if pair is not None and 1 <= pair[1] <= systems_per_galaxy and pair not in seen_gs:
+            seen_gs.add(pair)
+            colonies.append(pair)
+    return colonies, norm_set
+
+
+def _format_age_short(age_seconds: Optional[float]) -> str:
+    if age_seconds is None or not math.isfinite(age_seconds):
+        return "unscanned"
+    sec = max(0, int(round(age_seconds)))
+    if sec < 60:
+        return f"{sec}s"
+    if sec < 3600:
+        return f"{sec // 60}m"
+    if sec < 86400:
+        return f"{sec / 3600.0:.1f}h"
+    return f"{sec / 86400.0:.1f}d"
+
+
+def _compile_sector_intel_view(
+    *,
+    own_colonies: Sequence[tuple[int, int]],
+    own_norm_coords: set[str],
+    sector_intel: Optional[Mapping[str, Any]],
+    galaxies: Optional[Sequence[int]],
+    scanned_systems: Optional[Mapping[Any, Any] | Iterable[Any]],
+    raid_targets: Optional[Sequence[Mapping[str, Any]]],
+    raid_stats: Optional[Mapping[str, Any]],
+    raid_history: Optional[Sequence[Mapping[str, Any]]],
+    systems_per_galaxy: int,
+    eff_now: float,
+) -> tuple[list[int], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    n_sys = max(1, _safe_fleet_int(systems_per_galaxy, 400))
+    active_galaxies: list[int] = []
+    if galaxies is not None and not isinstance(galaxies, (str, bytes, bytearray)):
+        for g_raw in galaxies:
+            gi = _safe_fleet_int(g_raw, 0)
+            if 1 <= gi <= 14 and gi not in active_galaxies:
+                active_galaxies.append(gi)
+    if not active_galaxies and own_colonies:
+        for gi, _ in own_colonies:
+            if 1 <= gi <= 14 and gi not in active_galaxies:
+                active_galaxies.append(gi)
+    if not active_galaxies and isinstance(sector_intel, Mapping):
+        raw_gals = sector_intel.get("galaxies")
+        if isinstance(raw_gals, Sequence) and not isinstance(raw_gals, (str, bytes, bytearray)):
+            for g_raw in raw_gals:
+                gi = _safe_fleet_int(g_raw, 0)
+                if 1 <= gi <= 14 and gi not in active_galaxies:
+                    active_galaxies.append(gi)
+    if not active_galaxies:
+        active_galaxies = [1]
+
+    sectors_data: dict[str, dict[str, Any]] = {}
+    owner_stats: dict[str, dict[str, Any]] = {}
+
+    def _ensure_sec(gal: int, sys_num: int) -> dict[str, Any]:
+        skey = f"{gal:02d}:{sys_num:03d}"
+        entry = sectors_data.get(skey)
+        if entry is None:
+            entry = {
+                "galaxy": gal,
+                "system": sys_num,
+                "last_scanned_ts": 0.0,
+                "scan_count": 0,
+                "occupied_count": 0,
+                "target_count": 0,
+                "inactive_count": 0,
+                "spacia_count": 0,
+                "debris_count": 0,
+                "free_count": 0,
+                "prime_colony_free_count": 0,
+                "direct_raid_count": 0,
+                "direct_recency_raid_score": 0.0,
+                "direct_loot_spice_eq": 0.0,
+                "last_attacked_ts": 0.0,
+                "owner_planet_counts": {},
+                "owner_display": {},
+            }
+            sectors_data[skey] = entry
+        return entry
+
+    if isinstance(sector_intel, Mapping):
+        raw_owner_stats = sector_intel.get("owner_raid_stats")
+        if isinstance(raw_owner_stats, Mapping):
+            for ok_raw, ov in raw_owner_stats.items():
+                if not isinstance(ov, Mapping):
+                    continue
+                disp = game_data.safe_key(ov.get("owner") or ok_raw).strip()
+                if not disp or disp.lower() == "spacia":
+                    continue
+                okey = disp.lower()
+                owner_stats[okey] = {
+                    "owner": disp,
+                    "raid_count": max(0, _safe_fleet_int(ov.get("raid_count"), 0)),
+                    "recency_raid_score": max(0.0, _safe_scan_float(ov.get("recency_raid_score"), 0.0)),
+                    "loot_spice_eq": max(0.0, _safe_scan_float(ov.get("loot_spice_eq"), 0.0)),
+                }
+        raw_owner_counts = sector_intel.get("owner_attack_counts")
+        if isinstance(raw_owner_counts, Mapping):
+            for ok_raw, cnt_raw in raw_owner_counts.items():
+                disp = game_data.safe_key(ok_raw).strip()
+                cnt = max(0, _safe_fleet_int(cnt_raw, 0))
+                if not disp or disp.lower() == "spacia" or cnt <= 0:
+                    continue
+                okey = disp.lower()
+                cur_os = owner_stats.get(okey)
+                if cur_os is None:
+                    owner_stats[okey] = {
+                        "owner": disp,
+                        "raid_count": cnt,
+                        "recency_raid_score": float(cnt),
+                        "loot_spice_eq": 0.0,
+                    }
+                else:
+                    cur_os["raid_count"] = max(int(cur_os["raid_count"]), cnt)
+
+        raw_sectors = sector_intel.get("sectors")
+        if isinstance(raw_sectors, Mapping):
+            for skey_raw, sv in raw_sectors.items():
+                if not isinstance(sv, Mapping):
+                    continue
+                pair = _parse_gal_sys_pair(skey_raw)
+                gal = _safe_fleet_int(sv.get("galaxy"), pair[0] if pair else 0)
+                sys_num = _safe_fleet_int(sv.get("system"), pair[1] if pair else 0)
+                if not (1 <= gal <= 14 and 1 <= sys_num <= n_sys):
+                    continue
+                sec = _ensure_sec(gal, sys_num)
+                sec["last_scanned_ts"] = max(
+                    sec["last_scanned_ts"],
+                    _safe_scan_float(sv.get("last_scanned_ts"), 0.0),
+                )
+                sec["scan_count"] = max(sec["scan_count"], _safe_fleet_int(sv.get("scan_count"), 0))
+                for k_int in (
+                    "occupied_count",
+                    "target_count",
+                    "inactive_count",
+                    "spacia_count",
+                    "debris_count",
+                    "free_count",
+                    "prime_colony_free_count",
+                    "direct_raid_count",
+                ):
+                    sec[k_int] = max(sec[k_int], _safe_fleet_int(sv.get(k_int), 0))
+                sec["direct_recency_raid_score"] = max(
+                    sec["direct_recency_raid_score"],
+                    _safe_scan_float(sv.get("direct_recency_raid_score"), 0.0),
+                )
+                sec["direct_loot_spice_eq"] = max(
+                    sec["direct_loot_spice_eq"],
+                    _safe_scan_float(sv.get("direct_loot_spice_eq"), 0.0),
+                )
+                sec["last_attacked_ts"] = max(
+                    sec["last_attacked_ts"],
+                    _safe_scan_float(sv.get("last_attacked_ts"), 0.0),
+                )
+                raw_op = sv.get("owner_planet_counts")
+                if isinstance(raw_op, Mapping):
+                    for oname_raw, pcnt_raw in raw_op.items():
+                        disp = game_data.safe_key(oname_raw).strip()
+                        pcnt = max(0, _safe_fleet_int(pcnt_raw, 0))
+                        if disp and disp.lower() != "spacia" and pcnt > 0:
+                            okey = disp.lower()
+                            sec["owner_planet_counts"][okey] = max(
+                                sec["owner_planet_counts"].get(okey, 0),
+                                pcnt,
+                            )
+                            sec["owner_display"].setdefault(okey, disp)
+                raw_owners_list = sv.get("owners")
+                if isinstance(raw_owners_list, Sequence) and not isinstance(raw_owners_list, (str, bytes, bytearray)):
+                    for oname_raw in raw_owners_list:
+                        disp = game_data.safe_key(oname_raw).strip()
+                        if disp and disp.lower() != "spacia":
+                            okey = disp.lower()
+                            sec["owner_planet_counts"].setdefault(okey, 1)
+                            sec["owner_display"].setdefault(okey, disp)
+
+    if scanned_systems is not None:
+        if isinstance(scanned_systems, Mapping):
+            for raw_k, raw_ts in scanned_systems.items():
+                pair = _parse_gal_sys_pair(raw_k)
+                if pair is None or not (1 <= pair[1] <= n_sys):
+                    continue
+                ts_val = _safe_scan_float(raw_ts, 0.0)
+                if ts_val > 0.0:
+                    sec = _ensure_sec(pair[0], pair[1])
+                    sec["last_scanned_ts"] = max(sec["last_scanned_ts"], ts_val)
+                    sec["scan_count"] = max(sec["scan_count"], 1)
+        elif isinstance(scanned_systems, Iterable) and not isinstance(scanned_systems, (str, bytes, bytearray)):
+            fallback_ts = max(1.0, eff_now - 3600.0)
+            for raw_k in scanned_systems:
+                pair = _parse_gal_sys_pair(raw_k)
+                if pair is None or not (1 <= pair[1] <= n_sys):
+                    continue
+                sec = _ensure_sec(pair[0], pair[1])
+                if sec["last_scanned_ts"] <= 0.0:
+                    sec["last_scanned_ts"] = fallback_ts
+                sec["scan_count"] = max(sec["scan_count"], 1)
+
+    coord_owner: dict[str, str] = {}
+    coord_spacia: set[str] = set()
+    if isinstance(raid_targets, Sequence) and not isinstance(raid_targets, (str, bytes, bytearray)):
+        per_sec_owner_coords: dict[tuple[int, int], dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+        per_sec_debris_coords: dict[tuple[int, int], set[str]] = defaultdict(set)
+        per_sec_inact_coords: dict[tuple[int, int], set[str]] = defaultdict(set)
+        per_sec_spacia_coords: dict[tuple[int, int], set[str]] = defaultdict(set)
+        per_sec_free_coords: dict[tuple[int, int], set[str]] = defaultdict(set)
+        per_sec_prime_coords: dict[tuple[int, int], set[str]] = defaultdict(set)
+        for trow in raid_targets:
+            if not isinstance(trow, Mapping):
+                continue
+            if bool(trow.get("is_own_planet", False)) or str(trow.get("merged_into") or "").strip():
+                continue
+            nc = normalize_coords(trow.get("coords") or trow.get("target_coords") or "")
+            if not nc or nc in own_norm_coords:
+                continue
+            m_c = re.fullmatch(r"(\d{2}):(\d{3}):(\d{2})", nc, re.ASCII)
+            if not m_c:
+                continue
+            tg, ts_i, tp = int(m_c.group(1)), int(m_c.group(2)), int(m_c.group(3))
+            if not (1 <= tg <= 14 and 1 <= ts_i <= n_sys):
+                continue
+            sec = _ensure_sec(tg, ts_i)
+            scolor = game_data.safe_key(trow.get("status_color") or "").strip().lower()
+            is_sp = bool(trow.get("is_spacia", False))
+            owner_disp = game_data.safe_key(trow.get("owner") or "").strip()
+            if is_sp or owner_disp.lower() == "spacia":
+                coord_spacia.add(nc)
+                per_sec_spacia_coords[(tg, ts_i)].add(nc)
+            elif owner_disp and scolor != "free":
+                coord_owner[nc] = owner_disp
+                okey = owner_disp.lower()
+                per_sec_owner_coords[(tg, ts_i)][okey].add(nc)
+                sec["owner_display"].setdefault(okey, owner_disp)
+            if bool(trow.get("has_debris", False)):
+                per_sec_debris_coords[(tg, ts_i)].add(nc)
+            if scolor == "yellow" or (bool(trow.get("is_inactive", False)) and not is_sp and scolor != "free"):
+                per_sec_inact_coords[(tg, ts_i)].add(nc)
+            if scolor == "free":
+                per_sec_free_coords[(tg, ts_i)].add(nc)
+                uf = _safe_fleet_int(trow.get("uninhabited_fields"), 0)
+                cmax = _safe_fleet_int(trow.get("colonize_max_fields"), 0)
+                if uf >= 300 or cmax >= 300 or (uf == 0 and cmax == 0 and 7 <= tp <= 12):
+                    per_sec_prime_coords[(tg, ts_i)].add(nc)
+
+        for (tg, ts_i), omap in per_sec_owner_coords.items():
+            sec = _ensure_sec(tg, ts_i)
+            for okey, cset in omap.items():
+                sec["owner_planet_counts"][okey] = max(sec["owner_planet_counts"].get(okey, 0), len(cset))
+        for (tg, ts_i), cset in per_sec_debris_coords.items():
+            sec = _ensure_sec(tg, ts_i)
+            sec["debris_count"] = max(sec["debris_count"], len(cset))
+        for (tg, ts_i), cset in per_sec_inact_coords.items():
+            sec = _ensure_sec(tg, ts_i)
+            sec["inactive_count"] = max(sec["inactive_count"], len(cset))
+        for (tg, ts_i), cset in per_sec_spacia_coords.items():
+            sec = _ensure_sec(tg, ts_i)
+            sec["spacia_count"] = max(sec["spacia_count"], len(cset))
+        for (tg, ts_i), cset in per_sec_free_coords.items():
+            sec = _ensure_sec(tg, ts_i)
+            sec["free_count"] = max(sec["free_count"], len(cset))
+        for (tg, ts_i), cset in per_sec_prime_coords.items():
+            sec = _ensure_sec(tg, ts_i)
+            sec["prime_colony_free_count"] = max(sec["prime_colony_free_count"], len(cset))
+        for sec in sectors_data.values():
+            sec["target_count"] = max(sec["target_count"], sec["inactive_count"] + sec["spacia_count"])
+
+    if sector_intel is None:
+        raw_hist_rows: list[Mapping[str, Any]] = []
+        if isinstance(raid_history, Sequence) and not isinstance(raid_history, (str, bytes, bytearray)):
+            for r in raid_history:
+                if isinstance(r, Mapping):
+                    raw_hist_rows.append(r)
+        if isinstance(raid_stats, Mapping):
+            rs_hist = raid_stats.get("history")
+            if isinstance(rs_hist, Sequence) and not isinstance(rs_hist, (str, bytes, bytearray)) and not raw_hist_rows:
+                for r in rs_hist:
+                    if isinstance(r, Mapping):
+                        raw_hist_rows.append(r)
+
+        if raw_hist_rows:
+            for r in raw_hist_rows:
+                nc = normalize_coords(r.get("target_coords") or r.get("coords") or "")
+                if not nc or nc in own_norm_coords:
+                    continue
+                pair = _parse_gal_sys_pair(nc)
+                if pair is None or not (1 <= pair[1] <= n_sys):
+                    continue
+                rts = _safe_scan_float(
+                    r.get("attacked_ts")
+                    if r.get("attacked_ts") is not None
+                    else (r.get("ts") if r.get("ts") is not None else r.get("timestamp")),
+                    eff_now,
+                )
+                loot_sp = _safe_scan_float(r.get("loot_spice_eq"), 0.0)
+                if loot_sp <= 0.0 and isinstance(r.get("loot"), Mapping):
+                    loot_map = r["loot"]
+                    loot_sp = float(
+                        game_data.spice_equivalent(
+                            Resources(
+                                pig_iron=max(0, _safe_fleet_int(loot_map.get("pig_iron"), 0)),
+                                metal=max(0, _safe_fleet_int(loot_map.get("metal"), 0)),
+                                kryptonite=max(0, _safe_fleet_int(loot_map.get("kryptonite"), 0)),
+                                spice=max(0, _safe_fleet_int(loot_map.get("spice"), 0)),
+                            )
+                        )
+                    )
+                decay = 0.25 + 0.75 * math.exp(-max(0.0, eff_now - rts) / (7.0 * 86400.0))
+                sec = _ensure_sec(pair[0], pair[1])
+                sec["direct_raid_count"] += 1
+                sec["direct_recency_raid_score"] += decay
+                sec["direct_loot_spice_eq"] += max(0.0, loot_sp)
+                sec["last_attacked_ts"] = max(sec["last_attacked_ts"], rts)
+
+                owner_disp = coord_owner.get(nc, "")
+                if owner_disp and nc not in coord_spacia and owner_disp.lower() != "spacia":
+                    okey = owner_disp.lower()
+                    os_entry = owner_stats.setdefault(
+                        okey,
+                        {
+                            "owner": owner_disp,
+                            "raid_count": 0,
+                            "recency_raid_score": 0.0,
+                            "loot_spice_eq": 0.0,
+                        },
+                    )
+                    os_entry["raid_count"] += 1
+                    os_entry["recency_raid_score"] += decay
+                    os_entry["loot_spice_eq"] += max(0.0, loot_sp)
+        elif isinstance(raid_stats, Mapping) and isinstance(raid_stats.get("per_target"), Mapping):
+            for tc_raw, pt in raid_stats["per_target"].items():
+                if not isinstance(pt, Mapping):
+                    continue
+                nc = normalize_coords(tc_raw)
+                pair = _parse_gal_sys_pair(nc)
+                attempts = max(0, _safe_fleet_int(pt.get("attempts"), 0))
+                if pair is None or not (1 <= pair[1] <= n_sys) or attempts <= 0:
+                    continue
+                loot_sp = max(0.0, _safe_scan_float(pt.get("total_loot_spice_eq"), 0.0))
+                sec = _ensure_sec(pair[0], pair[1])
+                sec["direct_raid_count"] += attempts
+                sec["direct_recency_raid_score"] += float(attempts) * 0.75
+                sec["direct_loot_spice_eq"] += loot_sp
+                owner_disp = coord_owner.get(nc, "")
+                if owner_disp and nc not in coord_spacia and owner_disp.lower() != "spacia":
+                    okey = owner_disp.lower()
+                    os_entry = owner_stats.setdefault(
+                        okey,
+                        {
+                            "owner": owner_disp,
+                            "raid_count": 0,
+                            "recency_raid_score": 0.0,
+                            "loot_spice_eq": 0.0,
+                        },
+                    )
+                    os_entry["raid_count"] += attempts
+                    os_entry["recency_raid_score"] += float(attempts) * 0.75
+                    os_entry["loot_spice_eq"] += loot_sp
+
+    return active_galaxies, sectors_data, owner_stats
+
+
+def score_galaxy_scan_sectors(
+    *,
+    own_coords: Sequence[str] | str = (),
+    sector_intel: Optional[Mapping[str, Any]] = None,
+    galaxies: Optional[Sequence[int]] = None,
+    scanned_systems: Optional[Mapping[Any, Any] | Iterable[Any]] = None,
+    raid_targets: Optional[Sequence[Mapping[str, Any]]] = None,
+    raid_stats: Optional[Mapping[str, Any]] = None,
+    raid_history: Optional[Sequence[Mapping[str, Any]]] = None,
+    explore_first: bool = True,
+    near_weight: float = 2.0,
+    attack_weight: float = 3.0,
+    collect_colonies: bool = True,
+    min_freshness_seconds: float = 120.0,
+    max_radius: Optional[int] = None,
+    systems_per_galaxy: int = 400,
+    now_ts: Optional[float] = None,
+) -> list[dict[str, Any]]:
+    """Score and rank galaxy solar systems `(1..400)` for 2-phase smart scanning."""
+    eff_now = _safe_scan_float(now_ts, 0.0)
+    if eff_now <= 0.0 and isinstance(sector_intel, Mapping):
+        eff_now = _safe_scan_float(sector_intel.get("now_ts"), 0.0)
+    if eff_now <= 0.0:
+        eff_now = time.time()
+
+    n_sys = max(1, _safe_fleet_int(systems_per_galaxy, 400))
+    eff_near_w = max(0.0, min(20.0, _safe_scan_float(near_weight, 2.0)))
+    eff_attack_w = max(0.0, min(20.0, _safe_scan_float(attack_weight, 3.0)))
+    eff_fresh_s = max(0.0, _safe_scan_float(min_freshness_seconds, 120.0))
+    rad_cap = _safe_fleet_int(max_radius, -1) if max_radius is not None else -1
+
+    own_colonies, own_norm_coords = _extract_own_colonies_and_coords(
+        own_coords,
+        systems_per_galaxy=n_sys,
+    )
+    active_galaxies, sectors_data, owner_stats = _compile_sector_intel_view(
+        own_colonies=own_colonies,
+        own_norm_coords=own_norm_coords,
+        sector_intel=sector_intel,
+        galaxies=galaxies,
+        scanned_systems=scanned_systems,
+        raid_targets=raid_targets,
+        raid_stats=raid_stats,
+        raid_history=raid_history,
+        systems_per_galaxy=n_sys,
+        eff_now=eff_now,
+    )
+    eff_colonies = own_colonies if own_colonies else [(active_galaxies[0], 1)]
+    colony_gal_set = {cg for cg, _ in eff_colonies}
+    primary_sys_by_gal: dict[int, int] = {}
+    for cg, cs in eff_colonies:
+        primary_sys_by_gal.setdefault(cg, cs)
+
+    scored: list[dict[str, Any]] = []
+    for gal in active_galaxies:
+        anchor_sys = primary_sys_by_gal.get(gal, eff_colonies[0][1])
+        same_gal = gal in colony_gal_set
+        for sys_num in range(1, n_sys + 1):
+            dist = galaxy_sector_distance(
+                gal,
+                sys_num,
+                eff_colonies,
+                systems_per_galaxy=n_sys,
+            )
+            if rad_cap >= 0 and dist > rad_cap:
+                continue
+
+            skey = f"{gal:02d}:{sys_num:03d}"
+            sec = sectors_data.get(skey)
+            last_ts = _safe_scan_float(sec["last_scanned_ts"], 0.0) if sec else 0.0
+            scanned = last_ts > 0.0
+            age_s: Optional[float] = round(max(0.0, eff_now - last_ts), 3) if scanned else None
+            is_fresh = bool(scanned and age_s is not None and age_s < eff_fresh_s)
+
+            prox_norm = (1.0 / (1.0 + dist / 20.0)) if same_gal else (0.15 / (1.0 + dist / 200.0))
+            near_score = eff_near_w * 2.5 * prox_norm
+
+            direct_raids = int(sec["direct_raid_count"]) if sec else 0
+            direct_recency = float(sec["direct_recency_raid_score"]) if sec else 0.0
+            direct_loot = float(sec["direct_loot_spice_eq"]) if sec else 0.0
+            debris_cnt = int(sec["debris_count"]) if sec else 0
+            inact_cnt = int(sec["inactive_count"]) if sec else 0
+            spacia_cnt = int(sec["spacia_count"]) if sec else 0
+            target_cnt = max(int(sec["target_count"]) if sec else 0, inact_cnt + spacia_cnt)
+            free_cnt = int(sec["free_count"]) if sec else 0
+            prime_free_cnt = int(sec["prime_colony_free_count"]) if sec else 0
+
+            eff_direct = max(direct_recency, 0.6 * float(direct_raids))
+            direct_freq_sig = math.log1p(max(0.0, eff_direct))
+            direct_loot_sig = 0.35 * math.log1p(max(0.0, direct_loot) / 5000.0)
+
+            affinity_sig = 0.0
+            owner_affinity_raids = 0
+            freq_owners: list[str] = []
+            if sec and sec["owner_planet_counts"]:
+                owner_entries: list[tuple[int, float, str, int]] = []
+                for okey, pcnt in sec["owner_planet_counts"].items():
+                    os_info = owner_stats.get(okey)
+                    if os_info is None or int(os_info["raid_count"]) <= 0:
+                        continue
+                    o_raids = int(os_info["raid_count"])
+                    o_loot = float(os_info["loot_spice_eq"])
+                    o_disp = str(os_info["owner"] or sec["owner_display"].get(okey, okey))
+                    owner_entries.append((o_raids, o_loot, o_disp, int(pcnt)))
+                owner_entries.sort(key=lambda t: (-t[0], -t[1], t[2]))
+                for o_raids, o_loot, o_disp, pcnt in owner_entries:
+                    owner_affinity_raids += o_raids
+                    pmult = 1.0 + 0.35 * max(0, pcnt - 1)
+                    affinity_sig += (
+                        math.log1p(float(o_raids))
+                        + 0.25 * math.log1p(max(0.0, o_loot) / 10000.0)
+                    ) * pmult
+                    freq_owners.append(f"{o_disp}({o_raids})")
+
+            attack_score = eff_attack_w * (
+                1.6 * direct_freq_sig + direct_loot_sig + 1.4 * affinity_sig
+            )
+
+            debris_bonus = min(3.0, 1.25 * debris_cnt)
+            farm_bonus = min(2.5, 0.55 * inact_cnt + 0.75 * spacia_cnt)
+            colony_bonus = (
+                min(1.8, 0.45 * prime_free_cnt + 0.10 * min(6, free_cnt))
+                if collect_colonies
+                else 0.0
+            )
+            secondary_score = debris_bonus + farm_bonus + colony_bonus
+
+            importance = 1.0 + near_score + attack_score + secondary_score
+            eff_age = age_s if (scanned and age_s is not None) else (7.0 * 86400.0)
+            staleness_factor = max(60.0, eff_age) / 1800.0
+            refresh_score = importance * staleness_factor
+
+            item_phase = "exploratory" if (explore_first and not scanned) else "targeted_refresh"
+            if item_phase == "exploratory":
+                reason = f"unscanned sector (dist {dist})"
+            else:
+                tags: list[str] = []
+                if same_gal and dist <= 25 and eff_near_w > 0.0:
+                    tags.append(f"near d={dist}")
+                elif same_gal:
+                    tags.append(f"d={dist}")
+                else:
+                    tags.append(f"cross-gal d={dist}")
+                if direct_raids > 0:
+                    tags.append(f"raided {direct_raids}x")
+                if freq_owners:
+                    tags.append("freq-target " + ",".join(freq_owners[:2]))
+                if debris_cnt > 0:
+                    tags.append(f"debris x{debris_cnt}")
+                elif target_cnt > 0:
+                    tags.append(f"targets x{target_cnt}")
+                elif collect_colonies and prime_free_cnt > 0:
+                    tags.append(f"colony-slots x{prime_free_cnt}")
+                tags.append(f"age {_format_age_short(age_s)}")
+                reason = ", ".join(tags)
+
+            ring_offset = (sys_num - anchor_sys) % n_sys
+            scored.append(
+                {
+                    "sector": skey,
+                    "galaxy": gal,
+                    "system": sys_num,
+                    "phase": item_phase,
+                    "scanned": scanned,
+                    "is_fresh": is_fresh,
+                    "score": round(refresh_score, 4),
+                    "importance": round(importance, 4),
+                    "near_score": round(near_score, 4),
+                    "attack_score": round(attack_score, 4),
+                    "secondary_score": round(secondary_score, 4),
+                    "staleness_factor": round(staleness_factor, 4),
+                    "distance": int(dist),
+                    "last_scanned_ts": round(last_ts, 3),
+                    "age_seconds": age_s,
+                    "direct_raid_count": direct_raids,
+                    "direct_loot_spice_eq": round(direct_loot, 2),
+                    "owner_affinity_raid_count": owner_affinity_raids,
+                    "frequent_owners": freq_owners,
+                    "debris_count": debris_cnt,
+                    "target_count": target_cnt,
+                    "free_count": free_cnt,
+                    "reason": reason,
+                    "_same_gal": 0 if same_gal else 1,
+                    "_ring_offset": ring_offset,
+                }
+            )
+
+    if explore_first:
+        scored.sort(
+            key=lambda it: (
+                0 if not it["scanned"] else (1 if not it["is_fresh"] else 2),
+                it["_same_gal"] if not it["scanned"] else 0,
+                it["distance"] if not it["scanned"] else -it["score"],
+                it["_ring_offset"] if not it["scanned"] else -it["importance"],
+                it["distance"],
+                it["galaxy"],
+                it["system"],
+            )
+        )
+    else:
+        scored.sort(
+            key=lambda it: (
+                0 if not it["is_fresh"] else 1,
+                -it["score"],
+                -it["importance"],
+                it["distance"],
+                it["galaxy"],
+                it["system"],
+            )
+        )
+
+    for it in scored:
+        it.pop("_same_gal", None)
+        it.pop("_ring_offset", None)
+    return scored
+
+
+def select_smart_galaxy_scan_batch(
+    *,
+    own_coords: Sequence[str] | str = (),
+    sector_intel: Optional[Mapping[str, Any]] = None,
+    galaxies: Optional[Sequence[int]] = None,
+    scanned_systems: Optional[Mapping[Any, Any] | Iterable[Any]] = None,
+    raid_targets: Optional[Sequence[Mapping[str, Any]]] = None,
+    raid_stats: Optional[Mapping[str, Any]] = None,
+    raid_history: Optional[Sequence[Mapping[str, Any]]] = None,
+    batch_size: int = 100,
+    explore_first: bool = True,
+    near_weight: float = 2.0,
+    attack_weight: float = 3.0,
+    collect_colonies: bool = True,
+    min_freshness_seconds: float = 120.0,
+    max_radius: Optional[int] = None,
+    smooth_walk: bool = True,
+    systems_per_galaxy: int = 400,
+    now_ts: Optional[float] = None,
+) -> dict[str, Any]:
+    """Select a 2-phase smart galaxy scan batch (`exploratory` -> `targeted_refresh`) with smooth walk order."""
+    n_sys = max(1, _safe_fleet_int(systems_per_galaxy, 400))
+    eff_batch = max(1, _safe_fleet_int(batch_size, 100))
+
+    own_colonies, _ = _extract_own_colonies_and_coords(
+        own_coords,
+        systems_per_galaxy=n_sys,
+    )
+    ranked = score_galaxy_scan_sectors(
+        own_coords=own_coords,
+        sector_intel=sector_intel,
+        galaxies=galaxies,
+        scanned_systems=scanned_systems,
+        raid_targets=raid_targets,
+        raid_stats=raid_stats,
+        raid_history=raid_history,
+        explore_first=bool(explore_first),
+        near_weight=near_weight,
+        attack_weight=attack_weight,
+        collect_colonies=collect_colonies,
+        min_freshness_seconds=min_freshness_seconds,
+        max_radius=max_radius,
+        systems_per_galaxy=n_sys,
+        now_ts=now_ts,
+    )
+
+    active_galaxies: list[int] = []
+    for it in ranked:
+        gi = int(it["galaxy"])
+        if gi not in active_galaxies:
+            active_galaxies.append(gi)
+    if not active_galaxies:
+        active_galaxies = [1]
+
+    if max_radius is None:
+        total_systems = len(active_galaxies) * n_sys
+    else:
+        total_systems = len(ranked)
+    explored_systems = sum(1 for it in ranked if it["scanned"])
+    unscanned_systems = max(0, total_systems - explored_systems)
+    coverage_pct = round((explored_systems / total_systems) * 100.0, 2) if total_systems > 0 else 0.0
+
+    primary_sys_by_gal: dict[int, int] = {}
+    for cg, cs in own_colonies:
+        primary_sys_by_gal.setdefault(cg, cs)
+
+    if explore_first and unscanned_systems > 0:
+        phase = "exploratory"
+        unscanned_pool = [dict(it, phase="exploratory") for it in ranked if not it["scanned"]]
+        take_exp = unscanned_pool[:eff_batch]
+        rem_budget = max(0, eff_batch - len(take_exp))
+        take_ref: list[dict[str, Any]] = []
+        if rem_budget > 0:
+            scanned_pool = [dict(it, phase="targeted_refresh") for it in ranked if it["scanned"]]
+            scanned_pool.sort(
+                key=lambda it: (
+                    0 if not it["is_fresh"] else 1,
+                    -it["score"],
+                    -it["importance"],
+                    it["distance"],
+                    it["galaxy"],
+                    it["system"],
+                )
+            )
+            for it in scanned_pool[:rem_budget]:
+                if it["reason"].startswith("unscanned"):
+                    it["reason"] = f"d={it['distance']}, age {_format_age_short(it['age_seconds'])}"
+                take_ref.append(it)
+        priority_selected = [*take_exp, *take_ref]
+        if smooth_walk and len(take_exp) > 1:
+            walk_exp = order_sectors_for_smooth_walk(
+                take_exp,
+                primary_colony_by_galaxy=primary_sys_by_gal,
+                systems_per_galaxy=n_sys,
+            )
+        else:
+            walk_exp = take_exp
+        if smooth_walk and len(take_ref) > 1:
+            walk_ref = order_sectors_for_smooth_walk(
+                take_ref,
+                primary_colony_by_galaxy=primary_sys_by_gal,
+                systems_per_galaxy=n_sys,
+            )
+        else:
+            walk_ref = take_ref
+        selected_sectors = [*walk_exp, *walk_ref]
+    else:
+        phase = "targeted_refresh"
+        refresh_ranked = score_galaxy_scan_sectors(
+            own_coords=own_coords,
+            sector_intel=sector_intel,
+            galaxies=galaxies,
+            scanned_systems=scanned_systems,
+            raid_targets=raid_targets,
+            raid_stats=raid_stats,
+            raid_history=raid_history,
+            explore_first=False,
+            near_weight=near_weight,
+            attack_weight=attack_weight,
+            collect_colonies=collect_colonies,
+            min_freshness_seconds=min_freshness_seconds,
+            max_radius=max_radius,
+            systems_per_galaxy=n_sys,
+            now_ts=now_ts,
+        )
+        priority_selected = [dict(it, phase="targeted_refresh") for it in refresh_ranked[:eff_batch]]
+        walk_exp = []
+        if smooth_walk and len(priority_selected) > 1:
+            walk_ref = order_sectors_for_smooth_walk(
+                priority_selected,
+                primary_colony_by_galaxy=primary_sys_by_gal,
+                systems_per_galaxy=n_sys,
+            )
+        else:
+            walk_ref = priority_selected
+        selected_sectors = walk_ref
+
+    sample_targets = [
+        {
+            "sector": it["sector"],
+            "galaxy": it["galaxy"],
+            "system": it["system"],
+            "phase": it["phase"],
+            "score": it["score"],
+            "distance": it["distance"],
+            "direct_raid_count": it["direct_raid_count"],
+            "owner_affinity_raid_count": it["owner_affinity_raid_count"],
+            "reason": it["reason"],
+        }
+        for it in priority_selected[:5]
+    ]
+
+    return {
+        "phase": phase,
+        "scan_phase": phase,
+        "galaxies": active_galaxies,
+        "explored_systems": explored_systems,
+        "unscanned_systems": unscanned_systems,
+        "total_systems": total_systems,
+        "coverage_pct": coverage_pct,
+        "exploratory_count": len(walk_exp),
+        "refresh_count": len(walk_ref),
+        "selected_sectors": selected_sectors,
+        "sample_targets": sample_targets,
+    }

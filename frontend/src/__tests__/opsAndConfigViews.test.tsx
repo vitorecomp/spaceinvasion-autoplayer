@@ -30,6 +30,9 @@ const MOCK_DASHBOARD: DashboardPayload = {
     min_colony_fields: 300,
     galaxy_scan_click_delay_seconds: 1.5,
     galaxy_scan_click_jitter_seconds: 0.6,
+    galaxy_scan_explore_first: true,
+    galaxy_scan_near_weight: 2.0,
+    galaxy_scan_attack_weight: 3.0,
     reserved_spy_slots: 1,
     spy_dispatch_planet_id: 0,
   },
@@ -276,6 +279,63 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
             Number(c.config?.galaxy_scan_click_delay_seconds) === 2.4
         )
       ).toBe(true);
+    });
+  });
+
+  it("renders and saves Smart 2-Phase Galaxy Scanner config fields (explore-first, near weight, attack weight)", async () => {
+    const { container } = render(
+      <SeedProvider page="config">
+        <ConfigView />
+      </SeedProvider>
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("#cfg-galaxy_scan_explore_first")).not.toBeNull();
+    });
+
+    const galaxyGroup = container.querySelector('[aria-labelledby="cfg-grp-galaxy"]')!;
+    expect(galaxyGroup).not.toBeNull();
+    for (const key of [
+      "galaxy_scan_explore_first",
+      "galaxy_scan_near_weight",
+      "galaxy_scan_attack_weight",
+    ]) {
+      const ctrl = galaxyGroup.querySelector(`#cfg-${key}`);
+      expect(ctrl).not.toBeNull();
+      const item = ctrl!.closest(".config-item")!;
+      expect(item.querySelector(".config-item-key")?.textContent).toBe(key);
+      const desc = item.querySelector(".config-item-desc")?.textContent || "";
+      expect(desc.length).toBeGreaterThan(120);
+    }
+
+    const exploreBox = container.querySelector("#cfg-galaxy_scan_explore_first") as HTMLInputElement;
+    const nearInp = container.querySelector("#cfg-galaxy_scan_near_weight") as HTMLInputElement;
+    const attackInp = container.querySelector("#cfg-galaxy_scan_attack_weight") as HTMLInputElement;
+    expect(exploreBox.type).toBe("checkbox");
+    expect(exploreBox.checked).toBe(true);
+    expect(Number(nearInp.value)).toBe(2);
+    expect(Number(attackInp.value)).toBe(3);
+    expect(nearInp.min).toBe("0");
+    expect(nearInp.max).toBe("20");
+    expect(attackInp.min).toBe("0");
+    expect(attackInp.max).toBe("20");
+
+    const exploreDesc =
+      exploreBox.closest(".config-item")!.querySelector(".config-item-desc")?.textContent || "";
+    expect(exploreDesc).toContain("1–400");
+    expect(exploreDesc.toLowerCase()).toContain("phase 2");
+
+    fireEvent.click(exploreBox);
+    fireEvent.change(nearInp, { target: { value: "4.5" } });
+    fireEvent.change(attackInp, { target: { value: "7" } });
+    fireEvent.click(container.querySelector("#btn-save-config")!);
+
+    await waitFor(() => {
+      const saved = postedCommands.find((c) => c.command === "update_config");
+      expect(saved).toBeDefined();
+      expect(saved!.config.galaxy_scan_explore_first).toBe(false);
+      expect(Number(saved!.config.galaxy_scan_near_weight)).toBe(4.5);
+      expect(Number(saved!.config.galaxy_scan_attack_weight)).toBe(7);
     });
   });
 

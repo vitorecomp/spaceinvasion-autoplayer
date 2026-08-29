@@ -16246,7 +16246,7 @@
       id: "galaxy",
       headingId: "cfg-grp-galaxy",
       title: "Galaxy Scanner & Sweep Pacing",
-      subtitle: "Spiral solar-system recon, randomized multi-page 2D Galaxy si.navigate sweeps, inter-click pacing delay, random jitter, and free-slot colonization.",
+      subtitle: "Spiral solar-system recon, the smart 2-phase scanner (exploratory 1–400 coverage, then a weighted refresh by proximity and attack history), multi-page 2D Galaxy si.navigate sweeps, delay and jitter between clicks, and free-slot colonization.",
       items: [
         {
           key: "allow_galaxy_scan",
@@ -16304,6 +16304,39 @@
           min: 0,
           max: 30,
           step: 0.1
+        },
+        {
+          key: "galaxy_scan_explore_first",
+          id: "cfg-galaxy_scan_explore_first",
+          title: "Smart Scan Phase 1: Explore Unscanned Systems First",
+          boundsLabel: "default: true · boolean",
+          description: "Phase 1 (exploratory): Galaxy sweeps and SCAN_GALAXY visit every never-scanned solar system (1–400) in each galaxy where you own a non-raid colony before they revisit any system. Systems are ordered outward from your nearest colony so si.navigate steps stay contiguous. Once coverage reaches 100% (explored_systems == total_systems), or right away when this is off, sweeps switch to Phase 2: a weighted refresh that ranks sectors by proximity, attack history, and staleness. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: true
+        },
+        {
+          key: "galaxy_scan_near_weight",
+          id: "cfg-galaxy_scan_near_weight",
+          title: "Smart Scan Phase 2: Near-Sector Proximity Weight",
+          boundsLabel: "default: 2.0 · 0.0–20.0",
+          description: "Phase 2 (targeted_refresh) multiplier on the proximity score of each (galaxy, system) sector. Proximity uses the circular system distance to your closest non-raid colony, min(|s − own_s|, 400 − |s − own_s|), with a penalty for other galaxies. Higher values refresh nearby sectors (cheap raids, short Spy probe flights) more often; 0.0 ignores distance. Accepts floats from 0.0 to 20.0.",
+          control: "number",
+          defaultValue: 2,
+          min: 0,
+          max: 20,
+          step: 0.5
+        },
+        {
+          key: "galaxy_scan_attack_weight",
+          id: "cfg-galaxy_scan_attack_weight",
+          title: "Smart Scan Phase 2: Frequent-Attack Player & Sector Weight",
+          boundsLabel: "default: 3.0 · 0.0–20.0",
+          description: "Phase 2 (targeted_refresh) multiplier on attack-history affinity, read from SQLite raid_history. It combines direct raids and loot in a GG:SSS sector with per-owner frequency: every sector where a player you attack often owns a planet gets boosted. Debris, yellow inactive, Spacia, and 300+ free-slot value add a secondary score, and the total is multiplied by how stale the scan is. Higher values keep frequent farm targets fresh; 0.0 ignores attack history. Accepts floats from 0.0 to 20.0.",
+          control: "number",
+          defaultValue: 3,
+          min: 0,
+          max: 20,
+          step: 0.5
         },
         {
           key: "allow_colonize",

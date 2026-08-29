@@ -130,6 +130,9 @@ export interface StrategyConfigData {
   galaxy_sweep_pages?: number;
   galaxy_scan_click_delay_seconds?: number;
   galaxy_scan_click_jitter_seconds?: number;
+  galaxy_scan_explore_first?: boolean;
+  galaxy_scan_near_weight?: number;
+  galaxy_scan_attack_weight?: number;
   reserved_spy_slots?: number;
   spy_dispatch_planet_id?: number;
   ga_population_size?: number;

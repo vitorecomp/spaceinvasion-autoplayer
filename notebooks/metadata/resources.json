@@ -1,0 +1,29 @@
+{
+  "description": "The four stored resources for notebooks/full_planner.ipynb: the building that produces each one ('mine_building_key'), its warehouse ('warehouse_building_key'), and whether Mining technology (r1) boosts its production.",
+  "resources": {
+    "pig_iron": {
+      "mine_building_key": "b1",
+      "warehouse_building_key": "b11",
+      "boosted_by_mining_tech": true,
+      "notes": "Direct planetary mine extraction (+2%/lvl r1); feedstock for Blast furnace (2:1)"
+    },
+    "metal": {
+      "mine_building_key": "b2",
+      "warehouse_building_key": "b12",
+      "boosted_by_mining_tech": false,
+      "notes": "Smelted 2:1 from Pig iron inside Blast furnace (b2); NOT boosted by r1"
+    },
+    "kryptonite": {
+      "mine_building_key": "b3",
+      "warehouse_building_key": "b13",
+      "boosted_by_mining_tech": true,
+      "notes": "Direct planetary mine extraction (+2%/lvl r1); heavy tech & warship input"
+    },
+    "spice": {
+      "mine_building_key": "b4",
+      "warehouse_building_key": "b14",
+      "boosted_by_mining_tech": true,
+      "notes": "Temperature-interpolated output (higher on colder colonies) +2%/lvl r1; fleet & scan fuel"
+    }
+  }
+}

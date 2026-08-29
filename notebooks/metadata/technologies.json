@@ -1,0 +1,126 @@
+{
+  "description": "Static descriptions of researches r1-r15 for notebooks/full_planner.ipynb. 'per_level_bonus_pct' is the bonus each level adds; the notebook derives its attack, shield, hull, energy and ship-speed multipliers from it (r1's bonus is applied inside game_data.mine_production_per_hour). 'cost_scale_factor' is the nominal cost ratio between consecutive levels of every research. 'name' must match spaceinvasion.core.game_data (checked when the notebook loads the file).",
+  "cost_scale_factor": 2.0,
+  "technologies": {
+    "r1": {
+      "name": "Mining technology",
+      "domain": "economy",
+      "effect_metric": "mine_output_bonus",
+      "per_level_bonus_pct": 2.0,
+      "applies_to": "b1 Pig iron, b3 Kryptonite, b4 Spice across all planets (NOT b2 Blast furnace)",
+      "strategic_effect": "+2%/lvl global Pig iron, Kryptonite & Spice mine output"
+    },
+    "r2": {
+      "name": "Energy technology",
+      "domain": "economy",
+      "effect_metric": "global_energy_bonus",
+      "per_level_bonus_pct": 1.0,
+      "applies_to": "b5 Fusion plant, b6 Thermosolar plant, s9 Solar cells across all planets",
+      "strategic_effect": "+1%/lvl global energy output; gates b9, b6, r1, shields & turrets"
+    },
+    "r3": {
+      "name": "Engine research",
+      "domain": "propulsion",
+      "effect_metric": "engine_tier_unlock",
+      "per_level_bonus_pct": 0.0,
+      "applies_to": "Unlocks Rocket (L2), Diffusion (L6), and Warp (L8) drive trees",
+      "strategic_effect": "Core propulsion gate (L2 -> r4, L6 -> r5, L8 -> r6)"
+    },
+    "r4": {
+      "name": "Rocket engine",
+      "domain": "propulsion",
+      "effect_metric": "rocket_ship_speed_bonus",
+      "per_level_bonus_pct": 10.0,
+      "applies_to": "s1 Small transport, s2 Large transport, s4 Small fighter, s5 Warship, s8 Colony ship, s10 Spy probe",
+      "strategic_effect": "+10%/lvl flight speed on Rocket-engine ships"
+    },
+    "r5": {
+      "name": "Diffusion engine",
+      "domain": "propulsion",
+      "effect_metric": "diffusion_ship_speed_bonus",
+      "per_level_bonus_pct": 10.0,
+      "applies_to": "s3 Transmitter, s6 Starcruiser, s7 Phoenix, s11 Recycler",
+      "strategic_effect": "+10%/lvl flight speed on Diffusion-engine fast-raid & recycler fleets"
+    },
+    "r6": {
+      "name": "Warp engine",
+      "domain": "propulsion",
+      "effect_metric": "warp_ship_speed_bonus",
+      "per_level_bonus_pct": 10.0,
+      "applies_to": "s13 Battleship, s14 Stealth bomber, s15 Destroyer, s16 Imperial starbase",
+      "strategic_effect": "+10%/lvl flight speed on heavy Warp-engine capital wings"
+    },
+    "r7": {
+      "name": "Spy technology",
+      "domain": "intelligence",
+      "effect_metric": "espionage_and_stealth",
+      "per_level_bonus_pct": 0.0,
+      "applies_to": "s10 Spy probe intel depth, counter-espionage, s14 Stealth bomber late detection",
+      "strategic_effect": "Expands spy report tiers (fleets/defense/buildings/research) & Stealth concealment"
+    },
+    "r8": {
+      "name": "Weapons technology",
+      "domain": "combat",
+      "effect_metric": "unit_attack_bonus",
+      "per_level_bonus_pct": 10.0,
+      "applies_to": "All ships (s1..s16) and planetary defenses (d1..d11)",
+      "strategic_effect": "+10%/lvl weapon attack power on all combat units"
+    },
+    "r9": {
+      "name": "Shield technology",
+      "domain": "combat",
+      "effect_metric": "unit_shield_bonus",
+      "per_level_bonus_pct": 10.0,
+      "applies_to": "All ships (s1..s16) and planetary defenses (d1..d11)",
+      "strategic_effect": "+10%/lvl shield absorption capacity; gates Shield domes & r12"
+    },
+    "r10": {
+      "name": "Defense systems",
+      "domain": "combat",
+      "effect_metric": "unit_hull_bonus",
+      "per_level_bonus_pct": 10.0,
+      "applies_to": "All ships (s1..s16) and planetary defenses (d1..d11)",
+      "strategic_effect": "+10%/lvl structural hull/armor points; gates s7 Phoenix (L5)"
+    },
+    "r11": {
+      "name": "Targeting systems",
+      "domain": "defense_unlock",
+      "effect_metric": "turret_tier_unlock",
+      "per_level_bonus_pct": 0.0,
+      "applies_to": "Ion, Heavy graviton, Positron, Interval, Laser, and Solar cannons",
+      "strategic_effect": "Unlocks mid-to-heavy planetary turret tiers (L4..L10)"
+    },
+    "r12": {
+      "name": "Particle analyzer",
+      "domain": "strategic_weapon",
+      "effect_metric": "particle_tech_unlock",
+      "per_level_bonus_pct": 0.0,
+      "applies_to": "b16 Particle shield (L2), d6 Interval cannon (L4), b15 Particle cannon (L5)",
+      "strategic_effect": "Gates planetary Particle shield, Interval cannon & Particle cannon"
+    },
+    "r13": {
+      "name": "Graviton technology",
+      "domain": "defense_unlock",
+      "effect_metric": "graviton_unlock",
+      "per_level_bonus_pct": 0.0,
+      "applies_to": "Light/Heavy graviton cannons & r15 Black hole research (L10)",
+      "strategic_effect": "Unlocks Graviton turrets & gates Black hole research"
+    },
+    "r14": {
+      "name": "Teleportation",
+      "domain": "logistics",
+      "effect_metric": "teleporter_cooldown_and_unlock",
+      "per_level_bonus_pct": 0.0,
+      "applies_to": "b18 Teleporter (unlocked at L6) cooldown & energy efficiency",
+      "strategic_effect": "Unlocks b18 Teleporter (L6) & reduces jump cooldown/energy"
+    },
+    "r15": {
+      "name": "Black hole research",
+      "domain": "endgame_warfare",
+      "effect_metric": "scanner_jam_duration_hours",
+      "per_level_bonus_pct": 0.0,
+      "applies_to": "s16 Imperial starbase unlock (L2) & system scanner-blindness (4h + 1h * L)",
+      "strategic_effect": "Unlocks s16 Imperial starbase (L2) & extends scanner jam to (4 + L) hours"
+    }
+  }
+}

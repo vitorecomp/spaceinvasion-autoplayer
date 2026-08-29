@@ -1,0 +1,65 @@
+{
+  "description": "Role of each ship for notebooks/full_planner.ipynb, keyed by the s-key that spaceinvasion.combat.fleet.SHIP_SLUG_BY_KEY maps to the catalog. Costs and stats come from spaceinvasion.core.game_data. 'name' must match game_data (checked when the notebook loads the file).",
+  "ships": {
+    "s1": {
+      "name": "Small transport",
+      "role": "cargo_transport"
+    },
+    "s2": {
+      "name": "Large transport",
+      "role": "cargo_transport"
+    },
+    "s3": {
+      "name": "Transmitter",
+      "role": "armed_heavy_hauler"
+    },
+    "s4": {
+      "name": "Small fighter",
+      "role": "fodder_interceptor"
+    },
+    "s5": {
+      "name": "Warship",
+      "role": "early_raider"
+    },
+    "s6": {
+      "name": "Starcruiser",
+      "role": "cruiser_raider"
+    },
+    "s7": {
+      "name": "Phoenix",
+      "role": "fast_strike_cruiser"
+    },
+    "s8": {
+      "name": "Colony ship",
+      "role": "colonizer"
+    },
+    "s9": {
+      "name": "Solar cells",
+      "role": "orbital_power_satellite"
+    },
+    "s10": {
+      "name": "Spy probe",
+      "role": "espionage_probe"
+    },
+    "s11": {
+      "name": "Recycler",
+      "role": "debris_recycler"
+    },
+    "s13": {
+      "name": "Battleship",
+      "role": "capital_warship"
+    },
+    "s14": {
+      "name": "Stealth bomber",
+      "role": "first_strike_bomber"
+    },
+    "s15": {
+      "name": "Destroyer",
+      "role": "heavy_destroyer"
+    },
+    "s16": {
+      "name": "Imperial starbase",
+      "role": "supercapital_starbase"
+    }
+  }
+}
