@@ -541,7 +541,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
     def test_v009_universe_research_max_monotonic_ledger_and_append_only_history(self) -> None:
         from spaceinvasion.combat.fleet import SpyReport
 
-        self.assertEqual(LATEST_SCHEMA_VERSION, 9)
+        self.assertEqual(LATEST_SCHEMA_VERSION, 10)
         with tempfile.TemporaryDirectory(prefix="si_mig_v9_") as tmp:
             db_path = Path(tmp) / "v9.db"
             db_v8 = GameDatabase(db_path, attack_history_path="", target_schema_version=8)
@@ -549,7 +549,8 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 self.assertEqual(db_v8.get_schema_version()["version"], 8)
                 mig9 = db_v8.run_migrations(target_version=9, backup=True)
                 self.assertEqual(mig9["version"], 9)
-                self.assertTrue(mig9["up_to_date"])
+                mig_head = db_v8.run_migrations(target_version=LATEST_SCHEMA_VERSION, backup=False)
+                self.assertTrue(mig_head["up_to_date"])
                 chk = db_v8.verify_schema(full_integrity=True)
                 self.assertTrue(chk["ok"], chk)
 

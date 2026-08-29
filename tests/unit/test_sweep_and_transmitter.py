@@ -553,6 +553,185 @@ class TestSweepAndTransmitter(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_retro_free_slot_ecology_probing_priority_and_noop_batch_continuation(self) -> None:
+        from unittest.mock import MagicMock
+        import bin.commander as commander_mod
+        from spaceinvasion.combat.fleet import GalaxySlot, grade_colony_candidate
+        from spaceinvasion.session.executor import ActionExecutor
+        from spaceinvasion.runtime.api_server import GameApiBridge
+
+        # 1. Range-based ecology grading (140-340 fields @ 28C -> Grade S, meets 300+ target; 100-220 -> Grade D, skipped)
+        g_prime = grade_colony_candidate(
+            "02:380:12",
+            "02:380:08",
+            colonize_min_fields=140,
+            colonize_max_fields=340,
+            temperature=28,
+            min_fields_target=300,
+        )
+        self.assertTrue(g_prime["probed"])
+        self.assertTrue(g_prime["meets_target"])
+        self.assertEqual(g_prime["grade"], "S")
+        self.assertEqual(g_prime["fields_display"], "140–340 fields")
+
+        g_small = grade_colony_candidate(
+            "02:380:12",
+            "02:380:11",
+            colonize_min_fields=100,
+            colonize_max_fields=220,
+            temperature=43,
+            min_fields_target=300,
+        )
+        self.assertTrue(g_small["probed"])
+        self.assertFalse(g_small["meets_target"])
+        self.assertEqual(g_small["grade"], "D")
+
+        # 2. Free-slot SPY outranks raid SPY in both priority and ga_nn modes & ignores stale "can't be attacked" block
+        origin_p = _make_planet(101, "02:380:12", ships={"s10": 5, "s8": 1, "s1": 10})
+        raid_targets = (
+            {
+                "coords": "02:362:16",
+                "owner": "Mooee",
+                "planet_name": "Colony",
+                "status_color": "yellow",
+                "is_inactive": True,
+                "is_spacia": False,
+                "last_spied_ts": 0.0,
+            },
+            {
+                "coords": "02:380:09",
+                "owner": "",
+                "planet_name": "",
+                "status_color": "free",
+                "is_inactive": False,
+                "is_spacia": False,
+                "uninhabited_fields": None,
+                "blocked_until_ts": 1_700_050_000.0,
+                "block_reason": "This user can't be attacked!",
+            },
+        )
+        for mode in ("priority", "ga_nn"):
+            cfg_m = StrategyConfig(
+                planner_mode=mode,
+                playstyle="fleeter",
+                allow_raids=True,
+                allow_galaxy_scan=True,
+                allow_colonize=True,
+                min_colony_fields=300,
+                max_planets=11,
+                ga_population_size=6,
+                ga_generations=2,
+            )
+            st_m = GameState(31, 7, "cmdr", 1_700_000_100.0, (origin_p,), active_planet_id=101, raid_targets=raid_targets)
+            acts_m = plan_actions(st_m, config=cfg_m, now_ts=1_700_000_100.0)
+            spy_acts = [a for a in acts_m if a.kind == "SPY" and a.executable_now]
+            self.assertGreaterEqual(len(spy_acts), 2, mode)
+            self.assertEqual(spy_acts[0].target_name, "02:380:09 (Free slot)", mode)
+
+        # 3. _execute_spy probes free slot via 2D Galaxy ecology even when RETRO returns "This user can't be attacked!"
+        retro_gal_html = """
+        <html><body>
+          <textarea id="json-element">{"position":{"galaxy":2,"system":380},"planets":{"8":{"position":8,"uid":0,"temperature":28,"colonize":[140,340,0]}}}</textarea>
+        </body></html>
+        """
+        fake_browser = MagicMock()
+
+        def _fake_dispatch_spy(*, galaxy: int, system: int, position: int, **_kw):
+            return {
+                "supported": True,
+                "started": False,
+                "error": "This user can't be attacked!",
+                "html": retro_gal_html,
+                "galaxy": galaxy,
+                "system": system,
+            }
+
+        _fake_dispatch_spy.__module__ = "spaceinvasion.session.client"
+        fake_browser.dispatch_galaxy_spy = _fake_dispatch_spy
+
+        exec_inst = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
+        probe_act = spy_acts[0]
+        probe_act_08 = type(probe_act)(
+            priority="P2",
+            kind="SPY",
+            planet_id=101,
+            planet_coords="02:380:12",
+            target_id=10,
+            target_level=1,
+            target_name="02:380:08 (Free slot)",
+            reason="Probe free slot 02:380:08",
+            executable_now=True,
+        )
+        res_probe = exec_inst._execute_spy(fake_browser, st_m, probe_act_08, active_planet_confirmed=True)
+        self.assertTrue(res_probe.executed)
+        self.assertIn("140–340 fields (28°C)", res_probe.message)
+        self.assertEqual(len(exec_inst.last_galaxy_slots), 1)
+        self.assertEqual(exec_inst.last_galaxy_slots[0].colonize_max_fields, 340)
+
+        # 4. V010 persistence + Commander continuing past No-op THROTTLE_BUILDING to execute SPY
+        with tempfile.TemporaryDirectory(prefix="si_v10_col_") as tmp_v10:
+            tp10 = Path(tmp_v10)
+            bridge10 = GameApiBridge(
+                debug_port=19998,
+                config_path=tp10 / "cfg.yaml",
+                db_path=tp10 / "v10.db",
+                log_dir=None,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                assert bridge10._db is not None
+                bridge10._db.record_target_block("02:380:08", blocked_until_ts=9_999_999_999.0, reason="This user can't be attacked!")
+                bridge10._db.record_galaxy_slots(exec_inst.last_galaxy_slots, ts=3000.0)
+                cands10 = bridge10._db.get_colony_candidates(origin_coords="02:380:12", min_fields_target=300)
+                self.assertEqual(len(cands10), 1)
+                self.assertTrue(cands10[0]["probed"])
+                self.assertTrue(cands10[0]["meets_target"])
+                self.assertEqual(cands10[0]["blocked_until_ts"], 0.0)
+            finally:
+                bridge10.close()
+
+        sent_cmds: list[str] = []
+
+        class _FakeCmdApi:
+            def get_state(self, **_kw):
+                return st_m
+
+            def send_command(self, payload):
+                sent_cmds.append(str(payload.get("command")))
+                if payload.get("command") == "throttle_building":
+                    return {"ok": True, "executed": False, "message": "No-op: Blast furnace 100% (resource2) is already at 100%."}
+                return {"ok": True, "executed": True, "command": payload.get("command"), "message": "Probed free slot."}
+
+        mq_noop = [
+            {
+                "id": 1,
+                "status": "pending",
+                "priority": "P1",
+                "sort_rank": 1.0,
+                "kind": "THROTTLE_BUILDING",
+                "planet_id": 101,
+                "planet_coords": "02:380:12",
+                "target_id": 2,
+                "target_level": 100,
+                "target_name": "Blast furnace 100%",
+                "reason": "Ensure 100%",
+            }
+        ]
+        _, _, _, _, tick_outcomes = commander_mod.run_commander_tick(
+            _FakeCmdApi(),  # type: ignore[arg-type]
+            live=True,
+            max_actions=2,
+            config=StrategyConfig(
+                allow_galaxy_scan=True,
+                allow_colonize=True,
+                min_colony_fields=300,
+                max_planets=11,
+            ),
+            manual_queue=mq_noop,
+        )
+        self.assertEqual(sent_cmds, ["throttle_building", "spy"])
+        self.assertTrue(any(o.get("executed") for o in tick_outcomes))
+
 
 if __name__ == "__main__":
     unittest.main()

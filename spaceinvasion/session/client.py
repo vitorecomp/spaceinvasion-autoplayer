@@ -1376,6 +1376,40 @@ class GameBrowserClient:
             self.driver.execute_script("arguments[0].submit();", form_els[0])
         return self._wait_frame_ready("F_Hauptframe", expected_action="internalGalaxy", nav_token=nav_token)
 
+    def _sync_galaxy_json_textarea(self) -> None:
+        """Mirror 2D Galaxy `window.si.result` / `<textarea id="json-element">.value` into `.textContent` so `page_source` serializes it."""
+        try:
+            self.driver.execute_script(
+                "var je = document.getElementById('json-element');"
+                "if (!je) return;"
+                "var v = (typeof je.value === 'string') ? je.value.trim() : '';"
+                "if ((!v || v === 'null') && window.si && window.si.result && window.si.result.planets) {"
+                "  try {"
+                "    var rawPl = window.si.result.planets;"
+                "    var outPl = {};"
+                "    for (var pk in rawPl) {"
+                "      if (!Object.prototype.hasOwnProperty.call(rawPl, pk)) continue;"
+                "      var item = rawPl[pk];"
+                "      if (item && typeof item === 'object') {"
+                "        var copy = {};"
+                "        for (var ik in item) {"
+                "          if (Object.prototype.hasOwnProperty.call(item, ik) && typeof item[ik] !== 'function') {"
+                "            copy[ik] = item[ik];"
+                "          }"
+                "        }"
+                "        outPl[String(Number(pk) + (Array.isArray(rawPl) ? 1 : 0))] = copy;"
+                "      }"
+                "    }"
+                "    v = JSON.stringify({position: Object.assign({}, window.si.result.position || {}), planets: outPl});"
+                "  } catch (e) { v = ''; }"
+                "}"
+                "if (v && v !== 'null' && je.textContent !== v) {"
+                "  je.textContent = v;"
+                "}"
+            )
+        except Exception:
+            pass
+
     def _wait_galaxy_ajax_ready(self, html: str) -> str:
         """Wait briefly for SpaceInvasion 2D/Modern Galaxy (`SI_TPL.galaxy` -> `si.getData()`) to populate planets."""
         if "SI_TPL.galaxy" not in html:
@@ -1388,6 +1422,8 @@ class GameBrowserClient:
                     self.driver.execute_script(
                         "var pl = document.getElementById('planet-list');"
                         "if (pl && pl.children && pl.children.length > 0) return true;"
+                        "var je = document.getElementById('json-element');"
+                        "if (je && typeof je.value === 'string' && je.value.length > 20) return true;"
                         "var bodyTxt = document.body ? (document.body.innerText || '') : '';"
                         "return bodyTxt.indexOf('X:') !== -1;"
                     )
@@ -1395,6 +1431,7 @@ class GameBrowserClient:
             except Exception:
                 rendered = True
             if rendered:
+                self._sync_galaxy_json_textarea()
                 html = self.driver.page_source or html
                 self._check_page_guards(html)
                 break
@@ -1635,6 +1672,7 @@ class GameBrowserClient:
             )
 
         self._switch_frame("F_Hauptframe")
+        self._sync_galaxy_json_textarea()
         html = self.driver.page_source or ""
         self._check_page_guards(html)
         try:
@@ -1648,6 +1686,116 @@ class GameBrowserClient:
         )
         self.last_galaxy_coords = (actual_gal, actual_sys)
         return html, actual_gal, actual_sys
+
+    def dispatch_galaxy_spy(
+        self,
+        *,
+        galaxy: int,
+        system: int,
+        position: int,
+        quantity: int = 1,
+        is_asteroid: bool = False,
+        priority: str = "interactive",
+    ) -> dict[str, Any]:
+        """Dispatch a 2D Galaxy quick-spy (`startFleetAction=spy`) via `window.si.getData(...)`."""
+        gal_arg = game_data.cap_json_int(max(1, min(1000, game_data.safe_int(galaxy, 1))))
+        sys_arg = game_data.cap_json_int(max(1, min(1000, game_data.safe_int(system, 1))))
+        pos_arg = game_data.cap_json_int(max(1, min(16, game_data.safe_int(position, 1))))
+        qty_arg = game_data.cap_json_int(max(1, min(9999, game_data.safe_int(quantity, 1))))
+
+        html, actual_gal, actual_sys = self.step_galaxy_system(
+            galaxy=gal_arg,
+            system=sys_arg,
+            pace=True,
+            priority=priority,
+        )
+        self._switch_frame("F_Hauptframe")
+        has_si = False
+        try:
+            has_si = bool(
+                self.driver.execute_script(
+                    "return Boolean(window.si && typeof window.si.getData === 'function');"
+                )
+            )
+        except Exception:
+            has_si = False
+        if not has_si:
+            return {"supported": False, "started": False, "error": "2D Galaxy si.getData unavailable", "html": html}
+
+        self._pace(priority=priority)
+        self._switch_frame("F_Hauptframe")
+        ta_part = "&ta=1" if is_asteroid else ""
+        param = (
+            f"&startFleet=1&fleets={qty_arg}&startFleetAction=spy"
+            f"&gal={gal_arg}&sun={sys_arg}&p={pos_arg}{ta_part}&m=1"
+        )
+        self.driver.execute_script(
+            "var g = document.getElementById('fa-gal'); if (g) g.value = String(arguments[0]);"
+            "var s = document.getElementById('fa-sun'); if (s) s.value = String(arguments[1]);"
+            "var p = document.getElementById('fa-pla'); if (p) p.value = String(arguments[2]);"
+            "var f = document.getElementById('fleet-spy'); if (f) f.value = String(arguments[3]);"
+            "var mf = document.getElementById('message-fleetstart'); if (mf) mf.style.display = 'none';"
+            "var mf2 = document.getElementById('message-fleetstart-2'); if (mf2) mf2.style.display = 'none';"
+            "var me = document.getElementById('message-error'); if (me) me.style.display = 'none';"
+            "var met = document.getElementById('message-error-text'); if (met) met.textContent = '';"
+            "if (window.si && window.si.result) { delete window.si.result.flightStarted; delete window.si.result.err; }"
+            "window.si.getData(arguments[4]);",
+            gal_arg,
+            sys_arg,
+            pos_arg,
+            qty_arg,
+            param,
+        )
+        deadline = time.monotonic() + min(4.5, max(0.5, self.timeout * 0.4))
+        outcome: dict[str, Any] = {"supported": True, "started": False, "error": ""}
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+            self._switch_frame("F_Hauptframe")
+            try:
+                st = self.driver.execute_script(
+                    "var pvErr = document.getElementById('pageview-error');"
+                    "var pvAmt = document.getElementById('pageview-amount');"
+                    "if (pvErr && pvErr.style && pvErr.style.display !== 'none' && pvAmt && (pvAmt.textContent || '').trim()) {"
+                    "  return {throttled: true};"
+                    "}"
+                    "if (!window.si) return {done: true, err: 'window.si lost'};"
+                    "if (window.si._getStatus) return {busy: true};"
+                    "var r = window.si.result || {};"
+                    "var errEl = document.getElementById('message-error-text') || document.getElementById('message-error-text-mobile');"
+                    "var domErr = errEl ? (errEl.textContent || '').trim() : '';"
+                    "return {"
+                    "  busy: false,"
+                    "  flightStarted: r.flightStarted !== undefined ? r.flightStarted : null,"
+                    "  err: r.err !== undefined ? String(r.err || '') : domErr"
+                    "};"
+                )
+            except Exception as exc:
+                outcome["error"] = str(exc)
+                break
+            if isinstance(st, dict):
+                if st.get("throttled"):
+                    html_err = self.driver.page_source or ""
+                    self._check_page_guards(html_err)
+                    raise RateLimitError(
+                        "SpaceInvasion 2D Galaxy AJAX per-minute page-view throttle hit.",
+                        server_throttle=True,
+                    )
+                if st.get("busy"):
+                    continue
+                fs = st.get("flightStarted")
+                err_s = str(st.get("err") or "").strip()
+                outcome["started"] = bool(fs)
+                outcome["flight_started"] = fs
+                outcome["error"] = err_s
+                break
+        self._switch_frame("F_Hauptframe")
+        self._sync_galaxy_json_textarea()
+        post_html = self.driver.page_source or html
+        self._check_page_guards(post_html)
+        outcome["html"] = post_html
+        outcome["galaxy"] = actual_gal
+        outcome["system"] = actual_sys
+        return outcome
 
     def open_messages(
         self,

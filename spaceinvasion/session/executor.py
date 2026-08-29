@@ -2315,7 +2315,13 @@ class ActionExecutor:
         )
         send_soup = BeautifulSoup(send_html or "", "html.parser")
         step1_block = parse_send_fleet_mission_block(send_html, mission_kind)
-        if step1_block is not None:
+        has_any_step2_radio = send_soup.select_one('input[type="radio"]') is not None
+        if step1_block is not None and (
+            not has_any_step2_radio
+            or "(forbidden)" in step1_block[0].lower()
+            or "(verboten)" in step1_block[0].lower()
+            or mission_kind == "RECYCLE"
+        ):
             blk_reason, blk_cd, blk_bash = step1_block
             return ExecutionResult(
                 executed=False,
@@ -2709,6 +2715,137 @@ class ActionExecutor:
                 message=f"Aborted: no spy probes (s10) stationed on [{_safe_str(action.planet_coords)}].",
             )
         probe_count = min(avail, max(1, game_data.cap_json_int(game_data.safe_int(action.target_level, 1))))
+        tname_s = _safe_str(action.target_name)
+        reason_s = _safe_str(action.reason)
+        is_free_slot_probe = (
+            "(free slot)" in tname_s.lower()
+            or "probe free slot" in reason_s.lower()
+        )
+        m_coords = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", tname_s, re.ASCII)
+        dispatch_fn = getattr(client, "dispatch_galaxy_spy", None)
+        if (
+            is_free_slot_probe
+            and m_coords is not None
+            and callable(dispatch_fn)
+            and getattr(dispatch_fn, "__module__", "").startswith("spaceinvasion")
+        ):
+            t_gal, t_sys, t_pos = int(m_coords.group(1)), int(m_coords.group(2)), int(m_coords.group(3))
+            if len(state.planets) > 1 or not active_planet_confirmed or state.active_planet_id != action.planet_id:
+                self._navigate_and_select_planet(
+                    client,
+                    state,
+                    "internalHome",
+                    action.planet_id,
+                    active_planet_confirmed=active_planet_confirmed,
+                )
+                mismatch_pid = self._confirmed_planet_mismatch(action.planet_id)
+                if mismatch_pid is not None:
+                    return ExecutionResult(
+                        executed=False,
+                        dry_run=False,
+                        action=action,
+                        message=(
+                            f"Aborted: active planet is {mismatch_pid}, "
+                            f"not requested origin {game_data.fmt_compact_int(action.planet_id)}."
+                        ),
+                        observed_active_planet_id=mismatch_pid,
+                        observed_active_planet_confirmed=True,
+                    )
+            is_ast = bool(re.search(r"\[\s*a\s*\]|\basteroid\b", f"{tname_s} {reason_s}", re.IGNORECASE))
+            qspy = dispatch_fn(
+                galaxy=t_gal,
+                system=t_sys,
+                position=t_pos,
+                quantity=probe_count,
+                is_asteroid=is_ast,
+                priority="interactive",
+            )
+            if isinstance(qspy, Mapping):
+                q_html = str(qspy.get("html") or "")
+                parsed_q_slots: list[GalaxySlot] = []
+                if q_html:
+                    try:
+                        parsed_q_slots = list(
+                            parse_galaxy_system_html(
+                                q_html,
+                                galaxy=int(qspy.get("galaxy") or t_gal),
+                                system=int(qspy.get("system") or t_sys),
+                            )
+                        )
+                        self.last_galaxy_slots = parsed_q_slots
+                    except Exception:
+                        pass
+                if qspy.get("started"):
+                    self._recent_timestamps.append(time.monotonic())
+                    updated = _call_with_optional_priority(
+                        client.read_planets_overview,
+                        refresh=True,
+                        priority="interactive",
+                    )
+                    updated_state = self._build_updated_state(
+                        client,
+                        state,
+                        action,
+                        updated,
+                        is_fleet=True,
+                    )
+                    return ExecutionResult(
+                        executed=True,
+                        dry_run=False,
+                        action=action,
+                        message=(
+                            f"Dispatched spy probe ({probe_count}x s10) via 2D Galaxy to "
+                            f"[{t_gal:02d}:{t_sys:03d}:{t_pos:02d}] from [{_safe_str(action.planet_coords)}]."
+                        ),
+                        updated_state=updated_state,
+                    )
+                matched_free_slot = next(
+                    (
+                        sl
+                        for sl in parsed_q_slots
+                        if sl.position == t_pos
+                        and sl.status_color == "free"
+                        and (sl.uninhabited_fields is not None or sl.colonize_max_fields is not None)
+                    ),
+                    None,
+                )
+                if matched_free_slot is not None:
+                    self._recent_timestamps.append(time.monotonic())
+                    if matched_free_slot.uninhabited_fields is not None:
+                        eco_desc = f"{matched_free_slot.uninhabited_fields} fields"
+                    else:
+                        c_min_f = matched_free_slot.colonize_min_fields or matched_free_slot.colonize_max_fields
+                        eco_desc = f"{c_min_f}–{matched_free_slot.colonize_max_fields} fields"
+                    if matched_free_slot.temperature is not None:
+                        eco_desc += f" ({matched_free_slot.temperature}°C)"
+                    free_cnt = sum(
+                        1
+                        for sl in parsed_q_slots
+                        if sl.status_color == "free"
+                        and (sl.uninhabited_fields is not None or sl.colonize_max_fields is not None)
+                    )
+                    return ExecutionResult(
+                        executed=True,
+                        dry_run=False,
+                        action=action,
+                        message=(
+                            f"Probed free slot [{t_gal:02d}:{t_sys:03d}:{t_pos:02d}] ecology via 2D Galaxy: "
+                            f"{eco_desc} ({free_cnt} free slot(s) graded in [{t_gal:02d}:{t_sys:03d}])."
+                        ),
+                        validated=True,
+                    )
+                q_err = str(qspy.get("error") or "").strip()
+                if q_err and self._is_unattackable_target_html(q_err):
+                    return ExecutionResult(
+                        executed=False,
+                        dry_run=False,
+                        action=action,
+                        message=f"Aborted: {q_err}.",
+                        target_cooldown_seconds=21600.0,
+                        target_block_reason=q_err,
+                        validated=False,
+                        validation_error=q_err,
+                    )
         return self._dispatch_fleet_mission(
             client,
             state,

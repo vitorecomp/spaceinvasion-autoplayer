@@ -15116,13 +15116,16 @@
                 const coords = String(c.coords || "—");
                 const grade = String(c.grade || "?");
                 const uf = finiteNum(c.uninhabited_fields, null);
+                const cMin = finiteNum(c.colonize_min_fields, null);
+                const cMax = finiteNum(c.colonize_max_fields, null);
+                const fieldsDisp = typeof c.fields_display === "string" && c.fields_display.trim() ? c.fields_display.trim() : uf !== null && uf > 0 ? `${Math.round(uf)} fields` : cMax !== null && cMax > 0 ? cMin !== null && cMin > 0 && cMin !== cMax ? `${Math.round(cMin)}–${Math.round(cMax)} fields` : `${Math.round(cMax)} fields` : "";
                 const sysDist = Math.round(finiteNum(c.system_distance, 0));
                 return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `grade-badge ${gradeClassFor(grade)}`, children: grade }) }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `${Math.round(finiteNum(c.score, 0))}/100` }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: coords }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: `Pos ${c.position || "?"} · ${c.orbital_band || "Unknown"}` }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: uf !== null && uf > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `status-word${c.meets_target ? "" : " is-warn"}`, children: `${Math.round(uf)} fields` }) : "Unprobed" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fieldsDisp ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `status-word${c.meets_target ? "" : " is-warn"}`, children: fieldsDisp }) : "Unprobed" }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: sysDist === 0 ? "Same sys" : `${sysDist} sys` }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: String(c.reason || "") }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row-actions", children: [

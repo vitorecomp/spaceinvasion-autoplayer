@@ -86,6 +86,7 @@ class GalaxySlot:
     colonize_min_fields: Optional[int] = None
     colonize_max_fields: Optional[int] = None
     uninhabited_fields: Optional[int] = None
+    temperature: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -1578,7 +1579,7 @@ def parse_galaxy_system_html(
             except Exception:
                 parsed_j = None
         planets_j = parsed_j.get("planets") if isinstance(parsed_j, Mapping) else None
-        pos_meta: dict[int, tuple[Optional[int], Optional[int], Optional[int], bool, str, str, bool]] = {}
+        pos_meta: dict[int, tuple[Optional[int], Optional[int], Optional[int], Optional[int], bool, str, str, bool]] = {}
         if isinstance(planets_j, Mapping):
             iter_items = list(planets_j.items())
         elif isinstance(planets_j, Sequence) and not isinstance(planets_j, (str, bytes)):
@@ -1599,6 +1600,12 @@ def parse_galaxy_system_html(
             c_min: Optional[int] = None
             c_max: Optional[int] = None
             uf_exact: Optional[int] = None
+            temp_j: Optional[int] = None
+            raw_temp = pdata.get("temperature")
+            if raw_temp is not None and not isinstance(raw_temp, bool):
+                t_parsed = game_data.safe_optional_int(raw_temp, None)
+                if t_parsed is not None and -300 <= t_parsed <= 600:
+                    temp_j = t_parsed
             if is_free_j:
                 col_arr = pdata.get("colonize")
                 if isinstance(col_arr, Sequence) and not isinstance(col_arr, (str, bytes)) and len(col_arr) >= 2:
@@ -1625,27 +1632,34 @@ def parse_galaxy_system_html(
                 raw_exact = pdata.get("uninhabited_fields", pdata.get("fields"))
                 if isinstance(raw_exact, int) and not isinstance(raw_exact, bool) and 20 <= raw_exact <= 1000:
                     uf_exact = raw_exact
-            has_deb_j = bool(pdata.get("rubble") or pdata.get("debris") or pdata.get("tf"))
-            pos_meta[p_pos] = (c_min, c_max, uf_exact, is_free_j, pname_j, owner_j, has_deb_j)
+            raw_rubble = pdata.get("rubblefield1") or pdata.get("rubblefield") or pdata.get("rubble") or pdata.get("debris") or pdata.get("tf")
+            if isinstance(raw_rubble, Sequence) and not isinstance(raw_rubble, (str, bytes)):
+                has_deb_j = sum(max(0, _safe_fleet_int(x, 0)) for x in raw_rubble[:4]) > 0
+            else:
+                has_deb_j = bool(raw_rubble)
+            pos_meta[p_pos] = (c_min, c_max, uf_exact, temp_j, is_free_j, pname_j, owner_j, has_deb_j)
         if pos_meta:
             if slots:
                 enriched_slots: list[GalaxySlot] = []
                 for sl in slots:
                     meta_p = pos_meta.get(sl.position)
                     if meta_p is not None and sl.status_color == "free":
-                        c_min, c_max, uf_exact, _, _, _, _ = meta_p
-                        if c_min is not None or c_max is not None or uf_exact is not None:
+                        c_min, c_max, uf_exact, temp_j, _, _, _, _ = meta_p
+                        if c_min is not None or c_max is not None or uf_exact is not None or temp_j is not None:
                             sl = replace(
                                 sl,
-                                colonize_min_fields=c_min,
-                                colonize_max_fields=c_max,
+                                colonize_min_fields=c_min if c_min is not None else sl.colonize_min_fields,
+                                colonize_max_fields=c_max if c_max is not None else sl.colonize_max_fields,
                                 uninhabited_fields=uf_exact if uf_exact is not None else sl.uninhabited_fields,
+                                temperature=temp_j if temp_j is not None else sl.temperature,
                             )
+                    elif meta_p is not None and meta_p[3] is not None and sl.temperature is None:
+                        sl = replace(sl, temperature=meta_p[3])
                     enriched_slots.append(sl)
                 slots = enriched_slots
             else:
                 for p_pos in sorted(pos_meta):
-                    c_min, c_max, uf_exact, is_free_j, pname_j, owner_j, has_deb_j = pos_meta[p_pos]
+                    c_min, c_max, uf_exact, temp_j, is_free_j, pname_j, owner_j, has_deb_j = pos_meta[p_pos]
                     coords = f"{gal:02d}:{sys_num:03d}:{p_pos:02d}"
                     is_sp_j = "spacia" in pname_j.lower() or "spacia" in owner_j.lower()
                     slots.append(
@@ -1660,6 +1674,7 @@ def parse_galaxy_system_html(
                             colonize_min_fields=c_min,
                             colonize_max_fields=c_max,
                             uninhabited_fields=uf_exact,
+                            temperature=temp_j,
                         )
                     )
 
@@ -3155,12 +3170,15 @@ def grade_colony_candidate(
     origin_coords: str = "",
     position: Optional[int] = None,
     uninhabited_fields: Optional[int] = None,
+    colonize_min_fields: Optional[int] = None,
+    colonize_max_fields: Optional[int] = None,
+    temperature: Optional[int] = None,
     spied: bool = False,
     min_fields_target: int = 300,
     last_spied_ts: float = 0.0,
     last_scanned_ts: float = 0.0,
 ) -> dict[str, Any]:
-    """Grade an uninhabited/free galaxy slot (`S`..`D` when spied, `?` when unprobed)."""
+    """Grade an uninhabited/free galaxy slot (`S`..`D` when spied/scouted, `?` when unprobed)."""
     if coords is not None:
         eff_coords = coords
         eff_origin = origin_coords or first_coords
@@ -3201,10 +3219,27 @@ def grade_colony_candidate(
         est_temp = "100°C .. 220°C"
 
     fields_val = game_data.safe_optional_int(uninhabited_fields, None)
-    is_spied = bool(spied or fields_val is not None or last_spied_ts > 0.0)
-    is_probed = bool(is_spied and fields_val is not None)
+    if fields_val is not None and fields_val <= 0:
+        fields_val = None
+    c_min_val = game_data.safe_optional_int(colonize_min_fields, None)
+    if c_min_val is not None and c_min_val <= 0:
+        c_min_val = None
+    c_max_val = game_data.safe_optional_int(colonize_max_fields, None)
+    if c_max_val is not None and c_max_val <= 0:
+        c_max_val = None
+    if c_min_val is not None and c_max_val is not None and c_min_val > c_max_val:
+        c_min_val, c_max_val = c_max_val, c_min_val
+    temp_val = game_data.safe_optional_int(temperature, None)
+    if temp_val is not None and not (-300 <= temp_val <= 600):
+        temp_val = None
 
-    if is_probed and fields_val is not None:
+    has_range_ecology = c_max_val is not None
+    is_spied = bool(spied or fields_val is not None or has_range_ecology or last_spied_ts > 0.0)
+    is_probed = bool((is_spied and fields_val is not None) or has_range_ecology)
+    fields_display = ""
+
+    if fields_val is not None:
+        fields_display = f"{fields_val} fields"
         if fields_val >= 310:
             grade = "S"
             base_score = min(100, 95 + (fields_val - 310) // 4)
@@ -3230,6 +3265,41 @@ def grade_colony_candidate(
             reason = f"Confirmed {fields_val} fields >= {min_tgt} target ({zone_label}) — ready to colonize"
         else:
             reason = f"Confirmed {fields_val} fields < {min_tgt} target — skip for {min_tgt}+ end-game focus"
+    elif has_range_ecology and c_max_val is not None:
+        eff_min_f = c_min_val if (c_min_val is not None and c_min_val <= c_max_val) else c_max_val
+        fields_display = f"{eff_min_f}–{c_max_val} fields" if eff_min_f != c_max_val else f"{c_max_val} fields"
+        meets_target = c_max_val >= min_tgt
+        if c_max_val >= 340:
+            grade = "S" if meets_target else "B"
+            base_score = min(100, 95 + max(0, (eff_min_f - 130) // 5) + max(0, (c_max_val - 340) // 5))
+        elif c_max_val >= 310:
+            grade = "A+" if meets_target else "B"
+            base_score = 90 + min(4, max(0, (c_max_val - 310) // 8))
+        elif c_max_val >= 300:
+            grade = "A" if meets_target else "B"
+            base_score = 84 + min(5, max(0, (c_max_val - 300) // 2))
+        elif c_max_val >= 270:
+            grade = "A" if meets_target else "B"
+            base_score = 68 + min(12, int((c_max_val - 270) * 0.4))
+        elif c_max_val >= 230:
+            grade = "B" if meets_target else "C"
+            base_score = 50 + min(15, int((c_max_val - 230) * 0.35))
+        else:
+            grade = "D"
+            base_score = max(10, min(44, int(c_max_val * 0.18)))
+        score = max(1, min(100, base_score - dist_penalty))
+        recommendation = "COLONIZE_NOW" if meets_target else "SKIP_TOO_SMALL"
+        temp_suffix = f", {temp_val}°C" if temp_val is not None else ""
+        if meets_target:
+            reason = (
+                f"Scouted {eff_min_f}–{c_max_val} fields (max {c_max_val} >= {min_tgt} target{temp_suffix}) "
+                "— ready to colonize"
+            )
+        else:
+            reason = (
+                f"Scouted {eff_min_f}–{c_max_val} fields (max {c_max_val} < {min_tgt} target{temp_suffix}) "
+                f"— skip for {min_tgt}+ end-game focus"
+            )
     else:
         grade = "?"
         if 7 <= pos <= 12:
@@ -3259,13 +3329,17 @@ def grade_colony_candidate(
         "spied": is_probed,
         "probed": is_probed,
         "uninhabited_fields": fields_val,
+        "colonize_min_fields": c_min_val,
+        "colonize_max_fields": c_max_val,
+        "temperature": temp_val,
+        "fields_display": fields_display,
         "grade": grade,
         "score": int(score),
         "meets_target": bool(meets_target),
         "min_fields_target": min_tgt,
         "zone_label": zone_label,
         "orbital_zone": zone_label,
-        "orbital_band": f"{zone_label} ({est_temp})",
+        "orbital_band": f"{zone_label} ({temp_val}°C)" if temp_val is not None else f"{zone_label} ({est_temp})",
         "est_temp_range": est_temp,
         "distance": round(float(dist), 1),
         "system_distance": int(sys_dist),

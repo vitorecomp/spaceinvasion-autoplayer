@@ -615,7 +615,7 @@ def run_commander_tick(
                 state = game_state_from_dict(res_dict["state"])
                 actions = _compute_tick_actions(state, cur_mq)
                 continue
-            if ready.kind in ("ATTACK", "SPY", "RECYCLE", "COLONIZE"):
+            if ready.kind in ("ATTACK", "SPY", "RECYCLE", "COLONIZE") or fail_msg_l.startswith("no-op:"):
                 continue
             break
         after_live = True

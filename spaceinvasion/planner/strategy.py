@@ -1533,7 +1533,10 @@ def _plan_combat_and_raid_actions(
         ow_pre = game_data.safe_key(raw_pre.get("owner") or "").strip()
         raw_uf_pre = raw_pre.get("uninhabited_fields")
         uf_pre = game_data.safe_optional_int(raw_uf_pre, None) if raw_uf_pre is not None else None
-        if (sc_pre == "free" or (not ow_pre and uf_pre is not None)) and uf_pre is not None and uf_pre >= min_colony_fields:
+        raw_cmax_pre = raw_pre.get("colonize_max_fields")
+        cmax_pre = game_data.safe_optional_int(raw_cmax_pre, None) if raw_cmax_pre is not None else None
+        eff_qual_f = uf_pre if (uf_pre is not None and uf_pre > 0) else (cmax_pre if (cmax_pre is not None and cmax_pre > 0) else None)
+        if (sc_pre == "free" or (not ow_pre and eff_qual_f is not None)) and eff_qual_f is not None and eff_qual_f >= min_colony_fields:
             qualified_colony_coords.add(nc_pre)
     qualified_candidates_count = len(qualified_colony_coords)
     want_colony_probes = bool(
@@ -1789,28 +1792,42 @@ def _plan_combat_and_raid_actions(
             want_colonize
             and not is_spacia
             and not bool(raw.get("discarded", False))
-            and (status_color == "free" or (not owner and raw.get("uninhabited_fields") is not None))
+            and (
+                status_color == "free"
+                or (not owner and (raw.get("uninhabited_fields") is not None or raw.get("colonize_max_fields") is not None))
+            )
             and norm_coords not in seen_colony_coords
         ):
             seen_colony_coords.add(norm_coords)
             raw_uf = raw.get("uninhabited_fields")
             uf = game_data.safe_optional_int(raw_uf, None) if raw_uf is not None else None
+            raw_cmin = raw.get("colonize_min_fields")
+            cmin_col = game_data.safe_optional_int(raw_cmin, None) if raw_cmin is not None else None
+            raw_cmax = raw.get("colonize_max_fields")
+            cmax_col = game_data.safe_optional_int(raw_cmax, None) if raw_cmax is not None else None
+            raw_temp_c = raw.get("temperature")
+            temp_col = game_data.safe_optional_int(raw_temp_c, None) if raw_temp_c is not None else None
             spied_ts_col = _safe_strategy_float(raw.get("last_spied_ts"), 0.0)
             col_ref_planet = colony_planet or probe_planet or origin
             grade_info = _fleet.grade_colony_candidate(
                 coords=norm_coords,
                 position=pos,
                 uninhabited_fields=uf,
+                colonize_min_fields=cmin_col,
+                colonize_max_fields=cmax_col,
+                temperature=temp_col,
                 origin_coords=col_ref_planet.coords,
                 min_fields_target=min_colony_fields,
             )
-            if uf is not None and uf >= min_colony_fields and (cfg.allow_colonize or tutorial_colonize_pending):
+            if bool(grade_info["meets_target"]) and (cfg.allow_colonize or tutorial_colonize_pending):
                 col_exec_planet = colony_planet if colony_planet is not None else origin
                 can_exec_col = bool(cfg.allow_colonize and has_colony_ship and not own_fleet_in_flight)
                 col_prefix = "Tutorial colonize: " if tutorial_colonize_pending else ""
+                f_disp = str(grade_info.get("fields_display") or (f"{uf} fields" if uf is not None else f"{cmax_col} fields"))
+                eff_f_sort = int(uf if uf is not None else (cmax_col or 0))
                 col_reason = (
                     f"{col_prefix}Colonize {norm_coords} "
-                    f"({uf} fields >= {min_colony_fields} target, Grade {grade_info['grade']} {grade_info['score']}/100)"
+                    f"({f_disp} >= {min_colony_fields} target, Grade {grade_info['grade']} {grade_info['score']}/100)"
                 )
                 if not has_colony_ship:
                     col_reason += " [Hold: Build Colony ship (s8) first]"
@@ -1820,7 +1837,7 @@ def _plan_combat_and_raid_actions(
                     col_reason += " [Hold: allow_colonize=false in Config]"
                 colonize_actions.append(
                     (
-                        (0 if can_exec_col else 1, 0, -int(grade_info["score"]), -uf, int(grade_info["distance"])),
+                        (0 if can_exec_col else 1, 0, -int(grade_info["score"]), -eff_f_sort, int(grade_info["distance"])),
                         PlannedAction(
                             priority="P2",
                             kind="COLONIZE",
@@ -1828,19 +1845,27 @@ def _plan_combat_and_raid_actions(
                             planet_coords=_safe_strategy_str(col_exec_planet.coords),
                             target_id=8,
                             target_level=1,
-                            target_name=f"Colonize -> {norm_coords} ({uf} fields)",
+                            target_name=f"Colonize -> {norm_coords} ({f_disp})",
                             reason=col_reason,
                             executable_now=can_exec_col,
                         ),
                     )
                 )
             elif (
-                uf is None
+                not bool(grade_info["probed"])
                 and spied_ts_col <= 0.0
                 and want_colony_probes
                 and can_plan_spy
-                and _safe_strategy_float(raw.get("blocked_until_ts"), 0.0) <= ref_now
-                and bash_tracker.can_attack(norm_coords, is_inactive=True, timestamp=ref_now)
+                and (
+                    _safe_strategy_float(raw.get("blocked_until_ts"), 0.0) <= ref_now
+                    or "can't be attacked" in _safe_strategy_str(raw.get("block_reason")).lower()
+                    or "cannot be attacked" in _safe_strategy_str(raw.get("block_reason")).lower()
+                )
+                and (
+                    bash_tracker.can_attack(norm_coords, is_inactive=True, timestamp=ref_now)
+                    or "can't be attacked" in _safe_strategy_str(raw.get("block_reason")).lower()
+                    or "cannot be attacked" in _safe_strategy_str(raw.get("block_reason")).lower()
+                )
             ):
                 assert probe_planet is not None
                 max_spy_slots_col = 1 + max(0, probe_planet.building_level(FLEET_BASE))
@@ -2201,12 +2226,12 @@ def _plan_combat_and_raid_actions(
         out_actions: list[PlannedAction] = []
         if designated_probe_build_act is not None:
             out_actions.append(designated_probe_build_act)
-        if spy_actions:
-            spy_actions.sort(key=lambda item: item[0])
-            out_actions.extend(act for _, act in spy_actions[:2])
         if colony_spy_actions:
             colony_spy_actions.sort(key=lambda item: item[0])
             out_actions.extend(act for _, act in colony_spy_actions[:2])
+        if spy_actions:
+            spy_actions.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in spy_actions[:2])
         if colonize_actions:
             colonize_actions.sort(key=lambda item: item[0])
             out_actions.extend(act for _, act in colonize_actions[:1])
@@ -2216,7 +2241,7 @@ def _plan_combat_and_raid_actions(
         if recycle_actions:
             recycle_actions.sort(key=lambda item: item[0])
             out_actions.extend(act for _, act in recycle_actions[:2])
-        if want_colonize and not colonize_actions and not colony_spy_actions:
+        if (want_colonize or want_colony_probes) and not colonize_actions and not colony_spy_actions:
             nxt_scan = _next_spiral_scan_action()
             if nxt_scan is not None:
                 out_actions.append(nxt_scan)
@@ -2226,12 +2251,12 @@ def _plan_combat_and_raid_actions(
         out_spy_only: list[PlannedAction] = []
         if designated_probe_build_act is not None:
             out_spy_only.append(designated_probe_build_act)
-        if spy_actions:
-            spy_actions.sort(key=lambda item: item[0])
-            out_spy_only.extend(act for _, act in spy_actions[:3])
         if colony_spy_actions:
             colony_spy_actions.sort(key=lambda item: item[0])
             out_spy_only.extend(act for _, act in colony_spy_actions[:3])
+        if spy_actions:
+            spy_actions.sort(key=lambda item: item[0])
+            out_spy_only.extend(act for _, act in spy_actions[:3])
         return out_spy_only
 
     nxt_scan = _next_spiral_scan_action()
@@ -4052,13 +4077,23 @@ def plan_actions(
             if throttle_act is not None:
                 plan.append(throttle_act)
 
-    # Sort strictly by priority band, executable actions first within each band, SPY ahead of other P2 work
+    # Sort strictly by priority band, executable actions first within each band, colony SPY -> raid SPY ahead of other P2 work
     priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+    def _p2_subrank(act: PlannedAction) -> int:
+        if act.priority != "P2":
+            return 0
+        if act.kind == "CLAIM_TUTORIAL":
+            return 0
+        if act.kind == "SPY":
+            return 1 if "(free slot)" in _safe_strategy_str(act.target_name).lower() else 2
+        return 3
+
     plan.sort(
         key=lambda a: (
             priority_rank.get(a.priority, 9),
             0 if a.executable_now else 1,
-            0 if (a.priority == "P2" and a.kind == "CLAIM_TUTORIAL") else (1 if (a.priority == "P2" and a.kind == "SPY") else 2),
+            _p2_subrank(a),
         )
     )
     deduped: list[PlannedAction] = []

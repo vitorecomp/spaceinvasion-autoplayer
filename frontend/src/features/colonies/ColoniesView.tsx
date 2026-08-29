@@ -319,6 +319,18 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
                   const coords = String(c.coords || "—");
                   const grade = String(c.grade || "?");
                   const uf = finiteNum(c.uninhabited_fields, null);
+                  const cMin = finiteNum(c.colonize_min_fields, null);
+                  const cMax = finiteNum(c.colonize_max_fields, null);
+                  const fieldsDisp =
+                    typeof c.fields_display === "string" && c.fields_display.trim()
+                      ? c.fields_display.trim()
+                      : uf !== null && uf > 0
+                        ? `${Math.round(uf)} fields`
+                        : cMax !== null && cMax > 0
+                          ? cMin !== null && cMin > 0 && cMin !== cMax
+                            ? `${Math.round(cMin)}–${Math.round(cMax)} fields`
+                            : `${Math.round(cMax)} fields`
+                          : "";
                   const sysDist = Math.round(finiteNum(c.system_distance, 0));
 
                   return (
@@ -332,9 +344,9 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
                       <td className="tabular">{coords}</td>
                       <td>{`Pos ${c.position || "?"} · ${c.orbital_band || "Unknown"}`}</td>
                       <td className="col-right tabular">
-                        {uf !== null && uf > 0 ? (
+                        {fieldsDisp ? (
                           <span className={`status-word${c.meets_target ? "" : " is-warn"}`}>
-                            {`${Math.round(uf)} fields`}
+                            {fieldsDisp}
                           </span>
                         ) : (
                           "Unprobed"

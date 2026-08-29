@@ -1958,6 +1958,11 @@ class GameApiBridge:
                 if uf is not None and cur_entry.get("uninhabited_fields") is None:
                     cur_entry["uninhabited_fields"] = _safe_api_int(uf, 0)
                     added_any = True
+                for ek in ("colonize_min_fields", "colonize_max_fields", "temperature"):
+                    ev = cand.get(ek)
+                    if ev is not None and cur_entry.get(ek) is None:
+                        cur_entry[ek] = _safe_api_int(ev, 0)
+                        added_any = True
                 if cand_blk > _safe_api_float(cur_entry.get("blocked_until_ts", 0.0)):
                     cur_entry["blocked_until_ts"] = cand_blk
                     cur_entry["block_reason"] = cand_rsn
@@ -1973,6 +1978,9 @@ class GameApiBridge:
                 "has_debris": False,
                 "points": None,
                 "uninhabited_fields": cand.get("uninhabited_fields"),
+                "colonize_min_fields": cand.get("colonize_min_fields"),
+                "colonize_max_fields": cand.get("colonize_max_fields"),
+                "temperature": cand.get("temperature"),
                 "last_scanned_ts": _safe_api_float(cand.get("last_scanned_ts", 0.0)),
                 "last_spied_ts": _safe_api_float(cand.get("last_spied_ts", 0.0)),
                 "blocked_until_ts": cand_blk,
@@ -7283,6 +7291,8 @@ class GameApiBridge:
                             if eff_slot is not None:
                                 spy_color = game_data.safe_key(eff_slot.get("status_color") or "").strip().lower()
                                 spy_spacia = bool(eff_slot.get("is_spacia", False))
+                                if spy_color == "free" and not spy_spacia:
+                                    planned = replace(planned, target_name=f"{norm_target} (Free slot)")
                                 if spy_color in ("blue", "green", "white", "dark_red") and not spy_spacia:
                                     return _sanitize_finite_json(
                                         _redact_api_payload(

@@ -677,6 +677,9 @@ CREATE TABLE IF NOT EXISTS spy_targets (
     bash_hits INTEGER NOT NULL DEFAULT 0,
     last_blocked_ts REAL NOT NULL DEFAULT 0.0,
     uninhabited_fields INTEGER,
+    colonize_min_fields INTEGER,
+    colonize_max_fields INTEGER,
+    temperature INTEGER,
     spy_count INTEGER NOT NULL DEFAULT 0,
     is_own_planet INTEGER NOT NULL DEFAULT 0,
     merged_into TEXT NOT NULL DEFAULT ''
@@ -762,7 +765,10 @@ CREATE TABLE IF NOT EXISTS galaxy_slots (
     is_inactive INTEGER NOT NULL DEFAULT 0,
     is_spacia INTEGER NOT NULL DEFAULT 0,
     has_debris INTEGER NOT NULL DEFAULT 0,
-    last_scanned_ts REAL NOT NULL
+    last_scanned_ts REAL NOT NULL,
+    colonize_min_fields INTEGER,
+    colonize_max_fields INTEGER,
+    temperature INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_galaxy_slots_sys ON galaxy_slots(galaxy, system, position);
 
@@ -779,7 +785,10 @@ CREATE TABLE IF NOT EXISTS galaxy_slot_history (
     is_inactive INTEGER NOT NULL DEFAULT 0,
     is_spacia INTEGER NOT NULL DEFAULT 0,
     has_debris INTEGER NOT NULL DEFAULT 0,
-    has_asteroid INTEGER NOT NULL DEFAULT 0
+    has_asteroid INTEGER NOT NULL DEFAULT 0,
+    colonize_min_fields INTEGER,
+    colonize_max_fields INTEGER,
+    temperature INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_galaxy_slot_history_coords_ts ON galaxy_slot_history(coords, ts);
 
@@ -2458,6 +2467,13 @@ class GameDatabase:
             )
             self._conn.commit()
 
+    def _has_column_locked(self, table: str, column: str) -> bool:
+        try:
+            cols = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            return column in cols
+        except sqlite3.Error:
+            return False
+
     def _upsert_galaxy_slot_locked(
         self,
         slot: GalaxySlot,
@@ -2485,48 +2501,39 @@ class GameDatabase:
         has_asteroid = 1 if bool(getattr(slot, "has_asteroid", False)) else 0
         pname_s = _sanitize_text(getattr(slot, "name", ""))
         owner_s = _sanitize_text(getattr(slot, "owner", ""))
-        self._conn.execute(
-            """
-            INSERT INTO galaxy_slots(
-                coords, galaxy, system, position, planet_name, owner,
-                status_color, is_inactive, is_spacia, has_debris, last_scanned_ts
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(coords) DO UPDATE SET
-                galaxy = excluded.galaxy,
-                system = excluded.system,
-                position = excluded.position,
-                planet_name = excluded.planet_name,
-                owner = excluded.owner,
-                status_color = excluded.status_color,
-                is_inactive = excluded.is_inactive,
-                is_spacia = excluded.is_spacia,
-                has_debris = excluded.has_debris,
-                last_scanned_ts = excluded.last_scanned_ts
-            """,
-            (
-                norm_slot_coords,
-                gal_i,
-                sys_i,
-                pos_i,
-                pname_s,
-                owner_s,
-                scolor,
-                is_inactive,
-                is_spacia,
-                has_debris,
-                now_ts,
-            ),
-        )
-        if append_history:
+        c_min_opt = _sql_optional_int(getattr(slot, "colonize_min_fields", None))
+        c_max_opt = _sql_optional_int(getattr(slot, "colonize_max_fields", None))
+        temp_opt = _sql_optional_int(getattr(slot, "temperature", None))
+        if self._has_column_locked("galaxy_slots", "colonize_max_fields"):
             self._conn.execute(
                 """
-                INSERT INTO galaxy_slot_history(
-                    ts, coords, galaxy, system, position, planet_name, owner,
-                    status_color, is_inactive, is_spacia, has_debris, has_asteroid
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO galaxy_slots(
+                    coords, galaxy, system, position, planet_name, owner,
+                    status_color, is_inactive, is_spacia, has_debris, last_scanned_ts,
+                    colonize_min_fields, colonize_max_fields, temperature
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(coords) DO UPDATE SET
+                    galaxy = excluded.galaxy,
+                    system = excluded.system,
+                    position = excluded.position,
+                    planet_name = excluded.planet_name,
+                    owner = excluded.owner,
+                    status_color = excluded.status_color,
+                    is_inactive = excluded.is_inactive,
+                    is_spacia = excluded.is_spacia,
+                    has_debris = excluded.has_debris,
+                    last_scanned_ts = excluded.last_scanned_ts,
+                    colonize_min_fields = CASE
+                        WHEN excluded.status_color != 'free' THEN NULL
+                        ELSE COALESCE(excluded.colonize_min_fields, galaxy_slots.colonize_min_fields)
+                    END,
+                    colonize_max_fields = CASE
+                        WHEN excluded.status_color != 'free' THEN NULL
+                        ELSE COALESCE(excluded.colonize_max_fields, galaxy_slots.colonize_max_fields)
+                    END,
+                    temperature = COALESCE(excluded.temperature, galaxy_slots.temperature)
                 """,
                 (
-                    now_ts,
                     norm_slot_coords,
                     gal_i,
                     sys_i,
@@ -2537,9 +2544,96 @@ class GameDatabase:
                     is_inactive,
                     is_spacia,
                     has_debris,
-                    has_asteroid,
+                    now_ts,
+                    c_min_opt if scolor == "free" else None,
+                    c_max_opt if scolor == "free" else None,
+                    temp_opt,
                 ),
             )
+        else:
+            self._conn.execute(
+                """
+                INSERT INTO galaxy_slots(
+                    coords, galaxy, system, position, planet_name, owner,
+                    status_color, is_inactive, is_spacia, has_debris, last_scanned_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(coords) DO UPDATE SET
+                    galaxy = excluded.galaxy,
+                    system = excluded.system,
+                    position = excluded.position,
+                    planet_name = excluded.planet_name,
+                    owner = excluded.owner,
+                    status_color = excluded.status_color,
+                    is_inactive = excluded.is_inactive,
+                    is_spacia = excluded.is_spacia,
+                    has_debris = excluded.has_debris,
+                    last_scanned_ts = excluded.last_scanned_ts
+                """,
+                (
+                    norm_slot_coords,
+                    gal_i,
+                    sys_i,
+                    pos_i,
+                    pname_s,
+                    owner_s,
+                    scolor,
+                    is_inactive,
+                    is_spacia,
+                    has_debris,
+                    now_ts,
+                ),
+            )
+        if append_history:
+            if self._has_column_locked("galaxy_slot_history", "colonize_max_fields"):
+                self._conn.execute(
+                    """
+                    INSERT INTO galaxy_slot_history(
+                        ts, coords, galaxy, system, position, planet_name, owner,
+                        status_color, is_inactive, is_spacia, has_debris, has_asteroid,
+                        colonize_min_fields, colonize_max_fields, temperature
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        now_ts,
+                        norm_slot_coords,
+                        gal_i,
+                        sys_i,
+                        pos_i,
+                        pname_s,
+                        owner_s,
+                        scolor,
+                        is_inactive,
+                        is_spacia,
+                        has_debris,
+                        has_asteroid,
+                        c_min_opt if scolor == "free" else None,
+                        c_max_opt if scolor == "free" else None,
+                        temp_opt,
+                    ),
+                )
+            else:
+                self._conn.execute(
+                    """
+                    INSERT INTO galaxy_slot_history(
+                        ts, coords, galaxy, system, position, planet_name, owner,
+                        status_color, is_inactive, is_spacia, has_debris, has_asteroid
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        now_ts,
+                        norm_slot_coords,
+                        gal_i,
+                        sys_i,
+                        pos_i,
+                        pname_s,
+                        owner_s,
+                        scolor,
+                        is_inactive,
+                        is_spacia,
+                        has_debris,
+                        has_asteroid,
+                    ),
+                )
 
     def record_galaxy_slots(
         self,
@@ -2569,26 +2663,66 @@ class GameDatabase:
                 if slot.status_color == "free" and not has_debris:
                     if norm_slot_coords:
                         slot_uf = _sql_optional_int(getattr(slot, "uninhabited_fields", None))
-                        if slot_uf is not None:
-                            self._conn.execute(
-                                """
-                                INSERT INTO spy_targets(
-                                    coords, owner, planet_name, status_color, is_inactive, is_spacia,
-                                    has_debris, last_scanned_ts, uninhabited_fields, merged_into
-                                ) VALUES (?, '', '', 'free', 0, 0, 0, ?, ?, '')
-                                ON CONFLICT(coords) DO UPDATE SET
-                                    owner = '',
-                                    planet_name = '',
-                                    status_color = 'free',
-                                    is_inactive = 0,
-                                    is_spacia = 0,
-                                    has_debris = 0,
-                                    last_scanned_ts = excluded.last_scanned_ts,
-                                    uninhabited_fields = COALESCE(excluded.uninhabited_fields, spy_targets.uninhabited_fields)
-                                WHERE spy_targets.is_own_planet = 0
-                                """,
-                                (norm_slot_coords, now_ts, slot_uf),
-                            )
+                        slot_cmin = _sql_optional_int(getattr(slot, "colonize_min_fields", None))
+                        slot_cmax = _sql_optional_int(getattr(slot, "colonize_max_fields", None))
+                        slot_temp = _sql_optional_int(getattr(slot, "temperature", None))
+                        if slot_uf is not None or (slot_cmax is not None and self._has_column_locked("spy_targets", "colonize_max_fields")):
+                            if self._has_column_locked("spy_targets", "colonize_max_fields"):
+                                self._conn.execute(
+                                    """
+                                    INSERT INTO spy_targets(
+                                        coords, owner, planet_name, status_color, is_inactive, is_spacia,
+                                        has_debris, last_scanned_ts, uninhabited_fields,
+                                        colonize_min_fields, colonize_max_fields, temperature, merged_into
+                                    ) VALUES (?, '', '', 'free', 0, 0, 0, ?, ?, ?, ?, ?, '')
+                                    ON CONFLICT(coords) DO UPDATE SET
+                                        owner = '',
+                                        planet_name = '',
+                                        status_color = 'free',
+                                        is_inactive = 0,
+                                        is_spacia = 0,
+                                        has_debris = 0,
+                                        last_scanned_ts = excluded.last_scanned_ts,
+                                        uninhabited_fields = COALESCE(excluded.uninhabited_fields, spy_targets.uninhabited_fields),
+                                        colonize_min_fields = COALESCE(excluded.colonize_min_fields, spy_targets.colonize_min_fields),
+                                        colonize_max_fields = COALESCE(excluded.colonize_max_fields, spy_targets.colonize_max_fields),
+                                        temperature = COALESCE(excluded.temperature, spy_targets.temperature),
+                                        blocked_until_ts = CASE
+                                            WHEN LOWER(spy_targets.block_reason) LIKE '%can''t be attacked%'
+                                              OR LOWER(spy_targets.block_reason) LIKE '%cannot be attacked%'
+                                            THEN 0.0
+                                            ELSE spy_targets.blocked_until_ts
+                                        END,
+                                        block_reason = CASE
+                                            WHEN LOWER(spy_targets.block_reason) LIKE '%can''t be attacked%'
+                                              OR LOWER(spy_targets.block_reason) LIKE '%cannot be attacked%'
+                                            THEN ''
+                                            ELSE spy_targets.block_reason
+                                        END
+                                    WHERE spy_targets.is_own_planet = 0
+                                    """,
+                                    (norm_slot_coords, now_ts, slot_uf, slot_cmin, slot_cmax, slot_temp),
+                                )
+                            else:
+                                self._conn.execute(
+                                    """
+                                    INSERT INTO spy_targets(
+                                        coords, owner, planet_name, status_color, is_inactive, is_spacia,
+                                        has_debris, last_scanned_ts, uninhabited_fields, merged_into
+                                    ) VALUES (?, '', '', 'free', 0, 0, 0, ?, ?, '')
+                                    ON CONFLICT(coords) DO UPDATE SET
+                                        owner = '',
+                                        planet_name = '',
+                                        status_color = 'free',
+                                        is_inactive = 0,
+                                        is_spacia = 0,
+                                        has_debris = 0,
+                                        last_scanned_ts = excluded.last_scanned_ts,
+                                        uninhabited_fields = COALESCE(excluded.uninhabited_fields, spy_targets.uninhabited_fields)
+                                    WHERE spy_targets.is_own_planet = 0
+                                    """,
+                                    (norm_slot_coords, now_ts, slot_uf),
+                                )
                         else:
                             self._conn.execute(
                                 """
@@ -2734,8 +2868,7 @@ class GameDatabase:
         with self._lock:
             rows = self._conn.execute(
                 f"""
-                SELECT coords, galaxy, system, position, planet_name, owner,
-                       status_color, is_inactive, is_spacia, has_debris, last_scanned_ts
+                SELECT *
                 FROM galaxy_slots
                 {where_sql}
                 ORDER BY galaxy ASC, system ASC, position ASC
@@ -2743,24 +2876,30 @@ class GameDatabase:
                 """,
                 params,
             ).fetchall()
-        return [
-            _sanitize_obj(
-                {
-                    "coords": normalize_coords(_raw_text(r["coords"], "")),
-                    "galaxy": game_data.cap_json_int(_safe_int(r["galaxy"], 0)),
-                    "system": game_data.cap_json_int(_safe_int(r["system"], 0)),
-                    "position": game_data.cap_json_int(_safe_int(r["position"], 0)),
-                    "planet_name": _sanitize_text(r["planet_name"]) if r["planet_name"] is not None else "",
-                    "owner": _sanitize_text(r["owner"]) if r["owner"] is not None else "",
-                    "status_color": _sanitize_text(r["status_color"]) if r["status_color"] is not None else "free",
-                    "is_inactive": bool(r["is_inactive"]),
-                    "is_spacia": bool(r["is_spacia"]),
-                    "has_debris": bool(r["has_debris"]),
-                    "last_scanned_ts": _safe_float(r["last_scanned_ts"], 0.0),
-                }
+        out_gs: list[dict[str, Any]] = []
+        for r in rows:
+            rk = set(r.keys())
+            out_gs.append(
+                _sanitize_obj(
+                    {
+                        "coords": normalize_coords(_raw_text(r["coords"], "")),
+                        "galaxy": game_data.cap_json_int(_safe_int(r["galaxy"], 0)),
+                        "system": game_data.cap_json_int(_safe_int(r["system"], 0)),
+                        "position": game_data.cap_json_int(_safe_int(r["position"], 0)),
+                        "planet_name": _sanitize_text(r["planet_name"]) if r["planet_name"] is not None else "",
+                        "owner": _sanitize_text(r["owner"]) if r["owner"] is not None else "",
+                        "status_color": _sanitize_text(r["status_color"]) if r["status_color"] is not None else "free",
+                        "is_inactive": bool(r["is_inactive"]),
+                        "is_spacia": bool(r["is_spacia"]),
+                        "has_debris": bool(r["has_debris"]),
+                        "last_scanned_ts": _safe_float(r["last_scanned_ts"], 0.0),
+                        "colonize_min_fields": _safe_optional_int(r["colonize_min_fields"]) if "colonize_min_fields" in rk else None,
+                        "colonize_max_fields": _safe_optional_int(r["colonize_max_fields"]) if "colonize_max_fields" in rk else None,
+                        "temperature": _safe_optional_int(r["temperature"]) if "temperature" in rk else None,
+                    }
+                )
             )
-            for r in rows
-        ]
+        return out_gs
 
     def get_galaxy_scans(
         self,
@@ -2842,6 +2981,21 @@ class GameDatabase:
             if ("uninhabited_fields" in row_keys and r["uninhabited_fields"] is not None)
             else None
         )
+        colonize_min_fields = (
+            game_data.cap_json_int(_safe_int(r["colonize_min_fields"], 0))
+            if ("colonize_min_fields" in row_keys and r["colonize_min_fields"] is not None)
+            else None
+        )
+        colonize_max_fields = (
+            game_data.cap_json_int(_safe_int(r["colonize_max_fields"], 0))
+            if ("colonize_max_fields" in row_keys and r["colonize_max_fields"] is not None)
+            else None
+        )
+        temperature = (
+            game_data.cap_json_int(_safe_int(r["temperature"], 0))
+            if ("temperature" in row_keys and r["temperature"] is not None)
+            else None
+        )
         spy_count = game_data.cap_json_int(max(0, _safe_int(r["spy_count"], 0))) if "spy_count" in row_keys else 0
         return _sanitize_obj(
             {
@@ -2870,6 +3024,9 @@ class GameDatabase:
                 "bash_hits": bash_hits,
                 "last_blocked_ts": last_blocked_ts,
                 "uninhabited_fields": uninhabited_fields,
+                "colonize_min_fields": colonize_min_fields,
+                "colonize_max_fields": colonize_max_fields,
+                "temperature": temperature,
                 "spy_count": spy_count,
             }
         )
@@ -2882,11 +3039,7 @@ class GameDatabase:
             placeholders = ", ".join("?" for _ in cands)
             row = self._conn.execute(
                 f"""
-                SELECT coords, owner, planet_name, status_color, is_inactive, is_spacia, has_debris,
-                       points, pig_iron, metal, kryptonite, spice,
-                       fleet_json, defense_json, dug_in, last_scanned_ts, last_spied_ts,
-                       blocked_until_ts, block_reason, bash_hits, last_blocked_ts,
-                       uninhabited_fields, spy_count
+                SELECT *
                 FROM spy_targets
                 WHERE coords IN ({placeholders}) AND merged_into = '' AND is_own_planet = 0
                 ORDER BY (last_spied_ts > 0) DESC, last_scanned_ts DESC
@@ -2897,11 +3050,7 @@ class GameDatabase:
             if row is None:
                 all_rows = self._conn.execute(
                     """
-                    SELECT coords, owner, planet_name, status_color, is_inactive, is_spacia, has_debris,
-                           points, pig_iron, metal, kryptonite, spice,
-                           fleet_json, defense_json, dug_in, last_scanned_ts, last_spied_ts,
-                           blocked_until_ts, block_reason, bash_hits, last_blocked_ts,
-                           uninhabited_fields, spy_count
+                    SELECT *
                     FROM spy_targets
                     WHERE merged_into = '' AND is_own_planet = 0
                     ORDER BY (last_spied_ts > 0) DESC, last_scanned_ts DESC
@@ -2929,6 +3078,23 @@ class GameDatabase:
               AND planet_name = ''
               AND is_spacia = 0
               AND status_color = 'yellow'
+            """
+        )
+        self._conn.execute(
+            """
+            UPDATE spy_targets
+            SET blocked_until_ts = 0.0,
+                block_reason = ''
+            WHERE status_color = 'free'
+              AND owner = ''
+              AND planet_name = ''
+              AND is_spacia = 0
+              AND is_own_planet = 0
+              AND (
+                  LOWER(block_reason) LIKE '%can''t be attacked%'
+                  OR LOWER(block_reason) LIKE '%cannot be attacked%'
+                  OR LOWER(block_reason) LIKE '%can not be attacked%'
+              )
             """
         )
         if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots"):
@@ -2961,22 +3127,23 @@ class GameDatabase:
     ) -> list[dict[str, Any]]:
         own_clause = "" if include_own else "AND is_own_planet = 0"
         with self._lock:
+            cmax_clause = "AND colonize_max_fields IS NULL" if self._has_column_locked("spy_targets", "colonize_max_fields") else ""
+            own_filter = own_clause if self._has_column_locked("spy_targets", "is_own_planet") else ""
+            merged_filter = "merged_into = ''" if self._has_column_locked("spy_targets", "merged_into") else "1=1"
+            uf_clause = "AND uninhabited_fields IS NULL" if self._has_column_locked("spy_targets", "uninhabited_fields") else ""
             rows = self._conn.execute(
                 f"""
-                SELECT coords, owner, planet_name, status_color, is_inactive, is_spacia, has_debris,
-                       points, pig_iron, metal, kryptonite, spice,
-                       fleet_json, defense_json, dug_in, last_scanned_ts, last_spied_ts,
-                       blocked_until_ts, block_reason, bash_hits, last_blocked_ts,
-                       uninhabited_fields, spy_count
+                SELECT *
                 FROM spy_targets
-                WHERE merged_into = '' {own_clause}
+                WHERE {merged_filter} {own_filter}
                   AND NOT (
                       status_color = 'free'
                       AND owner = ''
                       AND is_spacia = 0
                       AND has_debris = 0
                       AND last_spied_ts <= 0
-                      AND uninhabited_fields IS NULL
+                      {uf_clause}
+                      {cmax_clause}
                   )
                 ORDER BY (is_inactive + is_spacia + has_debris) DESC, (last_spied_ts > 0) DESC, last_scanned_ts DESC
                 LIMIT ?
@@ -3611,21 +3778,25 @@ class GameDatabase:
         norm_origin = normalize_coords(origin_coords) if origin_coords else ""
         min_tgt = max(50, min(600, _safe_int(eff_min, 300)))
         with self._lock:
+            has_st_cmax = self._has_column_locked("spy_targets", "colonize_max_fields")
             free_rows = self._conn.execute(
                 """
-                SELECT coords, last_scanned_ts
+                SELECT *
                 FROM galaxy_slots
                 WHERE status_color = 'free'
                 ORDER BY galaxy ASC, system ASC, position ASC
                 """
             ).fetchall()
+            st_cmax_or = "OR colonize_max_fields IS NOT NULL" if has_st_cmax else ""
             spy_free_rows = self._conn.execute(
-                """
-                SELECT coords, uninhabited_fields, last_spied_ts, last_scanned_ts, spy_count,
-                       blocked_until_ts, block_reason
+                f"""
+                SELECT *
                 FROM spy_targets
                 WHERE merged_into = '' AND is_own_planet = 0
-                  AND (status_color = 'free' OR (uninhabited_fields IS NOT NULL AND owner = '' AND is_spacia = 0))
+                  AND (
+                      status_color = 'free'
+                      OR ((uninhabited_fields IS NOT NULL {st_cmax_or}) AND owner = '' AND is_spacia = 0)
+                  )
                 """
             ).fetchall()
             rep_free_rows = self._conn.execute(
@@ -3639,12 +3810,16 @@ class GameDatabase:
 
         merged: dict[str, dict[str, Any]] = {}
         for r in free_rows:
+            rk_f = set(r.keys())
             nc = normalize_coords(_raw_text(r["coords"], ""))
             if not nc or nc in own_norm or (not include_discarded and nc in discarded_norm):
                 continue
             merged[nc] = {
                 "coords": nc,
                 "uninhabited_fields": None,
+                "colonize_min_fields": _safe_optional_int(r["colonize_min_fields"]) if "colonize_min_fields" in rk_f else None,
+                "colonize_max_fields": _safe_optional_int(r["colonize_max_fields"]) if "colonize_max_fields" in rk_f else None,
+                "temperature": _safe_optional_int(r["temperature"]) if "temperature" in rk_f else None,
                 "last_spied_ts": 0.0,
                 "last_scanned_ts": _safe_float(r["last_scanned_ts"], 0.0),
                 "spy_count": 0,
@@ -3652,6 +3827,7 @@ class GameDatabase:
                 "block_reason": "",
             }
         for sr in spy_free_rows:
+            rk_s = set(sr.keys())
             nc = normalize_coords(_raw_text(sr["coords"], ""))
             if not nc or nc in own_norm or (not include_discarded and nc in discarded_norm):
                 continue
@@ -3660,6 +3836,9 @@ class GameDatabase:
                 {
                     "coords": nc,
                     "uninhabited_fields": None,
+                    "colonize_min_fields": None,
+                    "colonize_max_fields": None,
+                    "temperature": None,
                     "last_spied_ts": 0.0,
                     "last_scanned_ts": 0.0,
                     "spy_count": 0,
@@ -3667,16 +3846,30 @@ class GameDatabase:
                     "block_reason": "",
                 },
             )
-            uf = _safe_optional_int(sr["uninhabited_fields"])
+            uf = _safe_optional_int(sr["uninhabited_fields"]) if "uninhabited_fields" in rk_s else None
             if uf is not None:
                 entry["uninhabited_fields"] = uf
+            c_min_s = _safe_optional_int(sr["colonize_min_fields"]) if "colonize_min_fields" in rk_s else None
+            if c_min_s is not None and entry["colonize_min_fields"] is None:
+                entry["colonize_min_fields"] = c_min_s
+            c_max_s = _safe_optional_int(sr["colonize_max_fields"]) if "colonize_max_fields" in rk_s else None
+            if c_max_s is not None and entry["colonize_max_fields"] is None:
+                entry["colonize_max_fields"] = c_max_s
+            temp_s = _safe_optional_int(sr["temperature"]) if "temperature" in rk_s else None
+            if temp_s is not None and entry["temperature"] is None:
+                entry["temperature"] = temp_s
             entry["last_spied_ts"] = max(entry["last_spied_ts"], _safe_float(sr["last_spied_ts"], 0.0))
             entry["last_scanned_ts"] = max(entry["last_scanned_ts"], _safe_float(sr["last_scanned_ts"], 0.0))
             entry["spy_count"] = max(entry["spy_count"], _safe_int(sr["spy_count"], 0))
             b_until = _safe_float(sr["blocked_until_ts"], 0.0)
-            if b_until > entry["blocked_until_ts"]:
+            b_rsn = _sanitize_text(sr["block_reason"] or "")
+            if (
+                "can't be attacked" not in b_rsn.lower()
+                and "cannot be attacked" not in b_rsn.lower()
+                and b_until > entry["blocked_until_ts"]
+            ):
                 entry["blocked_until_ts"] = b_until
-                entry["block_reason"] = _sanitize_text(sr["block_reason"] or "")
+                entry["block_reason"] = b_rsn
         for rr in rep_free_rows:
             nc = normalize_coords(_raw_text(rr["target_coords"], ""))
             if not nc or nc in own_norm or (not include_discarded and nc in discarded_norm):
@@ -3686,6 +3879,9 @@ class GameDatabase:
                 {
                     "coords": nc,
                     "uninhabited_fields": None,
+                    "colonize_min_fields": None,
+                    "colonize_max_fields": None,
+                    "temperature": None,
                     "last_spied_ts": 0.0,
                     "last_scanned_ts": 0.0,
                     "spy_count": 0,
@@ -3701,11 +3897,15 @@ class GameDatabase:
 
         graded: list[dict[str, Any]] = []
         for nc, info in merged.items():
+            has_intel_c = info["uninhabited_fields"] is not None or info["colonize_max_fields"] is not None
             g = grade_colony_candidate(
                 norm_origin or nc,
                 nc,
                 uninhabited_fields=info["uninhabited_fields"],
-                spied=info["uninhabited_fields"] is not None,
+                colonize_min_fields=info["colonize_min_fields"],
+                colonize_max_fields=info["colonize_max_fields"],
+                temperature=info["temperature"],
+                spied=has_intel_c,
                 min_fields_target=min_tgt,
                 last_spied_ts=info["last_spied_ts"],
                 last_scanned_ts=info["last_scanned_ts"],
@@ -3717,9 +3917,14 @@ class GameDatabase:
             graded.append(_sanitize_obj(g))
 
         def _sort_key(item: dict[str, Any]) -> tuple[int, float, float, str]:
+            eff_max = float(
+                item["uninhabited_fields"]
+                if item.get("uninhabited_fields") is not None
+                else (item.get("colonize_max_fields") or 0)
+            )
             if item["meets_target"]:
                 tier = 0
-                primary = -float(item["uninhabited_fields"] or 0)
+                primary = -eff_max
             elif not item["spied"] and 7 <= int(item["position"]) <= 12:
                 tier = 1
                 primary = float(item["distance"])
@@ -3728,7 +3933,7 @@ class GameDatabase:
                 primary = -float(item["score"])
             else:
                 tier = 3
-                primary = -float(item["uninhabited_fields"] or 0)
+                primary = -eff_max
             return (tier, primary, float(item["distance"]), str(item["coords"]))
 
         graded.sort(key=_sort_key)

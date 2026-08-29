@@ -8273,7 +8273,9 @@ def _materialize_planned_actions(
         sc_qc = _resolve_raid_target_status_color(raw_qc)
         ow_qc = _safe_action_str(raw_qc.get("owner")).strip()
         uf_qc = game_data.safe_optional_int(raw_qc.get("uninhabited_fields"), None)
-        if (sc_qc == "free" or (not ow_qc and uf_qc is not None)) and uf_qc is not None and uf_qc >= min_col_f:
+        cmax_qc = game_data.safe_optional_int(raw_qc.get("colonize_max_fields"), None)
+        eff_qc = uf_qc if (uf_qc is not None and uf_qc > 0) else (cmax_qc if (cmax_qc is not None and cmax_qc > 0) else None)
+        if (sc_qc == "free" or (not ow_qc and eff_qc is not None)) and eff_qc is not None and eff_qc >= min_col_f:
             qualified_col_coords_opt.add(nc_qc)
     qualified_col_cnt_opt = len(qualified_col_coords_opt)
     want_col_probes_opt = bool(
@@ -8393,7 +8395,14 @@ def _materialize_planned_actions(
             uf_val = game_data.safe_optional_int(raw_uf, None)
             if uf_val is not None and uf_val <= 0:
                 uf_val = None
-            is_free_cand = sc_col == "free" or (not ow_col and uf_val is not None)
+            cmin_opt = game_data.safe_optional_int(raw_rt.get("colonize_min_fields"), None)
+            if cmin_opt is not None and cmin_opt <= 0:
+                cmin_opt = None
+            cmax_opt = game_data.safe_optional_int(raw_rt.get("colonize_max_fields"), None)
+            if cmax_opt is not None and cmax_opt <= 0:
+                cmax_opt = None
+            temp_opt_c = game_data.safe_optional_int(raw_rt.get("temperature"), None)
+            is_free_cand = sc_col == "free" or (not ow_col and (uf_val is not None or cmax_opt is not None))
             if not is_free_cand:
                 continue
             seen_col_opt.add(norm_tc)
@@ -8401,17 +8410,22 @@ def _materialize_planned_actions(
                 norm_tc,
                 origin_coords=_safe_action_str(ref_col_origin.coords),
                 uninhabited_fields=uf_val,
+                colonize_min_fields=cmin_opt,
+                colonize_max_fields=cmax_opt,
+                temperature=temp_opt_c,
                 min_fields_target=min_col_f,
             )
             sp_ts_c = _safe_float_any(raw_rt.get("last_spied_ts"), 0.0)
-            if uf_val is not None and uf_val >= min_col_f and (getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None):
+            if bool(gr_info["meets_target"]) and (getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None):
                 exec_col_p = col_ship_p if col_ship_p is not None else active
                 has_cs = col_ship_p is not None
                 can_ex_col = bool(getattr(cfg, "allow_colonize", False) and has_cs and not own_fleet_in_flight)
                 c_prefix = "Tutorial colonize: " if tutorial_colonize_task is not None else ""
+                f_disp_o = str(gr_info.get("fields_display") or (f"{uf_val} fields" if uf_val is not None else f"{cmax_opt} fields"))
+                eff_f_o = int(uf_val if uf_val is not None else (cmax_opt or 0))
                 c_reason = (
                     f"{c_prefix}Colonize {norm_tc} "
-                    f"({uf_val} fields >= {min_col_f} target, Grade {gr_info['grade']} {gr_info['score']}/100)"
+                    f"({f_disp_o} >= {min_col_f} target, Grade {gr_info['grade']} {gr_info['score']}/100)"
                 )
                 if not has_cs:
                     c_reason += " [Hold: Build Colony ship (s8) first]"
@@ -8421,7 +8435,7 @@ def _materialize_planned_actions(
                     c_reason += " [Hold: allow_colonize=false in Config]"
                 opt_col_ready.append(
                     (
-                        (0 if can_ex_col else 1, 0, -int(gr_info["score"]), -uf_val, int(gr_info["distance"])),
+                        (0 if can_ex_col else 1, 0, -int(gr_info["score"]), -eff_f_o, int(gr_info["distance"])),
                         _make_planned_action(
                             priority="P2",
                             kind="COLONIZE",
@@ -8429,19 +8443,27 @@ def _materialize_planned_actions(
                             planet_coords=_safe_action_str(exec_col_p.coords),
                             target_id=8,
                             target_level=1,
-                            target_name=f"Colonize -> {norm_tc} ({uf_val} fields)",
+                            target_name=f"Colonize -> {norm_tc} ({f_disp_o})",
                             reason=c_reason,
                             executable_now=can_ex_col,
                         ),
                     )
                 )
             elif (
-                uf_val is None
+                not bool(gr_info["probed"])
                 and sp_ts_c <= 0.0
                 and want_col_probes_opt
                 and probe_col_p is not None
-                and _safe_float_any(raw_rt.get("blocked_until_ts"), 0.0) <= live_now_ts
-                and bash_tracker.can_attack(norm_tc, is_inactive=True, timestamp=live_now_ts)
+                and (
+                    _safe_float_any(raw_rt.get("blocked_until_ts"), 0.0) <= live_now_ts
+                    or "can't be attacked" in _safe_action_str(raw_rt.get("block_reason")).lower()
+                    or "cannot be attacked" in _safe_action_str(raw_rt.get("block_reason")).lower()
+                )
+                and (
+                    bash_tracker.can_attack(norm_tc, is_inactive=True, timestamp=live_now_ts)
+                    or "can't be attacked" in _safe_action_str(raw_rt.get("block_reason")).lower()
+                    or "cannot be attacked" in _safe_action_str(raw_rt.get("block_reason")).lower()
+                )
             ):
                 pos_c = int(gr_info["position"])
                 zone_p = 0 if 7 <= pos_c <= 12 else (1 if 4 <= pos_c <= 6 else (2 if 13 <= pos_c <= 16 else 3))
@@ -8482,8 +8504,11 @@ def _materialize_planned_actions(
                 )
         if opt_col_spy:
             opt_col_spy.sort(key=lambda item: item[0])
-            for _, spy_act_c in opt_col_spy[:2]:
-                plan.append(spy_act_c)
+            insert_p2_idx = 0
+            while insert_p2_idx < len(plan) and plan[insert_p2_idx].priority in ("P0", "P1"):
+                insert_p2_idx += 1
+            for offset_cs, (_, spy_act_c) in enumerate(opt_col_spy[:2]):
+                plan.insert(insert_p2_idx + offset_cs, spy_act_c)
         if opt_col_ready:
             opt_col_ready.sort(key=lambda item: item[0])
             plan.append(opt_col_ready[0][1])

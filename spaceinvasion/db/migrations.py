@@ -31,7 +31,7 @@ DEFAULT_RANK_HISTORY_JSON_PATH = Path("state") / "rank_history.json"
 DEFAULT_SNAPSHOT_JSON_PATH = Path("state") / "snapshot.json"
 DEFAULT_CONFIG_YAML_PATH = Path("config.yaml")
 
-LATEST_SCHEMA_VERSION: int = 9
+LATEST_SCHEMA_VERSION: int = 10
 SCHEMA_VERSION: str = str(LATEST_SCHEMA_VERSION)
 ATTACK_HISTORY_SCHEMA_VERSION: int = 2
 
@@ -738,6 +738,23 @@ CREATE TABLE IF NOT EXISTS universe_research_max_history (
 CREATE INDEX IF NOT EXISTS idx_universe_research_max_hist_ts
     ON universe_research_max_history(ts);
 """,
+    ),
+    Migration(
+        version=10,
+        name="v010_colony_ecology_fields",
+        description="Persist 2D Galaxy colonize_min_fields, colonize_max_fields, and temperature on galaxy_slots, galaxy_slot_history, and spy_targets.",
+        sql="",
+        column_additions=(
+            ("galaxy_slots", "colonize_min_fields", "INTEGER"),
+            ("galaxy_slots", "colonize_max_fields", "INTEGER"),
+            ("galaxy_slots", "temperature", "INTEGER"),
+            ("galaxy_slot_history", "colonize_min_fields", "INTEGER"),
+            ("galaxy_slot_history", "colonize_max_fields", "INTEGER"),
+            ("galaxy_slot_history", "temperature", "INTEGER"),
+            ("spy_targets", "colonize_min_fields", "INTEGER"),
+            ("spy_targets", "colonize_max_fields", "INTEGER"),
+            ("spy_targets", "temperature", "INTEGER"),
+        ),
     ),
 )
 
