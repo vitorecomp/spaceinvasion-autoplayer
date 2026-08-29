@@ -1,6 +1,7 @@
 import React from "react";
 import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
 import { useConsole } from "../../context/ConsoleContext";
+import { copyNotificationCode, formatNotificationCode } from "./notificationId";
 
 function formatNotifAge(tsVal: unknown): string {
   const ts = safeFiniteNumber(tsVal, 0) ?? 0;
@@ -112,6 +113,7 @@ export const NotificationCenterModal: React.FC = () => {
             </p>
           ) : (
             items.map((n) => {
+              const notifCode = formatNotificationCode(n);
               const sev = String(n.severity || "warning").toLowerCase();
               const cnt = Math.max(1, Math.round(safeFiniteNumber(n.occurrence_count, 1) ?? 1));
               const mParts: string[] = [];
@@ -124,9 +126,17 @@ export const NotificationCenterModal: React.FC = () => {
                 <div
                   key={n.id}
                   className={`notif-item-row${n.status === "unread" ? " is-unread" : ""}`}
+                  data-notification-id={n.id}
                 >
                   <div className="notif-item-head">
                     <div className="notif-item-title-wrap">
+                      <span
+                        className="notif-id-pill tabular"
+                        data-notif-code={notifCode}
+                        title="Notification ID — copy and share to troubleshoot"
+                      >
+                        {notifCode}
+                      </span>
                       <span
                         className={`notif-sev-pill tabular ${sev === "error" ? "sev-error" : "sev-warning"}`}
                       >
@@ -144,28 +154,36 @@ export const NotificationCenterModal: React.FC = () => {
                   {n.help_prompt ? (
                     <p className="notif-item-help">{String(n.help_prompt)}</p>
                   ) : null}
-                  {n.status === "unread" || n.status !== "dismissed" ? (
-                    <div className="notif-item-actions">
-                      {n.status === "unread" ? (
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => onAckOne(n.id, "read")}
-                        >
-                          Mark Read
-                        </button>
-                      ) : null}
-                      {n.status !== "dismissed" ? (
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => onAckOne(n.id, "dismissed")}
-                        >
-                          Dismiss
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
+                  <div className="notif-item-actions">
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      data-copy-notif-id={notifCode}
+                      onClick={() => {
+                        void copyNotificationCode(notifCode, showFeedback);
+                      }}
+                    >
+                      Copy ID ({notifCode})
+                    </button>
+                    {n.status === "unread" ? (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => onAckOne(n.id, "read")}
+                      >
+                        Mark Read
+                      </button>
+                    ) : null}
+                    {n.status !== "dismissed" ? (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => onAckOne(n.id, "dismissed")}
+                      >
+                        Dismiss
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               );
             })

@@ -994,6 +994,54 @@ class TestSweepAndTransmitter(unittest.TestCase):
         self.assertEqual(cmd_payload["planet_id"], 12999)
         self.assertEqual(cmd_payload["min_colony_fields"], 300)
 
+    def test_notification_code_badge_and_notification_get_lookup(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="si_ntf_id_") as tmp_dir:
+            tp = Path(tmp_dir)
+            bridge = GameApiBridge(
+                debug_port=19997,
+                config_path=tp / "cfg.yaml",
+                db_path=tp / "ntf.db",
+                log_dir=None,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                assert bridge._db is not None
+                created = bridge._db.create_or_bump_notification(
+                    title="Spy Dispatch Blocked",
+                    message="Aborted: target [02:380:08] rejected Spy probe.",
+                    help_prompt="Share this notification ID in chat to inspect.",
+                    severity="warning",
+                    category="action_validation",
+                    action_kind="SPY",
+                    planet_coords="02:380:12",
+                    target_name="02:380:08",
+                    details={"raw_error": "This user can't be attacked!"},
+                    ts=1_700_000_500.0,
+                )
+                assert created is not None
+                nid = int(created["id"])
+                expected_code = f"NTF-{nid:04d}"
+                self.assertEqual(created["notification_code"], expected_code)
+
+                # Lookup via POST /command {"command": "notification_get", "notification_id": "NTF-0001"} and "#1"
+                res_by_code = bridge.handle_command({"command": "notification_get", "notification_id": expected_code})
+                self.assertTrue(res_by_code["ok"])
+                self.assertEqual(res_by_code["item"]["notification_code"], expected_code)
+                self.assertEqual(res_by_code["item"]["details"]["raw_error"], "This user can't be attacked!")
+
+                res_by_hash = bridge.handle_command({"command": "notification_get", "id": f"#{nid}"})
+                self.assertEqual(res_by_hash["item"]["id"], nid)
+
+                # Acknowledge using formatted code "NTF-0001"
+                res_ack = bridge.handle_command(
+                    {"command": "notification_ack", "notification_id": expected_code, "status": "read"}
+                )
+                self.assertTrue(res_ack["ok"])
+                self.assertEqual(res_ack["item"]["status"], "read")
+                self.assertEqual(res_ack["item"]["notification_code"], expected_code)
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

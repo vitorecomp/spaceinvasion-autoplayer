@@ -1,6 +1,7 @@
 import React from "react";
 import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
 import { useConsole } from "../../context/ConsoleContext";
+import { copyNotificationCode, formatNotificationCode } from "./notificationId";
 
 function formatNotifAge(tsVal: unknown): string {
   const ts = safeFiniteNumber(tsVal, 0) ?? 0;
@@ -25,6 +26,7 @@ export const HelpAlertModal: React.FC = () => {
   } = useConsole();
 
   const n = activeHelpNotif;
+  const notifCode = formatNotificationCode(n);
   const sev = String(n?.severity || "ALERT").toUpperCase();
   const title = String(n?.title || "Action Validation Needs Attention");
   const cnt = Math.max(1, Math.round(safeFiniteNumber(n?.occurrence_count, 1) ?? 1));
@@ -69,6 +71,13 @@ export const HelpAlertModal: React.FC = () => {
             <span className="module-code tabular" id="notif-help-sev">
               {sev}
             </span>
+            <span
+              className="notif-id-pill tabular"
+              id="notif-help-id"
+              title="Notification ID — copy and share to troubleshoot"
+            >
+              {notifCode}
+            </span>
             <h2 id="notif-help-title">{title}</h2>
           </div>
           <span className="module-meta tabular" id="notif-help-meta">
@@ -89,17 +98,29 @@ export const HelpAlertModal: React.FC = () => {
           </p>
         </div>
         <div className="notif-modal-footer">
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            id="btn-notif-help-all"
-            onClick={() => {
-              closeHelpPopupOnly();
-              openNotificationCenter();
-            }}
-          >
-            All Notifications
-          </button>
+          <div className="inline-actions">
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              id="btn-notif-help-all"
+              onClick={() => {
+                closeHelpPopupOnly();
+                openNotificationCenter();
+              }}
+            >
+              All Notifications
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              id="btn-notif-help-copy-id"
+              onClick={() => {
+                void copyNotificationCode(notifCode, showFeedback);
+              }}
+            >
+              Copy ID ({notifCode})
+            </button>
+          </div>
           <div className="inline-actions">
             <button
               type="button"

@@ -4938,8 +4938,52 @@ class GameApiBridge:
                     }
                 )
 
+        if cmd == "notification_get":
+            raw_nid = (
+                payload.get("notification_id")
+                if payload.get("notification_id") is not None
+                else (
+                    payload.get("notification_code")
+                    if payload.get("notification_code") is not None
+                    else payload.get("id")
+                )
+            )
+            parsed_nid = GameDatabase.parse_notification_id(raw_nid)
+            if parsed_nid is None:
+                raise ApiRequestError(
+                    "'notification_get' requires a valid 'notification_id' (e.g. 42 or 'NTF-0042')."
+                )
+            with self._lock:
+                if self._db is None or not hasattr(self._db, "get_notification"):
+                    raise ApiRequestError("Database notifications are not configured.")
+                found_item = self._db.get_notification(parsed_nid)
+                if found_item is None:
+                    raise ApiRequestError(
+                        f"Notification {GameDatabase.format_notification_code(parsed_nid)} not found."
+                    )
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "item": _redact_api_payload(found_item),
+                    }
+                )
+
         if cmd == "notification_ack":
-            nid = _parse_command_int("notification_id", payload.get("notification_id"), min_val=1, max_val=2**62)
+            raw_ack_nid = (
+                payload.get("notification_id")
+                if payload.get("notification_id") is not None
+                else payload.get("notification_code")
+            )
+            nid = (
+                GameDatabase.parse_notification_id(raw_ack_nid)
+                if isinstance(raw_ack_nid, str)
+                else _parse_command_int("notification_id", raw_ack_nid, min_val=1, max_val=2**62)
+            )
+            if nid is None:
+                raise ApiRequestError(
+                    "'notification_id' must be a positive integer or code like 'NTF-0042'."
+                )
             ack_st = _bounded_api_str(payload.get("status") or "read", default="read").strip().lower()
             if ack_st not in ("read", "dismissed", "unread"):
                 raise ApiRequestError("status must be 'read', 'dismissed', or 'unread'.")

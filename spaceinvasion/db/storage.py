@@ -1826,15 +1826,41 @@ class GameDatabase:
         return self._row_to_notification(row) if row is not None else None
 
     @staticmethod
+    def format_notification_code(notification_id: Any) -> str:
+        nid = max(0, _sql_int(notification_id, 0))
+        return f"NTF-{nid:04d}" if nid > 0 else "NTF-0000"
+
+    @staticmethod
+    def parse_notification_id(raw: Any) -> Optional[int]:
+        if isinstance(raw, bool) or raw is None:
+            return None
+        if isinstance(raw, int):
+            return raw if 0 < raw <= 2**62 else None
+        txt = _raw_text(raw, "").strip()
+        if not txt:
+            return None
+        m = re.fullmatch(
+            r"#?(?:(?:ntf|notif|notification)[-_:\s#]*)?0*(\d{1,18})",
+            txt,
+            re.IGNORECASE | re.ASCII,
+        )
+        if not m:
+            return None
+        val = int(m.group(1))
+        return val if 0 < val <= 2**62 else None
+
+    @staticmethod
     def _row_to_notification(r: sqlite3.Row) -> dict[str, Any]:
         try:
             det_obj = json.loads(_raw_text(r["details_json"], "{}"))
         except ValueError:
             det_obj = {}
         ack_val = _safe_optional_float(r["acknowledged_ts"])
+        nid_val = _sql_int(r["id"], 0)
         return _sanitize_obj(
             {
-                "id": _sql_int(r["id"], 0),
+                "id": nid_val,
+                "notification_code": GameDatabase.format_notification_code(nid_val),
                 "created_ts": _safe_float(r["created_ts"], 0.0),
                 "updated_ts": _safe_float(r["updated_ts"], 0.0),
                 "severity": _sanitize_text(_raw_text(r["severity"], "warning")),
@@ -1852,6 +1878,19 @@ class GameDatabase:
                 "details": det_obj if isinstance(det_obj, Mapping) else {},
             }
         )
+
+    def get_notification(self, notification_id: Any) -> Optional[dict[str, Any]]:
+        nid = self.parse_notification_id(notification_id)
+        if nid is None or nid <= 0:
+            return None
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "ui_notifications"):
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM ui_notifications WHERE id = ?",
+                (nid,),
+            ).fetchone()
+        return self._row_to_notification(row) if row is not None else None
 
     def get_notifications(
         self,
@@ -1892,12 +1931,13 @@ class GameDatabase:
 
     def acknowledge_notification(
         self,
-        notification_id: int,
+        notification_id: Any,
         *,
         status: str = "read",
         ts: Optional[float] = None,
     ) -> Optional[dict[str, Any]]:
-        nid = _sql_int(notification_id, 0)
+        nid_opt = self.parse_notification_id(notification_id)
+        nid = int(nid_opt) if nid_opt is not None else _sql_int(notification_id, 0)
         if nid <= 0:
             return None
         st_norm = _sanitize_text(status or "read").strip().lower()

@@ -144,6 +144,7 @@ export interface StrategyConfigData {
 
 export interface NotificationItem {
   id: number;
+  notification_code?: string;
   status?: "unread" | "read" | "dismissed" | string;
   severity?: "error" | "warning" | "info" | string;
   category?: string;
@@ -152,9 +153,11 @@ export interface NotificationItem {
   help_prompt?: string;
   action_kind?: string;
   planet_coords?: string;
+  target_name?: string;
   occurrence_count?: number;
   created_ts?: number;
   updated_ts?: number;
+  details?: Record<string, any>;
   [key: string]: any;
 }
 

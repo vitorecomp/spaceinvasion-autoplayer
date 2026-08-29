@@ -149,6 +149,21 @@
   flex-wrap: wrap;
 }
 
+.notif-id-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--mint);
+  background: var(--bg-header);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+  user-select: all;
+}
+
 .notif-sev-pill {
   padding: 2px 6px;
   font-size: 0.86rem;

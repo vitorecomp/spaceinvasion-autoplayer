@@ -9,6 +9,9 @@ import { BuildingsView } from "../features/buildings";
 import { LogsView } from "../features/logs";
 import { ConfigView } from "../features/config";
 import { ActionGraphView } from "../features/action-graph";
+import { HelpAlertModal } from "../components/modals/HelpAlertModal";
+import { NotificationCenterModal } from "../components/modals/NotificationCenterModal";
+import { FeedbackBanner } from "../components/layout/FeedbackBanner";
 
 const MOCK_DASHBOARD: DashboardPayload = {
   ok: true,
@@ -325,6 +328,80 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
     fireEvent.click(uniTab);
     await waitFor(() => {
       expect(container.querySelector("#view-buildings")?.textContent).toContain("StarLord");
+    });
+  });
+
+  it("renders notification ID badge (NTF-XXXX) and Copy ID buttons in HelpAlertModal and NotificationCenterModal", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const mockNotifItem = {
+      id: 42,
+      notification_code: "NTF-0042",
+      status: "unread",
+      severity: "warning",
+      category: "action_validation",
+      title: "Spy Dispatch Blocked",
+      message: "Target rejected probe.",
+      planet_coords: "02:380:12",
+      action_kind: "SPY",
+      occurrence_count: 2,
+      updated_ts: 1700000500,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).startsWith("/dashboard")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                ...MOCK_DASHBOARD,
+                notifications: { unread_count: 1, items: [mockNotifItem] },
+              }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              unread_count: 1,
+              items: [mockNotifItem],
+            }),
+        };
+      })
+    );
+
+    const TriggerOpen: React.FC = () => {
+      const { loadDashboard, openNotificationCenter } = useConsole();
+      useEffect(() => {
+        void loadDashboard({ force: true }).then(() => openNotificationCenter());
+      }, [loadDashboard, openNotificationCenter]);
+      return null;
+    };
+
+    const { container } = render(
+      <ConsoleProvider disableInitialFetch>
+        <TriggerOpen />
+        <FeedbackBanner />
+        <HelpAlertModal />
+        <NotificationCenterModal />
+      </ConsoleProvider>
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("#notif-help-id")?.textContent).toBe("NTF-0042");
+      expect(container.querySelector('[data-notif-code="NTF-0042"]')?.textContent).toBe("NTF-0042");
+    });
+
+    const copyBtn = container.querySelector("#btn-notif-help-copy-id") as HTMLButtonElement;
+    expect(copyBtn).not.toBeNull();
+    fireEvent.click(copyBtn);
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("NTF-0042");
+      expect(container.querySelector("#feedback-banner")?.textContent).toContain("NTF-0042");
     });
   });
 });

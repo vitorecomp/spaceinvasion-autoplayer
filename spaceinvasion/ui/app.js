@@ -9143,6 +9143,47 @@
       }
     );
   };
+  function formatNotificationCode(n) {
+    const rawCode = typeof (n == null ? void 0 : n.notification_code) === "string" ? n.notification_code.trim() : "";
+    if (rawCode) return rawCode;
+    const nid = Math.max(0, Math.trunc(safeFiniteNumber(n == null ? void 0 : n.id, 0) ?? 0));
+    return nid > 0 ? `NTF-${String(nid).padStart(4, "0")}` : "NTF-0000";
+  }
+  async function copyNotificationCode(code, showFeedback) {
+    var _a;
+    const clean = String(code || "").trim();
+    if (!clean) return;
+    let copied = false;
+    try {
+      if (typeof navigator !== "undefined" && ((_a = navigator.clipboard) == null ? void 0 : _a.writeText)) {
+        await navigator.clipboard.writeText(clean);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+    if (!copied && typeof document !== "undefined") {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = clean;
+        ta.setAttribute("readonly", "true");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        if (typeof document.execCommand === "function") {
+          copied = Boolean(document.execCommand("copy"));
+        }
+        document.body.removeChild(ta);
+      } catch {
+        copied = false;
+      }
+    }
+    showFeedback(
+      copied ? `Copied notification ID ${clean} — paste it in chat to investigate.` : `Notification ID: ${clean}`,
+      "ok"
+    );
+  }
   function formatNotifAge$1(tsVal) {
     const ts = safeFiniteNumber(tsVal, 0) ?? 0;
     if (ts <= 0) return "just now";
@@ -9165,6 +9206,7 @@
       showFeedback
     } = useConsole();
     const n = activeHelpNotif;
+    const notifCode = formatNotificationCode(n);
     const sev = String((n == null ? void 0 : n.severity) || "ALERT").toUpperCase();
     const title = String((n == null ? void 0 : n.title) || "Action Validation Needs Attention");
     const cnt = Math.max(1, Math.round(safeFiniteNumber(n == null ? void 0 : n.occurrence_count, 1) ?? 1));
@@ -9201,6 +9243,15 @@
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", id: "notif-help-sev", children: sev }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "span",
+                {
+                  className: "notif-id-pill tabular",
+                  id: "notif-help-id",
+                  title: "Notification ID — copy and share to troubleshoot",
+                  children: notifCode
+                }
+              ),
               /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { id: "notif-help-title", children: title })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "notif-help-meta", children: metaTxt })
@@ -9212,19 +9263,37 @@
             ) : "" })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "notif-modal-footer", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
-              "button",
-              {
-                type: "button",
-                className: "btn btn-secondary btn-sm",
-                id: "btn-notif-help-all",
-                onClick: () => {
-                  closeHelpPopupOnly();
-                  openNotificationCenter();
-                },
-                children: "All Notifications"
-              }
-            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: "btn-notif-help-all",
+                  onClick: () => {
+                    closeHelpPopupOnly();
+                    openNotificationCenter();
+                  },
+                  children: "All Notifications"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: "btn-notif-help-copy-id",
+                  onClick: () => {
+                    void copyNotificationCode(notifCode, showFeedback);
+                  },
+                  children: [
+                    "Copy ID (",
+                    notifCode,
+                    ")"
+                  ]
+                }
+              )
+            ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx(
                 "button",
@@ -9358,6 +9427,7 @@
             ] })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "notif-center-body", id: "notif-center-list", children: items.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", children: curFilter === "unread" ? "No unread notifications." : "No notifications recorded in SQLite yet." }) : items.map((n) => {
+            const notifCode = formatNotificationCode(n);
             const sev = String(n.severity || "warning").toLowerCase();
             const cnt = Math.max(1, Math.round(safeFiniteNumber(n.occurrence_count, 1) ?? 1));
             const mParts = [];
@@ -9369,9 +9439,19 @@
               "div",
               {
                 className: `notif-item-row${n.status === "unread" ? " is-unread" : ""}`,
+                "data-notification-id": n.id,
                 children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "notif-item-head", children: [
                     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "notif-item-title-wrap", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "span",
+                        {
+                          className: "notif-id-pill tabular",
+                          "data-notif-code": notifCode,
+                          title: "Notification ID — copy and share to troubleshoot",
+                          children: notifCode
+                        }
+                      ),
                       /* @__PURE__ */ jsxRuntimeExports.jsx(
                         "span",
                         {
@@ -9385,7 +9465,23 @@
                   ] }),
                   n.message ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "notif-item-msg tabular", children: String(n.message) }) : null,
                   n.help_prompt ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "notif-item-help", children: String(n.help_prompt) }) : null,
-                  n.status === "unread" || n.status !== "dismissed" ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "notif-item-actions", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "notif-item-actions", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                      "button",
+                      {
+                        type: "button",
+                        className: "btn btn-secondary btn-sm",
+                        "data-copy-notif-id": notifCode,
+                        onClick: () => {
+                          void copyNotificationCode(notifCode, showFeedback);
+                        },
+                        children: [
+                          "Copy ID (",
+                          notifCode,
+                          ")"
+                        ]
+                      }
+                    ),
                     n.status === "unread" ? /* @__PURE__ */ jsxRuntimeExports.jsx(
                       "button",
                       {
@@ -9404,7 +9500,7 @@
                         children: "Dismiss"
                       }
                     ) : null
-                  ] }) : null
+                  ] })
                 ]
               },
               n.id
