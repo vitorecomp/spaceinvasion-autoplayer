@@ -381,6 +381,76 @@ class TestSweepAndTransmitter(unittest.TestCase):
             self.assertEqual(res_full["colonies_found"], 0)
             self.assertEqual(res_full["debris_found"], 2)
 
+    def test_building_and_home_active_queues_extract_executing_timers_and_finish_ts(self) -> None:
+        from spaceinvasion.core.state import parse_building_queue, parse_home_metadata
+
+        ref_ts = 1_794_890_000.0
+        b_html = """
+        <html><body>
+        <table class="ecoshadow"><tbody>
+          <tr><td><b>Construction queue</b> ( 3 Elements )</td></tr>
+          <tr>
+            <td>Fusion plant (Level 23)</td>
+            <td><table><tr><td><span id="sicntbar-1-1">01:28:29</span></td><td><span id="sicntbar-1-2">8%</span></td></tr><tr><td><a>Cancel</a></td></tr></table></td>
+          </tr>
+          <tr class="nachricht">
+            <td>Pig iron warehouse ( Level 5 ) <a>abort</a></td>
+            <td>00:03:53 <div>2026-11-17 03:14:11 => 2026-11-17 03:18:04</div></td>
+          </tr>
+          <tr class="nachricht">
+            <td>Spice warehouse ( Level 3 ) <a>abort</a></td>
+            <td>00:00:58 <div>2026-11-17 03:18:04 => 2026-11-17 03:19:02</div></td>
+          </tr>
+        </tbody></table>
+        </body></html>
+        """
+        jobs = parse_building_queue(b_html, now_ts=ref_ts)
+        self.assertEqual(len(jobs), 3)
+        self.assertEqual(jobs[0].name, "Fusion plant")
+        self.assertEqual(jobs[0].building_id, 5)
+        self.assertEqual(jobs[0].target_level, 23)
+        self.assertEqual(jobs[0].queue_slot, 1)
+        self.assertEqual(jobs[0].remaining_seconds, 5309.0)
+        self.assertAlmostEqual(jobs[0].finish_ts or 0.0, ref_ts + 5309.0, places=2)
+        self.assertIn("8%", jobs[0].detail)
+
+        # Row 2 stripped "Cancel"/"abort" and chained finish_ts = Row1 + 233s
+        self.assertEqual(jobs[1].name, "Pig iron warehouse")
+        self.assertEqual(jobs[1].building_id, 11)
+        self.assertEqual(jobs[1].queue_slot, 2)
+        self.assertAlmostEqual(jobs[1].finish_ts or 0.0, ref_ts + 5309.0 + 233.0, places=2)
+
+        self.assertEqual(jobs[2].name, "Spice warehouse")
+        self.assertEqual(jobs[2].building_id, 14)
+        self.assertEqual(jobs[2].queue_slot, 3)
+        self.assertAlmostEqual(jobs[2].finish_ts or 0.0, ref_ts + 5309.0 + 233.0 + 58.0, places=2)
+
+        home_html = """
+        <html><body>
+        <script>SI_TPL.headerLoad={planetID:12476};
+        var faData=[{"title":"Own fleet","type":"friendly","rows":[,{"id":119301143,"t":3142,"n":6,"rc":1,"tt":"6 Small transport<br>12 Small fighter<br><hr>None","a":'ATTACK',"c":0,"start":"[02:380:12] Colony","dest":"[02:378:15] Colony"}]},{"title":"Returning Fleets","type":"friendly","rows":[,{"id":119300941,"t":1582,"n":'4w',"tt":"12 Recycler<br><hr>16.378 Pig iron","a":'RECYCLE',"c":0,"return":true,"save":false,"start":"Colony [02:380:12]","dest":"[02:381:06] " + "Debris"}]}];
+        </script>
+        <div id="sp-own-building"> Fusion plant (Level 23) </div>
+        <div data-left="5310" data-start-ts="1794890000000" data-total="5713" id="sp-own-building-left"></div>
+        <div id="sp-own-research"> Mining technology (Level 9) </div>
+        <div data-left="3934" data-start-ts="1794890000000" data-total="8889" id="sp-own-research-left"></div>
+        <div id="sp-own-fleet"> Small transport </div>
+        <div data-left="18" data-start-ts="1794890000000" data-total="21" id="sp-own-fleet-left"></div>
+        </body></html>
+        """
+        pid, _, _, h_queues, _ = parse_home_metadata(home_html, now_ts=ref_ts)
+        self.assertEqual(pid, 12476)
+        self.assertEqual(len(h_queues), 5)
+        by_cat = {}
+        for q in h_queues:
+            by_cat.setdefault(q.category, []).append(q)
+        self.assertAlmostEqual(by_cat["building"][0].finish_ts or 0.0, ref_ts + 5310.0, places=2)
+        self.assertAlmostEqual(by_cat["research"][0].finish_ts or 0.0, ref_ts + 3934.0, places=2)
+        self.assertEqual(by_cat["research"][0].target_level, 9)
+        self.assertEqual(len(by_cat["fleet"]), 3)
+        self.assertTrue(any("Recycle ↩" in q.name and q.remaining_seconds == 1582.0 for q in by_cat["fleet"]))
+        self.assertTrue(any("Attack →" in q.name and q.remaining_seconds == 3142.0 for q in by_cat["fleet"]))
+
 
 if __name__ == "__main__":
     unittest.main()

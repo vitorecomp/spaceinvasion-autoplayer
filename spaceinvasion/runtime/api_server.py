@@ -2503,6 +2503,24 @@ class GameApiBridge:
                         upd_kwargs["active_queues"] = tuple(list(state.active_queues) + extra_q)
             if upd_kwargs:
                 state = replace(state, **upd_kwargs)
+        if prev is not None and not fetched_buildings and prev.active_queues:
+            cur_b_jobs = [q for q in state.active_queues if q.category == "building"]
+            prev_b_jobs = [q for q in prev.active_queues if q.category == "building"]
+            if len(cur_b_jobs) == 1 and len(prev_b_jobs) > 1:
+                c0 = cur_b_jobs[0]
+                p0 = prev_b_jobs[0]
+                same_head = (
+                    (c0.building_id is not None and c0.building_id == p0.building_id)
+                    or (c0.target_level is not None and c0.target_level == p0.target_level and p0.name.lower() in c0.name.lower())
+                )
+                now_wall = time.time()
+                tail_b = [
+                    pq
+                    for pq in prev_b_jobs[1:]
+                    if pq.queue_slot >= 2 and (pq.finish_ts is None or pq.finish_ts > now_wall)
+                ]
+                if same_head and tail_b:
+                    state = replace(state, active_queues=tuple(list(state.active_queues) + tail_b))
         now = time.monotonic()
         if fetched_home:
             self._last_home_fetched = True

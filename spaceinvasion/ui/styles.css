@@ -2960,3 +2960,57 @@ tbody tr.is-manual-queued:hover {
     animation: none;
   }
 }
+
+/* Dashboard Active / Executing Queue Rows & Finish Clock */
+.dash-exec-tbody tr.dash-exec-row {
+  background: rgba(56, 189, 248, 0.07);
+}
+
+.dash-exec-tbody tr.dash-exec-row.is-queued-slot {
+  background: rgba(56, 189, 248, 0.03);
+}
+
+.dash-exec-tbody tr.dash-exec-row:last-child td {
+  border-bottom: 1px solid rgba(56, 189, 248, 0.28);
+}
+
+.prio-badge.prio-exec {
+  background: rgba(16, 185, 129, 0.16);
+  color: var(--status-ok, #34d399);
+  border: 1px solid rgba(16, 185, 129, 0.42);
+}
+
+.prio-badge.prio-game-q {
+  background: rgba(56, 189, 248, 0.14);
+  color: var(--accent, #38bdf8);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.eta-pill.is-exec-timer {
+  background: rgba(16, 185, 129, 0.14);
+  color: var(--status-ok, #34d399);
+  border: 1px solid rgba(16, 185, 129, 0.36);
+}
+
+.eta-pill.is-finish-at {
+  background: rgba(56, 189, 248, 0.13);
+  color: var(--text-primary, #e6edf7);
+  border: 1px solid rgba(56, 189, 248, 0.34);
+}
+
+.exec-live-label {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--status-ok, #34d399);
+}
+
+.exec-live-label.is-slot {
+  color: var(--text-muted, #94a3b8);
+}
+
+.finish-clock-sub {
+  margin-top: 2px;
+  font-size: 0.86rem;
+  color: var(--text-muted, #94a3b8);
+  white-space: nowrap;
+}

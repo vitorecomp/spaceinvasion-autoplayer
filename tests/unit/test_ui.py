@@ -2943,6 +2943,120 @@ return { badgeBefore, helpAutoOpened, helpTitle, helpPrompt, centerText, badgeHi
                 server.server_close()
                 bridge.close()
 
+    def test_dashboard_queues_render_currently_executing_items_and_finish_clock(self) -> None:
+        import time as _time
+        from spaceinvasion.core.state import QueueJob
+
+        now_s = _time.time()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            cfg_path = tmp_dir / "cfg.yaml"
+            db_path = tmp_dir / "state.db"
+            bridge = GameApiBridge(
+                debug_port=9222,
+                config_path=cfg_path,
+                db_path=db_path,
+                client_factory=lambda _port: MagicMock(),
+            )
+            p1 = PlanetState(
+                planet_id=12476,
+                name="Colony",
+                coords="02:380:12",
+                planet_type="normal",
+                fields_used=40,
+                fields_max=230,
+                temperature=31,
+                resources=Resources(50_000, 30_000, 40_000, 20_000),
+                storage=Resources(500_000, 500_000, 500_000, 500_000),
+                energy=EnergyBalance(1000, 500),
+                buildings={"b1": 10, "b2": 8, "b5": 12, "b8": 3, "b9": 4},
+            )
+            bridge._last_state = GameState(
+                universe_id=31,
+                user_id=103603,
+                nickname="ventkx86",
+                timestamp=now_s,
+                planets=(p1,),
+                active_planet_id=12476,
+                active_queues=(
+                    QueueJob(
+                        category="building",
+                        name="Fusion plant",
+                        building_id=5,
+                        target_level=23,
+                        remaining_text="01:28:29",
+                        remaining_seconds=5309.0,
+                        finish_ts=now_s + 5309.0,
+                        queue_slot=1,
+                        detail="In construction (8%)",
+                    ),
+                    QueueJob(
+                        category="building",
+                        name="Pig iron warehouse",
+                        building_id=11,
+                        target_level=5,
+                        remaining_text="01:32:22",
+                        remaining_seconds=5542.0,
+                        finish_ts=now_s + 5542.0,
+                        queue_slot=2,
+                        detail="In-game slot #2",
+                    ),
+                    QueueJob(
+                        category="fleet",
+                        name="Attack → [02:378:15] Colony",
+                        remaining_text="00:52:22",
+                        remaining_seconds=3142.0,
+                        finish_ts=now_s + 3142.0,
+                        queue_slot=1,
+                        detail="Outbound · 6 Small transport, 12 Small fighter",
+                    ),
+                    QueueJob(
+                        category="research",
+                        name="Mining technology (Level 9)",
+                        target_level=9,
+                        remaining_text="01:04:01",
+                        remaining_seconds=3841.0,
+                        finish_ts=now_s + 3841.0,
+                        queue_slot=1,
+                        detail="Researching (57%)",
+                    ),
+                ),
+            )
+            bridge._last_snapshot_at = _time.monotonic()
+
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                scenario_js = r"""
+await __waitUntil(() => !document.getElementById("dash-exec-building-tbody").hidden);
+const bldExecTxt = document.getElementById("dash-exec-building-tbody").textContent;
+const fltExecTxt = document.getElementById("dash-exec-fleet-tbody").textContent;
+const resExecTxt = document.getElementById("dash-exec-research-tbody").textContent;
+const finPills = Array.from(document.querySelectorAll("#view-dashboard .eta-pill.is-finish-at")).map((el) => el.textContent.trim());
+const stripTxt = document.getElementById("active-queues-list").textContent;
+return { bldExecTxt, fltExecTxt, resExecTxt, finPills, stripTxt };
+"""
+                with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                    res = _run_node_ui(base_url, scenario_js)
+                self.assertEqual(res["errors"], [])
+                sc = res["scenario"]
+                self.assertIn("EXEC", sc["bldExecTxt"])
+                self.assertIn("Fusion plant → L23", sc["bldExecTxt"])
+                self.assertIn("GAME #2", sc["bldExecTxt"])
+                self.assertIn("Pig iron warehouse → L5", sc["bldExecTxt"])
+                self.assertIn("Attack → [02:378:15] Colony", sc["fltExecTxt"])
+                self.assertIn("In flight", sc["fltExecTxt"])
+                self.assertIn("Mining technology → L9", sc["resExecTxt"])
+                self.assertEqual(len(sc["finPills"]), 4)
+                for ptxt in sc["finPills"]:
+                    self.assertRegex(ptxt, r"\b\d{2}:\d{2}:\d{2}\b")
+                self.assertRegex(sc["stripTxt"], r"\b\d{2}:\d{2}:\d{2}\b")
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

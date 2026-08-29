@@ -773,9 +773,33 @@ function renderColonyMatrix(dash) {
   if (queues.length === 0) {
     qNode.textContent = "No active construction or research jobs.";
   } else {
-    qNode.textContent = queues
-      .map((q) => `[${String(q.category || "JOB").toUpperCase()}] ${q.name} → L${q.target_level ?? "?"}`)
-      .join(" · ");
+    qNode.replaceChildren();
+    queues.forEach((q, idx) => {
+      if (idx > 0) {
+        qNode.appendChild(document.createTextNode(" · "));
+      }
+      const span = document.createElement("span");
+      const catTag = `[${String(q.category || "JOB").toUpperCase()}]`;
+      const titleTxt = cleanQueueJobTitle(q);
+      const finTs = finiteNum(q.finish_ts, null);
+      if (finTs !== null && finTs > 0) {
+        const remNow = Math.max(0, Math.round(finTs - Date.now() / 1000));
+        const remSpan = document.createElement("span");
+        remSpan.dataset.finishTs = String(finTs);
+        remSpan.textContent = formatCountdownHms(remNow);
+        const finClock = formatFinishClock(finTs);
+        span.append(
+          document.createTextNode(`${catTag} ${titleTxt} (`),
+          remSpan,
+          document.createTextNode(` · ${finClock})`)
+        );
+      } else if (q.remaining_text) {
+        span.textContent = `${catTag} ${titleTxt} (${q.remaining_text})`;
+      } else {
+        span.textContent = `${catTag} ${titleTxt}`;
+      }
+      qNode.appendChild(span);
+    });
   }
 }
 
@@ -1319,7 +1343,13 @@ function buildPlanRow(act, { compact = false } = {}) {
   totalPill.className = `eta-pill${totalBlocked ? " is-blocked" : isWaiting ? " is-wait" : ""}`;
   totalPill.textContent = totalEta;
   tdTotal.appendChild(totalPill);
-  if (!compact && durText && durText !== totalEta) {
+  const totSecNum = finiteNum(act.total_seconds, null);
+  if (compact && !totalBlocked && totSecNum !== null && totSecNum > 0) {
+    const finAtDiv = document.createElement("div");
+    finAtDiv.className = "finish-clock-sub tabular";
+    finAtDiv.textContent = `at ${formatFinishClock(Date.now() / 1000 + totSecNum)}`;
+    tdTotal.appendChild(finAtDiv);
+  } else if (!compact && durText && durText !== totalEta) {
     const durDiv = document.createElement("div");
     durDiv.className = "action-sub";
     durDiv.textContent = durText === "Instant" ? "Instant" : `Dur: ${durText}`;
@@ -1455,13 +1485,166 @@ function dashboardQueueDomainForAction(act) {
   return "building";
 }
 
-function renderDashQueueSlice(tbodyEl, countEl, domainActions, emptyText) {
+function pad2Digits(n) {
+  return String(Math.max(0, Math.trunc(n))).padStart(2, "0");
+}
+
+function formatCountdownHms(seconds) {
+  const n = finiteNum(seconds, null);
+  if (n === null) return "—";
+  const s = Math.max(0, Math.round(n));
+  if (s <= 0) return "00:00:00";
+  if (s >= 86400) {
+    const d = Math.floor(s / 86400);
+    const rem = s % 86400;
+    const h = Math.floor(rem / 3600);
+    const m = Math.floor((rem % 3600) / 60);
+    const sec = rem % 60;
+    return `${d}d ${pad2Digits(h)}:${pad2Digits(m)}:${pad2Digits(sec)}`;
+  }
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return `${pad2Digits(h)}:${pad2Digits(m)}:${pad2Digits(sec)}`;
+}
+
+function formatFinishClock(finishTs) {
+  const ts = finiteNum(finishTs, null);
+  if (ts === null || ts <= 0) return "—";
+  const d = new Date(ts * 1000);
+  if (Number.isNaN(d.getTime())) return "—";
+  const now = new Date();
+  const hms = `${pad2Digits(d.getHours())}:${pad2Digits(d.getMinutes())}:${pad2Digits(d.getSeconds())}`;
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) return hms;
+  return `${pad2Digits(d.getMonth() + 1)}-${pad2Digits(d.getDate())} ${hms}`;
+}
+
+function cleanQueueJobTitle(job) {
+  const rawName = String(job?.name || "Active job")
+    .replace(/^(?:cancel|abort)\s+/i, "")
+    .replace(/\s*\(\s*Level\s+\d+\s*\)\s*$/i, "")
+    .trim();
+  const lvl = finiteNum(job?.target_level, null);
+  if (lvl !== null && lvl > 0) {
+    return `${rawName} → L${lvl}`;
+  }
+  return rawName || "Active job";
+}
+
+function dashboardQueueDomainForJob(job) {
+  const cat = String(job?.category || "").toLowerCase();
+  if (cat === "research") return "research";
+  if (cat === "fleet" || cat === "shipyard" || cat === "defense") return "fleet";
+  return "building";
+}
+
+function buildActiveExecRow(job) {
+  const tr = document.createElement("tr");
+  const slot = Math.max(1, Math.trunc(finiteNum(job?.queue_slot, 1) || 1));
+  tr.className = slot > 1 ? "dash-exec-row is-queued-slot" : "dash-exec-row";
+
+  const tdPrio = document.createElement("td");
+  const badge = document.createElement("span");
+  badge.className = slot > 1 ? "prio-badge prio-game-q tabular" : "prio-badge prio-exec tabular";
+  badge.textContent = slot > 1 ? `GAME #${slot}` : "EXEC";
+  tdPrio.appendChild(badge);
+
+  const tdAction = document.createElement("td");
+  const titleDiv = document.createElement("div");
+  titleDiv.className = "action-title";
+  titleDiv.textContent = cleanQueueJobTitle(job);
+  tdAction.appendChild(titleDiv);
+
+  const tdDetail = document.createElement("td");
+  const detSpan = document.createElement("span");
+  detSpan.className = "action-sub";
+  detSpan.textContent =
+    String(job?.detail || "").trim() ||
+    (slot > 1 ? `In-game queue #${slot}` : "Executing now");
+  tdDetail.appendChild(detSpan);
+
+  const finTs = finiteNum(job?.finish_ts, null);
+  const remSec =
+    finTs !== null && finTs > 0
+      ? Math.max(0, Math.round(finTs - Date.now() / 1000))
+      : finiteNum(job?.remaining_seconds, null);
+
+  const tdRem = document.createElement("td");
+  tdRem.className = "col-right tabular";
+  const remPill = document.createElement("span");
+  remPill.className = "eta-pill is-exec-timer";
+  if (finTs !== null && finTs > 0) {
+    remPill.dataset.finishTs = String(finTs);
+    remPill.textContent = formatCountdownHms(remSec);
+  } else {
+    remPill.textContent = String(job?.remaining_text || "").trim() || "Running";
+  }
+  tdRem.appendChild(remPill);
+
+  const tdFinish = document.createElement("td");
+  tdFinish.className = "col-right tabular";
+  const finPill = document.createElement("span");
+  finPill.className = "eta-pill is-finish-at";
+  finPill.textContent = finTs !== null && finTs > 0 ? formatFinishClock(finTs) : "In progress";
+  tdFinish.appendChild(finPill);
+
+  const tdOps = document.createElement("td");
+  tdOps.className = "col-right";
+  const liveTag = document.createElement("span");
+  liveTag.className = slot > 1 ? "exec-live-label is-slot" : "exec-live-label";
+  const detLow = String(job?.detail || "").toLowerCase();
+  if (slot > 1) {
+    liveTag.textContent = `Queued #${slot}`;
+  } else if (detLow.includes("returning")) {
+    liveTag.textContent = "Returning";
+  } else if (detLow.includes("outbound") || detLow.includes("flight")) {
+    liveTag.textContent = "In flight";
+  } else {
+    liveTag.textContent = "Executing";
+  }
+  tdOps.appendChild(liveTag);
+
+  tr.append(tdPrio, tdAction, tdDetail, tdRem, tdFinish, tdOps);
+  return tr;
+}
+
+function tickLiveQueueCountdowns() {
+  const nodes = document.querySelectorAll("[data-finish-ts]");
+  if (!nodes.length) return;
+  const nowSec = Date.now() / 1000;
+  nodes.forEach((node) => {
+    const finTs = finiteNum(node.dataset.finishTs, null);
+    if (finTs === null || finTs <= 0) return;
+    const rem = Math.max(0, Math.round(finTs - nowSec));
+    node.textContent = rem > 0 ? formatCountdownHms(rem) : "Finishing...";
+  });
+}
+
+function renderDashQueueSlice(execTbodyEl, tbodyEl, countEl, execJobs, domainActions, emptyText) {
+  const activeList = Array.isArray(execJobs) ? execJobs : [];
   if (countEl) {
-    countEl.textContent = String(domainActions.length);
+    countEl.textContent = String(activeList.length + domainActions.length);
+  }
+  if (execTbodyEl) {
+    if (activeList.length === 0) {
+      execTbodyEl.hidden = true;
+      execTbodyEl.replaceChildren();
+    } else {
+      execTbodyEl.hidden = false;
+      execTbodyEl.replaceChildren(...activeList.map((j) => buildActiveExecRow(j)));
+    }
   }
   if (!tbodyEl) return;
   const topSlice = domainActions.slice(0, 10);
   if (topSlice.length === 0) {
+    if (activeList.length > 0) {
+      tbodyEl.replaceChildren();
+      return;
+    }
     const tr = document.createElement("tr");
     const td = document.createElement("td");
     td.colSpan = 6;
@@ -1525,6 +1708,21 @@ function renderPlanTable(dash) {
     tbody.replaceChildren(...actions.map((a) => buildPlanRow(a, { compact: false })));
   }
 
+  const activeQueues = Array.isArray(dash.state?.active_queues) ? dash.state.active_queues : [];
+  const execBuildingJobs = [];
+  const execFleetJobs = [];
+  const execResearchJobs = [];
+  for (const job of activeQueues) {
+    const jDom = dashboardQueueDomainForJob(job);
+    if (jDom === "research") {
+      execResearchJobs.push(job);
+    } else if (jDom === "fleet") {
+      execFleetJobs.push(job);
+    } else {
+      execBuildingJobs.push(job);
+    }
+  }
+
   const buildingActions = [];
   const fleetActions = [];
   const researchActions = [];
@@ -1540,20 +1738,26 @@ function renderPlanTable(dash) {
   }
 
   renderDashQueueSlice(
+    el("dash-exec-building-tbody"),
     el("dash-plan-tbody"),
     el("dash-bld-q-count"),
+    execBuildingJobs,
     buildingActions,
     "No queued building actions."
   );
   renderDashQueueSlice(
+    el("dash-exec-fleet-tbody"),
     el("dash-plan-fleet-tbody"),
     el("dash-fleet-q-count"),
+    execFleetJobs,
     fleetActions,
     "No queued fleet or ship actions."
   );
   renderDashQueueSlice(
+    el("dash-exec-research-tbody"),
     el("dash-plan-research-tbody"),
     el("dash-research-q-count"),
+    execResearchJobs,
     researchActions,
     "No queued research actions."
   );
@@ -5775,6 +5979,13 @@ const initialHash = rawInitialHash === "graph" ? "action-graph" : rawInitialHash
 setActivePage(PAGE_TITLES[initialHash] ? initialHash : state.activePage);
 checkApiHealthAndHotReload();
 loadDashboard({ refresh: false, preserveConfig: false });
+
+// Live 1s countdown ticker for currently executing queue items
+setInterval(() => {
+  if (document.visibilityState === "visible") {
+    tickLiveQueueCountdowns();
+  }
+}, 1000);
 
 // Fast auto-reconnect + live UI asset hot-reload watcher (1.2s)
 setInterval(() => {

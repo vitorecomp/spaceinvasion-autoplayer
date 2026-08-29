@@ -46,6 +46,7 @@ from spaceinvasion.core.state import (
     parse_menu_status,
     parse_planets_overview_json,
     parse_research_page,
+    parse_research_queue_timer,
     parse_ticker_rates,
     parse_tutorial_from_home,
     parse_unit_factory_page,
@@ -2678,8 +2679,24 @@ class GameBrowserClient:
             research_offers = parse_research_page(r_html, state.researches)
             active_res = [o for o in research_offers if o.active]
             if active_res:
+                r_rem_txt, r_rem_s, r_fin_ts, r_det = parse_research_queue_timer(r_html)
+                prev_home_res = next((q for q in merged_queues if q.category == "research"), None)
+                if r_fin_ts is None and prev_home_res is not None:
+                    r_rem_txt = r_rem_txt or prev_home_res.remaining_text
+                    r_rem_s = prev_home_res.remaining_seconds
+                    r_fin_ts = prev_home_res.finish_ts
+                    r_det = r_det or prev_home_res.detail
                 res_jobs = [
-                    QueueJob(category="research", name=o.name, target_level=o.target_level)
+                    QueueJob(
+                        category="research",
+                        name=o.name,
+                        target_level=o.target_level,
+                        remaining_text=r_rem_txt,
+                        remaining_seconds=r_rem_s,
+                        finish_ts=r_fin_ts,
+                        queue_slot=1,
+                        detail=r_det or "Researching",
+                    )
                     for o in active_res
                 ]
                 merged_queues = [q for q in merged_queues if q.category != "research"] + res_jobs

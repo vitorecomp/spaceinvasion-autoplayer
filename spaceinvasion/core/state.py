@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import time
 from typing import Any, Optional
 
 from bs4 import BeautifulSoup
@@ -489,13 +490,17 @@ class TutorialStatus:
 
 @dataclass(frozen=True)
 class QueueJob:
-    """Active construction, research, or shipyard job."""
+    """Active construction, research, shipyard, or fleet movement job."""
 
     category: str
     name: str
     building_id: Optional[int] = None
     target_level: Optional[int] = None
     remaining_text: str = ""
+    remaining_seconds: Optional[float] = None
+    finish_ts: Optional[float] = None
+    queue_slot: int = 1
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -918,8 +923,65 @@ def _find_card_row(detail_anchor, building_id: int) -> Any:
     return _find_item_card_row(detail_anchor, "building", "buildingID", building_id)
 
 
-def parse_building_queue(html: str) -> tuple[QueueJob, ...]:
-    """Parse active and queued jobs from `Construction queue (...)` in `internalBuildings`."""
+_HMS_TIMER_RE = re.compile(
+    r"\b(?:(\d{1,3}):)?(\d{1,2}):(\d{2}):(\d{2})\b|\b(\d{1,3}):(\d{2})\b",
+    re.ASCII,
+)
+_QUEUE_LEADING_JUNK_RE = re.compile(
+    r"^(?:(?:cancel|abort|abbrechen|annuler)\s+)+",
+    re.IGNORECASE | re.ASCII,
+)
+_QUEUE_TRAILING_JUNK_RE = re.compile(
+    r"(?:\s+(?:cancel|abort|abbrechen|annuler))+$",
+    re.IGNORECASE | re.ASCII,
+)
+
+
+def _clean_queue_item_name(raw: str) -> str:
+    cleaned = " ".join(str(raw or "").split())
+    cleaned = _QUEUE_LEADING_JUNK_RE.sub("", cleaned)
+    cleaned = _QUEUE_TRAILING_JUNK_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _parse_hms_seconds(text: Any) -> Optional[float]:
+    txt = _safe_state_str(text)
+    if not txt:
+        return None
+    m = _HMS_TIMER_RE.search(txt)
+    if not m:
+        return None
+    if m.group(4) is not None:
+        days = int(m.group(1)) if m.group(1) else 0
+        hours = int(m.group(2))
+        mins = int(m.group(3))
+        secs = int(m.group(4))
+        total = float(days * 86400 + hours * 3600 + mins * 60 + secs)
+        return total if total >= 0.0 else None
+    if m.group(5) is not None and m.group(6) is not None:
+        mins = int(m.group(5))
+        secs = int(m.group(6))
+        total = float(mins * 60 + secs)
+        return total if total >= 0.0 else None
+    return None
+
+
+def _format_hms_seconds(seconds: Optional[float]) -> str:
+    if seconds is None or not math.isfinite(seconds):
+        return ""
+    s = max(0, int(round(seconds)))
+    if s >= 86400:
+        d, rem = divmod(s, 86400)
+        h, rem = divmod(rem, 3600)
+        m, sec = divmod(rem, 60)
+        return f"{d}d {h:02d}:{m:02d}:{sec:02d}"
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{sec:02d}"
+
+
+def parse_building_queue(html: str, *, now_ts: Optional[float] = None) -> tuple[QueueJob, ...]:
+    """Parse active and queued jobs (with live countdowns and finish timestamps) from `Construction queue`."""
     soup = BeautifulSoup(html, "html.parser")
     queue_table = None
     for tbl in soup.find_all("table"):
@@ -930,24 +992,140 @@ def parse_building_queue(html: str) -> tuple[QueueJob, ...]:
     if queue_table is None:
         return ()
 
+    ref_now = _safe_state_float(now_ts, time.time()) if now_ts is not None else time.time()
     jobs: list[QueueJob] = []
     seen: set[tuple[str, int]] = set()
-    for m in re.finditer(r"([A-Za-z][A-Za-z ]+?)\s*\(\s*Level\s+(\d+)\s*\)", queue_table.get_text(" ", strip=True), re.ASCII):
-        bname = " ".join(m.group(1).split())
+    cumulative_rem: Optional[float] = None
+
+    top_timer_el = queue_table.find(id="sicntbar-1-1")
+    top_pct_el = queue_table.find(id="sicntbar-1-2")
+    top_timer_txt = " ".join(top_timer_el.get_text(" ", strip=True).split()) if top_timer_el else ""
+    top_pct_txt = " ".join(top_pct_el.get_text(" ", strip=True).split()) if top_pct_el else ""
+
+    for tr in queue_table.find_all("tr"):
+        # Skip nested layout tables inside Row 1's counter cell
+        if tr.find_parent("table") is not queue_table:
+            continue
+        row_text = " ".join(tr.get_text(" ", strip=True).split())
+        if "Construction queue" in row_text:
+            continue
+        m = re.search(
+            r"([A-Za-z][A-Za-z ]+?)\s*\(\s*Level\s+(\d+)\s*\)",
+            row_text,
+            re.ASCII,
+        )
+        if not m:
+            continue
+        bname = _clean_queue_item_name(m.group(1))
+        if not bname:
+            continue
         lvl = _parse_bounded_int(m.group(2), 0)
         key = (bname.lower(), lvl)
         if key in seen:
             continue
         seen.add(key)
+
+        slot_num = len(jobs) + 1
+        rem_s: Optional[float] = None
+        rem_txt = ""
+        fin_ts: Optional[float] = None
+        detail_txt = ""
+
+        if slot_num == 1:
+            cand_timer = top_timer_txt
+            if not cand_timer:
+                # Strip YYYY-MM-DD HH:MM:SS date stamps before HMS scan
+                stripped_dates = re.sub(r"\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\b", "", row_text)
+                m_hms = _HMS_TIMER_RE.search(stripped_dates)
+                if m_hms:
+                    cand_timer = m_hms.group(0)
+            parsed_s = _parse_hms_seconds(cand_timer)
+            if parsed_s is not None:
+                rem_s = parsed_s
+                cumulative_rem = parsed_s
+                rem_txt = _format_hms_seconds(parsed_s)
+                fin_ts = round(ref_now + parsed_s, 3)
+            detail_txt = f"In construction ({top_pct_txt})" if top_pct_txt else "In construction"
+        else:
+            stripped_dates = re.sub(r"\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\b", "", row_text)
+            dur_s = _parse_hms_seconds(stripped_dates)
+            if dur_s is not None:
+                if cumulative_rem is not None:
+                    cumulative_rem += dur_s
+                    rem_s = cumulative_rem
+                    rem_txt = _format_hms_seconds(rem_s)
+                    fin_ts = round(ref_now + rem_s, 3)
+                else:
+                    rem_s = dur_s
+                    rem_txt = _format_hms_seconds(dur_s)
+            detail_txt = f"In-game slot #{slot_num}"
+
         jobs.append(
             QueueJob(
                 category="building",
                 name=bname,
                 building_id=BUILDING_ID_BY_NAME.get(bname.lower()),
                 target_level=lvl,
+                remaining_text=rem_txt,
+                remaining_seconds=rem_s,
+                finish_ts=fin_ts,
+                queue_slot=slot_num,
+                detail=detail_txt,
+            )
+        )
+
+    if jobs:
+        return tuple(jobs)
+
+    for m in re.finditer(
+        r"([A-Za-z][A-Za-z ]+?)\s*\(\s*Level\s+(\d+)\s*\)",
+        queue_table.get_text(" ", strip=True),
+        re.ASCII,
+    ):
+        bname = _clean_queue_item_name(m.group(1))
+        if not bname:
+            continue
+        lvl = _parse_bounded_int(m.group(2), 0)
+        key = (bname.lower(), lvl)
+        if key in seen:
+            continue
+        seen.add(key)
+        slot_num = len(jobs) + 1
+        jobs.append(
+            QueueJob(
+                category="building",
+                name=bname,
+                building_id=BUILDING_ID_BY_NAME.get(bname.lower()),
+                target_level=lvl,
+                queue_slot=slot_num,
             )
         )
     return tuple(jobs)
+
+
+def parse_research_queue_timer(
+    html: str,
+    *,
+    now_ts: Optional[float] = None,
+) -> tuple[str, Optional[float], Optional[float], str]:
+    """Extract `(remaining_text, remaining_seconds, finish_ts, detail)` from `internalResearch`."""
+    if not html:
+        return ("", None, None, "")
+    soup = BeautifulSoup(html, "html.parser")
+    t_el = soup.find(id="sicntbar-1-1")
+    p_el = soup.find(id="sicntbar-1-2")
+    t_txt = " ".join(t_el.get_text(" ", strip=True).split()) if t_el else ""
+    p_txt = " ".join(p_el.get_text(" ", strip=True).split()) if p_el else ""
+    rem_s = _parse_hms_seconds(t_txt)
+    if rem_s is None:
+        return ("", None, None, f"Researching ({p_txt})" if p_txt else "Researching")
+    ref_now = _safe_state_float(now_ts, time.time()) if now_ts is not None else time.time()
+    return (
+        _format_hms_seconds(rem_s),
+        rem_s,
+        round(ref_now + rem_s, 3),
+        f"Researching ({p_txt})" if p_txt else "Researching",
+    )
 
 
 def parse_buildings_page(
@@ -1450,10 +1628,86 @@ def parse_tutorial_from_home(html: str) -> Optional[TutorialStatus]:
     )
 
 
-def parse_home_metadata(html: str) -> tuple[Optional[int], Optional[float], bool, tuple[QueueJob, ...], tuple[FleetAlert, ...]]:
-    """Extract active planet ID, speedup factor, newbie protection, queues, and fleet alerts."""
+_FADATA_BLOCK_RE = re.compile(r"\bvar\s+faData\s*=\s*(\[.*?\])\s*;", re.DOTALL)
+_FADATA_MISSION_LABELS: dict[str, str] = {
+    "ATTACK": "Attack",
+    "RECYCLE": "Recycle",
+    "SPIONAGE": "Spy",
+    "SAVE": "Escape flight",
+    "TRANSPORT": "Transport",
+    "STATION": "Station",
+    "COLONIZE": "Colonize",
+    "EVENT": "Event",
+    "PARTICLE": "Particle",
+}
+
+
+def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
+    """Parse active own/returning fleet flights and exact countdowns (`t` seconds) from `var faData`."""
+    m = _FADATA_BLOCK_RE.search(html or "")
+    if not m:
+        return []
+    block = m.group(1)
+    jobs: list[QueueJob] = []
+    # Split into section chunks by `"title":`
+    sections = re.split(r'\{\s*"title"\s*:\s*', block)
+    for sec in sections[1:]:
+        m_title = re.match(r'"([^"]+)"', sec)
+        sec_title = (m_title.group(1) if m_title else "").strip().lower()
+        if "own fleet" not in sec_title and "returning" not in sec_title and "eigene" not in sec_title and "rückkehr" not in sec_title and "rueckkehr" not in sec_title:
+            continue
+        is_ret_sec = "returning" in sec_title or "rückkehr" in sec_title or "rueckkehr" in sec_title
+        for row_m in re.finditer(r'\{\s*"id"\s*:\s*(\d+)(.*?)\}', sec, re.DOTALL):
+            body = row_m.group(2)
+            m_t = re.search(r'"t"\s*:\s*(\d+)', body, re.ASCII)
+            if not m_t:
+                continue
+            rem_s = float(_parse_bounded_int(m_t.group(1), 0))
+            m_act = re.search(r'"a"\s*:\s*[\'"]([A-Za-z_]+)[\'"]', body, re.ASCII)
+            raw_act = (m_act.group(1) if m_act else "FLEET").upper()
+            mission_lbl = _FADATA_MISSION_LABELS.get(raw_act, raw_act.title())
+            is_ret = is_ret_sec or bool(re.search(r'"return"\s*:\s*true\b', body, re.IGNORECASE))
+            m_dest = re.search(r'"dest"\s*:\s*"([^"]*)"(?:\s*\+\s*"([^"]*)")?', body)
+            dest_str = ""
+            if m_dest:
+                dest_str = ((m_dest.group(1) or "") + (m_dest.group(2) or "")).strip()
+            m_tt = re.search(r'"tt"\s*:\s*"(.*?)"\s*,\s*"a"', body, re.DOTALL)
+            ships_detail = ""
+            if m_tt:
+                tt_raw = m_tt.group(1).split("<hr>", 1)[0]
+                tt_parts = [
+                    " ".join(BeautifulSoup(part, "html.parser").get_text(" ", strip=True).split())
+                    for part in tt_raw.split("<br>")
+                ]
+                ships_detail = ", ".join(p for p in tt_parts if p)[:140]
+            arrow = "↩" if is_ret else "→"
+            label = f"{mission_lbl} {arrow} {dest_str}".strip() if dest_str else mission_lbl
+            leg_tag = "Returning" if is_ret else "Outbound"
+            detail_full = f"{leg_tag} · {ships_detail}" if ships_detail else leg_tag
+            jobs.append(
+                QueueJob(
+                    category="fleet",
+                    name=label[:200],
+                    remaining_text=_format_hms_seconds(rem_s),
+                    remaining_seconds=rem_s,
+                    finish_ts=round(ref_now + rem_s, 3),
+                    queue_slot=1,
+                    detail=detail_full[:160],
+                )
+            )
+    jobs.sort(key=lambda j: (j.finish_ts if j.finish_ts is not None else float("inf")))
+    return jobs
+
+
+def parse_home_metadata(
+    html: str,
+    *,
+    now_ts: Optional[float] = None,
+) -> tuple[Optional[int], Optional[float], bool, tuple[QueueJob, ...], tuple[FleetAlert, ...]]:
+    """Extract active planet ID, speedup factor, newbie protection, queues (with finish times), and fleet alerts."""
     soup = BeautifulSoup(html, "html.parser")
     text = " ".join(soup.get_text(" ", strip=True).split())
+    ref_now = _safe_state_float(now_ts, time.time()) if now_ts is not None else time.time()
 
     active_planet_id: Optional[int] = None
     m_pid = re.search(r"planetID\s*:\s*(\d+)", html, re.ASCII)
@@ -1481,27 +1735,68 @@ def parse_home_metadata(html: str) -> tuple[Optional[int], Optional[float], bool
             if content:
                 q_bid: Optional[int] = None
                 q_lvl: Optional[int] = None
-                if cat == "building":
-                    m_bq = re.search(
-                        r"([A-Za-z][A-Za-z ]+?)\s*\(\s*Level\s+(\d+)\s*\)",
-                        content,
-                        re.ASCII,
-                    )
-                    if m_bq:
-                        bname = " ".join(m_bq.group(1).split()).lower()
-                        q_bid = BUILDING_ID_BY_NAME.get(bname)
-                        parsed_lvl = _parse_bounded_int(m_bq.group(2), 0)
-                        q_lvl = parsed_lvl if parsed_lvl > 0 else None
+                q_name = content
+                m_lvl_any = re.search(
+                    r"([A-Za-z][A-Za-z ]+?)\s*\(\s*Level\s+(\d+)\s*\)",
+                    content,
+                    re.ASCII,
+                )
+                if cat == "building" and m_lvl_any:
+                    bname_clean = _clean_queue_item_name(m_lvl_any.group(1))
+                    q_bid = BUILDING_ID_BY_NAME.get(bname_clean.lower())
+                    parsed_lvl = _parse_bounded_int(m_lvl_any.group(2), 0)
+                    q_lvl = parsed_lvl if parsed_lvl > 0 else None
+                elif cat == "research" and m_lvl_any:
+                    parsed_rlvl = _parse_bounded_int(m_lvl_any.group(2), 0)
+                    q_lvl = parsed_rlvl if parsed_rlvl > 0 else None
+
+                left_el = soup.find(id=f"{box_id}-left")
+                rem_s: Optional[float] = None
+                fin_ts: Optional[float] = None
+                rem_txt = ""
+                detail_str = ""
+                if left_el is not None:
+                    raw_left = _safe_optional_state_float(left_el.get("data-left"))
+                    raw_start_ms = _safe_optional_state_float(left_el.get("data-start-ts"))
+                    raw_total = _safe_optional_state_float(left_el.get("data-total"))
+                    if raw_left is not None and raw_left >= 0.0:
+                        rem_s = float(raw_left)
+                        base_epoch = (
+                            (float(raw_start_ms) / 1000.0)
+                            if (raw_start_ms is not None and raw_start_ms > 1e11)
+                            else ref_now
+                        )
+                        fin_ts = round(base_epoch + rem_s, 3)
+                        rem_txt = _format_hms_seconds(rem_s)
+                        if raw_total is not None and raw_total > 0.0:
+                            pct = max(0, min(100, round((1.0 - min(1.0, rem_s / raw_total)) * 100)))
+                            detail_str = f"{pct}%"
+
+                if cat == "fleet":
+                    detail_str = f"Shipyard ({detail_str})" if detail_str else "Weapons factory"
+                elif cat == "building":
+                    detail_str = f"In construction ({detail_str})" if detail_str else "In construction"
+                elif cat == "research":
+                    detail_str = f"Researching ({detail_str})" if detail_str else "Researching"
+
                 queues.append(
                     QueueJob(
                         category=cat,
-                        name=content,
+                        name=q_name,
                         building_id=q_bid,
                         target_level=q_lvl,
+                        remaining_text=rem_txt,
+                        remaining_seconds=rem_s,
+                        finish_ts=fin_ts,
+                        queue_slot=1,
+                        detail=detail_str,
                     )
                 )
 
-    if not any(q.category == "fleet" for q in queues):
+    fadata_fleets = _parse_home_fadata_fleets(html, ref_now=ref_now)
+    if fadata_fleets:
+        queues.extend(fadata_fleets)
+    elif not any(q.category == "fleet" for q in queues):
         recall_nodes = soup.select(
             'form[action*="recallFleet"], a[href*="recallFleet"], '
             'input[name*="recallFleet"], [onclick*="recallFleet"]'
@@ -1509,10 +1804,16 @@ def parse_home_metadata(html: str) -> tuple[Optional[int], Optional[float], bool
         for rnode in recall_nodes:
             row = rnode.find_parent("tr") or rnode.find_parent("div") or rnode
             summary_txt = " ".join(row.get_text(" ", strip=True).split()).strip()
+            rem_s_rc = _parse_hms_seconds(summary_txt)
             queues.append(
                 QueueJob(
                     category="fleet",
                     name=(summary_txt[:200] if summary_txt else "Active/returning fleet"),
+                    remaining_text=_format_hms_seconds(rem_s_rc) if rem_s_rc is not None else "",
+                    remaining_seconds=rem_s_rc,
+                    finish_ts=round(ref_now + rem_s_rc, 3) if rem_s_rc is not None else None,
+                    queue_slot=1,
+                    detail="In flight",
                 )
             )
             break
@@ -1756,6 +2057,9 @@ def game_state_from_dict(data: Mapping[str, Any]) -> GameState:
             continue
         q_bid = _safe_optional_state_int(q.get("building_id"))
         q_tgt = _safe_optional_state_int(q.get("target_level"))
+        q_rem_s = _safe_optional_state_float(q.get("remaining_seconds"))
+        q_fin_ts = _safe_optional_state_float(q.get("finish_ts"))
+        q_slot = max(1, _safe_state_int(q.get("queue_slot", 1), 1))
         queues_list.append(
             QueueJob(
                 category=_safe_state_str(q.get("category") or ""),
@@ -1763,6 +2067,10 @@ def game_state_from_dict(data: Mapping[str, Any]) -> GameState:
                 building_id=q_bid if (q_bid is not None and q_bid >= 0) else None,
                 target_level=max(0, q_tgt) if q_tgt is not None else None,
                 remaining_text=_safe_state_str(q.get("remaining_text") or ""),
+                remaining_seconds=q_rem_s if (q_rem_s is not None and q_rem_s >= 0.0) else None,
+                finish_ts=q_fin_ts if (q_fin_ts is not None and q_fin_ts > 0.0) else None,
+                queue_slot=q_slot,
+                detail=_safe_state_str(q.get("detail") or ""),
             )
         )
     queues = tuple(queues_list)
