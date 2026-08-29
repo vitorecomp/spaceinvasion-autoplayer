@@ -46,10 +46,10 @@ export const HelpAlertModal: React.FC = () => {
 
   const onCaptchaResume = async () => {
     try {
-      await apiCommand({ command: "bot_control", paused: false });
+      await apiCommand({ command: "bot_control", paused: false, captcha_solved: true });
       await ackActiveHelpPopup("read");
-      await loadDashboard({ refresh: false, force: true });
-      showFeedback("CAPTCHA gate cleared — Commander automation resumed.", "ok");
+      await loadDashboard({ refresh: true, force: true });
+      showFeedback("CAPTCHA solved confirmed — page refresh & Commander automation resumed.", "ok");
     } catch (err: any) {
       showFeedback(`Resume failed: ${err.message}`, feedbackKindForError(err));
     }
@@ -126,9 +126,9 @@ export const HelpAlertModal: React.FC = () => {
               type="button"
               className="btn btn-secondary btn-sm"
               id="btn-notif-help-dismiss"
-              onClick={() => ackActiveHelpPopup("dismissed")}
+              onClick={() => (isCaptchaGate ? closeHelpPopupOnly() : ackActiveHelpPopup("dismissed"))}
             >
-              Dismiss
+              {isCaptchaGate ? "Hide Popup" : "Dismiss"}
             </button>
             {isCaptchaGate ? (
               <button
@@ -139,15 +139,16 @@ export const HelpAlertModal: React.FC = () => {
               >
                 Solved in Chrome — Resume Bot
               </button>
-            ) : null}
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              id="btn-notif-help-ack"
-              onClick={() => ackActiveHelpPopup("read")}
-            >
-              Acknowledge
-            </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                id="btn-notif-help-ack"
+                onClick={() => ackActiveHelpPopup("read")}
+              >
+                Acknowledge
+              </button>
+            )}
           </div>
         </div>
       </div>

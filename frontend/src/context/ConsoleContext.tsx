@@ -804,6 +804,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
           prev.server_boot_id &&
           vData.server_boot_id !== prev.server_boot_id
       );
+      if (sharedLegacyState.dashboard?.bot_control?.captcha_blocked) {
+        return false;
+      }
       if (codeChanged || bootChanged) {
         persistUiPrefs(
           sharedLegacyState.activePage,
@@ -1359,18 +1362,31 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
     }, 1000);
 
     const versionTimer = setInterval(() => {
-      checkApiHealthAndHotReload();
+      if (!sharedLegacyState.dashboard?.bot_control?.captcha_blocked) {
+        checkApiHealthAndHotReload();
+      }
     }, 1200);
 
     const dashTimer = setInterval(() => {
-      if (document.visibilityState === "visible" && sharedLegacyState.apiOnline) {
+      if (
+        document.visibilityState === "visible" &&
+        sharedLegacyState.apiOnline &&
+        !sharedLegacyState.dashboard?.bot_control?.captcha_blocked
+      ) {
         loadDashboard({ refresh: false, preserveConfig: true });
       }
     }, 5000);
 
-    const onOnline = () => checkApiHealthAndHotReload();
+    const onOnline = () => {
+      if (!sharedLegacyState.dashboard?.bot_control?.captcha_blocked) {
+        checkApiHealthAndHotReload();
+      }
+    };
     const onVis = () => {
-      if (document.visibilityState === "visible") {
+      if (
+        document.visibilityState === "visible" &&
+        !sharedLegacyState.dashboard?.bot_control?.captcha_blocked
+      ) {
         checkApiHealthAndHotReload();
         loadDashboard({ refresh: false, preserveConfig: true });
       }

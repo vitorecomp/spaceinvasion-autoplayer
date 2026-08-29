@@ -132,6 +132,13 @@ export const AppSidebar: React.FC = () => {
       : rnkCur.attack_zone?.label || "#—";
 
   const onSync = async () => {
+    if (dashboard?.bot_control?.captcha_blocked) {
+      showFeedback(
+        "Page refresh is frozen while CAPTCHA is active — solve it in Chrome (:9222) and click 'Solved in Chrome — Resume Bot'.",
+        "warn"
+      );
+      return;
+    }
     const useGa =
       String(dashboard?.config?.planner_mode || "").toLowerCase() === "ga_nn";
     if (useGa) beginGaCalc();
@@ -156,6 +163,13 @@ export const AppSidebar: React.FC = () => {
   };
 
   const onEnsureSession = async () => {
+    if (dashboard?.bot_control?.captcha_blocked) {
+      showFeedback(
+        "Browser attachment is frozen while CAPTCHA is active — solve it in Chrome (:9222) and click 'Solved in Chrome — Resume Bot'.",
+        "warn"
+      );
+      return;
+    }
     try {
       showFeedback("Attaching Chrome to SpaceInvasion universe...", "ok");
       const res = await apiCommand({ command: "ensure_session" });
@@ -168,9 +182,14 @@ export const AppSidebar: React.FC = () => {
 
   const onPauseToggle = async () => {
     const currentPaused = Boolean(dashboard?.bot_control?.paused);
+    const wasCaptcha = Boolean(dashboard?.bot_control?.captcha_blocked);
     try {
-      await apiCommand({ command: "bot_control", paused: !currentPaused });
-      await loadDashboard({ refresh: false, force: true });
+      await apiCommand({
+        command: "bot_control",
+        paused: !currentPaused,
+        ...(wasCaptcha && currentPaused ? { captcha_solved: true } : {}),
+      });
+      await loadDashboard({ refresh: Boolean(wasCaptcha && currentPaused), force: true });
       showFeedback(
         !currentPaused ? "Commander auto-loop paused." : "Commander auto-loop resumed.",
         "ok"

@@ -7955,6 +7955,7 @@
     }, []);
     const applyVersionSnapshot = reactExports.useCallback(
       (vData) => {
+        var _a2, _b;
         if (!vData) return false;
         const prev = uiVersionsRef.current;
         if (prev.code_version == null) {
@@ -7969,6 +7970,9 @@
         const bootChanged = Boolean(
           vData.server_boot_id && prev.server_boot_id && vData.server_boot_id !== prev.server_boot_id
         );
+        if ((_b = (_a2 = sharedLegacyState.dashboard) == null ? void 0 : _a2.bot_control) == null ? void 0 : _b.captcha_blocked) {
+          return false;
+        }
         if (codeChanged || bootChanged) {
           persistUiPrefs(
             sharedLegacyState.activePage,
@@ -8464,16 +8468,26 @@
         }
       }, 1e3);
       const versionTimer = setInterval(() => {
-        checkApiHealthAndHotReload();
+        var _a2, _b;
+        if (!((_b = (_a2 = sharedLegacyState.dashboard) == null ? void 0 : _a2.bot_control) == null ? void 0 : _b.captcha_blocked)) {
+          checkApiHealthAndHotReload();
+        }
       }, 1200);
       const dashTimer = setInterval(() => {
-        if (document.visibilityState === "visible" && sharedLegacyState.apiOnline) {
+        var _a2, _b;
+        if (document.visibilityState === "visible" && sharedLegacyState.apiOnline && !((_b = (_a2 = sharedLegacyState.dashboard) == null ? void 0 : _a2.bot_control) == null ? void 0 : _b.captcha_blocked)) {
           loadDashboard({ refresh: false, preserveConfig: true });
         }
       }, 5e3);
-      const onOnline = () => checkApiHealthAndHotReload();
+      const onOnline = () => {
+        var _a2, _b;
+        if (!((_b = (_a2 = sharedLegacyState.dashboard) == null ? void 0 : _a2.bot_control) == null ? void 0 : _b.captcha_blocked)) {
+          checkApiHealthAndHotReload();
+        }
+      };
       const onVis = () => {
-        if (document.visibilityState === "visible") {
+        var _a2, _b;
+        if (document.visibilityState === "visible" && !((_b = (_a2 = sharedLegacyState.dashboard) == null ? void 0 : _a2.bot_control) == null ? void 0 : _b.captcha_blocked)) {
           checkApiHealthAndHotReload();
           loadDashboard({ refresh: false, preserveConfig: true });
         }
@@ -8706,12 +8720,12 @@
     );
     const onResumeFromCaptcha = async () => {
       try {
-        await apiCommand2({ command: "bot_control", paused: false });
+        await apiCommand2({ command: "bot_control", paused: false, captcha_solved: true });
         if (activeHelpNotif) {
           await ackActiveHelpPopup("read");
         }
-        await loadDashboard({ refresh: false, force: true });
-        showFeedback("CAPTCHA gate cleared — Commander automation resumed.", "ok");
+        await loadDashboard({ refresh: true, force: true });
+        showFeedback("CAPTCHA solved confirmed — page refresh & Commander automation resumed.", "ok");
       } catch (err) {
         showFeedback(`Resume failed: ${err.message}`, feedbackKindForError(err));
       }
@@ -8882,15 +8896,22 @@
     const srvRank = safeFiniteNumber(rnkCur.server_rank, null);
     const rankBadgeTxt = rnkCur.server_rank != null ? srvRank !== null ? `#${srvRank}` : "#—" : ((_h = rnkCur.attack_zone) == null ? void 0 : _h.label) || "#—";
     const onSync = async () => {
-      var _a2, _b2, _c2;
-      const useGa = String(((_a2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a2.planner_mode) || "").toLowerCase() === "ga_nn";
+      var _a2, _b2, _c2, _d2;
+      if ((_a2 = dashboard == null ? void 0 : dashboard.bot_control) == null ? void 0 : _a2.captcha_blocked) {
+        showFeedback(
+          "Page refresh is frozen while CAPTCHA is active — solve it in Chrome (:9222) and click 'Solved in Chrome — Resume Bot'.",
+          "warn"
+        );
+        return;
+      }
+      const useGa = String(((_b2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b2.planner_mode) || "").toLowerCase() === "ga_nn";
       if (useGa) beginGaCalc();
       try {
         showFeedback("Syncing live snapshot from Chrome...", "ok");
         const ok = await loadDashboard({ refresh: true, preserveConfig: true, force: true });
         if (ok) {
-          const latestDash = ((_b2 = globalThis.state) == null ? void 0 : _b2.dashboard) || dashboard;
-          if ((_c2 = latestDash == null ? void 0 : latestDash.health) == null ? void 0 : _c2.rate_limited) {
+          const latestDash = ((_c2 = globalThis.state) == null ? void 0 : _c2.dashboard) || dashboard;
+          if ((_d2 = latestDash == null ? void 0 : latestDash.health) == null ? void 0 : _d2.rate_limited) {
             const rem = Math.ceil(safeFiniteNumber(latestDash.health.retry_after, 0) ?? 0);
             showFeedback(
               `Synced cached state — SpaceInvasion rate-limit cooldown active (${rem > 0 ? `${rem}s` : "wait"}).`,
@@ -8905,6 +8926,14 @@
       }
     };
     const onEnsureSession = async () => {
+      var _a2;
+      if ((_a2 = dashboard == null ? void 0 : dashboard.bot_control) == null ? void 0 : _a2.captcha_blocked) {
+        showFeedback(
+          "Browser attachment is frozen while CAPTCHA is active — solve it in Chrome (:9222) and click 'Solved in Chrome — Resume Bot'.",
+          "warn"
+        );
+        return;
+      }
       try {
         showFeedback("Attaching Chrome to SpaceInvasion universe...", "ok");
         const res = await apiCommand2({ command: "ensure_session" });
@@ -8915,11 +8944,16 @@
       }
     };
     const onPauseToggle = async () => {
-      var _a2;
+      var _a2, _b2;
       const currentPaused = Boolean((_a2 = dashboard == null ? void 0 : dashboard.bot_control) == null ? void 0 : _a2.paused);
+      const wasCaptcha = Boolean((_b2 = dashboard == null ? void 0 : dashboard.bot_control) == null ? void 0 : _b2.captcha_blocked);
       try {
-        await apiCommand2({ command: "bot_control", paused: !currentPaused });
-        await loadDashboard({ refresh: false, force: true });
+        await apiCommand2({
+          command: "bot_control",
+          paused: !currentPaused,
+          ...wasCaptcha && currentPaused ? { captcha_solved: true } : {}
+        });
+        await loadDashboard({ refresh: Boolean(wasCaptcha && currentPaused), force: true });
         showFeedback(
           !currentPaused ? "Commander auto-loop paused." : "Commander auto-loop resumed.",
           "ok"
@@ -9221,10 +9255,10 @@
     );
     const onCaptchaResume = async () => {
       try {
-        await apiCommand2({ command: "bot_control", paused: false });
+        await apiCommand2({ command: "bot_control", paused: false, captcha_solved: true });
         await ackActiveHelpPopup("read");
-        await loadDashboard({ refresh: false, force: true });
-        showFeedback("CAPTCHA gate cleared — Commander automation resumed.", "ok");
+        await loadDashboard({ refresh: true, force: true });
+        showFeedback("CAPTCHA solved confirmed — page refresh & Commander automation resumed.", "ok");
       } catch (err) {
         showFeedback(`Resume failed: ${err.message}`, feedbackKindForError(err));
       }
@@ -9301,8 +9335,8 @@
                   type: "button",
                   className: "btn btn-secondary btn-sm",
                   id: "btn-notif-help-dismiss",
-                  onClick: () => ackActiveHelpPopup("dismissed"),
-                  children: "Dismiss"
+                  onClick: () => isCaptchaGate ? closeHelpPopupOnly() : ackActiveHelpPopup("dismissed"),
+                  children: isCaptchaGate ? "Hide Popup" : "Dismiss"
                 }
               ),
               isCaptchaGate ? /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -9314,8 +9348,7 @@
                   onClick: onCaptchaResume,
                   children: "Solved in Chrome — Resume Bot"
                 }
-              ) : null,
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
+              ) : /* @__PURE__ */ jsxRuntimeExports.jsx(
                 "button",
                 {
                   type: "button",

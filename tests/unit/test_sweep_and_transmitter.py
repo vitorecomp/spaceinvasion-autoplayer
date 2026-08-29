@@ -1042,6 +1042,75 @@ class TestSweepAndTransmitter(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_captcha_freeze_stops_all_browser_refreshes_until_confirmed_in_ui(self) -> None:
+        from unittest.mock import patch
+        from spaceinvasion.session.auth import AntiBotChallengeError
+
+        client_open_count = 0
+
+        class _CountingClientCtx:
+            def __enter__(self):
+                nonlocal client_open_count
+                client_open_count += 1
+                raise AntiBotChallengeError("Cloudflare Turnstile challenge active")
+
+            def __exit__(self, *_a):
+                return False
+
+        with tempfile.TemporaryDirectory(prefix="si_cap_freeze_") as tmp_dir:
+            tp = Path(tmp_dir)
+            with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+                bridge = GameApiBridge(
+                    debug_port=19996,
+                    config_path=tp / "cfg.yaml",
+                    db_path=tp / "cap.db",
+                    log_dir=None,
+                    client_factory=lambda _p: _CountingClientCtx(),  # type: ignore[arg-type]
+                    ensure_session_fn=lambda: None,
+                )
+                try:
+                    # 1. First dashboard(refresh=True) detects CAPTCHA -> enters captcha_blocked=True (1 browser call)
+                    dash1 = bridge.dashboard(refresh=True)
+                    self.assertEqual(client_open_count, 1)
+                    self.assertTrue(dash1["bot_control"]["captcha_blocked"])
+                    self.assertTrue(dash1["bot_control"]["paused"])
+
+                    # 2. While captcha_blocked=True, ZERO further browser calls happen across health(),
+                    #    dashboard(refresh=True), get_state(), run_galaxy_sweep(), or live commands!
+                    h = bridge.health()
+                    self.assertFalse(h["in_game"])
+                    self.assertTrue(h["bot_control"]["captcha_blocked"])
+
+                    dash2 = bridge.dashboard(refresh=True)
+                    self.assertTrue(dash2["bot_control"]["captcha_blocked"])
+
+                    sw = bridge.run_galaxy_sweep(pages=5)
+                    self.assertFalse(sw["executed"])
+                    self.assertTrue(sw.get("captcha_blocked"))
+
+                    with self.assertRaises(AntiBotChallengeError):
+                        bridge.get_state(include_buildings=True)
+
+                    with self.assertRaises(AntiBotChallengeError):
+                        bridge.handle_command({"command": "navigate", "action": "internalHome"})
+
+                    self.assertEqual(
+                        client_open_count,
+                        1,
+                        "Expected ZERO Chrome sessions/refreshes while captcha_blocked=True!",
+                    )
+
+                    # 3. Only after operator confirms in UI (bot_control paused=False) does browser access resume
+                    res_resume = bridge.handle_command(
+                        {"command": "bot_control", "paused": False, "captcha_solved": True}
+                    )
+                    self.assertFalse(res_resume["bot_control"]["captcha_blocked"])
+                    self.assertFalse(res_resume["bot_control"]["paused"])
+                    bridge.health()
+                    self.assertEqual(client_open_count, 2)
+                finally:
+                    bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

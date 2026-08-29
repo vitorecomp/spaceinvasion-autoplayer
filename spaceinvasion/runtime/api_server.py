@@ -1473,6 +1473,7 @@ class GameApiBridge:
         save_rt_fn(payload, ts=now_wall)
 
     def _record_antibot_pause(self, exc: BaseException) -> None:
+        already_blocked = bool(self._bot_control.get("captcha_blocked"))
         msg = _bounded_api_str(exc, default="CAPTCHA / anti-bot challenge detected.")
         if not any(
             tok in msg.lower()
@@ -1482,14 +1483,14 @@ class GameApiBridge:
         self._bot_control["paused"] = True
         self._bot_control["captcha_blocked"] = True
         self._bot_control["captcha_message"] = msg
-        if self._db is not None and hasattr(self._db, "create_or_bump_notification"):
+        if not already_blocked and self._db is not None and hasattr(self._db, "create_or_bump_notification"):
             try:
                 self._db.create_or_bump_notification(
                     title="CAPTCHA / Security Verification Required",
                     message=msg,
                     help_prompt=(
-                        "Automation is paused and waiting. Solve the verification check manually in your open Chrome "
-                        "window (:9222), then click Resume Bot to continue."
+                        "Page refreshes and automation are completely frozen so the CAPTCHA is not interrupted. "
+                        "Solve the verification check manually in Chrome (:9222), then click 'Solved in Chrome — Resume Bot' in the UI."
                     ),
                     severity="error",
                     category="captcha_gate",
@@ -1498,7 +1499,8 @@ class GameApiBridge:
                 )
             except Exception:
                 pass
-        self._persist_runtime_state()
+        if not already_blocked:
+            self._persist_runtime_state()
 
     def _ack_captcha_notifications_locked(self) -> None:
         if self._db is None:
@@ -2291,9 +2293,10 @@ class GameApiBridge:
         with self._lock:
             port_open = is_debug_port_open(self.debug_port)
             rate_rem = self._page_limiter.rate_limit_remaining()
-            in_game = port_open and (self._last_state is not None or rate_rem > 0.0)
+            cap_blocked = bool(self._bot_control.get("captcha_blocked"))
+            in_game = port_open and not cap_blocked and (self._last_state is not None or rate_rem > 0.0)
             current_url: Optional[str] = self._last_url
-            if port_open and rate_rem <= 0.0:
+            if port_open and rate_rem <= 0.0 and not cap_blocked:
                 try:
                     with self._client_factory(self.debug_port) as client:
                         try:
@@ -2316,7 +2319,7 @@ class GameApiBridge:
                     in_game = False
                 except SpaceInvasionAuthError:
                     in_game = False
-            elif port_open and rate_rem > 0.0:
+            elif port_open and rate_rem > 0.0 and not cap_blocked:
                 in_game = True
             self._last_url = current_url
             rate_rem = self._page_limiter.rate_limit_remaining()
@@ -2826,9 +2829,15 @@ class GameApiBridge:
         with self._lock:
             port_open = is_debug_port_open(self.debug_port)
             rate_rem = self._page_limiter.rate_limit_remaining()
-            in_game = port_open and (self._last_state is not None or rate_rem > 0.0)
+            cap_blocked_dash = bool(self._bot_control.get("captcha_blocked"))
+            in_game = port_open and not cap_blocked_dash and (self._last_state is not None or rate_rem > 0.0)
             current_url = self._last_url
-            if port_open and rate_rem <= 0.0 and (refresh or self._last_state is None or self._last_snapshot_at < 0.0):
+            if (
+                port_open
+                and rate_rem <= 0.0
+                and not cap_blocked_dash
+                and (refresh or self._last_state is None or self._last_snapshot_at < 0.0)
+            ):
                 try:
                     with self._client_factory(self.debug_port) as client:
                         snap = self._read_snapshot(
@@ -3029,6 +3038,13 @@ class GameApiBridge:
 
     def get_state(self, *, include_buildings: bool = True) -> dict[str, Any]:
         with self._lock:
+            if self._bot_control.get("captcha_blocked"):
+                raise AntiBotChallengeError(
+                    str(
+                        self._bot_control.get("captcha_message")
+                        or "Paused for CAPTCHA — confirm solved in UI to resume."
+                    )
+                )
             self._raise_if_rate_limited()
             if self._last_state is None:
                 self._active_planet_confirmed = False
@@ -3708,6 +3724,22 @@ class GameApiBridge:
         priority: str = "normal",
     ) -> dict[str, Any]:
         """Scan `pages` (default `100`) solar systems with randomized intervals, releasing `_lock` between steps."""
+        with self._lock:
+            if self._bot_control.get("captcha_blocked"):
+                cur_st_cap = self._get_galaxy_sweep_state_locked()
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": "galaxy_sweep",
+                            "executed": False,
+                            "dry_run": dry_run,
+                            "captcha_blocked": True,
+                            "message": "Paused for CAPTCHA — confirm solved in UI before sweeping galaxy.",
+                            "galaxy_sweep": cur_st_cap,
+                        }
+                    )
+                )
         if not self._sweep_run_lock.acquire(blocking=False):
             with self._lock:
                 cur_st = self._get_galaxy_sweep_state_locked()
@@ -6244,6 +6276,13 @@ class GameApiBridge:
                     _client_state: list[Any] = [None]
 
                     def _get_client() -> Any:
+                        if self._bot_control.get("captcha_blocked"):
+                            raise AntiBotChallengeError(
+                                str(
+                                    self._bot_control.get("captcha_message")
+                                    or "Paused for CAPTCHA — confirm solved in UI to resume."
+                                )
+                            )
                         if _client_state[0] is None:
                             _client_state[0] = stack.enter_context(
                                 self._client_factory(self.debug_port)
@@ -6257,7 +6296,7 @@ class GameApiBridge:
                             return None
                         if planned.kind == "ESCAPE_FLIGHT" and not self._live_executor.allow_fleetsave:
                             return None
-                        if planned.kind == "COLONIZE" and not self._live_executor.allow_colonize:
+                        if planned.kind in ("COLONIZE", "ABANDON_COLONY") and not self._live_executor.allow_colonize:
                             return None
                         return _get_client()
 
@@ -6269,6 +6308,8 @@ class GameApiBridge:
                         include_home: bool = True,
                         priority: str = "interactive",
                     ) -> GameState:
+                        if self._bot_control.get("captcha_blocked") and self._last_state is not None:
+                            return self._refresh_cached_economy(self._last_state)
                         if (
                             not force_refresh
                             and self._last_state is not None

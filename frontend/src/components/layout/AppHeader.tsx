@@ -78,12 +78,12 @@ export const AppHeader: React.FC = () => {
 
   const onResumeFromCaptcha = async () => {
     try {
-      await apiCommand({ command: "bot_control", paused: false });
+      await apiCommand({ command: "bot_control", paused: false, captcha_solved: true });
       if (activeHelpNotif) {
         await ackActiveHelpPopup("read");
       }
-      await loadDashboard({ refresh: false, force: true });
-      showFeedback("CAPTCHA gate cleared — Commander automation resumed.", "ok");
+      await loadDashboard({ refresh: true, force: true });
+      showFeedback("CAPTCHA solved confirmed — page refresh & Commander automation resumed.", "ok");
     } catch (err: any) {
       showFeedback(`Resume failed: ${err.message}`, feedbackKindForError(err));
     }
