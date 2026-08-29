@@ -1,8 +1,8 @@
 # SpaceInvasion Classic Autoplayer
 
-Autonomous strategy engine (`priority` + evolutionary `ga_nn`), topological Action Graph (`DAG`), append-only SQLite universe observatory (`V001..V007` migrations), local HTTP API, and Web Operator Console for **SpaceInvasion Classic** (`https://spaceinvasion.bitmeup.com/?locale=en`).
+Autonomous strategy engine (`priority` + evolutionary `ga_nn`), topological Action Graph (`DAG`), append-only SQLite universe observatory (`V001..V008` migrations), local HTTP API, and Web Operator Console for **SpaceInvasion Classic** (`https://spaceinvasion.bitmeup.com/?locale=en`).
 
-See [docs/README.md](docs/README.md) for the full documentation portal, [docs/architecture.md](docs/architecture.md) for the 3-tier runtime design, [docs/database-mer.md](docs/database-mer.md) for the 23-table SQLite MER & migration architecture, [docs/specifications/README.md](docs/specifications/README.md) for the game-mechanics SRS, and [AGENTS.md](AGENTS.md) for contributor/agent rules.
+See [docs/README.md](docs/README.md) for the full documentation portal, [docs/architecture.md](docs/architecture.md) for the 3-tier runtime design, [docs/database-mer.md](docs/database-mer.md) for the 25-table SQLite MER & migration architecture, [docs/specifications/README.md](docs/specifications/README.md) for the game-mechanics SRS, and [AGENTS.md](AGENTS.md) for contributor/agent rules.
 
 ## Repository Structure
 
@@ -56,7 +56,7 @@ SPACEINVASION_PASSWORD=your-password
 SPACEINVASION_UNIVERSE=RETRO
 ```
 
-3. **Optional strategy configuration** via [config.example.yaml](config.example.yaml) copied to `config.yaml`.
+3. **Strategy configuration** lives directly in SQLite (`state/spaceinvasion.db` `strategy_config_store`, editable live in the Web Operator Console; [config.example.yaml](config.example.yaml) documents all fields).
 
 4. **Launch the full hot-reloadable stack**:
 

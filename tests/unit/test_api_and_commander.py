@@ -2028,7 +2028,11 @@ class TestApiAndCommander(unittest.TestCase):
         port = srv.server_address[1]
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/favicon.ico", timeout=3.0) as fav_resp:
-                self.assertEqual(fav_resp.status, 204)
+                self.assertEqual(fav_resp.status, 200)
+                self.assertGreater(len(fav_resp.read()), 64)
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/favicon.svg", timeout=3.0) as fav_svg:
+                self.assertEqual(fav_svg.status, 200)
+                self.assertIn(b"<svg", fav_svg.read())
 
             def _raw_post(hdr_len: str) -> tuple[bytes, dict]:
                 with socket.create_connection(("127.0.0.1", port), timeout=3.0) as sock:

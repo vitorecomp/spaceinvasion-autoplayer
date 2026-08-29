@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SpaceInvasion Control — Tactical Operations Console</title>
   <meta name="description" content="Tactical single-screen operations console for SpaceInvasion Classic autoplayer: dashboard, building reach ETAs, Blast furnace Pig iron bucket, 1:1 combat simulator, ranking evolution, and live telemetry." />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -179,6 +181,18 @@
           <div class="ruler-cluster">
             <button type="button" class="bf-pill tabular" id="hud-bf-pill" title="Blast furnace rate on selected planet — click to open Buildings & ETAs">
               B2: 100%
+            </button>
+            <button
+              type="button"
+              class="notif-bell-btn tabular"
+              id="btn-notifications"
+              aria-label="Open system notifications"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              title="System notifications and validation alerts"
+            >
+              <img src="/bell.svg" alt="" width="15" height="15" class="notif-bell-img" />
+              <span class="notif-count-badge" id="notif-unread-badge" hidden>0</span>
             </button>
             <div class="beacon-pill tabular" id="hud-alert-beacon" role="status">
               <span class="beacon-mark" aria-hidden="true"></span>
@@ -1794,7 +1808,7 @@
               <div class="window-bar">
                 <div class="window-title-group">
                   <span class="module-code tabular">CFG</span>
-                  <h2>Strategy Profile &amp; Decision Buckets (config.yaml)</h2>
+                  <h2>Strategy Profile &amp; Decision Buckets (SQLite)</h2>
                 </div>
                 <button type="button" class="btn btn-primary btn-sm" id="btn-save-config">Save &amp; Apply</button>
               </div>
@@ -1905,6 +1919,54 @@
             </article>
           </section>
         </main>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auto-Opening Help Alert Popup (Triggered by Unread Action Validation Alerts) -->
+  <div class="notif-modal-backdrop" id="notif-help-modal" role="alertdialog" aria-modal="true" aria-labelledby="notif-help-title" aria-describedby="notif-help-prompt" hidden>
+    <div class="notif-modal-card notif-help-card">
+      <div class="window-bar">
+        <div class="window-title-group">
+          <span class="module-code tabular" id="notif-help-sev">ALERT</span>
+          <h2 id="notif-help-title">Action Validation Needs Attention</h2>
+        </div>
+        <span class="module-meta tabular" id="notif-help-meta">SYSTEM</span>
+      </div>
+      <div class="notif-modal-body">
+        <p class="notif-msg-box tabular" id="notif-help-message"></p>
+        <p class="notif-prompt-copy" id="notif-help-prompt"></p>
+      </div>
+      <div class="notif-modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-notif-help-all">All Notifications</button>
+        <div class="inline-actions">
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-notif-help-dismiss">Dismiss</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-notif-help-ack">Acknowledge</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Persistent Notification Center Modal (Opened from Top-Bar Bell Icon) -->
+  <div class="notif-modal-backdrop" id="notif-center-modal" role="dialog" aria-modal="true" aria-labelledby="notif-center-title" hidden>
+    <div class="notif-modal-card notif-center-card">
+      <div class="window-bar">
+        <div class="window-title-group">
+          <span class="module-code tabular">NTF</span>
+          <h2 id="notif-center-title">Persistent System Notifications</h2>
+        </div>
+        <div class="inline-actions">
+          <div class="tab-group">
+            <button type="button" class="tab-btn active" data-notif-filter="active">Active</button>
+            <button type="button" class="tab-btn" data-notif-filter="unread">Unread</button>
+            <button type="button" class="tab-btn" data-notif-filter="all">All History</button>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-notif-mark-all">Mark All Read</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-notif-center-close">Close</button>
+        </div>
+      </div>
+      <div class="notif-center-body" id="notif-center-list">
+        <p class="muted">No notifications recorded yet.</p>
       </div>
     </div>
   </div>

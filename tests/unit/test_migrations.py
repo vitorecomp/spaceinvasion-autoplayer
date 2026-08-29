@@ -336,6 +336,11 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 encoding="utf-8",
             )
             snap_json = root / "state" / "snapshot.json"
+            cfg_yaml_legacy = root / "config.yaml"
+            cfg_yaml_legacy.write_text(
+                "planner_mode: ga_nn\nallow_raids: true\nmin_colony_fields: 320\n",
+                encoding="utf-8",
+            )
             snap_json.write_text(
                 json.dumps(
                     {
@@ -396,8 +401,9 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             self.assertFalse(st_payload["json_stores"]["attack_history_retired"]["retired_to_sqlite"])
             self.assertFalse(st_payload["json_stores"]["rank_history_retired"]["retired_to_sqlite"])
             self.assertFalse(st_payload["json_stores"]["snapshot_retired"]["retired_to_sqlite"])
+            self.assertFalse(st_payload["json_stores"]["config_yaml_retired"]["retired_to_sqlite"])
 
-            # CLI migrate --all --create --backup upgrades primary + archive.db to V007, absorbs & removes all 3 JSON stores!
+            # CLI migrate --all --create --backup upgrades primary + archive.db to V008, absorbs & removes all legacy files!
             buf_mig = io.StringIO()
             with contextlib.redirect_stdout(buf_mig):
                 rc_m = migrations_cli_main(["--root", str(root), "--json", "migrate", "--all", "--create", "--backup"])
@@ -414,9 +420,18 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             self.assertEqual(mig_payload["legacy_snapshot_json"]["imported_snapshots"], 1)
             self.assertEqual(mig_payload["legacy_snapshot_json"]["imported_planets"], 1)
             self.assertTrue(mig_payload["legacy_snapshot_json"]["removed_json"])
+            self.assertTrue(mig_payload["legacy_config_yaml"]["imported_config"])
+            self.assertTrue(mig_payload["legacy_config_yaml"]["removed_yaml"])
             self.assertFalse(atk_json.exists())
             self.assertFalse(rk_json.exists())
             self.assertFalse(snap_json.exists())
+            self.assertFalse(cfg_yaml_legacy.exists())
+
+            from spaceinvasion.core.config import load_strategy_config
+
+            db_cfg = load_strategy_config(root / "state" / "spaceinvasion.db")
+            self.assertEqual(db_cfg.planner_mode, "ga_nn")
+            self.assertEqual(db_cfg.min_colony_fields, 320)
 
             from spaceinvasion.optimizer import load_attack_history_stats
             from spaceinvasion.ranking import load_rank_history

@@ -2392,6 +2392,7 @@ return {
                 server.server_close()
                 bridge.close()
 
+
     def test_node_vm_espionage_colonies_attacks_and_recyclers_views(self) -> None:
         import time
         from spaceinvasion.fleet import GalaxySlot, InboxMessage, SpyReport
@@ -2574,6 +2575,7 @@ return {
                 server.server_close()
                 bridge.close()
 
+
     def test_node_vm_manual_queue_composer_pin_reprioritize_reorder_and_drop(self) -> None:
         import time
 
@@ -2699,6 +2701,7 @@ return {
                 server.shutdown()
                 server.server_close()
                 bridge.close()
+
 
     @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
     def test_dashboard_removes_building_eta_card_and_splits_three_side_by_side_queues(self) -> None:
@@ -2830,6 +2833,111 @@ return {
                 self.assertTrue(sc["onBldView"])
                 self.assertEqual(sc["catAfterJump"], "research")
                 self.assertEqual(sc["mqKindAfterFleetJump"], "BUILD_SHIP")
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
+    def test_favicon_top_bar_notifications_and_auto_help_popup_persistence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="si_ui_notif_") as td:
+            td_path = Path(td)
+            p_home = PlanetState(
+                planet_id=12476,
+                name="Colony",
+                coords="02:380:12",
+                planet_type="normal",
+                temperature=31,
+                fields_used=45,
+                fields_max=230,
+                resources=Resources(50_000, 30_000, 40_000, 20_000),
+                storage=Resources(500_000, 500_000, 500_000, 500_000),
+                energy=EnergyBalance(1200, 600),
+                buildings={"b1": 12, "b5": 14, "b9": 4, "b10": 5},
+                ships={"s10": 6},
+            )
+            st = GameState(
+                universe_id=31,
+                user_id=103603,
+                nickname="ventkx86",
+                timestamp=1700000500.0,
+                planets=(p_home,),
+                active_planet_id=12476,
+            )
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
+            fake_client.read_full_snapshot.return_value = st
+            # Simulate Spy Step 1 -> Step 2 returning "This user can't be attacked!"
+            fake_client.navigate_menu.return_value = (
+                '<form action="indexInternal.es?action=internalSendFleet">'
+                '<input name="ship_10" value="0"/><input name="gal"/><input name="sun"/><input name="pla"/>'
+                '<input type="submit" value="Continue"/></form>'
+            )
+            fake_client._wait_frame_ready.return_value = (
+                '<div>You have 2 unread Messages! [i]</div>'
+                '<div style="color:red">This user can\'t be attacked!</div>'
+            )
+
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                db_path=td_path / "notif.db",
+                log_dir=None,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge._last_snapshot_at = 1e9
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                fav_svg = requests.get(f"{base_url}/favicon.svg", timeout=5)
+                self.assertEqual(fav_svg.status_code, 200)
+                self.assertIn("rx=\"14\"", fav_svg.text)
+                fav_ico = requests.get(f"{base_url}/favicon.ico", timeout=5)
+                self.assertEqual(fav_ico.status_code, 200)
+                self.assertGreater(len(fav_ico.content), 64)
+
+                # Trigger live SPY to protected user -> records 6h target block + unread SQLite notification
+                spy_res = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "spy", "target_coords": "02:381:12", "planet_id": 12476, "dry_run": False},
+                    timeout=5,
+                ).json()
+                self.assertFalse(spy_res["executed"])
+                self.assertFalse(spy_res["validated"])
+                self.assertIn("can't be attacked", spy_res["message"].lower())
+                self.assertEqual(spy_res["notifications"]["unread_count"], 1)
+
+                scenario_js = """
+await __waitUntil(() => document.getElementById("notif-unread-badge") && !document.getElementById("notif-unread-badge").hidden);
+const badgeBefore = document.getElementById("notif-unread-badge").textContent;
+const helpAutoOpened = !document.getElementById("notif-help-modal").hidden;
+const helpTitle = document.getElementById("notif-help-title").textContent;
+const helpPrompt = document.getElementById("notif-help-prompt").textContent;
+
+document.getElementById("btn-notifications").click();
+await __waitUntil(() => !document.getElementById("notif-center-modal").hidden && document.getElementById("notif-center-list").textContent.toLowerCase().includes("can't be attacked"));
+const centerText = document.getElementById("notif-center-list").textContent;
+
+document.getElementById("btn-notif-mark-all").click();
+await __waitUntil(() => document.getElementById("notif-unread-badge").hidden);
+const badgeHiddenAfterAck = document.getElementById("notif-unread-badge").hidden;
+
+return { badgeBefore, helpAutoOpened, helpTitle, helpPrompt, centerText, badgeHiddenAfterAck };
+"""
+                with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                    res = _run_node_ui(base_url, scenario_js)
+                self.assertEqual(res["errors"], [])
+                sc = res["scenario"]
+                self.assertEqual(sc["badgeBefore"], "1")
+                self.assertTrue(sc["helpAutoOpened"])
+                self.assertIn("SPY", sc["helpTitle"])
+                self.assertIn("6-hour target cooldown", sc["helpPrompt"])
+                self.assertIn("can't be attacked", sc["centerText"].lower())
+                self.assertTrue(sc["badgeHiddenAfterAck"])
             finally:
                 server.shutdown()
                 server.server_close()

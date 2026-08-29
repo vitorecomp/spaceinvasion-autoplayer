@@ -52,6 +52,10 @@ const state = {
   recTab: "harvests",
   emailCatFilter: "all",
   recData: null,
+  notifications: { unread_count: 0, items: [] },
+  notifFilter: "active",
+  activeHelpNotifId: null,
+  seenHelpNotifSigs: new Set(),
 };
 
 function savePersistedUiState() {
@@ -266,6 +270,9 @@ async function apiGet(url, timeoutMs = 6000) {
     err.retryAfter = finiteNum(data?.retry_after, 0);
     throw err;
   }
+  if (data?.notifications && typeof data.notifications === "object") {
+    syncNotificationsPayload(data.notifications);
+  }
   return data;
 }
 
@@ -313,6 +320,9 @@ async function apiCommand(payload) {
     err.rateLimited = Boolean(data?.rate_limited || res.status === 429);
     err.retryAfter = finiteNum(data?.retry_after, 0);
     throw err;
+  }
+  if (data?.notifications && typeof data.notifications === "object") {
+    syncNotificationsPayload(data.notifications);
   }
   return data;
 }
@@ -4652,6 +4662,9 @@ async function loadDashboard({ refresh = false, preserveConfig = true, force = f
     renderRanking(dash);
     renderLogs(dash.logs, dash.db_summary);
     updateIntelNavBadges(dash);
+    if (dash.notifications && typeof dash.notifications === "object") {
+      syncNotificationsPayload(dash.notifications);
+    }
     if (state.activePage === "espionage") {
       refreshEspionageView();
     } else if (state.activePage === "colonies") {
@@ -5410,6 +5423,261 @@ function wireEvents() {
     });
   });
   el("btn-rec-sync")?.addEventListener("click", syncAllInboxFolders);
+
+  el("btn-notifications")?.addEventListener("click", () => {
+    openNotificationCenter();
+  });
+  el("btn-notif-center-close")?.addEventListener("click", () => {
+    closeNotificationCenter();
+  });
+  el("btn-notif-mark-all")?.addEventListener("click", async () => {
+    try {
+      await apiCommand({ command: "notifications_ack_all", status: "read" });
+      await refreshNotificationCenter();
+    } catch (err) {
+      showFeedback(`Failed marking notifications read: ${err.message}`, feedbackKindForError(err));
+    }
+  });
+  document.querySelectorAll("[data-notif-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const f = btn.dataset.notifFilter;
+      state.notifFilter = f === "unread" || f === "all" ? f : "active";
+      document.querySelectorAll("[data-notif-filter]").forEach((b) => b.classList.toggle("active", b === btn));
+      refreshNotificationCenter();
+    });
+  });
+  el("btn-notif-help-ack")?.addEventListener("click", () => ackActiveHelpPopup("read"));
+  el("btn-notif-help-dismiss")?.addEventListener("click", () => ackActiveHelpPopup("dismissed"));
+  el("btn-notif-help-all")?.addEventListener("click", () => {
+    closeHelpPopupOnly();
+    openNotificationCenter();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev && ev.key === "Escape") {
+      if (el("notif-center-modal") && !el("notif-center-modal").hidden) {
+        closeNotificationCenter();
+      } else if (el("notif-help-modal") && !el("notif-help-modal").hidden) {
+        closeHelpPopupOnly();
+      }
+    }
+  });
+}
+
+function formatNotifAge(tsVal) {
+  const ts = finiteNum(tsVal, 0);
+  if (ts <= 0) return "just now";
+  const sec = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+}
+
+function syncNotificationsPayload(notifPayload) {
+  const items = Array.isArray(notifPayload?.items) ? notifPayload.items : [];
+  const unreadCnt = Math.max(0, Math.round(finiteNum(notifPayload?.unread_count, 0)));
+  state.notifications = { unread_count: unreadCnt, items };
+
+  const badge = el("notif-unread-badge");
+  const bellBtn = el("btn-notifications");
+  if (badge) {
+    badge.textContent = unreadCnt > 99 ? "99+" : String(unreadCnt);
+    badge.hidden = unreadCnt <= 0;
+  }
+  if (bellBtn) {
+    bellBtn.classList.toggle("has-unread", unreadCnt > 0);
+    bellBtn.setAttribute(
+      "aria-label",
+      unreadCnt > 0 ? `Open system notifications (${unreadCnt} unread)` : "Open system notifications"
+    );
+  }
+
+  // Auto-open the help popup on the newest unseen unread notification
+  const newestUnread = items.find((n) => n && n.status === "unread" && finiteNum(n.id, 0) > 0);
+  if (newestUnread) {
+    const sig = `${newestUnread.id}:${finiteNum(newestUnread.occurrence_count, 1)}`;
+    const centerOpen = el("notif-center-modal") && !el("notif-center-modal").hidden;
+    if (!state.seenHelpNotifSigs.has(sig) && !centerOpen) {
+      state.seenHelpNotifSigs.add(sig);
+      showHelpPopupForNotification(newestUnread);
+    }
+  } else if (state.activeHelpNotifId !== null) {
+    closeHelpPopupOnly();
+  }
+}
+
+function showHelpPopupForNotification(n) {
+  const modal = el("notif-help-modal");
+  if (!modal || !n) return;
+  state.activeHelpNotifId = finiteNum(n.id, 0);
+  const sevEl = el("notif-help-sev");
+  if (sevEl) {
+    sevEl.textContent = String(n.severity || "warning").toUpperCase();
+  }
+  if (el("notif-help-title")) {
+    el("notif-help-title").textContent = String(n.title || "Action Validation Needs Attention");
+  }
+  const cnt = Math.max(1, Math.round(finiteNum(n.occurrence_count, 1)));
+  const metaParts = [];
+  if (n.planet_coords) metaParts.push(`[${n.planet_coords}]`);
+  if (n.action_kind) metaParts.push(String(n.action_kind));
+  if (cnt > 1) metaParts.push(`x${cnt}`);
+  metaParts.push(formatNotifAge(n.updated_ts));
+  if (el("notif-help-meta")) {
+    el("notif-help-meta").textContent = metaParts.join(" · ");
+  }
+  if (el("notif-help-message")) {
+    el("notif-help-message").textContent = String(n.message || "");
+  }
+  if (el("notif-help-prompt")) {
+    el("notif-help-prompt").textContent = String(
+      n.help_prompt || "Please inspect Chrome (:9222) to verify this action or acknowledge to continue."
+    );
+  }
+  modal.hidden = false;
+}
+
+function closeHelpPopupOnly() {
+  const modal = el("notif-help-modal");
+  if (modal) modal.hidden = true;
+  state.activeHelpNotifId = null;
+}
+
+async function ackActiveHelpPopup(targetStatus) {
+  const nid = state.activeHelpNotifId;
+  closeHelpPopupOnly();
+  if (!nid || nid <= 0) return;
+  try {
+    await apiCommand({ command: "notification_ack", notification_id: nid, status: targetStatus });
+  } catch (err) {
+    showFeedback(`Failed updating notification: ${err.message}`, feedbackKindForError(err));
+  }
+}
+
+async function openNotificationCenter() {
+  const modal = el("notif-center-modal");
+  if (!modal) return;
+  modal.hidden = false;
+  el("btn-notifications")?.setAttribute("aria-expanded", "true");
+  await refreshNotificationCenter();
+}
+
+function closeNotificationCenter() {
+  const modal = el("notif-center-modal");
+  if (modal) modal.hidden = true;
+  el("btn-notifications")?.setAttribute("aria-expanded", "false");
+}
+
+async function refreshNotificationCenter() {
+  const container = el("notif-center-list");
+  if (!container) return;
+  let items = Array.isArray(state.notifications?.items) ? state.notifications.items : [];
+  try {
+    const res = await apiCommand({
+      command: "notifications_list",
+      status: state.notifFilter,
+      limit: 60,
+    });
+    if (Array.isArray(res?.items)) {
+      items = res.items;
+      syncNotificationsPayload({
+        unread_count: res.unread_count,
+        items: state.notifFilter === "active" ? res.items : state.notifications.items,
+      });
+    }
+  } catch {
+    // Fall back to cached dashboard notifications if offline
+  }
+
+  container.textContent = "";
+  if (!items.length) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent =
+      state.notifFilter === "unread"
+        ? "No unread notifications."
+        : "No notifications recorded in SQLite yet.";
+    container.appendChild(p);
+    return;
+  }
+
+  items.forEach((n) => {
+    const row = document.createElement("div");
+    row.className = `notif-item-row${n.status === "unread" ? " is-unread" : ""}`;
+
+    const head = document.createElement("div");
+    head.className = "notif-item-head";
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "notif-item-title-wrap";
+
+    const pill = document.createElement("span");
+    const sev = String(n.severity || "warning").toLowerCase();
+    pill.className = `notif-sev-pill tabular ${sev === "error" ? "sev-error" : "sev-warning"}`;
+    pill.textContent = sev.toUpperCase();
+    titleWrap.appendChild(pill);
+
+    const ttl = document.createElement("span");
+    ttl.className = "notif-item-title";
+    ttl.textContent = String(n.title || "Notification");
+    titleWrap.appendChild(ttl);
+
+    const meta = document.createElement("span");
+    meta.className = "notif-item-meta tabular";
+    const cnt = Math.max(1, Math.round(finiteNum(n.occurrence_count, 1)));
+    const mParts = [];
+    if (n.planet_coords) mParts.push(`[${n.planet_coords}]`);
+    if (cnt > 1) mParts.push(`x${cnt}`);
+    mParts.push(String(n.status || "unread").toUpperCase());
+    mParts.push(formatNotifAge(n.updated_ts));
+    meta.textContent = mParts.join(" · ");
+
+    head.appendChild(titleWrap);
+    head.appendChild(meta);
+    row.appendChild(head);
+
+    if (n.message) {
+      const msgEl = document.createElement("p");
+      msgEl.className = "notif-item-msg tabular";
+      msgEl.textContent = String(n.message);
+      row.appendChild(msgEl);
+    }
+    if (n.help_prompt) {
+      const helpEl = document.createElement("p");
+      helpEl.className = "notif-item-help";
+      helpEl.textContent = String(n.help_prompt);
+      row.appendChild(helpEl);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "notif-item-actions";
+    if (n.status === "unread") {
+      const btnRead = document.createElement("button");
+      btnRead.type = "button";
+      btnRead.className = "btn btn-secondary btn-sm";
+      btnRead.textContent = "Mark Read";
+      btnRead.addEventListener("click", async () => {
+        await apiCommand({ command: "notification_ack", notification_id: n.id, status: "read" });
+        await refreshNotificationCenter();
+      });
+      actions.appendChild(btnRead);
+    }
+    if (n.status !== "dismissed") {
+      const btnDis = document.createElement("button");
+      btnDis.type = "button";
+      btnDis.className = "btn btn-secondary btn-sm";
+      btnDis.textContent = "Dismiss";
+      btnDis.addEventListener("click", async () => {
+        await apiCommand({ command: "notification_ack", notification_id: n.id, status: "dismissed" });
+        await refreshNotificationCenter();
+      });
+      actions.appendChild(btnDis);
+    }
+    if (actions.children.length > 0) {
+      row.appendChild(actions);
+    }
+    container.appendChild(row);
+  });
 }
 
 function applySavedTabButtons() {
