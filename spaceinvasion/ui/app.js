@@ -14955,8 +14955,36 @@
       }
     );
   };
+  function attemptOutcomeFor(eventType, minFields) {
+    const ev = String(eventType ?? "").trim().toLowerCase();
+    if (ev.includes("delet") || ev.includes("abandon") || ev.includes("undersized")) {
+      return { label: `DELETED <${minFields}`, cls: "is-loss" };
+    }
+    if (ev.includes("kept") || ev.includes("keep")) {
+      return { label: `KEPT ≥${minFields}`, cls: "is-win" };
+    }
+    if (ev.includes("fail") || ev.includes("reject") || ev.includes("abort") || ev.includes("block") || ev.includes("error")) {
+      return { label: "FAILED", cls: "is-loss" };
+    }
+    if (ev.includes("settl")) {
+      return { label: "SETTLED", cls: "is-draw" };
+    }
+    if (ev.includes("dispatch") || ev.includes("launch") || ev.includes("sent")) {
+      return { label: "DISPATCHED", cls: "is-pending" };
+    }
+    return { label: ev ? ev.toUpperCase().replace(/_/g, " ") : "UNKNOWN", cls: "is-pending" };
+  }
+  function attemptShortTag(stats, minFields) {
+    const tried = Math.max(0, Math.round(finiteNum(stats.attempts_count, 0)));
+    const lastFields = finiteNum(stats.last_fields_rolled, null);
+    const outcome = attemptOutcomeFor(stats.last_event_type, minFields);
+    const lastBits = [];
+    if (lastFields !== null && lastFields > 0) lastBits.push(`${Math.round(lastFields)}f`);
+    if (stats.last_event_type) lastBits.push(outcome.label.split(" ")[0].toLowerCase());
+    return lastBits.length > 0 ? `Tried ${tried}x · Last: ${lastBits.join(" ")}` : `Tried ${tried}x`;
+  }
   const ColoniesView = ({ hidden }) => {
-    var _a, _b;
+    var _a, _b, _c;
     const {
       dashboard,
       activePage,
@@ -15004,6 +15032,28 @@
       }
       return allCands;
     }, [allCands, colFilter]);
+    const minFieldsTarget = Math.max(
+      1,
+      Math.round(
+        finiteNum((colonyData == null ? void 0 : colonyData.min_colony_fields) ?? ((_c = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c.min_colony_fields), 300)
+      )
+    );
+    const attempts = Array.isArray(colonyData == null ? void 0 : colonyData.colony_attempts) ? colonyData.colony_attempts.filter(
+      (a) => a && typeof a === "object"
+    ) : [];
+    const attemptsSummary = (colonyData == null ? void 0 : colonyData.colony_attempts_summary) && typeof colonyData.colony_attempts_summary === "object" ? colonyData.colony_attempts_summary : {};
+    const attemptsByCoords = (colonyData == null ? void 0 : colonyData.attempts_by_coords) && typeof colonyData.attempts_by_coords === "object" ? colonyData.attempts_by_coords : attemptsSummary.by_coords && typeof attemptsSummary.by_coords === "object" ? attemptsSummary.by_coords : {};
+    const triedCount = Math.round(
+      finiteNum(attemptsSummary.unique_coords_tried, Object.keys(attemptsByCoords).length)
+    );
+    const deletedCount = Math.round(
+      finiteNum(
+        attemptsSummary.deleted_undersized_count,
+        attempts.filter((a) => attemptOutcomeFor(a.event_type, minFieldsTarget).label.startsWith("DELETED")).length
+      )
+    );
+    const keptCount = Math.round(finiteNum(attemptsSummary.kept_count, 0));
+    const totalEvents = Math.round(finiteNum(attemptsSummary.total_events, attempts.length));
     const handleSavePolicy = async () => {
       const minVal = Math.max(50, Math.min(600, Math.round(finiteNum(minFieldsInput, 300))));
       try {
@@ -15098,7 +15148,7 @@
         "aria-label": "Possible colonies and planetary field grading",
         hidden: isHidden,
         children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "combat-top-cards", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "combat-top-cards col-top-cards", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "kpi-card", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Qualified 300+ Colonies" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "kpi-value tabular", id: "col-kpi-qualified", children: `${fmtInt((colonyData == null ? void 0 : colonyData.qualified_count) ?? 0)} Ready` }),
@@ -15113,6 +15163,11 @@
               /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Colonization Fleet" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "kpi-value tabular", id: "col-kpi-ships", children: `${fmtInt((colonyData == null ? void 0 : colonyData.colony_ships) ?? 0)} s8 · ${fmtInt((colonyData == null ? void 0 : colonyData.spy_probes) ?? 0)} s10` }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", id: "col-kpi-origin", children: colonyData ? `Origin [${colonyData.origin_coords || "--"}] · ${fmtInt(colonyData.planet_count ?? 1)} colonies` : "Origin [--]" })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "kpi-card", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: `Tried / Deleted (<${minFieldsTarget})` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "kpi-value tabular", id: "col-kpi-tried", children: `${fmtInt(triedCount)} Tried · ${fmtInt(deletedCount)} Del` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", id: "col-kpi-tried-sub", children: `${fmtInt(keptCount)} kept · ${fmtInt(totalEvents)} logged events` })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "kpi-card", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Colony Policy" }),
@@ -15168,7 +15223,7 @@
               ] })
             ] })
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window page-fill", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window page-fill col-candidates-window", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "COL" }),
@@ -15249,10 +15304,23 @@
                 const cMax = finiteNum(c.colonize_max_fields, null);
                 const fieldsDisp = typeof c.fields_display === "string" && c.fields_display.trim() ? c.fields_display.trim() : uf !== null && uf > 0 ? `${Math.round(uf)} fields` : cMax !== null && cMax > 0 ? cMin !== null && cMin > 0 && cMin !== cMax ? `${Math.round(cMin)}–${Math.round(cMax)} fields` : `${Math.round(cMax)} fields` : "";
                 const sysDist = Math.round(finiteNum(c.system_distance, 0));
+                const trialStats = attemptsByCoords[coords];
+                const trialDeleted = trialStats && Math.round(finiteNum(trialStats.deleted_count, 0)) > 0;
                 return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `grade-badge ${gradeClassFor(grade)}`, children: grade }) }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `${Math.round(finiteNum(c.score, 0))}/100` }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: coords }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "tabular", children: [
+                    coords,
+                    trialStats ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "span",
+                      {
+                        className: `rate-chip col-trial-chip${trialDeleted ? " is-deleted" : ""}`,
+                        "data-trial-coords": coords,
+                        title: "Colonization attempts recorded in SQLite colony_attempts",
+                        children: attemptShortTag(trialStats, minFieldsTarget)
+                      }
+                    ) : null
+                  ] }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: `Pos ${c.position || "?"} · ${c.orbital_band || "Unknown"}` }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fieldsDisp ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `status-word${c.meets_target ? "" : " is-warn"}`, children: fieldsDisp }) : "Unprobed" }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: sysDist === 0 ? "Same sys" : `${sysDist} sys` }),
@@ -15287,6 +15355,53 @@
                     )
                   ] }) })
                 ] }, coords);
+              }) })
+            ] }) })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window col-attempts-window", "aria-labelledby": "col-attempts-title", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "window-bar window-bar-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "TRY" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { id: "col-attempts-title", children: "Tried Planets & Colonization Attempts" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "col-attempts-meta", children: `${fmtInt(attempts.length)} EVENTS · ${fmtInt(triedCount)} COORDS` })
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "colonies-attempts-table", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Coords" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Outcome" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Rolled Fields" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Target / Expected" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Temp" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Origin" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Time" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Details / Reason" })
+              ] }) }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "colonies-attempts-tbody", children: attempts.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No colonization attempts recorded yet. Every Colony ship dispatch, kept 300+ roll, and deleted undersized roll is logged here." }) }) : attempts.map((a, idx) => {
+                const aCoords = String(a.target_coords || "—");
+                const aMin = Math.round(finiteNum(a.min_fields_target, minFieldsTarget));
+                const outcome = attemptOutcomeFor(a.event_type, aMin);
+                const rolled = finiteNum(a.fields_rolled, null);
+                const expMin = finiteNum(a.expected_min_fields, null);
+                const expMax = finiteNum(a.expected_max_fields, null);
+                const expTxt = expMax !== null && expMax > 0 ? expMin !== null && expMin > 0 && expMin !== expMax ? `${Math.round(expMin)}–${Math.round(expMax)}` : `${Math.round(expMax)}` : "";
+                const temp = finiteNum(a.temperature, null);
+                const reasonTxt = String(a.status_message || "").trim() || (a.grade ? `Grade ${a.grade}` : "") || "—";
+                return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                  "tr",
+                  {
+                    "data-attempt-event": String(a.event_type || ""),
+                    children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: aCoords }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `outcome-badge ${outcome.cls}`, children: outcome.label }) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: rolled !== null && rolled > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `status-word${rolled >= aMin ? "" : " is-warn"}`, children: `${Math.round(rolled)} f` }) : "—" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: expTxt ? `≥${aMin} · exp ${expTxt}` : `≥${aMin}` }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: temp !== null ? `${Math.round(temp)} °C` : "—" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: a.origin_coords ? String(a.origin_coords) : "—" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtShortDateTime(a.ts) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: reasonTxt })
+                    ]
+                  },
+                  `${a.id ?? idx}-${aCoords}`
+                );
               }) })
             ] }) })
           ] })

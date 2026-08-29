@@ -56,6 +56,7 @@ from spaceinvasion.combat.fleet import (
     parse_inbox_messages_html,
     parse_spy_messages_html,
     plan_escape_flight,
+    select_smart_galaxy_scan_batch,
     simulate_raid_outcome,
 )
 from spaceinvasion.core.logging_utils import (
@@ -82,6 +83,7 @@ from spaceinvasion.core.state import (
     PlanetState,
     Resources,
     count_allocated_normal_planets,
+    homeworld_planet_id,
     is_building_allowed_on_planet_type,
     is_in_flight_fleet_job,
     is_undersized_fresh_colony,
@@ -516,6 +518,8 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         "raid_min_loot_spice_eq": (0.0, 1e12),
         "galaxy_scan_click_delay_seconds": (0.2, 60.0),
         "galaxy_scan_click_jitter_seconds": (0.0, 30.0),
+        "galaxy_scan_near_weight": (0.0, 20.0),
+        "galaxy_scan_attack_weight": (0.0, 20.0),
     }
     for key, (lo, hi) in float_specs.items():
         if key in raw_cfg:
@@ -534,6 +538,7 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         "allow_colonize",
         "allow_transmitter",
         "forbid_planetary_solar",
+        "galaxy_scan_explore_first",
     )
     if strict_bools:
         for key in bool_keys:
@@ -1184,6 +1189,11 @@ class GameApiBridge:
         self._throttle_timestamps: dict[int, float] = {}
         self._fleet_slot_cooldown_until: dict[int, float] = {}
         self._target_blocks: dict[str, tuple[float, str]] = {}
+        # Colony trial ledger (`colony_attempts`): dedupe keys for kept/settled observations,
+        # secondary planets seen without a parsed field count yet, and recent failed-dispatch throttle.
+        self._colony_attempt_seen: set[tuple[int, str]] = set()
+        self._colony_attempt_pending_pids: set[int] = set()
+        self._colony_attempt_failed_recent: dict[str, tuple[str, float]] = {}
         self._dash_cache_state_ref: Optional[GameState] = None
         self._dash_static_cache_key: Optional[Any] = None
         self._dash_static_cache_json: Optional[str] = None
@@ -1217,6 +1227,7 @@ class GameApiBridge:
             )
             self._scanned_systems.update(self._db.get_galaxy_scans())
             self._throttle_timestamps.update(self._db.get_last_throttle_timestamps())
+            self._hydrate_colony_attempt_seen()
         else:
             self._rank_samples = []
             self._raid_targets = ()
@@ -1255,6 +1266,9 @@ class GameApiBridge:
         self._sweep_in_progress = False
         self._sweep_stop_event = threading.Event()
         self._sweep_thread: Optional[threading.Thread] = None
+        # Cached Smart 2-Phase Galaxy Scanner telemetry (`scan_phase`, coverage, `sample_targets`)
+        self._smart_sweep_summary: dict[str, Any] = {}
+        self._smart_sweep_summary_ts: float = 0.0
         self._hydrate_persisted_bridge_state()
         enforce_hourly = max_actions_per_hour is not None
         raw_budget = (
@@ -1845,7 +1859,12 @@ class GameApiBridge:
             mem["last_reward"] = _bounded_api_str(reward, default="")[:160]
         return self._get_transmitter_status_locked(now_ts=eff_now)
 
-    def _get_galaxy_sweep_state_locked(self, *, now_ts: Optional[float] = None) -> dict[str, Any]:
+    def _get_galaxy_sweep_state_locked(
+        self,
+        *,
+        now_ts: Optional[float] = None,
+        include_smart: bool = True,
+    ) -> dict[str, Any]:
         eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
         if self._db is not None and hasattr(self._db, "get_galaxy_sweep_state"):
             st = dict(self._db.get_galaxy_sweep_state(now_ts=eff_now))
@@ -1861,7 +1880,173 @@ class GameApiBridge:
             3,
         )
         st["in_progress"] = bool(self._sweep_in_progress)
+        if include_smart:
+            self._refresh_smart_sweep_summary_locked(now_ts=eff_now)
+        return self._merge_smart_sweep_summary_locked(st)
+
+    # ---- Smart 2-Phase Galaxy Scanner (exploratory -> weighted targeted refresh) ----
+
+    _SMART_SWEEP_SUMMARY_TTL_S: float = 60.0
+    _SMART_SWEEP_STATE_KEYS: tuple[str, ...] = (
+        "scan_phase",
+        "selection_mode",
+        "explored_systems",
+        "unscanned_systems",
+        "total_systems",
+        "coverage_pct",
+        "scan_galaxies",
+        "sample_targets",
+    )
+
+    def _own_sweep_coords_locked(self) -> list[str]:
+        out: list[str] = []
+        st = self._last_state
+        if st is None:
+            return out
+        ap = st.active_planet()
+        ordered = ([ap] if ap is not None else []) + [p for p in st.planets if ap is None or p.planet_id != ap.planet_id]
+        for p in ordered:
+            if normalize_planet_type(p) == "raid":
+                continue
+            c = str(getattr(p, "coords", "") or "").strip()
+            if c and c not in out:
+                out.append(c)
+        return out
+
+    def _plan_smart_galaxy_sweep_locked(
+        self,
+        *,
+        batch_size: int,
+        galaxies: Sequence[int],
+        collect_colonies: bool,
+        now_ts: float,
+    ) -> Optional[dict[str, Any]]:
+        """Select the next smart sweep batch via SQLite `get_galaxy_sector_intel` + `select_smart_galaxy_scan_batch`."""
+        cfg = self.strategy_config
+        gal_list = [g for g in (max(1, min(14, _safe_api_int(x, 1))) for x in galaxies)]
+        intel: Optional[Mapping[str, Any]] = None
+        get_intel = getattr(self._db, "get_galaxy_sector_intel", None) if self._db is not None else None
+        if callable(get_intel):
+            try:
+                raw_intel = get_intel(galaxies=gal_list or None, now_ts=now_ts)
+                intel = raw_intel if isinstance(raw_intel, Mapping) else None
+            except Exception as exc:  # pragma: no cover - defensive: in-memory fallback below
+                intel = None
+                if self.log_dir is not None:
+                    append_crash_debug_log(
+                        component="api_server.smart_galaxy_sweep",
+                        event="sector_intel_error",
+                        error=exc,
+                    )
+        raid_stats = getattr(self._last_state, "raid_stats", None) if self._last_state is not None else None
+        try:
+            plan = select_smart_galaxy_scan_batch(
+                own_coords=self._own_sweep_coords_locked(),
+                sector_intel=intel,
+                galaxies=gal_list or None,
+                scanned_systems=self._get_scanned_systems(),
+                raid_targets=[r for r in (self._raid_targets or ()) if isinstance(r, Mapping)],
+                raid_stats=raid_stats if isinstance(raid_stats, Mapping) else None,
+                batch_size=max(1, min(400 * max(1, len(gal_list)), int(batch_size))),
+                explore_first=bool(getattr(cfg, "galaxy_scan_explore_first", True)),
+                near_weight=max(0.0, min(20.0, _safe_api_float(getattr(cfg, "galaxy_scan_near_weight", 2.0), 2.0))),
+                attack_weight=max(0.0, min(20.0, _safe_api_float(getattr(cfg, "galaxy_scan_attack_weight", 3.0), 3.0))),
+                collect_colonies=bool(collect_colonies),
+                now_ts=now_ts,
+            )
+        except Exception as exc:  # pragma: no cover - defensive: contiguous cursor fallback
+            if self.log_dir is not None:
+                append_crash_debug_log(
+                    component="api_server.smart_galaxy_sweep",
+                    event="select_batch_error",
+                    error=exc,
+                )
+            return None
+        return plan if isinstance(plan, Mapping) else None
+
+    def _store_smart_sweep_summary_locked(
+        self,
+        plan: Optional[Mapping[str, Any]],
+        *,
+        selection_mode: str,
+        now_ts: float,
+        sample_targets: Optional[Sequence[Mapping[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        if not isinstance(plan, Mapping):
+            return dict(getattr(self, "_smart_sweep_summary", {}) or {})
+        samples = sample_targets if sample_targets is not None else (plan.get("sample_targets") or [])
+        summary = {
+            "scan_phase": str(plan.get("scan_phase") or plan.get("phase") or "exploratory"),
+            "selection_mode": selection_mode,
+            "explored_systems": max(0, _safe_api_int(plan.get("explored_systems"), 0)),
+            "unscanned_systems": max(0, _safe_api_int(plan.get("unscanned_systems"), 0)),
+            "total_systems": max(0, _safe_api_int(plan.get("total_systems"), 0)),
+            "coverage_pct": round(max(0.0, min(100.0, _safe_api_float(plan.get("coverage_pct"), 0.0))), 2),
+            "scan_galaxies": [
+                _safe_api_int(g, 1) for g in (plan.get("galaxies") or []) if _safe_api_int(g, 0) > 0
+            ],
+            "sample_targets": [dict(s) for s in list(samples)[:5] if isinstance(s, Mapping)],
+            "smart_summary_ts": round(now_ts, 3),
+        }
+        self._smart_sweep_summary = summary
+        self._smart_sweep_summary_ts = now_ts
+        return dict(summary)
+
+    def _refresh_smart_sweep_summary_locked(self, *, now_ts: float, force: bool = False) -> None:
+        last_ts = _safe_api_float(getattr(self, "_smart_sweep_summary_ts", 0.0), 0.0)
+        if not force and getattr(self, "_smart_sweep_summary", None) and (now_ts - last_ts) < self._SMART_SWEEP_SUMMARY_TTL_S:
+            return
+        if self._sweep_in_progress and getattr(self, "_smart_sweep_summary", None) and not force:
+            return
+        cfg = self.strategy_config
+        pages = max(1, min(400, _safe_api_int(getattr(cfg, "galaxy_sweep_pages", 100), 100)))
+        allocated_normal = count_allocated_normal_planets(self._last_state)
+        max_planets_cap = max(1, _safe_api_int(getattr(cfg, "max_planets", 11), 11))
+        plan = self._plan_smart_galaxy_sweep_locked(
+            batch_size=pages,
+            galaxies=self._owned_sweep_galaxies_locked(),
+            collect_colonies=bool(allocated_normal < max_planets_cap),
+            now_ts=now_ts,
+        )
+        if plan is not None:
+            self._store_smart_sweep_summary_locked(plan, selection_mode="smart", now_ts=now_ts)
+        else:
+            self._smart_sweep_summary_ts = now_ts
+
+    def _merge_smart_sweep_summary_locked(self, st: dict[str, Any]) -> dict[str, Any]:
+        summary = getattr(self, "_smart_sweep_summary", None) or {}
+        st.setdefault("scan_phase", summary.get("scan_phase", "exploratory"))
+        st.setdefault("selection_mode", summary.get("selection_mode", "smart"))
+        st.setdefault("explored_systems", summary.get("explored_systems", 0))
+        st.setdefault("unscanned_systems", summary.get("unscanned_systems", 0))
+        st.setdefault("total_systems", summary.get("total_systems", 0))
+        st.setdefault("coverage_pct", summary.get("coverage_pct", 0.0))
+        st.setdefault("scan_galaxies", list(summary.get("scan_galaxies") or []))
+        st.setdefault("sample_targets", [dict(s) for s in (summary.get("sample_targets") or [])])
         return st
+
+    @staticmethod
+    def _contiguous_sweep_targets(
+        start_gal: int,
+        start_sys: int,
+        count: int,
+        *,
+        rotate_galaxies: Sequence[int] = (),
+    ) -> list[tuple[int, int]]:
+        """Legacy contiguous cursor walk (`start_sys..400 -> 1..`), rotating owned galaxies on wrap."""
+        out: list[tuple[int, int]] = []
+        g, s = int(start_gal), max(1, min(400, int(start_sys)))
+        gals = list(rotate_galaxies)
+        for _ in range(max(0, int(count))):
+            out.append((g, s))
+            if s >= 400:
+                s = 1
+                if len(gals) > 1:
+                    idx_g = gals.index(g) if g in gals else 0
+                    g = gals[(idx_g + 1) % len(gals)]
+            else:
+                s += 1
+        return out
 
     def _save_galaxy_sweep_state_locked(
         self,
@@ -1888,7 +2073,7 @@ class GameApiBridge:
             3,
         )
         st["in_progress"] = bool(self._sweep_in_progress)
-        return st
+        return self._merge_smart_sweep_summary_locked(st)
 
     def _sweep_views_last_60s(self) -> int:
         cutoff = time.monotonic() - 60.0
@@ -2738,6 +2923,7 @@ class GameApiBridge:
             self._active_planet_confirmed = True
 
         merged = self._merge_economy_rates(self._merge_cached_offers(state))
+        self._record_new_colonies_locked(prev, merged)
         self._last_state = merged
         self._last_recorded_state_obj = merged
         self._invalidate_dashboard_cache()
@@ -3773,7 +3959,7 @@ class GameApiBridge:
                     min(400, int(pages if pages is not None else getattr(cfg, "galaxy_sweep_pages", 100))),
                 )
                 owned_gals = self._owned_sweep_galaxies_locked()
-                sw_state = self._get_galaxy_sweep_state_locked(now_ts=sweep_started_ts)
+                sw_state = self._get_galaxy_sweep_state_locked(now_ts=sweep_started_ts, include_smart=False)
                 cur_gal = int(galaxy) if galaxy is not None else int(sw_state.get("cursor_galaxy") or owned_gals[0])
                 if galaxy is None and cur_gal not in owned_gals:
                     cur_gal = owned_gals[0]
@@ -3814,8 +4000,83 @@ class GameApiBridge:
                     ts=sweep_started_ts,
                 )
 
+                # Smart 2-Phase target selection (exploratory -> weighted targeted refresh). An explicit
+                # operator/test `start_system` keeps the legacy contiguous cursor walk for backward compatibility.
+                rotate_gals = owned_gals if galaxy is None else []
+                smart_plan: Optional[Mapping[str, Any]] = None
+                sweep_targets: list[tuple[int, int]] = []
+                contiguous_tail: Optional[tuple[int, int]] = None
+                if start_system is None:
+                    smart_plan = self._plan_smart_galaxy_sweep_locked(
+                        batch_size=total_pages,
+                        galaxies=[max(1, min(14, int(galaxy)))] if galaxy is not None else owned_gals,
+                        collect_colonies=collect_colonies,
+                        now_ts=sweep_started_ts,
+                    )
+                    seen_tg: set[tuple[int, int]] = set()
+                    for sec in (smart_plan or {}).get("selected_sectors") or []:
+                        if not isinstance(sec, Mapping):
+                            continue
+                        tg = (_safe_api_int(sec.get("galaxy"), 0), _safe_api_int(sec.get("system"), 0))
+                        if 1 <= tg[0] <= 14 and 1 <= tg[1] <= 400 and tg not in seen_tg:
+                            seen_tg.add(tg)
+                            sweep_targets.append(tg)
+                    sweep_targets = sweep_targets[:total_pages]
+                selection_mode = "smart" if sweep_targets else "contiguous"
+                if not sweep_targets:
+                    full_seq = self._contiguous_sweep_targets(
+                        cur_gal,
+                        cur_sys,
+                        total_pages + 1,
+                        rotate_galaxies=rotate_gals,
+                    )
+                    sweep_targets = full_seq[:total_pages]
+                    contiguous_tail = full_seq[total_pages] if len(full_seq) > total_pages else None
+                    if smart_plan is None:
+                        # Coverage/phase telemetry only (targets stay contiguous)
+                        smart_plan = self._plan_smart_galaxy_sweep_locked(
+                            batch_size=1,
+                            galaxies=[max(1, min(14, int(cur_gal)))] if galaxy is not None else owned_gals,
+                            collect_colonies=collect_colonies,
+                            now_ts=sweep_started_ts,
+                        )
+                    contiguous_samples = [
+                        {
+                            "sector": f"{tg:02d}:{ts_c:03d}",
+                            "galaxy": tg,
+                            "system": ts_c,
+                            "phase": "contiguous",
+                            "score": 0.0,
+                            "distance": 0,
+                            "direct_raid_count": 0,
+                            "owner_affinity_raid_count": 0,
+                            "reason": "explicit start_system contiguous walk",
+                        }
+                        for tg, ts_c in sweep_targets[:5]
+                    ]
+                    smart_summary = self._store_smart_sweep_summary_locked(
+                        smart_plan,
+                        selection_mode="contiguous",
+                        now_ts=sweep_started_ts,
+                        sample_targets=contiguous_samples,
+                    )
+                else:
+                    smart_summary = self._store_smart_sweep_summary_locked(
+                        smart_plan,
+                        selection_mode="smart",
+                        now_ts=sweep_started_ts,
+                    )
+                cur_gal, cur_sys = sweep_targets[0]
+                planned_pages = len(sweep_targets)
+                scan_phase = str(smart_summary.get("scan_phase") or "exploratory")
+
             if dry_run:
-                end_sys = ((cur_sys - 1 + total_pages) % 400) + 1
+                if contiguous_tail is not None:
+                    end_gal, end_sys = contiguous_tail
+                else:
+                    end_gal, end_sys = sweep_targets[-1]
+                with self._lock:
+                    dry_state = self._get_galaxy_sweep_state_locked(now_ts=sweep_started_ts, include_smart=False)
                 return _sanitize_finite_json(
                     _redact_api_payload(
                         {
@@ -3823,18 +4084,36 @@ class GameApiBridge:
                             "command": "galaxy_sweep",
                             "executed": False,
                             "dry_run": True,
-                            "pages_planned": total_pages,
+                            "pages_planned": planned_pages,
                             "start_galaxy": cur_gal,
                             "start_system": cur_sys,
+                            "end_galaxy": end_gal,
                             "end_system": end_sys,
+                            "selection_mode": selection_mode,
+                            "scan_phase": scan_phase,
+                            "explored_systems": smart_summary.get("explored_systems", 0),
+                            "unscanned_systems": smart_summary.get("unscanned_systems", 0),
+                            "total_systems": smart_summary.get("total_systems", 0),
+                            "coverage_pct": smart_summary.get("coverage_pct", 0.0),
+                            "exploratory_count": _safe_api_int((smart_plan or {}).get("exploratory_count"), 0)
+                            if selection_mode == "smart"
+                            else 0,
+                            "refresh_count": _safe_api_int((smart_plan or {}).get("refresh_count"), 0)
+                            if selection_mode == "smart"
+                            else 0,
+                            "sample_targets": smart_summary.get("sample_targets", []),
+                            "planned_targets": [f"{g:02d}:{s:03d}" for g, s in sweep_targets[:400]],
                             "collect_colonies": collect_colonies,
                             "allocated_normal_planets": allocated_normal,
                             "max_planets": max_planets_cap,
                             "click_delay_seconds": cfg_delay_s,
                             "click_jitter_seconds": cfg_jitter_s,
+                            "galaxy_sweep": dry_state,
                             "message": (
-                                f"[DRY-RUN] Would sweep {total_pages} galaxy pages starting at "
-                                f"[{cur_gal:02d}:{cur_sys:03d}] (colonies={'ON' if collect_colonies else 'FULL'})."
+                                f"[DRY-RUN] Would sweep {planned_pages} galaxy pages "
+                                f"({selection_mode} {scan_phase}, coverage {smart_summary.get('coverage_pct', 0.0)}%) "
+                                f"starting at [{cur_gal:02d}:{cur_sys:03d}] "
+                                f"(colonies={'ON' if collect_colonies else 'FULL'})."
                             ),
                         }
                     )
@@ -3844,7 +4123,7 @@ class GameApiBridge:
             hi_d = max(lo_d, float(max(delay_range[0], delay_range[1]))) if delay_range is not None else 0.0
             has_pacing = (delay_range is None) or (hi_d > 0.0)
 
-            for step_idx in range(total_pages):
+            for step_idx, (cur_gal, cur_sys) in enumerate(sweep_targets):
                 if self._sweep_stop_event.is_set():
                     aborted_reason = "Sweep stopped on shutdown."
                     break
@@ -3966,13 +4245,18 @@ class GameApiBridge:
                     if collect_colonies:
                         colonies_found += free_on_page
 
-                    if cur_sys >= 400:
-                        cur_sys = 1
-                        if galaxy is None and len(owned_gals) > 1:
-                            idx_g = owned_gals.index(cur_gal) if cur_gal in owned_gals else 0
-                            cur_gal = owned_gals[(idx_g + 1) % len(owned_gals)]
-                    else:
-                        cur_sys += 1
+            # Next cursor: contiguous mode continues after the last scanned page; smart mode records the system
+            # after the last visited sector (used only by explicit fallbacks / telemetry).
+            if selection_mode == "contiguous":
+                if pages_scanned < len(sweep_targets):
+                    cur_gal, cur_sys = sweep_targets[pages_scanned]
+                elif contiguous_tail is not None:
+                    cur_gal, cur_sys = contiguous_tail
+            elif pages_scanned > 0:
+                last_g, last_s = sweep_targets[pages_scanned - 1]
+                cur_gal, cur_sys = last_g, (1 if last_s >= 400 else last_s + 1)
+            else:
+                cur_gal, cur_sys = sweep_targets[0]
 
             now_done = round(time.time(), 3)
             with self._lock:
@@ -3987,7 +4271,7 @@ class GameApiBridge:
                     sweep_started_ts + min(296.0, cfg_iv),
                     max(now_done + random.uniform(8.0, 25.0), sweep_started_ts + rand_cycle_s),
                 )
-                cur_prev = self._get_galaxy_sweep_state_locked(now_ts=now_done)
+                cur_prev = self._get_galaxy_sweep_state_locked(now_ts=now_done, include_smart=False)
                 updated_sw = self._save_galaxy_sweep_state_locked(
                     {
                         "cursor_galaxy": cur_gal,
@@ -4004,9 +4288,17 @@ class GameApiBridge:
                     },
                     ts=now_done,
                 )
+                if pages_scanned > 0:
+                    # Refresh coverage + next-batch preview (phase may flip exploratory -> targeted_refresh)
+                    self._refresh_smart_sweep_summary_locked(now_ts=now_done, force=True)
+                    updated_sw = self._merge_smart_sweep_summary_locked(
+                        {k: v for k, v in updated_sw.items() if k not in self._SMART_SWEEP_STATE_KEYS}
+                    )
                 self._invalidate_dashboard_cache()
+                cov_txt = f"{updated_sw.get('coverage_pct', 0.0)}%"
                 msg_summary = (
-                    f"Swept {pages_scanned}/{total_pages} galaxy pages "
+                    f"Swept {pages_scanned}/{planned_pages} galaxy pages "
+                    f"[{selection_mode} {scan_phase}, coverage {cov_txt}] "
                     f"(players={players_found}, colonies={colonies_found if collect_colonies else 'SKIP:full'}, "
                     f"debris={debris_found}); next cursor [{cur_gal:02d}:{cur_sys:03d}]."
                 )
@@ -4027,7 +4319,11 @@ class GameApiBridge:
                             planet_id=ap_log.planet_id if ap_log is not None else 0,
                             planet_coords=ap_log.coords if ap_log is not None else "",
                             target_name=f"Sweep {pages_scanned} pages -> [{cur_gal:02d}:{cur_sys:03d}]",
-                            reason="Periodic randomized 100-page galaxy sweep",
+                            reason=(
+                                f"Smart 2-phase galaxy sweep ({scan_phase}, coverage {cov_txt})"
+                                if selection_mode == "smart"
+                                else "Periodic randomized 100-page galaxy sweep"
+                            ),
                             executable_now=True,
                         ),
                         executed=True,
@@ -4041,11 +4337,19 @@ class GameApiBridge:
                         "command": "galaxy_sweep",
                         "executed": pages_scanned > 0,
                         "dry_run": False,
+                        "pages_planned": planned_pages,
                         "pages_scanned": pages_scanned,
                         "players_found": players_found,
                         "colonies_found": colonies_found,
                         "debris_found": debris_found,
                         "collect_colonies": collect_colonies,
+                        "selection_mode": selection_mode,
+                        "scan_phase": scan_phase,
+                        "explored_systems": updated_sw.get("explored_systems", 0),
+                        "total_systems": updated_sw.get("total_systems", 0),
+                        "coverage_pct": updated_sw.get("coverage_pct", 0.0),
+                        "sample_targets": smart_summary.get("sample_targets", []),
+                        "visited_targets": [f"{g:02d}:{s:03d}" for g, s in sweep_targets[:pages_scanned]],
                         "click_delay_seconds": updated_sw.get("click_delay_seconds", cfg_delay_s),
                         "click_jitter_seconds": updated_sw.get("click_jitter_seconds", cfg_jitter_s),
                         "aborted_reason": aborted_reason,
@@ -4484,6 +4788,226 @@ class GameApiBridge:
         self._persist_runtime_state()
         return total_ingested
 
+    # ------------------------------------------------------------------
+    # Colony trial ledger (`colony_attempts`, V011) — every call is guarded
+    # so a missing table/method never breaks the API.
+    # ------------------------------------------------------------------
+    COLONY_FAILED_DEDUPE_S = 600.0
+
+    def _colony_min_fields(self) -> int:
+        return max(50, _safe_api_int(getattr(self.strategy_config, "min_colony_fields", 300), 300))
+
+    def _safe_record_colony_attempt(self, **kwargs: Any) -> Optional[dict[str, Any]]:
+        db = self._db
+        rec_fn = getattr(db, "record_colony_attempt", None) if db is not None else None
+        if not callable(rec_fn):
+            return None
+        try:
+            out = rec_fn(**kwargs)
+        except Exception:  # noqa: BLE001 - ledger must never crash the API
+            pass
+            return None
+        return out if isinstance(out, dict) else None
+
+    def _colony_attempts_payload(self) -> dict[str, Any]:
+        """Return `colony_attempts`, `colony_attempts_summary`, `attempts_by_coords` (empty when unavailable)."""
+        attempts: list[dict[str, Any]] = []
+        summary: dict[str, Any] = {
+            "total_events": 0,
+            "unique_coords_tried": 0,
+            "dispatched_count": 0,
+            "deleted_undersized_count": 0,
+            "kept_count": 0,
+            "failed_count": 0,
+            "by_coords": {},
+        }
+        db = self._db
+        if db is not None:
+            get_fn = getattr(db, "get_colony_attempts", None)
+            if callable(get_fn):
+                try:
+                    raw_rows = get_fn(limit=100)
+                    attempts = [dict(r) for r in (raw_rows or ()) if isinstance(r, Mapping)]
+                except Exception:  # noqa: BLE001
+                    pass
+            sum_fn = getattr(db, "get_colony_attempts_summary", None)
+            if callable(sum_fn):
+                try:
+                    raw_sum = sum_fn()
+                    if isinstance(raw_sum, Mapping):
+                        summary = dict(raw_sum)
+                except Exception:  # noqa: BLE001
+                    pass
+        by_coords = summary.get("by_coords")
+        if not isinstance(by_coords, Mapping):
+            by_coords = {}
+            summary["by_coords"] = by_coords
+        return {
+            "colony_attempts": attempts,
+            "colony_attempts_summary": summary,
+            "attempts_by_coords": dict(by_coords),
+        }
+
+    def _hydrate_colony_attempt_seen(self) -> None:
+        db = self._db
+        get_fn = getattr(db, "get_colony_attempts", None) if db is not None else None
+        if not callable(get_fn):
+            return
+        try:
+            rows = get_fn(limit=500) or ()
+        except Exception:  # noqa: BLE001
+            return
+        for r in rows:
+            if not isinstance(r, Mapping):
+                continue
+            if str(r.get("event_type") or "").lower() not in ("kept", "settled"):
+                continue
+            pid_h = _safe_api_int(r.get("planet_id"), 0)
+            nc_h = normalize_coords(str(r.get("target_coords") or ""))
+            if pid_h > 0 and nc_h:
+                self._colony_attempt_seen.add((pid_h, nc_h))
+
+    def _lookup_colony_candidate(self, norm_target: str, origin_coords: str) -> Optional[dict[str, Any]]:
+        db = self._db
+        get_fn = getattr(db, "get_colony_candidates", None) if db is not None else None
+        if not callable(get_fn) or not norm_target:
+            return None
+        try:
+            rows = get_fn(
+                origin_coords=origin_coords,
+                min_fields_target=self._colony_min_fields(),
+                include_discarded=True,
+                limit=1000,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        for r in rows or ():
+            if isinstance(r, Mapping) and normalize_coords(str(r.get("coords") or "")) == norm_target:
+                return dict(r)
+        return None
+
+    def _record_colony_attempt_from_result_locked(self, state: GameState, res: Any, cmd: str) -> None:
+        """Append `dispatched`/`failed` (COLONIZE) or `deleted_undersized` (ABANDON_COLONY) ledger rows."""
+        act = getattr(res, "action", None)
+        kind = getattr(act, "kind", None)
+        if kind not in ("COLONIZE", "ABANDON_COLONY") or self._db is None:
+            return
+        executed = bool(getattr(res, "executed", False))
+        msg = _bounded_api_str(getattr(res, "message", None), default="")
+        min_f = self._colony_min_fields()
+        origin_pid = _safe_api_int(getattr(act, "planet_id", 0), 0)
+        if kind == "ABANDON_COLONY":
+            if not executed:
+                return
+            planet = next((p for p in state.planets if p.planet_id == origin_pid), None)
+            coords_ab = normalize_coords(
+                str(getattr(planet, "coords", "") or getattr(act, "planet_coords", "") or "")
+            )
+            if not coords_ab:
+                return
+            min_ab = _safe_api_int(getattr(act, "target_level", None), 0)
+            self._safe_record_colony_attempt(
+                target_coords=coords_ab,
+                event_type="deleted_undersized",
+                planet_id=origin_pid if origin_pid > 0 else None,
+                fields_rolled=(_safe_api_int(planet.fields_max, 0) if planet is not None else None),
+                min_fields_target=min_ab if min_ab >= 50 else min_f,
+                temperature=(_safe_api_int(planet.temperature, 0) if planet is not None else None),
+                status_message=msg,
+                details={"source": cmd},
+            )
+            return
+        # COLONIZE
+        tname = game_data.safe_key(act.target_name) if getattr(act, "target_name", None) is not None else ""
+        m_tc = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", tname, re.ASCII)
+        norm_target = normalize_coords(m_tc.group(1)) if m_tc else ""
+        if not norm_target:
+            return
+        origin_coords = normalize_coords(str(getattr(act, "planet_coords", "") or ""))
+        if not executed:
+            if not bool(getattr(act, "executable_now", False)) or msg.lower().startswith("guarded"):
+                return
+            now_wall = time.time()
+            prev_fail = self._colony_attempt_failed_recent.get(norm_target)
+            if prev_fail is not None and prev_fail[0] == msg and (now_wall - prev_fail[1]) < self.COLONY_FAILED_DEDUPE_S:
+                return
+            self._colony_attempt_failed_recent[norm_target] = (msg, now_wall)
+            self._safe_record_colony_attempt(
+                target_coords=norm_target,
+                event_type="failed",
+                origin_coords=origin_coords,
+                min_fields_target=min_f,
+                status_message=msg or "COLONIZE dispatch failed",
+                details={"source": cmd, "origin_planet_id": origin_pid},
+            )
+            return
+        self._colony_attempt_failed_recent.pop(norm_target, None)
+        cand = self._lookup_colony_candidate(norm_target, origin_coords) or {}
+        exp_max_raw = (
+            cand.get("colonize_max_fields")
+            if cand.get("colonize_max_fields") is not None
+            else cand.get("uninhabited_fields")
+        )
+        self._safe_record_colony_attempt(
+            target_coords=norm_target,
+            event_type="dispatched",
+            origin_coords=origin_coords,
+            min_fields_target=min_f,
+            expected_min_fields=(
+                _safe_api_int(cand.get("colonize_min_fields"), 0)
+                if cand.get("colonize_min_fields") is not None
+                else None
+            ),
+            expected_max_fields=_safe_api_int(exp_max_raw, 0) if exp_max_raw is not None else None,
+            temperature=(
+                _safe_api_int(cand.get("temperature"), 0) if cand.get("temperature") is not None else None
+            ),
+            grade=str(cand.get("grade") or ""),
+            score=_safe_api_int(cand.get("score"), 0) if cand.get("score") is not None else None,
+            status_message=msg,
+            details={"source": cmd, "origin_planet_id": origin_pid},
+        )
+
+    def _record_new_colonies_locked(self, prev: Optional[GameState], new_state: GameState) -> None:
+        """Append `kept`/`settled` rows when a new secondary normal planet appears (deduped per planet)."""
+        if prev is None or self._db is None:
+            return
+        try:
+            prev_ids = {p.planet_id for p in prev.planets}
+            hw_id = homeworld_planet_id(new_state)
+            min_f = self._colony_min_fields()
+            for p in new_state.planets:
+                pid_n = _safe_api_int(p.planet_id, 0)
+                if pid_n <= 0 or pid_n == hw_id or normalize_planet_type(p) != "normal":
+                    continue
+                if pid_n in prev_ids and pid_n not in self._colony_attempt_pending_pids:
+                    continue
+                nc_n = normalize_coords(str(p.coords or ""))
+                if not nc_n:
+                    continue
+                key = (pid_n, nc_n)
+                if key in self._colony_attempt_seen:
+                    self._colony_attempt_pending_pids.discard(pid_n)
+                    continue
+                f_max = _safe_api_int(p.fields_max, 0)
+                if f_max <= 0:
+                    # Field count not parsed yet; retry on the next snapshot.
+                    self._colony_attempt_pending_pids.add(pid_n)
+                    continue
+                self._colony_attempt_pending_pids.discard(pid_n)
+                self._colony_attempt_seen.add(key)
+                self._safe_record_colony_attempt(
+                    target_coords=nc_n,
+                    event_type="kept" if f_max >= min_f else "settled",
+                    planet_id=pid_n,
+                    fields_rolled=f_max,
+                    min_fields_target=min_f,
+                    temperature=_safe_api_int(p.temperature, 0),
+                    details={"source": "state", "planet_name": _bounded_api_str(p.name, default="")},
+                )
+        except Exception:  # noqa: BLE001 - never break state recording
+            pass
+
     def _execute_and_summarize(
         self,
         client: Any,
@@ -4685,6 +5209,8 @@ class GameApiBridge:
                 )
                 self._db.record_raid(t_coords, is_exempt=is_exempt, outcome=res.message)
                 self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
+            if res.action.kind in ("COLONIZE", "ABANDON_COLONY"):
+                self._record_colony_attempt_from_result_locked(state, res, cmd)
         if self._db is not None:
             self._db.record_action(
                 source="api",
@@ -5587,6 +6113,7 @@ class GameApiBridge:
                         colony_ships += max(0, _safe_api_int(p.ships.get("s8", 0)))
                         spy_probes += max(0, _safe_api_int(p.ships.get("s10", 0)))
                 needed_colonies = max(0, max_planets - allocated_normal_planets)
+                attempts_payload = self._colony_attempts_payload()
                 return _sanitize_finite_json(
                     _redact_api_payload(
                         {
@@ -5609,6 +6136,7 @@ class GameApiBridge:
                             "qualified_count": qualified_count,
                             "discarded_count": discarded_count,
                             "candidates": candidates,
+                            **attempts_payload,
                         }
                     )
                 )
@@ -7535,7 +8063,7 @@ class GameApiBridge:
                             allow_none=True,
                             min_val=50,
                             max_val=1000,
-                        ) or max(50, _safe_api_int(getattr(self._config, "min_colony_fields", 300), 300))
+                        ) or max(50, _safe_api_int(getattr(self.strategy_config, "min_colony_fields", 300), 300))
                         state = _cached_or_fetch(
                             include_buildings=False,
                             include_research=False,

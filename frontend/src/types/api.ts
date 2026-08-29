@@ -169,6 +169,48 @@ export interface NotificationsState {
   items: NotificationItem[];
 }
 
+/** One append-only SQLite `colony_attempts` row (V011): a tried colonization target. */
+export interface ColonyAttemptItem {
+  id: number;
+  ts?: number | null;
+  /** `dispatched` | `settled` | `kept` | `deleted_undersized` | `failed` (case-insensitive). */
+  event_type?: string;
+  target_coords?: string;
+  origin_coords?: string;
+  planet_id?: number | null;
+  fields_rolled?: number | null;
+  min_fields_target?: number | null;
+  expected_min_fields?: number | null;
+  expected_max_fields?: number | null;
+  temperature?: number | null;
+  grade?: string;
+  score?: number | null;
+  status_message?: string;
+  details?: Record<string, any> | null;
+  [key: string]: any;
+}
+
+/** Per-coordinate rollup from `get_colony_attempts_summary().by_coords`. */
+export interface ColonyAttemptCoordStats {
+  attempts_count?: number;
+  deleted_count?: number;
+  last_event_type?: string;
+  last_fields_rolled?: number | null;
+  last_ts?: number | null;
+  [key: string]: any;
+}
+
+export interface ColonyAttemptsSummary {
+  total_events?: number;
+  unique_coords_tried?: number;
+  dispatched_count?: number;
+  deleted_undersized_count?: number;
+  kept_count?: number;
+  failed_count?: number;
+  by_coords?: Record<string, ColonyAttemptCoordStats>;
+  [key: string]: any;
+}
+
 export interface UniverseResearchMaxRow {
   research_id: number;
   key?: string;

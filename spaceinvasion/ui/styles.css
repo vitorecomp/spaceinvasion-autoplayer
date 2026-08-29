@@ -1063,6 +1063,37 @@ tbody tr:hover {
   color: var(--amber);
 }
 
+.outcome-badge.is-pending {
+  background: rgba(50, 232, 255, 0.08);
+  border-color: rgba(50, 232, 255, 0.45);
+  color: var(--cyan);
+}
+
+/* Colonies: 5-card KPI strip, candidate trial chips, and stacked Tried Planets window */
+
+.combat-top-cards.col-top-cards {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.col-trial-chip {
+  white-space: nowrap;
+  color: var(--ink-muted);
+}
+
+.col-trial-chip.is-deleted {
+  border-color: #ff6873;
+  color: #ff6873;
+}
+
+.page-fill.col-candidates-window {
+  flex: 3 1 0;
+}
+
+.col-attempts-window {
+  flex: 2 1 0;
+  min-height: 180px;
+}
+
 .msg-body-cell {
   max-width: 460px;
   white-space: normal;
@@ -3061,6 +3092,10 @@ tbody tr.is-manual-queued:hover {
   .gann-metrics-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .combat-top-cards.col-top-cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1100px) {
@@ -3082,6 +3117,8 @@ tbody tr.is-manual-queued:hover {
   .view-stage,
   .page-view,
   .page-fill,
+  .page-fill.col-candidates-window,
+  .col-attempts-window,
   .ag-main-window,
   .ag-control-panel,
   .ag-panel-body,
@@ -3134,6 +3171,7 @@ tbody tr.is-manual-queued:hover {
   .dash-lower-grid,
   .split-workspace,
   .combat-top-cards,
+  .combat-top-cards.col-top-cards,
   .combat-main-grid,
   .ranking-kpi-grid,
   .ranking-grid,

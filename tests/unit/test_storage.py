@@ -1087,6 +1087,94 @@ class TestGameDatabase(unittest.TestCase):
         self.assertNotIn("ST_DAG_SEC", s_dag)
         self.assertLess((time.perf_counter() - t1) * 1000.0, 50.0)
 
+    def test_colony_attempts_append_only_logging_filtering_and_summary(self) -> None:
+        now = 1_750_000_000.0
+        with tempfile.TemporaryDirectory() as tmp:
+            db = GameDatabase(Path(tmp) / "col_attempts.db", attack_history_path="")
+            try:
+                # 1st attempt on 02:150:08: dispatched -> deleted_undersized (215 fields)
+                db.record_colony_attempt(
+                    target_coords="2:150:8",
+                    event_type="dispatched",
+                    origin_coords="2:150:5",
+                    expected_min_fields=180,
+                    expected_max_fields=340,
+                    temperature=32,
+                    grade="S",
+                    score=94,
+                    status_message="Dispatched Colony ship to 02:150:08",
+                    ts=now - 600.0,
+                )
+                db.record_colony_attempt(
+                    target_coords="02:150:08",
+                    event_type="deleted_undersized",
+                    origin_coords="02:150:05",
+                    planet_id=5001,
+                    fields_rolled=215,
+                    min_fields_target=300,
+                    temperature=32,
+                    status_message="Deleted undersized colony (215 < 300 fields) ?sid=SECRET_COL_TOK",
+                    details={"planet_name": "Colony"},
+                    ts=now - 300.0,
+                )
+                # 2nd attempt on 02:150:08: dispatched -> kept (318 fields)
+                db.record_colony_attempt(
+                    target_coords="02:150:08",
+                    event_type="dispatched",
+                    origin_coords="02:150:05",
+                    status_message="Re-dispatched Colony ship to 02:150:08",
+                    ts=now - 200.0,
+                )
+                db.record_colony_attempt(
+                    target_coords="02:150:08",
+                    event_type="kept",
+                    origin_coords="02:150:05",
+                    planet_id=5002,
+                    fields_rolled=318,
+                    min_fields_target=300,
+                    temperature=32,
+                    grade="S",
+                    score=96,
+                    status_message="Kept settled colony (318 >= 300 fields)",
+                    ts=now - 50.0,
+                )
+                # Attempt on another coord 02:151:09: failed
+                db.record_colony_attempt(
+                    target_coords="02:151:09",
+                    event_type="failed",
+                    origin_coords="02:150:05",
+                    status_message="Slot occupied on arrival",
+                    ts=now - 20.0,
+                )
+
+                all_rows = db.get_colony_attempts(limit=50)
+                self.assertEqual(len(all_rows), 5)
+                self.assertEqual(all_rows[0]["target_coords"], "02:151:09")
+                self.assertEqual(all_rows[1]["event_type"], "kept")
+                self.assertEqual(all_rows[1]["fields_rolled"], 318)
+                self.assertNotIn("SECRET_COL_TOK", json.dumps(all_rows, allow_nan=False))
+
+                filtered = db.get_colony_attempts(target_coords="2:150:8")
+                self.assertEqual(len(filtered), 4)
+
+                summary = db.get_colony_attempts_summary()
+                self.assertEqual(summary["total_events"], 5)
+                self.assertEqual(summary["unique_coords_tried"], 2)
+                self.assertEqual(summary["dispatched_count"], 2)
+                self.assertEqual(summary["deleted_undersized_count"], 1)
+                self.assertEqual(summary["kept_count"], 1)
+                self.assertEqual(summary["failed_count"], 1)
+
+                c150 = summary["by_coords"]["02:150:08"]
+                self.assertEqual(c150["attempts_count"], 2)
+                self.assertEqual(c150["events_count"], 4)
+                self.assertEqual(c150["deleted_count"], 1)
+                self.assertEqual(c150["kept_count"], 1)
+                self.assertEqual(c150["last_event_type"], "kept")
+                self.assertEqual(c150["last_fields_rolled"], 318)
+            finally:
+                db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,7 +31,7 @@ DEFAULT_RANK_HISTORY_JSON_PATH = Path("state") / "rank_history.json"
 DEFAULT_SNAPSHOT_JSON_PATH = Path("state") / "snapshot.json"
 DEFAULT_CONFIG_YAML_PATH = Path("config.yaml")
 
-LATEST_SCHEMA_VERSION: int = 10
+LATEST_SCHEMA_VERSION: int = 11
 SCHEMA_VERSION: str = str(LATEST_SCHEMA_VERSION)
 ATTACK_HISTORY_SCHEMA_VERSION: int = 2
 
@@ -756,6 +756,36 @@ CREATE INDEX IF NOT EXISTS idx_universe_research_max_hist_ts
             ("spy_targets", "temperature", "INTEGER"),
         ),
     ),
+    Migration(
+        version=11,
+        name="v011_colony_attempts_ledger",
+        description="Add append-only colony_attempts table tracking dispatched, settled/kept >=300, and undersized <300 colonization trials.",
+        sql="""
+CREATE TABLE IF NOT EXISTS colony_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    event_type TEXT NOT NULL,
+    target_coords TEXT NOT NULL,
+    origin_coords TEXT NOT NULL DEFAULT '',
+    planet_id INTEGER,
+    fields_rolled INTEGER,
+    min_fields_target INTEGER NOT NULL DEFAULT 300,
+    expected_min_fields INTEGER,
+    expected_max_fields INTEGER,
+    temperature INTEGER,
+    grade TEXT NOT NULL DEFAULT '',
+    score INTEGER,
+    status_message TEXT NOT NULL DEFAULT '',
+    details_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_colony_attempts_coords_ts
+    ON colony_attempts(target_coords, ts);
+
+CREATE INDEX IF NOT EXISTS idx_colony_attempts_ts
+    ON colony_attempts(ts);
+""",
+    ),
 )
 
 GAME_REQUIRED_TABLES: tuple[str, ...] = (
@@ -784,6 +814,7 @@ GAME_REQUIRED_TABLES: tuple[str, ...] = (
     "recycle_reports",
     "manual_queue",
     "manual_queue_events",
+    "colony_attempts",
     "schema_migrations",
     "schema_migration_events",
 )

@@ -225,12 +225,30 @@ Whenever `effective_allocated_normal < max_planets` (default `11`) and `allow_co
      2. `0 < fields_max < min_colony_fields` (`300`).
      3. **Zero development & zero stationed fleet/defenses**: `fields_used == 0`, `sum(buildings) == 0`, `sum(ships except s9) == 0`, `sum(defense) == 0`, and zero active construction jobs.
      4. All building/shipyard planning on `undersized_pids` is suppressed so no building is ever started on an undersized roll prior to deletion.
-2. **`COLONIZE` (`s8` *Colony ship* — Top `P1` Fleet Dispatch & Slot Reservation)**:
-   - Dispatches a stationed `Colony ship` (`s8`) to the highest-graded non-discarded candidate meeting `>= min_colony_fields` (either exact `uninhabited_fields >= 300` or RETRO 2D Galaxy `colonize_max_fields >= 300` in prime `Pos 7–12`), skipping coordinates that already have an outbound `COLONIZE` flight in transit (`extract_in_flight_colonize_coords`).
-   - Uses full `1 + b10` concurrent fleet-slot capacity (`used_fleet_slots < max_fleet_slots`), is **never** held back by `reserved_spy_slots`, and reserves `1` fleet slot on the `Colony ship`'s origin planet so lower-priority `P2` `ATTACK`, `RECYCLE`, and player `SPY` missions never steal the last open flight slot from `COLONIZE`.
-3. **`BUILD_SHIP Colony ship` (`s8`), Free-Slot Colony `SPY`, and Colony `SCAN_GALAXY` (`P1`)**:
-   - When `open_colony_slots > 0` and no `Colony ship` (`s8`) is stationed, emits `P1` `BUILD_SHIP Colony ship` (`10k Pig, 20k Metal, 10k Krypt, 5k Spice`, treated as a top Metal consumer by `_plan_blast_furnace_throttle`).
+2. **`COLONIZE` (`s8` *Colony ship* — Parallel Dispatch, Fleet Priority #2)**:
+   - **Targets**: Each `COLONIZE` goes to a different highest-graded, non-discarded candidate meeting `>= min_colony_fields`, either an exact `uninhabited_fields >= 300` or a RETRO 2D Galaxy `colonize_max_fields >= 300` in prime `Pos 7–12`. Coordinates that already have an outbound `COLONIZE` flight (`extract_in_flight_colonize_coords`) are skipped.
+   - **Parallel colonization**: Let `open_planet_slots = max(0, max_planets - effective_allocated_normal - len(in_flight_colonize_coords))`. The planner emits up to `min(open_planet_slots, max(1, total_stationed_s8))` distinct `COLONIZE` actions (in `strategy.py` `_plan_combat_and_raid_actions` and `optimizer.py` `_materialize_planned_actions`). Each is assigned to a colony with a stationed `s8` and tagged `[Parallel colony k/n]`. `in_flight_colonize + new_dispatches` never exceeds the open planet slots. With `open_planet_slots == 0`, no `COLONIZE` is emitted.
+   - **Strict fleet-slot priority `SPY` (#1) -> `COLONIZE` (#2) -> `ATTACK` / `RECYCLE` (#3)**, with `max_fleet_slots = 1 + b10`:
+     - **`SPY` #1**: `reserved_spy_slots` (`spy_res`) also holds back `COLONIZE`. The `k`-th `COLONIZE` dispatched in a tick is held with `"Fleet slot reserved for Spy probes"` once `used_slots + k >= max_fleet_slots - spy_res`. Raid `SPY` is never held for colonization.
+     - **`COLONIZE` #2**: `col_res = min(#COLONIZE on planet, open_planet_slots, s8 on planet, max_fleet_slots - spy_res)` seats are reserved against `ATTACK` / `RECYCLE`. Those missions are held with `"reserved for Colony ship"` while `used_slots >= max_fleet_slots - spy_res - col_res`.
+     - **`ATTACK` / `RECYCLE` #3**: Use only the remaining seats.
+3. **`BUILD_SHIP Colony ship` (`s8`) Auto-Build, Free-Slot Colony `SPY`, and Colony `SCAN_GALAXY` (`P1`)**:
+   - **Proactive `s8` build for parallel colonization**: Emits `P1` `BUILD_SHIP Colony ship` (`10k Pig, 20k Metal, 10k Krypt, 5k Spice`, treated as a top Metal consumer by `_plan_blast_furnace_throttle`) while `stationed_s8 + queued_s8 + in_flight_colonize < min(open_planet_slots, max(1, max_fleet_slots - spy_res))`. The shipyard builds enough `s8` hulls to fill parallel slots, but never more than the open planet slots.
    - While `qualified_candidates_count < needed_colonies`, free-slot `SPY` probes (`1x s10`, `02:380:08 (Free slot)`) and spiral `SCAN_GALAXY` colony discovery also run at **`P1`**.
+   - **`P1` sub-order**: `ABANDON_COLONY` -> free-slot `SPY` -> parallel `COLONIZE` -> `BUILD_SHIP s8` -> designated-colony `s10` probe build -> colony `SCAN_GALAXY` -> routine `P1` maintenance. Raid `SPY` stays in the `P2` band, because `commander.py` re-sorts by band; its seat is protected by `reserved_spy_slots` instead.
+4. **Tried Planets Ledger (`colony_attempts`, SQLite `V011`, Append-Only)**:
+   - Every colonization trial is appended to `colony_attempts` (`GameDatabase.record_colony_attempt`; read with `get_colony_attempts(limit=100)` newest first and `get_colony_attempts_summary()`). This table is insert-only (no `DELETE FROM` / `DROP TABLE`) and indexed on `(target_coords, ts)`.
+   - **`event_type` values** (recorded by `GameApiBridge` in `spaceinvasion/runtime/api_server.py`):
+
+     | `event_type` | Recorded When | Key Fields |
+     |---|---|---|
+     | `dispatched` | `COLONIZE` executed (API command, planner, or `commander.py` path via `_execute_and_summarize`) | `target_coords`, `origin_coords`, `min_fields_target`, plus the candidate's `expected_min_fields` / `expected_max_fields` (`colonize_max_fields` or `uninhabited_fields`), `temperature`, `grade`, `score` |
+     | `failed` | Live `COLONIZE` not executed (skips non-executable / `"Guarded:"` results; repeats of the same coords + message within `600s` are deduped) | `target_coords`, `status_message` |
+     | `deleted_undersized` | `ABANDON_COLONY` executed | `planet_id`, `target_coords`, `fields_rolled = fields_max`, `min_fields_target`, `temperature` |
+     | `kept` / `settled` | `_record_state` sees a new secondary `normal` planet: `kept` when `fields_max >= min_colony_fields`, otherwise `settled` (still pending if `fields_max == 0`) | `planet_id`, `target_coords`, `fields_rolled`; deduped per `(planet_id, coords)` and hydrated at startup from `get_colony_attempts(limit=500)` |
+
+   - **Summary**: `{total_events, unique_coords_tried, dispatched_count, deleted_undersized_count, kept_count, failed_count, by_coords}`, where `by_coords` is keyed by normalized `GG:SSS:PP` (`attempts_count`, `deleted_count`, `last_event_type`, `last_fields_rolled`, `last_ts`, ...).
+   - **Operator Console**: `POST /command {"command": "colony_candidates"}` returns `colony_attempts`, `colony_attempts_summary`, and `attempts_by_coords`. `#view-colonies` shows them as the stacked **Tried Planets & Colonization Attempts** table (`#colonies-attempts-tbody`, with `DELETED <300` / `KEPT ≥300` / `DISPATCHED` / `SETTLED` / `FAILED` outcome pills), a `Tried / Deleted (<300)` KPI card (`#col-kpi-tried`), and per-candidate `Tried Nx · Last: ...` chips.
 
 ---
 
@@ -322,7 +340,7 @@ When `P2` fleet actions are evaluated, candidate missions are emitted in strict 
 
 1. **`SPY` (`s10` *Spy probe* — Top `P2` Recon Priority, Colony-Quota Probing, Origin Pinning & Slot Reservation)**:
    - **`SPY`-First Execution Order**: Ready `SPY` actions (both player/`Spacia` recon and free colony-candidate probes) are placed at the **very front of `P2` (Bucket `0` / index `0` of `P2`, ahead of `BUILD`, `BUILD_SHIP`, `COLONIZE`, `ATTACK`, and `RECYCLE`)** so `commander.py` always dispatches `Spy probes` (`s10`) first on every batch tick.
-   - **Configurable `SPY` Fleet-Slot Reservation (`reserved_spy_slots`, default `1`, range `0..10`)**: Whenever `cfg.reserved_spy_slots > 0` and ready `SPY` candidates exist alongside stationed `s10 > 0` on the dispatch colony, the runtime reserves `eff_res = min(cfg.reserved_spy_slots, max(0, max_fleet_slots - 1))` fleet slots (`max_fleet_slots = 1 + b10`) exclusively for `SPY`. Once `used_slots >= max_fleet_slots - eff_res`, non-`SPY` missions (`ATTACK`, `RECYCLE`, `COLONIZE`) are held (`executable_now = False`) while `SPY` remains executable up to `max_fleet_slots`.
+   - **Configurable `SPY` Fleet-Slot Reservation (`reserved_spy_slots`, default `1`, range `0..10`)**: Whenever `cfg.reserved_spy_slots > 0` and ready `SPY` candidates exist alongside stationed `s10 > 0` on the dispatch colony, the runtime reserves `eff_res = min(cfg.reserved_spy_slots, max(0, max_fleet_slots - 1))` fleet slots (`max_fleet_slots = 1 + b10`) exclusively for `SPY`. Once `used_slots >= max_fleet_slots - eff_res`, non-`SPY` missions (`ATTACK`, `RECYCLE`, `COLONIZE`) are held (`executable_now = False`) while `SPY` remains executable up to `max_fleet_slots`. `COLONIZE` counts its in-tick dispatch index `k` too (`used_slots + k >= max_fleet_slots - eff_res` is held with `"Fleet slot reserved for Spy probes"`).
    - **Designated vs. Auto `SPY` Dispatch Colony (`spy_dispatch_planet_id`, default `0`)**:
      - `0` (*Auto*): Automatically selects the active colony (or closest non-raid colony) with stationed `Spy probes` (`s10 > 0`).
      - `> 0` (*Designated Colony*): When matching a non-raid colony `p` in `state.planets`, uses `p` exclusively as the `SPY` launch origin (falling back to *Auto* only if the ID is absent from `state.planets`). If `p` currently has `0` stationed `s10`, holds `SPY` with `"[Hold: No Spy probes (s10) stationed on designated spy colony]"` and prioritizes building `s10` on `p` when `Weapons factory` (`b9 >= 1`) is unlocked.
@@ -336,6 +354,7 @@ When `P2` fleet actions are evaluated, candidate missions are emitted in strict 
 2. **`COLONIZE` (`s8` *Colony ship* — Confirmed `300+` Settlement)**:
    - Gated by `allocated_normal_planets < max_planets` (default `11` normal planets) and `allow_colonize=true` (plus stationed `s8` and no own fleet in transit during hold checks).
    - **Probed Non-Discarded Candidates Only**: Emits `COLONIZE` (`s8`) strictly on **probed, non-discarded** free slots confirmed to meet `uninhabited_fields >= min_colony_fields` (`300+` fields, graded `S` / `A+` by `grade_colony_candidate`), ranked by highest colony grade score, field count, and shortest distance.
+   - **Parallel Dispatch & Slot Priority**: Up to `min(open_planet_slots, max(1, total_stationed_s8))` distinct `COLONIZE` actions per tick (`[Parallel colony k/n]`). Fleet-slot priority is `SPY` (#1, `reserved_spy_slots`) -> `COLONIZE` (#2, `col_res` seats held against `ATTACK` / `RECYCLE`) -> `ATTACK` / `RECYCLE` (#3). Every dispatch, failure, kept roll, and deleted roll is logged in `colony_attempts` (see §4.5).
 3. **`ATTACK` (Zero-Rapidfire `1:1` Raid Simulator)**:
    - Simulated via `simulate_raid_outcome` & `score_raid_target` (`spaceinvasion/combat/fleet.py`):
      - Zero rapidfire (`1:1` targeting) with `+10%/lvl` `r8` (*Weapons*), `r9` (*Shield*), and `r10` (*Defense/Hull*) scaling, plus `s14` *Stealth bomber* pre-round turret suppression against non-dug-in defenses.
@@ -343,9 +362,80 @@ When `P2` fleet actions are evaluated, candidate missions are emitted in strict 
    - **Target Filter & Protection Cooldowns**: Raids **yellow inactives** (`>7d`) and **`Spacia`** AI planets by default (`1.15x` score bonus on overlooked distant `Spacia` with `dist > 1020`); includes **`light_red` active players inside AZ (`AZ ±2`) ONLY when `allow_pvp_in_az=true`**. Never targets ownerless non-Spacia coordinates. Enforces the **`3/24h` Bash cap** (yellow inactives & `Spacia` exempt unless server-blocked) and **`6h` (`21,600s`) server protection / `attackzone` / mission-unavailable cooldowns** (`blocked_until_ts`). Gated by `allow_raids=true`.
 4. **`RECYCLE` (`s11` *Recycler* — Debris Harvest)**:
    - Targets coordinates with `has_debris == True` when `Recycler` (`s11`) hulls are stationed on a non-raid colony, sorted **closest physical distance first** (`abs(Δgal)*20000 + abs(Δsys)*95 + abs(Δpos)*5`). Gated by `allow_raids` or `allow_galaxy_scan`.
-5. **`SCAN_GALAXY` & Background 100-Page 2D Galaxy Sweep**:
-   - **Spiral Recon (`SCAN_GALAXY`)**: Walks `[0, +1, -1, ..., ±R]` (`R = 15` systems default; `R = 25` when colonizing or tutorial-recycling) around non-raid colonies with an **`1800s` (`30m`) per-system cooldown** (`scanned_systems`), gated by `allow_galaxy_scan`.
-   - **Background 100-Page Sweep (`GameApiBridge.run_galaxy_sweep`)**: Periodically sweeps `galaxy_sweep_pages` (default **`100`** pages) every `galaxy_sweep_interval_seconds` (default **`270s`**, `<= 5 min`) across the 2D Galaxy map via `step_galaxy_system` (`si.navigate` XHR stepping), releasing `GameApiBridge._lock` between clicks, staying inside `< 24 views / 60s`, and pacing inter-page sleep as `max(0.2, galaxy_scan_click_delay_seconds + random.uniform(-galaxy_scan_click_jitter_seconds, +galaxy_scan_click_jitter_seconds))` (`galaxy_scan_click_delay_seconds = 1.5s`, `galaxy_scan_click_jitter_seconds = 0.6s`).
+5. **`SCAN_GALAXY` & Background Smart 2-Phase 2D Galaxy Sweep**:
+   - **Spiral Recon (`SCAN_GALAXY`)**: Single-system recon around non-raid colonies (`R = 15` systems default; `R = 25` when colonizing or tutorial-recycling) with an **`1800s` (`30m`) per-system cooldown** (`scanned_systems`), gated by `allow_galaxy_scan`. With `galaxy_scan_explore_first=true`, never-scanned systems are picked first, walking outward from the colony. Once nearby systems are covered, stale candidates are ranked by the same proximity (`galaxy_scan_near_weight`) and frequent-attack (`galaxy_scan_attack_weight`, from `raid_stats["history"]` + `raid_targets` owner counts) scoring as the background sweep (§5.6.1), not by raw age alone. Selection goes through `optimizer.select_planner_scan_system`, shared by the live `strategy.py` `_next_spiral_scan_action` and `optimizer.py` `_next_unscanned_system`. It returns `None` when every system within the radius is on the `30m` cooldown, leaving far-galaxy exploration to the background sweep. The GA simulation keeps the legacy spiral.
+   - **Background Smart Sweep (`GameApiBridge.run_galaxy_sweep`)**: Every `galaxy_sweep_interval_seconds` (default **`270s`**, `<= 5 min`), sweeps a batch of `galaxy_sweep_pages` (default **`100`**) `(galaxy, system)` sectors. The batch comes from `select_smart_galaxy_scan_batch` (§5.6.1). An explicit operator/test `start_system` override keeps the old contiguous walk. Each page is a `step_galaxy_system` (`si.navigate` XHR) step that releases `GameApiBridge._lock` between clicks, honors the `captcha_blocked` freeze gate, stays inside `< 24 views / 60s`, and sleeps `max(0.2, galaxy_scan_click_delay_seconds + random.uniform(-galaxy_scan_click_jitter_seconds, +galaxy_scan_click_jitter_seconds))` between pages (`galaxy_scan_click_delay_seconds = 1.5s`, `galaxy_scan_click_jitter_seconds = 0.6s`).
+
+#### 5.6.1 Smart 2-Phase Galaxy Scanner (Exploratory -> Weighted Sector Refresh)
+
+The background sweep and planner `SCAN_GALAXY` share one pure, deterministic ranking engine in [`spaceinvasion/combat/fleet.py`](../spaceinvasion/combat/fleet.py). It reads SQLite sector intelligence from [`spaceinvasion/db/storage.py`](../spaceinvasion/db/storage.py):
+
+| Layer | Function | Role |
+|---|---|---|
+| SQLite (read-only) | `GameDatabase.get_galaxy_sector_intel(*, galaxies=None, now_ts=None)` | Aggregates `galaxy_scans`, `galaxy_scan_history`, `galaxy_slots`, `spy_targets`, `raid_history`, and `battle_reports` into per-`"GG:SSS"` sector metrics, per-owner attack stats (`owner_attack_counts`, `owner_raid_stats`), and coverage (`explored_systems`, `unscanned_systems`, `total_systems`, `coverage_pct`). Strictly read-only. |
+| Distance | `galaxy_sector_distance(galaxy, system, own_colonies, *, systems_per_galaxy=400)` | Minimum circular system distance to any own non-raid colony, with a cross-galaxy penalty. |
+| Scoring | `score_galaxy_scan_sectors(...)` | Scores every system `1..400` in each active galaxy (`phase`, `score`, `importance`, `near_score`, `attack_score`, `secondary_score`, `staleness_factor`, `reason`). |
+| Batch | `select_smart_galaxy_scan_batch(..., batch_size=100, ...)` | Picks the top-`K` batch and returns `phase` / `scan_phase`, coverage counters, `exploratory_count`, `refresh_count`, `selected_sectors`, and `sample_targets`. Takes either SQLite `sector_intel` (runtime sweep) or in-memory `scanned_systems` / `raid_targets` / `raid_stats` (planner). |
+| Walk order | `order_sectors_for_smooth_walk(sectors, *, primary_colony_by_galaxy=None)` | Reorders the chosen batch along a forward circular arc per galaxy, starting after the largest gap, so `step_galaxy_system` never jumps back and forth. |
+
+**Active galaxies**: Every galaxy that holds at least one own non-raid colony. `total_systems = 400 x len(active_galaxies)` (or the number of in-radius systems when `max_radius` is set).
+
+##### Phase 1 — `"exploratory"` (Full Galaxy Coverage First)
+
+- **Enabled when** `galaxy_scan_explore_first = true` and `unscanned_systems > 0` (some system `1..400` in an active galaxy has `last_scanned_ts <= 0`).
+- **Ordering**: Unscanned systems sort by `(same-galaxy first, distance, ring offset (system - anchor_system) mod 400)`, where the anchor is the first own colony in that galaxy. Coverage grows outward from home and stays contiguous.
+- **Spare budget**: If fewer than `batch_size` unscanned systems remain, the rest of the page budget refreshes the highest-scoring already-scanned sectors (Phase 2 ranking). The exploratory and refresh slices are each smooth-walk ordered, exploratory first.
+- **Exit**: Once `explored_systems == total_systems` (`coverage_pct == 100.0`), every later batch is `"targeted_refresh"`.
+
+##### Phase 2 — `"targeted_refresh"` (Weighted Sector Refresh)
+
+Each `(g, s)` sector gets a `refresh_score` built from proximity, attack affinity, secondary farm value, and staleness. Weights are clamped: $w_{near}, w_{atk} \in [0, 20]$.
+
+1. **Proximity** (`galaxy_scan_near_weight`, default `2.0`):
+   $$d = \min_{c \in \text{colonies}} \begin{cases} \min(|s - s_c|,\ 400 - |s - s_c|) & g = g_c \\ 250 \cdot |g - g_c| + \min(|s - s_c|,\ 400 - |s - s_c|) & g \ne g_c \end{cases}$$
+   $$\text{near\_score} = 2.5 \cdot w_{near} \cdot \begin{cases} \dfrac{1}{1 + d/20} & \text{same galaxy as a colony} \\[4pt] \dfrac{0.15}{1 + d/200} & \text{otherwise} \end{cases}$$
+2. **Attack affinity** (`galaxy_scan_attack_weight`, default `3.0`), from SQLite player-affinity scoring:
+   - **Recency-decayed raid weight** per `raid_history` row: $\text{decay} = 0.25 + 0.75 \cdot e^{-\text{age}/7\text{d}}$. Old raids keep at least 25% of their weight.
+   - **Direct sector signal** (raids whose `target_coords` fall in `GG:SSS`):
+     $$\text{direct} = \ln\!\bigl(1 + \max(\textstyle\sum \text{decay},\ 0.6 \cdot n_{raids})\bigr), \qquad \text{loot} = 0.35 \cdot \ln\!\bigl(1 + \text{loot\_SpEq} / 5000\bigr)$$
+   - **Player-affinity signal**: Each raided coordinate is matched to its `owner` (via `spy_targets`, `galaxy_slots`, or the `battle_reports` defender). That gives universe-wide per-owner `raid_count` / `loot_spice_eq` (`owner_attack_counts`, `owner_raid_stats`), excluding own planets and NPC `Spacia`. **Every sector where a frequently attacked player owns planets gets boosted**, even if that exact sector was never raided:
+     $$\text{affinity} = \sum_{o \in \text{owners}(g,s),\ raids_o > 0} \Bigl(\ln(1 + raids_o) + 0.25 \cdot \ln\bigl(1 + \text{loot}_o / 10000\bigr)\Bigr) \cdot \bigl(1 + 0.35 \cdot \max(0,\ planets_o(g,s) - 1)\bigr)$$
+   - $$\text{attack\_score} = w_{atk} \cdot \bigl(1.6 \cdot \text{direct} + \text{loot} + 1.4 \cdot \text{affinity}\bigr)$$
+3. **Secondary target value**:
+   $$\text{secondary} = \min(3.0,\ 1.25 \cdot n_{debris}) + \min(2.5,\ 0.55 \cdot n_{inactive} + 0.75 \cdot n_{Spacia}) + \underbrace{\min(1.8,\ 0.45 \cdot n_{prime\_free} + 0.10 \cdot \min(6, n_{free}))}_{\text{only when } collect\_colonies}$$
+   `collect_colonies` is true only while `count_allocated_normal_planets < max_planets`. `n_prime_free` counts free `Pos 7–12` slots that can roll `300+` fields.
+4. **Staleness & final score**:
+   $$\text{importance} = 1 + \text{near\_score} + \text{attack\_score} + \text{secondary}, \qquad \text{staleness} = \frac{\max(60,\ \text{age}_s)}{1800}, \qquad \text{refresh\_score} = \text{importance} \times \text{staleness}$$
+   Never-scanned sectors (only possible when `galaxy_scan_explore_first=false`) use `age = 7 days`.
+5. **Freshness window**: Sectors scanned less than `min_freshness_seconds` (`120s`) ago are marked `is_fresh` and sort after every non-fresh sector. They are only picked when everything else is fresh too.
+6. **Selection**: Sort by `(is_fresh, -refresh_score, -importance, distance, galaxy, system)`, take the top `batch_size`, then reorder with `order_sectors_for_smooth_walk`. Because the score multiplies importance by staleness, near and frequently farmed sectors come back often, while low-value distant sectors still rotate in as they age.
+
+```mermaid
+flowchart TD
+    Intel["get_galaxy_sector_intel: galaxy_scans, scan_history, galaxy_slots, spy_targets, raid_history, battle_reports"] --> Cov{"galaxy_scan_explore_first AND unscanned_systems above 0?"}
+    Cov -->|"Yes"| Exp["Phase 1 exploratory: unscanned systems 1..400, same galaxy first, nearest colony outward"]
+    Exp --> Spare{"Batch budget left?"}
+    Spare -->|"Yes"| RefFill["Fill remaining pages with top targeted_refresh sectors"]
+    Spare -->|"No"| Walk
+    RefFill --> Walk
+    Cov -->|"No"| Score["Phase 2 targeted_refresh: importance = 1 + near_score + attack_score + secondary"]
+    Score --> Stale["refresh_score = importance x max(60, age) / 1800; fresh under 120s sorted last"]
+    Stale --> TopK["Top batch_size sectors (galaxy_sweep_pages)"]
+    TopK --> Walk["order_sectors_for_smooth_walk: forward circular arc per galaxy"]
+    Walk --> Sweep["run_galaxy_sweep: step_galaxy_system with delay + jitter, lock release, CAPTCHA gate, under 24 views per 60s"]
+```
+
+##### Telemetry (`galaxy_sweep` State, Dry-Run & Dashboard)
+
+`POST /command {"command": "galaxy_sweep", "dry_run": true}` and `GET /dashboard` (`galaxy_sweep`) report:
+
+| Field | Meaning |
+|---|---|
+| `scan_phase` | `"exploratory"` while unscanned systems remain (and `galaxy_scan_explore_first=true`), otherwise `"targeted_refresh"`. |
+| `explored_systems` / `total_systems` / `coverage_pct` | Systems with `last_scanned_ts > 0` across active galaxies, the `400 x galaxies` total, and the percentage. |
+| `sample_targets` | Top 5 planned `GG:SSS` sectors with `score` and a readable `reason` (e.g. `"unscanned sector (dist 3)"` or `"near d=4, raided 3x, freq-target Foo(5), age 2.1h"`). |
+
+The live values of `galaxy_scan_explore_first`, `galaxy_scan_near_weight`, and `galaxy_scan_attack_weight` are in `dashboard.config` and can be edited in `#view-config` under **3. Galaxy Scanner & Sweep Pacing** (`#cfg-galaxy_scan_explore_first`, `#cfg-galaxy_scan_near_weight`, `#cfg-galaxy_scan_attack_weight`).
 
 ---
 
@@ -393,6 +483,9 @@ All `StrategyConfig` parameters (`spaceinvasion/core/config.py`) map directly to
 | **3. Galaxy Scanner & Sweep Pacing** | `galaxy_sweep_interval_seconds` | `int = 270` (`30..86400`) | Base interval (`<= 5 min` default) between background 100-page Galaxy sweeps. |
 | **3. Galaxy Scanner & Sweep Pacing** | `galaxy_scan_click_delay_seconds` | `float = 1.5` (`0.2..60.0`) | Base inter-page delay (seconds, floored at `0.2s`) between `step_galaxy_system` clicks during 2D Galaxy sweeps. |
 | **3. Galaxy Scanner & Sweep Pacing** | `galaxy_scan_click_jitter_seconds` | `float = 0.6` (`0.0..30.0`) | Uniform `±jitter` seconds (`random.uniform(-jitter, +jitter)`) added around `galaxy_scan_click_delay_seconds` on each sweep page step (`max(0.2, base + delta)`). |
+| **3. Galaxy Scanner & Sweep Pacing** | `galaxy_scan_explore_first` | `bool = true` | **Phase 1 `"exploratory"`**: sweeps and `SCAN_GALAXY` cover every never-scanned system `1..400` in each colony galaxy (outward from the nearest colony) before revisiting any. When `explored_systems == total_systems`, or when this is `false`, they switch to the Phase 2 weighted refresh (§5.6.1). |
+| **3. Galaxy Scanner & Sweep Pacing** | `galaxy_scan_near_weight` | `float = 2.0` (`0.0..20.0`) | **Phase 2** proximity multiplier: `near_score = 2.5 * w * 1/(1 + d/20)` using circular system distance `d = min(|s - own_s|, 400 - |s - own_s|)` (cross-galaxy: `0.15/(1 + d/200)`). |
+| **3. Galaxy Scanner & Sweep Pacing** | `galaxy_scan_attack_weight` | `float = 3.0` (`0.0..20.0`) | **Phase 2** attack-history multiplier: `attack_score = w * (1.6 * direct + loot + 1.4 * affinity)`. It combines recency-decayed `raid_history` raids/loot in the sector with player affinity, so every sector holding planets of frequently attacked owners gets boosted. |
 | **3. Galaxy Scanner & Sweep Pacing** | `allow_colonize` | `bool = false` | Gates `executable_now` on `COLONIZE` (`s8`) missions to probed, non-discarded `>= min_colony_fields` (`300+`) slots. |
 | **4. Espionage, Raiding & Fleet Safety** | `reserved_spy_slots` | `int = 1` (`0..10`) | Fleet-base (`1 + b10`) flight slots (`eff_res = min(reserved_spy_slots, max(0, max_fleet_slots - 1))`) held exclusively for `SPY` when probes & targets are ready. |
 | **4. Espionage, Raiding & Fleet Safety** | `spy_dispatch_planet_id` | `int = 0` (`>= 0`, `0` = Auto) | Designated non-raid colony `planet_id` used exclusively to launch `SPY` probes (`0` auto-picks active/closest colony with `s10`). |

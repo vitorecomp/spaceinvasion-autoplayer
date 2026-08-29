@@ -897,6 +897,28 @@ CREATE TABLE IF NOT EXISTS manual_queue_events (
 );
 CREATE INDEX IF NOT EXISTS idx_manual_queue_events_qid_ts
     ON manual_queue_events(queue_id, ts);
+
+CREATE TABLE IF NOT EXISTS colony_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    event_type TEXT NOT NULL,
+    target_coords TEXT NOT NULL,
+    origin_coords TEXT NOT NULL DEFAULT '',
+    planet_id INTEGER,
+    fields_rolled INTEGER,
+    min_fields_target INTEGER NOT NULL DEFAULT 300,
+    expected_min_fields INTEGER,
+    expected_max_fields INTEGER,
+    temperature INTEGER,
+    grade TEXT NOT NULL DEFAULT '',
+    score INTEGER,
+    status_message TEXT NOT NULL DEFAULT '',
+    details_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_colony_attempts_coords_ts
+    ON colony_attempts(target_coords, ts);
+CREATE INDEX IF NOT EXISTS idx_colony_attempts_ts
+    ON colony_attempts(ts);
 """ + SCHEMA_LEDGER_DDL
 
 
@@ -3003,6 +3025,13 @@ class GameDatabase:
             has_spy = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets")
             has_raids = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "raid_history")
             has_battles = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "battle_reports")
+            has_psnaps = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "planet_snapshots")
+
+            own_psnap_rows = (
+                self._conn.execute("SELECT DISTINCT coords FROM planet_snapshots WHERE coords != ''").fetchall()
+                if has_psnaps
+                else []
+            )
 
             scan_rows = (
                 self._conn.execute(
@@ -3099,6 +3128,11 @@ class GameDatabase:
             if not m_c:
                 return None
             return (nc, int(m_c.group(1)), int(m_c.group(2)), int(m_c.group(3)))
+
+        for r in own_psnap_rows:
+            parsed = _parse_norm_gsp(r["coords"])
+            if parsed is not None:
+                own_coords.add(parsed[0])
 
         for r in spy_rows:
             parsed = _parse_norm_gsp(r["coords"])
@@ -6099,6 +6133,7 @@ class GameDatabase:
             "recycle_reports",
             "manual_queue",
             "manual_queue_events",
+            "colony_attempts",
             "schema_migrations",
             "schema_migration_events",
         )
@@ -6614,3 +6649,260 @@ class GameDatabase:
                 )
             )
         return out
+
+    @staticmethod
+    def _row_to_colony_attempt_dict(r: sqlite3.Row) -> dict[str, Any]:
+        raw_tc = _raw_text(r["target_coords"], "").strip()
+        norm_tc = normalize_coords(raw_tc) if raw_tc else ""
+        raw_oc = _raw_text(r["origin_coords"], "").strip()
+        norm_oc = normalize_coords(raw_oc) if raw_oc else ""
+        pid_opt = _safe_optional_int(r["planet_id"]) if r["planet_id"] is not None else None
+        f_rolled_opt = _safe_optional_int(r["fields_rolled"]) if r["fields_rolled"] is not None else None
+        min_f_tgt = max(1, _safe_int(r["min_fields_target"], 300))
+        exp_min_opt = _safe_optional_int(r["expected_min_fields"]) if r["expected_min_fields"] is not None else None
+        exp_max_opt = _safe_optional_int(r["expected_max_fields"]) if r["expected_max_fields"] is not None else None
+        temp_opt = _safe_optional_int(r["temperature"]) if r["temperature"] is not None else None
+        score_opt = _safe_optional_int(r["score"]) if r["score"] is not None else None
+        return _sanitize_obj(
+            {
+                "id": game_data.cap_json_int(_safe_int(r["id"], 0)),
+                "ts": _safe_float(r["ts"], 0.0),
+                "event_type": _sanitize_text(r["event_type"] or "").strip().lower(),
+                "target_coords": norm_tc,
+                "origin_coords": norm_oc,
+                "planet_id": game_data.cap_json_int(pid_opt) if pid_opt is not None else None,
+                "fields_rolled": game_data.cap_json_int(f_rolled_opt) if f_rolled_opt is not None else None,
+                "min_fields_target": game_data.cap_json_int(min_f_tgt),
+                "expected_min_fields": game_data.cap_json_int(exp_min_opt) if exp_min_opt is not None else None,
+                "expected_max_fields": game_data.cap_json_int(exp_max_opt) if exp_max_opt is not None else None,
+                "temperature": game_data.cap_json_int(temp_opt) if temp_opt is not None else None,
+                "grade": _sanitize_text(r["grade"] or "").strip(),
+                "score": game_data.cap_json_int(score_opt) if score_opt is not None else None,
+                "status_message": _sanitize_text(r["status_message"] or ""),
+                "details": _safe_json_dict(r["details_json"]),
+            }
+        )
+
+    def record_colony_attempt(
+        self,
+        *,
+        target_coords: str,
+        event_type: str,
+        origin_coords: str = "",
+        planet_id: Optional[int] = None,
+        fields_rolled: Optional[int] = None,
+        min_fields_target: int = 300,
+        expected_min_fields: Optional[int] = None,
+        expected_max_fields: Optional[int] = None,
+        temperature: Optional[int] = None,
+        grade: str = "",
+        score: Optional[int] = None,
+        status_message: str = "",
+        details: Optional[Mapping[str, Any]] = None,
+        ts: Optional[float] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Append a colonization trial event (`dispatched`, `settled`, `kept`, `deleted_undersized`, `failed`)."""
+        norm_tc = normalize_coords(_raw_text(target_coords, "").strip())
+        if not norm_tc:
+            return None
+        raw_oc = _raw_text(origin_coords, "").strip()
+        norm_oc = normalize_coords(raw_oc) if raw_oc else ""
+        ev_type = _sanitize_text(event_type).strip().lower()[:40] or "dispatched"
+        eff_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        pid_i = _sql_optional_int(planet_id)
+        f_rolled_i = _sql_optional_int(fields_rolled)
+        min_tgt_i = max(1, _sql_int(min_fields_target, 300))
+        exp_min_i = _sql_optional_int(expected_min_fields)
+        exp_max_i = _sql_optional_int(expected_max_fields)
+        temp_i = _sql_optional_int(temperature)
+        grade_s = _sanitize_text(grade).strip()[:16]
+        score_i = _sql_optional_int(score)
+        msg_s = _sanitize_text(status_message).strip()[:400]
+        details_json = _json_dumps(dict(details) if isinstance(details, Mapping) else {})
+
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "colony_attempts"):
+                return None
+            cur = self._conn.execute(
+                """
+                INSERT INTO colony_attempts(
+                    ts, event_type, target_coords, origin_coords, planet_id,
+                    fields_rolled, min_fields_target, expected_min_fields, expected_max_fields,
+                    temperature, grade, score, status_message, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    eff_ts,
+                    ev_type,
+                    norm_tc,
+                    norm_oc,
+                    pid_i,
+                    f_rolled_i,
+                    min_tgt_i,
+                    exp_min_i,
+                    exp_max_i,
+                    temp_i,
+                    grade_s,
+                    score_i,
+                    msg_s,
+                    details_json,
+                ),
+            )
+            row_id = int(cur.lastrowid or 0)
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT * FROM colony_attempts WHERE id = ? LIMIT 1",
+                (row_id,),
+            ).fetchone()
+        return self._row_to_colony_attempt_dict(row) if row is not None else None
+
+    def get_colony_attempts(
+        self,
+        *,
+        limit: int = 100,
+        target_coords: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Read colonization trial history ordered newest first (`ts DESC, id DESC`)."""
+        lim = max(1, min(2000, _sql_int(limit, 100)))
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "colony_attempts"):
+                return []
+            if target_coords is not None and _raw_text(target_coords, "").strip():
+                _, variants, _ = _coord_query_candidates(target_coords)
+                if not variants:
+                    return []
+                ph = ", ".join("?" for _ in variants)
+                rows = self._conn.execute(
+                    f"""
+                    SELECT * FROM colony_attempts
+                    WHERE target_coords IN ({ph})
+                    ORDER BY ts DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (*variants, lim),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT * FROM colony_attempts
+                    ORDER BY ts DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (lim,),
+                ).fetchall()
+        return [self._row_to_colony_attempt_dict(r) for r in rows]
+
+    def get_colony_attempts_summary(self) -> dict[str, Any]:
+        """Aggregate append-only `colony_attempts` into KPI counters and per-coordinate trial summaries."""
+        empty_summary: dict[str, Any] = {
+            "total_events": 0,
+            "unique_coords_tried": 0,
+            "dispatched_count": 0,
+            "deleted_undersized_count": 0,
+            "kept_count": 0,
+            "failed_count": 0,
+            "by_coords": {},
+        }
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "colony_attempts"):
+                return _sanitize_obj(empty_summary)
+            rows = self._conn.execute(
+                """
+                SELECT * FROM colony_attempts
+                ORDER BY ts ASC, id ASC
+                """
+            ).fetchall()
+
+        total_events = 0
+        dispatched_count = 0
+        deleted_undersized_count = 0
+        kept_count = 0
+        failed_count = 0
+        by_coords: dict[str, dict[str, Any]] = {}
+        pending_dispatch_by_coords: dict[str, bool] = {}
+
+        for r in rows:
+            raw_tc = _raw_text(r["target_coords"], "").strip()
+            norm_tc = normalize_coords(raw_tc) if raw_tc else ""
+            if not norm_tc:
+                continue
+            total_events += 1
+            ev = _sanitize_text(r["event_type"] or "").strip().lower()
+            ts_val = _safe_float(r["ts"], 0.0)
+            f_rolled = _safe_optional_int(r["fields_rolled"]) if r["fields_rolled"] is not None else None
+            temp_val = _safe_optional_int(r["temperature"]) if r["temperature"] is not None else None
+            orig_c = normalize_coords(_raw_text(r["origin_coords"], "").strip()) if r["origin_coords"] else ""
+            msg_s = _sanitize_text(r["status_message"] or "")
+
+            c_entry = by_coords.get(norm_tc)
+            if c_entry is None:
+                c_entry = {
+                    "coords": norm_tc,
+                    "attempts_count": 0,
+                    "events_count": 0,
+                    "dispatched_count": 0,
+                    "deleted_count": 0,
+                    "kept_count": 0,
+                    "failed_count": 0,
+                    "last_event_type": "",
+                    "last_fields_rolled": None,
+                    "last_temperature": None,
+                    "last_origin_coords": "",
+                    "last_status_message": "",
+                    "last_ts": 0.0,
+                }
+                by_coords[norm_tc] = c_entry
+
+            c_entry["events_count"] += 1
+            if ev == "dispatched":
+                dispatched_count += 1
+                c_entry["dispatched_count"] += 1
+                c_entry["attempts_count"] += 1
+                pending_dispatch_by_coords[norm_tc] = True
+            elif ev in ("deleted_undersized", "deleted", "abandoned", "undersized"):
+                deleted_undersized_count += 1
+                c_entry["deleted_count"] += 1
+                if pending_dispatch_by_coords.get(norm_tc, False):
+                    pending_dispatch_by_coords[norm_tc] = False
+                else:
+                    c_entry["attempts_count"] += 1
+            elif ev in ("kept", "settled", "settled_kept"):
+                kept_count += 1
+                c_entry["kept_count"] += 1
+                if pending_dispatch_by_coords.get(norm_tc, False):
+                    pending_dispatch_by_coords[norm_tc] = False
+                else:
+                    c_entry["attempts_count"] += 1
+            elif ev in ("failed", "aborted", "blocked", "error"):
+                failed_count += 1
+                c_entry["failed_count"] += 1
+                if pending_dispatch_by_coords.get(norm_tc, False):
+                    pending_dispatch_by_coords[norm_tc] = False
+                else:
+                    c_entry["attempts_count"] += 1
+            else:
+                if not pending_dispatch_by_coords.get(norm_tc, False):
+                    c_entry["attempts_count"] += 1
+
+            c_entry["last_event_type"] = ev
+            if f_rolled is not None:
+                c_entry["last_fields_rolled"] = game_data.cap_json_int(f_rolled)
+            if temp_val is not None:
+                c_entry["last_temperature"] = game_data.cap_json_int(temp_val)
+            if orig_c:
+                c_entry["last_origin_coords"] = orig_c
+            if msg_s:
+                c_entry["last_status_message"] = msg_s
+            c_entry["last_ts"] = max(float(c_entry["last_ts"]), ts_val)
+
+        return _sanitize_obj(
+            {
+                "total_events": game_data.cap_json_int(total_events),
+                "unique_coords_tried": game_data.cap_json_int(len(by_coords)),
+                "dispatched_count": game_data.cap_json_int(dispatched_count),
+                "deleted_undersized_count": game_data.cap_json_int(deleted_undersized_count),
+                "kept_count": game_data.cap_json_int(kept_count),
+                "failed_count": game_data.cap_json_int(failed_count),
+                "by_coords": by_coords,
+            }
+        )

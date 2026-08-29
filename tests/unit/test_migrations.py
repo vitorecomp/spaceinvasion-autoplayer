@@ -541,7 +541,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
     def test_v009_universe_research_max_monotonic_ledger_and_append_only_history(self) -> None:
         from spaceinvasion.combat.fleet import SpyReport
 
-        self.assertEqual(LATEST_SCHEMA_VERSION, 10)
+        self.assertEqual(LATEST_SCHEMA_VERSION, 11)
         with tempfile.TemporaryDirectory(prefix="si_mig_v9_") as tmp:
             db_path = Path(tmp) / "v9.db"
             db_v8 = GameDatabase(db_path, attack_history_path="", target_schema_version=8)
@@ -601,6 +601,53 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 self.assertGreaterEqual(db_v8.summary()["counts"]["universe_research_max_history"], 2)
             finally:
                 db_v8.close()
+
+    def test_v011_colony_attempts_staged_guard_and_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="si_mig_v11_") as tmp:
+            db_path = Path(tmp) / "v11.db"
+            db = GameDatabase(db_path, attack_history_path="", target_schema_version=10)
+            try:
+                self.assertEqual(db.get_schema_version()["version"], 10)
+                # Guarded gracefully when pinned at V010 before V011 table exists
+                self.assertIsNone(
+                    db.record_colony_attempt(
+                        target_coords="02:150:08",
+                        event_type="dispatched",
+                        origin_coords="02:150:05",
+                    )
+                )
+                self.assertEqual(db.get_colony_attempts(), [])
+                self.assertEqual(db.get_colony_attempts_summary()["total_events"], 0)
+
+                mig11 = db.run_migrations(target_version=11, backup=True)
+                self.assertEqual(mig11["version"], 11)
+                self.assertTrue(mig11["up_to_date"])
+                chk = db.verify_schema(full_integrity=True)
+                self.assertTrue(chk["ok"], chk)
+
+                ins = db.record_colony_attempt(
+                    target_coords="2:150:8",
+                    event_type="deleted_undersized",
+                    origin_coords="2:150:5",
+                    planet_id=9901,
+                    fields_rolled=214,
+                    min_fields_target=300,
+                    expected_min_fields=180,
+                    expected_max_fields=340,
+                    temperature=35,
+                    grade="S",
+                    score=92,
+                    status_message="Deleted undersized colony (214 < 300 fields)",
+                    details={"action": "ABANDON_COLONY"},
+                    ts=1_750_000_100.0,
+                )
+                self.assertIsNotNone(ins)
+                assert ins is not None
+                self.assertEqual(ins["target_coords"], "02:150:08")
+                self.assertEqual(ins["fields_rolled"], 214)
+                self.assertEqual(db.summary()["counts"]["colony_attempts"], 1)
+            finally:
+                db.close()
 
 
 if __name__ == "__main__":

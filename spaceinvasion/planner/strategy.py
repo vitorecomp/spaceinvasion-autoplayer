@@ -1529,6 +1529,24 @@ def _plan_combat_and_raid_actions(
         )
     )
     has_colony_ship = colony_planet is not None
+    # Parallel colonization: stationed Colony ships (s8) pool (colony_planet first) + queued s8 in shipyards
+    s8_pool: list[list[Any]] = []
+    for p_s8 in ([colony_planet] if colony_planet is not None else []) + list(state.planets):
+        if p_s8 is None or _norm_planet_type(p_s8) == "raid" or p_s8.planet_id in undersized_pids_combat:
+            continue
+        if any(e[0].planet_id == p_s8.planet_id for e in s8_pool):
+            continue
+        cnt_s8 = max(0, _safe_strategy_int(p_s8.ships.get("s8", 0), 0))
+        if cnt_s8 > 0:
+            s8_pool.append([p_s8, cnt_s8])
+    total_stationed_s8 = sum(int(e[1]) for e in s8_pool)
+    queued_s8 = sum(
+        1
+        for q in (state.active_queues or ())
+        if _safe_strategy_str(getattr(q, "category", "")).lower() in ("ship", "shipyard")
+        and "colony ship" in _safe_strategy_str(getattr(q, "name", "")).lower()
+    )
+    res_spy_cfg_pre = max(0, _safe_strategy_int(getattr(cfg, "reserved_spy_slots", 1), 1))
     raid_targets = getattr(state, "raid_targets", ()) or ()
     _fleet_pre = _get_fleet()
     own_coords_pre = {_fleet_pre.normalize_coords(p.coords) for p in state.planets}
@@ -1733,7 +1751,6 @@ def _plan_combat_and_raid_actions(
         want_colonize
         and cfg.allow_colonize
         and not tutorial_colonize_pending
-        and not has_colony_ship
         and not has_hostile_alert
     ):
         wf_col_candidates = [
@@ -1743,59 +1760,77 @@ def _plan_combat_and_raid_actions(
             and _norm_planet_type(p) != "raid"
             and p.building_level(WEAPONS_FACTORY) >= 1
         ]
-        if wf_col_candidates:
-            wf_col_candidates.sort(
-                key=lambda p: (
-                    0
-                    if not game_data.missing_prerequisites(
-                        "ships",
-                        "colony-ship",
-                        buildings=p.buildings,
-                        researches=state.researches or {},
-                    )
-                    else 1,
-                    0 if p.planet_id == active.planet_id else 1,
-                    -p.building_level(WEAPONS_FACTORY),
+    else:
+        wf_col_candidates = []
+    if wf_col_candidates:
+        # Build enough s8 for parallel colonization: stationed + queued + in-flight < min(open planets, usable slots)
+        ref_s8_p = colony_planet or next(iter(wf_col_candidates))
+        max_slots_s8 = 1 + max(0, ref_s8_p.building_level(FLEET_BASE))
+        spy_res_s8 = (
+            min(res_spy_cfg_pre, max(0, max_slots_s8 - 1))
+            if _safe_strategy_int(ref_s8_p.ships.get("s10", 0), 0) > 0
+            else 0
+        )
+        s8_target = min(needed_colonies, max(1, max_slots_s8 - spy_res_s8))
+        if total_stationed_s8 + queued_s8 + len(in_flight_col_coords) >= s8_target:
+            wf_col_candidates = []
+    if wf_col_candidates:
+        wf_col_candidates.sort(
+            key=lambda p: (
+                0
+                if not game_data.missing_prerequisites(
+                    "ships",
+                    "colony-ship",
+                    buildings=p.buildings,
+                    researches=state.researches or {},
                 )
+                else 1,
+                0 if p.planet_id == active.planet_id else 1,
+                -p.building_level(WEAPONS_FACTORY),
             )
-            wf_col_p = wf_col_candidates[0]
-            unmet_s8_p = game_data.missing_prerequisites(
-                "ships",
-                "colony-ship",
-                buildings=wf_col_p.buildings,
-                researches=state.researches or {},
+        )
+        wf_col_p = wf_col_candidates[0]
+        unmet_s8_p = game_data.missing_prerequisites(
+            "ships",
+            "colony-ship",
+            buildings=wf_col_p.buildings,
+            researches=state.researches or {},
+        )
+        s8_offers = _ship_offer_map(wf_col_p)
+        s8_off = s8_offers.get(8)
+        s8_cost = (
+            s8_off.cost
+            if (s8_off is not None and not s8_off.cost.is_zero())
+            else _resources_from_dict((game_data.SHIPS.get("colony-ship") or {}).get("base_cost", {}))
+        )
+        s8_can = bool(
+            cfg.allow_shipyard
+            and not unmet_s8_p
+            and wf_col_p.resources.can_afford(s8_cost)
+            and (s8_off is None or s8_off.can_build)
+        )
+        s8_reason = f"Build Colony ship (s8) to colonize a {min_colony_fields}+ field planet"
+        if total_stationed_s8 + queued_s8 + len(in_flight_col_coords) > 0:
+            s8_reason += (
+                f" ({total_stationed_s8 + queued_s8 + len(in_flight_col_coords)}/{s8_target} s8 for parallel colonization)"
             )
-            s8_offers = _ship_offer_map(wf_col_p)
-            s8_off = s8_offers.get(8)
-            s8_cost = (
-                s8_off.cost
-                if (s8_off is not None and not s8_off.cost.is_zero())
-                else _resources_from_dict((game_data.SHIPS.get("colony-ship") or {}).get("base_cost", {}))
-            )
-            s8_can = bool(
-                cfg.allow_shipyard
-                and not unmet_s8_p
-                and wf_col_p.resources.can_afford(s8_cost)
-                and (s8_off is None or s8_off.can_build)
-            )
-            s8_reason = f"Build Colony ship (s8) to colonize a {min_colony_fields}+ field planet"
-            if unmet_s8_p:
-                s8_reason += f" [Hold: Prerequisites unmet ({unmet_s8_p[0]['name']} L{unmet_s8_p[0]['required']})]"
-            elif not cfg.allow_shipyard:
-                s8_reason += " [Hold: allow_shipyard=false in Config]"
-            colony_ship_build_act = PlannedAction(
-                priority="P1",
-                kind="BUILD_SHIP",
-                planet_id=wf_col_p.planet_id,
-                planet_coords=_safe_strategy_str(wf_col_p.coords),
-                target_id=8,
-                target_name=(_safe_strategy_str(s8_off.name) if (s8_off is not None and s8_off.name) else "") or "Colony ship",
-                target_level=1,
-                cost=s8_cost,
-                missing=wf_col_p.resources.missing(s8_cost),
-                reason=s8_reason,
-                executable_now=s8_can,
-            )
+        if unmet_s8_p:
+            s8_reason += f" [Hold: Prerequisites unmet ({unmet_s8_p[0]['name']} L{unmet_s8_p[0]['required']})]"
+        elif not cfg.allow_shipyard:
+            s8_reason += " [Hold: allow_shipyard=false in Config]"
+        colony_ship_build_act = PlannedAction(
+            priority="P1",
+            kind="BUILD_SHIP",
+            planet_id=wf_col_p.planet_id,
+            planet_coords=_safe_strategy_str(wf_col_p.coords),
+            target_id=8,
+            target_name=(_safe_strategy_str(s8_off.name) if (s8_off is not None and s8_off.name) else "") or "Colony ship",
+            target_level=1,
+            cost=s8_cost,
+            missing=wf_col_p.resources.missing(s8_cost),
+            reason=s8_reason,
+            executable_now=s8_can,
+        )
 
     for raw in raid_targets:
         if not isinstance(raw, Mapping):
@@ -1906,10 +1941,9 @@ def _plan_combat_and_raid_actions(
                 if norm_coords in in_flight_col_coords:
                     continue
                 col_exec_planet = colony_planet if colony_planet is not None else origin
-                max_col_slots = 1 + max(0, col_exec_planet.building_level(FLEET_BASE))
                 hold_col_inflight = bool(tutorial_colonize_pending and in_flight_col_coords)
-                hold_col_slots = (used_fleet_slots >= max_col_slots) or hold_col_inflight
-                can_exec_col = bool(cfg.allow_colonize and has_colony_ship and not hold_col_slots)
+                # Fleet-slot gating (SPY reservation #1, parallel dispatch index) is applied after the loop
+                can_exec_col = bool(cfg.allow_colonize and has_colony_ship and not hold_col_inflight)
                 col_prefix = "Tutorial colonize: " if tutorial_colonize_pending else ""
                 f_disp = str(grade_info.get("fields_display") or (f"{uf} fields" if uf is not None else f"{cmax_col} fields"))
                 eff_f_sort = int(uf if uf is not None else (cmax_col or 0))
@@ -1921,8 +1955,6 @@ def _plan_combat_and_raid_actions(
                     col_reason += " [Hold: Build Colony ship (s8) first]"
                 elif hold_col_inflight:
                     col_reason += " [Hold: Colony ship already in transit]"
-                elif used_fleet_slots >= max_col_slots:
-                    col_reason += f" [Hold: Fleet slots full ({used_fleet_slots}/{max_col_slots} in flight)]"
                 elif not cfg.allow_colonize:
                     col_reason += " [Hold: allow_colonize=false in Config]"
                 colonize_actions.append(
@@ -2220,22 +2252,61 @@ def _plan_combat_and_raid_actions(
                     base_planets.append(p)
         colonies = [(p, *_parse_gal_sys_pos(p.coords)[:2]) for p in base_planets]
         max_radius = 25 if (tutorial_recycle_pending or want_colonize) else 15
-        offsets = [0] + [off for d in range(1, max_radius + 1) for off in (d, -d)]
 
+        # Smart 2-phase selection: (1) never-scanned systems outward from colonies, then (2) stale systems ranked
+        # by proximity (`galaxy_scan_near_weight`) + frequent-attack sector/owner history (`galaxy_scan_attack_weight`).
         chosen: Optional[tuple[PlanetState, int, int]] = None
-        for off in offsets:
-            for col_p, col_gal, col_sys in colonies:
-                cand_sys = col_sys + off
-                if not (1 <= cand_sys <= 400):
-                    continue
-                skey = f"{col_gal:02d}:{cand_sys:03d}"
-                prev_ts = scanned_map.get(skey)
-                if prev_ts is not None and (ref_now - prev_ts) < scan_cooldown_s:
-                    continue
-                chosen = (col_p, col_gal, cand_sys)
-                break
-            if chosen is not None:
-                break
+        smart_note = ""
+        try:
+            from spaceinvasion.planner.optimizer import select_planner_scan_system
+
+            hist_stats = next(
+                (
+                    rs
+                    for rs in stats_sources
+                    if isinstance(rs.get("history"), Sequence) and not isinstance(rs.get("history"), (str, bytes))
+                ),
+                stats_sources[0] if stats_sources else None,
+            )
+            pick = select_planner_scan_system(
+                [_safe_strategy_str(p.coords) for p in base_planets],
+                scanned_systems=scanned_map,
+                raid_targets=[r for r in raid_targets if isinstance(r, Mapping)],
+                raid_stats=hist_stats,
+                cfg=cfg,
+                radius=max_radius,
+                now_ts=ref_now if ref_now > 0.0 else None,
+                cooldown_s=scan_cooldown_s,
+            )
+        except Exception:  # pragma: no cover - defensive fallback to legacy spiral below
+            pick = None
+        if pick is not None:
+            p_gal, p_sys = int(pick["galaxy"]), int(pick["system"])
+            best_col = min(
+                colonies,
+                key=lambda c: (
+                    0 if c[1] == p_gal else 1,
+                    min(abs(c[2] - p_sys), 400 - abs(c[2] - p_sys)),
+                ),
+            )
+            chosen = (best_col[0], p_gal, p_sys)
+            phase_lbl = "explore" if pick.get("phase") == "exploratory" else "refresh"
+            smart_note = f" [{phase_lbl}: {_safe_strategy_str(pick.get('reason'))}]"
+        else:
+            offsets = [0] + [off for d in range(1, max_radius + 1) for off in (d, -d)]
+            for off in offsets:
+                for col_p, col_gal, col_sys in colonies:
+                    cand_sys = col_sys + off
+                    if not (1 <= cand_sys <= 400):
+                        continue
+                    skey = f"{col_gal:02d}:{cand_sys:03d}"
+                    prev_ts = scanned_map.get(skey)
+                    if prev_ts is not None and (ref_now - prev_ts) < scan_cooldown_s:
+                        continue
+                    chosen = (col_p, col_gal, cand_sys)
+                    break
+                if chosen is not None:
+                    break
 
         if chosen is None:
             return None
@@ -2257,49 +2328,94 @@ def _plan_combat_and_raid_actions(
             planet_id=scan_planet.planet_id,
             planet_coords=_safe_strategy_str(scan_planet.coords),
             target_name=f"Galaxy [{gal_num:02d}:{sys_num:03d}]",
-            reason=f"Scan system {gal_num:02d}:{sys_num:03d} for yellow inactive / Spacia raid targets{tut_hint}{scan_note}",
+            reason=f"Scan system {gal_num:02d}:{sys_num:03d} for yellow inactive / Spacia raid targets{tut_hint}{smart_note}{scan_note}",
             executable_now=bool(cfg.allow_galaxy_scan),
         )
 
-    # Enforce max_fleet_slots (`1 + b10`), Colony ship slot priority, and `reserved_spy_slots` on lower-priority missions
+    # Strict fleet priority: SPY (#1) -> parallel COLONIZE (#2) -> ATTACK / RECYCLE (#3).
+    # `reserved_spy_slots` protects SPY seats from ALL non-SPY missions (including COLONIZE); parallel COLONIZE
+    # flights reserve their slots against ATTACK / RECYCLE. Max fleet slots = `1 + b10`.
     res_spy_cfg = max(0, _safe_strategy_int(getattr(cfg, "reserved_spy_slots", 1), 1))
     all_spy_planet_ids = {
         sa.planet_id
         for _, sa in [*spy_actions, *colony_spy_actions]
         if sa.executable_now or (cfg.allow_galaxy_scan or cfg.allow_colonize)
     }
-    col_ready_planet_ids = {
-        ca.planet_id
-        for _, ca in colonize_actions
-        if cfg.allow_colonize and has_colony_ship
-    }
+    planet_by_id = {p.planet_id: p for p in state.planets}
 
-    def _gate_non_spy_slot(act: PlannedAction) -> PlannedAction:
-        p_obj = next((p for p in state.planets if p.planet_id == act.planet_id), origin)
-        max_p_slots = 1 + max(0, p_obj.building_level(FLEET_BASE))
-        if used_fleet_slots >= max_p_slots:
-            rsn = act.reason
-            if "in flight" not in rsn.lower() and "in transit" not in rsn.lower():
-                rsn = f"{rsn} [Hold: Fleet slots full ({used_fleet_slots}/{max_p_slots} in flight)]"
-            return replace(act, executable_now=False, reason=rsn) if act.executable_now or rsn != act.reason else act
-        if act.kind == "COLONIZE":
-            return act
-        col_res = 1 if (p_obj.planet_id in col_ready_planet_ids and max_p_slots > 1) else 0
+    def _max_slots_for(p_obj: PlanetState) -> int:
+        return 1 + max(0, p_obj.building_level(FLEET_BASE))
+
+    def _spy_res_for(p_obj: PlanetState) -> int:
         has_spy_demand_p = (
             res_spy_cfg > 0
             and _safe_strategy_int(p_obj.ships.get("s10", 0), 0) > 0
             and p_obj.planet_id in all_spy_planet_ids
         )
-        eff_res = min(res_spy_cfg, max(0, max_p_slots - 1 - col_res)) if has_spy_demand_p else 0
-        if col_res > 0 and used_fleet_slots >= max_p_slots - col_res:
-            rsn = act.reason
-            if "reserved for colony" not in rsn.lower():
-                rsn = (
-                    f"{rsn} [Hold: Fleet slot reserved for Colony ship "
-                    f"({used_fleet_slots}/{max_p_slots} in flight)]"
+        return min(res_spy_cfg, max(0, _max_slots_for(p_obj) - 1)) if has_spy_demand_p else 0
+
+    # Parallel COLONIZE: up to min(remaining planet slots, stationed s8) distinct top-graded candidates, each
+    # assigned to a planet with a stationed Colony ship and gated by SPY reservation + in-tick dispatch index.
+    colonize_actions.sort(key=lambda item: item[0])
+    n_col_dispatch = min(open_colony_slots, max(1, total_stationed_s8))
+    pool_left = [[e[0], int(e[1])] for e in s8_pool]
+    col_dispatch_idx = 0
+    col_count_by_planet: dict[int, int] = {}
+    selected_colonize: list[tuple[tuple[int, int, int, int, int], PlannedAction]] = []
+    for sk_c, act_c in colonize_actions:
+        if len(selected_colonize) >= n_col_dispatch:
+            break
+        assign = next((e for e in pool_left if e[1] > 0), None)
+        if assign is not None:
+            assign[1] -= 1
+            exec_p = assign[0]
+            act_c = replace(act_c, planet_id=exec_p.planet_id, planet_coords=_safe_strategy_str(exec_p.coords))
+        else:
+            exec_p = planet_by_id.get(act_c.planet_id, origin)
+        max_c = _max_slots_for(exec_p)
+        spy_res_c = _spy_res_for(exec_p)
+        slot_idx = used_fleet_slots + col_dispatch_idx
+        rsn_c = act_c.reason
+        can_c = bool(act_c.executable_now and assign is not None)
+        if can_c and slot_idx >= max_c:
+            can_c = False
+            if "in flight" not in rsn_c.lower():
+                rsn_c += f" [Hold: Fleet slots full ({slot_idx}/{max_c} in flight)]"
+        elif can_c and slot_idx >= max_c - spy_res_c:
+            can_c = False
+            if "reserved for spy" not in rsn_c.lower():
+                rsn_c += (
+                    f" [Hold: Fleet slot reserved for Spy probes ({slot_idx}/{max_c} in flight, {spy_res_c} reserved)]"
                 )
+        if n_col_dispatch > 1:
+            rsn_c += f" [Parallel colony {len(selected_colonize) + 1}/{n_col_dispatch}]"
+        if can_c:
+            col_dispatch_idx += 1
+        if cfg.allow_colonize and assign is not None:
+            col_count_by_planet[exec_p.planet_id] = col_count_by_planet.get(exec_p.planet_id, 0) + 1
+        selected_colonize.append(
+            ((0 if can_c else 1, *sk_c[1:]), replace(act_c, executable_now=can_c, reason=rsn_c))
+        )
+    colonize_actions = selected_colonize
+    col_res_by_planet: dict[int, int] = {}
+    for pid_c, n_c in col_count_by_planet.items():
+        p_c = planet_by_id.get(pid_c)
+        if p_c is None:
+            continue
+        s8_here = max(0, _safe_strategy_int(p_c.ships.get("s8", 0), 0))
+        col_res_by_planet[pid_c] = min(n_c, open_colony_slots, s8_here, max(0, _max_slots_for(p_c) - _spy_res_for(p_c)))
+
+    def _gate_non_spy_slot(act: PlannedAction) -> PlannedAction:
+        p_obj = planet_by_id.get(act.planet_id, origin)
+        max_p_slots = _max_slots_for(p_obj)
+        if used_fleet_slots >= max_p_slots:
+            rsn = act.reason
+            if "in flight" not in rsn.lower() and "in transit" not in rsn.lower():
+                rsn = f"{rsn} [Hold: Fleet slots full ({used_fleet_slots}/{max_p_slots} in flight)]"
             return replace(act, executable_now=False, reason=rsn) if act.executable_now or rsn != act.reason else act
-        if eff_res > 0 and used_fleet_slots >= max_p_slots - col_res - eff_res:
+        eff_res = _spy_res_for(p_obj)
+        col_res = col_res_by_planet.get(p_obj.planet_id, 0)
+        if eff_res > 0 and used_fleet_slots >= max_p_slots - eff_res:
             rsn = act.reason
             if "reserved for spy" not in rsn.lower():
                 rsn = (
@@ -2307,31 +2423,16 @@ def _plan_combat_and_raid_actions(
                     f"({used_fleet_slots}/{max_p_slots} in flight, {eff_res} reserved)]"
                 )
             return replace(act, executable_now=False, reason=rsn) if act.executable_now or rsn != act.reason else act
-        return act
-
-    def _gate_p2_spy_for_colony(act: PlannedAction) -> PlannedAction:
-        if not col_ready_planet_ids or act.planet_id not in col_ready_planet_ids:
-            return act
-        p_obj = next((p for p in state.planets if p.planet_id == act.planet_id), origin)
-        max_p_slots = 1 + max(0, p_obj.building_level(FLEET_BASE))
-        if max_p_slots > 1 and used_fleet_slots >= max_p_slots - 1:
+        if col_res > 0 and used_fleet_slots >= max_p_slots - eff_res - col_res:
             rsn = act.reason
             if "reserved for colony" not in rsn.lower():
                 rsn = (
                     f"{rsn} [Hold: Fleet slot reserved for Colony ship "
-                    f"({used_fleet_slots}/{max_p_slots} in flight)]"
+                    f"({used_fleet_slots}/{max_p_slots} in flight, {col_res} reserved)]"
                 )
             return replace(act, executable_now=False, reason=rsn) if act.executable_now or rsn != act.reason else act
         return act
 
-    colonize_actions = [
-        ((0 if (g := _gate_non_spy_slot(act)).executable_now else 1, *sk[1:]), g)
-        for sk, act in colonize_actions
-    ]
-    spy_actions = [
-        ((0 if (g := _gate_p2_spy_for_colony(act)).executable_now else 1, *sk[1:]), g)
-        for sk, act in spy_actions
-    ]
     scored_attacks = [
         ((0 if (g := _gate_non_spy_slot(act)).executable_now else 1, *sk[1:]), g)
         for sk, act in scored_attacks
@@ -2354,7 +2455,7 @@ def _plan_combat_and_raid_actions(
         out_actions: list[PlannedAction] = []
         if colonize_actions:
             colonize_actions.sort(key=lambda item: item[0])
-            out_actions.extend(act for _, act in colonize_actions[:1])
+            out_actions.extend(act for _, act in colonize_actions)
         if colony_ship_build_act is not None:
             out_actions.append(colony_ship_build_act)
         if designated_probe_build_act is not None:
@@ -4253,20 +4354,21 @@ def plan_actions(
                 plan.append(throttle_act)
 
     # Sort strictly by priority band, executable actions first within each band,
-    # with Colony Expansion tasks ALWAYS at the top of P1 (ABANDON_COLONY -> COLONIZE -> Colony ship s8 -> Free-slot SPY -> Colony SCAN_GALAXY)
+    # with Colony Expansion tasks ALWAYS at the top of P1 (ABANDON_COLONY -> Free-slot SPY -> parallel COLONIZE -> Colony ship s8 -> Colony SCAN_GALAXY)
     priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
     def _band_subrank(act: PlannedAction) -> tuple[int, int]:
         if act.priority == "P1":
+            # Fleet priority: ABANDON_COLONY -> SPY (#1) -> parallel COLONIZE (#2) -> Colony ship s8 -> probes -> scan
             if act.kind == "ABANDON_COLONY":
                 return (0, 0)
-            if act.kind == "COLONIZE":
-                return (0, 1)
-            if act.kind == "BUILD_SHIP" and game_data.safe_optional_int(act.target_id, None) == 8:
-                return (0, 2)
-            if act.kind == "BUILD_SHIP" and game_data.safe_optional_int(act.target_id, None) == 10 and "designated spy" in _safe_strategy_str(act.reason).lower():
-                return (0, 3)
             if act.kind == "SPY" and "(free slot)" in _safe_strategy_str(act.target_name).lower():
+                return (0, 1)
+            if act.kind == "COLONIZE":
+                return (0, 2)
+            if act.kind == "BUILD_SHIP" and game_data.safe_optional_int(act.target_id, None) == 8:
+                return (0, 3)
+            if act.kind == "BUILD_SHIP" and game_data.safe_optional_int(act.target_id, None) == 10 and "designated spy" in _safe_strategy_str(act.reason).lower():
                 return (0, 4)
             if act.kind == "SCAN_GALAXY":
                 return (0, 5)

@@ -866,10 +866,13 @@ class TestSweepAndTransmitter(unittest.TestCase):
             )
             acts_top = plan_actions(st_col_top, config=cfg_top, now_ts=1_700_000_200.0)
             self.assertGreaterEqual(len(acts_top), 3, mode)
-            # #0 = ABANDON_COLONY (delete 215-field roll), #1 = COLONIZE -> 02:380:09 (executable even with 3/6 fleets in flight!)
+            # #0 = ABANDON_COLONY (delete 215-field roll), then ready SPY (fleet priority #1), then COLONIZE -> 02:380:09
+            # (fleet priority #2, executable even with 3/6 fleets in flight + 1 reserved spy slot!)
             self.assertEqual((acts_top[0].priority, acts_top[0].kind, acts_top[0].planet_id, acts_top[0].executable_now), ("P1", "ABANDON_COLONY", 12999, True), mode)
-            self.assertEqual((acts_top[1].priority, acts_top[1].kind, acts_top[1].executable_now), ("P1", "COLONIZE", True), mode)
-            self.assertIn("02:380:09", acts_top[1].target_name, mode)
+            col_idx = next(i for i, a in enumerate(acts_top) if a.kind == "COLONIZE")
+            self.assertTrue(all(a.kind == "SPY" and a.priority == "P1" for a in acts_top[1:col_idx]), mode)
+            self.assertEqual((acts_top[col_idx].priority, acts_top[col_idx].kind, acts_top[col_idx].executable_now), ("P1", "COLONIZE", True), mode)
+            self.assertIn("02:380:09", acts_top[col_idx].target_name, mode)
             # Zero buildings/ships planned on undersized colony 12999 slated for deletion
             self.assertFalse(
                 any(a.planet_id == 12999 and a.kind != "ABANDON_COLONY" for a in acts_top),
@@ -1110,6 +1113,311 @@ class TestSweepAndTransmitter(unittest.TestCase):
                     self.assertEqual(client_open_count, 2)
                 finally:
                     bridge.close()
+
+    def test_parallel_colonize_bounded_by_planet_slots_and_spy_colonize_attack_fleet_priority(self) -> None:
+        from dataclasses import replace
+        from spaceinvasion.core.state import QueueJob
+
+        now = 1_700_000_300.0
+        home = PlanetState(
+            planet_id=101,
+            name="Home",
+            coords="02:380:12",
+            planet_type="normal",
+            fields_used=40,
+            fields_max=330,
+            temperature=25,
+            resources=Resources(500_000, 500_000, 500_000, 500_000),
+            storage=Resources(900_000, 900_000, 900_000, 900_000),
+            energy=EnergyBalance(1000, 500),
+            buildings={"b1": 12, "b2": 10, "b5": 12, "b9": 6, "b10": 5},  # b10=5 -> 6 fleet slots
+            ships={"s8": 3, "s10": 6, "s4": 40, "s1": 20},
+        )
+        raid_targets = tuple(
+            {
+                "coords": f"02:38{i}:08",
+                "owner": "",
+                "status_color": "free",
+                "colonize_min_fields": 300,
+                "colonize_max_fields": 340 - i,
+                "temperature": 20,
+                "last_scanned_ts": now - 50.0,
+            }
+            for i in range(1, 5)
+        ) + (
+            {  # spied inactive raid target (ATTACK candidate)
+                "coords": "02:379:04",
+                "owner": "IdleFarm",
+                "planet_name": "Farm",
+                "status_color": "yellow",
+                "is_inactive": True,
+                "has_spy_intel": True,
+                "last_spied_ts": now - 60.0,
+                "resources": {"pig_iron": 90_000, "metal": 60_000, "kryptonite": 40_000, "spice": 20_000},
+            },
+            {  # unspied inactive (SPY candidate)
+                "coords": "02:378:06",
+                "owner": "SleepyUser",
+                "planet_name": "Colony",
+                "status_color": "yellow",
+                "is_inactive": True,
+                "last_spied_ts": 0.0,
+            },
+        )
+        three_in_flight = tuple(
+            QueueJob(category="fleet", name=f"Attack -> [02:370:0{i}]", remaining_seconds=300.0, detail="Outbound")
+            for i in (1, 2, 3)
+        )
+        st = GameState(
+            31, 7, "cmdr", now, (home,), active_planet_id=101,
+            researches={"r1": 6, "r2": 6, "r3": 6, "r4": 8, "r7": 6},
+            raid_targets=raid_targets, active_queues=three_in_flight,
+        )
+        for mode in ("priority", "ga_nn"):
+            cfg = StrategyConfig(
+                planner_mode=mode,
+                playstyle="fleeter",
+                allow_raids=True,
+                allow_galaxy_scan=True,
+                allow_colonize=True,
+                allow_shipyard=True,
+                min_colony_fields=300,
+                max_planets=11,
+                reserved_spy_slots=1,
+                ga_population_size=6,
+                ga_generations=2,
+            )
+            acts = plan_actions(st, config=cfg, now_ts=now)
+            cols = [a for a in acts if a.kind == "COLONIZE"]
+            # 10 open planet slots, 3 stationed s8 -> 3 distinct parallel COLONIZE targets
+            self.assertEqual(len(cols), 3, mode)
+            self.assertEqual(len({a.target_name for a in cols}), 3, mode)
+            # 3 in flight, 6 slots, 1 reserved for SPY -> dispatch #1 (slot 4) and #2 (slot 5) ready, #3 held for SPY
+            ready_cols = [a for a in cols if a.executable_now]
+            held_cols = [a for a in cols if not a.executable_now]
+            self.assertEqual(len(ready_cols), 2, mode)
+            self.assertEqual(len(held_cols), 1, mode)
+            self.assertIn("reserved for Spy probes", held_cols[0].reason, mode)
+            self.assertIn("Parallel colony", ready_cols[0].reason, mode)
+            # SPY (#1) stays executable; ATTACK (#3) is held for the parallel Colony ships
+            spies = [a for a in acts if a.kind == "SPY" and "02:378:06" in a.target_name]
+            self.assertTrue(spies and spies[0].executable_now, mode)
+            atks = [a for a in acts if a.kind == "ATTACK" and "02:379:04" in a.target_name]
+            if atks:
+                self.assertFalse(atks[0].executable_now, mode)
+                self.assertRegex(atks[0].reason, r"reserved for (Colony ship|Spy probes)")
+            # Ordering: ready SPY ahead of ready COLONIZE ahead of any ATTACK
+            kinds_ready = [a.kind for a in acts if a.executable_now and a.kind in ("SPY", "COLONIZE", "ATTACK")]
+            if "SPY" in kinds_ready and "COLONIZE" in kinds_ready:
+                first_col = kinds_ready.index("COLONIZE")
+                self.assertTrue(all(k != "ATTACK" for k in kinds_ready[:first_col]), mode)
+            # Proactive s8 build: 3 stationed < min(10 open planets, 6 slots - 1 spy reserve = 5)
+            self.assertTrue(any(a.kind == "BUILD_SHIP" and a.target_id == 8 for a in acts), mode)
+
+            # Only 1 free planet slot -> exactly 1 COLONIZE (never more flights than available planets)
+            acts_one = plan_actions(st, config=replace(cfg, max_planets=2), now_ts=now)
+            self.assertEqual(len([a for a in acts_one if a.kind == "COLONIZE"]), 1, mode)
+            self.assertFalse(any(a.kind == "BUILD_SHIP" and a.target_id == 8 for a in acts_one), mode)
+
+            # 1 free planet slot already consumed by an in-flight colonize mission -> zero COLONIZE
+            col_flight = QueueJob(
+                category="fleet", name="Colonize -> [02:390:08]", remaining_seconds=500.0, detail="Outbound"
+            )
+            st_inflight = replace(st, active_queues=three_in_flight + (col_flight,))
+            acts_full = plan_actions(st_inflight, config=replace(cfg, max_planets=2), now_ts=now)
+            self.assertFalse(any(a.kind == "COLONIZE" for a in acts_full), mode)
+
+    def test_smart_galaxy_sweep_explores_unscanned_first_then_weighted_near_and_frequent_attack_refresh(self) -> None:
+        import time as _time
+        from unittest.mock import patch
+        from spaceinvasion.combat.fleet import GalaxySlot
+
+        with tempfile.TemporaryDirectory(prefix="si_smart_sweep_") as tmp:
+            tp = Path(tmp)
+            visited: list[tuple[int, int]] = []
+
+            class _FakeSweepClient:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_exc):
+                    return None
+
+                def ensure_in_game(self, **_kw):
+                    return None
+
+                def step_galaxy_system(self, *, galaxy: int, system: int, **_kw):
+                    visited.append((galaxy, system))
+                    return _make_galaxy_html(galaxy, system, include_debris=False), galaxy, system
+
+            bridge = GameApiBridge(
+                debug_port=19995,
+                config_path=tp / "cfg.yaml",
+                db_path=tp / "smart.db",
+                log_dir=None,
+                client_factory=lambda _p: _FakeSweepClient(),
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                assert bridge._db is not None
+                bridge._last_state = GameState(
+                    31, 7, "cmdr", _time.time(), (_make_planet(101, "02:380:12"),), active_planet_id=101
+                )
+                now = _time.time()
+                # Pre-scan the home system 02:380 and 02:381 (stale) -> exploratory must skip them.
+                for s_pre in (380, 381):
+                    bridge._db.record_galaxy_scan(2, s_pre, [], ts=now - 7200.0)
+                bridge._scanned_systems.update({"02:380": now - 7200.0, "02:381": now - 7200.0})
+
+                # 1. Dry-run: Phase 1 exploratory, smart selection, coverage telemetry + top-5 sample targets
+                dry = bridge.handle_command({"command": "galaxy_sweep", "pages": 10, "dry_run": True})
+                self.assertTrue(dry["ok"])
+                self.assertFalse(dry["executed"])
+                self.assertEqual(dry["selection_mode"], "smart")
+                self.assertEqual(dry["scan_phase"], "exploratory")
+                self.assertEqual(dry["total_systems"], 400)
+                self.assertEqual(dry["explored_systems"], 2)
+                self.assertAlmostEqual(dry["coverage_pct"], 0.5)
+                self.assertEqual(dry["pages_planned"], 10)
+                self.assertEqual(len(dry["sample_targets"]), 5)
+                planned = dry["planned_targets"]
+                self.assertEqual(len(planned), 10)
+                self.assertEqual(len(set(planned)), 10)
+                self.assertNotIn("02:380", planned)
+                self.assertNotIn("02:381", planned)
+                # Exploration radiates outward from the colony (nearest unscanned systems first)
+                for sk in planned:
+                    self.assertTrue(sk.startswith("02:"))
+                    self.assertLessEqual(abs(int(sk[3:]) - 380), 8, sk)
+                for st_item in dry["sample_targets"]:
+                    self.assertEqual(st_item["phase"], "exploratory")
+                    self.assertIn("unscanned", st_item["reason"])
+                for k in ("scan_phase", "explored_systems", "total_systems", "coverage_pct", "sample_targets"):
+                    self.assertIn(k, dry["galaxy_sweep"])
+
+                # 2. Live smart sweep visits ONLY unscanned systems (no duplicates) and updates coverage
+                with patch.object(bridge._sweep_stop_event, "wait", return_value=False):
+                    live = bridge.run_galaxy_sweep(pages=6, delay_range=(0.0, 0.0))
+                self.assertEqual(live["pages_scanned"], 6)
+                self.assertEqual(live["selection_mode"], "smart")
+                self.assertEqual(live["scan_phase"], "exploratory")
+                self.assertEqual(len(visited), 6)
+                self.assertEqual(len(set(visited)), 6)
+                self.assertTrue(all(v not in ((2, 380), (2, 381)) for v in visited))
+                sw = live["galaxy_sweep"]
+                self.assertEqual(sw["explored_systems"], 8)
+                self.assertAlmostEqual(sw["coverage_pct"], 2.0)
+                self.assertEqual(sw["total_sweeps"], 1)
+                st_dash = bridge._get_galaxy_sweep_state_locked()
+                self.assertEqual(st_dash["explored_systems"], 8)
+
+                # 3. Once the whole galaxy is explored -> Phase 2 targeted refresh favors frequently-raided sectors
+                #    (02:200 raided 6x, far away) and near sectors (02:37x..38x) over stale background sectors.
+                old_ts = now - 6 * 3600.0
+                for s_all in range(1, 401):
+                    slots_all = (
+                        [GalaxySlot("02:200:05", 5, name="Farm", owner="FarmKing", status_color="yellow")]
+                        if s_all == 200
+                        else []
+                    )
+                    bridge._db.record_galaxy_scan(2, s_all, slots_all, ts=old_ts)
+                bridge._scanned_systems.update({f"02:{s:03d}": old_ts for s in range(1, 401)})
+                for i in range(6):
+                    bridge._db.record_raid("02:200:05", attacked_ts=now - 3600.0 * (i + 1), outcome="win")
+                bridge._smart_sweep_summary_ts = 0.0
+
+                dry2 = bridge.handle_command({"command": "galaxy_sweep", "pages": 12, "dry_run": True})
+                self.assertEqual(dry2["scan_phase"], "targeted_refresh")
+                self.assertEqual(dry2["explored_systems"], 400)
+                self.assertAlmostEqual(dry2["coverage_pct"], 100.0)
+                planned2 = dry2["planned_targets"]
+                self.assertIn("02:200", planned2)
+                # Near sectors (within 12 systems of the 02:380 colony) fill most of the remaining refresh budget
+                near_planned = [sk for sk in planned2 if abs(int(sk[3:]) - 380) <= 12]
+                self.assertGreaterEqual(len(near_planned), 8, planned2)
+                sample_secs = [s["sector"] for s in dry2["sample_targets"]]
+                self.assertIn("02:200", sample_secs)
+                farm = next(s for s in dry2["sample_targets"] if s["sector"] == "02:200")
+                self.assertGreaterEqual(farm["direct_raid_count"], 6)
+                self.assertIn("raided", farm["reason"])
+                # Far background sectors (e.g. 02:100) are NOT refreshed ahead of near / frequent-attack sectors
+                self.assertNotIn("02:100", planned2)
+                self.assertTrue(all(s["phase"] == "targeted_refresh" for s in dry2["sample_targets"]))
+                self.assertEqual(bridge._get_galaxy_sweep_state_locked()["scan_phase"], "targeted_refresh")
+            finally:
+                bridge.close()
+
+    def test_planner_scan_galaxy_prefers_unscanned_then_near_and_frequent_attack_sectors(self) -> None:
+        from spaceinvasion.planner.optimizer import _next_unscanned_system, select_planner_scan_system
+
+        now = 1_700_100_000.0
+        cfg = StrategyConfig(allow_galaxy_scan=True)
+        # Home system 02:380 scanned 1h ago (off cooldown but already explored), 02:381 never scanned.
+        scanned = {"02:380": now - 3600.0}
+        # Legacy GA-simulation hot path (no history) keeps the cheap spiral.
+        self.assertEqual(_next_unscanned_system("02:380:12", set()), (2, 380))
+        # Smart path explores the never-scanned neighbour first instead of re-scanning 02:380.
+        self.assertEqual(
+            _next_unscanned_system("02:380:12", set(), scanned_ts=scanned, cfg=cfg, now_ts=now),
+            (2, 381),
+        )
+        pick = select_planner_scan_system("02:380:12", scanned_systems=scanned, cfg=cfg, now_ts=now)
+        assert pick is not None
+        self.assertEqual(pick["phase"], "exploratory")
+
+        # Every system within radius 15 explored 2h ago -> weighted refresh. 02:390 hosts a planet of a
+        # frequently-raided owner (and direct raid history) so it outranks the plain home system 02:380.
+        all_scanned = {f"02:{s:03d}": now - 7200.0 for s in range(365, 396)}
+        raid_targets = [
+            {"coords": "02:390:06", "owner": "FarmKing", "status_color": "yellow", "is_inactive": True},
+            {"coords": "02:150:04", "owner": "FarmKing", "status_color": "yellow", "is_inactive": True},
+        ]
+        raid_stats = {
+            "history": [
+                {"target_coords": "02:150:04", "attacked_ts": now - 3600.0 * i, "outcome": "win"} for i in range(1, 5)
+            ]
+            + [{"target_coords": "02:390:06", "attacked_ts": now - 1800.0, "outcome": "win"}]
+        }
+        pick_ref = select_planner_scan_system(
+            "02:380:12",
+            scanned_systems=all_scanned,
+            raid_targets=raid_targets,
+            raid_stats=raid_stats,
+            cfg=cfg,
+            now_ts=now,
+        )
+        assert pick_ref is not None
+        self.assertEqual((pick_ref["galaxy"], pick_ref["system"], pick_ref["phase"]), (2, 390, "targeted_refresh"))
+        self.assertGreater(pick_ref["attack_score"], 0.0)
+
+        # attack_weight=0 + near_weight high -> proximity wins (home system 02:380).
+        cfg_near = StrategyConfig(allow_galaxy_scan=True, galaxy_scan_attack_weight=0.0, galaxy_scan_near_weight=10.0)
+        pick_near = select_planner_scan_system(
+            "02:380:12",
+            scanned_systems=all_scanned,
+            raid_targets=raid_targets,
+            raid_stats=raid_stats,
+            cfg=cfg_near,
+            now_ts=now,
+        )
+        assert pick_near is not None
+        self.assertEqual((pick_near["galaxy"], pick_near["system"]), (2, 380))
+
+        # Systems on the 30-min scan cooldown are never re-picked.
+        fresh_all = {f"02:{s:03d}": now - 60.0 for s in range(1, 401)}
+        self.assertIsNone(select_planner_scan_system("02:380:12", scanned_systems=fresh_all, cfg=cfg, now_ts=now))
+
+        # plan_actions (priority planner) emits SCAN_GALAXY on the never-scanned neighbour, tagged as exploration.
+        st = GameState(
+            31, 7, "cmdr", now, (_make_planet(101, "02:380:12", ships={"s4": 10}),), active_planet_id=101
+        )
+        cfg_m = StrategyConfig(planner_mode="priority", allow_galaxy_scan=True, allow_raids=True)
+        acts = plan_actions(st, config=cfg_m, scanned_systems=scanned, now_ts=now)
+        scans = [a for a in acts if a.kind == "SCAN_GALAXY"]
+        self.assertTrue(scans)
+        self.assertEqual(scans[0].target_name, "Galaxy [02:381]")
+        self.assertIn("[explore:", scans[0].reason)
+        self.assertTrue(scans[0].executable_now)
 
 
 if __name__ == "__main__":

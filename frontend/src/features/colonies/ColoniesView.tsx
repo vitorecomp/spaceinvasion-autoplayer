@@ -1,10 +1,57 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
 import { useConsole } from "../../context/ConsoleContext";
-import { finiteNum, fmtInt, gradeClassFor } from "../../utils/formatters";
+import {
+  ColonyAttemptCoordStats,
+  ColonyAttemptItem,
+  ColonyAttemptsSummary,
+} from "../../types/api";
+import { finiteNum, fmtInt, fmtShortDateTime, gradeClassFor } from "../../utils/formatters";
 
 export interface ColoniesViewProps {
   hidden?: boolean;
+}
+
+export interface AttemptOutcome {
+  label: string;
+  cls: string;
+}
+
+/** Map a `colony_attempts.event_type` to a short outcome pill label + badge modifier. */
+export function attemptOutcomeFor(eventType: unknown, minFields: number): AttemptOutcome {
+  const ev = String(eventType ?? "").trim().toLowerCase();
+  if (ev.includes("delet") || ev.includes("abandon") || ev.includes("undersized")) {
+    return { label: `DELETED <${minFields}`, cls: "is-loss" };
+  }
+  if (ev.includes("kept") || ev.includes("keep")) {
+    return { label: `KEPT ≥${minFields}`, cls: "is-win" };
+  }
+  if (
+    ev.includes("fail") ||
+    ev.includes("reject") ||
+    ev.includes("abort") ||
+    ev.includes("block") ||
+    ev.includes("error")
+  ) {
+    return { label: "FAILED", cls: "is-loss" };
+  }
+  if (ev.includes("settl")) {
+    return { label: "SETTLED", cls: "is-draw" };
+  }
+  if (ev.includes("dispatch") || ev.includes("launch") || ev.includes("sent")) {
+    return { label: "DISPATCHED", cls: "is-pending" };
+  }
+  return { label: ev ? ev.toUpperCase().replace(/_/g, " ") : "UNKNOWN", cls: "is-pending" };
+}
+
+function attemptShortTag(stats: ColonyAttemptCoordStats, minFields: number): string {
+  const tried = Math.max(0, Math.round(finiteNum(stats.attempts_count, 0)));
+  const lastFields = finiteNum(stats.last_fields_rolled, null);
+  const outcome = attemptOutcomeFor(stats.last_event_type, minFields);
+  const lastBits: string[] = [];
+  if (lastFields !== null && lastFields > 0) lastBits.push(`${Math.round(lastFields)}f`);
+  if (stats.last_event_type) lastBits.push(outcome.label.split(" ")[0].toLowerCase());
+  return lastBits.length > 0 ? `Tried ${tried}x · Last: ${lastBits.join(" ")}` : `Tried ${tried}x`;
 }
 
 export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
@@ -61,6 +108,40 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
     }
     return allCands;
   }, [allCands, colFilter]);
+
+  const minFieldsTarget = Math.max(
+    1,
+    Math.round(
+      finiteNum(colonyData?.min_colony_fields ?? dashboard?.config?.min_colony_fields, 300)
+    )
+  );
+  const attempts: ColonyAttemptItem[] = Array.isArray(colonyData?.colony_attempts)
+    ? (colonyData!.colony_attempts as ColonyAttemptItem[]).filter(
+        (a) => a && typeof a === "object"
+      )
+    : [];
+  const attemptsSummary: ColonyAttemptsSummary =
+    colonyData?.colony_attempts_summary && typeof colonyData.colony_attempts_summary === "object"
+      ? (colonyData.colony_attempts_summary as ColonyAttemptsSummary)
+      : {};
+  const attemptsByCoords: Record<string, ColonyAttemptCoordStats> =
+    colonyData?.attempts_by_coords && typeof colonyData.attempts_by_coords === "object"
+      ? (colonyData.attempts_by_coords as Record<string, ColonyAttemptCoordStats>)
+      : attemptsSummary.by_coords && typeof attemptsSummary.by_coords === "object"
+        ? attemptsSummary.by_coords
+        : {};
+  const triedCount = Math.round(
+    finiteNum(attemptsSummary.unique_coords_tried, Object.keys(attemptsByCoords).length)
+  );
+  const deletedCount = Math.round(
+    finiteNum(
+      attemptsSummary.deleted_undersized_count,
+      attempts.filter((a) => attemptOutcomeFor(a.event_type, minFieldsTarget).label.startsWith("DELETED"))
+        .length
+    )
+  );
+  const keptCount = Math.round(finiteNum(attemptsSummary.kept_count, 0));
+  const totalEvents = Math.round(finiteNum(attemptsSummary.total_events, attempts.length));
 
   const handleSavePolicy = async () => {
     const minVal = Math.max(50, Math.min(600, Math.round(finiteNum(minFieldsInput, 300))));
@@ -160,7 +241,7 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
       aria-label="Possible colonies and planetary field grading"
       hidden={isHidden}
     >
-      <div className="combat-top-cards">
+      <div className="combat-top-cards col-top-cards">
         <div className="kpi-card">
           <span className="kpi-label tabular">Qualified 300+ Colonies</span>
           <strong className="kpi-value tabular" id="col-kpi-qualified">
@@ -190,6 +271,15 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
             {colonyData
               ? `Origin [${colonyData.origin_coords || "--"}] · ${fmtInt(colonyData.planet_count ?? 1)} colonies`
               : "Origin [--]"}
+          </span>
+        </div>
+        <div className="kpi-card">
+          <span className="kpi-label tabular">{`Tried / Deleted (<${minFieldsTarget})`}</span>
+          <strong className="kpi-value tabular" id="col-kpi-tried">
+            {`${fmtInt(triedCount)} Tried · ${fmtInt(deletedCount)} Del`}
+          </strong>
+          <span className="kpi-sub tabular" id="col-kpi-tried-sub">
+            {`${fmtInt(keptCount)} kept · ${fmtInt(totalEvents)} logged events`}
           </span>
         </div>
         <div className="kpi-card">
@@ -236,7 +326,7 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
         </div>
       </div>
 
-      <article className="hud-window page-fill">
+      <article className="hud-window page-fill col-candidates-window">
         <div className="window-bar window-bar-wrap">
           <div className="window-title-group">
             <span className="module-code tabular">COL</span>
@@ -332,6 +422,9 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
                             : `${Math.round(cMax)} fields`
                           : "";
                   const sysDist = Math.round(finiteNum(c.system_distance, 0));
+                  const trialStats = attemptsByCoords[coords];
+                  const trialDeleted =
+                    trialStats && Math.round(finiteNum(trialStats.deleted_count, 0)) > 0;
 
                   return (
                     <tr key={coords}>
@@ -341,7 +434,18 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
                       <td className="col-right tabular">
                         {`${Math.round(finiteNum(c.score, 0))}/100`}
                       </td>
-                      <td className="tabular">{coords}</td>
+                      <td className="tabular">
+                        {coords}
+                        {trialStats ? (
+                          <span
+                            className={`rate-chip col-trial-chip${trialDeleted ? " is-deleted" : ""}`}
+                            data-trial-coords={coords}
+                            title="Colonization attempts recorded in SQLite colony_attempts"
+                          >
+                            {attemptShortTag(trialStats, minFieldsTarget)}
+                          </span>
+                        ) : null}
+                      </td>
                       <td>{`Pos ${c.position || "?"} · ${c.orbital_band || "Unknown"}`}</td>
                       <td className="col-right tabular">
                         {fieldsDisp ? (
@@ -385,6 +489,92 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
                           </button>
                         </div>
                       </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article className="hud-window col-attempts-window" aria-labelledby="col-attempts-title">
+        <div className="window-bar window-bar-wrap">
+          <div className="window-title-group">
+            <span className="module-code tabular">TRY</span>
+            <h2 id="col-attempts-title">Tried Planets &amp; Colonization Attempts</h2>
+            <span className="module-meta tabular" id="col-attempts-meta">
+              {`${fmtInt(attempts.length)} EVENTS · ${fmtInt(triedCount)} COORDS`}
+            </span>
+          </div>
+        </div>
+        <div className="table-wrap table-scroll">
+          <table id="colonies-attempts-table">
+            <thead>
+              <tr>
+                <th>Coords</th>
+                <th>Outcome</th>
+                <th className="col-right">Rolled Fields</th>
+                <th className="col-right">Target / Expected</th>
+                <th className="col-right">Temp</th>
+                <th>Origin</th>
+                <th className="col-right">Time</th>
+                <th>Details / Reason</th>
+              </tr>
+            </thead>
+            <tbody id="colonies-attempts-tbody">
+              {attempts.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="empty-cell">
+                    No colonization attempts recorded yet. Every Colony ship dispatch, kept 300+ roll, and deleted undersized roll is logged here.
+                  </td>
+                </tr>
+              ) : (
+                attempts.map((a, idx) => {
+                  const aCoords = String(a.target_coords || "—");
+                  const aMin = Math.round(finiteNum(a.min_fields_target, minFieldsTarget));
+                  const outcome = attemptOutcomeFor(a.event_type, aMin);
+                  const rolled = finiteNum(a.fields_rolled, null);
+                  const expMin = finiteNum(a.expected_min_fields, null);
+                  const expMax = finiteNum(a.expected_max_fields, null);
+                  const expTxt =
+                    expMax !== null && expMax > 0
+                      ? expMin !== null && expMin > 0 && expMin !== expMax
+                        ? `${Math.round(expMin)}–${Math.round(expMax)}`
+                        : `${Math.round(expMax)}`
+                      : "";
+                  const temp = finiteNum(a.temperature, null);
+                  const reasonTxt =
+                    String(a.status_message || "").trim() ||
+                    (a.grade ? `Grade ${a.grade}` : "") ||
+                    "—";
+                  return (
+                    <tr
+                      key={`${a.id ?? idx}-${aCoords}`}
+                      data-attempt-event={String(a.event_type || "")}
+                    >
+                      <td className="tabular">{aCoords}</td>
+                      <td>
+                        <span className={`outcome-badge ${outcome.cls}`}>{outcome.label}</span>
+                      </td>
+                      <td className="col-right tabular">
+                        {rolled !== null && rolled > 0 ? (
+                          <span className={`status-word${rolled >= aMin ? "" : " is-warn"}`}>
+                            {`${Math.round(rolled)} f`}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="col-right tabular">
+                        {expTxt ? `≥${aMin} · exp ${expTxt}` : `≥${aMin}`}
+                      </td>
+                      <td className="col-right tabular">
+                        {temp !== null ? `${Math.round(temp)} °C` : "—"}
+                      </td>
+                      <td className="tabular">{a.origin_coords ? String(a.origin_coords) : "—"}</td>
+                      <td className="col-right tabular">{fmtShortDateTime(a.ts)}</td>
+                      <td>{reasonTxt}</td>
                     </tr>
                   );
                 })

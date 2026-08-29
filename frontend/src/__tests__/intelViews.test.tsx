@@ -515,6 +515,160 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
     });
   });
 
+  it("renders ColoniesView Tried Planets attempts table, outcome pills, KPI chip, and candidate trial badges", async () => {
+    const colSeed = {
+      qualified_count: 1,
+      probed_count: 1,
+      unprobed_count: 1,
+      colony_ships: 1,
+      spy_probes: 8,
+      origin_coords: "02:380:12",
+      planet_count: 2,
+      min_colony_fields: 300,
+      grade_counts: { S: 1 },
+      candidates: [
+        {
+          coords: "02:380:09",
+          position: 9,
+          orbital_band: "Prime Mid-Orbit",
+          grade: "S",
+          score: 96,
+          probed: true,
+          meets_target: true,
+          uninhabited_fields: 330,
+          system_distance: 0,
+          reason: "330 buildable fields",
+        },
+        {
+          coords: "02:381:08",
+          position: 8,
+          orbital_band: "Prime Mid-Orbit",
+          grade: "A",
+          score: 80,
+          probed: true,
+          meets_target: false,
+          colonize_min_fields: 140,
+          colonize_max_fields: 340,
+          system_distance: 1,
+          reason: "Range roll",
+        },
+      ],
+      colony_attempts: [
+        {
+          id: 3,
+          ts: 1700000300,
+          event_type: "deleted_undersized",
+          target_coords: "02:381:08",
+          origin_coords: "02:380:12",
+          planet_id: 99001,
+          fields_rolled: 215,
+          min_fields_target: 300,
+          expected_min_fields: 140,
+          expected_max_fields: 340,
+          temperature: 22,
+          status_message: "Rolled 215 < 300 fields; colony abandoned",
+        },
+        {
+          id: 2,
+          ts: 1700000200,
+          event_type: "kept",
+          target_coords: "02:379:07",
+          origin_coords: "02:380:12",
+          planet_id: 99000,
+          fields_rolled: 318,
+          min_fields_target: 300,
+          temperature: 35,
+          grade: "S",
+          status_message: "",
+        },
+        {
+          id: 1,
+          ts: 1700000100,
+          event_type: "dispatched",
+          target_coords: "02:381:08",
+          origin_coords: "02:380:12",
+          min_fields_target: 300,
+          expected_min_fields: 140,
+          expected_max_fields: 340,
+          status_message: "Colony ship (s8) launched",
+        },
+      ],
+      colony_attempts_summary: {
+        total_events: 3,
+        unique_coords_tried: 2,
+        dispatched_count: 1,
+        deleted_undersized_count: 1,
+        kept_count: 1,
+        failed_count: 0,
+        by_coords: {
+          "02:381:08": {
+            attempts_count: 2,
+            deleted_count: 1,
+            last_event_type: "deleted_undersized",
+            last_fields_rolled: 215,
+            last_ts: 1700000300,
+          },
+        },
+      },
+    };
+
+    const { container } = render(
+      <Harness page="colonies" colSeed={colSeed}>
+        <ColoniesView hidden={false} />
+      </Harness>
+    );
+
+    await waitFor(() => {
+      expect(container.querySelectorAll("#colonies-attempts-tbody tr").length).toBe(3);
+    });
+    expect(container.querySelector("#colonies-attempts-table")).not.toBeNull();
+
+    const rows = Array.from(container.querySelectorAll("#colonies-attempts-tbody tr"));
+    const pills = rows.map((r) => r.querySelector(".outcome-badge")?.textContent);
+    expect(pills).toEqual(["DELETED <300", "KEPT ≥300", "DISPATCHED"]);
+    expect(rows[0].querySelector(".outcome-badge")?.className).toContain("is-loss");
+    expect(rows[1].querySelector(".outcome-badge")?.className).toContain("is-win");
+    expect(rows[0].textContent).toContain("02:381:08");
+    expect(rows[0].textContent).toContain("215 f");
+    expect(rows[0].textContent).toContain("140–340");
+    expect(rows[0].textContent).toContain("22 °C");
+    expect(rows[0].textContent).toContain("Rolled 215 < 300 fields");
+    expect(rows[1].textContent).toContain("318 f");
+    expect(rows[1].textContent).toContain("Grade S");
+    expect(rows[2].textContent).toContain("Colony ship (s8) launched");
+    expect(container.querySelector("#colonies-attempts-tbody")?.textContent).not.toMatch(
+      /undefined|null|NaN/
+    );
+
+    expect(container.querySelector("#col-kpi-tried")?.textContent).toBe("2 Tried · 1 Del");
+    expect(container.querySelector("#col-kpi-tried-sub")?.textContent).toContain("1 kept");
+
+    const trialChip = container.querySelector('[data-trial-coords="02:381:08"]');
+    expect(trialChip).not.toBeNull();
+    expect(trialChip?.textContent).toBe("Tried 2x · Last: 215f deleted");
+    expect(trialChip?.className).toContain("is-deleted");
+    expect(container.querySelector('[data-trial-coords="02:380:09"]')).toBeNull();
+    // Candidate action buttons are unchanged by the trial chip
+    const firstRowButtons = Array.from(
+      container.querySelectorAll("#col-candidates-tbody tr:first-child button")
+    ).map((b) => b.textContent);
+    expect(firstRowButtons).toEqual(["Re-Probe", "Colonize", "Discard"]);
+  });
+
+  it("renders ColoniesView Tried Planets empty state when no attempts are logged", async () => {
+    const { container } = render(
+      <Harness page="colonies" colSeed={{ candidates: [], qualified_count: 0 }}>
+        <ColoniesView hidden={false} />
+      </Harness>
+    );
+    await waitFor(() => {
+      expect(container.querySelector("#colonies-attempts-tbody")?.textContent).toContain(
+        "No colonization attempts recorded yet"
+      );
+    });
+    expect(container.querySelector("#col-kpi-tried")?.textContent).toBe("0 Tried · 0 Del");
+  });
+
   it("renders AttacksView and RecyclersView KPIs, battles, blocks, harvests, debris, and emails", async () => {
     const atkSeed = {
       summary: {
