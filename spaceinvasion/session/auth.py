@@ -32,17 +32,32 @@ LOGIN_ERROR_MESSAGES: dict[str, str] = {
     "b.external.login.error.6": "The 2-factor authentication code is incorrect.",
 }
 
-_ANTIBOT_PATTERNS = (
-    re.compile(r"cf-turnstile", re.IGNORECASE),
-    re.compile(r"challenges\.cloudflare\.com", re.IGNORECASE),
-    re.compile(r"cf-challenge", re.IGNORECASE),
-    re.compile(r"g-recaptcha", re.IGNORECASE),
-    re.compile(r"h-captcha", re.IGNORECASE),
+_CLOUDFLARE_INTERSTITIAL_PATTERNS = (
     re.compile(r"<title>\s*Just a moment", re.IGNORECASE),
     re.compile(r"Attention Required!\s*\|\s*Cloudflare", re.IGNORECASE),
+)
+
+_VISIBLE_CHALLENGE_TEXT_PATTERNS = (
     re.compile(r"Sicherheitspr(?:ü|ue)fung", re.IGNORECASE),
     re.compile(r"best(?:ä|ae)tigen,\s*dass\s+du\s+kein\s+Bot\s+bist", re.IGNORECASE),
     re.compile(r"confirm\s+that\s+you\s+are\s+not\s+a\s+bot", re.IGNORECASE),
+)
+
+_HIDDEN_INLINE_STYLE_RE = re.compile(
+    r"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b",
+    re.IGNORECASE,
+)
+
+_ANTIBOT_FAST_MARKERS = (
+    "turnstile",
+    "cloudflare",
+    "cf-challenge",
+    "recaptcha",
+    "h-captcha",
+    "si-captcha-gate",
+    "sicherheitspr",
+    "kein bot",
+    "not a bot",
 )
 
 _PORTAL_FIELDS_RE = re.compile(
@@ -189,12 +204,55 @@ def load_credentials(
 
 
 def detect_antibot_challenge(status_code: int, html: str) -> Optional[str]:
-    """Return a diagnostic label if the response presents a CAPTCHA/anti-bot gate."""
-    for pattern in _ANTIBOT_PATTERNS:
+    """Return a diagnostic label if the response presents a visible CAPTCHA/anti-bot gate."""
+    if not isinstance(html, str) or not html:
+        return None
+    for pattern in _CLOUDFLARE_INTERSTITIAL_PATTERNS:
         if pattern.search(html):
             return f"Anti-bot or CAPTCHA challenge detected ({pattern.pattern})"
-    if status_code in (403, 503) and "cloudflare" in html.lower():
+    low = html.lower()
+    if status_code in (403, 503) and "cloudflare" in low:
         return f"Blocked by Cloudflare gate (HTTP {status_code})"
+    if not any(marker in low for marker in _ANTIBOT_FAST_MARKERS):
+        return None
+
+    soup = BeautifulSoup(html, "html.parser")
+    for non_vis in soup.find_all(["script", "style", "noscript", "template", "link"]):
+        non_vis.decompose()
+
+    to_decompose = []
+    for el in soup.find_all(True):
+        if el.attrs is None:
+            continue
+        if el.has_attr("hidden"):
+            to_decompose.append(el)
+            continue
+        aria_h = str(el.get("aria-hidden") or "").strip().lower()
+        if aria_h == "true":
+            to_decompose.append(el)
+            continue
+        style_v = str(el.get("style") or "")
+        if style_v and _HIDDEN_INLINE_STYLE_RE.search(style_v):
+            to_decompose.append(el)
+    for el in to_decompose:
+        el.decompose()
+
+    for selector, label in (
+        ("#si-captcha-gate", "si-captcha-gate"),
+        (".cf-turnstile, [class*='cf-turnstile']", "cf-turnstile"),
+        (".cf-challenge, [id*='cf-challenge'], [class*='cf-challenge']", "cf-challenge"),
+        (".g-recaptcha, [class*='g-recaptcha']", "g-recaptcha"),
+        (".h-captcha, [class*='h-captcha']", "h-captcha"),
+        ("iframe[src*='challenges.cloudflare.com']", "challenges.cloudflare.com"),
+    ):
+        if soup.select_one(selector) is not None:
+            return f"Anti-bot or CAPTCHA challenge detected ({label})"
+
+    visible_text = " ".join(soup.get_text(" ", strip=True).split())
+    if visible_text:
+        for pattern in _VISIBLE_CHALLENGE_TEXT_PATTERNS:
+            if pattern.search(visible_text):
+                return f"Anti-bot or CAPTCHA challenge detected ({pattern.pattern})"
     return None
 
 

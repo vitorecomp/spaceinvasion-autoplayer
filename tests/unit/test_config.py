@@ -792,6 +792,70 @@ shipyard_targets:
         self.assertIsInstance(_safe_cfg_key(dag_exc), str)
         self.assertLess((time.perf_counter() - t1) * 1000.0, 50.0)
 
+    def test_galaxy_scan_delay_jitter_and_spy_config_fields_clamping_and_roundtrip(self) -> None:
+        from spaceinvasion.db.storage import GameDatabase
+
+        defaults = StrategyConfig()
+        self.assertAlmostEqual(defaults.galaxy_scan_click_delay_seconds, 1.5)
+        self.assertAlmostEqual(defaults.galaxy_scan_click_jitter_seconds, 0.6)
+        self.assertEqual(defaults.reserved_spy_slots, 1)
+        self.assertEqual(defaults.spy_dispatch_planet_id, 0)
+
+        low_clamped = strategy_config_from_dict(
+            {
+                "galaxy_scan_click_delay_seconds": 0.01,
+                "galaxy_scan_click_jitter_seconds": -5.0,
+                "reserved_spy_slots": -3,
+                "spy_dispatch_planet_id": -99,
+            }
+        )
+        self.assertAlmostEqual(low_clamped.galaxy_scan_click_delay_seconds, 0.2)
+        self.assertAlmostEqual(low_clamped.galaxy_scan_click_jitter_seconds, 0.0)
+        self.assertEqual(low_clamped.reserved_spy_slots, 0)
+        self.assertEqual(low_clamped.spy_dispatch_planet_id, 0)
+
+        high_clamped = strategy_config_from_dict(
+            {
+                "galaxy_scan_click_delay_seconds": 500.0,
+                "galaxy_scan_click_jitter_seconds": 120.0,
+                "reserved_spy_slots": 99,
+                "spy_dispatch_planet_id": None,
+            }
+        )
+        self.assertAlmostEqual(high_clamped.galaxy_scan_click_delay_seconds, 60.0)
+        self.assertAlmostEqual(high_clamped.galaxy_scan_click_jitter_seconds, 30.0)
+        self.assertEqual(high_clamped.reserved_spy_slots, 10)
+        self.assertEqual(high_clamped.spy_dispatch_planet_id, 0)
+
+        empty_pid = strategy_config_from_dict({"spy_dispatch_planet_id": ""})
+        self.assertEqual(empty_pid.spy_dispatch_planet_id, 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            cfg = StrategyConfig(
+                galaxy_scan_click_delay_seconds=2.75,
+                galaxy_scan_click_jitter_seconds=0.85,
+                reserved_spy_slots=3,
+                spy_dispatch_planet_id=12476,
+            )
+            yaml_path = tp / "cfg.yaml"
+            save_strategy_config(cfg, yaml_path)
+            loaded_yaml = load_strategy_config(yaml_path)
+            self.assertAlmostEqual(loaded_yaml.galaxy_scan_click_delay_seconds, 2.75)
+            self.assertAlmostEqual(loaded_yaml.galaxy_scan_click_jitter_seconds, 0.85)
+            self.assertEqual(loaded_yaml.reserved_spy_slots, 3)
+            self.assertEqual(loaded_yaml.spy_dispatch_planet_id, 12476)
+
+            db_path = tp / "cfg.db"
+            db = GameDatabase(db_path, attack_history_path="")
+            db.close()
+            save_strategy_config(cfg, db_path)
+            loaded_db = load_strategy_config(db_path)
+            self.assertAlmostEqual(loaded_db.galaxy_scan_click_delay_seconds, 2.75)
+            self.assertAlmostEqual(loaded_db.galaxy_scan_click_jitter_seconds, 0.85)
+            self.assertEqual(loaded_db.reserved_spy_slots, 3)
+            self.assertEqual(loaded_db.spy_dispatch_planet_id, 12476)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1642,13 +1642,23 @@ _FADATA_MISSION_LABELS: dict[str, str] = {
 }
 
 
+def is_in_flight_fleet_job(job: Any) -> bool:
+    """Return True when `job` represents an in-flight/returning fleet (excluding `#sp-own-fleet` shipyard builds)."""
+    if getattr(job, "category", None) != "fleet":
+        return False
+    detail_l = str(getattr(job, "detail", "") or "").strip().lower()
+    if detail_l.startswith(("shipyard", "weapons factory")):
+        return False
+    return True
+
+
 def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
     """Parse active own/returning fleet flights and exact countdowns (`t` seconds) from `var faData`."""
     m = _FADATA_BLOCK_RE.search(html or "")
     if not m:
         return []
     block = m.group(1)
-    jobs: list[QueueJob] = []
+    raw_entries: list[dict[str, Any]] = []
     # Split into section chunks by `"title":`
     sections = re.split(r'\{\s*"title"\s*:\s*', block)
     for sec in sections[1:]:
@@ -1658,6 +1668,7 @@ def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
             continue
         is_ret_sec = "returning" in sec_title or "rückkehr" in sec_title or "rueckkehr" in sec_title
         for row_m in re.finditer(r'\{\s*"id"\s*:\s*(\d+)(.*?)\}', sec, re.DOTALL):
+            row_id = _parse_bounded_int(row_m.group(1), 0)
             body = row_m.group(2)
             m_t = re.search(r'"t"\s*:\s*(\d+)', body, re.ASCII)
             if not m_t:
@@ -1680,21 +1691,94 @@ def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
                     for part in tt_raw.split("<br>")
                 ]
                 ships_detail = ", ".join(p for p in tt_parts if p)[:140]
-            arrow = "↩" if is_ret else "→"
-            label = f"{mission_lbl} {arrow} {dest_str}".strip() if dest_str else mission_lbl
-            leg_tag = "Returning" if is_ret else "Outbound"
-            detail_full = f"{leg_tag} · {ships_detail}" if ships_detail else leg_tag
-            jobs.append(
-                QueueJob(
-                    category="fleet",
-                    name=label[:200],
-                    remaining_text=_format_hms_seconds(rem_s),
-                    remaining_seconds=rem_s,
-                    finish_ts=round(ref_now + rem_s, 3),
-                    queue_slot=1,
-                    detail=detail_full[:160],
-                )
+            raw_entries.append(
+                {
+                    "row_id": row_id,
+                    "rem_s": rem_s,
+                    "raw_act": raw_act,
+                    "mission_lbl": mission_lbl,
+                    "is_ret": is_ret,
+                    "dest_str": dest_str,
+                    "ships_detail": ships_detail,
+                }
             )
+
+    # 1. Deduplicate identical flight IDs (keep active leg with smaller countdown `t`).
+    by_id: dict[int, dict[str, Any]] = {}
+    dedup_entries: list[dict[str, Any]] = []
+    for ent in raw_entries:
+        rid = int(ent["row_id"])
+        if rid > 0:
+            prev_ent = by_id.get(rid)
+            if prev_ent is None:
+                by_id[rid] = ent
+            elif (ent["rem_s"], 1 if ent["is_ret"] else 0) < (prev_ent["rem_s"], 1 if prev_ent["is_ret"] else 0):
+                by_id[rid] = ent
+        else:
+            dedup_entries.append(ent)
+    if by_id:
+        dedup_entries = list(by_id.values()) + dedup_entries
+
+    # 2. Pair each outbound leg (`is_ret=False`) with its scheduled future return event (`is_ret=True`, `t_ret > t_out`)
+    #    matching `(mission, dest, ships_summary)` 1-to-1 so `faData`'s 2-row outbound+return schedule counts once.
+    grouped_indices: dict[tuple[str, str, str], list[int]] = {}
+    for idx, ent in enumerate(dedup_entries):
+        sig = (
+            str(ent["raw_act"]),
+            " ".join(str(ent["dest_str"]).lower().split()),
+            " ".join(str(ent["ships_detail"]).lower().split()),
+        )
+        grouped_indices.setdefault(sig, []).append(idx)
+
+    skip_indices: set[int] = set()
+    for idxs in grouped_indices.values():
+        out_idxs = sorted(
+            (i for i in idxs if not dedup_entries[i]["is_ret"]),
+            key=lambda i: float(dedup_entries[i]["rem_s"]),
+            reverse=True,
+        )
+        ret_idxs = sorted(
+            (i for i in idxs if dedup_entries[i]["is_ret"]),
+            key=lambda i: float(dedup_entries[i]["rem_s"]),
+            reverse=True,
+        )
+        if not out_idxs or not ret_idxs:
+            continue
+        used_ret: set[int] = set()
+        for oi in out_idxs:
+            t_out = float(dedup_entries[oi]["rem_s"])
+            for ri in ret_idxs:
+                if ri in used_ret:
+                    continue
+                if float(dedup_entries[ri]["rem_s"]) > t_out:
+                    used_ret.add(ri)
+                    skip_indices.add(ri)
+                    break
+
+    jobs: list[QueueJob] = []
+    for idx, ent in enumerate(dedup_entries):
+        if idx in skip_indices:
+            continue
+        rem_s = float(ent["rem_s"])
+        is_ret = bool(ent["is_ret"])
+        dest_str = str(ent["dest_str"])
+        mission_lbl = str(ent["mission_lbl"])
+        ships_detail = str(ent["ships_detail"])
+        arrow = "↩" if is_ret else "→"
+        label = f"{mission_lbl} {arrow} {dest_str}".strip() if dest_str else mission_lbl
+        leg_tag = "Returning" if is_ret else "Outbound"
+        detail_full = f"{leg_tag} · {ships_detail}" if ships_detail else leg_tag
+        jobs.append(
+            QueueJob(
+                category="fleet",
+                name=label[:200],
+                remaining_text=_format_hms_seconds(rem_s),
+                remaining_seconds=rem_s,
+                finish_ts=round(ref_now + rem_s, 3),
+                queue_slot=1,
+                detail=detail_full[:160],
+            )
+        )
     jobs.sort(key=lambda j: (j.finish_ts if j.finish_ts is not None else float("inf")))
     return jobs
 
@@ -2291,3 +2375,133 @@ def parse_transmitter_page(html: Any) -> dict[str, Any]:
         "latest_reward": latest_reward,
         "latest_date": latest_date,
     }
+
+
+_UNIVERSE_RESEARCH_ALIASES: dict[str, str] = {
+    "mining technology": "r1",
+    "bergbautechnik": "r1",
+    "energy technology": "r2",
+    "energietechnik": "r2",
+    "engine research": "r3",
+    "triebwerksforschung": "r3",
+    "rocket engine": "r4",
+    "raketentriebwerk": "r4",
+    "diffusion engine": "r5",
+    "diffusionstriebwerk": "r5",
+    "warp engine": "r6",
+    "warptriebwerk": "r6",
+    "spy technology": "r7",
+    "spionagetechnik": "r7",
+    "weapons technology": "r8",
+    "waffentechnik": "r8",
+    "shield technology": "r9",
+    "schildtechnik": "r9",
+    "defense systems": "r10",
+    "verteidigungssysteme": "r10",
+    "targeting systems": "r11",
+    "zielsysteme": "r11",
+    "particle analyzer": "r12",
+    "partikelanalysator": "r12",
+    "graviton technology": "r13",
+    "gravitontechnik": "r13",
+    "teleportation": "r14",
+    "black hole research": "r15",
+    "schwarzes-loch-forschung": "r15",
+    "schwarzes loch forschung": "r15",
+    "urplasma-extraction": "urplasma-extraction",
+    "urplasma extraction": "urplasma-extraction",
+    "urplasma-extraktion": "urplasma-extraction",
+    "urplasma extraktion": "urplasma-extraction",
+}
+
+
+def parse_universe_research_records(html: Any) -> dict[str, dict[str, Any]]:
+    """Parse Universe Records / Top Research Levels HTML (if exposed by server) into `{rkey: {level, holder, coords}}`."""
+    raw_html = _safe_state_str(html) if html is not None else ""
+    if not raw_html or "researchid=" in raw_html.lower():
+        return {}
+    soup = BeautifulSoup(raw_html, "html.parser")
+    out: dict[str, dict[str, Any]] = {}
+
+    def _record(rkey: str, lvl: int, holder: str = "", coords: str = "") -> None:
+        if lvl <= 0 or lvl > 500:
+            return
+        prev = out.get(rkey)
+        if prev is None or lvl > int(prev.get("level", 0)):
+            out[rkey] = {
+                "level": int(lvl),
+                "holder": holder.strip()[:80],
+                "coords": coords.strip()[:24],
+            }
+
+    for jid in ("json-element", "json-container"):
+        jel = soup.find(id=jid)
+        if jel is None:
+            continue
+        jtxt = (jel.string if jel.string is not None else jel.get_text("", strip=True)) or ""
+        if not jtxt.strip():
+            continue
+        try:
+            jdata = json.loads(jtxt)
+        except Exception:
+            jdata = None
+        if isinstance(jdata, Mapping):
+            rec_sec = jdata.get("records") or jdata.get("research_records") or jdata.get("researches")
+            if isinstance(rec_sec, Mapping):
+                for rk, rv in rec_sec.items():
+                    rk_s = str(rk).strip().lower()
+                    canon_k = _UNIVERSE_RESEARCH_ALIASES.get(rk_s, rk_s if re.fullmatch(r"r\d{1,2}", rk_s) else "")
+                    if not canon_k:
+                        continue
+                    if isinstance(rv, Mapping):
+                        lvl_v = _safe_state_int(rv.get("level", rv.get("max", 0)), 0)
+                        _record(
+                            canon_k,
+                            lvl_v,
+                            str(rv.get("holder") or rv.get("player") or rv.get("uname") or ""),
+                            str(rv.get("coords") or ""),
+                        )
+                    elif isinstance(rv, int) and not isinstance(rv, bool):
+                        _record(canon_k, rv)
+
+    for tr in soup.find_all("tr"):
+        cells = [" ".join(c.get_text(" ", strip=True).split()) for c in tr.find_all(["td", "th"], recursive=False)]
+        if len(cells) < 2:
+            continue
+        matched_key = ""
+        matched_idx = -1
+        for idx, ctxt in enumerate(cells):
+            low_c = re.sub(r"\s*\(\s*(?:level|stufe)\s*\d+\s*\)\s*$", "", ctxt.lower()).strip().rstrip(":")
+            if low_c in _UNIVERSE_RESEARCH_ALIASES:
+                matched_key = _UNIVERSE_RESEARCH_ALIASES[low_c]
+                matched_idx = idx
+                break
+        if not matched_key:
+            continue
+        lvl_found = 0
+        holder_found = ""
+        coords_found = ""
+        m_inline_lvl = re.search(r"(?:level|stufe)\s*(\d{1,3})\b", cells[matched_idx], re.IGNORECASE | re.ASCII)
+        if m_inline_lvl:
+            lvl_found = int(m_inline_lvl.group(1))
+        for idx, ctxt in enumerate(cells):
+            if idx == matched_idx or not ctxt:
+                continue
+            m_c = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", ctxt, re.ASCII)
+            if m_c and not coords_found:
+                coords_found = m_c.group(1)
+            m_l = re.search(r"^(?:level|stufe|lvl\.?)?\s*(\d{1,3})$", ctxt.strip(), re.IGNORECASE | re.ASCII)
+            if m_l and lvl_found <= 0:
+                lvl_found = int(m_l.group(1))
+                continue
+            m_l2 = re.search(r"\b(?:level|stufe)\s*(\d{1,3})\b", ctxt, re.IGNORECASE | re.ASCII)
+            if m_l2 and lvl_found <= 0:
+                lvl_found = int(m_l2.group(1))
+                continue
+            clean_h = re.sub(r"\[\s*\d{1,2}:\d{1,3}:\d{1,2}\s*\]", "", ctxt).strip()
+            if clean_h and clean_h not in ("-", "---", "—") and not clean_h.isdigit() and not holder_found:
+                holder_found = clean_h
+        if lvl_found > 0:
+            _record(matched_key, lvl_found, holder_found, coords_found)
+
+    return out

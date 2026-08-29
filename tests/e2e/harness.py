@@ -2041,572 +2041,20 @@ def inspect_ui_html(html_text: str) -> dict[str, Any]:
 
 
 _NODE_HARNESS_SCRIPT = r"""
-const fs = require("fs");
-const vm = require("vm");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
 
 const payload = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-const baseUrl = payload.baseUrl;
-const domTree = payload.domTree;
-const appJs = payload.appJs;
-const scenarioJs = payload.scenarioJs || "";
-const fetchPatchJs = payload.fetchPatchJs || "";
+const baseUrl = String(payload.baseUrl || "http://127.0.0.1:8787").replace(/\/$/, "");
+const html = String(payload.html || "<!doctype html><html><body><div id='root'></div></body></html>");
+const appJs = String(payload.appJs || "");
+const scenarioJs = String(payload.scenarioJs || "");
+const fetchPatchJs = String(payload.fetchPatchJs || "");
+const jsdomPath = payload.jsdomPath || path.resolve(process.cwd(), "frontend/node_modules/jsdom");
 
-function camelAttr(name) {
-  return name.slice(5).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
-}
+const { JSDOM, VirtualConsole } = require(jsdomPath);
 
-class ClassList {
-  constructor(el) {
-    this._el = el;
-  }
-  _set() {
-    const raw = String(this._el._attrs.class || "").trim();
-    return new Set(raw ? raw.split(/\s+/) : []);
-  }
-  _save(set) {
-    this._el._attrs.class = Array.from(set).join(" ");
-  }
-  add(...tokens) {
-    const s = this._set();
-    for (const t of tokens) if (t) s.add(String(t));
-    this._save(s);
-  }
-  remove(...tokens) {
-    const s = this._set();
-    for (const t of tokens) s.delete(String(t));
-    this._save(s);
-  }
-  contains(token) {
-    return this._set().has(String(token));
-  }
-  toggle(token, force) {
-    const s = this._set();
-    const has = s.has(String(token));
-    const want = force === undefined ? !has : Boolean(force);
-    if (want) s.add(String(token));
-    else s.delete(String(token));
-    this._save(s);
-    return want;
-  }
-}
-
-class TextNode {
-  constructor(text) {
-    this.nodeType = 3;
-    this.textContent = String(text ?? "");
-    this.parentNode = null;
-  }
-}
-
-function toKebabCase(name) {
-  return String(name).startsWith("--")
-    ? String(name)
-    : String(name).replace(/[A-Z]/g, (m) => "-" + m.toLowerCase());
-}
-
-function createStyleProxy(el) {
-  const map = new Map();
-  const parseInline = (raw) => {
-    map.clear();
-    if (!raw) return;
-    for (const part of String(raw).split(";")) {
-      const idx = part.indexOf(":");
-      if (idx > 0) {
-        const k = part.slice(0, idx).trim().toLowerCase();
-        const v = part.slice(idx + 1).trim();
-        if (k) map.set(k, v);
-      }
-    }
-  };
-  const syncInline = () => {
-    const chunks = [];
-    for (const [k, v] of map.entries()) chunks.push(`${k}: ${v}`);
-    if (chunks.length > 0) el._attrs.style = chunks.join("; ");
-    else delete el._attrs.style;
-  };
-  if (el._attrs.style) parseInline(el._attrs.style);
-  const api = {
-    setProperty(k, v) {
-      const key = toKebabCase(k).toLowerCase();
-      if (v === null || v === undefined || String(v) === "") map.delete(key);
-      else map.set(key, String(v));
-      syncInline();
-    },
-    getPropertyValue(k) {
-      return map.get(toKebabCase(k).toLowerCase()) || "";
-    },
-    removeProperty(k) {
-      const key = toKebabCase(k).toLowerCase();
-      const prev = map.get(key) || "";
-      map.delete(key);
-      syncInline();
-      return prev;
-    },
-    get cssText() {
-      return el._attrs.style || "";
-    },
-    set cssText(val) {
-      parseInline(val);
-      syncInline();
-    },
-    _syncFromAttr(raw) {
-      parseInline(raw);
-    },
-  };
-  return new Proxy(api, {
-    get(target, prop) {
-      if (prop in target) return target[prop];
-      if (typeof prop === "symbol") return undefined;
-      return map.get(toKebabCase(prop).toLowerCase()) || "";
-    },
-    set(target, prop, val) {
-      if (prop === "cssText") {
-        target.cssText = val;
-        return true;
-      }
-      target.setProperty(String(prop), val);
-      return true;
-    },
-  });
-}
-
-class Element {
-  constructor(tagName, attrs = {}) {
-    this.nodeType = 1;
-    this.tagName = String(tagName || "div").toUpperCase();
-    this._attrs = { ...attrs };
-    this.children = [];
-    this.parentNode = null;
-    this.style = createStyleProxy(this);
-    this._listeners = new Map();
-    this.onclick = null;
-    this.classList = new ClassList(this);
-    this._valueOverride = undefined;
-    this._checkedOverride = undefined;
-    this._selectedOverride = undefined;
-    this._colSpanOverride = undefined;
-    this.dataset = new Proxy(
-      {},
-      {
-        get: (_, prop) => {
-          const kebab = "data-" + String(prop).replace(/[A-Z]/g, (m) => "-" + m.toLowerCase());
-          return this._attrs[kebab];
-        },
-        set: (_, prop, val) => {
-          const kebab = "data-" + String(prop).replace(/[A-Z]/g, (m) => "-" + m.toLowerCase());
-          this._attrs[kebab] = String(val);
-          return true;
-        },
-      }
-    );
-  }
-
-  get id() {
-    return this._attrs.id || "";
-  }
-  set id(v) {
-    this._attrs.id = String(v);
-  }
-
-  get parentElement() {
-    return this.parentNode && this.parentNode.nodeType === 1 ? this.parentNode : null;
-  }
-
-  get className() {
-    return this._attrs.class || "";
-  }
-  set className(v) {
-    this._attrs.class = String(v);
-  }
-
-  get hidden() {
-    return Object.prototype.hasOwnProperty.call(this._attrs, "hidden");
-  }
-  set hidden(v) {
-    if (v) this._attrs.hidden = "";
-    else delete this._attrs.hidden;
-  }
-
-  get disabled() {
-    return Object.prototype.hasOwnProperty.call(this._attrs, "disabled");
-  }
-  set disabled(v) {
-    if (v) this._attrs.disabled = "";
-    else delete this._attrs.disabled;
-  }
-
-  get checked() {
-    if (this._checkedOverride !== undefined) return this._checkedOverride;
-    return Object.prototype.hasOwnProperty.call(this._attrs, "checked");
-  }
-  set checked(v) {
-    this._checkedOverride = Boolean(v);
-    if (v) this._attrs.checked = "";
-    else delete this._attrs.checked;
-  }
-
-  get selected() {
-    if (this._selectedOverride !== undefined) return this._selectedOverride;
-    return Object.prototype.hasOwnProperty.call(this._attrs, "selected");
-  }
-  set selected(v) {
-    this._selectedOverride = Boolean(v);
-    if (v) this._attrs.selected = "";
-    else delete this._attrs.selected;
-  }
-
-  get colSpan() {
-    if (this._colSpanOverride !== undefined) return this._colSpanOverride;
-    return Number(this._attrs.colspan || 1);
-  }
-  set colSpan(v) {
-    this._colSpanOverride = Number(v);
-    this._attrs.colspan = String(v);
-  }
-
-  get href() {
-    return this._attrs.href || "";
-  }
-  set href(v) {
-    this._attrs.href = String(v);
-  }
-
-  get type() {
-    return this._attrs.type || "";
-  }
-  set type(v) {
-    this._attrs.type = String(v);
-  }
-
-  get min() {
-    return this._attrs.min || "";
-  }
-  set min(v) {
-    this._attrs.min = String(v);
-  }
-
-  get max() {
-    return this._attrs.max || "";
-  }
-  set max(v) {
-    this._attrs.max = String(v);
-  }
-
-  get step() {
-    return this._attrs.step || "";
-  }
-  set step(v) {
-    this._attrs.step = String(v);
-  }
-
-  get value() {
-    if (this.tagName === "SELECT") {
-      if (this._valueOverride !== undefined) return this._valueOverride;
-      const opts = this.querySelectorAll("option");
-      const sel = opts.find((o) => o.selected) || opts[0];
-      return sel ? sel.value : "";
-    }
-    if (this._valueOverride !== undefined) return this._valueOverride;
-    if (this.tagName === "OPTION" && this._attrs.value === undefined) {
-      return this.textContent.trim();
-    }
-    return this._attrs.value !== undefined ? String(this._attrs.value) : "";
-  }
-  set value(v) {
-    const s = String(v);
-    this._valueOverride = s;
-    this._attrs.value = s;
-    if (this.tagName === "SELECT") {
-      for (const opt of this.querySelectorAll("option")) {
-        opt.selected = opt.value === s;
-      }
-    }
-  }
-
-  get textContent() {
-    return this.children
-      .map((c) => (c.nodeType === 3 ? c.textContent : c.textContent))
-      .join("");
-  }
-  set textContent(v) {
-    this.children = [new TextNode(v)];
-  }
-
-  appendChild(child) {
-    if (child) {
-      child.parentNode = this;
-      this.children.push(child);
-    }
-    return child;
-  }
-
-  append(...items) {
-    for (const item of items) {
-      if (typeof item === "string") this.appendChild(new TextNode(item));
-      else if (item) this.appendChild(item);
-    }
-  }
-
-  replaceChildren(...items) {
-    this.children = [];
-    this.append(...items);
-  }
-
-  setAttribute(k, v) {
-    this._attrs[String(k)] = String(v);
-    if (k === "value") this._valueOverride = String(v);
-    if (k === "style" && this.style && typeof this.style._syncFromAttr === "function") {
-      this.style._syncFromAttr(String(v));
-    }
-  }
-
-  getAttribute(k) {
-    return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null;
-  }
-
-  removeAttribute(k) {
-    delete this._attrs[String(k)];
-    if (k === "style" && this.style && typeof this.style._syncFromAttr === "function") {
-      this.style._syncFromAttr("");
-    }
-  }
-
-  matches(selector) {
-    return String(selector)
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .some((part) => {
-        const chunks = part.split(/\s+/).filter(Boolean);
-        return chunks.length === 1 && matchesSimple(this, chunks[0]);
-      });
-  }
-
-  closest(selector) {
-    let cur = this;
-    while (cur && cur.nodeType === 1) {
-      if (cur.matches(selector)) return cur;
-      cur = cur.parentElement;
-    }
-    return null;
-  }
-
-  addEventListener(type, fn) {
-    if (!this._listeners.has(type)) this._listeners.set(type, []);
-    this._listeners.get(type).push(fn);
-  }
-
-  removeEventListener(type, fn) {
-    const list = this._listeners.get(type);
-    if (list) this._listeners.set(type, list.filter((x) => x !== fn));
-  }
-
-  dispatchEvent(evOrType) {
-    const ev = typeof evOrType === "string" ? { type: evOrType } : { ...evOrType };
-    ev.target = ev.target || this;
-    ev.currentTarget = this;
-    ev.stopPropagation = ev.stopPropagation || (() => { ev._stopped = true; });
-    ev.preventDefault = ev.preventDefault || (() => {});
-    if (ev.type === "click" && typeof this.onclick === "function") {
-      this.onclick(ev);
-    }
-    const list = this._listeners.get(ev.type) || [];
-    for (const fn of [...list]) {
-      fn.call(this, ev);
-    }
-    return true;
-  }
-
-  click() {
-    this.dispatchEvent({ type: "click" });
-  }
-
-  querySelectorAll(selector) {
-    return matchSelectorAll(this, selector);
-  }
-
-  querySelector(selector) {
-    return this.querySelectorAll(selector)[0] || null;
-  }
-}
-
-function matchesSimple(el, part) {
-  if (!el || el.nodeType !== 1) return false;
-  let rest = part.trim();
-  if (!rest) return false;
-  if (rest[0] === "*") {
-    rest = rest.slice(1);
-  } else {
-    const tagMatch = rest.match(/^([a-zA-Z0-9_-]+)/);
-    if (tagMatch) {
-      if (el.tagName !== tagMatch[1].toUpperCase()) return false;
-      rest = rest.slice(tagMatch[0].length);
-    }
-  }
-  while (rest.length > 0) {
-    if (rest[0] === "#") {
-      const m = rest.match(/^#([a-zA-Z0-9_:-]+)/);
-      if (!m || el.id !== m[1]) return false;
-      rest = rest.slice(m[0].length);
-    } else if (rest[0] === ".") {
-      const m = rest.match(/^\.([a-zA-Z0-9_-]+)/);
-      if (!m || !el.classList.contains(m[1])) return false;
-      rest = rest.slice(m[0].length);
-    } else if (rest[0] === "[") {
-      const m = rest.match(/^\[([^=\]]+)(?:=["']([^"']*)["'])?\]/);
-      if (!m) return false;
-      const attr = m[1].trim();
-      const val = el.getAttribute(attr);
-      if (m[2] !== undefined) {
-        if (val !== m[2]) return false;
-      } else if (val === null) {
-        return false;
-      }
-      rest = rest.slice(m[0].length);
-    } else {
-      return false;
-    }
-  }
-  return true;
-}
-
-function descendants(root) {
-  const out = [];
-  for (const ch of root.children) {
-    if (ch.nodeType === 1) {
-      out.push(ch);
-      out.push(...descendants(ch));
-    }
-  }
-  return out;
-}
-
-function tokenizeSelectorGroup(rawGroup) {
-  const tokens = [];
-  let i = 0;
-  const s = String(rawGroup || "").trim();
-  while (i < s.length) {
-    if (/\s/.test(s[i])) {
-      while (i < s.length && /\s/.test(s[i])) i += 1;
-      const prev = tokens[tokens.length - 1];
-      if (tokens.length > 0 && prev !== ">" && prev !== "+" && prev !== "~" && prev !== " ") {
-        tokens.push(" ");
-      }
-      continue;
-    }
-    if (s[i] === ">" || s[i] === "+" || s[i] === "~") {
-      if (tokens.length > 0 && tokens[tokens.length - 1] === " ") tokens.pop();
-      tokens.push(s[i]);
-      i += 1;
-      while (i < s.length && /\s/.test(s[i])) i += 1;
-      continue;
-    }
-    let buf = "";
-    let inBracket = false;
-    let quote = "";
-    while (i < s.length) {
-      const ch = s[i];
-      if (quote) {
-        buf += ch;
-        if (ch === quote) quote = "";
-        i += 1;
-        continue;
-      }
-      if (ch === '"' || ch === "'") {
-        quote = ch;
-        buf += ch;
-        i += 1;
-        continue;
-      }
-      if (ch === "[") inBracket = true;
-      if (ch === "]") inBracket = false;
-      if (!inBracket && (/\s/.test(ch) || ch === ">" || ch === "+" || ch === "~")) {
-        break;
-      }
-      buf += ch;
-      i += 1;
-    }
-    if (buf) tokens.push(buf);
-  }
-  if (tokens.length > 0 && tokens[tokens.length - 1] === " ") tokens.pop();
-  return tokens;
-}
-
-function matchSelectorAll(root, selector) {
-  const groups = String(selector).split(",");
-  const results = [];
-  const seen = new Set();
-  const isComb = (tok) => tok === " " || tok === ">" || tok === "+" || tok === "~";
-  for (const rawGroup of groups) {
-    const tokens = tokenizeSelectorGroup(rawGroup);
-    if (tokens.length === 0 || isComb(tokens[0])) continue;
-    let currentMatches = descendants(root).filter((n) => matchesSimple(n, tokens[0]));
-    for (let idx = 1; idx < tokens.length; idx += 2) {
-      const comb = tokens[idx];
-      const part = tokens[idx + 1];
-      if (!part || isComb(part)) {
-        currentMatches = [];
-        break;
-      }
-      const next = [];
-      const nextSeen = new Set();
-      const pushIfMatch = (node) => {
-        if (!nextSeen.has(node) && matchesSimple(node, part)) {
-          nextSeen.add(node);
-          next.push(node);
-        }
-      };
-      for (const r of currentMatches) {
-        if (comb === " ") {
-          for (const d of descendants(r)) pushIfMatch(d);
-        } else if (comb === ">") {
-          for (const ch of r.children) {
-            if (ch.nodeType === 1) pushIfMatch(ch);
-          }
-        } else if (comb === "+" || comb === "~") {
-          const parent = r.parentNode;
-          if (!parent || !Array.isArray(parent.children)) continue;
-          const elemSibs = parent.children.filter((ch) => ch.nodeType === 1);
-          const pos = elemSibs.indexOf(r);
-          if (pos < 0) continue;
-          if (comb === "+") {
-            if (pos + 1 < elemSibs.length) pushIfMatch(elemSibs[pos + 1]);
-          } else {
-            for (let k = pos + 1; k < elemSibs.length; k += 1) pushIfMatch(elemSibs[k]);
-          }
-        }
-      }
-      currentMatches = next;
-      if (currentMatches.length === 0) break;
-    }
-    for (const c of currentMatches) {
-      if (!seen.has(c)) {
-        seen.add(c);
-        results.push(c);
-      }
-    }
-  }
-  return results;
-}
-
-function buildElement(node) {
-  if (node.tag === "#text") return new TextNode(node.text || "");
-  const el = new Element(node.tag, node.attrs || {});
-  for (const ch of node.children || []) {
-    const built = buildElement(ch);
-    if (built) el.appendChild(built);
-  }
-  return el;
-}
-
-const docRoot = new Element("html");
-for (const ch of domTree.children || []) {
-  docRoot.appendChild(buildElement(ch));
-}
-
-const storageMap = new Map();
-const docListeners = new Map();
-const winListeners = new Map();
 const activeIntervals = new Set();
 const activeTimeouts = new Set();
 const recordedTimeoutDelays = [];
@@ -2615,80 +2063,171 @@ const windowErrors = [];
 const fetchLog = [];
 let reloadCount = 0;
 
-const documentObj = {
-  visibilityState: "visible",
-  documentElement: docRoot,
-  get body() {
-    return descendants(docRoot).find((n) => n.tagName === "BODY") || null;
-  },
-  getElementById(id) {
-    return descendants(docRoot).find((n) => n.id === id) || null;
-  },
-  querySelectorAll(sel) {
-    return matchSelectorAll(docRoot, sel);
-  },
-  querySelector(sel) {
-    return matchSelectorAll(docRoot, sel)[0] || null;
-  },
-  createElement(tag) {
-    return new Element(tag);
-  },
-  createElementNS(_ns, tag) {
-    return new Element(tag);
-  },
-  createTextNode(txt) {
-    return new TextNode(txt);
-  },
-  addEventListener(type, fn) {
-    if (!docListeners.has(type)) docListeners.set(type, []);
-    docListeners.get(type).push(fn);
-  },
-  dispatchEvent(evOrType) {
-    const ev = typeof evOrType === "string" ? { type: evOrType } : evOrType;
-    for (const fn of docListeners.get(ev.type) || []) fn(ev);
-  },
+const virtualConsole = new VirtualConsole();
+virtualConsole.on("jsdomError", (err) => {
+  const msg = String((err && err.message) || err || "");
+  if (msg.includes("Not implemented: navigation")) {
+    reloadCount += 1;
+    return;
+  }
+  windowErrors.push(msg);
+});
+
+const dom = new JSDOM(html, {
+  url: `${baseUrl}/`,
+  pretendToBeVisual: true,
+  runScripts: "outside-only",
+  virtualConsole,
+});
+
+const { window } = dom;
+const ctx = dom.getInternalVMContext();
+
+// Preserve unsanitized invalid strings (e.g. "abc") on <input type="number"> for validation tests
+const origInputValueDesc = Object.getOwnPropertyDescriptor(
+  window.HTMLInputElement.prototype,
+  "value"
+);
+if (origInputValueDesc && origInputValueDesc.get && origInputValueDesc.set) {
+  Object.defineProperty(window.HTMLInputElement.prototype, "value", {
+    configurable: true,
+    enumerable: origInputValueDesc.enumerable,
+    get() {
+      const cur = origInputValueDesc.get.call(this);
+      if (this.type === "number" && cur === "" && this.__siRawUnsanitizedValue !== undefined) {
+        return this.__siRawUnsanitizedValue;
+      }
+      return cur;
+    },
+    set(val) {
+      const strVal = val === null || val === undefined ? "" : String(val);
+      delete this.__siRawUnsanitizedValue;
+      origInputValueDesc.set.call(this, strVal);
+      if (this.type === "number" && strVal !== "" && origInputValueDesc.get.call(this) === "") {
+        this.__siRawUnsanitizedValue = strVal;
+      }
+    },
+  });
+}
+
+// Array-method ergonomics on NodeList / HTMLCollection for legacy test scenarios
+for (const proto of [window.NodeList?.prototype, window.HTMLCollection?.prototype]) {
+  if (!proto) continue;
+  for (const method of ["map", "filter", "some", "every", "find", "reduce"]) {
+    if (typeof proto[method] !== "function") {
+      Object.defineProperty(proto, method, {
+        configurable: true,
+        writable: true,
+        value(...args) {
+          return Array.from(this)[method](...args);
+        },
+      });
+    }
+  }
+}
+
+// Seamless synthetic + legacy string/object dispatchEvent with React _valueTracker & scheduler sync
+const microQueue = [];
+const macroQueue = [];
+let flushingReact = false;
+let scenarioFinished = false;
+
+function flushReactScheduler() {
+  if (flushingReact || scenarioFinished) return;
+  flushingReact = true;
+  try {
+    let guard = 0;
+    while ((microQueue.length > 0 || macroQueue.length > 0) && guard++ < 50) {
+      while (microQueue.length > 0) {
+        const fn = microQueue.shift();
+        fn();
+      }
+      if (macroQueue.length > 0) {
+        const fn = macroQueue.shift();
+        fn();
+      }
+    }
+  } finally {
+    flushingReact = false;
+  }
+}
+
+window.queueMicrotask = (fn) => {
+  if (scenarioFinished) return;
+  microQueue.push(fn);
+  queueMicrotask(flushReactScheduler);
+};
+window.setImmediate = (fn) => {
+  if (scenarioFinished) return 0;
+  macroQueue.push(fn);
+  setImmediate(flushReactScheduler);
+  return 1;
 };
 
-const parsedBase = new URL(baseUrl);
-const windowObj = {
-  location: {
-    href: baseUrl + "/",
-    port: parsedBase.port,
-    hash: "",
-    reload() {
-      reloadCount += 1;
-    },
-  },
-  history: {
-    replaceState(_s, _t, url) {
-      const str = String(url || "");
-      if (str.startsWith("#")) windowObj.location.hash = str;
-    },
-  },
-  addEventListener(type, fn) {
-    if (!winListeners.has(type)) winListeners.set(type, []);
-    winListeners.get(type).push(fn);
-  },
-  getComputedStyle(node) {
-    if (!node || !node.style) return { display: "" };
-    const disp = node.hidden ? "none" : (node.style.display || "");
-    return new Proxy(
-      { display: disp, getPropertyValue: (k) => (k === "display" ? disp : node.style.getPropertyValue(k)) },
-      {
-        get(t, p) {
-          if (p in t) return t[p];
-          if (typeof p === "symbol") return undefined;
-          return node.style[p] || "";
-        },
-      }
-    );
-  },
+const origClick = window.HTMLElement.prototype.click;
+window.HTMLElement.prototype.click = function patchedClick() {
+  const res = origClick.call(this);
+  flushReactScheduler();
+  return res;
+};
+
+const origDispatchEvent = window.EventTarget.prototype.dispatchEvent;
+window.EventTarget.prototype.dispatchEvent = function patchedDispatchEvent(evOrType) {
+  let ev = evOrType;
+  if (typeof evOrType === "string") {
+    ev = new window.Event(evOrType, { bubbles: true, cancelable: true });
+  } else if (evOrType && !(evOrType instanceof window.Event) && typeof evOrType === "object") {
+    const type = String(evOrType.type || "custom");
+    if (
+      type.startsWith("mouse") ||
+      type.startsWith("pointer") ||
+      type === "click" ||
+      type === "dblclick"
+    ) {
+      ev = new window.MouseEvent(type, {
+        bubbles: evOrType.bubbles !== undefined ? Boolean(evOrType.bubbles) : true,
+        cancelable: evOrType.cancelable !== undefined ? Boolean(evOrType.cancelable) : true,
+        clientX: Number(evOrType.clientX || 0),
+        clientY: Number(evOrType.clientY || 0),
+        button: evOrType.button !== undefined ? Number(evOrType.button) : 0,
+      });
+    } else if (type.startsWith("key")) {
+      ev = new window.KeyboardEvent(type, {
+        bubbles: evOrType.bubbles !== undefined ? Boolean(evOrType.bubbles) : true,
+        cancelable: evOrType.cancelable !== undefined ? Boolean(evOrType.cancelable) : true,
+        key: String(evOrType.key || ""),
+      });
+    } else {
+      ev = new window.Event(type, {
+        bubbles: evOrType.bubbles !== undefined ? Boolean(evOrType.bubbles) : true,
+        cancelable: evOrType.cancelable !== undefined ? Boolean(evOrType.cancelable) : true,
+      });
+    }
+  }
+  if (
+    ev &&
+    (ev.type === "input" || ev.type === "change") &&
+    this &&
+    this._valueTracker &&
+    typeof this._valueTracker.setValue === "function"
+  ) {
+    this._valueTracker.setValue(`__si_force_diff__${Math.random()}`);
+  }
+  const out = origDispatchEvent.call(this, ev);
+  flushReactScheduler();
+  return out;
 };
 
 const nativeFetch = globalThis.fetch;
 async function wrappedFetch(url, opts = {}) {
-  const fullUrl = String(url).startsWith("http") ? String(url) : `${baseUrl}${url.startsWith("/") ? "" : "/"}${url}`;
-  const reqInfo = { url: String(url), method: (opts.method || "GET").toUpperCase(), body: null };
+  if (scenarioFinished) {
+    return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+  }
+  const urlStr = String(url);
+  const fullUrl = urlStr.startsWith("http")
+    ? urlStr
+    : `${baseUrl}${urlStr.startsWith("/") ? "" : "/"}${urlStr}`;
+  const reqInfo = { url: urlStr, method: String(opts.method || "GET").toUpperCase(), body: null };
   if (opts.body) {
     try {
       reqInfo.body = JSON.parse(String(opts.body));
@@ -2697,20 +2236,23 @@ async function wrappedFetch(url, opts = {}) {
     }
   }
   fetchLog.push(reqInfo);
-  if (fetchPatchJs) {
-    const patchFn = vm.runInContext(`(${fetchPatchJs})`, ctx);
-    const custom = await patchFn(String(url), opts, fullUrl, nativeFetch);
+  if (window.__siFetchHook) {
+    const custom = await window.__siFetchHook(urlStr, opts, fullUrl, nativeFetch);
     if (custom !== undefined) return custom;
   }
   return nativeFetch(fullUrl, opts);
 }
 
 function trackedSetTimeout(fn, ms = 0, ...args) {
-  recordedTimeoutDelays.push(Number(ms || 0));
+  if (scenarioFinished) return 0;
+  const numMs = Number(ms || 0);
+  recordedTimeoutDelays.push(numMs);
   const id = setTimeout(() => {
     activeTimeouts.delete(id);
+    if (scenarioFinished) return;
     fn(...args);
-  }, ms);
+    flushReactScheduler();
+  }, Math.max(0, numMs));
   activeTimeouts.add(id);
   return id;
 }
@@ -2719,7 +2261,12 @@ function trackedClearTimeout(id) {
   clearTimeout(id);
 }
 function trackedSetInterval(fn, ms = 0, ...args) {
-  const id = setInterval(fn, ms, ...args);
+  if (scenarioFinished) return 0;
+  const id = setInterval(() => {
+    if (scenarioFinished) return;
+    fn(...args);
+    flushReactScheduler();
+  }, Math.max(50, Number(ms || 0)));
   activeIntervals.add(id);
   return id;
 }
@@ -2728,93 +2275,113 @@ function trackedClearInterval(id) {
   clearInterval(id);
 }
 
-const sandbox = {
-  document: documentObj,
-  window: windowObj,
-  sessionStorage: {
-    getItem: (k) => (storageMap.has(String(k)) ? storageMap.get(String(k)) : null),
-    setItem: (k, v) => storageMap.set(String(k), String(v)),
-    removeItem: (k) => storageMap.delete(String(k)),
-  },
-  fetch: wrappedFetch,
-  fetchLog,
-  get reloadCount() {
+window.fetch = wrappedFetch;
+window.AbortController = AbortController;
+window.setTimeout = trackedSetTimeout;
+window.clearTimeout = trackedClearTimeout;
+window.setInterval = trackedSetInterval;
+window.clearInterval = trackedClearInterval;
+window.fetchLog = fetchLog;
+window.recordedTimeoutDelays = recordedTimeoutDelays;
+Object.defineProperty(window, "reloadCount", {
+  configurable: true,
+  enumerable: true,
+  get() {
     return reloadCount;
   },
-  AbortController,
-  URL,
-  URLSearchParams,
-  setTimeout: trackedSetTimeout,
-  clearTimeout: trackedClearTimeout,
-  setInterval: trackedSetInterval,
-  clearInterval: trackedClearInterval,
-  Date,
-  Math,
-  Number,
-  String,
-  Boolean,
-  Array,
-  Object,
-  JSON,
-  Map,
-  Set,
-  RegExp,
-  Error,
-  TypeError,
-  Promise,
-  console: { log() {}, warn() {}, error(...a) { errors.push(a.map(String).join(" ")); } },
-  __waitUntil: async (pred, timeoutMs = 4000) => {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (pred()) return true;
-      await new Promise((r) => setTimeout(r, 25));
+});
+window.console = {
+  log() {},
+  info() {},
+  debug() {},
+  warn() {},
+  error(...a) {
+    if (!scenarioFinished) {
+      errors.push(a.map(String).join(" "));
     }
-    return Boolean(pred());
-  },
-  __sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-  __serializeTable: (tbodyId) => {
-    const tb = documentObj.getElementById(tbodyId);
-    if (!tb) return [];
-    return tb.children
-      .filter((c) => c.nodeType === 1 && c.tagName === "TR")
-      .map((tr) =>
-        tr.children
-          .filter((td) => td.nodeType === 1 && td.tagName === "TD")
-          .map((td) => ({
-            text: td.textContent.replace(/\s+/g, " ").trim(),
-            className: td.className,
-            colSpan: td.colSpan,
-            pills: td.querySelectorAll(".eta-pill").map((p) => ({
-              text: p.textContent.trim(),
-              className: p.className,
-            })),
-            buttons: td.querySelectorAll("button").map((b) => b.textContent.trim()),
-          }))
-      );
-  },
-  __snapshotElement: (id) => {
-    const node = documentObj.getElementById(id);
-    if (!node) return null;
-    return {
-      id: node.id,
-      tagName: node.tagName,
-      className: node.className,
-      hidden: node.hidden,
-      disabled: node.disabled,
-      value: node.value,
-      checked: node.checked,
-      textContent: node.textContent.replace(/\s+/g, " ").trim(),
-      options: node.tagName === "SELECT" ? node.querySelectorAll("option").map((o) => ({ value: o.value, text: o.textContent.trim(), selected: o.selected })) : undefined,
-    };
   },
 };
-sandbox.globalThis = sandbox;
-const ctx = vm.createContext(sandbox);
+window.__waitUntil = async (pred, timeoutMs = 10000) => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    flushReactScheduler();
+    if (pred()) return true;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  flushReactScheduler();
+  return Boolean(pred());
+};
+window.__sleep = async (ms) => {
+  await new Promise((r) => setTimeout(r, ms));
+  flushReactScheduler();
+};
+window.__serializeTable = (tbodyId) => {
+  flushReactScheduler();
+  const tb = window.document.getElementById(tbodyId);
+  if (!tb) return [];
+  return Array.from(tb.children)
+    .filter((c) => c.nodeType === 1 && c.tagName === "TR")
+    .map((tr) =>
+      Array.from(tr.children)
+        .filter((td) => td.nodeType === 1 && td.tagName === "TD")
+        .map((td) => ({
+          text: (td.textContent || "").replace(/\s+/g, " ").trim(),
+          className: typeof td.className === "string" ? td.className : td.getAttribute("class") || "",
+          colSpan: td.colSpan || 1,
+          pills: Array.from(td.querySelectorAll(".eta-pill")).map((p) => ({
+            text: (p.textContent || "").trim(),
+            className: typeof p.className === "string" ? p.className : p.getAttribute("class") || "",
+          })),
+          buttons: Array.from(td.querySelectorAll("button")).map((b) =>
+            (b.textContent || "").trim()
+          ),
+        }))
+    );
+};
+window.__snapshotElement = (id) => {
+  flushReactScheduler();
+  const node = window.document.getElementById(id);
+  if (!node) return null;
+  return {
+    id: node.id,
+    tagName: node.tagName,
+    className: typeof node.className === "string" ? node.className : node.getAttribute("class") || "",
+    hidden: Boolean(node.hidden),
+    disabled: Boolean(node.disabled),
+    value: node.value ?? "",
+    checked: Boolean(node.checked),
+    textContent: (node.textContent || "").replace(/\s+/g, " ").trim(),
+    options:
+      node.tagName === "SELECT"
+        ? Array.from(node.querySelectorAll("option")).map((o) => ({
+            value: o.value,
+            text: (o.textContent || "").trim(),
+            selected: Boolean(o.selected),
+          }))
+        : undefined,
+  };
+};
+
+if (fetchPatchJs) {
+  window.__siFetchHook = vm.runInContext(`(${fetchPatchJs})`, ctx);
+}
 
 (async () => {
+  let exitCode = 0;
+  let outStr = "";
   try {
+    await new Promise((r) => setImmediate(r));
     vm.runInContext(appJs, ctx, { filename: "app.js" });
-    await sandbox.__sleep(120);
+    flushReactScheduler();
+    if (typeof window.loadDashboard === "function") {
+      const origLoadDash = window.loadDashboard;
+      window.loadDashboard = async (...args) => {
+        const res = await origLoadDash(...args);
+        flushReactScheduler();
+        return res;
+      };
+    }
+    await window.__sleep(120);
     let scenarioOut = null;
     if (scenarioJs) {
       scenarioOut = await vm.runInContext(
@@ -2822,36 +2389,36 @@ const ctx = vm.createContext(sandbox);
         ctx,
         { filename: "scenario.js" }
       );
+      flushReactScheduler();
     }
-    process.stdout.write(
-      JSON.stringify({
-        ok: true,
-        errors,
-        windowErrors,
-        reloadCount,
-        fetchLog,
-        recordedTimeoutDelays,
-        scenario: scenarioOut,
-      })
-    );
+    outStr = JSON.stringify({
+      ok: true,
+      errors,
+      windowErrors,
+      reloadCount,
+      fetchLog,
+      recordedTimeoutDelays,
+      scenario: scenarioOut,
+    });
   } catch (err) {
     windowErrors.push(err && err.message ? err.message : String(err));
-    process.stdout.write(
-      JSON.stringify({
-        ok: false,
-        fatal: err && err.stack ? err.stack : String(err),
-        errors,
-        windowErrors,
-        reloadCount,
-        fetchLog,
-        recordedTimeoutDelays,
-      })
-    );
-    process.exitCode = 1;
+    outStr = JSON.stringify({
+      ok: false,
+      fatal: err && err.stack ? err.stack : String(err),
+      errors,
+      windowErrors,
+      reloadCount,
+      fetchLog,
+      recordedTimeoutDelays,
+    });
+    exitCode = 1;
   } finally {
+    scenarioFinished = true;
     for (const id of activeIntervals) clearInterval(id);
     for (const id of activeTimeouts) clearTimeout(id);
   }
+  fs.writeSync(1, outStr);
+  process.exit(exitCode);
 })();
 """
 
@@ -2861,9 +2428,9 @@ def run_ui_in_node(
     scenario_js: str = "",
     *,
     fetch_patch_js: str = "",
-    timeout: float = 15.0,
+    timeout: float = 30.0,
 ) -> dict[str, Any]:
-    """Fetch real `GET /` and `GET /app.js` over HTTP and execute inside Node `vm` against `base_url`."""
+    """Fetch real `GET /` and `GET /app.js` over HTTP and execute inside real `jsdom` against `base_url`."""
     import requests
 
     html_resp = requests.get(f"{base_url}/", timeout=5.0)
@@ -2872,19 +2439,22 @@ def run_ui_in_node(
     js_resp.raise_for_status()
 
     inspected = inspect_ui_html(html_resp.text)
+    jsdom_path = Path(__file__).resolve().parents[2] / "frontend" / "node_modules" / "jsdom"
     with tempfile.TemporaryDirectory(prefix="si_ui_node_") as tmp:
         tmp_path = Path(tmp)
-        runner_js = tmp_path / "runner.js"
+        runner_js = tmp_path / "runner.cjs"
         payload_json = tmp_path / "payload.json"
         runner_js.write_text(_NODE_HARNESS_SCRIPT, encoding="utf-8")
         payload_json.write_text(
             json.dumps(
                 {
                     "baseUrl": base_url.rstrip("/"),
+                    "html": html_resp.text,
                     "domTree": inspected["tree"],
                     "appJs": js_resp.text,
                     "scenarioJs": scenario_js,
                     "fetchPatchJs": fetch_patch_js,
+                    "jsdomPath": str(jsdom_path),
                 }
             ),
             encoding="utf-8",

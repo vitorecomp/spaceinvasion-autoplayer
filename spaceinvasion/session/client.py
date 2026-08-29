@@ -723,8 +723,45 @@ class GameBrowserClient:
                 diag["raw_preview"] = html[:1000]
         return diag
 
+    def _is_antibot_visible_in_live_dom(self) -> Optional[bool]:
+        """Read-only visibility check for real Selenium drivers to ignore hidden/dismissed modal residue."""
+        if not getattr(self.driver, "__class__", object).__module__.startswith("selenium"):
+            return None
+        try:
+            res = self.driver.execute_script(
+                "function isVis(el) {"
+                "  if (!el) return false;"
+                "  var cur = el;"
+                "  while (cur && cur.nodeType === 1) {"
+                "    if (cur.hidden || cur.getAttribute('aria-hidden') === 'true') return false;"
+                "    var st = window.getComputedStyle(cur);"
+                "    if (!st || st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;"
+                "    cur = cur.parentElement;"
+                "  }"
+                "  var r = el.getBoundingClientRect();"
+                "  return r.width > 0 && r.height > 0;"
+                "}"
+                "var sels = ['#si-captcha-gate', '.cf-turnstile', '.cf-challenge', '.g-recaptcha', '.h-captcha', 'iframe[src*=\"challenges.cloudflare.com\"]'];"
+                "for (var i = 0; i < sels.length; i++) {"
+                "  var nodes = document.querySelectorAll(sels[i]);"
+                "  for (var j = 0; j < nodes.length; j++) {"
+                "    if (isVis(nodes[j])) return true;"
+                "  }"
+                "}"
+                "var t = (document.title || '').toLowerCase();"
+                "if (t.indexOf('just a moment') !== -1 || t.indexOf('attention required!') !== -1) return true;"
+                "var bodyTxt = (document.body && document.body.innerText ? document.body.innerText : '').toLowerCase();"
+                "if (bodyTxt.indexOf('sicherheitsprüfung') !== -1 || bodyTxt.indexOf('sicherheitspruefung') !== -1 || bodyTxt.indexOf('confirm that you are not a bot') !== -1 || bodyTxt.indexOf('dass du kein bot bist') !== -1) return true;"
+                "return false;"
+            )
+            return res if isinstance(res, bool) else None
+        except Exception:
+            return None
+
     def _check_page_guards(self, html: str) -> None:
         issue = detect_antibot_challenge(200, html)
+        if issue and self._is_antibot_visible_in_live_dom() is False:
+            issue = None
         if issue:
             err_ab = AntiBotChallengeError(
                 f"{issue}. Stopping automation; handle verification in Chrome."
@@ -853,6 +890,11 @@ class GameBrowserClient:
 
             if top_shell_html:
                 top_issue = detect_antibot_challenge(200, top_shell_html)
+                if top_issue and missing_exc is None:
+                    with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
+                        self.driver.switch_to.default_content()
+                        if self._is_antibot_visible_in_live_dom() is False:
+                            top_issue = None
                 if top_issue:
                     err_top_ab = AntiBotChallengeError(
                         f"{top_issue}. Stopping automation; handle verification in Chrome."
@@ -1505,7 +1547,8 @@ class GameBrowserClient:
         try:
             self._switch_frame("F_Hauptframe")
             probe = self.driver.execute_script(
-                "if (document.getElementById('si-captcha-gate')) return 'captcha';"
+                "var cg = document.getElementById('si-captcha-gate');"
+                "if (cg && window.getComputedStyle(cg).display !== 'none' && window.getComputedStyle(cg).visibility !== 'hidden' && cg.offsetWidth > 0 && cg.offsetHeight > 0) return 'captcha';"
                 "if (window.si && typeof window.si.navigate === 'function' && typeof window.si.getData === 'function') {"
                 "  return {ok: true, g: Number(window.si.galaxy || 0), s: Number(window.si.sun || 0), busy: Boolean(window.si._getStatus)};"
                 "}"

@@ -146,376 +146,312 @@ class _TableInspector(HTMLParser):
 
 _NODE_DOM_HARNESS = r"""
 const fs = require("node:fs");
+const path = require("node:path");
 const vm = require("node:vm");
 
 const cfg = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const baseUrl = String(cfg.baseUrl || "http://127.0.0.1:8787").replace(/\/$/, "");
 const html = fs.readFileSync(cfg.htmlPath, "utf8");
 const appJs = fs.readFileSync(cfg.appJsPath, "utf8");
 const scenarioJs = fs.readFileSync(cfg.scenarioPath, "utf8");
+const jsdomPath = cfg.jsdomPath || path.resolve(process.cwd(), "frontend/node_modules/jsdom");
 
-function parseAttrs(attrStr) {
-  const attrs = {};
-  const re = /([A-Za-z_:][A-Za-z0-9_.:-]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
-  let m;
-  while ((m = re.exec(attrStr)) !== null) {
-    const key = m[1];
-    const val = m[2] !== undefined ? m[2] : (m[3] !== undefined ? m[3] : (m[4] !== undefined ? m[4] : ""));
-    attrs[key] = val;
-  }
-  return attrs;
-}
-
-function makeStyleProxy() {
-  const props = new Map();
-  return new Proxy({
-    setProperty(k, v) { props.set(String(k), String(v)); },
-    getPropertyValue(k) { return props.get(String(k)) || ""; },
-    removeProperty(k) { props.delete(String(k)); },
-  }, {
-    get(target, prop) {
-      if (prop in target) return target[prop];
-      return props.get(String(prop)) || "";
-    },
-    set(_target, prop, val) {
-      props.set(String(prop), String(val));
-      return true;
-    },
-  });
-}
-
-class MiniElement {
-  constructor(tagName, attrs = {}) {
-    this.nodeType = 1;
-    this.tagName = String(tagName || "DIV").toUpperCase();
-    this.children = [];
-    this.parentNode = null;
-    this.parentElement = null;
-    this._attrs = {};
-    this._listeners = new Map();
-    this.style = makeStyleProxy();
-    this.dataset = {};
-    this._text = "";
-    this._id = "";
-    this._classSet = new Set();
-    this.hidden = false;
-    this.disabled = false;
-    this.checked = false;
-    this.selected = false;
-    this.colSpan = 1;
-    this.value = "";
-    this.type = "";
-    this.href = "";
-    this.min = "";
-    this.max = "";
-    this.step = "";
-    const self = this;
-    this.classList = {
-      add(...cs) { cs.forEach((c) => { if (c) self._classSet.add(c); }); },
-      remove(...cs) { cs.forEach((c) => self._classSet.delete(c)); },
-      contains(c) { return self._classSet.has(c); },
-      toggle(c, force) {
-        if (force === undefined) {
-          if (self._classSet.has(c)) { self._classSet.delete(c); return false; }
-          self._classSet.add(c); return true;
-        }
-        if (force) { self._classSet.add(c); return true; }
-        self._classSet.delete(c); return false;
-      },
-    };
-    for (const [k, v] of Object.entries(attrs)) this.setAttribute(k, v);
-  }
-  get id() { return this._id; }
-  set id(v) { this._id = String(v || ""); this._attrs.id = this._id; }
-  get className() { return Array.from(this._classSet).join(" "); }
-  set className(v) {
-    this._classSet = new Set(String(v || "").split(/\s+/).filter(Boolean));
-    this._attrs.class = this.className;
-  }
-  get textContent() {
-    if (this.children.length === 0) return this._text;
-    return this._text + this.children.map((c) => c.textContent).join(" ");
-  }
-  set textContent(v) {
-    this.children = [];
-    this._text = v == null ? "" : String(v);
-  }
-  setAttribute(k, v) {
-    const key = String(k);
-    const val = v == null ? "" : String(v);
-    this._attrs[key] = val;
-    if (key === "id") this._id = val;
-    else if (key === "class") this.className = val;
-    else if (key === "hidden") this.hidden = true;
-    else if (key === "disabled") this.disabled = true;
-    else if (key === "checked") this.checked = true;
-    else if (key === "selected") this.selected = true;
-    else if (key === "value") this.value = val;
-    else if (key === "type") this.type = val;
-    else if (key === "href") this.href = val;
-    else if (key.startsWith("data-")) {
-      const camel = key.slice(5).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
-      this.dataset[camel] = val;
-    }
-  }
-  getAttribute(k) {
-    if (k === "id") return this._id || null;
-    if (k === "class") return this.className || null;
-    return k in this._attrs ? this._attrs[k] : null;
-  }
-  removeAttribute(k) {
-    delete this._attrs[k];
-    if (k === "hidden") this.hidden = false;
-    if (k === "disabled") this.disabled = false;
-  }
-  appendChild(child) {
-    if (!child) return child;
-    if (child.nodeType === 3) {
-      this._text += child.textContent;
-      return child;
-    }
-    child.parentNode = this;
-    child.parentElement = this;
-    this.children.push(child);
-    if (this.tagName === "SELECT" && child.tagName === "OPTION" && (child.selected || this.value === "")) {
-      this.value = child.value;
-    }
-    return child;
-  }
-  append(...nodes) {
-    for (const n of nodes) {
-      if (typeof n === "string") this._text += n;
-      else this.appendChild(n);
-    }
-  }
-  replaceChildren(...nodes) {
-    this.children = [];
-    this._text = "";
-    this.append(...nodes);
-  }
-  addEventListener(type, fn) {
-    if (!this._listeners.has(type)) this._listeners.set(type, []);
-    this._listeners.get(type).push(fn);
-  }
-  removeEventListener(type, fn) {
-    const arr = this._listeners.get(type) || [];
-    this._listeners.set(type, arr.filter((x) => x !== fn));
-  }
-  dispatchEvent(evOrType) {
-    const ev = typeof evOrType === "string" ? { type: evOrType, target: this, currentTarget: this, stopPropagation() {}, preventDefault() {} } : { ...evOrType, target: evOrType.target || this, currentTarget: this, stopPropagation() {}, preventDefault() {} };
-    for (const fn of (this._listeners.get(ev.type) || [])) {
-      fn.call(this, ev);
-    }
-    return true;
-  }
-  click() {
-    if (typeof this.onclick === "function") this.onclick({ type: "click", target: this, currentTarget: this, stopPropagation() {}, preventDefault() {} });
-    this.dispatchEvent("click");
-  }
-  matches(sel) {
-    return sel.split(",").map((s) => s.trim()).filter(Boolean).some((part) => {
-      const tokens = part.trim().split(/\s+/);
-      if (tokens.length === 1) return matchAtom(this, tokens[0]);
-      if (!matchAtom(this, tokens[tokens.length - 1])) return false;
-      let cur = this.parentElement;
-      for (let i = tokens.length - 2; i >= 0; i--) {
-        while (cur && !matchAtom(cur, tokens[i])) cur = cur.parentElement;
-        if (!cur) return false;
-        cur = cur.parentElement;
-      }
-      return true;
-    });
-  }
-  querySelectorAll(sel) {
-    const out = [];
-    const walk = (node) => {
-      for (const ch of node.children) {
-        if (ch.matches(sel)) out.push(ch);
-        walk(ch);
-      }
-    };
-    walk(this);
-    return out;
-  }
-  querySelector(sel) {
-    return this.querySelectorAll(sel)[0] || null;
-  }
-}
-
-function matchAtom(el, atom) {
-  let s = atom.trim();
-  if (!s) return false;
-  if (s === "*") return true;
-  const tagM = /^[A-Za-z0-9_-]+/.exec(s);
-  if (tagM) {
-    if (el.tagName !== tagM[0].toUpperCase()) return false;
-    s = s.slice(tagM[0].length);
-  }
-  while (s.length > 0) {
-    if (s[0] === "#") {
-      const m = /^#([A-Za-z0-9_-]+)/.exec(s);
-      if (!m || el.id !== m[1]) return false;
-      s = s.slice(m[0].length);
-    } else if (s[0] === ".") {
-      const m = /^\.([A-Za-z0-9_-]+)/.exec(s);
-      if (!m || !el.classList.contains(m[1])) return false;
-      s = s.slice(m[0].length);
-    } else if (s[0] === "[") {
-      const m = /^\[([^=\]]+)(?:="([^"]*)")?\]/.exec(s);
-      if (!m) return false;
-      const got = el.getAttribute(m[1]);
-      if (m[2] !== undefined) { if (got !== m[2]) return false; }
-      else if (got === null) return false;
-      s = s.slice(m[0].length);
-    } else {
-      return false;
-    }
-  }
-  return true;
-}
-
-const VOID_TAGS = new Set(["meta", "link", "input", "br", "hr", "img"]);
-const root = new MiniElement("HTML");
-const stack = [root];
-const tokenRe = /<!--[\s\S]*?-->|<\/?([A-Za-z0-9_-]+)([^>]*)>|([^<]+)/g;
-let tm;
-while ((tm = tokenRe.exec(html)) !== null) {
-  if (tm[3] !== undefined) {
-    const txt = tm[3].replace(/\s+/g, " ").trim();
-    if (txt) {
-      const top = stack[stack.length - 1];
-      top._text = top._text ? `${top._text} ${txt}` : txt;
-    }
-    continue;
-  }
-  if (!tm[1]) continue;
-  const raw = tm[0];
-  const tag = tm[1].toLowerCase();
-  const isClose = raw.startsWith("</");
-  if (isClose) {
-    for (let i = stack.length - 1; i > 0; i--) {
-      if (stack[i].tagName.toLowerCase() === tag) { stack.length = i; break; }
-    }
-    continue;
-  }
-  const attrs = parseAttrs(tm[2] || "");
-  const node = new MiniElement(tag, attrs);
-  stack[stack.length - 1].appendChild(node);
-  const selfClose = raw.endsWith("/>") || VOID_TAGS.has(tag);
-  if (!selfClose) stack.push(node);
-}
-
-const bodyEl = root.querySelector("body") || root;
-const document = {
-  visibilityState: "visible",
-  documentElement: root,
-  body: bodyEl,
-  getElementById(id) {
-    const walk = (n) => {
-      if (n.id === id) return n;
-      for (const ch of n.children) {
-        const hit = walk(ch);
-        if (hit) return hit;
-      }
-      return null;
-    };
-    return walk(root);
-  },
-  querySelectorAll(sel) { return root.querySelectorAll(sel); },
-  querySelector(sel) { return root.querySelector(sel); },
-  createElement(tag) { return new MiniElement(tag); },
-  createElementNS(_ns, tag) { return new MiniElement(tag); },
-  createTextNode(txt) { return { nodeType: 3, textContent: String(txt || "") }; },
-  addEventListener() {},
-};
+const { JSDOM, VirtualConsole } = require(jsdomPath);
 
 const errors = [];
 const recordedTimeoutDelays = [];
 const fetchLog = [];
 const timers = new Set();
 const intervals = new Set();
-const store = new Map();
+let reloadCount = 0;
 
-const sandbox = {
-  document,
-  window: {
-    location: { href: `${cfg.baseUrl}/`, port: String(new URL(cfg.baseUrl).port), hash: "", reload() {} },
-    history: { replaceState() {} },
-    addEventListener() {},
-  },
-  sessionStorage: {
-    getItem(k) { return store.has(k) ? store.get(k) : null; },
-    setItem(k, v) { store.set(String(k), String(v)); },
-    removeItem(k) { store.delete(k); },
-  },
-  AbortController,
-  URL,
-  URLSearchParams,
-  console: {
-    log() {},
-    warn() {},
-    error(...args) { errors.push(args.map((a) => String(a)).join(" ")); },
-  },
-  setTimeout(fn, ms, ...args) {
-    recordedTimeoutDelays.push(Number(ms || 0));
-    const t = global.setTimeout(() => { timers.delete(t); fn(...args); }, Math.min(Number(ms || 0), 2500));
-    timers.add(t);
-    return t;
-  },
-  clearTimeout(t) { timers.delete(t); global.clearTimeout(t); },
-  setInterval(fn, ms, ...args) {
-    const t = global.setInterval(fn, Math.max(200, Number(ms || 0)), ...args);
-    intervals.add(t);
-    return t;
-  },
-  clearInterval(t) { intervals.delete(t); global.clearInterval(t); },
-  fetch: async (url, opts = {}) => {
-    const fullUrl = String(url).startsWith("http") ? String(url) : `${cfg.baseUrl}${url}`;
-    const bodyObj = opts.body ? JSON.parse(String(opts.body)) : null;
-    fetchLog.push({ url: String(url), method: opts.method || "GET", body: bodyObj });
-    if (sandbox.__fetchHook) {
-      const custom = await sandbox.__fetchHook(String(url), opts, fullUrl, global.fetch);
-      if (custom !== undefined) return custom;
-    }
-    return await global.fetch(fullUrl, opts);
-  },
-  fetchLog,
-  recordedTimeoutDelays,
-  __waitUntil: async (pred, timeoutMs = 4000) => {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (pred()) return true;
-      await new Promise((r) => global.setTimeout(r, 20));
-    }
-    return false;
-  },
-  __sleep: (ms) => new Promise((r) => global.setTimeout(r, ms)),
-};
+const virtualConsole = new VirtualConsole();
+virtualConsole.on("jsdomError", (err) => {
+  const msg = String((err && err.message) || err || "");
+  if (msg.includes("Not implemented: navigation")) {
+    reloadCount += 1;
+    return;
+  }
+  errors.push(msg);
+});
 
-vm.createContext(sandbox);
-if (cfg.fetchPatchJs) {
-  sandbox.__fetchHook = vm.runInContext(`(${cfg.fetchPatchJs})`, sandbox);
+const dom = new JSDOM(html, {
+  url: `${baseUrl}/`,
+  pretendToBeVisual: true,
+  runScripts: "outside-only",
+  virtualConsole,
+});
+
+const { window } = dom;
+const ctx = dom.getInternalVMContext();
+
+// Preserve unsanitized invalid strings (e.g. "abc") on <input type="number"> for validation tests
+const origInputValueDesc = Object.getOwnPropertyDescriptor(
+  window.HTMLInputElement.prototype,
+  "value"
+);
+if (origInputValueDesc && origInputValueDesc.get && origInputValueDesc.set) {
+  Object.defineProperty(window.HTMLInputElement.prototype, "value", {
+    configurable: true,
+    enumerable: origInputValueDesc.enumerable,
+    get() {
+      const cur = origInputValueDesc.get.call(this);
+      if (this.type === "number" && cur === "" && this.__siRawUnsanitizedValue !== undefined) {
+        return this.__siRawUnsanitizedValue;
+      }
+      return cur;
+    },
+    set(val) {
+      const strVal = val === null || val === undefined ? "" : String(val);
+      delete this.__siRawUnsanitizedValue;
+      origInputValueDesc.set.call(this, strVal);
+      if (this.type === "number" && strVal !== "" && origInputValueDesc.get.call(this) === "") {
+        this.__siRawUnsanitizedValue = strVal;
+      }
+    },
+  });
 }
 
-vm.runInContext(appJs, sandbox);
+// Array-method ergonomics on NodeList / HTMLCollection for legacy test scenarios
+for (const proto of [window.NodeList?.prototype, window.HTMLCollection?.prototype]) {
+  if (!proto) continue;
+  for (const method of ["map", "filter", "some", "every", "find", "reduce"]) {
+    if (typeof proto[method] !== "function") {
+      Object.defineProperty(proto, method, {
+        configurable: true,
+        writable: true,
+        value(...args) {
+          return Array.from(this)[method](...args);
+        },
+      });
+    }
+  }
+}
+
+// Seamless synthetic + legacy string/object dispatchEvent with React _valueTracker & scheduler sync
+const microQueue = [];
+const macroQueue = [];
+let flushingReact = false;
+let scenarioFinished = false;
+
+function flushReactScheduler() {
+  if (flushingReact || scenarioFinished) return;
+  flushingReact = true;
+  try {
+    let guard = 0;
+    while ((microQueue.length > 0 || macroQueue.length > 0) && guard++ < 50) {
+      while (microQueue.length > 0) {
+        const fn = microQueue.shift();
+        fn();
+      }
+      if (macroQueue.length > 0) {
+        const fn = macroQueue.shift();
+        fn();
+      }
+    }
+  } finally {
+    flushingReact = false;
+  }
+}
+
+window.queueMicrotask = (fn) => {
+  if (scenarioFinished) return;
+  microQueue.push(fn);
+  queueMicrotask(flushReactScheduler);
+};
+window.setImmediate = (fn) => {
+  if (scenarioFinished) return 0;
+  macroQueue.push(fn);
+  setImmediate(flushReactScheduler);
+  return 1;
+};
+
+const origClick = window.HTMLElement.prototype.click;
+window.HTMLElement.prototype.click = function patchedClick() {
+  const res = origClick.call(this);
+  flushReactScheduler();
+  return res;
+};
+
+const origDispatchEvent = window.EventTarget.prototype.dispatchEvent;
+window.EventTarget.prototype.dispatchEvent = function patchedDispatchEvent(evOrType) {
+  let ev = evOrType;
+  if (typeof evOrType === "string") {
+    ev = new window.Event(evOrType, { bubbles: true, cancelable: true });
+  } else if (evOrType && !(evOrType instanceof window.Event) && typeof evOrType === "object") {
+    const type = String(evOrType.type || "custom");
+    if (
+      type.startsWith("mouse") ||
+      type.startsWith("pointer") ||
+      type === "click" ||
+      type === "dblclick"
+    ) {
+      ev = new window.MouseEvent(type, {
+        bubbles: evOrType.bubbles !== undefined ? Boolean(evOrType.bubbles) : true,
+        cancelable: evOrType.cancelable !== undefined ? Boolean(evOrType.cancelable) : true,
+        clientX: Number(evOrType.clientX || 0),
+        clientY: Number(evOrType.clientY || 0),
+        button: evOrType.button !== undefined ? Number(evOrType.button) : 0,
+      });
+    } else if (type.startsWith("key")) {
+      ev = new window.KeyboardEvent(type, {
+        bubbles: evOrType.bubbles !== undefined ? Boolean(evOrType.bubbles) : true,
+        cancelable: evOrType.cancelable !== undefined ? Boolean(evOrType.cancelable) : true,
+        key: String(evOrType.key || ""),
+      });
+    } else {
+      ev = new window.Event(type, {
+        bubbles: evOrType.bubbles !== undefined ? Boolean(evOrType.bubbles) : true,
+        cancelable: evOrType.cancelable !== undefined ? Boolean(evOrType.cancelable) : true,
+      });
+    }
+  }
+  if (
+    ev &&
+    (ev.type === "input" || ev.type === "change") &&
+    this &&
+    this._valueTracker &&
+    typeof this._valueTracker.setValue === "function"
+  ) {
+    this._valueTracker.setValue(`__si_force_diff__${Math.random()}`);
+  }
+  const out = origDispatchEvent.call(this, ev);
+  flushReactScheduler();
+  return out;
+};
+
+window.AbortController = AbortController;
+window.console = {
+  log() {},
+  info() {},
+  debug() {},
+  warn() {},
+  error(...args) {
+    if (!scenarioFinished) {
+      errors.push(args.map((a) => String(a)).join(" "));
+    }
+  },
+};
+window.setTimeout = function trackedSetTimeout(fn, ms, ...args) {
+  if (scenarioFinished) return 0;
+  const numMs = Number(ms || 0);
+  recordedTimeoutDelays.push(numMs);
+  const t = global.setTimeout(() => {
+    timers.delete(t);
+    if (scenarioFinished) return;
+    fn(...args);
+    flushReactScheduler();
+  }, Math.max(0, numMs));
+  timers.add(t);
+  return t;
+};
+window.clearTimeout = function trackedClearTimeout(t) {
+  timers.delete(t);
+  global.clearTimeout(t);
+};
+window.setInterval = function trackedSetInterval(fn, ms, ...args) {
+  if (scenarioFinished) return 0;
+  const t = global.setInterval(() => {
+    if (scenarioFinished) return;
+    fn(...args);
+    flushReactScheduler();
+  }, Math.max(200, Number(ms || 0)));
+  intervals.add(t);
+  return t;
+};
+window.clearInterval = function trackedClearInterval(t) {
+  intervals.delete(t);
+  global.clearInterval(t);
+};
+window.fetch = async (url, opts = {}) => {
+  if (scenarioFinished) {
+    return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+  }
+  const urlStr = String(url);
+  const fullUrl = urlStr.startsWith("http")
+    ? urlStr
+    : `${baseUrl}${urlStr.startsWith("/") ? "" : "/"}${urlStr}`;
+  let bodyObj = null;
+  if (opts.body) {
+    try {
+      bodyObj = JSON.parse(String(opts.body));
+    } catch {
+      bodyObj = String(opts.body);
+    }
+  }
+  fetchLog.push({ url: urlStr, method: opts.method || "GET", body: bodyObj });
+  if (window.__fetchHook) {
+    const custom = await window.__fetchHook(urlStr, opts, fullUrl, global.fetch);
+    if (custom !== undefined) return custom;
+  }
+  return await global.fetch(fullUrl, opts);
+};
+window.fetchLog = fetchLog;
+window.recordedTimeoutDelays = recordedTimeoutDelays;
+Object.defineProperty(window, "reloadCount", {
+  configurable: true,
+  enumerable: true,
+  get() {
+    return reloadCount;
+  },
+});
+window.__waitUntil = async (pred, timeoutMs = 10000) => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    flushReactScheduler();
+    if (pred()) return true;
+    await new Promise((r) => global.setTimeout(r, 20));
+  }
+  flushReactScheduler();
+  return Boolean(pred());
+};
+window.__sleep = async (ms) => {
+  await new Promise((r) => global.setTimeout(r, ms));
+  flushReactScheduler();
+};
+
+if (cfg.fetchPatchJs) {
+  window.__fetchHook = vm.runInContext(`(${cfg.fetchPatchJs})`, ctx);
+}
 
 (async () => {
+  let exitCode = 0;
+  let outStr = "";
   try {
-    const scenario = await vm.runInContext(`(async () => { ${scenarioJs} })()`, sandbox);
-    for (const t of timers) global.clearTimeout(t);
-    for (const i of intervals) global.clearInterval(i);
-    process.stdout.write(JSON.stringify({ ok: true, errors, recordedTimeoutDelays, fetchLog, scenario }));
+    await new Promise((r) => setImmediate(r));
+    vm.runInContext(appJs, ctx, { filename: "app.js" });
+    flushReactScheduler();
+    if (typeof window.loadDashboard === "function") {
+      const origLoadDash = window.loadDashboard;
+      window.loadDashboard = async (...args) => {
+        const res = await origLoadDash(...args);
+        flushReactScheduler();
+        return res;
+      };
+    }
+    const scenario = await vm.runInContext(`(async () => { ${scenarioJs} })()`, ctx, {
+      filename: "scenario.js",
+    });
+    flushReactScheduler();
+    outStr = JSON.stringify({ ok: true, errors, recordedTimeoutDelays, fetchLog, scenario });
   } catch (err) {
+    outStr = JSON.stringify({ ok: false, error: String(err && err.stack ? err.stack : err), errors });
+    exitCode = 1;
+  } finally {
+    scenarioFinished = true;
     for (const t of timers) global.clearTimeout(t);
     for (const i of intervals) global.clearInterval(i);
-    process.stdout.write(JSON.stringify({ ok: false, error: String(err && err.stack ? err.stack : err), errors }));
-    process.exitCode = 1;
   }
+  fs.writeSync(1, outStr);
+  process.exit(exitCode);
 })();
 """
 
 
 def _run_node_ui(base_url: str, scenario_js: str, *, fetch_patch_js: str = "") -> dict:
-    ui_dir = Path(__file__).resolve().parents[2] / "spaceinvasion" / "ui"
+    repo_root = Path(__file__).resolve().parents[2]
+    ui_dir = repo_root / "spaceinvasion" / "ui"
+    jsdom_path = repo_root / "frontend" / "node_modules" / "jsdom"
     with tempfile.TemporaryDirectory(prefix="si_test_ui_") as tmp:
         tmp_path = Path(tmp)
         harness_js = tmp_path / "harness.cjs"
@@ -531,6 +467,7 @@ def _run_node_ui(base_url: str, scenario_js: str, *, fetch_patch_js: str = "") -
                     "appJsPath": str(ui_dir / "app.js"),
                     "scenarioPath": str(scenario_path),
                     "fetchPatchJs": fetch_patch_js,
+                    "jsdomPath": str(jsdom_path),
                 }
             ),
             encoding="utf-8",
@@ -539,7 +476,7 @@ def _run_node_ui(base_url: str, scenario_js: str, *, fetch_patch_js: str = "") -
             ["node", str(harness_js), str(cfg_path)],
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=30,
             check=False,
         )
         if proc.returncode != 0:
@@ -3052,6 +2989,230 @@ return { bldExecTxt, fltExecTxt, resExecTxt, finPills, stripTxt };
                 for ptxt in sc["finPills"]:
                     self.assertRegex(ptxt, r"\b\d{2}:\d{2}:\d{2}\b")
                 self.assertRegex(sc["stripTxt"], r"\b\d{2}:\d{2}:\d{2}\b")
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
+    def test_grouped_config_explanations_new_params_and_universe_research_refresh(self) -> None:
+        bridge, server, base_url = self._start_server(planner_mode="priority")
+        try:
+            scenario_js = r"""
+await __waitUntil(() => state.dashboard !== null);
+document.querySelector('[data-page="config"]').click();
+
+const groups = Array.from(document.querySelectorAll('#view-config .config-group'));
+const items = Array.from(document.querySelectorAll('#view-config .config-item'));
+const missingDescs = items.filter((item) => {
+  const desc = item.querySelector('.config-item-desc');
+  return !desc || desc.textContent.trim().length < 25;
+}).length;
+
+const delayInp = el("cfg-galaxy_scan_click_delay_seconds");
+const jitterInp = el("cfg-galaxy_scan_click_jitter_seconds");
+const resSpyInp = el("cfg-reserved_spy_slots");
+const spyPidSel = el("cfg-spy_dispatch_planet_id");
+const refreshUniBtn = el("btn-refresh-universe-research");
+
+delayInp.value = "2.5";
+delayInp.dispatchEvent("change");
+if (jitterInp) {
+  jitterInp.value = "0.8";
+  jitterInp.dispatchEvent("change");
+}
+resSpyInp.value = "2";
+resSpyInp.dispatchEvent("change");
+spyPidSel.value = "12476";
+spyPidSel.dispatchEvent("change");
+
+el("btn-save-config").click();
+await __waitUntil(() =>
+  fetchLog.some((f) => f.url === "/command" && f.body?.command === "update_config")
+);
+const savedCfg = fetchLog.find(
+  (f) => f.url === "/command" && f.body?.command === "update_config"
+).body.config;
+
+if (refreshUniBtn) {
+  refreshUniBtn.click();
+  await __waitUntil(() =>
+    fetchLog.some((f) => f.url === "/command" && f.body?.command === "universe_research_max")
+  );
+}
+
+return {
+  groupCount: groups.length,
+  itemCount: items.length,
+  missingDescs,
+  hasJitter: Boolean(jitterInp),
+  hasRefreshUniBtn: Boolean(refreshUniBtn),
+  spyPidOptions: Array.from(spyPidSel.querySelectorAll("option")).map((o) => o.value),
+  savedCfg,
+  uniRefreshDispatched: fetchLog.some(
+    (f) => f.url === "/command" && f.body?.command === "universe_research_max" && f.body?.sync === true
+  ),
+};
+"""
+            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                res = _run_node_ui(base_url, scenario_js)
+            self.assertEqual(res["errors"], [])
+            sc = res["scenario"]
+            self.assertGreaterEqual(sc["groupCount"], 5)
+            self.assertGreaterEqual(sc["itemCount"], 25)
+            self.assertEqual(sc["missingDescs"], 0)
+            self.assertTrue(sc["hasJitter"])
+            self.assertTrue(sc["hasRefreshUniBtn"])
+            self.assertIn("0", sc["spyPidOptions"])
+            self.assertIn("12476", sc["spyPidOptions"])
+            self.assertAlmostEqual(float(sc["savedCfg"]["galaxy_scan_click_delay_seconds"]), 2.5)
+            self.assertAlmostEqual(float(sc["savedCfg"]["galaxy_scan_click_jitter_seconds"]), 0.8)
+            self.assertEqual(int(sc["savedCfg"]["reserved_spy_slots"]), 2)
+            self.assertEqual(int(sc["savedCfg"]["spy_dispatch_planet_id"]), 12476)
+            self.assertTrue(sc["uniRefreshDispatched"])
+        finally:
+            bridge.close()
+            server.shutdown()
+            server.server_close()
+            self._tmp.cleanup()
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
+    def test_action_graph_drag_scroll_colony_discard_and_ranking_max_research(self) -> None:
+        import time as _time
+        from spaceinvasion.fleet import GalaxySlot, SpyReport
+
+        p_home = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=15,
+            fields_used=45,
+            fields_max=230,
+            resources=Resources(90_000, 60_000, 40_000, 20_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(2200, 900),
+            buildings={"b1": 10, "b2": 9, "b5": 15, "b8": 4, "b9": 4, "b10": 3},
+            ships={"s8": 1, "s10": 8},
+            building_offers=_sample_state().planets[0].building_offers,
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=103603,
+            nickname="ventkx86",
+            timestamp=1700000800.0,
+            planets=(p_home,),
+            active_planet_id=12476,
+            researches={"r1": 5, "r2": 7},
+            speedup_factor=10.0,
+        )
+        with tempfile.TemporaryDirectory(prefix="si_ui_drag_col_") as td:
+            td_path = Path(td)
+            cfg_path = td_path / "config.yaml"
+            cfg_path.write_text(
+                "planner_mode: priority\nallow_build: true\nallow_colonize: true\nmin_colony_fields: 300\n",
+                encoding="utf-8",
+            )
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
+            fake_client.read_full_snapshot.return_value = st
+            fake_client.navigate_menu.return_value = "<html><body>Records</body></html>"
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=td_path / "drag_col.db",
+                log_dir=None,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            assert bridge._db is not None
+            bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+            bridge._last_snapshot_at = _time.monotonic()
+            bridge._db.record_galaxy_slots(
+                [
+                    GalaxySlot("02:380:09", 9, status_color="free"),
+                    GalaxySlot("02:380:10", 10, status_color="free"),
+                ],
+                ts=1700000750.0,
+            )
+            bridge._db.record_spy_report(
+                SpyReport(target_coords="02:380:09", owner="", resources=Resources(), uninhabited_fields=330),
+                status_color="free",
+                ts=1700000760.0,
+            )
+
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                scenario_js = r"""
+await __waitUntil(() => state.dashboard !== null);
+
+// 1. Action Graph mouse click-and-drag scrolling
+document.querySelector('[data-page="action-graph"]').click();
+const scrollEl = el("ag-canvas-scroll");
+scrollEl.scrollLeft = 0;
+scrollEl.scrollTop = 0;
+scrollEl.dispatchEvent({ type: "mousedown", clientX: 320, clientY: 160, button: 0 });
+scrollEl.dispatchEvent({ type: "mousemove", clientX: 190, clientY: 120 });
+const draggingDuringMove = scrollEl.classList.contains("is-dragging");
+const scrollLeftAfterDrag = scrollEl.scrollLeft;
+const scrollTopAfterDrag = scrollEl.scrollTop;
+scrollEl.dispatchEvent({ type: "mouseup", clientX: 190, clientY: 120 });
+const draggingAfterUp = scrollEl.classList.contains("is-dragging");
+
+// 2. ColoniesView Discard candidate button removes candidate row
+document.querySelector('[data-page="colonies"]').click();
+await __waitUntil(() => state.colonyData !== null && el("col-candidates-tbody").textContent.includes("02:380:09"));
+const rowsBefore = el("col-candidates-tbody").querySelectorAll("tr").length;
+const firstRowBtns = Array.from(el("col-candidates-tbody").querySelector("tr").querySelectorAll("button"));
+const btnTexts = firstRowBtns.map((b) => b.textContent.trim());
+const discardBtn = firstRowBtns.find((b) => b.textContent.trim() === "Discard");
+discardBtn.click();
+await __waitUntil(() =>
+  fetchLog.some((f) => f.url === "/command" && f.body?.command === "discard_colony_candidate") &&
+  !el("col-candidates-tbody").textContent.includes("02:380:09")
+);
+const rowsAfter = el("col-candidates-tbody").querySelectorAll("tr").length;
+
+// 3. RankingView Universe Max Research Levels table & Sync Records button
+document.querySelector('[data-page="ranking"]').click();
+const uniTableExists = Boolean(el("universe-research-max-table"));
+const syncUniBtn = el("btn-sync-universe-research");
+syncUniBtn.click();
+await __waitUntil(() =>
+  fetchLog.some((f) => f.url === "/command" && f.body?.command === "universe_research_max" && f.body?.sync === true) &&
+  el("universe-research-max-tbody").textContent.includes("Mining technology")
+);
+
+return {
+  draggingDuringMove,
+  scrollLeftAfterDrag,
+  scrollTopAfterDrag,
+  draggingAfterUp,
+  rowsBefore,
+  rowsAfter,
+  btnTexts,
+  uniTableExists,
+  uniTbodyText: el("universe-research-max-tbody").textContent,
+};
+"""
+                with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                    res = _run_node_ui(base_url, scenario_js)
+                self.assertEqual(res["errors"], [])
+                sc = res["scenario"]
+                self.assertTrue(sc["draggingDuringMove"])
+                self.assertEqual(sc["scrollLeftAfterDrag"], 130)
+                self.assertEqual(sc["scrollTopAfterDrag"], 40)
+                self.assertFalse(sc["draggingAfterUp"])
+                self.assertEqual(sc["rowsBefore"], 2)
+                self.assertEqual(sc["rowsAfter"], 1)
+                self.assertIn("Discard", sc["btnTexts"])
+                self.assertIn("Colonize", sc["btnTexts"])
+                self.assertTrue(sc["uniTableExists"])
+                self.assertIn("Mining technology", sc["uniTbodyText"])
             finally:
                 server.shutdown()
                 server.server_close()

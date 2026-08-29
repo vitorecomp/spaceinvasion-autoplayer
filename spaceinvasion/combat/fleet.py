@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import math
@@ -83,6 +83,9 @@ class GalaxySlot:
     spy_href: Optional[str] = None
     has_asteroid: bool = False
     attack_href: Optional[str] = None
+    colonize_min_fields: Optional[int] = None
+    colonize_max_fields: Optional[int] = None
+    uninhabited_fields: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -575,6 +578,10 @@ _MISSION_FORBIDDEN_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b(?:(?:Escape(?:\s+flight)?|Save)\s*\(\s*forbidden\s*\)|Flucht(?:flug)?\s*\(\s*verboten\s*\))\s*:\s*([^<\r\n]+)",
         re.IGNORECASE,
     ),
+    "COLONIZE": re.compile(
+        r"\b(?:(?:Colonize|Colonisation|Colonization)\s*\(\s*forbidden\s*\)|Kolonisierung\s*\(\s*verboten\s*\))\s*:\s*([^<\r\n]+)",
+        re.IGNORECASE,
+    ),
 }
 _BASH_RESET_TIMER_RE = re.compile(
     r"(?:Reset\s+in|Zur[üu]cksetzen\s+in)\s+(\d{1,3}):(\d{2}):(\d{2})",
@@ -588,9 +595,10 @@ _PLAYER_PROTECTION_BLOCK_RE = re.compile(
     r"|(?:user|player)\s+can(?:'t|\s*not)\s+be\s+(?:attacked|spied)"
     r"|dieser\s+spieler\s+kann\s+nicht\s+(?:angegriffen|ausspioniert)\s+werden"
     r"|spieler\s+kann\s+nicht\s+(?:angegriffen|ausspioniert)\s+werden"
-    r"|target\s+is\s+in\s+(?:vacation\s+mode|newbie\s+protection|noob\s+protection)"
-    r"|player\s+is\s+in\s+(?:vacation\s+mode|newbie\s+protection|noob\s+protection)"
-    r"|outside\s+(?:your\s+)?attack\s+zone"
+    r"|target\s+is\s+in\s+(?:vacation\s+mode|urlaubsmodus|newbie\s+protection|noob\s+protection)"
+    r"|player\s+is\s+in\s+(?:vacation\s+mode|urlaubsmodus|newbie\s+protection|noob\s+protection)"
+    r"|(?:out\s+of|outside)\s+(?:your\s+)?attack\s*zone(?:\s+range)?"
+    r"|au[ßs]erhalb\s+(?:deiner\s+|ihrer\s+)?angriffszone"
     r")!?",
     re.IGNORECASE,
 )
@@ -620,12 +628,12 @@ def parse_send_fleet_mission_block(
         if raw_ln and raw_ln.strip()
     ]
     joined_lines = "\n".join(lines)
-    if mk in ("ATTACK", "SPY"):
+    m_forb = pat.search(joined_lines)
+    if m_forb is None and mk in ("ATTACK", "SPY"):
         m_prot = _PLAYER_PROTECTION_BLOCK_RE.search(joined_lines)
         if m_prot is not None:
             prot_msg = " ".join(m_prot.group(0).split()).strip()
             return (prot_msg[:240], 21600.0, False)
-    m_forb = pat.search(joined_lines)
     if m_forb is None and mk == "RECYCLE":
         low_all = joined_lines.lower()
         for phrase in (
@@ -664,7 +672,22 @@ def parse_send_fleet_mission_block(
         cooldown_s = 86400.0
     elif any(
         tok in low_match
-        for tok in ("vacation", "urlaub", "newbie", "noob", "spectral", "zone", "strong", "weak")
+        for tok in (
+            "vacation",
+            "urlaub",
+            "urlaubsmodus",
+            "newbie",
+            "noob",
+            "spectral",
+            "attackzone",
+            "attack zone",
+            "angriffszone",
+            "zone",
+            "strong",
+            "weak",
+            "can't be attacked",
+            "cannot be attacked",
+        )
     ):
         cooldown_s = 21600.0
     elif mk == "RECYCLE":
@@ -1543,6 +1566,102 @@ def parse_galaxy_system_html(
                     attack_href=attack_href,
                 )
             )
+
+    # Enrich free slots (or synthesize slots when DOM cards absent) from `#json-element` 2D Galaxy payload
+    json_el = soup.find(id="json-element")
+    if json_el is not None:
+        raw_jtxt = (json_el.string if json_el.string is not None else json_el.get_text("", strip=True)) or ""
+        parsed_j: Any = None
+        if raw_jtxt.strip():
+            try:
+                parsed_j = json.loads(raw_jtxt)
+            except Exception:
+                parsed_j = None
+        planets_j = parsed_j.get("planets") if isinstance(parsed_j, Mapping) else None
+        pos_meta: dict[int, tuple[Optional[int], Optional[int], Optional[int], bool, str, str, bool]] = {}
+        if isinstance(planets_j, Mapping):
+            iter_items = list(planets_j.items())
+        elif isinstance(planets_j, Sequence) and not isinstance(planets_j, (str, bytes)):
+            iter_items = [(idx + 1, val) for idx, val in enumerate(planets_j)]
+        else:
+            iter_items = []
+        for raw_pk, pdata in iter_items:
+            if not isinstance(pdata, Mapping):
+                continue
+            p_pos = _safe_fleet_int(pdata.get("pla", pdata.get("position", raw_pk)), 0)
+            if not (1 <= p_pos <= 16):
+                continue
+            uid_v = _safe_fleet_int(pdata.get("uid", pdata.get("user_id", 0)), 0)
+            pname_j = str(pdata.get("name") or pdata.get("planet_name") or "").strip()
+            owner_j = str(pdata.get("uname") or pdata.get("owner") or "").strip()
+            is_sp_j = "spacia" in pname_j.lower() or "spacia" in owner_j.lower() or bool(pdata.get("spacia"))
+            is_free_j = (uid_v == 0) and not pname_j and not owner_j and not is_sp_j
+            c_min: Optional[int] = None
+            c_max: Optional[int] = None
+            uf_exact: Optional[int] = None
+            if is_free_j:
+                col_arr = pdata.get("colonize")
+                if isinstance(col_arr, Sequence) and not isinstance(col_arr, (str, bytes)) and len(col_arr) >= 2:
+                    v0 = _safe_fleet_int(col_arr[0], 0)
+                    v1 = _safe_fleet_int(col_arr[1], 0)
+                    if v0 > 0 and v1 >= v0:
+                        c_min, c_max = v0, v1
+                elif isinstance(col_arr, Mapping):
+                    v0 = _safe_fleet_int(
+                        col_arr.get("minFields", col_arr.get("min_fields", col_arr.get("min", 0))),
+                        0,
+                    )
+                    v1 = _safe_fleet_int(
+                        col_arr.get("maxFields", col_arr.get("max_fields", col_arr.get("max", 0))),
+                        0,
+                    )
+                    if v0 > 0 and v1 >= v0:
+                        c_min, c_max = v0, v1
+                    vf = col_arr.get("fields", col_arr.get("uninhabited_fields"))
+                    if isinstance(vf, int) and not isinstance(vf, bool) and 20 <= vf <= 1000:
+                        uf_exact = vf
+                elif isinstance(col_arr, int) and not isinstance(col_arr, bool) and 20 <= col_arr <= 1000:
+                    uf_exact = col_arr
+                raw_exact = pdata.get("uninhabited_fields", pdata.get("fields"))
+                if isinstance(raw_exact, int) and not isinstance(raw_exact, bool) and 20 <= raw_exact <= 1000:
+                    uf_exact = raw_exact
+            has_deb_j = bool(pdata.get("rubble") or pdata.get("debris") or pdata.get("tf"))
+            pos_meta[p_pos] = (c_min, c_max, uf_exact, is_free_j, pname_j, owner_j, has_deb_j)
+        if pos_meta:
+            if slots:
+                enriched_slots: list[GalaxySlot] = []
+                for sl in slots:
+                    meta_p = pos_meta.get(sl.position)
+                    if meta_p is not None and sl.status_color == "free":
+                        c_min, c_max, uf_exact, _, _, _, _ = meta_p
+                        if c_min is not None or c_max is not None or uf_exact is not None:
+                            sl = replace(
+                                sl,
+                                colonize_min_fields=c_min,
+                                colonize_max_fields=c_max,
+                                uninhabited_fields=uf_exact if uf_exact is not None else sl.uninhabited_fields,
+                            )
+                    enriched_slots.append(sl)
+                slots = enriched_slots
+            else:
+                for p_pos in sorted(pos_meta):
+                    c_min, c_max, uf_exact, is_free_j, pname_j, owner_j, has_deb_j = pos_meta[p_pos]
+                    coords = f"{gal:02d}:{sys_num:03d}:{p_pos:02d}"
+                    is_sp_j = "spacia" in pname_j.lower() or "spacia" in owner_j.lower()
+                    slots.append(
+                        GalaxySlot(
+                            coords=coords,
+                            position=p_pos,
+                            name=pname_j,
+                            owner=("Spacia" if (is_sp_j and not owner_j) else owner_j),
+                            status_color=("free" if is_free_j else ("yellow" if is_sp_j else "light_red")),
+                            has_debris=has_deb_j,
+                            is_spacia=is_sp_j,
+                            colonize_min_fields=c_min,
+                            colonize_max_fields=c_max,
+                            uninhabited_fields=uf_exact,
+                        )
+                    )
 
     return tuple(slots)
 

@@ -1,0 +1,388 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { feedbackKindForError } from "../../api/httpClient";
+import { useConsole } from "../../context/ConsoleContext";
+import { finiteNum, fmtInt, gradeClassFor } from "../../utils/formatters";
+
+export interface ColoniesViewProps {
+  hidden?: boolean;
+}
+
+export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
+  const {
+    dashboard,
+    activePage,
+    activePlanet,
+    colonyData,
+    refreshColoniesView,
+    syncAllInboxFolders,
+    showFeedback,
+    apiCommand,
+    loadDashboard,
+    uiPrefs,
+    setUiPref,
+  } = useConsole();
+
+  const isHidden = hidden ?? activePage !== "colonies";
+  const colFilter = uiPrefs.colonyFilter || "all";
+
+  const [minFieldsInput, setMinFieldsInput] = useState<string>("300");
+  const [allowColonizeInput, setAllowColonizeInput] = useState<boolean>(false);
+
+  useEffect(() => {
+    const cfgMin = colonyData?.min_colony_fields ?? dashboard?.config?.min_colony_fields;
+    if (cfgMin != null) {
+      setMinFieldsInput(String(cfgMin));
+    }
+    const cfgAllow = colonyData?.allow_colonize ?? dashboard?.config?.allow_colonize;
+    if (cfgAllow != null) {
+      setAllowColonizeInput(Boolean(cfgAllow));
+    }
+  }, [
+    colonyData?.allow_colonize,
+    colonyData?.min_colony_fields,
+    dashboard?.config?.allow_colonize,
+    dashboard?.config?.min_colony_fields,
+  ]);
+
+  const gc = colonyData?.grade_counts || {};
+  const allCands: Array<Record<string, any>> = Array.isArray(colonyData?.candidates)
+    ? colonyData!.candidates
+    : [];
+
+  const filteredCands = useMemo(() => {
+    if (colFilter === "probed") {
+      return allCands.filter((c) => Boolean(c.probed));
+    }
+    if (colFilter === "qualified") {
+      return allCands.filter((c) => Boolean(c.meets_target));
+    }
+    if (colFilter === "unprobed") {
+      return allCands.filter((c) => !c.probed);
+    }
+    return allCands;
+  }, [allCands, colFilter]);
+
+  const handleSavePolicy = async () => {
+    const minVal = Math.max(50, Math.min(600, Math.round(finiteNum(minFieldsInput, 300))));
+    try {
+      await apiCommand({
+        command: "update_config",
+        config: { min_colony_fields: minVal, allow_colonize: allowColonizeInput },
+      });
+      showFeedback(
+        `Colony policy saved: min ${minVal} fields, auto-colonize=${allowColonizeInput}.`,
+        "ok"
+      );
+      await loadDashboard({ refresh: false, preserveConfig: false, force: true });
+      await refreshColoniesView();
+    } catch (err: any) {
+      showFeedback(`Failed updating colony policy: ${err.message}`, feedbackKindForError(err));
+    }
+  };
+
+  const handleScanGalaxy = async () => {
+    try {
+      showFeedback("Scanning Galaxy system for free slots...", "ok");
+      const res = await apiCommand({
+        command: "scan_galaxy",
+        planet_id: activePlanet?.planet_id,
+        dry_run: false,
+      });
+      showFeedback(res.message || "Galaxy scan completed.", "ok");
+      await loadDashboard({ refresh: false, force: true });
+      await refreshColoniesView();
+    } catch (err: any) {
+      showFeedback(`Galaxy scan failed: ${err.message}`, feedbackKindForError(err));
+    }
+  };
+
+  const handleProbeCandidate = async (coords: string) => {
+    try {
+      showFeedback(`Probing free slot ${coords} for field count...`, "ok");
+      const res = await apiCommand({
+        command: "spy",
+        target_coords: coords,
+        quantity: 1,
+        planet_id: activePlanet?.planet_id,
+        dry_run: false,
+      });
+      showFeedback(
+        res.message || `Spy probe dispatched to ${coords}.`,
+        res.executed ? "ok" : "warn"
+      );
+      await refreshColoniesView();
+    } catch (err: any) {
+      showFeedback(`Probe failed: ${err.message}`, feedbackKindForError(err));
+    }
+  };
+
+  const handleColonizeCandidate = async (coords: string) => {
+    try {
+      showFeedback(`Dispatching Colony ship (s8) to ${coords}...`, "ok");
+      const res = await apiCommand({
+        command: "colonize",
+        target_coords: coords,
+        planet_id: activePlanet?.planet_id,
+        dry_run: false,
+      });
+      showFeedback(
+        res.message || `Colonization processed for ${coords}.`,
+        res.executed ? "ok" : "warn"
+      );
+      await loadDashboard({ refresh: false, force: true });
+      await refreshColoniesView();
+    } catch (err: any) {
+      showFeedback(`Colonize failed: ${err.message}`, feedbackKindForError(err));
+    }
+  };
+
+  const handleDiscardCandidate = async (coords: string) => {
+    try {
+      const res = await apiCommand({
+        command: "discard_colony_candidate",
+        target_coords: coords,
+      });
+      showFeedback(
+        res.message || `Discarded colony candidate ${coords}.`,
+        "ok"
+      );
+      await refreshColoniesView();
+      await loadDashboard({ refresh: false, force: true });
+    } catch (err: any) {
+      showFeedback(`Discard failed: ${err.message}`, feedbackKindForError(err));
+    }
+  };
+
+  return (
+    <section
+      id="view-colonies"
+      className="page-view"
+      aria-label="Possible colonies and planetary field grading"
+      hidden={isHidden}
+    >
+      <div className="combat-top-cards">
+        <div className="kpi-card">
+          <span className="kpi-label tabular">Qualified 300+ Colonies</span>
+          <strong className="kpi-value tabular" id="col-kpi-qualified">
+            {`${fmtInt(colonyData?.qualified_count ?? 0)} Ready`}
+          </strong>
+          <span className="kpi-sub tabular" id="col-kpi-grades">
+            {colonyData
+              ? `S:${gc.S || 0} · A+:${gc["A+"] || 0} · A:${gc.A || 0} · B:${gc.B || 0} · C/D:${(gc.C || 0) + (gc.D || 0)}`
+              : "S:0 · A+:0 · A:0 · B:0"}
+          </span>
+        </div>
+        <div className="kpi-card">
+          <span className="kpi-label tabular">Scouted Free Slots</span>
+          <strong className="kpi-value tabular" id="col-kpi-probed">
+            {colonyData ? `${fmtInt(colonyData.probed_count ?? 0)} Spied` : "0 Probed"}
+          </strong>
+          <span className="kpi-sub tabular" id="col-kpi-unprobed">
+            {`${fmtInt(colonyData?.unprobed_count ?? 0)} unprobed free slots`}
+          </span>
+        </div>
+        <div className="kpi-card">
+          <span className="kpi-label tabular">Colonization Fleet</span>
+          <strong className="kpi-value tabular" id="col-kpi-ships">
+            {`${fmtInt(colonyData?.colony_ships ?? 0)} s8 · ${fmtInt(colonyData?.spy_probes ?? 0)} s10`}
+          </strong>
+          <span className="kpi-sub tabular" id="col-kpi-origin">
+            {colonyData
+              ? `Origin [${colonyData.origin_coords || "--"}] · ${fmtInt(colonyData.planet_count ?? 1)} colonies`
+              : "Origin [--]"}
+          </span>
+        </div>
+        <div className="kpi-card">
+          <span className="kpi-label tabular">Colony Policy</span>
+          <div className="colony-policy-controls">
+            <label className="colony-inline-field tabular" htmlFor="col-min-fields">
+              Min Fields
+              <input
+                type="number"
+                id="col-min-fields"
+                min={50}
+                max={600}
+                step={10}
+                value={minFieldsInput}
+                onChange={(e) => setMinFieldsInput(e.target.value)}
+              />
+            </label>
+            <label className="toggle-chip colony-inline-toggle">
+              <input
+                type="checkbox"
+                id="col-allow-colonize"
+                checked={allowColonizeInput}
+                onChange={(e) => setAllowColonizeInput(e.target.checked)}
+              />{" "}
+              Auto Colonize
+            </label>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              id="btn-col-save"
+              onClick={handleSavePolicy}
+            >
+              Apply
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              id="btn-col-scan"
+              onClick={handleScanGalaxy}
+            >
+              Scan Galaxy
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <article className="hud-window page-fill">
+        <div className="window-bar window-bar-wrap">
+          <div className="window-title-group">
+            <span className="module-code tabular">COL</span>
+            <h2>Possible Colonies &amp; Spied Field Grading</h2>
+            <span className="module-meta tabular" id="col-meta-count">
+              {colonyData ? `${filteredCands.length} / ${allCands.length} SLOTS` : "0 CANDIDATES"}
+            </span>
+          </div>
+          <div className="filter-toolbar">
+            <div className="filter-chips" role="group" aria-label="Colony candidate filters">
+              <button
+                type="button"
+                className={`chip-btn${colFilter === "all" ? " active" : ""}`}
+                data-col-filter="all"
+                onClick={() => setUiPref("colonyFilter", "all")}
+              >
+                All Slots
+              </button>
+              <button
+                type="button"
+                className={`chip-btn${colFilter === "probed" ? " active" : ""}`}
+                data-col-filter="probed"
+                onClick={() => setUiPref("colonyFilter", "probed")}
+              >
+                Spied &amp; Graded
+              </button>
+              <button
+                type="button"
+                className={`chip-btn${colFilter === "qualified" ? " active" : ""}`}
+                data-col-filter="qualified"
+                onClick={() => setUiPref("colonyFilter", "qualified")}
+              >
+                300+ Fields (S / A+)
+              </button>
+              <button
+                type="button"
+                className={`chip-btn${colFilter === "unprobed" ? " active" : ""}`}
+                data-col-filter="unprobed"
+                onClick={() => setUiPref("colonyFilter", "unprobed")}
+              >
+                Unprobed (?)
+              </button>
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              id="btn-col-sync"
+              onClick={syncAllInboxFolders}
+            >
+              Sync Spy Reports
+            </button>
+          </div>
+        </div>
+
+        <div className="table-wrap table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Grade</th>
+                <th className="col-right">Score</th>
+                <th>Coords</th>
+                <th>Orbital Zone</th>
+                <th className="col-right">Fields</th>
+                <th className="col-right">Distance</th>
+                <th>Assessment</th>
+                <th className="col-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="col-candidates-tbody">
+              {filteredCands.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="empty-cell">
+                    {colonyData
+                      ? "No matching colony slots. Click Scan Galaxy or probe free slots 7-12."
+                      : "Scan neighbor systems or sync spy reports to grade free planet slots."}
+                  </td>
+                </tr>
+              ) : (
+                filteredCands.map((c) => {
+                  const coords = String(c.coords || "—");
+                  const grade = String(c.grade || "?");
+                  const uf = finiteNum(c.uninhabited_fields, null);
+                  const sysDist = Math.round(finiteNum(c.system_distance, 0));
+
+                  return (
+                    <tr key={coords}>
+                      <td>
+                        <span className={`grade-badge ${gradeClassFor(grade)}`}>{grade}</span>
+                      </td>
+                      <td className="col-right tabular">
+                        {`${Math.round(finiteNum(c.score, 0))}/100`}
+                      </td>
+                      <td className="tabular">{coords}</td>
+                      <td>{`Pos ${c.position || "?"} · ${c.orbital_band || "Unknown"}`}</td>
+                      <td className="col-right tabular">
+                        {uf !== null && uf > 0 ? (
+                          <span className={`status-word${c.meets_target ? "" : " is-warn"}`}>
+                            {`${Math.round(uf)} fields`}
+                          </span>
+                        ) : (
+                          "Unprobed"
+                        )}
+                      </td>
+                      <td className="col-right tabular">
+                        {sysDist === 0 ? "Same sys" : `${sysDist} sys`}
+                      </td>
+                      <td>{String(c.reason || "")}</td>
+                      <td className="col-right">
+                        <div className="row-actions">
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => handleProbeCandidate(coords)}
+                          >
+                            {c.probed ? "Re-Probe" : "Probe"}
+                          </button>
+                          <button
+                            type="button"
+                            className={
+                              c.meets_target
+                                ? "btn btn-primary btn-sm"
+                                : "btn btn-secondary btn-sm"
+                            }
+                            onClick={() => handleColonizeCandidate(coords)}
+                          >
+                            Colonize
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-warning btn-sm"
+                            onClick={() => handleDiscardCandidate(coords)}
+                          >
+                            Discard
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+  );
+};
+
+export default ColoniesView;

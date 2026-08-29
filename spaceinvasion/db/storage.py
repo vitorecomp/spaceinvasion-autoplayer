@@ -1029,6 +1029,7 @@ class GameDatabase:
                     auto_backup_default_db=(True if backup_on_upgrade is None else bool(backup_on_upgrade)),
                     now_ts=now_ts,
                 )
+                self._repair_spy_targets_locked()
                 if legacy_rank_json is not None and legacy_rank_json.exists():
                     self._migrate_legacy_rank_json(legacy_rank_json)
                 if not self._is_memory and self.db_path.resolve() == DEFAULT_DB_PATH.resolve():
@@ -2563,11 +2564,48 @@ class GameDatabase:
             for slot in slots:
                 self._upsert_galaxy_slot_locked(slot, now_ts, append_history=append_hist)
                 has_debris = 1 if bool(getattr(slot, "has_debris", False)) else 0
-                if slot.status_color == "free" and not has_debris:
-                    continue
-                is_inactive = 1 if (slot.status_color == "yellow" or slot.is_spacia) else 0
                 raw_slot_coords = _raw_text(slot.coords, "").strip()
                 norm_slot_coords = normalize_coords(raw_slot_coords)
+                if slot.status_color == "free" and not has_debris:
+                    if norm_slot_coords:
+                        slot_uf = _sql_optional_int(getattr(slot, "uninhabited_fields", None))
+                        if slot_uf is not None:
+                            self._conn.execute(
+                                """
+                                INSERT INTO spy_targets(
+                                    coords, owner, planet_name, status_color, is_inactive, is_spacia,
+                                    has_debris, last_scanned_ts, uninhabited_fields, merged_into
+                                ) VALUES (?, '', '', 'free', 0, 0, 0, ?, ?, '')
+                                ON CONFLICT(coords) DO UPDATE SET
+                                    owner = '',
+                                    planet_name = '',
+                                    status_color = 'free',
+                                    is_inactive = 0,
+                                    is_spacia = 0,
+                                    has_debris = 0,
+                                    last_scanned_ts = excluded.last_scanned_ts,
+                                    uninhabited_fields = COALESCE(excluded.uninhabited_fields, spy_targets.uninhabited_fields)
+                                WHERE spy_targets.is_own_planet = 0
+                                """,
+                                (norm_slot_coords, now_ts, slot_uf),
+                            )
+                        else:
+                            self._conn.execute(
+                                """
+                                UPDATE spy_targets
+                                SET owner = '',
+                                    planet_name = '',
+                                    status_color = 'free',
+                                    is_inactive = 0,
+                                    is_spacia = 0,
+                                    has_debris = 0,
+                                    last_scanned_ts = ?
+                                WHERE coords = ? AND is_own_planet = 0
+                                """,
+                                (now_ts, norm_slot_coords),
+                            )
+                    continue
+                is_inactive = 1 if (slot.status_color == "yellow" or slot.is_spacia) else 0
                 if not norm_slot_coords:
                     continue
                 self._coalesce_legacy_spy_target_locked(norm_slot_coords, raw_slot_coords)
@@ -2879,6 +2917,42 @@ class GameDatabase:
                 )
         return self._row_to_spy_target_dict(row) if row is not None else None
 
+    def _repair_spy_targets_locked(self) -> None:
+        if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets"):
+            return
+        self._conn.execute(
+            """
+            UPDATE spy_targets
+            SET status_color = 'free',
+                is_inactive = 0
+            WHERE owner = ''
+              AND planet_name = ''
+              AND is_spacia = 0
+              AND status_color = 'yellow'
+            """
+        )
+        if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots"):
+            self._conn.execute(
+                """
+                UPDATE spy_targets
+                SET owner = COALESCE((SELECT gs.owner FROM galaxy_slots gs WHERE gs.coords = spy_targets.coords), spy_targets.owner),
+                    planet_name = COALESCE((SELECT gs.planet_name FROM galaxy_slots gs WHERE gs.coords = spy_targets.coords), spy_targets.planet_name),
+                    status_color = (SELECT gs.status_color FROM galaxy_slots gs WHERE gs.coords = spy_targets.coords),
+                    is_inactive = COALESCE((SELECT gs.is_inactive FROM galaxy_slots gs WHERE gs.coords = spy_targets.coords), 0),
+                    is_spacia = COALESCE((SELECT gs.is_spacia FROM galaxy_slots gs WHERE gs.coords = spy_targets.coords), 0),
+                    has_debris = COALESCE((SELECT gs.has_debris FROM galaxy_slots gs WHERE gs.coords = spy_targets.coords), 0)
+                WHERE is_own_planet = 0
+                  AND EXISTS (
+                      SELECT 1
+                      FROM galaxy_slots gs
+                      WHERE gs.coords = spy_targets.coords
+                        AND gs.last_scanned_ts >= spy_targets.last_scanned_ts
+                        AND gs.status_color IN ('free', 'blue', 'green', 'white', 'dark_red')
+                  )
+                """
+            )
+        self._conn.commit()
+
     def get_spy_targets(
         self,
         *,
@@ -2896,6 +2970,14 @@ class GameDatabase:
                        uninhabited_fields, spy_count
                 FROM spy_targets
                 WHERE merged_into = '' {own_clause}
+                  AND NOT (
+                      status_color = 'free'
+                      AND owner = ''
+                      AND is_spacia = 0
+                      AND has_debris = 0
+                      AND last_spied_ts <= 0
+                      AND uninhabited_fields IS NULL
+                  )
                 ORDER BY (is_inactive + is_spacia + has_debris) DESC, (last_spied_ts > 0) DESC, last_scanned_ts DESC
                 LIMIT ?
                 """,
@@ -3438,6 +3520,79 @@ class GameDatabase:
             )
         return out_r
 
+    def get_discarded_colony_coords(self) -> set[str]:
+        """Return normalized coordinates of operator-discarded free colony candidates."""
+        raw = self.load_meta_json("discarded_colony_coords")
+        if not isinstance(raw, Mapping):
+            return set()
+        out: set[str] = set()
+        for k in raw.keys():
+            nc = normalize_coords(_raw_text(k, "").strip())
+            if nc:
+                out.add(nc)
+        return out
+
+    def discard_colony_candidate(
+        self,
+        coords: str,
+        *,
+        reason: str = "operator_discard",
+        ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Mark a free colony coordinate as discarded non-destructively in `meta['discarded_colony_coords']`."""
+        norm_c = normalize_coords(_raw_text(coords, "").strip())
+        if not norm_c:
+            raise ValueError(f"Invalid colony coordinates: {coords!r}")
+        eff_now = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        raw = self.load_meta_json("discarded_colony_coords")
+        cur_map: dict[str, Any] = {}
+        if isinstance(raw, Mapping):
+            for k, v in raw.items():
+                nk = normalize_coords(_raw_text(k, "").strip())
+                if nk:
+                    cur_map[nk] = dict(v) if isinstance(v, Mapping) else {"discarded_ts": eff_now, "reason": "operator_discard"}
+        clean_reason = _sanitize_text(reason or "operator_discard")[:160] or "operator_discard"
+        entry = {"discarded_ts": eff_now, "reason": clean_reason}
+        cur_map[norm_c] = entry
+        self.save_meta_json("discarded_colony_coords", cur_map, ts=eff_now)
+        return _sanitize_obj(
+            {
+                "coords": norm_c,
+                "discarded": True,
+                "discarded_ts": eff_now,
+                "reason": clean_reason,
+                "discarded_count": len(cur_map),
+            }
+        )
+
+    def restore_colony_candidate(
+        self,
+        coords: str,
+        *,
+        ts: Optional[float] = None,
+    ) -> bool:
+        """Restore a previously discarded colony candidate coordinate."""
+        norm_c = normalize_coords(_raw_text(coords, "").strip())
+        if not norm_c:
+            return False
+        eff_now = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        raw = self.load_meta_json("discarded_colony_coords")
+        if not isinstance(raw, Mapping):
+            return False
+        cur_map: dict[str, Any] = {}
+        removed = False
+        for k, v in raw.items():
+            nk = normalize_coords(_raw_text(k, "").strip())
+            if not nk:
+                continue
+            if nk == norm_c:
+                removed = True
+                continue
+            cur_map[nk] = dict(v) if isinstance(v, Mapping) else v
+        if removed:
+            self.save_meta_json("discarded_colony_coords", cur_map, ts=eff_now)
+        return removed
+
     def get_colony_candidates(
         self,
         *,
@@ -3446,11 +3601,13 @@ class GameDatabase:
         min_fields_target: Optional[int] = None,
         own_coords: Iterable[str] = (),
         exclude_coords: Optional[Iterable[str]] = None,
+        include_discarded: bool = False,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
         eff_own = exclude_coords if exclude_coords is not None else own_coords
         eff_min = min_fields_target if min_fields_target is not None else min_colony_fields
         own_norm = {normalize_coords(c) for c in (eff_own or ()) if normalize_coords(c)}
+        discarded_norm = self.get_discarded_colony_coords()
         norm_origin = normalize_coords(origin_coords) if origin_coords else ""
         min_tgt = max(50, min(600, _safe_int(eff_min, 300)))
         with self._lock:
@@ -3464,7 +3621,8 @@ class GameDatabase:
             ).fetchall()
             spy_free_rows = self._conn.execute(
                 """
-                SELECT coords, uninhabited_fields, last_spied_ts, last_scanned_ts, spy_count
+                SELECT coords, uninhabited_fields, last_spied_ts, last_scanned_ts, spy_count,
+                       blocked_until_ts, block_reason
                 FROM spy_targets
                 WHERE merged_into = '' AND is_own_planet = 0
                   AND (status_color = 'free' OR (uninhabited_fields IS NOT NULL AND owner = '' AND is_spacia = 0))
@@ -3482,7 +3640,7 @@ class GameDatabase:
         merged: dict[str, dict[str, Any]] = {}
         for r in free_rows:
             nc = normalize_coords(_raw_text(r["coords"], ""))
-            if not nc or nc in own_norm:
+            if not nc or nc in own_norm or (not include_discarded and nc in discarded_norm):
                 continue
             merged[nc] = {
                 "coords": nc,
@@ -3490,10 +3648,12 @@ class GameDatabase:
                 "last_spied_ts": 0.0,
                 "last_scanned_ts": _safe_float(r["last_scanned_ts"], 0.0),
                 "spy_count": 0,
+                "blocked_until_ts": 0.0,
+                "block_reason": "",
             }
         for sr in spy_free_rows:
             nc = normalize_coords(_raw_text(sr["coords"], ""))
-            if not nc or nc in own_norm:
+            if not nc or nc in own_norm or (not include_discarded and nc in discarded_norm):
                 continue
             entry = merged.setdefault(
                 nc,
@@ -3503,6 +3663,8 @@ class GameDatabase:
                     "last_spied_ts": 0.0,
                     "last_scanned_ts": 0.0,
                     "spy_count": 0,
+                    "blocked_until_ts": 0.0,
+                    "block_reason": "",
                 },
             )
             uf = _safe_optional_int(sr["uninhabited_fields"])
@@ -3511,9 +3673,13 @@ class GameDatabase:
             entry["last_spied_ts"] = max(entry["last_spied_ts"], _safe_float(sr["last_spied_ts"], 0.0))
             entry["last_scanned_ts"] = max(entry["last_scanned_ts"], _safe_float(sr["last_scanned_ts"], 0.0))
             entry["spy_count"] = max(entry["spy_count"], _safe_int(sr["spy_count"], 0))
+            b_until = _safe_float(sr["blocked_until_ts"], 0.0)
+            if b_until > entry["blocked_until_ts"]:
+                entry["blocked_until_ts"] = b_until
+                entry["block_reason"] = _sanitize_text(sr["block_reason"] or "")
         for rr in rep_free_rows:
             nc = normalize_coords(_raw_text(rr["target_coords"], ""))
-            if not nc or nc in own_norm:
+            if not nc or nc in own_norm or (not include_discarded and nc in discarded_norm):
                 continue
             entry = merged.setdefault(
                 nc,
@@ -3523,6 +3689,8 @@ class GameDatabase:
                     "last_spied_ts": 0.0,
                     "last_scanned_ts": 0.0,
                     "spy_count": 0,
+                    "blocked_until_ts": 0.0,
+                    "block_reason": "",
                 },
             )
             uf = _safe_optional_int(rr["max_fields"])
@@ -3543,6 +3711,9 @@ class GameDatabase:
                 last_scanned_ts=info["last_scanned_ts"],
             )
             g["spy_count"] = int(info["spy_count"])
+            g["blocked_until_ts"] = float(info["blocked_until_ts"])
+            g["block_reason"] = str(info["block_reason"])
+            g["discarded"] = nc in discarded_norm
             graded.append(_sanitize_obj(g))
 
         def _sort_key(item: dict[str, Any]) -> tuple[int, float, float, str]:
@@ -3690,12 +3861,44 @@ class GameDatabase:
         is_spacia_hint = 1 if "spacia" in clean_reason.lower() else 0
         with self._lock:
             self._coalesce_legacy_spy_target_locked(norm_c, raw_c)
+            gs_row = None
+            if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots"):
+                gs_row = self._conn.execute(
+                    """
+                    SELECT owner, planet_name, status_color, is_inactive, is_spacia, has_debris
+                    FROM galaxy_slots
+                    WHERE coords = ?
+                    LIMIT 1
+                    """,
+                    (norm_c,),
+                ).fetchone()
+            if gs_row is not None:
+                ins_owner = _sanitize_text(gs_row["owner"] or "")
+                ins_pname = _sanitize_text(gs_row["planet_name"] or "")
+                ins_color = _sanitize_text(gs_row["status_color"] or "free") or "free"
+                ins_inactive = 1 if bool(gs_row["is_inactive"]) else 0
+                ins_spacia = 1 if (bool(gs_row["is_spacia"]) or is_spacia_hint) else 0
+                ins_debris = 1 if bool(gs_row["has_debris"]) else 0
+            elif is_spacia_hint:
+                ins_owner = "Spacia"
+                ins_pname = "Spacia"
+                ins_color = "purple"
+                ins_inactive = 1
+                ins_spacia = 1
+                ins_debris = 0
+            else:
+                ins_owner = ""
+                ins_pname = ""
+                ins_color = "free"
+                ins_inactive = 0
+                ins_spacia = 0
+                ins_debris = 0
             self._conn.execute(
                 """
                 INSERT INTO spy_targets(
-                    coords, owner, planet_name, status_color, is_inactive, is_spacia,
+                    coords, owner, planet_name, status_color, is_inactive, is_spacia, has_debris,
                     last_scanned_ts, blocked_until_ts, block_reason, bash_hits, last_blocked_ts
-                ) VALUES (?, '', '', 'yellow', ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(coords) DO UPDATE SET
                     blocked_until_ts = MAX(spy_targets.blocked_until_ts, excluded.blocked_until_ts),
                     block_reason = CASE WHEN excluded.block_reason != '' THEN excluded.block_reason ELSE spy_targets.block_reason END,
@@ -3704,8 +3907,12 @@ class GameDatabase:
                 """,
                 (
                     norm_c,
-                    is_spacia_hint,
-                    is_spacia_hint,
+                    ins_owner,
+                    ins_pname,
+                    ins_color,
+                    ins_inactive,
+                    ins_spacia,
+                    ins_debris,
                     round(now_val, 3),
                     round(until_val, 3),
                     clean_reason,
@@ -5127,6 +5334,8 @@ class GameDatabase:
             "state_snapshots",
             "strategy_config_store",
             "ui_notifications",
+            "universe_research_max",
+            "universe_research_max_history",
             "economy_rates_cache",
             "tutorial_progress",
             "action_history",
@@ -5317,6 +5526,14 @@ class GameDatabase:
                 "total_pages_scanned": game_data.cap_json_int(
                     max(0, _safe_int(data.get("total_pages_scanned"), 0))
                 ),
+                "click_delay_seconds": round(
+                    max(0.2, min(60.0, _safe_float(data.get("click_delay_seconds"), 1.5))),
+                    3,
+                ),
+                "click_jitter_seconds": round(
+                    max(0.0, min(30.0, _safe_float(data.get("click_jitter_seconds"), 0.6))),
+                    3,
+                ),
             }
         )
 
@@ -5337,3 +5554,317 @@ class GameDatabase:
             merged[str(k)] = v
         self.save_meta_json("galaxy_sweep_state", merged, ts=eff_now)
         return self.get_galaxy_sweep_state(now_ts=eff_now)
+
+    @staticmethod
+    def _catalog_research_definitions() -> list[tuple[int, str, str, str, Optional[int]]]:
+        """Return ordered `(research_id, research_key, slug, name, catalog_max_level)` across `game_data.RESEARCHES`."""
+        defs: list[tuple[int, str, str, str, Optional[int]]] = []
+        for slug, info in game_data.RESEARCHES.items():
+            if not isinstance(info, Mapping):
+                continue
+            raw_id = str(info.get("id") or "").strip()
+            if raw_id.startswith("r") and raw_id[1:].isascii() and raw_id[1:].isdigit():
+                rid = int(raw_id[1:])
+                rkey = raw_id
+            else:
+                rid = 16
+                rkey = str(slug).strip()
+            name = str(info.get("name") or slug).strip()
+            lvls = info.get("levels")
+            cat_max: Optional[int] = None
+            if isinstance(lvls, Mapping) and lvls:
+                int_lvls = [int(k) for k in lvls.keys() if isinstance(k, int) or (isinstance(k, str) and k.isdigit())]
+                if int_lvls:
+                    cat_max = max(int_lvls)
+            defs.append((rid, rkey, str(slug), name, cat_max))
+        defs.sort(key=lambda item: (item[0], item[2]))
+        return defs
+
+    def refresh_universe_research_max(
+        self,
+        *,
+        own_researches: Optional[Mapping[str, Any]] = None,
+        own_nick: str = "",
+        server_records: Optional[Mapping[str, Any]] = None,
+        source: str = "refresh",
+        ts: Optional[float] = None,
+    ) -> list[dict[str, Any]]:
+        """Recompute and persist `universe_research_max` across server records, spy reports, own researches, and catalog."""
+        eff_now = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        defs = self._catalog_research_definitions()
+        slug_to_key = {slug: rkey for _, rkey, slug, _, _ in defs}
+        name_to_key = {name.lower(): rkey for _, rkey, _, name, _ in defs}
+
+        raw_meta_srv = self.load_meta_json("universe_research_records")
+        merged_srv: dict[str, dict[str, Any]] = {}
+        if isinstance(raw_meta_srv, Mapping):
+            for rk, rv in raw_meta_srv.items():
+                if isinstance(rv, Mapping):
+                    merged_srv[str(rk)] = {
+                        "level": max(0, _safe_int(rv.get("level"), 0)),
+                        "holder": _sanitize_text(rv.get("holder") or ""),
+                        "coords": normalize_coords(_raw_text(rv.get("coords"), "")) if rv.get("coords") else "",
+                    }
+        srv_changed = False
+        if isinstance(server_records, Mapping):
+            for raw_k, raw_v in server_records.items():
+                ks = _raw_text(raw_k, "").strip()
+                canon_k = slug_to_key.get(ks.lower(), name_to_key.get(ks.lower(), ks))
+                if isinstance(raw_v, Mapping):
+                    lvl_v = max(0, _safe_int(raw_v.get("level"), 0))
+                    h_v = _sanitize_text(raw_v.get("holder") or "")
+                    c_raw = _raw_text(raw_v.get("coords"), "").strip()
+                    c_v = normalize_coords(c_raw) if c_raw else ""
+                else:
+                    lvl_v = max(0, _safe_int(raw_v, 0))
+                    h_v = ""
+                    c_v = ""
+                if lvl_v <= 0:
+                    continue
+                prev_s = merged_srv.get(canon_k)
+                if prev_s is None or lvl_v > int(prev_s.get("level", 0)) or (lvl_v == int(prev_s.get("level", 0)) and h_v and not prev_s.get("holder")):
+                    merged_srv[canon_k] = {"level": lvl_v, "holder": h_v, "coords": c_v}
+                    srv_changed = True
+        if srv_changed:
+            self.save_meta_json("universe_research_records", merged_srv, ts=eff_now)
+
+        eff_own_map: dict[str, int] = {}
+        eff_nick = _sanitize_text(own_nick or "")
+        with self._lock:
+            if own_researches is None:
+                snap_row = self._conn.execute(
+                    "SELECT researches_json FROM planet_snapshots ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                if snap_row is not None and snap_row[0]:
+                    try:
+                        parsed_own = json.loads(snap_row[0])
+                        if isinstance(parsed_own, Mapping):
+                            for ok, ov in parsed_own.items():
+                                eff_own_map[str(ok)] = max(0, _sql_int(ov, 0))
+                    except Exception:
+                        pass
+                if not eff_nick:
+                    rnk_row = self._conn.execute(
+                        "SELECT nickname FROM rank_snapshots WHERE nickname != '' ORDER BY id DESC LIMIT 1"
+                    ).fetchone()
+                    if rnk_row is not None and rnk_row[0]:
+                        eff_nick = _sanitize_text(rnk_row[0])
+            else:
+                for ok, ov in own_researches.items():
+                    eff_own_map[_raw_text(ok, "").strip()] = max(0, _sql_int(ov, 0))
+
+            prev_rows_by_key: dict[str, sqlite3.Row] = {}
+            if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "universe_research_max"):
+                for pr in self._conn.execute("SELECT * FROM universe_research_max").fetchall():
+                    prev_rows_by_key[str(pr["research_key"])] = pr
+
+            spied_best: dict[str, tuple[int, str, str]] = {}
+            rep_rows = self._conn.execute(
+                """
+                SELECT target_coords, owner, researches_json
+                FROM spy_reports
+                WHERE researches_json != '' AND researches_json != '{}'
+                ORDER BY ts ASC, id ASC
+                """
+            ).fetchall()
+            for rr in rep_rows:
+                try:
+                    rmap = json.loads(rr["researches_json"] or "{}")
+                except Exception:
+                    continue
+                if not isinstance(rmap, Mapping):
+                    continue
+                r_owner = _sanitize_text(rr["owner"] or "")
+                r_coords = normalize_coords(_raw_text(rr["target_coords"], ""))
+                for rk_raw, rv_raw in rmap.items():
+                    rk_s = _raw_text(rk_raw, "").strip()
+                    canon_rk = slug_to_key.get(rk_s.lower(), name_to_key.get(rk_s.lower(), rk_s))
+                    rlvl = max(0, _sql_int(rv_raw, 0))
+                    if rlvl <= 0:
+                        continue
+                    cur_b = spied_best.get(canon_rk)
+                    if cur_b is None or rlvl >= cur_b[0]:
+                        spied_best[canon_rk] = (
+                            rlvl,
+                            r_owner or (cur_b[1] if (cur_b and cur_b[0] == rlvl) else ""),
+                            r_coords or (cur_b[2] if (cur_b and cur_b[0] == rlvl) else ""),
+                        )
+
+            out_rows: list[dict[str, Any]] = []
+            for rid, rkey, slug, name, cat_max in defs:
+                prev_r = prev_rows_by_key.get(rkey)
+                own_lvl = max(
+                    0,
+                    eff_own_map.get(rkey, eff_own_map.get(slug, 0)),
+                )
+                prev_spied = max(0, _safe_int(prev_r["spied_max_level"], 0)) if prev_r is not None else 0
+                obs_spied, obs_holder, obs_coords = spied_best.get(rkey, (0, "", ""))
+                spied_lvl = max(prev_spied, obs_spied)
+
+                prev_srv = (
+                    _safe_optional_int(prev_r["server_record_level"])
+                    if (prev_r is not None and prev_r["server_record_level"] is not None)
+                    else None
+                )
+                srv_entry = merged_srv.get(rkey)
+                srv_lvl_cand = max(0, _sql_int(srv_entry.get("level"), 0)) if isinstance(srv_entry, Mapping) else 0
+                if prev_srv is not None and srv_lvl_cand > 0:
+                    srv_lvl: Optional[int] = max(prev_srv, srv_lvl_cand)
+                elif srv_lvl_cand > 0:
+                    srv_lvl = srv_lvl_cand
+                else:
+                    srv_lvl = prev_srv
+
+                prev_univ = max(0, _sql_int(prev_r["universe_max_level"], 0)) if prev_r is not None else 0
+                univ_max = _sql_int(max(prev_univ, own_lvl, spied_lvl, srv_lvl or 0), 0)
+
+                holder = ""
+                holder_coords = ""
+                if univ_max > 0:
+                    if srv_lvl is not None and srv_lvl == univ_max and isinstance(srv_entry, Mapping) and srv_entry.get("holder"):
+                        holder = str(srv_entry.get("holder") or "")
+                        holder_coords = str(srv_entry.get("coords") or "")
+                    elif obs_spied == univ_max and obs_spied > 0:
+                        holder = obs_holder or obs_coords
+                        holder_coords = obs_coords
+                    elif prev_r is not None and prev_univ == univ_max and str(prev_r["holder"] or "").strip():
+                        holder = _sanitize_text(prev_r["holder"] or "")
+                        holder_coords = _sanitize_text(prev_r["holder_coords"] or "")
+                    elif own_lvl == univ_max and own_lvl > 0:
+                        holder = eff_nick or "You"
+                        holder_coords = ""
+
+                if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "universe_research_max"):
+                    self._conn.execute(
+                        """
+                        INSERT INTO universe_research_max(
+                            research_key, research_id, slug, name,
+                            own_level, spied_max_level, server_record_level,
+                            universe_max_level, catalog_max_level,
+                            holder, holder_coords, updated_ts
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(research_key) DO UPDATE SET
+                            research_id = excluded.research_id,
+                            slug = excluded.slug,
+                            name = excluded.name,
+                            own_level = excluded.own_level,
+                            spied_max_level = MAX(universe_research_max.spied_max_level, excluded.spied_max_level),
+                            server_record_level = CASE
+                                WHEN excluded.server_record_level IS NULL THEN universe_research_max.server_record_level
+                                WHEN universe_research_max.server_record_level IS NULL THEN excluded.server_record_level
+                                ELSE MAX(universe_research_max.server_record_level, excluded.server_record_level)
+                            END,
+                            universe_max_level = MAX(universe_research_max.universe_max_level, excluded.universe_max_level),
+                            catalog_max_level = excluded.catalog_max_level,
+                            holder = CASE WHEN excluded.holder != '' THEN excluded.holder ELSE universe_research_max.holder END,
+                            holder_coords = CASE WHEN excluded.holder != '' THEN excluded.holder_coords ELSE universe_research_max.holder_coords END,
+                            updated_ts = excluded.updated_ts
+                        """,
+                        (
+                            rkey,
+                            _sql_int(rid, 0),
+                            slug,
+                            name,
+                            _sql_int(own_lvl, 0),
+                            _sql_int(spied_lvl, 0),
+                            _sql_optional_int(srv_lvl),
+                            _sql_int(univ_max, 0),
+                            _sql_optional_int(cat_max),
+                            holder[:80],
+                            holder_coords[:24],
+                            eff_now,
+                        ),
+                    )
+                out_rows.append(
+                    _sanitize_obj(
+                        {
+                            "research_id": rid,
+                            "key": rkey,
+                            "slug": slug,
+                            "name": name,
+                            "own_level": game_data.cap_json_int(own_lvl),
+                            "universe_max_level": game_data.cap_json_int(univ_max),
+                            "spied_max_level": game_data.cap_json_int(spied_lvl),
+                            "server_record_level": game_data.cap_json_int(srv_lvl) if srv_lvl is not None else None,
+                            "catalog_max_level": game_data.cap_json_int(cat_max) if cat_max is not None else None,
+                            "gap_to_max": game_data.cap_json_int(max(0, univ_max - own_lvl)),
+                            "holder": holder[:80],
+                            "holder_coords": holder_coords[:24],
+                            "updated_ts": eff_now,
+                        }
+                    )
+                )
+
+            if (
+                source != "auto_seed"
+                and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "universe_research_max_history")
+            ):
+                clean_src = _sanitize_text(source or "refresh")[:32] or "refresh"
+                rec_json = _json_dumps(out_rows)
+                self._conn.execute(
+                    "INSERT INTO universe_research_max_history(ts, source, records_json) VALUES (?, ?, ?)",
+                    (eff_now, clean_src, rec_json),
+                )
+            self._conn.commit()
+        return out_rows
+
+    def get_universe_research_max(
+        self,
+        own_researches: Optional[Mapping[str, Any]] = None,
+        own_nick: str = "",
+    ) -> list[dict[str, Any]]:
+        """Read persisted `universe_research_max` rows (auto-seeding if empty, and syncing `own_level` if higher)."""
+        defs = self._catalog_research_definitions()
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "universe_research_max"):
+                rows_db = []
+            else:
+                rows_db = self._conn.execute(
+                    "SELECT * FROM universe_research_max ORDER BY research_id ASC, slug ASC"
+                ).fetchall()
+        if len(rows_db) < len(defs):
+            return self.refresh_universe_research_max(
+                own_researches=own_researches,
+                own_nick=own_nick,
+                source="auto_seed",
+            )
+        if isinstance(own_researches, Mapping) and own_researches:
+            own_lookup = {_raw_text(k, "").strip(): max(0, _sql_int(v, 0)) for k, v in own_researches.items()}
+            needs_refresh = any(
+                own_lookup.get(str(r["research_key"]), own_lookup.get(str(r["slug"]), int(r["own_level"])))
+                != int(r["own_level"])
+                for r in rows_db
+            )
+            if needs_refresh:
+                return self.refresh_universe_research_max(
+                    own_researches=own_researches,
+                    own_nick=own_nick,
+                    source="auto_seed",
+                )
+        out: list[dict[str, Any]] = []
+        for r in rows_db:
+            own_l = max(0, _safe_int(r["own_level"], 0))
+            univ_l = max(own_l, _safe_int(r["universe_max_level"], 0))
+            spied_l = max(0, _safe_int(r["spied_max_level"], 0))
+            srv_l = _safe_optional_int(r["server_record_level"]) if r["server_record_level"] is not None else None
+            cat_l = _safe_optional_int(r["catalog_max_level"]) if r["catalog_max_level"] is not None else None
+            out.append(
+                _sanitize_obj(
+                    {
+                        "research_id": _safe_int(r["research_id"], 0),
+                        "key": _sanitize_text(r["research_key"] or ""),
+                        "slug": _sanitize_text(r["slug"] or ""),
+                        "name": _sanitize_text(r["name"] or ""),
+                        "own_level": game_data.cap_json_int(own_l),
+                        "universe_max_level": game_data.cap_json_int(univ_l),
+                        "spied_max_level": game_data.cap_json_int(spied_l),
+                        "server_record_level": game_data.cap_json_int(srv_l) if srv_l is not None else None,
+                        "catalog_max_level": game_data.cap_json_int(cat_l) if cat_l is not None else None,
+                        "gap_to_max": game_data.cap_json_int(max(0, univ_l - own_l)),
+                        "holder": _sanitize_text(r["holder"] or ""),
+                        "holder_coords": _sanitize_text(r["holder_coords"] or ""),
+                        "updated_ts": _safe_float(r["updated_ts"], 0.0),
+                    }
+                )
+            )
+        return out

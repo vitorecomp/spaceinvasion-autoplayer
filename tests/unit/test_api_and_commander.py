@@ -4053,6 +4053,8 @@ class TestApiAndCommander(unittest.TestCase):
                 bridge.close()
 
     def test_antibot_captcha_auto_pauses_bridge_and_stops_commander_immediately(self) -> None:
+        import contextlib
+        import io
         import threading
         import requests
         from spaceinvasion.auth import AntiBotChallengeError
@@ -4071,6 +4073,7 @@ class TestApiAndCommander(unittest.TestCase):
             bridge = GameApiBridge(
                 debug_port=9222,
                 config_path=cfg_path,
+                db_path=tmp_path / "captcha.db",
                 log_dir=None,
                 client_factory=lambda _port: fake_client,
                 ensure_session_fn=lambda: None,
@@ -4091,42 +4094,96 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertTrue(bot_status["paused"])
                 self.assertTrue(bot_status["captcha_blocked"])
 
-                # Commander in --loop mode must exit immediately with code 2 without sleeping/retrying
-                with patch("commander.time.sleep", side_effect=AssertionError("commander must not sleep/retry on CAPTCHA")):
+                # Persistent unread captcha_gate notification was created
+                notifs = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "notifications_list"},
+                    timeout=5,
+                ).json()
+                self.assertGreaterEqual(notifs["unread_count"], 1)
+                self.assertTrue(any(n.get("dedupe_key") == "captcha:gate" for n in notifs["items"]))
+
+                # Commander in --loop mode stays alive, logs [ALERT] once, makes ZERO browser calls while blocked,
+                # and resumes cleanly when operator clicks Resume (paused=False)!
+                calls_before_wait = fake_client.read_full_snapshot.call_count
+                sleep_count = [0]
+
+                def _fake_sleep(_s: float) -> None:
+                    sleep_count[0] += 1
+                    if sleep_count[0] == 2:
+                        # Operator solved CAPTCHA in Chrome and clicked Resume Bot
+                        fake_client.read_full_snapshot.side_effect = None
+                        fake_client.read_full_snapshot.return_value = _sample_state()
+                        requests.post(
+                            f"{base_url}/command",
+                            json={"command": "bot_control", "paused": False},
+                            timeout=5,
+                        )
+
+                out_buf = io.StringIO()
+                with (
+                    patch("spaceinvasion.api_server.is_debug_port_open", return_value=True),
+                    patch("commander.time.sleep", side_effect=_fake_sleep),
+                    contextlib.redirect_stdout(out_buf),
+                ):
                     rc = commander.main(
                         [
                             "--api-url",
                             base_url,
                             "--loop",
-                            "--live",
+                            "--interval",
+                            "0.05",
+                            "--max-ticks",
+                            "3",
                             "--config",
                             str(cfg_path),
                             "--log-dir",
                             "",
                         ]
                     )
-                self.assertEqual(rc, 2)
+                self.assertEqual(rc, 0)
+                out_txt = out_buf.getvalue()
+                self.assertEqual(out_txt.count("[CMD][ALERT]"), 1)
+                self.assertIn("CAPTCHA gate cleared and automation resumed", out_txt)
+                # Zero snapshot calls happened on ticks 1 & 2 while blocked; 1 snapshot call happened on tick 3 after Resume!
+                self.assertEqual(fake_client.read_full_snapshot.call_count, calls_before_wait + 1)
 
-                # Also verify direct tick exception path when captcha_blocked was not yet set beforehand
-                requests.post(f"{base_url}/command", json={"command": "bot_control", "paused": False}, timeout=5)
+                # Resuming auto-acknowledged the captcha:gate notification and cleared captcha_blocked
                 bot_cleared = requests.get(f"{base_url}/bot_status", timeout=5).json()
                 self.assertFalse(bot_cleared["captcha_blocked"])
+                notifs_after = requests.post(
+                    f"{base_url}/command",
+                    json={"command": "notifications_list", "status": "unread"},
+                    timeout=5,
+                ).json()
+                self.assertFalse(any(n.get("dedupe_key") == "captcha:gate" for n in notifs_after["items"]))
 
-                with patch("commander.time.sleep", side_effect=AssertionError("commander must not sleep/retry on CAPTCHA")):
+                # Direct tick exception path also pauses & waits passively instead of exiting with code 2
+                fake_client.read_full_snapshot.side_effect = AntiBotChallengeError("Turnstile gate")
+                bridge._last_snapshot_at = -1.0
+                out_buf2 = io.StringIO()
+                with (
+                    patch("commander.time.sleep", side_effect=lambda _s: None),
+                    contextlib.redirect_stdout(out_buf2),
+                ):
                     rc2 = commander.main(
                         [
                             "--api-url",
                             base_url,
                             "--loop",
-                            "--live",
+                            "--interval",
+                            "0.05",
+                            "--max-ticks",
+                            "2",
                             "--config",
                             str(cfg_path),
                             "--log-dir",
                             "",
                         ]
                     )
-                self.assertEqual(rc2, 2)
-                self.assertEqual(fake_client.read_full_snapshot.call_count, 2)
+                self.assertEqual(rc2, 0)
+                self.assertEqual(out_buf2.getvalue().count("[CMD][ALERT]"), 1)
+                self.assertTrue(requests.get(f"{base_url}/bot_status", timeout=5).json()["captcha_blocked"])
             finally:
                 server.shutdown()
                 server.server_close()
@@ -5831,6 +5888,155 @@ class TestApiAndCommander(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 bridge.close()
+
+    def test_static_assets_traversal_guard_attack_free_cooldown_and_universe_research_sync(self) -> None:
+        import time
+        import requests
+        from spaceinvasion.executor import ExecutionResult
+        from spaceinvasion.fleet import GalaxySlot
+        from spaceinvasion.runtime import api_server as api_mod
+
+        with tempfile.TemporaryDirectory(prefix="si_api_assets_") as tmp:
+            tp = Path(tmp)
+            fake_ui = tp / "ui"
+            (fake_ui / "assets").mkdir(parents=True)
+            (fake_ui / "assets" / "chunk-test.js").write_text("export const x = 42;\n", encoding="utf-8")
+            (tp / "secret.txt").write_text("TOP_SECRET", encoding="utf-8")
+
+            cfg_path = tp / "config.yaml"
+            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            st = _sample_state()
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.driver = MagicMock(current_url="https://spaceinvasion.bitmeup.com/indexGame.es?sid=tok")
+            fake_client.read_full_snapshot.return_value = st
+            fake_client.navigate_menu.return_value = (
+                "<html><body><table><tr><td>Mining technology</td><td>21</td><td>TopMiner [01:015:08]</td></tr></table></body></html>"
+            )
+
+            bridge = GameApiBridge(
+                debug_port=19999,
+                config_path=cfg_path,
+                db_path=tp / "api_assets.db",
+                log_dir=None,
+                client_factory=lambda _p: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            with patch.object(api_mod, "UI_DIR", fake_ui):
+                server = create_api_server(bridge, host="127.0.0.1", port=0)
+                base_url = f"http://127.0.0.1:{server.server_address[1]}"
+                threading.Thread(target=server.serve_forever, daemon=True).start()
+                try:
+                    # 1. /assets/<name> serves valid chunk and rejects traversal
+                    ok_js = requests.get(f"{base_url}/assets/chunk-test.js", timeout=5)
+                    self.assertEqual(ok_js.status_code, 200)
+                    self.assertIn("javascript", ok_js.headers.get("Content-Type", ""))
+                    self.assertEqual(ok_js.text, "export const x = 42;\n")
+
+                    for bad_path in ("/assets/../secret.txt", "/assets/..%2Fsecret.txt", "/assets/", "/assets/a\\b.js"):
+                        r_bad = requests.get(f"{base_url}{bad_path}", timeout=5)
+                        self.assertIn(r_bad.status_code, (400, 404), bad_path)
+                        self.assertNotIn("TOP_SECRET", r_bad.text)
+
+                    # 2. attack rejects free/ownerless slots & 6h target protection cooldowns before touching Selenium
+                    assert bridge._db is not None
+                    bridge._last_state = st
+                    bridge._last_snapshot_at = time.monotonic()
+                    bridge._db.record_galaxy_slots(
+                        [
+                            GalaxySlot("02:381:08", 8, status_color="free"),
+                            GalaxySlot("02:381:06", 6, name="Fort", owner="IdleUser", status_color="yellow"),
+                        ],
+                        ts=time.time(),
+                    )
+                    atk_free = requests.post(
+                        f"{base_url}/command",
+                        json={"command": "attack", "target_coords": "02:381:08"},
+                        timeout=5,
+                    ).json()
+                    self.assertFalse(atk_free["executed"])
+                    self.assertIn("uninhabited", atk_free["message"].lower())
+
+                    # Simulate Step 2 missing ATTACK radio on 02:381:06 -> persists 6h block & fleet_protection notification
+                    def _no_atk_radio(_c, _s, act, **_kw):
+                        return ExecutionResult(
+                            action=act,
+                            executed=False,
+                            validated=False,
+                            dry_run=False,
+                            message="Aborted: Target cannot be attacked on internalSendFleet (ATTACK mission unavailable).",
+                            validation_error="Target cannot be attacked on internalSendFleet (ATTACK mission unavailable)",
+                            target_cooldown_seconds=6 * 3600.0,
+                            target_block_reason="Target cannot be attacked on internalSendFleet (ATTACK mission unavailable)",
+                        )
+
+                    with (
+                        patch("spaceinvasion.api_server.is_debug_port_open", return_value=True),
+                        patch.object(bridge._live_executor, "execute_action", side_effect=_no_atk_radio) as mock_ex,
+                    ):
+                        atk1 = requests.post(
+                            f"{base_url}/command",
+                            json={"command": "attack", "target_coords": "02:381:06"},
+                            timeout=5,
+                        ).json()
+                        self.assertFalse(atk1["executed"])
+                        self.assertEqual(mock_ex.call_count, 1)
+
+                        # Immediate retry is blocked by persisted cooldown WITHOUT calling executor!
+                        atk2 = requests.post(
+                            f"{base_url}/command",
+                            json={"command": "attack", "target_coords": "02:381:06"},
+                            timeout=5,
+                        ).json()
+                        self.assertFalse(atk2["executed"])
+                        self.assertIn("cooldown", atk2["message"].lower())
+                        self.assertEqual(mock_ex.call_count, 1)
+
+                    # Free-slot SPY probe rejection records 6h cooldown silently WITHOUT unread popup spam
+                    unread_before = bridge._db.unread_notification_count()
+
+                    def _free_spy_reject(_c, _s, act, **_kw):
+                        return ExecutionResult(
+                            action=act,
+                            executed=False,
+                            validated=False,
+                            dry_run=False,
+                            message="Aborted: Spy mission unavailable on free slot.",
+                            validation_error="Spy mission unavailable on free slot",
+                            target_cooldown_seconds=6 * 3600.0,
+                            target_block_reason="Spy mission unavailable on free slot",
+                        )
+
+                    with (
+                        patch("spaceinvasion.api_server.is_debug_port_open", return_value=True),
+                        patch.object(bridge._live_executor, "execute_action", side_effect=_free_spy_reject),
+                    ):
+                        spy_free = requests.post(
+                            f"{base_url}/command",
+                            json={"command": "spy", "target_coords": "02:381:08"},
+                            timeout=5,
+                        ).json()
+                    self.assertFalse(spy_free["executed"])
+                    self.assertEqual(bridge._db.unread_notification_count(), unread_before)
+
+                    # 3. universe_research_max sync merges live server records into SQLite and dashboard
+                    with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                        uni_res = requests.post(
+                            f"{base_url}/command",
+                            json={"command": "universe_research_max", "sync": True},
+                            timeout=5,
+                        ).json()
+                    self.assertTrue(uni_res["ok"])
+                    self.assertTrue(uni_res["synced"])
+                    r1_row = next(r for r in uni_res["rows"] if r["key"] == "r1")
+                    self.assertEqual(r1_row["universe_max_level"], 21)
+                    self.assertEqual(r1_row["holder"], "TopMiner")
+                    dash = requests.get(f"{base_url}/dashboard?refresh=0", timeout=5).json()
+                    self.assertIn("universe_research_max", dash)
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    bridge.close()
 
 
 if __name__ == "__main__":

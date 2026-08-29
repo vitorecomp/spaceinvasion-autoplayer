@@ -49,6 +49,7 @@ from spaceinvasion.core.state import (
     _parse_cost_from_text,
     is_asteroid_planet,
     is_building_allowed_on_planet_type,
+    is_in_flight_fleet_job,
     is_raid_planet,
     normalize_planet_type,
 )
@@ -2624,7 +2625,7 @@ class _SimState:
             raid_targets_info[coords] = {
                 "coords": coords,
                 "owner": _safe_action_str(raw.get("owner")),
-                "planet_name": _safe_action_str(raw.get("planet_name")),
+                "planet_name": _safe_action_str(raw.get("planet_name") or raw.get("name")),
                 "is_spacia": bool(raw.get("is_spacia", False)),
                 "status_color": _resolve_raid_target_status_color(raw),
                 "fleet": {_safe_action_str(k): max(0, _safe_int(v, 0)) for k, v in raw_fleet.items()},
@@ -3593,7 +3594,7 @@ def _sim_tutorial_fight_pending(sim: _SimState) -> bool:
         return False
     if sim.fleet_jobs:
         return False
-    if any(getattr(q, "category", "") == "fleet" for q in (getattr(src, "active_queues", ()) or ())):
+    if any(is_in_flight_fleet_job(q) for q in (getattr(src, "active_queues", ()) or ())):
         return False
     return True
 
@@ -3777,6 +3778,8 @@ def _compute_sim_metrics(
         for coords, meta in sim.raid_targets_info.items():
             is_inact = _safe_action_str(meta["status_color"]).lower() == "yellow"
             is_sp = bool(meta["is_spacia"])
+            if not is_sp and not _safe_action_str(meta.get("owner")) and not _safe_action_str(meta.get("planet_name")):
+                continue
             if not sim.bash_tracker.can_attack(
                 coords, is_inactive=is_inact, is_spacia=is_sp, timestamp=sim_now
             ):
@@ -5983,13 +5986,24 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
 
         if cfg.allow_galaxy_scan and ptype != "raid" and _safe_int(p.ships.get("s10", 0), 0) > 0 and _sim_tutorial_spy_pending(sim):
             own_coords_spy = {normalize_coords(op.coords) for op in sim.planets}
+            sim_spy_now = sim.sim_base_ts + sim.clock_s
             for t_coords, meta in sim.raid_targets_info.items():
                 norm_t = normalize_coords(t_coords)
                 if norm_t in own_coords_spy or norm_t in sim.spied_targets:
                     continue
+                if _safe_float_any(sim.target_raid_cooldown_until.get(norm_t, sim.target_raid_cooldown_until.get(t_coords, 0.0)), 0.0) > sim.clock_s + 1e-6:
+                    continue
                 is_spacia = bool(meta["is_spacia"])
                 scolor = _safe_action_str(meta["status_color"]).lower()
                 if not (scolor == "yellow" or is_spacia or (cfg.allow_pvp_in_az and scolor == "light_red")):
+                    continue
+                if not is_spacia and not _safe_action_str(meta.get("owner")) and not _safe_action_str(meta.get("planet_name")):
+                    t_res_chk = sim.raid_target_res.get(t_coords, Resources())
+                    if t_res_chk.is_zero() and not meta.get("fleet") and not meta.get("defense"):
+                        continue
+                if not sim.bash_tracker.can_attack(
+                    t_coords, is_inactive=(scolor == "yellow"), is_spacia=is_spacia, timestamp=sim_spy_now
+                ):
                     continue
                 candidates.append(
                     SimAction(
@@ -6029,6 +6043,8 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
                     if _safe_float_any(sim.target_raid_cooldown_until.get(norm_t, sim.target_raid_cooldown_until.get(t_coords, 0.0)), 0.0) > sim.clock_s + 1e-6:
                         continue
                     is_spacia = bool(meta["is_spacia"])
+                    if not is_spacia and not _safe_action_str(meta.get("owner")) and not _safe_action_str(meta.get("planet_name")):
+                        continue
                     scolor = _safe_action_str(meta["status_color"]).lower()
                     is_inact = scolor == "yellow"
                     if not (is_inact or is_spacia or (cfg.allow_pvp_in_az and scolor == "light_red")):
@@ -7407,7 +7423,8 @@ def _materialize_planned_actions(
                         )
                     )
 
-    own_fleet_in_flight = any(getattr(q, "category", "") == "fleet" for q in (state.active_queues or ()))
+    used_fleet_slots_opt = sum(1 for q in (state.active_queues or ()) if is_in_flight_fleet_job(q))
+    own_fleet_in_flight = used_fleet_slots_opt > 0
     tut_obj = state.tutorial if (state.tutorial is not None and not state.tutorial.can_complete) else None
     tutorial_fight_task = _opt_tutorial_fight_task(tut_obj)
     tutorial_spy_task = _opt_tutorial_spy_task(tut_obj)
@@ -7980,8 +7997,16 @@ def _materialize_planned_actions(
                     sc_col = _resolve_raid_target_status_color(raw_rt)
                     if not (sc_col == "yellow" or is_sp or (bool(cfg.allow_pvp_in_az) and sc_col == "light_red")):
                         continue
+                    if _safe_float_any(raw_rt.get("blocked_until_ts"), 0.0) > live_now_ts:
+                        continue
+                    if not bash_tracker.can_attack(
+                        norm_tc, is_inactive=(sc_col == "yellow"), is_spacia=is_sp, timestamp=live_now_ts
+                    ):
+                        continue
                     ow_s = _safe_action_str(raw_rt.get("owner"))
-                    pn_s = _safe_action_str(raw_rt.get("planet_name"))
+                    pn_s = _safe_action_str(raw_rt.get("planet_name") or raw_rt.get("name"))
+                    if not is_sp and not ow_s and not pn_s:
+                        continue
                     tg_s = "Spacia" if is_sp else ("Inactive" if sc_col == "yellow" else sc_col.title())
                     plan.append(
                         _make_planned_action(
@@ -8066,7 +8091,9 @@ def _materialize_planned_actions(
                 if not cmb_t.safe_to_attack:
                     continue
                 ow_s = _safe_action_str(raw_rt.get("owner"))
-                pn_s = _safe_action_str(raw_rt.get("planet_name"))
+                pn_s = _safe_action_str(raw_rt.get("planet_name") or raw_rt.get("name"))
+                if not is_sp and not ow_s and not pn_s:
+                    continue
                 tg_s = "Spacia" if is_sp else ("Inactive" if is_in else sc_col.title())
                 can_ex_f = bool(cfg.allow_raids and atk_fl and not own_fleet_in_flight)
                 f_reason = f"Tutorial {tut_step_s}/{tut_total_s}: {_safe_action_str(tutorial_fight_task.description)}"
@@ -8220,19 +8247,93 @@ def _materialize_planned_actions(
                         prio_str=w_act.priority,
                     )
 
-    if bool(getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None):
+    req_spy_pid_opt = max(0, _safe_int(getattr(cfg, "spy_dispatch_planet_id", 0), 0))
+    designated_spy_opt = (
+        next(
+            (pl for pl in state.planets if pl.planet_id == req_spy_pid_opt and not is_raid_planet(pl)),
+            None,
+        )
+        if req_spy_pid_opt > 0
+        else None
+    )
+    allocated_norm_opt = sum(1 for pl in state.planets if normalize_planet_type(pl) == "normal")
+    max_p_opt = max(1, _safe_int(getattr(cfg, "max_planets", 11), 11))
+    needed_col_opt = max(0, max_p_opt - allocated_norm_opt)
+    min_col_f = max(50, min(600, _safe_int(getattr(cfg, "min_colony_fields", 300), 300)))
+    qualified_col_coords_opt: set[str] = set()
+    for raw_qc in state.raid_targets or ():
+        if not isinstance(raw_qc, Mapping) or bool(raw_qc.get("discarded", False)):
+            continue
+        tc_qc = _safe_action_str(raw_qc.get("coords") or raw_qc.get("target_coords")).strip()
+        if not tc_qc:
+            continue
+        nc_qc = normalize_coords(tc_qc)
+        if not nc_qc or nc_qc in own_coords or bool(raw_qc.get("is_spacia", False)):
+            continue
+        sc_qc = _resolve_raid_target_status_color(raw_qc)
+        ow_qc = _safe_action_str(raw_qc.get("owner")).strip()
+        uf_qc = game_data.safe_optional_int(raw_qc.get("uninhabited_fields"), None)
+        if (sc_qc == "free" or (not ow_qc and uf_qc is not None)) and uf_qc is not None and uf_qc >= min_col_f:
+            qualified_col_coords_opt.add(nc_qc)
+    qualified_col_cnt_opt = len(qualified_col_coords_opt)
+    want_col_probes_opt = bool(
+        (getattr(cfg, "allow_galaxy_scan", False) or getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None)
+        and allocated_norm_opt < max_p_opt
+        and qualified_col_cnt_opt < needed_col_opt
+    )
+
+    if designated_spy_opt is not None and _safe_int(designated_spy_opt.ships.get("s10", 0), 0) <= 0:
+        if cfg.allow_shipyard and designated_spy_opt.building_level(9) >= 1 and not any(a.kind == "BUILD_SHIP" and a.target_id == 10 for a in plan):
+            unmet_s10_opt = _fast_unmet_prereqs("ships", "spy-probe", designated_spy_opt.buildings, state.researches)
+            if not unmet_s10_opt:
+                s10_off_d = s_offers_by_p.get(designated_spy_opt.planet_id, {}).get(10)
+                s10_cost_d = (
+                    s10_off_d.cost
+                    if (s10_off_d is not None and not s10_off_d.cost.is_zero())
+                    else _resources_from_dict((game_data.SHIPS.get("spy-probe") or {}).get("base_cost") or {})
+                )
+                av_s10_d = avail_res_by_p.get(designated_spy_opt.planet_id, designated_spy_opt.resources)
+                can_ex_s10_d = bool(
+                    av_s10_d.can_afford(s10_cost_d)
+                    and (s10_off_d is None or s10_off_d.can_build)
+                )
+                plan.append(
+                    _make_planned_action(
+                        priority="P2",
+                        kind="BUILD_SHIP",
+                        planet_id=designated_spy_opt.planet_id,
+                        planet_coords=_safe_action_str(designated_spy_opt.coords),
+                        target_id=10,
+                        target_name="Spy probe",
+                        target_level=1,
+                        cost=s10_cost_d,
+                        missing=av_s10_d.missing(s10_cost_d),
+                        reason=f"Build Spy probe (s10) on designated spy colony [{_safe_action_str(designated_spy_opt.coords)}]",
+                        executable_now=can_ex_s10_d,
+                    )
+                )
+
+    if allocated_norm_opt < max_p_opt and bool(
+        getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None or want_col_probes_opt
+    ):
         non_raid_col_p = [pl for pl in planets_to_check if not is_raid_planet(pl)]
         col_ship_p = (
             active
             if _safe_int(active.ships.get("s8", 0), 0) > 0
             else next((pl for pl in non_raid_col_p if _safe_int(pl.ships.get("s8", 0), 0) > 0), None)
         )
-        probe_col_p = (
-            active
-            if _safe_int(active.ships.get("s10", 0), 0) > 0
-            else next((pl for pl in non_raid_col_p if _safe_int(pl.ships.get("s10", 0), 0) > 0), None)
-        )
-        min_col_f = max(50, min(600, _safe_int(getattr(cfg, "min_colony_fields", 300), 300)))
+        if designated_spy_opt is not None:
+            probe_col_p: Optional[PlanetState] = designated_spy_opt
+            probe_col_has_s10 = _safe_int(designated_spy_opt.ships.get("s10", 0), 0) > 0
+            probe_col_missing_designated = not probe_col_has_s10
+        else:
+            probe_col_p = (
+                active
+                if not is_raid_planet(active) and _safe_int(active.ships.get("s10", 0), 0) > 0
+                else next((pl for pl in non_raid_col_p if _safe_int(pl.ships.get("s10", 0), 0) > 0), None)
+            )
+            probe_col_has_s10 = probe_col_p is not None
+            probe_col_missing_designated = False
         if col_ship_p is None and bool(getattr(cfg, "allow_colonize", False)) and tutorial_colonize_task is None:
             wf_col_p = next((pl for pl in non_raid_col_p if pl.building_level(9) >= 1), None)
             if wf_col_p is not None and not any(a.kind == "BUILD_SHIP" and a.target_id == 8 for a in plan):
@@ -8270,11 +8371,12 @@ def _materialize_planned_actions(
                     )
                 )
         ref_col_origin = col_ship_p or probe_col_p or active
-        opt_col_ready: list[tuple[tuple[int, int, int, int], "PlannedAction"]] = []
+        opt_col_ready: list[tuple[tuple[int, int, int, int, int], "PlannedAction"]] = []
         opt_col_spy: list[tuple[tuple[int, int, int, int], "PlannedAction"]] = []
         merged_scans_col = set(recent_scans)
+        seen_col_opt: set[str] = set()
         for raw_rt in state.raid_targets or ():
-            if not isinstance(raw_rt, Mapping):
+            if not isinstance(raw_rt, Mapping) or bool(raw_rt.get("discarded", False)):
                 continue
             tc_raw = _safe_action_str(raw_rt.get("coords") or raw_rt.get("target_coords")).strip()
             if not tc_raw:
@@ -8283,7 +8385,7 @@ def _materialize_planned_actions(
             if rt_sc_ts > 0.0 and (live_now_ts - rt_sc_ts) < 1800.0:
                 merged_scans_col.add(_parse_gal_sys(tc_raw))
             norm_tc = normalize_coords(tc_raw)
-            if norm_tc in own_coords:
+            if norm_tc in own_coords or norm_tc in seen_col_opt or bool(raw_rt.get("is_spacia", False)):
                 continue
             ow_col = _safe_action_str(raw_rt.get("owner")).strip()
             sc_col = _resolve_raid_target_status_color(raw_rt)
@@ -8294,6 +8396,7 @@ def _materialize_planned_actions(
             is_free_cand = sc_col == "free" or (not ow_col and uf_val is not None)
             if not is_free_cand:
                 continue
+            seen_col_opt.add(norm_tc)
             gr_info = grade_colony_candidate(
                 norm_tc,
                 origin_coords=_safe_action_str(ref_col_origin.coords),
@@ -8301,7 +8404,7 @@ def _materialize_planned_actions(
                 min_fields_target=min_col_f,
             )
             sp_ts_c = _safe_float_any(raw_rt.get("last_spied_ts"), 0.0)
-            if uf_val is not None and uf_val >= min_col_f:
+            if uf_val is not None and uf_val >= min_col_f and (getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None):
                 exec_col_p = col_ship_p if col_ship_p is not None else active
                 has_cs = col_ship_p is not None
                 can_ex_col = bool(getattr(cfg, "allow_colonize", False) and has_cs and not own_fleet_in_flight)
@@ -8318,7 +8421,7 @@ def _materialize_planned_actions(
                     c_reason += " [Hold: allow_colonize=false in Config]"
                 opt_col_ready.append(
                     (
-                        (0 if can_ex_col else 1, -int(gr_info["score"]), -uf_val, int(gr_info["distance"])),
+                        (0 if can_ex_col else 1, 0, -int(gr_info["score"]), -uf_val, int(gr_info["distance"])),
                         _make_planned_action(
                             priority="P2",
                             kind="COLONIZE",
@@ -8332,21 +8435,38 @@ def _materialize_planned_actions(
                         ),
                     )
                 )
-            elif uf_val is None and sp_ts_c <= 0.0 and probe_col_p is not None:
+            elif (
+                uf_val is None
+                and sp_ts_c <= 0.0
+                and want_col_probes_opt
+                and probe_col_p is not None
+                and _safe_float_any(raw_rt.get("blocked_until_ts"), 0.0) <= live_now_ts
+                and bash_tracker.can_attack(norm_tc, is_inactive=True, timestamp=live_now_ts)
+            ):
                 pos_c = int(gr_info["position"])
                 zone_p = 0 if 7 <= pos_c <= 12 else (1 if 4 <= pos_c <= 6 else (2 if 13 <= pos_c <= 16 else 3))
-                can_ex_ps = bool((cfg.allow_galaxy_scan or getattr(cfg, "allow_colonize", False)) and not own_fleet_in_flight)
+                max_spy_sl_c = 1 + max(0, probe_col_p.building_level(10))
+                pg_c, ps_c, pp_c = _parse_gal_sys_pos(probe_col_p.coords)
+                tg_c, ts_c, tp_c = _parse_gal_sys_pos(norm_tc)
+                dist_p_c = abs(pg_c - tg_c) * 20000 + abs(ps_c - ts_c) * 95 + abs(pp_c - tp_c) * 5
+                can_ex_ps = bool(
+                    (cfg.allow_galaxy_scan or getattr(cfg, "allow_colonize", False))
+                    and probe_col_has_s10
+                    and used_fleet_slots_opt < max_spy_sl_c
+                )
                 ps_reason = (
                     f"Probe free slot {norm_tc} (pos {pos_c}, {gr_info['orbital_zone']}) "
-                    f"to check for {min_col_f}+ building fields"
+                    f"for {min_col_f}+ fields ({qualified_col_cnt_opt}/{needed_col_opt} qualified)"
                 )
-                if own_fleet_in_flight:
-                    ps_reason += " [Hold: Own fleet in transit]"
+                if probe_col_missing_designated:
+                    ps_reason += " [Hold: No Spy probes (s10) stationed on designated spy colony]"
+                elif used_fleet_slots_opt >= max_spy_sl_c:
+                    ps_reason += f" [Hold: Fleet slots full ({used_fleet_slots_opt}/{max_spy_sl_c} in flight)]"
                 elif not (cfg.allow_galaxy_scan or getattr(cfg, "allow_colonize", False)):
                     ps_reason += " [Hold: allow_galaxy_scan/allow_colonize disabled in Config]"
                 opt_col_spy.append(
                     (
-                        (0 if can_ex_ps else 1, zone_p, int(gr_info["distance"]), pos_c),
+                        (0 if can_ex_ps else 1, zone_p, dist_p_c, pos_c),
                         _make_planned_action(
                             priority="P2",
                             kind="SPY",
@@ -8360,14 +8480,19 @@ def _materialize_planned_actions(
                         ),
                     )
                 )
-        if opt_col_ready:
-            opt_col_ready.sort(key=lambda item: item[0])
-            plan.append(opt_col_ready[0][1])
-        elif opt_col_spy:
+        if opt_col_spy:
             opt_col_spy.sort(key=lambda item: item[0])
             for _, spy_act_c in opt_col_spy[:2]:
                 plan.append(spy_act_c)
-        elif not own_fleet_in_flight and (col_ship_p is not None or probe_col_p is not None):
+        if opt_col_ready:
+            opt_col_ready.sort(key=lambda item: item[0])
+            plan.append(opt_col_ready[0][1])
+        elif (
+            (getattr(cfg, "allow_colonize", False) or tutorial_colonize_task is not None)
+            and not opt_col_spy
+            and not own_fleet_in_flight
+            and (col_ship_p is not None or probe_col_p is not None)
+        ):
             nxt_sc_col = _next_unscanned_system(_safe_action_str(ref_col_origin.coords), merged_scans_col, radius=25)
             if nxt_sc_col is not None:
                 sg_c, ss_c = nxt_sc_col
@@ -8728,8 +8853,10 @@ def _materialize_planned_actions(
             )
             coords = norm_step_coords
             owner = _safe_action_str((meta or {}).get("owner"))
-            pname = _safe_action_str((meta or {}).get("planet_name"))
+            pname = _safe_action_str((meta or {}).get("planet_name") or (meta or {}).get("name"))
             is_spacia = bool((meta or {}).get("is_spacia", False))
+            if not is_spacia and not owner and not pname:
+                continue
             scolor = _resolve_raid_target_status_color(meta)
             is_inact = scolor == "yellow"
             tag = "Spacia" if is_spacia else ("Inactive" if is_inact else scolor.title())
@@ -8900,22 +9027,38 @@ def _materialize_planned_actions(
             if meta_spy is None:
                 continue
             ow_spy = _safe_action_str(meta_spy.get("owner"))
-            pn_spy = _safe_action_str(meta_spy.get("planet_name"))
+            pn_spy = _safe_action_str(meta_spy.get("planet_name") or meta_spy.get("name"))
             is_sp_spy = bool(meta_spy.get("is_spacia", False))
             sc_spy = _resolve_raid_target_status_color(meta_spy)
+            if not is_sp_spy and (sc_spy == "free" or (not ow_spy and not pn_spy)):
+                continue
+            if _safe_float_any(meta_spy.get("blocked_until_ts"), 0.0) > live_now_ts:
+                continue
+            if not bash_tracker.can_attack(
+                norm_spy_coords, is_inactive=(sc_spy == "yellow"), is_spacia=is_sp_spy, timestamp=live_now_ts
+            ):
+                continue
+            spy_exec_p = designated_spy_opt if designated_spy_opt is not None else planet
+            spy_has_s10 = _safe_int(spy_exec_p.ships.get("s10", 0), 0) > 0
+            max_spy_sl_m = 1 + max(0, spy_exec_p.building_level(10))
             pol_spy = sc_spy == "yellow" or is_sp_spy or (bool(cfg.allow_pvp_in_az) and sc_spy == "light_red")
             tg_spy = "Spacia" if is_sp_spy else ("Inactive" if sc_spy == "yellow" else sc_spy.title())
-            can_exec_spy = bool(cfg.allow_galaxy_scan and _safe_int(planet.ships.get("s10", 0), 0) > 0 and pol_spy)
+            can_exec_spy = bool(cfg.allow_galaxy_scan and spy_has_s10 and pol_spy and used_fleet_slots_opt < max_spy_sl_m)
+            spy_rsn_m = _safe_action_str(step.reason) or f"Send Spy probe (s10) to scout {tg_spy} {norm_spy_coords}"
+            if designated_spy_opt is not None and not spy_has_s10:
+                spy_rsn_m += " [Hold: No Spy probes (s10) stationed on designated spy colony]"
+            elif used_fleet_slots_opt >= max_spy_sl_m:
+                spy_rsn_m += f" [Hold: Fleet slots full ({used_fleet_slots_opt}/{max_spy_sl_m} in flight)]"
             plan.append(
                 _make_planned_action(
                     priority="P2",
                     kind="SPY",
-                    planet_id=planet.planet_id,
-                    planet_coords=_safe_action_str(planet.coords),
+                    planet_id=spy_exec_p.planet_id,
+                    planet_coords=_safe_action_str(spy_exec_p.coords),
                     target_id=10,
                     target_level=1,
                     target_name=f"{norm_spy_coords} ({ow_spy or pn_spy or tg_spy})",
-                    reason=_safe_action_str(step.reason) or f"Send Spy probe (s10) to scout {tg_spy} {norm_spy_coords}",
+                    reason=spy_rsn_m,
                     executable_now=can_exec_spy,
                 )
             )
@@ -9048,7 +9191,9 @@ def _materialize_planned_actions(
             if not bash_tracker.can_attack(t_coords, is_inactive=is_inact, is_spacia=is_spacia, timestamp=live_now_ts):
                 continue
             owner = _safe_action_str(raw.get("owner"))
-            pname = _safe_action_str(raw.get("planet_name"))
+            pname = _safe_action_str(raw.get("planet_name") or raw.get("name"))
+            if not is_spacia and not owner and not pname:
+                continue
             res_m = raw.get("resources") if isinstance(raw.get("resources"), Mapping) else raw
             raw_fleet_p3 = raw.get("fleet") if isinstance(raw.get("fleet"), Mapping) else {}
             raw_def_p3 = raw.get("defense") if isinstance(raw.get("defense"), Mapping) else {}
@@ -9132,12 +9277,136 @@ def _materialize_planned_actions(
                     )
                 )
 
+    # Ensure nearby unspied/stale player/Spacia targets are scouted via SPY and enforce `reserved_spy_slots`
+    probe_auto_p = (
+        designated_spy_opt
+        if designated_spy_opt is not None
+        else (
+            active
+            if not is_raid_planet(active) and _safe_int(active.ships.get("s10", 0), 0) > 0
+            else next(
+                (pl for pl in state.planets if not is_raid_planet(pl) and _safe_int(pl.ships.get("s10", 0), 0) > 0),
+                None,
+            )
+        )
+    )
+    if probe_auto_p is not None and tutorial_fight_task is None:
+        existing_spy_coords = {
+            normalize_coords(m_ex.group(1))
+            for a_ex in plan
+            if a_ex.kind == "SPY" and (m_ex := re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", a_ex.target_name, re.ASCII))
+        }
+        probe_has_s10_auto = _safe_int(probe_auto_p.ships.get("s10", 0), 0) > 0
+        max_spy_sl_auto = 1 + max(0, probe_auto_p.building_level(10))
+        pg_a, ps_a, pp_a = _parse_gal_sys_pos(probe_auto_p.coords)
+        extra_player_spies: list[tuple[tuple[int, int, int, float], "PlannedAction"]] = []
+        for raw_ps in state.raid_targets or ():
+            if not isinstance(raw_ps, Mapping):
+                continue
+            tc_ps = _safe_action_str(raw_ps.get("coords") or raw_ps.get("target_coords")).strip()
+            if not tc_ps:
+                continue
+            nc_ps = normalize_coords(tc_ps)
+            if not nc_ps or nc_ps in own_coords or nc_ps in existing_spy_coords:
+                continue
+            is_sp_ps = bool(raw_ps.get("is_spacia", False))
+            sc_ps = _resolve_raid_target_status_color(raw_ps)
+            if not (sc_ps == "yellow" or is_sp_ps or (bool(cfg.allow_pvp_in_az) and sc_ps == "light_red")):
+                continue
+            ow_ps = _safe_action_str(raw_ps.get("owner"))
+            pn_ps = _safe_action_str(raw_ps.get("planet_name") or raw_ps.get("name"))
+            if not is_sp_ps and not ow_ps and not pn_ps:
+                continue
+            if _safe_float_any(raw_ps.get("blocked_until_ts"), 0.0) > live_now_ts:
+                continue
+            if not bash_tracker.can_attack(nc_ps, is_inactive=(sc_ps == "yellow"), is_spacia=is_sp_ps, timestamp=live_now_ts):
+                continue
+            spied_ts_ps = _safe_float_any(raw_ps.get("last_spied_ts"), 0.0)
+            res_ps_m = raw_ps.get("resources") if isinstance(raw_ps.get("resources"), Mapping) else raw_ps
+            has_intel_ps = (
+                bool(raw_ps.get("has_spy_intel"))
+                or spied_ts_ps > 0.0
+                or not _resources_from_dict(res_ps_m).is_zero()
+                or bool(raw_ps.get("fleet"))
+                or bool(raw_ps.get("defense"))
+            )
+            stale_ps = spied_ts_ps > 0.0 and (live_now_ts - spied_ts_ps) > (4 * 3600.0)
+            if has_intel_ps and not stale_ps and tutorial_spy_task is None:
+                continue
+            tg_p, ts_p, tp_p = _parse_gal_sys_pos(nc_ps)
+            dist_ps = abs(pg_a - tg_p) * 20000 + abs(ps_a - ts_p) * 95 + abs(pp_a - tp_p) * 5
+            sc_ts_ps = _safe_float_any(raw_ps.get("last_scanned_ts"), 0.0)
+            can_ex_ps2 = bool(cfg.allow_galaxy_scan and probe_has_s10_auto and used_fleet_slots_opt < max_spy_sl_auto)
+            tg_lbl = "Spacia" if is_sp_ps else ("Inactive" if sc_ps == "yellow" else sc_ps.title())
+            rsn_ps2 = (
+                f"Send Spy probe (s10) to scout {tg_lbl} {nc_ps}"
+                + (" (refresh stale intel)" if stale_ps else " before raiding")
+            )
+            if designated_spy_opt is not None and not probe_has_s10_auto:
+                rsn_ps2 += " [Hold: No Spy probes (s10) stationed on designated spy colony]"
+            elif used_fleet_slots_opt >= max_spy_sl_auto:
+                rsn_ps2 += f" [Hold: Fleet slots full ({used_fleet_slots_opt}/{max_spy_sl_auto} in flight)]"
+            elif not cfg.allow_galaxy_scan:
+                rsn_ps2 += " [Hold: allow_galaxy_scan=false in Config]"
+            extra_player_spies.append(
+                (
+                    (0 if can_ex_ps2 else 1, 0 if (sc_ps == "yellow" or is_sp_ps) else 1, dist_ps, -sc_ts_ps),
+                    _make_planned_action(
+                        priority="P2",
+                        kind="SPY",
+                        planet_id=probe_auto_p.planet_id,
+                        planet_coords=_safe_action_str(probe_auto_p.coords),
+                        target_id=10,
+                        target_level=1,
+                        target_name=f"{nc_ps} ({ow_ps or pn_ps or tg_lbl})",
+                        reason=rsn_ps2,
+                        executable_now=can_ex_ps2,
+                    ),
+                )
+            )
+        if extra_player_spies:
+            extra_player_spies.sort(key=lambda item: item[0])
+            for _, ps_act in extra_player_spies[:2]:
+                plan.append(ps_act)
+
+    res_spy_opt = max(0, _safe_int(getattr(cfg, "reserved_spy_slots", 1), 1))
+    spy_pids_opt = {
+        a_s.planet_id
+        for a_s in plan
+        if a_s.kind == "SPY" and (a_s.executable_now or cfg.allow_galaxy_scan or getattr(cfg, "allow_colonize", False))
+    }
+    for idx_pl, act_pl in enumerate(plan):
+        if act_pl.kind not in ("ATTACK", "RECYCLE", "COLONIZE") or act_pl.priority == "P3":
+            continue
+        p_pl = planet_map.get(act_pl.planet_id, active)
+        max_sl_pl = 1 + max(0, p_pl.building_level(10))
+        has_spy_dem_pl = (
+            res_spy_opt > 0
+            and _safe_int(p_pl.ships.get("s10", 0), 0) > 0
+            and p_pl.planet_id in spy_pids_opt
+        )
+        eff_res_pl = min(res_spy_opt, max(0, max_sl_pl - 1)) if has_spy_dem_pl else 0
+        if used_fleet_slots_opt >= max_sl_pl:
+            rsn_pl = act_pl.reason
+            if "in flight" not in rsn_pl.lower() and "in transit" not in rsn_pl.lower():
+                rsn_pl = f"{rsn_pl} [Hold: Fleet slots full ({used_fleet_slots_opt}/{max_sl_pl} in flight)]"
+            plan[idx_pl] = replace(act_pl, executable_now=False, reason=rsn_pl)
+        elif eff_res_pl > 0 and used_fleet_slots_opt >= max_sl_pl - eff_res_pl:
+            rsn_pl = act_pl.reason
+            if "reserved for spy" not in rsn_pl.lower():
+                rsn_pl = (
+                    f"{rsn_pl} [Hold: Fleet slot reserved for Spy probes "
+                    f"({used_fleet_slots_opt}/{max_sl_pl} in flight, {eff_res_pl} reserved)]"
+                )
+            plan[idx_pl] = replace(act_pl, executable_now=False, reason=rsn_pl)
+
     # Stable priority-band sort + deduplication matching `strategy.py`
     priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
     plan.sort(
         key=lambda a: (
             priority_rank.get(a.priority, 9),
             0 if a.executable_now else 1,
+            0 if (a.priority == "P2" and a.kind == "CLAIM_TUTORIAL") else (1 if (a.priority == "P2" and a.kind == "SPY") else 2),
         )
     )
     deduped: list["PlannedAction"] = []

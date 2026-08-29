@@ -1,0 +1,748 @@
+/* ==================== VIEW 1: DASHBOARD, GA+NN HUD, BUILDINGS, COMBAT & RANKING ==================== */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+  }
+}
+
+.tutorial-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--bg-panel-alt);
+  border: 1px solid var(--mint);
+}
+
+.tutorial-copy {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.86rem;
+}
+
+.dashboard-view {
+  overflow-y: auto;
+}
+
+.dash-upper-grid {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.dash-queues-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 0;
+}
+
+.dash-lower-grid {
+  flex: 1 1 0;
+  min-height: 240px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dash-queue-card {
+  min-width: 0;
+}
+
+.dash-queue-card .table-scroll {
+  overflow-x: auto;
+}
+
+.dash-queue-card table th {
+  white-space: nowrap;
+}
+
+.dash-queue-card table th,
+.dash-queue-card table td {
+  padding: 6px 8px;
+}
+
+.dash-q-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  padding: 1px 6px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  background-color: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--radius);
+}
+
+.mode-badge {
+  padding: 2px 8px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.mode-badge.is-ga {
+  border-color: var(--mint);
+  background: #09271d;
+  color: var(--mint);
+}
+
+/* ==================== GA + NEURAL CALCULATION HUD (F21) ==================== */
+.gann-hud {
+  flex: 0 0 auto;
+  border-color: var(--line-mid);
+}
+
+.gann-state-pill {
+  padding: 2px 8px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  border: 1px solid var(--mint);
+  background: #09271d;
+  color: var(--mint);
+  border-radius: var(--radius);
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out;
+}
+
+.gann-hud.is-calculating .gann-state-pill {
+  border-color: var(--amber);
+  background: var(--amber-surface);
+  color: var(--amber);
+}
+
+.gann-hud-body {
+  background:
+    radial-gradient(circle at 96px 50%, rgba(22, 236, 152, 0.08) 0%, rgba(50, 232, 255, 0.03) 34%, transparent 62%),
+    #06090b;
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.gann-scanner-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+  border-right: 1px solid var(--line-dim);
+  background: #06090b;
+}
+
+.gann-radial-svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.gann-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line-dim);
+}
+
+.gann-metric-cell {
+  background: #06090b;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.gann-metric-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.gann-mini-arc {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  position: relative;
+  --arc-pct: 0;
+  background: conic-gradient(var(--arc-color, var(--mint)) calc(var(--arc-pct) * 1%), #1b2b30 0);
+}
+
+.gann-mini-arc::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: #06090b;
+}
+
+.gann-mini-arc.is-cyan {
+  --arc-color: var(--cyan);
+}
+
+.gann-mini-arc.is-mint {
+  --arc-color: var(--mint);
+}
+
+.gann-mini-arc.is-gold {
+  --arc-color: var(--amber);
+}
+
+.gann-metric-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gann-metric-label {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gann-metric-val {
+  font-size: 0.96rem;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gann-metric-sub {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gann-hud .module-meta,
+#gann-meta-line {
+  font-size: 0.86rem;
+}
+
+@keyframes siRingSpinCw {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes siRingSpinCcw {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes siCorePulse {
+  0%,
+  100% {
+    opacity: 0.82;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+}
+
+.gann-ring-outer,
+.gann-ring-mid,
+.gann-ring-gold,
+.gann-scan-sweep,
+.gann-core-pulse {
+  transform-origin: 0 0;
+}
+
+.gann-hud.is-active .gann-ring-outer {
+  animation: siRingSpinCw 22s linear infinite;
+}
+
+.gann-hud.is-active .gann-ring-mid {
+  animation: siRingSpinCcw 28s linear infinite;
+}
+
+.gann-hud.is-active .gann-ring-gold {
+  animation: siRingSpinCw 16s linear infinite;
+}
+
+.gann-hud.is-active .gann-scan-sweep {
+  animation: siRingSpinCw 9s linear infinite;
+}
+
+.gann-hud.is-active .gann-core-pulse {
+  animation: siCorePulse 3.2s ease-in-out infinite;
+}
+
+.gann-hud.is-calculating .gann-ring-outer {
+  animation: siRingSpinCw 4.5s linear infinite;
+}
+
+.gann-hud.is-calculating .gann-scan-sweep {
+  animation: siRingSpinCw 1.8s linear infinite;
+}
+
+/* Telemetry Tracks & Counters */
+.telemetry-core {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.track-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.track-row {
+  display: grid;
+  grid-template-columns: 124px minmax(72px, 1fr) 256px;
+  align-items: center;
+  gap: 8px;
+}
+
+.track-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.track-code {
+  display: inline-block;
+  min-width: 34px;
+  padding: 0 4px;
+  text-align: center;
+  font-size: 0.86rem;
+  font-weight: 700;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-mid);
+  color: var(--ink-muted);
+}
+
+.track-name {
+  font-size: 0.86rem;
+  font-weight: 500;
+}
+
+.meter-track {
+  height: 12px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.meter-fill {
+  height: 100%;
+  width: 100%;
+  background: var(--ivory);
+  transform-origin: left center;
+  transform: scaleX(0);
+  transition: transform 240ms ease-out;
+}
+
+.meter-fill.high {
+  background: var(--red);
+}
+
+.meter-fill.gann-bar-cyan {
+  background: var(--cyan);
+}
+
+.meter-fill.gann-bar-mint {
+  background: var(--mint);
+}
+
+.meter-fill.gann-bar-gold {
+  background: var(--amber);
+}
+
+.track-values {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.track-val {
+  font-weight: 700;
+  color: var(--ink);
+  font-size: 0.92rem;
+}
+
+.track-cap {
+  color: var(--ink-muted);
+  font-size: 0.86rem;
+}
+
+.track-rate {
+  min-width: 68px;
+  text-align: right;
+  font-size: 0.86rem;
+  color: var(--mint);
+}
+
+.track-rate.is-neg {
+  color: var(--red);
+  font-weight: 700;
+}
+
+.digital-readout-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.digital-counter {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+}
+
+.digital-tag {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+  letter-spacing: 0.06em;
+}
+
+.digital-number {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.digital-sub {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+}
+
+.matrix-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  justify-content: space-between;
+}
+
+.queue-strip {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  background: var(--bg-panel-alt);
+  border-top: 1px solid var(--line-dim);
+}
+
+.queue-strip-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+
+.queue-summary {
+  font-size: 0.86rem;
+  color: var(--ivory);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ==================== VIEW 2: BUILDINGS & ETAS ==================== */
+.split-workspace {
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
+}
+
+.inspector-pane {
+  border-left: 1px solid var(--line-mid);
+  background: var(--bg-panel-alt);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.inspector-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.inspector-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+  font-size: 0.86rem;
+  color: var(--ink);
+}
+
+.inspector-bf-hint {
+  padding: 8px 12px;
+  font-size: 0.86rem;
+  background: var(--amber-surface);
+  border: 1px solid var(--amber);
+  color: var(--ivory);
+}
+
+.inspector-actions {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ==================== VIEW 3: COMBAT & FLEET ==================== */
+.combat-top-cards {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.combat-jumps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.combat-main-grid {
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.15fr);
+  gap: 12px;
+}
+
+.combat-subpane {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.qty-inline {
+  width: 58px !important;
+  padding: 4px 8px !important;
+  text-align: right;
+  font-family: var(--font-mono);
+}
+
+.sim-body {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.sim-inputs-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.sim-group {
+  background: var(--bg-panel-alt);
+  border: 1px solid var(--line-dim);
+  padding: 12px;
+}
+
+.sim-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.sim-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+}
+
+.sim-fields input {
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+}
+
+.sim-result-card {
+  padding: 12px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-mid);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sim-verdict-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sim-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.sim-metrics-grid > div {
+  padding: 8px;
+  background: var(--bg-panel-alt);
+  border: 1px solid var(--line-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sim-metrics-grid span {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+}
+
+.sim-metrics-grid strong {
+  font-size: 0.9rem;
+}
+
+.fleet-pane {
+  padding: 12px 16px;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.fleetsave-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.fleetsave-form .control-field {
+  flex: 1;
+  min-width: 180px;
+}
+
+/* ==================== VIEW 5: RANKING EVOLUTION ==================== */
+.ranking-pane {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.ranking-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.kpi-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-mid);
+}
+
+.kpi-label {
+  font-size: 0.86rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.kpi-value {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.kpi-sub {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+}
+
+.ranking-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  gap: 12px;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.ranking-chart-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-panel-alt);
+  border: 1px solid var(--line-dim);
+}
+
+.card-subhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.86rem;
+  color: var(--mint);
+}
+
+#rnk-chart {
+  width: 100%;
+  height: 150px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+}
+
+.ranking-tables-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}

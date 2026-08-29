@@ -2481,6 +2481,158 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(merged_reordered[0].target_level, 100)
         self.assertEqual(merged_reordered[1].manual_queue_id, 12)
 
+    def test_fadata_dedup_spy_first_closest_distance_reserved_slots_designated_planet_and_colony_quota_probing(self) -> None:
+        from spaceinvasion.core.state import QueueJob, is_in_flight_fleet_job, parse_home_metadata
+
+        # 1. faData 2-leg deduplication: 4 outbound + 4 scheduled future returns + 1 genuine returning flight = 5 in-flight
+        fadata_html = """
+        <html><body><script>
+        SI_TPL.headerLoad={planetID:12476};
+        var faData=[
+          {"title":"Own fleet","type":"friendly","rows":[
+            ,{"id":1,"t":300,"n":6,"a":'ATTACK',"return":false,"start":"[02:380:12] C","dest":"[02:380:04] T1"},
+            {"id":2,"t":400,"n":6,"a":'ATTACK',"return":false,"start":"[02:380:12] C","dest":"[02:380:05] T2"},
+            {"id":3,"t":500,"n":1,"a":'SPY',"return":false,"start":"[02:380:12] C","dest":"[02:381:06] T3"},
+            {"id":4,"t":600,"n":4,"a":'RECYCLE',"return":false,"start":"[02:380:12] C","dest":"[02:381:07] T4"}
+          ]},
+          {"title":"Returning Fleets","type":"friendly","rows":[
+            ,{"id":11,"t":600,"n":6,"a":'ATTACK',"return":true,"start":"[02:380:12] C","dest":"[02:380:04] T1"},
+            {"id":12,"t":800,"n":6,"a":'ATTACK',"return":true,"start":"[02:380:12] C","dest":"[02:380:05] T2"},
+            {"id":13,"t":1000,"n":1,"a":'SPY',"return":true,"start":"[02:380:12] C","dest":"[02:381:06] T3"},
+            {"id":14,"t":1200,"n":4,"a":'RECYCLE',"return":true,"start":"[02:380:12] C","dest":"[02:381:07] T4"},
+            {"id":15,"t":250,"n":8,"a":'ATTACK',"return":true,"start":"[02:380:12] C","dest":"[02:379:03] T5"}
+          ]}
+        ];
+        </script>
+        <div id="sp-own-fleet"> Spy probe </div>
+        <div data-left="15" data-start-ts="1700000000000" data-total="20" id="sp-own-fleet-left"></div>
+        </body></html>
+        """
+        _, _, _, jobs, _ = parse_home_metadata(fadata_html, now_ts=1_700_000_000.0)
+        in_flight = [q for q in jobs if is_in_flight_fleet_job(q)]
+        self.assertEqual(len(in_flight), 5)
+
+        # 2. SPY-first in P2 (ahead of BUILD/ATTACK), closest-distance SPY sorting, and ownerless non-Spacia never ATTACKed
+        p1 = PlanetState(
+            planet_id=101,
+            name="Main",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=20,
+            fields_used=40,
+            fields_max=250,
+            resources=Resources(80_000, 50_000, 40_000, 30_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(2000, 800),
+            buildings={"b1": 10, "b2": 8, "b3": 8, "b4": 7, "b5": 14, "b8": 4, "b9": 4, "b10": 3},
+            ships={"s1": 20, "s4": 30, "s8": 1, "s10": 5},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 10, 11, Resources(2000, 1000, 500, 0), True, "Build"),
+            ),
+        )
+        p2_no_probes = PlanetState(
+            planet_id=102,
+            name="ScoutHub",
+            coords="02:381:08",
+            planet_type="normal",
+            temperature=15,
+            fields_used=20,
+            fields_max=320,
+            resources=Resources(20_000, 20_000, 20_000, 10_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(800, 300),
+            buildings={"b1": 6, "b5": 8, "b9": 3, "b10": 2},
+            ships={},
+        )
+        raid_targets = (
+            # Distant unspied inactive (250 systems away)
+            {"coords": "02:130:05", "owner": "FarIdle", "status_color": "yellow", "last_scanned_ts": 2000.0},
+            # Nearby unspied inactive (1 system away)
+            {"coords": "02:381:04", "owner": "NearIdle", "status_color": "yellow", "last_scanned_ts": 1000.0},
+            # Spied lucrative inactive -> ready ATTACK
+            {
+                "coords": "02:380:04",
+                "owner": "RichFarm",
+                "status_color": "yellow",
+                "last_spied_ts": 1990.0,
+                "resources": {"pig_iron": 60_000, "metal": 30_000, "kryptonite": 20_000, "spice": 10_000},
+            },
+            # Ownerless non-Spacia free slot (unprobed) -> probed via SPY, NEVER targeted by ATTACK!
+            {"coords": "02:380:09", "owner": "", "status_color": "free", "last_scanned_ts": 1995.0},
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2_no_probes),
+            active_planet_id=101,
+            researches={"r1": 4, "r2": 6, "r3": 4, "r4": 5, "r6": 3, "r7": 4},
+            raid_targets=raid_targets,
+        )
+        cfg = StrategyConfig(
+            planner_mode="priority",
+            allow_raids=True,
+            allow_galaxy_scan=True,
+            allow_colonize=True,
+            max_planets=4,
+            min_colony_fields=300,
+            reserved_spy_slots=1,
+        )
+        acts = plan_actions(st, config=cfg, now_ts=2000.0)
+        p2_ready = [a for a in acts if a.priority == "P2" and a.executable_now]
+        self.assertGreaterEqual(len(p2_ready), 2)
+        self.assertEqual(p2_ready[0].kind, "SPY")
+        # Nearby 02:381:04 comes ahead of distant 02:130:05!
+        spy_targets_order = [a.target_name for a in acts if a.kind == "SPY"]
+        idx_near = next(i for i, t in enumerate(spy_targets_order) if "02:381:04" in t)
+        idx_far = next(i for i, t in enumerate(spy_targets_order) if "02:130:05" in t)
+        self.assertLess(idx_near, idx_far)
+        # Ownerless 02:380:09 is probed via SPY (quota 2 < 4), never ATTACKed or COLONIZEd unprobed!
+        self.assertTrue(any(a.kind == "SPY" and "02:380:09" in a.target_name for a in acts))
+        self.assertFalse(any(a.kind == "ATTACK" and "02:380:09" in a.target_name for a in acts))
+        self.assertFalse(any(a.kind == "COLONIZE" and "02:380:09" in a.target_name for a in acts))
+
+        # 3. Once qualified >=300-field candidates meet needed_colonies (max_planets=3, allocated=2 -> need=1), stop probing free slots!
+        rt_quota_met = (
+            {
+                "coords": "02:380:08",
+                "owner": "",
+                "status_color": "free",
+                "uninhabited_fields": 335,
+                "last_spied_ts": 1998.0,
+            },
+            {"coords": "02:380:09", "owner": "", "status_color": "free", "last_scanned_ts": 1995.0},
+        )
+        st_quota_met = replace(st, raid_targets=rt_quota_met)
+        acts_met = plan_actions(st_quota_met, config=replace(cfg, max_planets=3), now_ts=2000.0)
+        self.assertFalse(any(a.kind == "SPY" and "02:380:09" in a.target_name for a in acts_met))
+        self.assertTrue(any(a.kind == "COLONIZE" and "02:380:08" in a.target_name and a.executable_now for a in acts_met))
+
+        # 4. reserved_spy_slots=1 with b10=3 (max_slots=4) and 3 fleets in flight -> ATTACK held, SPY still executable!
+        three_fleets = tuple(
+            QueueJob(category="fleet", name=f"Attack → 02:380:0{i}", remaining_seconds=200.0, detail="Outbound")
+            for i in (1, 2, 3)
+        )
+        st_3_inflight = replace(st, active_queues=three_fleets)
+        acts_res = plan_actions(st_3_inflight, config=cfg, now_ts=2000.0)
+        spy_3 = [a for a in acts_res if a.kind == "SPY" and "02:381:04" in a.target_name]
+        atk_3 = [a for a in acts_res if a.kind == "ATTACK" and "02:380:04" in a.target_name]
+        self.assertTrue(spy_3 and spy_3[0].executable_now)
+        self.assertTrue(atk_3 and not atk_3[0].executable_now)
+        self.assertIn("reserved for Spy probes", atk_3[0].reason)
+
+        # 5. spy_dispatch_planet_id=102 (0 probes stationed) -> holds SPY on planet 102 and builds s10 on 102!
+        cfg_desig = replace(cfg, spy_dispatch_planet_id=102, allow_shipyard=True)
+        acts_desig = plan_actions(st, config=cfg_desig, now_ts=2000.0)
+        spy_desig = [a for a in acts_desig if a.kind == "SPY"]
+        self.assertTrue(spy_desig)
+        self.assertTrue(all(a.planet_id == 102 and not a.executable_now for a in spy_desig))
+        self.assertIn("designated spy colony", spy_desig[0].reason)
+        self.assertTrue(
+            any(a.kind == "BUILD_SHIP" and a.planet_id == 102 and a.target_id == 10 for a in acts_desig)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

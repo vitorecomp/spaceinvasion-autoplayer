@@ -9,9 +9,10 @@ Welcome to the unified technical documentation suite for **`spaceinvasion-autopl
 | Document | Scope |
 |---|---|
 | **[Architecture Guide](./architecture.md)** | 3-tier runtime topology, concurrency/locking model, heuristic (`priority`) vs. evolutionary (`ga_nn`) planners, Kahn Action Graph DAG engine, Web Operator Console, hot-reload order, and anti-bot/security guardrails. |
+| **[Heuristic Strategy Specification](./heuristic-strategy.md)** | Complete deterministic `P0`–`P3` heuristic (`priority`) planner ruleset: `SAVE` escape flights, energy recovery, manual queue Metal frontier & `2:1` `Blast furnace` auto-throttling, `b6` solar tear-down, tutorial solver, mine ROI math, free daily Transmitter guard, `SPY`/`COLONIZE`/`ATTACK`/`RECYCLE`/`SCAN_GALAXY` dispatch rules, and configuration group cross-reference. |
 | **[System Specification](./specification.md)** | Core runtime specification, API contracts, safety boundaries, and component design. |
 | **[Operator & System Manual](./manual.md)** | Installation, CLI launchers (`./starter.sh`, `bin/run_stack.py`, `bin/game_api.py`, `bin/commander.py`, `bin/login.py`), `StrategyConfig` reference, HTTP API & `POST /command` catalog, and verification suites. |
-| **[Database MER & Migrations](./database-mer.md)** | Entity-Relationship Diagram (`erDiagram`), append-only retention model, column-by-column dictionary across all **23 SQLite tables**, **21 secondary indexes**, and forward-only `V001..V007` schema migrations (`scripts/db_migrate.py`). |
+| **[Database MER & Migrations](./database-mer.md)** | Entity-Relationship Diagram (`erDiagram`), append-only retention model, column-by-column dictionary across all **27 SQLite tables**, **28 secondary indexes**, and forward-only `V001..V009` schema migrations (`scripts/db_migrate.py`). |
 | **[Project Overview & Roadmap](./project.md)** | Milestone history, capability matrix, and current operational status. |
 
 ---
@@ -32,4 +33,4 @@ Welcome to the unified technical documentation suite for **`spaceinvasion-autopl
   - [R2 2D Galaxy & Rate-Limit Diagnosis](./notes/r2-galaxy-diagnosis.md)
 - **Interactive Strategy & Optimizer Notebooks (`notebooks/`)**:
   - [optimizer_experimentation.ipynb](../notebooks/optimizer_experimentation.ipynb) — Offline laboratory covering SQLite telemetry, 46D state encoding, `NeuralValueNetwork` training, `ga_nn` evolution, Action Graph DAGs, solar policy ablations, and hyperparameter sweeps.
-  - [full_planner.ipynb](../notebooks/full_planner.ipynb) — Full-game strategy simulation notebook modeling empirical attack loot (`mean`/`std`), mission flight & inter-attack times (`mean`/`std`), and attack success rates (`W/N` + Laplace prior).
+  - [full_planner.ipynb](../notebooks/full_planner.ipynb) — Full-game strategy simulation notebook modeling empirical attack loot (`mean`/`std`), mission flight & inter-attack times (`mean`/`std`), and attack success rates (`W/N` + Laplace prior), plus game-parameter tables for every colony, the technology requirement graph and the planet roster. Its static descriptions and planner settings are JSON files in [notebooks/metadata/](../notebooks/metadata/).

@@ -272,13 +272,6 @@ def main(argv: list[str] | None = None) -> int:
                 break
         rc_api = api_proc.poll()
         rc_cmd = cmd_proc.poll()
-        if rc_cmd == 2:
-            print(
-                "[STACK] Stopped because a CAPTCHA / anti-bot challenge was detected. "
-                "Complete verification in Chrome (port 9222 stays open), then restart.",
-                file=sys.stderr,
-            )
-            return 2
         if (rc_api is not None and rc_api != 0) or (rc_cmd is not None and rc_cmd != 0):
             return 1
         return 0

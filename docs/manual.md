@@ -131,6 +131,8 @@ Both Jupyter notebooks in `notebooks/` run **100% read-only** (copying `state/sp
    - Walks step-by-step through `attack_history.json` coercion, 4-layer SQLite WAL inspection, midgame colony synthesis, controlled Farm (`90%` win) vs. Fluke Trap (`10%` win) raid telemetry, 46D state encoding, `NeuralValueNetwork` rollout training & `dV/dx_j` sensitivities, `ga_nn` convergence, Action Graph DAG layering, planetary solar demolition ablations, and hyperparameter sweeps.
 2. **[notebooks/full_planner.ipynb](../notebooks/full_planner.ipynb)**:
    - Full-game strategy simulation notebook starting with dedicated statistical cells for **Attack Resource Mean & Std** (`pig_iron`, `metal`, `kryptonite`, `spice`, `spice_eq`), **Attack Time Mean & Std** (one-way flight, round-trip slot occupation, and inter-attack dispatch interval), and **Attack Success Rate** (`W/N`, binomial SE, Laplace-smoothed prior, and per-slot-hour `SpiceEq` yield).
+   - It then loads every owned colony, adds generic planets (empty colony slots) up to the planet limit, and builds `pandas` tables of every building, technology, ship and defense: level tables for a generic planet, and per-planet tables with each colony's own levels, build times and temperature. It also builds an in-memory technology requirement graph with unlock plans and tables of the planet sizes and states. Its last section prints every generated data set in full.
+   - Static descriptions and planner settings (planet limit, empty-colony size, table level caps, cold-start colony) are JSON files in [notebooks/metadata/](../notebooks/metadata/), loaded and checked against `game_data` when the notebook runs.
 
 ---
 

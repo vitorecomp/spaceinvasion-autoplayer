@@ -3469,6 +3469,138 @@ class TestActionExecutor(unittest.TestCase):
             r_save.click.assert_called_once()
             launch_el.click.assert_called_once()
 
+    def test_attackzone_forbidden_and_missing_step2_mission_radios_return_6h_target_cooldown(self) -> None:
+        from dataclasses import replace as dc_replace
+        from spaceinvasion.session import executor as ex_mod
+
+        # 1. 1-word "attackzone" / "angriffszone" / "urlaubsmodus" / "can't be attacked" detection
+        for banner, mkind in (
+            ("Spy (forbidden): out of your attackzone range.", "SPY"),
+            ("Attack (forbidden): out of your attackzone range.", "ATTACK"),
+            ("Angriff (verboten): außerhalb deiner angriffszone.", "ATTACK"),
+            ("Spieler befindet sich im Urlaubsmodus.", "ATTACK"),
+            ("This user can't be attacked!.", "ATTACK"),
+        ):
+            html = f"<html><body><div class='error'>{banner}</div></body></html>"
+            self.assertTrue(ex_mod._is_unattackable_target_html(html), banner)
+            self.assertIn(banner.split(".")[0][:18].lower(), (ex_mod._extract_mission_forbidden_reason(html, mkind) or "").lower())
+
+        base_st, _ = _make_state_and_action()
+        p_fleet = dc_replace(
+            base_st.planets[0],
+            ships={"s1": 10, "s4": 25, "s10": 5},
+            resources=Resources(50_000, 30_000, 20_000, 20_000),
+        )
+        st = dc_replace(base_st, planets=(p_fleet,))
+
+        step1_html = (
+            '<html><body><form name="fleet" action="indexInternal.es?action=internalSendFleet" method="POST">'
+            '<input type="text" name="ship_1" value="0"/>'
+            '<input type="text" name="ship_4" value="0"/>'
+            '<input type="text" name="ship_10" value="0"/>'
+            '<input type="text" name="gal" value="2"/>'
+            '<input type="text" name="sun" value="381"/>'
+            '<input type="text" name="pla" value="6"/>'
+            '<input type="submit" value="Continue"/></form></body></html>'
+        )
+        # Step 2 form#fleet present with TRANSPORT + SAVE radios, but ATTACK & SPY radios omitted!
+        step2_no_attack_or_spy_html = (
+            '<html><body><form id="fleet" action="indexInternal.es?action=internalSendFleet&send=1" method="POST">'
+            '<label><input name="todo" type="radio" value="TRANSPORT"/> Transport</label>'
+            '<label><input name="todo" type="radio" value="SAVE"/> Escape flight</label>'
+            '<input id="goButton" type="button" value="LAUNCH"/>'
+            '</form></body></html>'
+        )
+
+        def _mk_inp() -> MagicMock:
+            el = MagicMock()
+            el.value = ""
+
+            def _sk(v: str) -> None:
+                el.value = v
+
+            el.send_keys.side_effect = _sk
+            el.get_attribute.side_effect = lambda k: el.value if k == "value" else ""
+            return el
+
+        # 2. _execute_attack on Step 2 without ATTACK radio -> 6h target_cooldown_seconds + validated=False
+        s1_el, s4_el, s10_el = _mk_inp(), _mk_inp(), _mk_inp()
+        gal_el, sun_el, pla_el = _mk_inp(), _mk_inp(), _mk_inp()
+        cont_el = MagicMock()
+        r_trn = MagicMock()
+        r_trn.get_attribute.side_effect = lambda k: {"name": "todo", "value": "TRANSPORT", "disabled": None}.get(k, "")
+        r_trn.is_selected.return_value = False
+        r_save = MagicMock()
+        r_save.get_attribute.side_effect = lambda k: {"name": "todo", "value": "SAVE", "disabled": None}.get(k, "")
+        r_save.is_selected.return_value = False
+
+        drv_atk = MagicMock()
+        by_name_els = {"ship_1": [s1_el], "ship_4": [s4_el], "ship_10": [s10_el]}
+        by_name_el = {"gal": gal_el, "sun": sun_el, "pla": pla_el}
+        drv_atk.find_elements.side_effect = lambda by, sel: (
+            by_name_els.get(sel, []) if by == "name" else [r_trn, r_save]
+        )
+        drv_atk.find_element.side_effect = lambda by, sel: by_name_el[sel] if by == "name" else cont_el
+        drv_atk.page_source = step2_no_attack_or_spy_html
+
+        cli_atk = MagicMock(spec=GameBrowserClient)
+        cli_atk.driver = drv_atk
+        cli_atk.navigate_menu.return_value = step1_html
+        cli_atk._wait_frame_ready.return_value = step2_no_attack_or_spy_html
+        cli_atk.read_planets_overview.return_value = st
+
+        ex = ActionExecutor(dry_run=False, allow_raids=True, action_delay_range=(0.0, 0.0))
+        atk_act = PlannedAction(
+            priority="P2",
+            kind="ATTACK",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_name="02:381:06",
+            reason="Inactive raid",
+            executable_now=True,
+        )
+        res_atk = ex.execute_action(cli_atk, st, atk_act)
+        self.assertFalse(res_atk.executed)
+        self.assertFalse(res_atk.validated)
+        self.assertEqual(res_atk.target_cooldown_seconds, 6 * 3600.0)
+        self.assertTrue(bool(res_atk.target_block_reason))
+
+        # 3. _execute_spy on Step 2 with Spy (forbidden): out of your attackzone range -> 6h cooldown
+        step2_az_html = (
+            '<html><body><div class="error">Spy (forbidden): out of your attackzone range.</div>'
+            '<form id="fleet"><input name="todo" type="radio" value="SAVE"/></form></body></html>'
+        )
+        cli_spy = MagicMock(spec=GameBrowserClient)
+        drv_spy = MagicMock()
+        drv_spy.find_elements.side_effect = lambda by, sel: (
+            {"ship_10": [_mk_inp()]}.get(sel, []) if by == "name" else [r_save]
+        )
+        drv_spy.find_element.side_effect = lambda by, sel: (
+            {"gal": _mk_inp(), "sun": _mk_inp(), "pla": _mk_inp()}[sel] if by == "name" else MagicMock()
+        )
+        drv_spy.page_source = step2_az_html
+        cli_spy.driver = drv_spy
+        cli_spy.navigate_menu.return_value = step1_html
+        cli_spy._wait_frame_ready.return_value = step2_az_html
+        cli_spy.read_planets_overview.return_value = st
+
+        spy_act = PlannedAction(
+            priority="P2",
+            kind="SPY",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=10,
+            target_level=1,
+            target_name="02:322:15",
+            reason="Scout inactive",
+            executable_now=True,
+        )
+        res_spy = ex.execute_action(cli_spy, st, spy_act)
+        self.assertFalse(res_spy.executed)
+        self.assertFalse(res_spy.validated)
+        self.assertEqual(res_spy.target_cooldown_seconds, 6 * 3600.0)
+        self.assertIn("attackzone", (res_spy.target_block_reason or "").lower())
+
 
 if __name__ == "__main__":
     unittest.main()

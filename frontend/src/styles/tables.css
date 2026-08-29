@@ -1,0 +1,522 @@
+/* ==================== TABLES, QUEUES & INTEL BADGES ==================== */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+  }
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.table-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--line-mid);
+}
+
+td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-dim);
+  vertical-align: middle;
+}
+
+tbody tr:hover {
+  background: var(--row-hover);
+}
+
+.clickable-row {
+  cursor: pointer;
+}
+
+.row-selected {
+  background: rgba(22, 236, 152, 0.1) !important;
+}
+
+.col-right {
+  text-align: right;
+}
+
+.col-right.tabular {
+  white-space: nowrap;
+}
+
+.empty-cell {
+  text-align: center;
+  color: var(--ink-muted);
+  padding: 16px 12px;
+}
+
+.status-word {
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--mint);
+}
+
+.status-word.is-warn {
+  color: var(--red);
+}
+
+.prio-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 700;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-mid);
+  background: var(--bg-inset);
+}
+
+.prio-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.prio-P0 .prio-dot {
+  background: var(--red);
+}
+
+.prio-P1 .prio-dot {
+  background: var(--amber);
+}
+
+.prio-P2 .prio-dot {
+  background: var(--mint);
+}
+
+.prio-P3 .prio-dot {
+  background: var(--ink-muted);
+}
+
+.action-title {
+  font-weight: 600;
+}
+
+.action-sub {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+  margin: 0;
+}
+
+.row-actions {
+  display: inline-flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.rate-chip {
+  display: inline-block;
+  padding: 0 4px;
+  font-size: 0.86rem;
+  border: 1px solid var(--line-mid);
+  margin-left: 8px;
+}
+
+.rate-chip.is-paused {
+  border-color: var(--amber);
+  color: var(--amber);
+  background: var(--amber-surface);
+}
+
+.eta-pill {
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--mint);
+  white-space: nowrap;
+}
+
+.eta-pill.is-blocked {
+  color: #ff6873;
+}
+
+.eta-pill.is-wait {
+  color: var(--amber);
+}
+
+/* Espionage, Colonies Grading, Attack Results & Recycler/Inbox */
+.intel-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.intel-pane[hidden] {
+  display: none;
+}
+
+.colony-policy-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.colony-inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+}
+
+.colony-inline-field input {
+  width: 74px;
+  padding: 4px 8px;
+  font-size: 0.86rem;
+}
+
+.colony-inline-toggle {
+  padding: 4px 12px;
+  font-size: 0.86rem;
+}
+
+.email-filter-bar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line-dim);
+  background: var(--bg-panel-alt);
+}
+
+.grade-badge,
+.outcome-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 700;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-mid);
+  background: var(--bg-inset);
+  color: var(--ink);
+}
+
+.grade-badge.grade-s {
+  background: rgba(22, 236, 152, 0.16);
+  border-color: var(--mint);
+  color: var(--mint);
+}
+
+.grade-badge.grade-aplus {
+  background: rgba(50, 232, 255, 0.16);
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.grade-badge.grade-a {
+  background: rgba(50, 232, 255, 0.08);
+  border-color: rgba(50, 232, 255, 0.45);
+  color: var(--ink);
+}
+
+.grade-badge.grade-b {
+  background: var(--amber-surface);
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.grade-badge.grade-c,
+.grade-badge.grade-d {
+  background: var(--red-surface);
+  border-color: #ff6873;
+  color: #ff6873;
+}
+
+.grade-badge.grade-unknown {
+  background: var(--bg-inset);
+  border-color: var(--line-mid);
+  color: var(--ink-muted);
+}
+
+.outcome-badge.is-win {
+  background: rgba(22, 236, 152, 0.14);
+  border-color: var(--mint);
+  color: var(--mint);
+}
+
+.outcome-badge.is-loss {
+  background: var(--red-surface);
+  border-color: #ff6873;
+  color: #ff6873;
+}
+
+.outcome-badge.is-draw {
+  background: var(--amber-surface);
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.msg-body-cell {
+  max-width: 460px;
+  white-space: normal;
+  word-break: break-word;
+  font-size: 0.88rem;
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+/* Manual Command Queue Composer & Row Reordering */
+.mq-composer-bar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 10px 14px;
+  background-color: var(--bg-panel-alt);
+  border-bottom: 1px solid var(--line-dim);
+}
+
+.mq-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 118px;
+}
+
+.mq-field-wide {
+  min-width: 196px;
+  flex: 1 1 196px;
+}
+
+.mq-field-num {
+  width: 88px;
+  min-width: 82px;
+}
+
+.mq-field-prio,
+.mq-field-pos {
+  min-width: 126px;
+}
+
+.mq-field-note {
+  min-width: 150px;
+  flex: 1 1 150px;
+}
+
+.mq-field label {
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--ink-muted);
+  line-height: 1.2;
+}
+
+.mq-field select,
+.mq-field input {
+  height: 32px;
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 0.86rem;
+  font-family: var(--font-sans);
+  color: var(--ink);
+  background-color: var(--bg-inset);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+}
+
+#mq-coords,
+#mq-level {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.mq-field select:focus-visible,
+.mq-field input:focus-visible,
+.mq-prio-select:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+.mq-submit-wrap {
+  display: flex;
+  align-items: flex-end;
+}
+
+#dash-pinned-count-badge,
+#ops-pinned-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--cyan);
+  background-color: var(--bg-inset);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+}
+
+#btn-dash-add-queue,
+#btn-dash-add-fleet-queue,
+#btn-dash-add-res-queue,
+#btn-dash-goto-research,
+#btn-insp-pin-queue,
+#btn-mq-clear,
+#btn-mq-submit,
+#chip-filter-manual,
+.dash-queues-toolbar .btn-sm,
+.dash-queue-card .inline-actions .btn-sm,
+.row-actions-wrap .btn-sm {
+  font-size: 0.86rem;
+  min-height: 32px;
+  white-space: nowrap;
+}
+
+#btn-mq-submit {
+  height: 32px;
+}
+
+.row-actions-wrap .qty-inline {
+  min-height: 32px;
+  height: 32px;
+  font-size: 0.86rem;
+}
+
+.prio-cell-stack {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.mq-pin-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--cyan);
+  background-color: var(--bg-inset);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+  white-space: nowrap;
+}
+
+.mq-prio-select {
+  height: 32px;
+  min-height: 32px;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--ink);
+  background-color: var(--bg-inset);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+}
+
+.row-actions-wrap {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-danger-ghost:hover,
+.btn-danger-ghost:focus-visible {
+  border-color: var(--red);
+  background-color: var(--red-surface);
+  color: #ff8f97;
+}
+
+tr.is-manual-queued {
+  background-color: rgba(50, 232, 255, 0.04);
+}
+
+tbody tr.is-manual-queued:hover {
+  background-color: rgba(50, 232, 255, 0.08);
+}
+
+/* Dashboard Active / Executing Queue Rows & Finish Clock */
+.dash-exec-tbody tr.dash-exec-row {
+  background: rgba(56, 189, 248, 0.07);
+}
+
+.dash-exec-tbody tr.dash-exec-row.is-queued-slot {
+  background: rgba(56, 189, 248, 0.03);
+}
+
+.dash-exec-tbody tr.dash-exec-row:last-child td {
+  border-bottom: 1px solid rgba(56, 189, 248, 0.28);
+}
+
+.prio-badge.prio-exec {
+  background: rgba(16, 185, 129, 0.16);
+  color: var(--status-ok, #34d399);
+  border: 1px solid rgba(16, 185, 129, 0.42);
+}
+
+.prio-badge.prio-game-q {
+  background: rgba(56, 189, 248, 0.14);
+  color: var(--accent, #38bdf8);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.eta-pill.is-exec-timer {
+  background: rgba(16, 185, 129, 0.14);
+  color: var(--status-ok, #34d399);
+  border: 1px solid rgba(16, 185, 129, 0.36);
+}
+
+.eta-pill.is-finish-at {
+  background: rgba(56, 189, 248, 0.13);
+  color: var(--text-primary, #e6edf7);
+  border: 1px solid rgba(56, 189, 248, 0.34);
+}
+
+.exec-live-label {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--status-ok, #34d399);
+}
+
+.exec-live-label.is-slot {
+  color: var(--text-muted, #94a3b8);
+}
+
+.finish-clock-sub {
+  margin-top: 2px;
+  font-size: 0.86rem;
+  color: var(--text-muted, #94a3b8);
+  white-space: nowrap;
+}

@@ -1779,12 +1779,13 @@ class ActionExecutor:
     ):
         # Collect BS4 label/row text per radio input inside the selected form without bleeding across siblings
         scoped_form = send_soup.select_one(form_css) if form_css else None
-        radio_labels: list[tuple[str, str, str, str]] = []
+        radio_labels: list[tuple[str, str, str, str, bool]] = []
         if scoped_form is not None:
             for inp in scoped_form.select('input[type="radio"]'):
                 rid = str(inp.get("id") or "").strip().lower()
                 rval = str(inp.get("value") or "").strip().lower()
                 rname = str(inp.get("name") or "").strip().lower()
+                inp_disabled = inp.has_attr("disabled")
                 lbl_parts: list[str] = []
                 if rid:
                     lbl = scoped_form.find("label", attrs={"for": inp.get("id")})
@@ -1870,7 +1871,7 @@ class ActionExecutor:
                             )
                             if sib_txt:
                                 lbl_parts.append(sib_txt)
-                radio_labels.append((rval, rid, rname, " ".join(lbl_parts).lower()))
+                radio_labels.append((rval, rid, rname, " ".join(lbl_parts).lower(), inp_disabled))
 
         if mission_kind == "ATTACK":
             want_tokens: tuple[str, ...] = ("attack", "angriff", "angreif")
@@ -1916,30 +1917,35 @@ class ActionExecutor:
             r_val = str(r.get_attribute("value") or "").strip().lower()
             r_id = str(r.get_attribute("id") or "").strip().lower()
             r_name = str(r.get_attribute("name") or "").strip().lower()
+            raw_dis = r.get_attribute("disabled")
+            is_dis = (isinstance(raw_dis, str) and raw_dis.strip().lower() in ("true", "disabled", "1")) or raw_dis is True
             label_txt = ""
             matched_label = False
             if len(radios) == len(radio_labels) and idx < len(radio_labels):
-                b_val, b_id, b_name, b_lbl = radio_labels[idx]
+                b_val, b_id, b_name, b_lbl, b_dis = radio_labels[idx]
                 if (
                     (not r_id or not b_id or r_id == b_id)
                     and (not r_name or not b_name or r_name == b_name)
                     and (not r_val or not b_val or r_val == b_val)
                 ):
                     label_txt = b_lbl
+                    is_dis = is_dis or b_dis
                     matched_label = True
             if not matched_label:
-                for b_val, b_id, b_name, b_lbl in radio_labels:
+                for b_val, b_id, b_name, b_lbl, b_dis in radio_labels:
                     if r_id and b_id and r_id != b_id:
                         continue
                     if (r_id and r_id == b_id) or (
                         r_val and r_val == b_val and (not r_name or not b_name or r_name == b_name)
                     ):
                         label_txt = b_lbl
+                        is_dis = is_dis or b_dis
                         matched_label = True
                         break
             if not matched_label and idx < len(radio_labels):
                 label_txt = radio_labels[idx][3]
-            if _is_speed_or_route(r_name, label_txt):
+                is_dis = is_dis or radio_labels[idx][4]
+            if is_dis or _is_speed_or_route(r_name, label_txt):
                 continue
             candidates.append((r, r_val, r_id, r_name, label_txt))
 
@@ -1987,6 +1993,55 @@ class ActionExecutor:
                     return r
         return None
 
+    _PROTECTION_AND_AZ_KEYWORDS: tuple[str, ...] = (
+        "attackzone",
+        "attack zone",
+        "angriffszone",
+        "vacation",
+        "urlaub",
+        "urlaubsmodus",
+        "newbie",
+        "noob",
+        "bash",
+        "can't be attacked",
+        "cannot be attacked",
+        "can not be attacked",
+        "can't be spied",
+        "cannot be spied",
+        "nicht angegriffen",
+        "nicht ausspioniert",
+        "protection",
+    )
+
+    @classmethod
+    def _is_unattackable_target_html(cls, html_or_text: str) -> bool:
+        if not html_or_text:
+            return False
+        low = str(html_or_text).lower()
+        return any(kw in low for kw in cls._PROTECTION_AND_AZ_KEYWORDS)
+
+    @classmethod
+    def _extract_mission_forbidden_reason(cls, html: str, mission_kind: str = "ATTACK") -> Optional[str]:
+        if not html:
+            return None
+        parsed_blk = parse_send_fleet_mission_block(html, mission_kind)
+        if parsed_blk is not None:
+            return parsed_blk[0]
+        srv_err = cls._extract_fleet_server_error(html)
+        if srv_err and cls._is_unattackable_target_html(srv_err):
+            return srv_err
+        soup = BeautifulSoup(html, "html.parser")
+        for raw_ln in soup.get_text("\n", strip=True).splitlines():
+            ln = " ".join(raw_ln.split()).strip()
+            if not ln:
+                continue
+            low_ln = ln.lower()
+            if ("(forbidden)" in low_ln or "(verboten)" in low_ln) and "transport" not in low_ln:
+                return ln[:240]
+            if cls._is_unattackable_target_html(low_ln) and len(ln) <= 240:
+                return ln
+        return srv_err
+
     @staticmethod
     def _extract_fleet_server_error(confirm_html: str) -> Optional[str]:
         if not confirm_html:
@@ -2024,6 +2079,11 @@ class ActionExecutor:
                             "not enough",
                             "protection",
                             "vacation",
+                            "urlaubsmodus",
+                            "attackzone",
+                            "attack zone",
+                            "angriffszone",
+                            "bash",
                         )
                     ):
                         return txt[:160]
@@ -2047,8 +2107,14 @@ class ActionExecutor:
             "newbie protection",
             "noob protection",
             "vacation mode",
+            "urlaubsmodus",
+            "out of your attackzone range",
+            "out of your attack zone range",
             "outside your attack zone",
             "outside attack zone",
+            "attackzone",
+            "angriffszone",
+            "bash protection",
             "cannot attack",
             "can't attack",
             "cannot spy",
@@ -2266,15 +2332,9 @@ class ActionExecutor:
         step1_err = self._extract_fleet_server_error(send_html)
         if step1_err and (
             send_soup.select_one('input[type="radio"]') is None
-            or any(
-                kw in step1_err.lower()
-                for kw in ("can't be attacked", "cannot be attacked", "nicht angegriffen", "vacation", "protection", "attack zone")
-            )
+            or self._is_unattackable_target_html(step1_err)
         ):
-            is_prot_err = any(
-                kw in step1_err.lower()
-                for kw in ("can't be attacked", "cannot be attacked", "nicht angegriffen", "vacation", "protection", "attack zone")
-            )
+            is_prot_err = self._is_unattackable_target_html(step1_err)
             append_crash_debug_log(
                 component="executor._dispatch_fleet_mission",
                 event="step1_rejected",
@@ -2293,6 +2353,7 @@ class ActionExecutor:
                 message=f"Aborted: fleet step 1 rejected by server ({step1_err}).",
                 target_cooldown_seconds=21600.0 if is_prot_err else None,
                 target_block_reason=step1_err if is_prot_err else None,
+                target_is_bash_block=("bash" in step1_err.lower()),
                 validated=False,
                 validation_error=step1_err,
             )
@@ -2325,7 +2386,17 @@ class ActionExecutor:
                             target_block_reason=blk_reason,
                             target_is_bash_block=blk_bash,
                             clear_target_debris=(mission_kind == "RECYCLE"),
+                            validated=False,
+                            validation_error=blk_reason,
                         )
+                    has_step2_controls = bool(
+                        radios
+                        or send_soup.select_one(
+                            'form#fleet, form[action*="internalSendFleetFinish"], input[name="todo"], input[type="radio"]'
+                        )
+                        is not None
+                        or self._is_unattackable_target_html(send_html)
+                    )
                     append_crash_debug_log(
                         component="executor._dispatch_fleet_mission",
                         event="mission_radio_missing",
@@ -2338,6 +2409,31 @@ class ActionExecutor:
                             "page_text": " ".join(send_soup.get_text(" ", strip=True).split())[:1000],
                         },
                     )
+                    if mission_kind in ("ATTACK", "SPY") and has_step2_controls:
+                        inline_forb = self._extract_mission_forbidden_reason(send_html, mission_kind)
+                        verb_unavail = "attacked" if mission_kind == "ATTACK" else "spied"
+                        blk_msg = inline_forb or (
+                            f"Target cannot be {verb_unavail} on internalSendFleet ({mission_kind} mission unavailable)"
+                        )
+                        out_msg = (
+                            f"Aborted: {inline_forb}."
+                            if inline_forb
+                            else (
+                                f"Aborted: {mission_kind.title()} mission radio button not confirmed on internalSendFleet "
+                                f"(page bytes={len(send_html)})."
+                            )
+                        )
+                        return ExecutionResult(
+                            executed=False,
+                            dry_run=False,
+                            action=action,
+                            message=out_msg,
+                            target_cooldown_seconds=6 * 3600.0,
+                            target_block_reason=blk_msg,
+                            target_is_bash_block=("bash" in blk_msg.lower()),
+                            validated=False,
+                            validation_error=blk_msg,
+                        )
                     return ExecutionResult(
                         executed=False,
                         dry_run=False,
@@ -2427,10 +2523,7 @@ class ActionExecutor:
             )
         server_err = self._extract_fleet_server_error(confirm_html)
         if server_err:
-            is_prot_err2 = any(
-                kw in server_err.lower()
-                for kw in ("can't be attacked", "cannot be attacked", "nicht angegriffen", "vacation", "protection", "attack zone")
-            )
+            is_prot_err2 = self._is_unattackable_target_html(server_err)
             append_crash_debug_log(
                 component="executor._dispatch_fleet_mission",
                 event="step2_rejected",
@@ -2448,6 +2541,7 @@ class ActionExecutor:
                 message=f"Aborted: fleet launch rejected by server ({server_err}).",
                 target_cooldown_seconds=21600.0 if is_prot_err2 else None,
                 target_block_reason=server_err if is_prot_err2 else None,
+                target_is_bash_block=("bash" in server_err.lower()),
                 validated=False,
                 validation_error=server_err,
             )
@@ -3038,3 +3132,11 @@ class ActionExecutor:
                 active_planet_confirmed=active_planet_confirmed,
             )
         return self._attach_observed_planet(res)
+
+
+def _is_unattackable_target_html(html_or_text: str) -> bool:
+    return ActionExecutor._is_unattackable_target_html(html_or_text)
+
+
+def _extract_mission_forbidden_reason(html: str, mission_kind: str = "ATTACK") -> Optional[str]:
+    return ActionExecutor._extract_mission_forbidden_reason(html, mission_kind)

@@ -9,7 +9,7 @@
 ```mermaid
 flowchart TB
     subgraph Sup["Tier 0 — Process Supervision & Hot Reload"]
-        SH["starter.sh (Crash Watchdog & Exit-2 CAPTCHA Guard)"]
+        SH["starter.sh (Crash Watchdog & Passive CAPTCHA Hold)"]
         RS["bin/run_stack.py (Stack Launcher & Health Monitor)"]
         RL["spaceinvasion/runtime/reloader.py (Dependency-Safe Subprocess Reloader)"]
         SH --> RS
@@ -30,7 +30,7 @@ flowchart TB
         GANN["spaceinvasion/planner/optimizer.py (GA + 46D NeuralValueNetwork)"]
         DAG["spaceinvasion/planner/action_graph.py (Kahn Multi-Lane DAG & Sim Merger)"]
         FLT["spaceinvasion/combat/{fleet,ranking}.py (1:1 Combat Sim, Escape, Galaxy/Spy/Inbox, ETAs)"]
-        DB[("state/spaceinvasion.db + spaceinvasion/db/{storage,migrations}.py (23 Tables, V001..V007)")]
+        DB[("state/spaceinvasion.db + spaceinvasion/db/{storage,migrations}.py (27 Tables, V001..V009)")]
 
         API --> CL
         API --> EX
@@ -45,7 +45,7 @@ flowchart TB
 
     subgraph T3["Tier 3 — Pure-HTTP Clients & Analysis"]
         CMD["commander.py + commander_client.py (Zero-Selenium Batch Autopilot)"]
-        UI["spaceinvasion/ui/ (Operator Console + Action Graph + Manual Queue)"]
+        UI["frontend/ (React + TS + Vite) -> spaceinvasion/ui/ (Operator Console)"]
         NB["notebooks/*.ipynb (Read-Only Temp-Copy Strategy & GA+NN Labs)"]
 
         CMD <-->|"HTTP JSON"| API
@@ -62,7 +62,7 @@ flowchart TB
 ## 2. Tier Responsibilities & Isolation Boundaries
 
 ### Tier 0 — Supervision & Hot-Reload (`starter.sh`, `bin/run_stack.py`, `reloader.py`)
-- **`starter.sh`**: Outer POSIX/Bash watchdog at the repository root that restarts `bin/run_stack.py` with exponential backoff (`5s -> 60s` max, resetting after `>= 60s` healthy uptime) if Python crashes, cleans up orphaned port-`8787` children, and **halts immediately without restarting on exit code `2`** (anti-bot / Cloudflare Turnstile challenge).
+- **`starter.sh`**: Outer POSIX/Bash watchdog at the repository root that restarts `bin/run_stack.py` with exponential backoff (`5s -> 60s` max, resetting after `>= 60s` healthy uptime) if Python crashes and cleans up orphaned port-`8787` children, while keeping the live stack running in passive auto-paused mode whenever a CAPTCHA/Turnstile gate requires operator intervention.
 - **`bin/run_stack.py`**: Verifies Chrome DevTools readiness on `127.0.0.1:9222`, starts `bin/game_api.py --reload`, waits for `GET /health == 200`, and starts `bin/commander.py --loop --reload`.
 - **Bottom-Up Hot-Reload Invariant**: `reloader.py` watches leaf domain modules (`game_data.py`, `state.py`, `fleet.py`, `ranking.py`, `action_graph.py`, `storage.py`) and restarts `game_api.py` / `commander.py` cleanly without closing Chrome.
 
@@ -70,7 +70,7 @@ flowchart TB
 - Launches Google Chrome with `--remote-debugging-port=9222` backed by a persistent local profile (`.browser_profile/`).
 - Chrome stays open independently of Python restarts so active BitMeUp sessions survive code reloads.
 - **Single-Client Rule**: Only `GameApiBridge` connects Selenium to `127.0.0.1:9222`. All automation loops, CLI checks, and UI actions route through `http://127.0.0.1:8787`.
-- **Anti-Bot / CAPTCHA Guard**: `auth.py` and `client.py` inspect both inner frames (`#F_Hauptframe`, `#F_planets`) and the outer `indexGame.es` shell for Cloudflare Turnstile / CAPTCHA challenges (including German `Sicherheitsprüfung` modals), raising `AntiBotChallengeError` (`HTTP 503` -> Commander exit code `2`).
+- **Anti-Bot / CAPTCHA Guard**: `auth.py` and `client.py` inspect both inner frames (`#F_Hauptframe`, `#F_planets`) and the outer `indexGame.es` shell for Cloudflare Turnstile / CAPTCHA challenges (including German `Sicherheitsprüfung` modals), raising `AntiBotChallengeError` -> `GameApiBridge._record_antibot_pause()` sets `captcha_blocked = True` + `paused = True` and creates a persistent `captcha_gate` UI alert (`#notif-help-modal` + `#btn-captcha-resume`), with **zero Selenium/Chrome calls** while blocked.
 
 ### Tier 2 — HTTP Bridge, Planning Engines & Storage (`api_server.py`)
 - **`GameApiBridge._lock`**: Serializes all Selenium frame transitions, DOM reads, and click executions across concurrent UI requests and `commander.py` ticks.
@@ -85,12 +85,21 @@ flowchart TB
   - Memoizes JSON-cloned active graphs via deep `_freeze_sig_tree` signatures so 5-planet `GET /dashboard?refresh=0` completes in **`~13.6ms`** (`< 25ms` SLA).
 
 ### Tier 3 — Pure-HTTP Commander & Web Operator Console
-- **`commander.py`**: Pure-HTTP batch autopilot with **zero Selenium imports**. Accumulates ready actions (`manual_queue` `P0`/`P1` items first, then planner actions), respects `action_batch_interval_seconds` and exact build/queue wakeup timers to minimize browser page views, tracks per-colony fleet-slot cooldowns (`1 + Fleet base b10`), and halts immediately (`exit 2`) on `AntiBotChallengeError`.
-- **`spaceinvasion/ui/` (`index.html`, `styles.css`, `app.js`)**: Single-page operator console served at `http://127.0.0.1:8787/` providing:
-  - **Overview & Colony Telemetry** (resources, queues, `GA+NN` convergence HUD, ranking evolution chart)
-  - **Action Graph & Right-Side Parameter Simulation Panel** (`#view-action-graph` + `#ag-control-panel`: `"priority"` <-> `"ga_nn"` switcher, SVG cubic Bezier DAG canvas, `180ms`-debounced preview across `28` controls, `Reset to Active`, and explicit `Apply to Active Config`)
-  - **Manual Command Queue** (`P0`..`P3` pinning, reordering, resource reservation)
-  - **Espionage Intel**, **Possible Colonies** (`S`/`A+`/`A`/`B`/`C`/`D` grading, `300+` field filter), **Attack Results**, **Recycler & Inbox**, and **Live Redacted Logs**.
+- **`commander.py`**: Pure-HTTP batch autopilot with **zero Selenium imports**. Accumulates ready actions (`manual_queue` `P0`/`P1` items first, then planner actions), respects `action_batch_interval_seconds` and exact build/queue wakeup timers to minimize browser page views, tracks per-colony fleet-slot cooldowns (`1 + Fleet base b10`), and on `AntiBotChallengeError` (`captcha_blocked=true`) stays alive without exiting — logging a single `[ALERT]` notice and passively polling `GET /bot_status` (zero Chrome calls) until the operator solves the CAPTCHA in Chrome and clicks Resume.
+- **`frontend/` -> `spaceinvasion/ui/` (`http://127.0.0.1:8787/`)**: Modular **React + TypeScript + Vite** operator console providing:
+  - **Overview & Colony Telemetry** (`DashboardView`: resources, 3 live/planned Building/Fleet/Research queue cards, tutorial progress, `GaNnScannerHud`)
+  - **Action Graph & Right-Side Parameter Simulation Panel** (`ActionGraphView`: `"priority"` <-> `"ga_nn"` switcher, click-and-drag scrollable SVG cubic Bezier DAG canvas via `useDragScroll`, `180ms`-debounced isolated preview, `Reset to Active`, and explicit `Apply to Active Config`)
+  - **Operations & Manual Command Queue** (`OperationsView`: `P0`..`P3` pinning, reordering, resource reservation, and queue-position Metal production review)
+  - **Grouped Configuration Reference** (`ConfigView`: 5 vertical configuration groups with per-setting technical explanations, `galaxy_scan_click_delay_seconds`, `reserved_spy_slots`, and `spy_dispatch_planet_id`)
+  - **Buildings, Combat, Espionage, Possible Colonies (`S`–`D` grading, `300+` field quota & `Discard`), Attack Results, Recyclers, Ranking Evolution, and Live Redacted Logs**.
+
+#### Modular React Frontend & Build Pipeline (`frontend/` -> `spaceinvasion/ui/`)
+- **Source Architecture (`frontend/src/`)**:
+  - `context/ConsoleContext.tsx` & `api/httpClient.ts`: Centralized state/polling provider (`ConsoleProvider` / `useConsole`) with `>= 15s` `AbortController` timeouts, HTTP `429` rate-limit resilience, and `window.state` / `window.el` compatibility bindings.
+  - `features/*` & `components/{layout,modals}/*`: 12 isolated feature modules (`dashboard`, `operations`, `buildings`, `action-graph`, `combat`, `espionage`, `colonies`, `attacks`, `recyclers`, `ranking`, `config`, `logs`) plus shared shell/modal components (`AppHeader`, `AppSidebar`, `FeedbackBanner`, `GaNnScannerHud`, `HelpAlertModal`, `NotificationCenterModal`).
+  - `styles/*`: Domain-scoped stylesheets (`tokens.css`, `shell.css`, `tables.css`, `dashboard.css`, `action-graph.css`, `config.css`, `modals.css`) enforcing the `#06090b` dark palette, `>= 0.86rem` typography floor, `4px`/`6px`/`8px` radii, and `prefers-reduced-motion` guards.
+- **Build & SSR Pre-Render (`npm --prefix frontend run build`)**:
+  - `vite.config.ts` bundles single-entry IIFE `app.js` and `styles.css` directly into `spaceinvasion/ui/` (`emptyOutDir: false`, preserving `favicon.svg`, `favicon.ico`, and `bell.svg`), followed by `frontend/scripts/prerender.mjs` (`react-dom/server` `renderToString` into `#root` of `spaceinvasion/ui/index.html`) for instant zero-flash SSR HTML + client React hydration served by `GameApiBridge` (`http://127.0.0.1:8787/`). `starter.sh` automatically runs `npm --prefix frontend run build` if `spaceinvasion/ui/app.js` is missing, and Vitest (`npm --prefix frontend test`) + `jsdom` Python harnesses (`tests/unit/test_ui.py`, `tests/e2e/test_tier1_r3.py`) verify every view.
 
 ---
 

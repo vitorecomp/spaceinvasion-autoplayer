@@ -2540,6 +2540,23 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         ]
         self.assertEqual(custom_cli._resolve_sid_query(), "sid=rawWindowSid42")
 
+    def test_check_page_guards_ignores_passive_turnstile_and_live_dom_hidden_gate(self) -> None:
+        driver = _FakeDriver()
+        client = GameBrowserClient(driver, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        passive_html = (
+            '<html><head><script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script></head>'
+            '<body><div id="si-captcha-gate" style="display:none;"><div class="cf-turnstile"></div></div>'
+            '<div>Normal game frame</div></body></html>'
+        )
+        client._check_page_guards(passive_html)
+
+        visible_class_only_html = '<html><body><div id="si-captcha-gate"><div class="cf-turnstile"></div></div></body></html>'
+        with patch.object(client, "_is_antibot_visible_in_live_dom", return_value=False):
+            client._check_page_guards(visible_class_only_html)
+        with patch.object(client, "_is_antibot_visible_in_live_dom", return_value=True):
+            with self.assertRaises(AntiBotChallengeError):
+                client._check_page_guards(visible_class_only_html)
+
 
 if __name__ == "__main__":
     unittest.main()

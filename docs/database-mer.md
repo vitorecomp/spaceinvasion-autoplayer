@@ -1,21 +1,21 @@
 # Database Entity-Relationship Model (MER / DER)
 
-Complete data model and schema documentation for `state/spaceinvasion.db` (`spaceinvasion/storage.py`) and its sanitized JSON mirror `data/attack_history.json`.
+Complete data model and schema documentation for `state/spaceinvasion.db` (`spaceinvasion/db/storage.py` & `spaceinvasion/db/migrations.py`, schema **`V001..V009`**).
 
 ---
 
 ## 1. Storage Architecture & Core Design Rules
 
-1. **SQLite WAL Mode + Thread Lock**: `GameDatabase` (`spaceinvasion/storage.py`) opens `state/spaceinvasion.db` with `PRAGMA journal_mode=WAL`, `PRAGMA synchronous=NORMAL`, and `PRAGMA foreign_keys=ON`, guarded by an internal `threading.RLock` for thread-safe concurrent access inside `GameApiBridge`.
-2. **Append-Only Historical Retention**: Event and snapshot tables (`rank_snapshots`, `planet_snapshots`, `action_history`, `config_history`, `galaxy_scan_history`, `galaxy_slot_history`, `spy_reports`, `game_messages`, `raid_history`, `bash_blocks`, `battle_reports`, `recycle_reports`, `manual_queue_events`) **never delete historical rows**, preserving complete longitudinal universe telemetry for offline analytics and machine-learning/GA training.
-3. **Soft Flags Over Destructive Deletes**: Current-state lookup tables (`spy_targets`, `manual_queue`, `game_messages`) use non-destructive lifecycle columns (`is_own_planet`, `merged_into`, `status`, `completed_ts`, `canceled_ts`, `deleted_in_game`, `deleted_ts`) rather than `DELETE`.
-4. **Automatic Secret Redaction**: Every text/JSON write passes through `redact_sensitive` and finite-number coercion so `sid=` session tokens, `NaN`, and `Infinity` never enter SQLite or `data/attack_history.json`.
+1. **SQLite WAL Mode + Thread Lock**: `GameDatabase` (`spaceinvasion/db/storage.py`) opens `state/spaceinvasion.db` with `PRAGMA journal_mode=WAL`, `PRAGMA synchronous=NORMAL`, and `PRAGMA foreign_keys=ON`, guarded by an internal `threading.RLock` for thread-safe concurrent access inside `GameApiBridge`.
+2. **Append-Only Historical Retention**: Event and snapshot tables (`rank_snapshots`, `planet_snapshots`, `state_snapshots`, `action_history`, `config_history`, `galaxy_scan_history`, `galaxy_slot_history`, `spy_reports`, `game_messages`, `raid_history`, `bash_blocks`, `battle_reports`, `recycle_reports`, `manual_queue_events`, `schema_migration_events`, `universe_research_max_history`) **never delete historical rows**, preserving complete longitudinal universe telemetry for offline analytics and machine-learning/GA training.
+3. **Soft Flags & Monotonic Upserts Over Destructive Deletes**: Current-state lookup tables (`spy_targets`, `manual_queue`, `game_messages`, `ui_notifications`, `universe_research_max`) use non-destructive lifecycle columns (`is_own_planet`, `merged_into`, `status`, `completed_ts`, `canceled_ts`, `deleted_in_game`, `deleted_ts`, `acknowledged_ts`) and monotonic `ON CONFLICT DO UPDATE` upserts rather than `DELETE`.
+4. **Automatic Secret Redaction**: Every text/JSON write passes through `redact_sensitive` and finite-number coercion so `sid=` session tokens, `NaN`, and `Infinity` never enter SQLite.
 
 ---
 
 ## 2. Entity-Relationship Diagram (MER)
 
-> **Relationship Convention**: SQLite coordinates (`coords` / `target_coords` formatted as `GG:SSS:PP`), `planet_id`, `(galaxy, system)`, `msg_uid`, and `queue_id` form the logical entity relationships across the 20 tables.
+> **Relationship Convention**: SQLite coordinates (`coords` / `target_coords` formatted as `GG:SSS:PP`), `planet_id`, `(galaxy, system)`, `research_key`, `msg_uid`, and `queue_id` form the logical entity relationships across the **27 SQLite tables** (`V001..V009`).
 
 ```mermaid
 erDiagram
@@ -29,6 +29,45 @@ erDiagram
         INTEGER id PK
         REAL ts
         TEXT config_json
+    }
+    STRATEGY_CONFIG_STORE {
+        INTEGER id PK
+        TEXT config_json
+        REAL updated_ts
+        TEXT source
+    }
+    STATE_SNAPSHOTS {
+        INTEGER id PK
+        REAL ts
+        TEXT source
+        INTEGER universe_id
+        INTEGER user_id
+        TEXT nickname
+        INTEGER active_planet_id
+        INTEGER planet_count
+        INTEGER planned_action_count
+        TEXT state_json
+        TEXT plan_json
+    }
+    UNIVERSE_RESEARCH_MAX {
+        TEXT research_key PK
+        INTEGER research_id
+        TEXT slug
+        TEXT name
+        INTEGER own_level
+        INTEGER spied_max_level
+        INTEGER server_record_level
+        INTEGER universe_max_level
+        INTEGER catalog_max_level
+        TEXT holder
+        TEXT holder_coords
+        REAL updated_ts
+    }
+    UNIVERSE_RESEARCH_MAX_HISTORY {
+        INTEGER id PK
+        REAL ts
+        TEXT source
+        TEXT records_json
     }
     RANK_SNAPSHOTS {
         INTEGER id PK
@@ -124,6 +163,24 @@ erDiagram
         REAL ts
         INTEGER queue_id FK
         TEXT event_type
+        TEXT details_json
+    }
+    UI_NOTIFICATIONS {
+        INTEGER id PK
+        REAL created_ts
+        REAL updated_ts
+        TEXT severity
+        TEXT category
+        TEXT title
+        TEXT message
+        TEXT help_prompt
+        TEXT action_kind
+        TEXT planet_coords
+        TEXT target_name
+        TEXT dedupe_key
+        INTEGER occurrence_count
+        TEXT status
+        REAL acknowledged_ts
         TEXT details_json
     }
 
@@ -325,29 +382,35 @@ erDiagram
     GAME_MESSAGES ||--o| BATTLE_REPORTS : "msg_uid"
     GAME_MESSAGES ||--o| RECYCLE_REPORTS : "msg_uid"
     GAME_MESSAGES ||--o{ SPY_REPORTS : "server_msg_id"
+    SPY_REPORTS }o--o{ UNIVERSE_RESEARCH_MAX : "researches_json"
+    UNIVERSE_RESEARCH_MAX ||--o{ UNIVERSE_RESEARCH_MAX_HISTORY : "records_json"
 ```
 
 ---
 
-## 3. Complete Table Dictionary (20 Tables)
+## 3. Complete Table Dictionary (27 Tables)
 
-### 3.1 Empire State, Economy & Configuration
+### 3.1 Empire State, Economy, Configuration & Universe Research Records
 
 | Table | Pattern | Primary Key | Description & JSON Columns |
 |---|---|---|---|
-| `meta` | Upsert KV | `key` | Schema version (`schema_version`) and database metadata flags. |
+| `meta` | Upsert KV | `key` | Schema version (`schema_version`, `schema_version_tag`, `schema_checksum`), `discarded_colony_coords`, and runtime state keys. |
+| `strategy_config_store` | Single-row Upsert (`V008`) | `id` (`CHECK id = 1`) | Authoritative persisted `StrategyConfig` (`config_json`, `updated_ts`, `source`), retiring legacy `config.yaml` sidecars into SQLite. |
 | `config_history` | Append-only | `id` | Immutable audit log of every `StrategyConfig` snapshot (`config_json`). |
 | `rank_snapshots` | Append-only | `id` | Time-series account progression: server points/rank, estimated build+tech+fleet points, `pts_per_hr`, total `spice_value`, and colony count. |
 | `planet_snapshots` | Append-only | `id` | Time-series colony snapshots: resources, energy (`energy_produced`, `energy_used`), field usage, `buildings_json`, `ships_json`, `defense_json`, `economy_rates_json`, and `researches_json`. |
-| `state_snapshots` | Append-only | `id` | Full `GameState` + planned-action snapshots (`source`, `universe_id`, `user_id`, `nickname`, `active_planet_id`, `planet_count`, `planned_action_count`, `state_json`, `plan_json`), consolidating legacy `state/snapshot.json` into SQLite. |
+| `state_snapshots` | Append-only (`V007`) | `id` | Full `GameState` + planned-action snapshots (`source`, `universe_id`, `user_id`, `nickname`, `active_planet_id`, `planet_count`, `planned_action_count`, `state_json`, `plan_json`), consolidating legacy `state/snapshot.json` into SQLite. |
 | `economy_rates_cache` | Upsert State | `planet_id` | Latest persisted `internalEconomy` slider percentages (`resource1..resource6` in `rates_json`) per owned colony. |
 | `tutorial_progress` | Upsert State | `step` | Tutorial steps `1..11`, task checklist (`tasks_json`), reward text, claim readiness, and completion timestamps. |
+| `universe_research_max` | Monotonic Upsert (`V009`) | `research_key` | Persisted max observed research levels across the universe (`r1`–`r15` + `urplasma-extraction`): `research_id`, `slug`, `name`, `own_level`, `spied_max_level`, `server_record_level`, `universe_max_level`, `catalog_max_level`, `holder`, `holder_coords`, and `updated_ts`. Refreshed via `refresh_universe_research_max` (`#btn-refresh-universe-research` in `#view-config` / `POST /command {"command": "universe_research_max", "sync": true}`). |
+| `universe_research_max_history` | Append-only (`V009`) | `id` | Immutable audit log of every universe max research refresh (`ts`, `source`, `records_json`). |
 
-### 3.2 Action Audit Log & Manual Operator Queue
+### 3.2 Action Audit Log, Operator Notifications & Manual Queue
 
 | Table | Pattern | Primary Key | Description & Lifecycle |
 |---|---|---|---|
 | `action_history` | Append-only | `id` | Every live or dry-run command attempted by `commander.py` or the Operator UI (`source`, `command`, `priority`, `kind`, `planet_id`, `target_id`, `target_name`, `target_level`, `executed`, `dry_run`, `reason`, `message`). |
+| `ui_notifications` | Soft-state (`V008`) | `id` | Persistent action-validation and target-protection alerts (`severity`, `category`, `title`, `message`, `help_prompt`, `dedupe_key`, `occurrence_count`, `status` in `unread` / `acknowledged`, `acknowledged_ts`, `details_json`). |
 | `manual_queue` | Soft-state | `id` | Operator-enqueued manual commands (`status` in `pending` / `completed` / `canceled`, `priority` `P0`..`P3`, `sort_rank`). `P0`/`P1` pending items reserve colony resources and execute ahead of automated plans. |
 | `manual_queue_events` | Append-only | `id` | Immutable audit trail of queue mutations (`enqueued`, `updated`, `reordered`, `completed`, `canceled`) linked via `queue_id -> manual_queue.id`. |
 
@@ -379,7 +442,7 @@ erDiagram
 
 ---
 
-## 4. Secondary Index Catalog (16 Indexes)
+## 4. Secondary Index Catalog (28 Indexes)
 
 | Index Name | Table & Columns | Query Accelerated |
 |---|---|---|
@@ -396,27 +459,48 @@ erDiagram
 | `idx_galaxy_slot_history_coords_ts` | `galaxy_slot_history(coords, ts)` | Player inactivity transition detection |
 | `idx_config_history_ts` | `config_history(ts)` | Configuration change timeline |
 | `idx_raid_history_coords_ts` | `raid_history(target_coords, attacked_ts)` | Rolling 24h `BashTracker` window & per-target raid stats |
-| `idx_bash_blocks_coords_ts` | `bash_blocks(target_coords, blocked_ts)` | Active server bash-cooldown lookup |
+| `idx_raid_history_ts` | `raid_history(attacked_ts)` | Global chronological raid throughput (`V006`) |
+| `idx_bash_blocks_coords_ts` | `bash_blocks(target_coords, blocked_ts)` | Per-target server bash-cooldown history |
+| `idx_bash_blocks_until_ts` | `bash_blocks(blocked_until_ts)` | Active unexpired target cooldown scan (`V006`) |
 | `idx_battle_reports_coords_ts` | `battle_reports(target_coords, ts)` | Per-target win rate & loot mean/std in `full_planner.ipynb` |
 | `idx_recycle_reports_coords_ts` | `recycle_reports(coords, ts)` | Debris-field harvest history |
-| `idx_schema_migration_events_ts` | `schema_migration_events(ts)` | Chronological schema upgrade & backup audit trail |
-| `idx_spy_targets_colony_filter` | `spy_targets(is_own_planet, merged_into, is_spacia, is_inactive)` | Colony candidate & active raid target filtering |
-| `idx_battle_reports_ts` | `battle_reports(ts)` | Chronological attack result feeds |
-| `idx_recycle_reports_ts` | `recycle_reports(ts)` | Chronological recycler harvest feeds |
-| `idx_state_snapshots_ts` | `state_snapshots(ts)` | Chronological full-state & plan snapshot lookups |
+| `idx_manual_queue_status_prio_rank` | `manual_queue(status, priority, sort_rank, id)` | Pending manual queue frontier ordering (`V004`) |
+| `idx_manual_queue_events_qid_ts` | `manual_queue_events(queue_id, ts)` | Per-queue-item audit trail (`V004`) |
+| `idx_schema_migration_events_ts` | `schema_migration_events(ts)` | Chronological schema upgrade & backup audit trail (`V005`) |
+| `idx_spy_targets_colony_filter` | `spy_targets(is_own_planet, merged_into, is_spacia, is_inactive)` | Colony candidate & active raid target filtering (`V005`) |
+| `idx_battle_reports_ts` | `battle_reports(ts)` | Chronological attack result feeds (`V005`) |
+| `idx_recycle_reports_ts` | `recycle_reports(ts)` | Chronological recycler harvest feeds (`V005`) |
+| `idx_state_snapshots_ts` | `state_snapshots(ts)` | Chronological full-state & plan snapshot lookups (`V007`) |
+| `idx_ui_notifications_status_ts` | `ui_notifications(status, updated_ts)` | Unread operator notification banner & modal feed (`V008`) |
+| `idx_ui_notifications_dedupe` | `ui_notifications(dedupe_key, status)` | Idempotent validation-alert deduplication (`V008`) |
+| `idx_universe_research_max_hist_ts` | `universe_research_max_history(ts)` | Chronological universe max research refresh audit (`V009`) |
 
 ---
 
-## 5. Schema Versioning & Forward-Only Migrations (`spaceinvasion/migrations.py`)
+## 5. Schema Versioning & Forward-Only Migrations (`spaceinvasion/db/migrations.py`)
 
-All SQLite databases (`state/spaceinvasion.db` plus any auxiliary `state/*.db` stores) are versioned and migrated non-destructively via `MigrationRunner` and `DatabaseMigrationRegistry` (`spaceinvasion/migrations.py`, CLI `scripts/db_migrate.py`):
+All SQLite databases (`state/spaceinvasion.db` plus any auxiliary `state/*.db` stores) are versioned and migrated non-destructively via `MigrationRunner` and `DatabaseMigrationRegistry` (`spaceinvasion/db/migrations.py`, CLI `scripts/db_migrate.py`):
 
 | Ledger Table | Pattern | Primary Key | Description |
 |---|---|---|---|
-| `schema_migrations` | Append-only | `version` | Authoritative ledger of applied forward migrations (`V001..V007`), storing `version_tag`, `name`, `description`, deterministic SHA-256 DDL `checksum`, `applied_ts`, `duration_ms`, and `details_json` (e.g. `added_columns`). |
+| `schema_migrations` | Append-only | `version` | Authoritative ledger of applied forward migrations (`V001..V009`), storing `version_tag`, `name`, `description`, deterministic SHA-256 DDL `checksum`, `applied_ts`, `duration_ms`, and `details_json` (e.g. `added_columns`). |
 | `schema_migration_events` | Append-only | `id` | Immutable audit log of every `migration_applied` and `backup_created` event (`from_version`, `to_version`, `backup_path`, `details_json`). |
 
-- **Triple-Synced Version Markers**: Every applied migration synchronizes `schema_migrations.version`, `meta` (`schema_version`, `schema_version_tag`, `schema_checksum`), and SQLite's binary header `PRAGMA user_version = 7`.
+### Ordered Migration Catalog (`V001..V009`)
+
+| Version | Name | Summary of Non-Destructive Schema Additions |
+|---|---|---|
+| `V001` | `v001_core_empire_telemetry` | Core empire telemetry (`meta`, `rank_snapshots`, `planet_snapshots`, `economy_rates_cache`, `tutorial_progress`, `action_history`, `config_history`). |
+| `V002` | `v002_espionage_galaxy_and_raid_ledger` | Espionage & galaxy cartography (`spy_targets`, `spy_reports`, `galaxy_scans`, `galaxy_scan_history`, `galaxy_slots`, `galaxy_slot_history`, `raid_history`, `bash_blocks`). |
+| `V003` | `v003_inbox_battle_and_recycle_reports` | Archived inbox & combat/rubble ledgers (`game_messages`, `battle_reports`, `recycle_reports`). |
+| `V004` | `v004_manual_command_queue` | Operator manual queue & event log (`manual_queue`, `manual_queue_events`). |
+| `V005` | `v005_migration_ledger_and_analytics_indexes` | Schema migration ledger (`schema_migrations`, `schema_migration_events`) and analytics indexes. |
+| `V006` | `v006_absorb_legacy_attack_json_and_retire_mirror` | Retires `data/attack_history.json` into SQLite and adds `idx_raid_history_ts` + `idx_bash_blocks_until_ts`. |
+| `V007` | `v007_consolidate_rank_and_state_snapshots_in_sqlite` | Adds `state_snapshots` (`idx_state_snapshots_ts`) and retires `state/rank_history.json` & `state/snapshot.json`. |
+| `V008` | `v008_db_strategy_config_and_ui_notifications` | Adds `strategy_config_store` and `ui_notifications` (`idx_ui_notifications_status_ts`, `idx_ui_notifications_dedupe`). |
+| `V009` | `v009_universe_research_max_tables` | Adds persisted `universe_research_max` (`research_key` PK) and append-only `universe_research_max_history` (`idx_universe_research_max_hist_ts`) for universe-wide max technology tracking. |
+
+- **Triple-Synced Version Markers**: Every applied migration synchronizes `schema_migrations.version`, `meta` (`schema_version`, `schema_version_tag`, `schema_checksum`), and SQLite's binary header `PRAGMA user_version = 9`.
 - **Savepoint-Isolated Execution & Online Backups**: Individual migrations execute via `conn.execute(...)` inside per-version SQLite `SAVEPOINT`s (preserving transactional DDL rollback on failure) and automatically create hot WAL-consistent backups in `state/backups/` via `sqlite3.Connection.backup` before upgrading `state/spaceinvasion.db`.
 - **CLI & HTTP API Commands**:
   - CLI: `.venv/bin/python3 scripts/db_migrate.py {status,migrate,verify,backup,history} [--all] [--dry-run] [--backup] [--json]`

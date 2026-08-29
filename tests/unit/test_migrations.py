@@ -538,6 +538,69 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 server.server_close()
                 bridge.close()
 
+    def test_v009_universe_research_max_monotonic_ledger_and_append_only_history(self) -> None:
+        from spaceinvasion.combat.fleet import SpyReport
+
+        self.assertEqual(LATEST_SCHEMA_VERSION, 9)
+        with tempfile.TemporaryDirectory(prefix="si_mig_v9_") as tmp:
+            db_path = Path(tmp) / "v9.db"
+            db_v8 = GameDatabase(db_path, attack_history_path="", target_schema_version=8)
+            try:
+                self.assertEqual(db_v8.get_schema_version()["version"], 8)
+                mig9 = db_v8.run_migrations(target_version=9, backup=True)
+                self.assertEqual(mig9["version"], 9)
+                self.assertTrue(mig9["up_to_date"])
+                chk = db_v8.verify_schema(full_integrity=True)
+                self.assertTrue(chk["ok"], chk)
+
+                seeded = db_v8.get_universe_research_max(own_researches={"r1": 6, "r2": 8}, own_nick="ventkx86")
+                by_k = {r["key"]: r for r in seeded}
+                self.assertEqual(by_k["r1"]["own_level"], 6)
+                self.assertEqual(by_k["r1"]["universe_max_level"], 6)
+                self.assertEqual(by_k["r1"]["holder"], "ventkx86")
+
+                # Spy report with higher research raises spied_max_level and universe_max_level
+                db_v8.record_spy_report(
+                    SpyReport(
+                        target_coords="02:381:05",
+                        owner="TechLeader",
+                        resources=Resources(1000, 1000, 1000, 1000),
+                        researches={"r1": 14, "r2": 5},
+                    ),
+                    ts=1700001000.0,
+                )
+                refreshed = db_v8.refresh_universe_research_max(
+                    own_researches={"r1": 6, "r2": 8},
+                    own_nick="ventkx86",
+                    server_records={"r3": {"level": 19, "holder": "TopPilot", "coords": "01:010:02"}},
+                    source="manual_sync",
+                    ts=1700001010.0,
+                )
+                by_k2 = {r["key"]: r for r in refreshed}
+                self.assertEqual(by_k2["r1"]["spied_max_level"], 14)
+                self.assertEqual(by_k2["r1"]["universe_max_level"], 14)
+                self.assertEqual(by_k2["r1"]["gap_to_max"], 8)
+                self.assertEqual(by_k2["r1"]["holder"], "TechLeader")
+                # r2 own_level (8) > spied (5) -> universe_max_level stays 8
+                self.assertEqual(by_k2["r2"]["universe_max_level"], 8)
+                self.assertEqual(by_k2["r3"]["server_record_level"], 19)
+                self.assertEqual(by_k2["r3"]["universe_max_level"], 19)
+                self.assertEqual(by_k2["r3"]["holder"], "TopPilot")
+
+                # Subsequent lower server record never decreases persisted universe_max_level
+                refreshed_low = db_v8.refresh_universe_research_max(
+                    own_researches={"r1": 6, "r2": 8},
+                    own_nick="ventkx86",
+                    server_records={"r3": {"level": 10, "holder": "LowerPilot"}},
+                    source="manual_sync",
+                    ts=1700001020.0,
+                )
+                by_k3 = {r["key"]: r for r in refreshed_low}
+                self.assertEqual(by_k3["r3"]["universe_max_level"], 19)
+                self.assertGreaterEqual(db_v8.summary()["counts"]["universe_research_max_history"], 2)
+            finally:
+                db_v8.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -457,6 +457,10 @@ class StrategyConfig:
     max_planets: int = 11
     galaxy_sweep_interval_seconds: int = 270
     galaxy_sweep_pages: int = 100
+    galaxy_scan_click_delay_seconds: float = 1.5
+    galaxy_scan_click_jitter_seconds: float = 0.6
+    reserved_spy_slots: int = 1
+    spy_dispatch_planet_id: int = 0
     planner_mode: str = "priority"  # "priority" | "ga_nn"
     ga_population_size: int = 24
     ga_generations: int = 12
@@ -1136,6 +1140,14 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
             30, min(86400, _safe_cfg_int(data.get("galaxy_sweep_interval_seconds"), 270))
         ),
         galaxy_sweep_pages=max(1, min(400, _safe_cfg_int(data.get("galaxy_sweep_pages"), 100))),
+        galaxy_scan_click_delay_seconds=max(
+            0.2, min(60.0, _safe_cfg_float(data.get("galaxy_scan_click_delay_seconds"), 1.5))
+        ),
+        galaxy_scan_click_jitter_seconds=max(
+            0.0, min(30.0, _safe_cfg_float(data.get("galaxy_scan_click_jitter_seconds"), 0.6))
+        ),
+        reserved_spy_slots=max(0, min(10, _safe_cfg_int(data.get("reserved_spy_slots"), 1))),
+        spy_dispatch_planet_id=max(0, _safe_cfg_int(data.get("spy_dispatch_planet_id"), 0)),
         planner_mode=normalize_planner_mode(raw_mode),
         ga_population_size=max(4, min(200, _safe_cfg_int(data.get("ga_population_size"), 24))),
         ga_generations=max(1, min(200, _safe_cfg_int(data.get("ga_generations"), 12))),
@@ -1354,6 +1366,10 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
     max_planets = max(1, min(50, _safe_cfg_int(cfg.max_planets, 11)))
     sweep_interval = max(30, min(86400, _safe_cfg_int(cfg.galaxy_sweep_interval_seconds, 270)))
     sweep_pages = max(1, min(400, _safe_cfg_int(cfg.galaxy_sweep_pages, 100)))
+    scan_click_delay = max(0.2, min(60.0, _safe_cfg_float(cfg.galaxy_scan_click_delay_seconds, 1.5)))
+    scan_click_jitter = max(0.0, min(30.0, _safe_cfg_float(cfg.galaxy_scan_click_jitter_seconds, 0.6)))
+    res_spy_slots = max(0, min(10, _safe_cfg_int(cfg.reserved_spy_slots, 1)))
+    spy_disp_pid = max(0, _safe_cfg_int(cfg.spy_dispatch_planet_id, 0))
     planner_mode = normalize_planner_mode(cfg.planner_mode)
     ga_pop = max(4, min(200, _safe_cfg_int(cfg.ga_population_size, 24)))
     ga_gen = max(1, min(200, _safe_cfg_int(cfg.ga_generations, 12)))
@@ -1405,6 +1421,10 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         f"max_planets: {max_planets}",
         f"galaxy_sweep_interval_seconds: {sweep_interval}",
         f"galaxy_sweep_pages: {sweep_pages}",
+        f"galaxy_scan_click_delay_seconds: {scan_click_delay}",
+        f"galaxy_scan_click_jitter_seconds: {scan_click_jitter}",
+        f"reserved_spy_slots: {res_spy_slots}",
+        f"spy_dispatch_planet_id: {spy_disp_pid}",
         f"planner_mode: {planner_mode}",
         f"ga_population_size: {ga_pop}",
         f"ga_generations: {ga_gen}",

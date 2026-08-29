@@ -174,6 +174,11 @@ on_stop_signal() {
 trap on_stop_signal INT TERM
 trap cleanup_pid_file EXIT
 
+if [[ -f "$REPO_DIR/frontend/package.json" ]] && command -v npm >/dev/null 2>&1 && [[ ! -f "$REPO_DIR/spaceinvasion/ui/app.js" ]]; then
+  log_msg "Building frontend UI bundle into spaceinvasion/ui/..."
+  npm --prefix "$REPO_DIR/frontend" run build
+fi
+
 consecutive_crashes=0
 log_msg "Supervisor started (pid=$$, python=$PY_BIN, script=$STACK_SCRIPT, args=${STACK_ARGS[*]:-(dry-run)})"
 

@@ -1,0 +1,169 @@
+/* ==================== VIEW 6: GROUPED STRATEGY CONFIG LIST ==================== */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+  }
+}
+
+.config-body {
+  padding: 20px 24px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  overflow-y: auto;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.config-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 1120px;
+}
+
+.config-research-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 1120px;
+}
+
+.config-group-head {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-mid);
+}
+
+.config-group-head h3 {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--ink);
+}
+
+.config-group-sub {
+  margin: 4px 0 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: var(--ink-muted);
+  max-width: 72ch;
+}
+
+.config-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.config-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 272px;
+  align-items: center;
+  gap: 16px 24px;
+  padding: 14px 8px;
+  border-bottom: 1px solid var(--line-dim);
+  transition: background-color 120ms ease;
+}
+
+.config-item:hover {
+  background-color: var(--row-hover);
+}
+
+.config-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-width: 72ch;
+}
+
+.config-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+}
+
+.config-item-label {
+  font-size: 0.94rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.config-item-key {
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  color: var(--cyan);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+  border-radius: 4px;
+}
+
+.config-item-bounds {
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+}
+
+.config-item-desc {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--ink-muted);
+  max-width: 70ch;
+}
+
+.config-item-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.config-item-control select,
+.config-item-control input[type="number"],
+.config-item-control input[type="text"] {
+  width: 100%;
+  max-width: 272px;
+  min-height: 36px;
+  padding: 6px 10px;
+  font-size: 0.88rem;
+  border-radius: 4px;
+}
+
+.config-item-control input[type="number"],
+.config-seed-input {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.config-checkbox {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--mint);
+  cursor: pointer;
+}
+
+.toggle-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+  border-radius: 4px;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.toggle-chip input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--mint);
+}

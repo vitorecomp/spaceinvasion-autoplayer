@@ -451,6 +451,108 @@ class TestSweepAndTransmitter(unittest.TestCase):
         self.assertTrue(any("Recycle ↩" in q.name and q.remaining_seconds == 1582.0 for q in by_cat["fleet"]))
         self.assertTrue(any("Attack →" in q.name and q.remaining_seconds == 3142.0 for q in by_cat["fleet"]))
 
+    def test_galaxy_json_colonize_metadata_click_delay_jitter_and_discard_colony_candidate(self) -> None:
+        from unittest.mock import MagicMock, patch
+        from spaceinvasion.combat.fleet import GalaxySlot, SpyReport, parse_galaxy_system_html
+        from spaceinvasion.runtime.api_server import ApiRequestError, GameApiBridge
+
+        # 1. Passive #json-element colonize extraction on 2D Galaxy view
+        gal_2d_html = """
+        <html><body>
+          <script id="json-element" type="application/json">
+            {"galaxy": 2, "sun": 380, "planets": {"9": {"colonize": [295, 355]}, "10": {"colonize": 340}}}
+          </script>
+          <table>
+            <tr><td>9</td><td></td></tr>
+            <tr><td>10</td><td></td></tr>
+          </table>
+        </body></html>
+        """
+        slots = parse_galaxy_system_html(gal_2d_html, galaxy=2, system=380)
+        by_pos = {s.position: s for s in slots}
+        self.assertEqual(by_pos[9].colonize_min_fields, 295)
+        self.assertEqual(by_pos[9].colonize_max_fields, 355)
+        self.assertEqual(by_pos[10].uninhabited_fields, 340)
+
+        # 2. galaxy_scan_click_delay_seconds + galaxy_scan_click_jitter_seconds + discard/restore colony candidate
+        with tempfile.TemporaryDirectory(prefix="si_sweep_delay_") as tmp:
+            tp = Path(tmp)
+            cfg_path = tp / "config.yaml"
+            cfg_path.write_text(
+                "allow_galaxy_scan: true\nallow_colonize: true\nmax_planets: 4\n"
+                "galaxy_scan_click_delay_seconds: 1.8\ngalaxy_scan_click_jitter_seconds: 0.4\n",
+                encoding="utf-8",
+            )
+            fake_client = MagicMock()
+            fake_client.__enter__.return_value = fake_client
+            fake_client.ensure_in_game.return_value = None
+            fake_client.step_galaxy_system = lambda galaxy, system, **_kw: (gal_2d_html, galaxy, system)
+
+            bridge = GameApiBridge(
+                debug_port=19999,
+                config_path=cfg_path,
+                db_path=tp / "sweep.db",
+                log_dir=None,
+                client_factory=lambda _p: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                assert bridge._db is not None
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "update_config", "config": {"galaxy_scan_click_delay_seconds": 0.05}})
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "update_config", "config": {"galaxy_scan_click_jitter_seconds": -1.0}})
+
+                dry_sw = bridge.handle_command({"command": "galaxy_sweep", "pages": 3, "dry_run": True})
+                self.assertAlmostEqual(dry_sw["click_delay_seconds"], 1.8)
+                self.assertAlmostEqual(dry_sw["click_jitter_seconds"], 0.4)
+
+                waits: list[float] = []
+                with patch.object(bridge._sweep_stop_event, "wait", side_effect=lambda s: (waits.append(s), False)[1]):
+                    live_sw = bridge.run_galaxy_sweep(pages=3, galaxy=2, start_system=380)
+                self.assertEqual(live_sw["pages_scanned"], 3)
+                self.assertEqual(len(waits), 2)
+                for w in waits:
+                    self.assertGreaterEqual(w, 1.4 - 1e-6)
+                    self.assertLessEqual(w, 2.2 + 1e-6)
+
+                # Discard & restore colony candidate excludes/restores from colony_candidates & planner
+                bridge._db.record_galaxy_slots(
+                    [
+                        GalaxySlot("02:380:08", 8, status_color="free"),
+                        GalaxySlot("02:380:09", 9, status_color="free"),
+                    ],
+                    ts=2000.0,
+                )
+                bridge._db.record_spy_report(
+                    SpyReport(target_coords="02:380:08", owner="", resources=Resources(), uninhabited_fields=330),
+                    status_color="free",
+                    ts=2005.0,
+                )
+                before_col = bridge.handle_command({"command": "colony_candidates"})
+                before_coords = [c["coords"] for c in before_col["candidates"]]
+                self.assertIn("02:380:08", before_coords)
+                self.assertEqual(before_col["discarded_count"], 0)
+
+                disc = bridge.handle_command({"command": "discard_colony_candidate", "target_coords": "2:380:8"})
+                self.assertTrue(disc["ok"])
+                self.assertEqual(disc["target_coords"], "02:380:08")
+                self.assertEqual(disc["discarded_count"], 1)
+
+                after_disc = bridge.handle_command({"command": "colony_candidates"})
+                self.assertNotIn("02:380:08", [c["coords"] for c in after_disc["candidates"]])
+                self.assertEqual(len(after_disc["candidates"]), len(before_coords) - 1)
+                self.assertEqual(after_disc["discarded_count"], 1)
+
+                rest = bridge.handle_command({"command": "restore_colony_candidate", "target_coords": "02:380:08"})
+                self.assertTrue(rest["ok"])
+                self.assertEqual(rest["discarded_count"], 0)
+                after_rest = bridge.handle_command({"command": "colony_candidates"})
+                self.assertIn("02:380:08", [c["coords"] for c in after_rest["candidates"]])
+                self.assertEqual(len(after_rest["candidates"]), len(before_coords))
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -435,6 +435,9 @@ def _hold_busy_fleet_slots(
             key=lambda a: (
                 prio_rank.get(a.priority, 9),
                 -1 if a.kind == "ALERT_HOSTILE" else (0 if a.executable_now else 1),
+                0
+                if (a.priority == "P2" and a.kind == "CLAIM_TUTORIAL")
+                else (1 if (a.priority == "P2" and a.kind == "SPY") else 2),
             )
         )
     return out
@@ -796,6 +799,7 @@ def main(argv: list[str] | None = None) -> int:
         tick = 0
         last_recovery_at = 0.0
         last_full_buildings_at = 0.0
+        captcha_alert_logged = False
         while True:
             if args.max_ticks > 0 and tick >= args.max_ticks:
                 break
@@ -835,16 +839,22 @@ def main(argv: list[str] | None = None) -> int:
                             bot_ctrl.get("captcha_message"),
                             "CAPTCHA / anti-bot challenge active",
                         )
-                        print(
-                            f"[CMD][STOP] CAPTCHA / anti-bot challenge detected ({redact_sensitive(cap_msg)}) — "
-                            "stopping automation immediately. Complete verification in Chrome before restarting."
-                        )
-                        return 2
-                    if run_loop and bot_ctrl.get("paused"):
+                        if not captcha_alert_logged:
+                            print(
+                                f"[CMD][ALERT] CAPTCHA / anti-bot gate active ({redact_sensitive(cap_msg)}) — "
+                                "automation paused; waiting for operator to solve in Chrome (:9222) and click Resume..."
+                            )
+                            captcha_alert_logged = True
+                        paused_via_ui = True
+                        loop_sleep = min(5.0, eff_min_interval_s)
+                    elif run_loop and bot_ctrl.get("paused"):
                         print(f"[CMD tick {game_data.fmt_compact_int(tick)}] Paused via control UI; waiting.")
                         paused_via_ui = True
                         loop_sleep = max(3.0, min(8.0, eff_min_interval_s))
                     else:
+                        if captcha_alert_logged and not bot_ctrl.get("paused"):
+                            print("[CMD] CAPTCHA gate cleared and automation resumed.")
+                            captcha_alert_logged = False
                         override = bot_ctrl.get("mode_override")
                         if override in ("live", "dry-run"):
                             effective_live = override == "live"
@@ -1024,64 +1034,72 @@ def main(argv: list[str] | None = None) -> int:
                         api.send_command({"command": "bot_control", "paused": True})
                     except Exception:
                         pass
-                    print(
-                        f"[CMD][STOP] CAPTCHA / anti-bot challenge detected ({redact_sensitive(exc_txt)}) — "
-                        "stopping automation immediately. Complete verification in Chrome before restarting."
-                    )
-                    return 2
-                print(f"[CMD tick {tick_s}] API unavailable ({redact_sensitive(exc_txt)}); retrying shortly.")
-                if not run_loop:
-                    return 1
-                err_lower = exc_txt.lower()
-                health_info: Optional[dict[str, Any]] = None
-                if any(marker in err_lower for marker in _RATE_LIMIT_MARKERS):
-                    try:
-                        h_raw = api.health()
-                        health_info = h_raw if isinstance(h_raw, dict) else (dict(h_raw) if isinstance(h_raw, Mapping) else None)
-                    except Exception:
-                        health_info = None
-                rl_backoff = compute_rate_limit_backoff(exc_txt, health_payload=health_info)
-                if rl_backoff is not None:
-                    wait_s = rl_backoff + random.uniform(1.0, 3.0)
-                    print(f"[CMD tick {tick_s}] Rate-limit cooldown active; backing off {wait_s:.1f}s.")
-                    loop_sleep = wait_s
-                elif (
-                    isinstance(exc, GameApiError)
-                    and any(
-                        marker in err_lower
-                        for marker in (
-                            "not inside spaceinvasion game shell",
-                            "timed out waiting for frame",
-                            "session expired",
-                            "missing #json-container",
+                    if not captcha_alert_logged:
+                        print(
+                            f"[CMD][ALERT] CAPTCHA / anti-bot challenge detected ({redact_sensitive(exc_txt)}) — "
+                            "automation paused; waiting for operator to solve in Chrome (:9222) and click Resume..."
                         )
-                    )
-                    and (time.monotonic() - last_recovery_at) >= 25.0
-                ):
-                    last_recovery_at = time.monotonic()
-                    try:
-                        api.send_command({"command": "ensure_session"})
-                        print(f"[CMD tick {tick_s}] Recovered browser session via ensure_session.")
-                        loop_sleep = 1.0
-                    except (requests.RequestException, GameApiError) as rec_exc:
-                        rec_txt = _safe_cmd_str(rec_exc)
-                        if is_captcha_error(rec_txt):
-                            try:
-                                api.send_command({"command": "bot_control", "paused": True})
-                            except Exception:
-                                pass
-                            print(
-                                f"[CMD][STOP] CAPTCHA / anti-bot challenge detected ({redact_sensitive(rec_txt)}) — "
-                                "stopping automation immediately. Complete verification in Chrome before restarting."
-                            )
-                            return 2
-                        print(f"[CMD tick {tick_s}] Session recovery pending: {redact_sensitive(rec_txt)}")
-                        if any(gate in rec_txt.lower() for gate in ("2-factor", "2fa")):
-                            loop_sleep = 15.0
-                        else:
-                            loop_sleep = 3.0
+                        captcha_alert_logged = True
+                    if not run_loop:
+                        return 0
+                    loop_sleep = min(5.0, eff_min_interval_s)
                 else:
-                    loop_sleep = 3.0
+                    print(f"[CMD tick {tick_s}] API unavailable ({redact_sensitive(exc_txt)}); retrying shortly.")
+                    if not run_loop:
+                        return 1
+                    err_lower = exc_txt.lower()
+                    health_info: Optional[dict[str, Any]] = None
+                    if any(marker in err_lower for marker in _RATE_LIMIT_MARKERS):
+                        try:
+                            h_raw = api.health()
+                            health_info = h_raw if isinstance(h_raw, dict) else (dict(h_raw) if isinstance(h_raw, Mapping) else None)
+                        except Exception:
+                            health_info = None
+                    rl_backoff = compute_rate_limit_backoff(exc_txt, health_payload=health_info)
+                    if rl_backoff is not None:
+                        wait_s = rl_backoff + random.uniform(1.0, 3.0)
+                        print(f"[CMD tick {tick_s}] Rate-limit cooldown active; backing off {wait_s:.1f}s.")
+                        loop_sleep = wait_s
+                    elif (
+                        isinstance(exc, GameApiError)
+                        and any(
+                            marker in err_lower
+                            for marker in (
+                                "not inside spaceinvasion game shell",
+                                "timed out waiting for frame",
+                                "session expired",
+                                "missing #json-container",
+                            )
+                        )
+                        and (time.monotonic() - last_recovery_at) >= 25.0
+                    ):
+                        last_recovery_at = time.monotonic()
+                        try:
+                            api.send_command({"command": "ensure_session"})
+                            print(f"[CMD tick {tick_s}] Recovered browser session via ensure_session.")
+                            loop_sleep = 1.0
+                        except (requests.RequestException, GameApiError) as rec_exc:
+                            rec_txt = _safe_cmd_str(rec_exc)
+                            if is_captcha_error(rec_txt):
+                                try:
+                                    api.send_command({"command": "bot_control", "paused": True})
+                                except Exception:
+                                    pass
+                                if not captcha_alert_logged:
+                                    print(
+                                        f"[CMD][ALERT] CAPTCHA / anti-bot challenge detected ({redact_sensitive(rec_txt)}) — "
+                                        "automation paused; waiting for operator to solve in Chrome (:9222) and click Resume..."
+                                    )
+                                    captcha_alert_logged = True
+                                loop_sleep = min(5.0, eff_min_interval_s)
+                            else:
+                                print(f"[CMD tick {tick_s}] Session recovery pending: {redact_sensitive(rec_txt)}")
+                                if any(gate in rec_txt.lower() for gate in ("2-factor", "2fa")):
+                                    loop_sleep = 15.0
+                                else:
+                                    loop_sleep = 3.0
+                    else:
+                        loop_sleep = 3.0
 
             if not run_loop:
                 break

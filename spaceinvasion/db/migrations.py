@@ -31,7 +31,7 @@ DEFAULT_RANK_HISTORY_JSON_PATH = Path("state") / "rank_history.json"
 DEFAULT_SNAPSHOT_JSON_PATH = Path("state") / "snapshot.json"
 DEFAULT_CONFIG_YAML_PATH = Path("config.yaml")
 
-LATEST_SCHEMA_VERSION: int = 8
+LATEST_SCHEMA_VERSION: int = 9
 SCHEMA_VERSION: str = str(LATEST_SCHEMA_VERSION)
 ATTACK_HISTORY_SCHEMA_VERSION: int = 2
 
@@ -708,6 +708,37 @@ CREATE INDEX IF NOT EXISTS idx_ui_notifications_dedupe
     ON ui_notifications(dedupe_key, status);
 """,
     ),
+    Migration(
+        version=9,
+        name="v009_universe_research_max_ledger",
+        description="Add universe_research_max state table and append-only universe_research_max_history audit log.",
+        sql="""
+CREATE TABLE IF NOT EXISTS universe_research_max (
+    research_key TEXT PRIMARY KEY,
+    research_id INTEGER NOT NULL,
+    slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    own_level INTEGER NOT NULL DEFAULT 0,
+    spied_max_level INTEGER NOT NULL DEFAULT 0,
+    server_record_level INTEGER,
+    universe_max_level INTEGER NOT NULL DEFAULT 0,
+    catalog_max_level INTEGER,
+    holder TEXT NOT NULL DEFAULT '',
+    holder_coords TEXT NOT NULL DEFAULT '',
+    updated_ts REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS universe_research_max_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'refresh',
+    records_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_universe_research_max_hist_ts
+    ON universe_research_max_history(ts);
+""",
+    ),
 )
 
 GAME_REQUIRED_TABLES: tuple[str, ...] = (
@@ -717,6 +748,8 @@ GAME_REQUIRED_TABLES: tuple[str, ...] = (
     "state_snapshots",
     "strategy_config_store",
     "ui_notifications",
+    "universe_research_max",
+    "universe_research_max_history",
     "economy_rates_cache",
     "tutorial_progress",
     "action_history",

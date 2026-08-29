@@ -677,6 +677,48 @@ class TestLoginFlow(unittest.TestCase):
                     load_session_cookies(bad_cookie_file)
             self.assertTrue(closed)
 
+    def test_detect_antibot_challenge_ignores_passive_turnstile_script_and_hidden_modal(self) -> None:
+        from spaceinvasion.auth import detect_antibot_challenge
+
+        passive_game_shell_html = """
+        <html>
+          <head>
+            <title>SpaceInvasion Retro</title>
+            <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+            <script>
+              const msg = "Sicherheitspruefung: Bitte bestaetige, dass du kein Bot bist";
+            </script>
+            <style>#si-captcha-gate { display: none; }</style>
+          </head>
+          <body>
+            <div id="si-captcha-gate" style="display: none;">
+              <div class="cf-turnstile" data-sitekey="abc"></div>
+              Sicherheitsprüfung: Bitte bestätige, dass du kein Bot bist
+            </div>
+            <div hidden>
+              <iframe src="https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/g"></iframe>
+            </div>
+            <iframe id="F_Navi" src="indexInternal.es?action=internalMenu"></iframe>
+            <iframe id="F_planets" src="indexInternal.es?action=internalPlanetsOverview"></iframe>
+            <iframe id="F_Hauptframe" src="indexInternal.es?action=internalHome"></iframe>
+          </body>
+        </html>
+        """
+        self.assertIsNone(detect_antibot_challenge(200, passive_game_shell_html))
+
+        visible_gate_html = """
+        <html>
+          <head><title>SpaceInvasion Retro</title></head>
+          <body>
+            <div id="si-captcha-gate" style="display: block;">
+              <div class="cf-turnstile" data-sitekey="abc"></div>
+            </div>
+          </body>
+        </html>
+        """
+        self.assertIsNotNone(detect_antibot_challenge(200, visible_gate_html))
+        self.assertIsNotNone(detect_antibot_challenge(403, "<html><title>Just a moment...</title><body>Checking</body></html>"))
+
 
 if __name__ == "__main__":
     unittest.main()
