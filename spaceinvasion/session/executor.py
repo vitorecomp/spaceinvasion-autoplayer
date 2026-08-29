@@ -184,6 +184,8 @@ class ExecutionResult:
     target_block_reason: Optional[str] = None
     target_is_bash_block: bool = False
     clear_target_debris: bool = False
+    validated: bool = True
+    validation_error: Optional[str] = None
 
 
 class ActionExecutor:
@@ -949,11 +951,33 @@ class ActionExecutor:
         new_lvl = after_planet.building_level(game_data.safe_int(action.target_id, 0)) if after_planet else None
         after_lower = after_html.lower()
         tgt_lvl_opt = game_data.safe_optional_int(action.target_level, None)
+        before_planet = next(
+            (p for p in state.planets if p.planet_id == action.planet_id),
+            None,
+        )
+        res_spent = (
+            before_planet is not None
+            and after_planet is not None
+            and (
+                after_planet.resources.pig_iron < before_planet.resources.pig_iron
+                or after_planet.resources.metal < before_planet.resources.metal
+                or after_planet.resources.kryptonite < before_planet.resources.kryptonite
+                or after_planet.resources.spice < before_planet.resources.spice
+            )
+        )
         in_queue = (
             "construction queue" in after_lower
             or "abort" in after_lower
             or "cancel" in after_lower
+            or any(getattr(q, "category", "") == "building" for q in (updated.active_queues or ()))
+            or res_spent
             or (new_lvl is not None and tgt_lvl_opt is not None and new_lvl >= tgt_lvl_opt)
+        )
+        is_validated = bool(in_queue or len(after_html.strip()) < 200)
+        val_err = (
+            None
+            if is_validated
+            else f"Build {_safe_str(action.target_name)} -> L{tgt_lvl_opt} was clicked, yet neither construction queue, building level, nor resources changed."
         )
         tgt_txt = (
             game_data.fmt_compact_int(tgt_lvl_opt)
@@ -979,6 +1003,8 @@ class ActionExecutor:
             action=action,
             message=detail,
             updated_state=updated_state,
+            validated=is_validated,
+            validation_error=val_err,
         )
 
     def _execute_demolish_building(
@@ -1116,7 +1142,14 @@ class ActionExecutor:
         verified = (
             "cancel" in after_lower
             or "abort" in after_lower
+            or any(getattr(q, "category", "") == "research" for q in (updated.active_queues or ()))
             or (tgt_lvl_opt is not None and new_lvl >= tgt_lvl_opt)
+        )
+        res_validated = bool(verified or len(after_html.strip()) < 200)
+        res_val_err = (
+            None
+            if res_validated
+            else f"Research {_safe_str(action.target_name)} -> L{tgt_lvl_opt} was clicked, yet neither research queue nor level changed."
         )
         tgt_txt = (
             game_data.fmt_compact_int(tgt_lvl_opt)
@@ -1141,6 +1174,8 @@ class ActionExecutor:
             action=action,
             message=detail,
             updated_state=updated_state,
+            validated=res_validated,
+            validation_error=res_val_err,
         )
 
     def _execute_build_ship(
@@ -1956,22 +1991,64 @@ class ActionExecutor:
         if m_err:
             return m_err.group(0)
         soup = BeautifulSoup(confirm_html, "html.parser")
-        for sel in (".error", ".errormessage", ".fehler", ".alert-danger"):
+        for sel in (
+            ".error",
+            ".errormessage",
+            ".fehler",
+            ".alert-danger",
+            'font[color="red"]',
+            '[style*="color:red"]',
+            '[style*="color: red"]',
+            '[style*="color:#ff0000"]',
+            '[style*="color: #ff0000"]',
+        ):
             el = soup.select_one(sel)
             if el is not None:
                 txt = " ".join(el.get_text(" ", strip=True).split())
-                if txt:
-                    return txt[:160]
+                if txt and len(txt) <= 200:
+                    low_el = txt.lower()
+                    if sel in (".error", ".errormessage", ".fehler", ".alert-danger") or any(
+                        kw in low_el
+                        for kw in (
+                            "can't",
+                            "cannot",
+                            "can not",
+                            "error",
+                            "forbidden",
+                            "verboten",
+                            "kann nicht",
+                            "not enough",
+                            "protection",
+                            "vacation",
+                        )
+                    ):
+                        return txt[:160]
         low = " ".join(soup.get_text(" ", strip=True).split()).lower()
         for phrase in (
+            "this user can't be attacked!",
+            "this user can't be attacked",
+            "this user cannot be attacked",
+            "this player can't be attacked",
+            "this player cannot be attacked",
+            "can't be attacked",
+            "cannot be attacked",
+            "can not be attacked",
+            "dieser spieler kann nicht angegriffen werden",
+            "kann nicht angegriffen werden",
             "not enough spice",
             "not enough deuterium",
             "not enough ships",
             "no free fleet slot",
             "too many fleets",
             "newbie protection",
+            "noob protection",
             "vacation mode",
+            "outside your attack zone",
+            "outside attack zone",
             "cannot attack",
+            "can't attack",
+            "cannot spy",
+            "can't spy",
         ):
             if phrase in low:
                 return phrase
@@ -2167,8 +2244,33 @@ class ActionExecutor:
             nav_token=nav_token1,
         )
         send_soup = BeautifulSoup(send_html or "", "html.parser")
+        step1_block = parse_send_fleet_mission_block(send_html, mission_kind)
+        if step1_block is not None:
+            blk_reason, blk_cd, blk_bash = step1_block
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: {blk_reason}.",
+                target_cooldown_seconds=blk_cd,
+                target_block_reason=blk_reason,
+                target_is_bash_block=blk_bash,
+                clear_target_debris=(mission_kind == "RECYCLE"),
+                validated=False,
+                validation_error=blk_reason,
+            )
         step1_err = self._extract_fleet_server_error(send_html)
-        if step1_err and send_soup.select_one('input[type="radio"]') is None:
+        if step1_err and (
+            send_soup.select_one('input[type="radio"]') is None
+            or any(
+                kw in step1_err.lower()
+                for kw in ("can't be attacked", "cannot be attacked", "nicht angegriffen", "vacation", "protection", "attack zone")
+            )
+        ):
+            is_prot_err = any(
+                kw in step1_err.lower()
+                for kw in ("can't be attacked", "cannot be attacked", "nicht angegriffen", "vacation", "protection", "attack zone")
+            )
             append_crash_debug_log(
                 component="executor._dispatch_fleet_mission",
                 event="step1_rejected",
@@ -2185,6 +2287,10 @@ class ActionExecutor:
                 dry_run=False,
                 action=action,
                 message=f"Aborted: fleet step 1 rejected by server ({step1_err}).",
+                target_cooldown_seconds=21600.0 if is_prot_err else None,
+                target_block_reason=step1_err if is_prot_err else None,
+                validated=False,
+                validation_error=step1_err,
             )
         form_css = self._pick_send_fleet_form_css(send_soup)
 
@@ -2312,9 +2418,15 @@ class ActionExecutor:
                 target_block_reason=blk_reason,
                 target_is_bash_block=blk_bash,
                 clear_target_debris=(mission_kind == "RECYCLE"),
+                validated=False,
+                validation_error=blk_reason,
             )
         server_err = self._extract_fleet_server_error(confirm_html)
         if server_err:
+            is_prot_err2 = any(
+                kw in server_err.lower()
+                for kw in ("can't be attacked", "cannot be attacked", "nicht angegriffen", "vacation", "protection", "attack zone")
+            )
             append_crash_debug_log(
                 component="executor._dispatch_fleet_mission",
                 event="step2_rejected",
@@ -2330,6 +2442,20 @@ class ActionExecutor:
                 dry_run=False,
                 action=action,
                 message=f"Aborted: fleet launch rejected by server ({server_err}).",
+                target_cooldown_seconds=21600.0 if is_prot_err2 else None,
+                target_block_reason=server_err if is_prot_err2 else None,
+                validated=False,
+                validation_error=server_err,
+            )
+        confirm_soup = BeautifulSoup(confirm_html or "", "html.parser")
+        if confirm_soup.select_one('form[action*="internalSendFleetFinish"] input[type="radio"][name="todo"]') is not None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: {mission_kind.title()} fleet remained on internalSendFleet after clicking LAUNCH.",
+                validated=False,
+                validation_error="Fleet remained on internalSendFleet after clicking LAUNCH.",
             )
 
         self._recent_timestamps.append(time.monotonic())

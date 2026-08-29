@@ -109,6 +109,8 @@ _UI_ASSETS: dict[str, tuple[str, str]] = {
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+    "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+    "/bell.svg": ("bell.svg", "image/svg+xml"),
 }
 
 
@@ -1108,12 +1110,15 @@ class GameApiBridge:
         self.debug_port = _safe_debug_port(debug_port, DEFAULT_DEBUG_PORT)
         self.env_file = env_file
         self.account = account
+        self._config_file_explicit = bool(
+            config_path is not None and config_path != Path("config.yaml")
+        )
         if config_path is not None:
             self.config_path = config_path
             self.strategy_config: StrategyConfig = load_strategy_config(config_path)
         elif log_dir is not None:
             self.config_path = Path("config.yaml")
-            self.strategy_config = load_strategy_config(self.config_path)
+            self.strategy_config = load_strategy_config(None)
         else:
             self.config_path = Path("config.yaml")
             self.strategy_config = StrategyConfig()
@@ -1290,7 +1295,7 @@ class GameApiBridge:
             return
         load_cfg_fn = getattr(self._db, "load_strategy_config_snapshot", None)
         save_cfg_fn = getattr(self._db, "save_strategy_config_snapshot", None)
-        if not self.config_path.exists() and callable(load_cfg_fn):
+        if not (self._config_file_explicit and self.config_path.exists()) and callable(load_cfg_fn):
             saved_cfg = load_cfg_fn()
             if isinstance(saved_cfg, Mapping) and saved_cfg:
                 try:
@@ -1419,7 +1424,116 @@ class GameApiBridge:
         self._bot_control["paused"] = True
         self._bot_control["captcha_blocked"] = True
         self._bot_control["captcha_message"] = msg
+        if self._db is not None and hasattr(self._db, "create_or_bump_notification"):
+            try:
+                self._db.create_or_bump_notification(
+                    title="Anti-Bot / CAPTCHA Verification Required",
+                    message=msg,
+                    help_prompt=(
+                        "Automation paused immediately for safety. Please complete the challenge manually in Chrome "
+                        "(port 9222), then click Resume Auto or restart ./starter.sh."
+                    ),
+                    severity="error",
+                    category="antibot",
+                    action_kind="SECURITY_CHECK",
+                    dedupe_key="antibot:captcha_challenge",
+                )
+            except Exception:
+                pass
         self._persist_runtime_state()
+
+    def _get_notifications_summary_locked(self, *, limit: int = 30) -> dict[str, Any]:
+        if self._db is None or not hasattr(self._db, "get_notifications"):
+            return {"unread_count": 0, "items": []}
+        items = self._db.get_notifications(status="active", limit=limit)
+        unread_cnt = self._db.unread_notification_count()
+        return {
+            "unread_count": int(unread_cnt),
+            "items": _redact_api_payload(items),
+        }
+
+    def _record_action_validation_notification_locked(
+        self,
+        cmd: str,
+        res: Any,
+    ) -> Optional[dict[str, Any]]:
+        if self._db is None or bool(getattr(res, "dry_run", False)):
+            return None
+        create_fn = getattr(self._db, "create_or_bump_notification", None)
+        if not callable(create_fn):
+            return None
+        executed = bool(getattr(res, "executed", False))
+        validated = bool(getattr(res, "validated", True))
+        if executed and validated:
+            return None
+        msg_s = _bounded_api_str(getattr(res, "message", ""), default="")
+        msg_l = msg_s.lower()
+        # Skip benign non-errors (fleet slot capacity waits, no-ops, hourly caps)
+        if (
+            msg_l.startswith("no-op:")
+            or "hourly action rate cap" in msg_l
+            or "no free fleet slot" in msg_l
+            or "too many fleets" in msg_l
+            or any(m in msg_l for m in self._FLEET_SLOT_BUSY_MARKERS)
+        ):
+            return None
+        act = getattr(res, "action", None)
+        kind_s = _bounded_api_str(getattr(act, "kind", cmd), default=cmd).upper()
+        pcoords_s = _bounded_api_str(getattr(act, "planet_coords", ""), default="")
+        tname_s = _bounded_api_str(getattr(act, "target_name", ""), default=kind_s)
+        val_err = _bounded_api_str(getattr(res, "validation_error", None) or "", default="")
+        is_prot = any(
+            kw in f"{msg_l} {val_err.lower()}"
+            for kw in ("can't be attacked", "cannot be attacked", "nicht angegriffen", "vacation", "protection", "attack zone")
+        )
+        if is_prot:
+            severity = "warning"
+            category = "fleet_protection"
+            title = f"{kind_s} blocked: Target protected ({tname_s})"
+            help_prompt = (
+                f"The game server rejected {kind_s} on {tname_s} ('{val_err or msg_s}'). "
+                "A 6-hour target cooldown was recorded automatically so the bot stops retrying this target. "
+                "Please check the target in Chrome (:9222) if you pinned it manually, or acknowledge this alert."
+            )
+            dkey = f"prot:{kind_s}:{tname_s}"
+        elif executed and not validated:
+            severity = "error"
+            category = "action_validation"
+            title = f"Validation failed after {kind_s}: {tname_s}"
+            help_prompt = (
+                f"{val_err or msg_s} Please inspect [{pcoords_s or 'active colony'}] in Chrome (:9222) "
+                "to verify whether the action took effect or needs manual intervention."
+            )
+            dkey = f"valfail:{kind_s}:{pcoords_s}:{tname_s}"
+        else:
+            severity = "warning"
+            category = "action_aborted"
+            title = f"{kind_s} could not execute: {tname_s}"
+            help_prompt = (
+                f"{msg_s} Please check [{pcoords_s or 'active colony'}] in Chrome (:9222) if operator action is needed, "
+                "or acknowledge to dismiss."
+            )
+            dkey = f"abort:{kind_s}:{pcoords_s}:{tname_s}"
+        try:
+            return create_fn(
+                title=title,
+                message=msg_s or val_err or "Action did not pass post-execution validation.",
+                help_prompt=help_prompt,
+                severity=severity,
+                category=category,
+                action_kind=kind_s,
+                planet_coords=pcoords_s,
+                target_name=tname_s,
+                dedupe_key=dkey,
+                details={
+                    "command": cmd,
+                    "executed": executed,
+                    "validated": validated,
+                    "validation_error": val_err or None,
+                },
+            )
+        except Exception:
+            return None
 
     def _get_scanned_systems(self) -> dict[str, float]:
         if self._db is not None:
@@ -2454,6 +2568,7 @@ class GameApiBridge:
                     "planner_mode": eff_mode,
                     "optimizer_summary": ag_opt,
                     "manual_queue": manual_queue_pending,
+                    "notifications": self._get_notifications_summary_locked(),
                     "db_summary": self._db.summary() if self._db is not None else None,
                     "logs": {
                         "commander": self._read_log_tail("commander.log"),
@@ -2482,6 +2597,7 @@ class GameApiBridge:
                 "plan": ag_val["plan"],
                 "action_graph": ag_val["action_graph"],
                 "manual_queue": envelope["manual_queue"],
+                "notifications": envelope["notifications"],
                 "optimizer_summary": envelope["optimizer_summary"],
                 "buildings_eta": static_val["buildings_eta"],
                 "combat": static_val["combat"],
@@ -3706,6 +3822,7 @@ class GameApiBridge:
                     )
                     self._dash_ag_cache_json = None
             if not dry_run:
+                self._record_action_validation_notification_locked(cmd, res)
                 self._persist_runtime_state()
 
         after_state: Optional[GameState] = None
@@ -3912,6 +4029,8 @@ class GameApiBridge:
             "ok": True,
             "command": cmd,
             "executed": res.executed,
+            "validated": bool(getattr(res, "validated", True)),
+            "validation_error": _redact_api_payload(getattr(res, "validation_error", None)),
             "dry_run": res.dry_run,
             "message": _redact_api_payload(res.message),
             "action": self._serialize_action(res.action),
@@ -3923,6 +4042,8 @@ class GameApiBridge:
             summary["manual_queue"] = _sanitize_finite_json(
                 _redact_api_payload(self._db.get_manual_queue(status="pending", limit=200))
             )
+        if self._db is not None:
+            summary["notifications"] = _sanitize_finite_json(self._get_notifications_summary_locked())
         return _sanitize_finite_json(summary)
 
     def handle_command(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3936,6 +4057,68 @@ class GameApiBridge:
         if not cmd:
             raise ApiRequestError("Request JSON must include a non-empty 'command' field.")
         dry_run = bool(payload.get("dry_run", False))
+
+        if cmd == "notifications_list":
+            n_limit = _parse_command_int("limit", payload.get("limit", 50), min_val=1, max_val=200) or 50
+            n_status = _bounded_api_str(payload.get("status") or "all", default="all").strip().lower()
+            with self._lock:
+                items = (
+                    self._db.get_notifications(status=n_status, limit=int(n_limit))
+                    if self._db is not None and hasattr(self._db, "get_notifications")
+                    else []
+                )
+                unread_cnt = (
+                    self._db.unread_notification_count()
+                    if self._db is not None and hasattr(self._db, "unread_notification_count")
+                    else 0
+                )
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "unread_count": int(unread_cnt),
+                        "items": _redact_api_payload(items),
+                    }
+                )
+
+        if cmd == "notification_ack":
+            nid = _parse_command_int("notification_id", payload.get("notification_id"), min_val=1, max_val=2**62)
+            ack_st = _bounded_api_str(payload.get("status") or "read", default="read").strip().lower()
+            if ack_st not in ("read", "dismissed", "unread"):
+                raise ApiRequestError("status must be 'read', 'dismissed', or 'unread'.")
+            with self._lock:
+                if self._db is None or not hasattr(self._db, "acknowledge_notification"):
+                    raise ApiRequestError("Database notifications are not configured.")
+                updated_item = self._db.acknowledge_notification(int(nid or 0), status=ack_st)
+                if updated_item is None:
+                    raise ApiRequestError(f"Notification #{nid} not found.")
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "item": _redact_api_payload(updated_item),
+                        "notifications": self._get_notifications_summary_locked(),
+                    }
+                )
+
+        if cmd == "notifications_ack_all":
+            ack_st = _bounded_api_str(payload.get("status") or "read", default="read").strip().lower()
+            if ack_st not in ("read", "dismissed"):
+                raise ApiRequestError("status must be 'read' or 'dismissed'.")
+            with self._lock:
+                changed = (
+                    self._db.acknowledge_all_notifications(status=ack_st)
+                    if self._db is not None and hasattr(self._db, "acknowledge_all_notifications")
+                    else 0
+                )
+                return _sanitize_finite_json(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "updated_count": int(changed),
+                        "notifications": self._get_notifications_summary_locked(),
+                    }
+                )
 
         if cmd == "queue_list":
             limit = _parse_command_int("limit", payload.get("limit", 150), min_val=1, max_val=500) or 150
@@ -4688,7 +4871,8 @@ class GameApiBridge:
                         **dict(raw_cfg["shipyard_targets"]),
                     }
                 new_cfg = strategy_config_from_dict(merged)
-                save_strategy_config(new_cfg, self.config_path)
+                if self._config_file_explicit or self._db is None:
+                    save_strategy_config(new_cfg, self.config_path)
                 self.strategy_config = new_cfg
                 if self._db is not None:
                     save_cfg_fn = getattr(self._db, "save_strategy_config_snapshot", None)
@@ -6846,6 +7030,14 @@ def create_api_server(
                     self._send_static(filename, ctype)
                     return
                 if parsed.path == "/favicon.ico":
+                    ico_path = UI_DIR / "favicon.ico"
+                    if ico_path.is_file():
+                        self._send_static("favicon.ico", "image/x-icon")
+                        return
+                    svg_path = UI_DIR / "favicon.svg"
+                    if svg_path.is_file():
+                        self._send_static("favicon.svg", "image/svg+xml")
+                        return
                     self.send_response(HTTPStatus.NO_CONTENT)
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()

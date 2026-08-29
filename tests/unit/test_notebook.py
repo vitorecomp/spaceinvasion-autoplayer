@@ -21,6 +21,9 @@ import types
 import unittest
 import warnings
 
+import numpy as np
+import pandas as pd
+
 from spaceinvasion import game_data
 from spaceinvasion.optimizer import run_optimizer
 from spaceinvasion.ranking import compute_action_eta
@@ -1639,6 +1642,22 @@ class TestExperimentationNotebook(unittest.TestCase):
             self.assertEqual(cell.get("outputs"), [])
             self.assertIsNone(cell.get("execution_count"))
             src = _cell_source(cell)
+            if idx == 0:
+                pip_lines = [
+                    ln.strip()
+                    for ln in src.splitlines()
+                    if ln.strip() and not ln.strip().startswith("#")
+                ]
+                self.assertGreater(len(pip_lines), 0, "First code cell in full_planner must hold !pip install")
+                for ln in pip_lines:
+                    self.assertTrue(
+                        ln.startswith("!pip install "),
+                        f"First code cell in full_planner must only contain !pip install lines: {ln!r}",
+                    )
+                for pkg in ("numpy", "pandas", "beautifulsoup4", "python-dotenv", "requests"):
+                    self.assertIn(pkg, src)
+                continue
+
             self._assert_cell_ast_safe(src, f"full_planner code cell {idx}")
             parsed_cell = ast.parse(src)
             import_nodes = [
@@ -1647,8 +1666,8 @@ class TestExperimentationNotebook(unittest.TestCase):
             func_names = {
                 n.name for n in parsed_cell.body if isinstance(n, ast.FunctionDef)
             }
-            if idx == 0:
-                self.assertGreater(len(import_nodes), 0, "First code cell in full_planner must hold imports")
+            if idx == 1:
+                self.assertGreater(len(import_nodes), 0, "Imports code cell in full_planner must hold imports")
                 self.assertNotIn("resolve_repo_root", func_names)
             else:
                 self.assertEqual(
@@ -1656,7 +1675,7 @@ class TestExperimentationNotebook(unittest.TestCase):
                     [],
                     f"Non-import code cell {idx} in full_planner must not contain imports: {import_nodes}",
                 )
-            if idx == 1:
+            if idx == 2:
                 self.assertIn("resolve_repo_root", func_names, "Utils code cell must define resolve_repo_root")
 
         orig_cwd = Path.cwd()
@@ -1707,7 +1726,7 @@ class TestExperimentationNotebook(unittest.TestCase):
                 os.chdir(tmp_path)
                 ns: dict = {"__name__": "__main__"}
                 with contextlib.redirect_stdout(io.StringIO()):
-                    for idx, cell in enumerate(code_cells):
+                    for idx, cell in enumerate(code_cells[1:], start=1):
                         exec(compile(_cell_source(cell), f"fp_{idx}", "exec"), ns, ns)
 
                 self.assertAlmostEqual(ns["attack_resource_mean"]["spice_eq"], 2000.0, places=2)
@@ -1718,6 +1737,186 @@ class TestExperimentationNotebook(unittest.TestCase):
                 self.assertAlmostEqual(ns["inter_attack_time_mean_sec"], 1500.0, places=2)
                 self.assertAlmostEqual(ns["attack_success_rate"], 2.0 / 3.0, places=4)
                 self.assertEqual(ns["ATTACK_SIM_PARAMS"]["attempts"], 3)
+
+                # Sections 2-5: Vectorized pandas & numpy attack telemetry DataFrames & arrays
+                self.assertNotIn("statistics", ns)
+                self.assertIsInstance(ns["one_way_times_arr"], np.ndarray)
+                self.assertIsInstance(ns["round_trip_times_arr"], np.ndarray)
+                self.assertIsInstance(ns["inter_attack_intervals_arr"], np.ndarray)
+                attack_tables = ns["ATTACK_STATS_TABLES"]
+                self.assertEqual(
+                    set(attack_tables.keys()),
+                    {
+                        "attacks",
+                        "recycles",
+                        "attack_resource_stats",
+                        "attack_time_stats",
+                        "attack_summary_stats",
+                        "attack_class_stats",
+                        "attack_target_stats",
+                    },
+                )
+                for at_name, at_df in attack_tables.items():
+                    self.assertIsInstance(at_df, pd.DataFrame, f"{at_name} must be a pandas DataFrame")
+                    self.assertFalse(at_df.isna().any().any(), f"{at_name} must not contain NaNs")
+                res_df = ns["attack_resource_stats_df"].set_index("metric")
+                self.assertAlmostEqual(float(res_df.loc["spice_eq", "mean_all"]), 2000.0, places=2)
+                self.assertAlmostEqual(float(res_df.loc["spice_eq", "sample_std_all"]), 2000.0, places=2)
+                self.assertAlmostEqual(float(res_df.loc["spice_eq", "mean_wins"]), 3000.0, places=2)
+                self.assertEqual(len(ns["attack_target_stats_df"]), 2)
+
+                # Section 6, 7 & 8: Game Parameters, In-Memory Tech Graph & Empire Planet States verification
+                tables = ns["GAME_PARAMS_TABLES"]
+                self.assertEqual(
+                    set(tables.keys()),
+                    {
+                        "merchant_rates",
+                        "buildings_catalog",
+                        "buildings_levels",
+                        "technologies_catalog",
+                        "technologies_levels",
+                        "ships",
+                        "defenses",
+                        "tech_graph_nodes",
+                        "tech_graph_edges",
+                        "unlock_targets_summary",
+                        "empire_planets",
+                        "empire_planet_buildings",
+                    },
+                )
+                for tname, df in tables.items():
+                    self.assertIsInstance(df, pd.DataFrame, f"{tname} must be a pandas DataFrame")
+                    self.assertGreater(len(df), 0, f"{tname} must not be empty")
+
+                self.assertEqual(len(ns["merchant_rates_df"]), 4)
+                self.assertEqual(len(ns["buildings_catalog_df"]), 21)
+                self.assertEqual(len(ns["buildings_levels_df"]), 975)
+                self.assertEqual(len(ns["technologies_catalog_df"]), 15)
+                self.assertEqual(len(ns["technologies_levels_df"]), 445)
+                self.assertEqual(len(ns["ships_df"]), 15)
+                self.assertEqual(len(ns["defenses_df"]), 11)
+                self.assertEqual(len(ns["tech_graph_nodes_df"]), 62)
+                self.assertEqual(len(ns["tech_graph_edges_df"]), 101)
+                self.assertEqual(len(ns["unlock_targets_summary_df"]), 62)
+
+                # Blast furnace (b2) 2:1 Pig iron feedstock invariant & monotonic build times
+                bld_lvls = ns["buildings_levels_df"]
+                b2_rows = bld_lvls[bld_lvls["key"] == "b2"]
+                for _, row in b2_rows.iterrows():
+                    self.assertAlmostEqual(
+                        float(row["pig_iron_consumed_hr_effective"]),
+                        2.0 * float(row["hourly_prod_effective"]),
+                        places=2,
+                    )
+                for bkey, grp in bld_lvls.groupby("key"):
+                    times = list(grp.sort_values("level")["base_time_s"])
+                    self.assertEqual(times, sorted(times), f"Non-monotonic base_time_s in {bkey}")
+
+                # Technology quantitative effects checks (r1 +2%, r2 +1%, r4..r6 & r8..r10 +10%)
+                tech_cat = ns["technologies_catalog_df"].set_index("key")
+                self.assertEqual(float(tech_cat.loc["r1", "per_level_bonus_pct"]), 2.0)
+                self.assertEqual(float(tech_cat.loc["r2", "per_level_bonus_pct"]), 1.0)
+                for rk in ("r4", "r5", "r6", "r8", "r9", "r10"):
+                    self.assertEqual(float(tech_cat.loc[rk, "per_level_bonus_pct"]), 10.0)
+
+                # Spaceships & orbital solar cell (s9) checks
+                ships_by_key = ns["ships_df"].set_index("key")
+                self.assertGreater(float(ships_by_key.loc["s9", "energy_output_effective"]), 0.0)
+                self.assertEqual(int(ships_by_key.loc["s9", "fields_used"]), 0)
+                self.assertEqual(int(ships_by_key.loc["s3", "cargo"]), 250_000)
+
+                # Section 7: In-memory TechnologyRequirementGraph DAG & unlock path invariants
+                tech_graph = ns["TECH_GRAPH"]
+                self.assertEqual(len(tech_graph.nodes), 62)
+                self.assertEqual(len(tech_graph.topological_order), 62)
+                for _, edge_row in ns["tech_graph_edges_df"].iterrows():
+                    src_k = str(edge_row["source_key"])
+                    tgt_k = str(edge_row["target_key"])
+                    self.assertLess(
+                        tech_graph.topological_layer[src_k],
+                        tech_graph.topological_layer[tgt_k],
+                    )
+
+                # Diamond prerequisite resolution on s7 Phoenix
+                s7_reqs = tech_graph.transitive_requirements("s7")
+                self.assertEqual(
+                    s7_reqs,
+                    {"b7": 3, "b8": 5, "r2": 1, "r3": 6, "b9": 7, "r5": 8, "r10": 5},
+                )
+
+                # Applying plan_unlock_sequence from cold start unlocks every single entity legally
+                for target_key, node_meta in tech_graph.nodes.items():
+                    plan_df = tech_graph.plan_unlock_sequence(target_key, {}, {}, speedup_factor=5.0)
+                    sim_b: dict[str, int] = {}
+                    sim_r: dict[str, int] = {}
+                    for _, step_row in plan_df.iterrows():
+                        sk = str(step_row["key"])
+                        # Every prerequisite of sk must ALREADY be satisfied before sk upgrades!
+                        self.assertTrue(
+                            tech_graph.is_unlocked(sk, sim_b, sim_r),
+                            f"Step {sk} executed before its own prerequisites in {target_key} plan",
+                        )
+                        if str(step_row["category"]) == "buildings":
+                            sim_b[sk] = int(step_row["to_level"])
+                        else:
+                            sim_r[sk] = int(step_row["to_level"])
+                    self.assertTrue(tech_graph.is_unlocked(target_key, sim_b, sim_r))
+                    unmet = game_data.missing_prerequisites(
+                        node_meta["category"],
+                        node_meta["slug"],
+                        buildings=sim_b,
+                        researches=sim_r,
+                    )
+                    self.assertEqual(unmet, [], f"Unmet prereqs after unlock plan for {target_key}: {unmet}")
+
+                # Section 8: Planet sizes, live states & 300-field empty colony padding
+                self.assertEqual(ns["MAX_EMPIRE_PLANETS"], 11)
+                self.assertEqual(ns["EMPTY_COLONY_SIZE_FIELDS"], 300)
+                self.assertEqual(len(ns["live_planet_states"]), 1)
+                self.assertEqual(len(ns["empire_planet_states"]), 11)
+                ep_df = ns["empire_planets_df"]
+                eb_df = ns["empire_planet_buildings_df"]
+                self.assertEqual(len(ep_df), 11)
+                self.assertEqual(len(eb_df), 11)
+                self.assertEqual(int((~ep_df["is_empty_slot"]).sum()), 1)
+                self.assertEqual(int(ep_df["is_empty_slot"].sum()), 10)
+                self.assertEqual(int(ep_df.loc[~ep_df["is_empty_slot"], "fields_max"].iloc[0]), 230)
+                empty_rows = ep_df[ep_df["is_empty_slot"]]
+                self.assertTrue((empty_rows["fields_max"] == 300).all())
+                self.assertTrue((empty_rows["fields_used"] == 0).all())
+                self.assertTrue((empty_rows["fields_remaining"] == 300).all())
+                self.assertTrue((eb_df.loc[eb_df["status"] == "empty_colony_slot", [f"b{i}" for i in range(1, 22)]] == 0).all().all())
+                self.assertEqual(ns["EMPIRE_PLANET_STATE_SUMMARY"]["total_fields_capacity"], 230 + 10 * 300)
+
+                # When already at MAX_EMPIRE_PLANETS, zero empty slots are added
+                full_roster = [ns["live_planet_states"][0]] * 11
+                full_states, full_df, _ = ns["build_padded_empire_planets"](full_roster)
+                self.assertEqual(len(full_states), 11)
+                self.assertEqual(int(full_df["is_empty_slot"].sum()), 0)
+
+            # Cold-start empty workspace check (0 attacks -> zero NaNs, zero RuntimeWarnings)
+            os.chdir(orig_cwd)
+            with tempfile.TemporaryDirectory(prefix="si_fp_cold_") as cold_tmp:
+                cold_path = Path(cold_tmp)
+                (cold_path / "state").mkdir()
+                cold_db = GameDatabase(cold_path / "state" / "spaceinvasion.db", legacy_rank_json=None)
+                cold_db.close()
+                os.chdir(cold_path)
+                cold_ns: dict = {"__name__": "__main__"}
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", RuntimeWarning)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        for idx, cell in enumerate(code_cells[1:], start=1):
+                            exec(compile(_cell_source(cell), f"fp_cold_{idx}", "exec"), cold_ns, cold_ns)
+                self.assertEqual(cold_ns["ATTACK_SIM_PARAMS"]["attempts"], 0)
+                self.assertEqual(cold_ns["attack_success_rate"], 0.0)
+                self.assertAlmostEqual(cold_ns["attack_success_rate_smoothed"], 0.5, places=4)
+                self.assertEqual(len(cold_ns["live_planet_states"]), 0)
+                self.assertEqual(len(cold_ns["empire_planet_states"]), 11)
+                self.assertTrue((cold_ns["empire_planets_df"]["fields_max"] == 300).all())
+                self.assertEqual(cold_ns["EMPIRE_PLANET_STATE_SUMMARY"]["total_fields_capacity"], 3300)
+                for at_name, at_df in cold_ns["ATTACK_STATS_TABLES"].items():
+                    self.assertFalse(at_df.isna().any().any(), f"Cold-start {at_name} contained NaNs")
         finally:
             os.chdir(orig_cwd)
 

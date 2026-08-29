@@ -29,8 +29,9 @@ DEFAULT_GAME_DB_PATH = Path("state") / "spaceinvasion.db"
 DEFAULT_ATTACK_HISTORY_JSON_PATH = Path("data") / "attack_history.json"
 DEFAULT_RANK_HISTORY_JSON_PATH = Path("state") / "rank_history.json"
 DEFAULT_SNAPSHOT_JSON_PATH = Path("state") / "snapshot.json"
+DEFAULT_CONFIG_YAML_PATH = Path("config.yaml")
 
-LATEST_SCHEMA_VERSION: int = 7
+LATEST_SCHEMA_VERSION: int = 8
 SCHEMA_VERSION: str = str(LATEST_SCHEMA_VERSION)
 ATTACK_HISTORY_SCHEMA_VERSION: int = 2
 
@@ -669,6 +670,44 @@ CREATE INDEX IF NOT EXISTS idx_state_snapshots_ts
     ON state_snapshots(ts);
 """,
     ),
+    Migration(
+        version=8,
+        name="v008_db_strategy_config_and_ui_notifications",
+        description="Consolidate StrategyConfig into strategy_config_store (retiring config.yaml) and add persistent ui_notifications for action-validation help prompts.",
+        sql="""
+CREATE TABLE IF NOT EXISTS strategy_config_store (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    config_json TEXT NOT NULL,
+    updated_ts REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'sqlite'
+);
+
+CREATE TABLE IF NOT EXISTS ui_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_ts REAL NOT NULL,
+    updated_ts REAL NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'warning',
+    category TEXT NOT NULL DEFAULT 'action_validation',
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    help_prompt TEXT NOT NULL DEFAULT '',
+    action_kind TEXT NOT NULL DEFAULT '',
+    planet_coords TEXT NOT NULL DEFAULT '',
+    target_name TEXT NOT NULL DEFAULT '',
+    dedupe_key TEXT NOT NULL DEFAULT '',
+    occurrence_count INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'unread',
+    acknowledged_ts REAL,
+    details_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_ui_notifications_status_ts
+    ON ui_notifications(status, updated_ts);
+
+CREATE INDEX IF NOT EXISTS idx_ui_notifications_dedupe
+    ON ui_notifications(dedupe_key, status);
+""",
+    ),
 )
 
 GAME_REQUIRED_TABLES: tuple[str, ...] = (
@@ -676,6 +715,8 @@ GAME_REQUIRED_TABLES: tuple[str, ...] = (
     "rank_snapshots",
     "planet_snapshots",
     "state_snapshots",
+    "strategy_config_store",
+    "ui_notifications",
     "economy_rates_cache",
     "tutorial_progress",
     "action_history",
@@ -1975,6 +2016,116 @@ def import_legacy_snapshot_json(
     )
 
 
+def import_legacy_config_yaml(
+    conn: sqlite3.Connection,
+    yaml_path: Path,
+    *,
+    now_ts: Optional[float] = None,
+    remove_after_import: bool = False,
+) -> dict[str, Any]:
+    """Non-destructively absorb a legacy `config.yaml` file into `strategy_config_store`, `meta`, and `config_history`."""
+    from dataclasses import asdict as _dc_asdict
+    from spaceinvasion.core.config import load_strategy_config as _load_cfg
+
+    p = Path(yaml_path)
+    ts_ref = round(float(now_ts) if now_ts is not None else time.time(), 3)
+    if not p.exists() or not p.is_file():
+        return _clean_json_obj(
+            {
+                "exists": False,
+                "imported_config": False,
+                "removed_yaml": False,
+                "path": str(p),
+            }
+        )
+
+    try:
+        cfg_obj = _load_cfg(p)
+        cfg_dict = _clean_json_obj(_dc_asdict(cfg_obj))
+        cfg_json = _safe_json_dumps(cfg_dict)
+    except Exception as exc:
+        return _clean_json_obj(
+            {
+                "exists": True,
+                "imported_config": False,
+                "removed_yaml": False,
+                "path": str(p),
+                "error": str(exc),
+            }
+        )
+
+    imported_cfg = False
+    if MigrationRunner._table_exists(conn, "strategy_config_store"):
+        conn.execute(
+            """
+            INSERT INTO strategy_config_store(id, config_json, updated_ts, source)
+            VALUES (1, ?, ?, 'legacy_config_yaml')
+            ON CONFLICT(id) DO UPDATE SET
+                config_json = excluded.config_json,
+                updated_ts = excluded.updated_ts,
+                source = excluded.source
+            """,
+            (cfg_json, ts_ref),
+        )
+        imported_cfg = True
+
+    if MigrationRunner._table_exists(conn, "meta"):
+        conn.execute(
+            """
+            INSERT INTO meta(key, value, updated_ts) VALUES ('strategy_config', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_ts = excluded.updated_ts
+            """,
+            (cfg_json, ts_ref),
+        )
+        meta_audit = _safe_json_dumps(
+            {
+                "source_path": str(p),
+                "imported_config": imported_cfg,
+                "imported_ts": ts_ref,
+            }
+        )
+        conn.execute(
+            """
+            INSERT INTO meta(key, value, updated_ts) VALUES ('legacy_config_yaml_import', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_ts = excluded.updated_ts
+            """,
+            (meta_audit, ts_ref),
+        )
+        imported_cfg = True
+
+    if MigrationRunner._table_exists(conn, "config_history"):
+        last_row = conn.execute(
+            "SELECT config_json FROM config_history ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if last_row is None or last_row[0] != cfg_json:
+            conn.execute(
+                "INSERT INTO config_history(ts, config_json) VALUES (?, ?)",
+                (ts_ref, cfg_json),
+            )
+
+    removed_yaml = False
+    if remove_after_import:
+        conn.commit()
+        try:
+            p.unlink(missing_ok=True)
+            removed_yaml = not p.exists()
+        except OSError:
+            removed_yaml = False
+
+    return _clean_json_obj(
+        {
+            "exists": True,
+            "imported_config": imported_cfg,
+            "removed_yaml": removed_yaml,
+            "path": str(p),
+        }
+    )
+
+
 class DatabaseMigrationRegistry:
     """Multi-database registry managing schema versioning across SQLite databases."""
 
@@ -2033,9 +2184,11 @@ class DatabaseMigrationRegistry:
         legacy_atk_path = self.root_dir / DEFAULT_ATTACK_HISTORY_JSON_PATH
         legacy_rank_path = self.root_dir / DEFAULT_RANK_HISTORY_JSON_PATH
         legacy_snap_path = self.root_dir / DEFAULT_SNAPSHOT_JSON_PATH
+        legacy_cfg_path = self.root_dir / DEFAULT_CONFIG_YAML_PATH
         legacy_atk_retired = not legacy_atk_path.exists()
         legacy_rank_retired = not legacy_rank_path.exists()
         legacy_snap_retired = not legacy_snap_path.exists()
+        legacy_cfg_retired = not legacy_cfg_path.exists()
         json_stores = {
             "attack_history_retired": {
                 "store_kind": "attack_history",
@@ -2058,12 +2211,20 @@ class DatabaseMigrationRegistry:
                 "retired_to_sqlite": legacy_snap_retired,
                 "up_to_date": legacy_snap_retired,
             },
+            "config_yaml_retired": {
+                "store_kind": "config_yaml",
+                "path": str(legacy_cfg_path),
+                "exists": legacy_cfg_path.exists(),
+                "retired_to_sqlite": legacy_cfg_retired,
+                "up_to_date": legacy_cfg_retired,
+            },
         }
         all_ok = (
             all((not d["exists"]) or bool(d.get("up_to_date")) for d in databases.values())
             and legacy_atk_retired
             and legacy_rank_retired
             and legacy_snap_retired
+            and legacy_cfg_retired
         )
         return _clean_json_obj(
             {
@@ -2084,11 +2245,13 @@ class DatabaseMigrationRegistry:
         remove_legacy_attack_json: bool = True,
         remove_legacy_rank_json: bool = True,
         remove_legacy_snapshot_json: bool = True,
+        remove_legacy_config_yaml: bool = True,
     ) -> dict[str, Any]:
         db_results: dict[str, Any] = {}
         legacy_atk_path = self.root_dir / DEFAULT_ATTACK_HISTORY_JSON_PATH
         legacy_rank_path = self.root_dir / DEFAULT_RANK_HISTORY_JSON_PATH
         legacy_snap_path = self.root_dir / DEFAULT_SNAPSHOT_JSON_PATH
+        legacy_cfg_path = self.root_dir / DEFAULT_CONFIG_YAML_PATH
         atk_import_res: dict[str, Any] = {
             "exists": legacy_atk_path.exists(),
             "imported_raids": 0,
@@ -2109,10 +2272,17 @@ class DatabaseMigrationRegistry:
             "removed_json": False,
             "dry_run": bool(dry_run),
         }
+        cfg_import_res: dict[str, Any] = {
+            "exists": legacy_cfg_path.exists(),
+            "imported_config": False,
+            "removed_yaml": False,
+            "dry_run": bool(dry_run),
+        }
         has_any_legacy_json = (
             legacy_atk_path.exists()
             or legacy_rank_path.exists()
             or legacy_snap_path.exists()
+            or legacy_cfg_path.exists()
         )
         for alias, (db_p, family) in self.discover_sqlite_databases().items():
             if not db_p.exists() and not (alias == "primary" and (create_missing_primary or has_any_legacy_json)):
@@ -2149,6 +2319,12 @@ class DatabaseMigrationRegistry:
                             legacy_snap_path,
                             remove_after_import=remove_legacy_snapshot_json,
                         )
+                    if legacy_cfg_path.exists():
+                        cfg_import_res = import_legacy_config_yaml(
+                            conn,
+                            legacy_cfg_path,
+                            remove_after_import=remove_legacy_config_yaml,
+                        )
                     conn.commit()
 
         return _clean_json_obj(
@@ -2159,6 +2335,7 @@ class DatabaseMigrationRegistry:
                 "legacy_attack_json": atk_import_res,
                 "legacy_rank_json": rank_import_res,
                 "legacy_snapshot_json": snap_import_res,
+                "legacy_config_yaml": cfg_import_res,
             }
         )
 

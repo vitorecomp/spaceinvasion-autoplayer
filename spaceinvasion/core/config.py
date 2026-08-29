@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+import contextlib
+from dataclasses import asdict, dataclass, field
 import json
 import math
 import os
 from pathlib import Path
 import re
+import shutil
+import sqlite3
+import tempfile
+import time
 from typing import Any, Optional
+
+DEFAULT_CONFIG_DB_PATH: Path = Path("state") / "spaceinvasion.db"
+LEGACY_CONFIG_YAML_PATH: Path = Path("config.yaml")
 
 VALID_PLANNER_MODES: tuple[str, ...] = ("priority", "ga_nn")
 
@@ -1129,9 +1137,143 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
     )
 
 
-def load_strategy_config(path: Path = Path("config.yaml")) -> StrategyConfig:
-    """Load `StrategyConfig` from `path` (YAML or JSON), falling back to safe defaults."""
+def _is_sqlite_config_path(path: Path) -> bool:
+    if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+        return True
+    if not path.is_file():
+        return False
+    try:
+        with path.open("rb") as fh:
+            return fh.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
+def load_strategy_config_from_sqlite(db_path: Path = DEFAULT_CONFIG_DB_PATH) -> Optional[StrategyConfig]:
+    """Load persisted `StrategyConfig` from SQLite (`strategy_config_store` or `meta['strategy_config']`)."""
+    if not db_path.is_file():
+        return None
+    raw_json: Optional[str] = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="si_cfg_ro_") as tmp_dir:
+            tmp_db = Path(tmp_dir) / db_path.name
+            shutil.copy2(db_path, tmp_db)
+            for suffix in ("-wal", "-shm", "-journal"):
+                sidecar = Path(f"{db_path}{suffix}")
+                if sidecar.is_file():
+                    with contextlib.suppress(OSError):
+                        shutil.copy2(sidecar, Path(f"{tmp_db}{suffix}"))
+            with contextlib.closing(sqlite3.connect(str(tmp_db), timeout=5.0)) as conn:
+                has_store = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='strategy_config_store' LIMIT 1"
+                ).fetchone()
+                if has_store is not None:
+                    row = conn.execute(
+                        "SELECT config_json FROM strategy_config_store WHERE id = 1"
+                    ).fetchone()
+                    if row is not None and isinstance(row[0], str) and row[0].strip():
+                        raw_json = row[0]
+                if raw_json is None:
+                    has_meta = conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta' LIMIT 1"
+                    ).fetchone()
+                    if has_meta is not None:
+                        mrow = conn.execute(
+                            "SELECT value FROM meta WHERE key = 'strategy_config'"
+                        ).fetchone()
+                        if mrow is not None and isinstance(mrow[0], str) and mrow[0].strip():
+                            raw_json = mrow[0]
+    except (OSError, sqlite3.Error):
+        return None
+    if not raw_json:
+        return None
+    try:
+        parsed = _sanitize_cfg_json_tree(json.loads(raw_json))
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, Mapping):
+        return None
+    return strategy_config_from_dict(parsed)
+
+
+def save_strategy_config_to_sqlite(
+    cfg: StrategyConfig,
+    db_path: Path = DEFAULT_CONFIG_DB_PATH,
+    *,
+    source: str = "sqlite",
+) -> Path:
+    """Persist `StrategyConfig` into SQLite (`strategy_config_store`, `meta`, and `config_history`)."""
+    clean_cfg = strategy_config_from_dict(asdict(cfg))
+    cfg_dict = _sanitize_cfg_json_tree(asdict(clean_cfg))
+    cfg_json = json.dumps(cfg_dict, sort_keys=True, allow_nan=False)
+    now_ts = round(time.time(), 3)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.closing(sqlite3.connect(str(db_path), timeout=10.0)) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS strategy_config_store (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                config_json TEXT NOT NULL,
+                updated_ts REAL NOT NULL,
+                source TEXT NOT NULL DEFAULT 'sqlite'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO strategy_config_store(id, config_json, updated_ts, source)
+            VALUES (1, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                config_json = excluded.config_json,
+                updated_ts = excluded.updated_ts,
+                source = excluded.source
+            """,
+            (cfg_json, now_ts, str(source or "sqlite")[:32]),
+        )
+        has_meta = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta' LIMIT 1"
+        ).fetchone()
+        if has_meta is not None:
+            conn.execute(
+                """
+                INSERT INTO meta(key, value, updated_ts) VALUES ('strategy_config', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_ts = excluded.updated_ts
+                """,
+                (cfg_json, now_ts),
+            )
+        has_hist = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='config_history' LIMIT 1"
+        ).fetchone()
+        if has_hist is not None:
+            last_row = conn.execute(
+                "SELECT config_json FROM config_history ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if last_row is None or last_row[0] != cfg_json:
+                conn.execute(
+                    "INSERT INTO config_history(ts, config_json) VALUES (?, ?)",
+                    (now_ts, cfg_json),
+                )
+        conn.commit()
+    return db_path
+
+
+def load_strategy_config(path: Optional[Path] = None) -> StrategyConfig:
+    """Load `StrategyConfig` from SQLite (`state/spaceinvasion.db`) or an explicit YAML/JSON file."""
+    if path is None:
+        if LEGACY_CONFIG_YAML_PATH.is_file():
+            return load_strategy_config(LEGACY_CONFIG_YAML_PATH)
+        from_db = load_strategy_config_from_sqlite(DEFAULT_CONFIG_DB_PATH)
+        return from_db if from_db is not None else StrategyConfig()
+    if _is_sqlite_config_path(path):
+        from_db = load_strategy_config_from_sqlite(path)
+        return from_db if from_db is not None else StrategyConfig()
     if not path.exists():
+        if path == LEGACY_CONFIG_YAML_PATH:
+            from_db = load_strategy_config_from_sqlite(DEFAULT_CONFIG_DB_PATH)
+            if from_db is not None:
+                return from_db
         return StrategyConfig()
     try:
         text = path.read_text(encoding="utf-8")
@@ -1183,8 +1325,12 @@ def _format_yaml_string(value: str) -> str:
     return value
 
 
-def save_strategy_config(cfg: StrategyConfig, path: Path = Path("config.yaml")) -> Path:
-    """Persist `StrategyConfig` cleanly in simple YAML format matching `load_strategy_config`."""
+def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Path:
+    """Persist `StrategyConfig` to SQLite (`path=None` or `.db`) or simple YAML when given a YAML path."""
+    if path is None:
+        return save_strategy_config_to_sqlite(cfg, DEFAULT_CONFIG_DB_PATH)
+    if _is_sqlite_config_path(path):
+        return save_strategy_config_to_sqlite(cfg, path)
     storage_warn_ratio = max(0.1, min(0.99, _safe_cfg_float(cfg.storage_warn_ratio, 0.85)))
     blast_share = max(0.1, min(1.0, _safe_cfg_float(cfg.blast_pig_iron_max_share, 0.70)))
     combat_margin = max(1.0, _safe_cfg_float(cfg.combat_safety_margin, 1.4))

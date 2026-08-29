@@ -159,8 +159,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("config.yaml"),
-        help="Optional non-secret strategy config file (default: config.yaml).",
+        default=None,
+        help="Optional strategy config path (.db SQLite or legacy .yaml; defaults to state/spaceinvasion.db).",
     )
     parser.add_argument(
         "--log-dir",

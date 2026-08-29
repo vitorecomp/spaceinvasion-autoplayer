@@ -1742,7 +1742,13 @@ def _plan_combat_and_raid_actions(
                         ),
                     )
                 )
-            elif uf is None and spied_ts_col <= 0.0 and has_probes:
+            elif (
+                uf is None
+                and spied_ts_col <= 0.0
+                and has_probes
+                and _safe_strategy_float(raw.get("blocked_until_ts"), 0.0) <= ref_now
+                and bash_tracker.can_attack(norm_coords, is_inactive=True, timestamp=ref_now)
+            ):
                 assert probe_planet is not None
                 if 7 <= pos <= 12:
                     zone_prio = 0
@@ -1815,11 +1821,14 @@ def _plan_combat_and_raid_actions(
             or status_color == "yellow"
             or (cfg.allow_pvp_in_az and status_color == "light_red")
         )
-        can_attack_now = bash_tracker.can_attack(
-            norm_coords,
-            is_inactive=(status_color == "yellow"),
-            is_spacia=is_spacia,
-            timestamp=ref_now,
+        can_attack_now = (
+            _safe_strategy_float(raw.get("blocked_until_ts"), 0.0) <= ref_now
+            and bash_tracker.can_attack(
+                norm_coords,
+                is_inactive=(status_color == "yellow"),
+                is_spacia=is_spacia,
+                timestamp=ref_now,
+            )
         )
         tag = "Spacia" if is_spacia else ("Inactive" if status_color == "yellow" else status_color.title())
         target_label = f"{coords} ({owner or pname or tag})"
@@ -2023,23 +2032,21 @@ def _plan_combat_and_raid_actions(
 
     if colonize_actions or colony_spy_actions or scored_attacks or recycle_actions:
         out_actions: list[PlannedAction] = []
+        if spy_actions:
+            spy_actions.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in spy_actions[:2])
+        if not colonize_actions and colony_spy_actions:
+            colony_spy_actions.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in colony_spy_actions[:2])
         if colonize_actions:
             colonize_actions.sort(key=lambda item: item[0])
             out_actions.extend(act for _, act in colonize_actions[:1])
         if scored_attacks:
             scored_attacks.sort(key=lambda item: item[0])
-            out_actions.extend(act for _, act in scored_attacks[:2])
+            out_actions.extend(act for _, act in scored_attacks[:3])
         if recycle_actions:
             recycle_actions.sort(key=lambda item: item[0])
             out_actions.extend(act for _, act in recycle_actions[:2])
-        if not colonize_actions and colony_spy_actions:
-            colony_spy_actions.sort(key=lambda item: item[0])
-            out_actions.extend(act for _, act in colony_spy_actions[:2])
-        if len(scored_attacks) > 2:
-            out_actions.extend(act for _, act in scored_attacks[2:3])
-        if spy_actions:
-            spy_actions.sort(key=lambda item: item[0])
-            out_actions.extend(act for _, act in spy_actions[:2])
         if want_colonize and not colonize_actions and not colony_spy_actions:
             nxt_scan = _next_spiral_scan_action()
             if nxt_scan is not None:

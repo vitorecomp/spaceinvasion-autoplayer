@@ -582,11 +582,25 @@ _BASH_RESET_TIMER_RE = re.compile(
 )
 
 
+_PLAYER_PROTECTION_BLOCK_RE = re.compile(
+    r"(?:"
+    r"this\s+(?:user|player)\s+can(?:'t|\s*not)\s+be\s+(?:attacked|spied)"
+    r"|(?:user|player)\s+can(?:'t|\s*not)\s+be\s+(?:attacked|spied)"
+    r"|dieser\s+spieler\s+kann\s+nicht\s+(?:angegriffen|ausspioniert)\s+werden"
+    r"|spieler\s+kann\s+nicht\s+(?:angegriffen|ausspioniert)\s+werden"
+    r"|target\s+is\s+in\s+(?:vacation\s+mode|newbie\s+protection|noob\s+protection)"
+    r"|player\s+is\s+in\s+(?:vacation\s+mode|newbie\s+protection|noob\s+protection)"
+    r"|outside\s+(?:your\s+)?attack\s+zone"
+    r")!?",
+    re.IGNORECASE,
+)
+
+
 def parse_send_fleet_mission_block(
     html: str,
     mission_kind: str,
 ) -> Optional[tuple[str, float, bool]]:
-    """Parse mission-specific `(forbidden)` / bash-protection banners on `internalSendFleet`.
+    """Parse mission-specific `(forbidden)`, player-protection, or bash-protection banners.
 
     Returns `(reason, cooldown_seconds, is_bash_block)` or `None` when the requested
     `mission_kind` is not explicitly forbidden (e.g., ignores benign `Transport (forbidden)`
@@ -606,6 +620,11 @@ def parse_send_fleet_mission_block(
         if raw_ln and raw_ln.strip()
     ]
     joined_lines = "\n".join(lines)
+    if mk in ("ATTACK", "SPY"):
+        m_prot = _PLAYER_PROTECTION_BLOCK_RE.search(joined_lines)
+        if m_prot is not None:
+            prot_msg = " ".join(m_prot.group(0).split()).strip()
+            return (prot_msg[:240], 21600.0, False)
     m_forb = pat.search(joined_lines)
     if m_forb is None and mk == "RECYCLE":
         low_all = joined_lines.lower()

@@ -41,6 +41,7 @@ from spaceinvasion.db.migrations import (
     SCHEMA_VERSION,
     create_sqlite_backup,
     import_legacy_attack_history_json,
+    import_legacy_config_yaml,
     import_legacy_rank_history_json,
     import_legacy_snapshot_json,
 )
@@ -571,6 +572,34 @@ CREATE TABLE IF NOT EXISTS state_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_state_snapshots_ts ON state_snapshots(ts);
 
+CREATE TABLE IF NOT EXISTS strategy_config_store (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    config_json TEXT NOT NULL,
+    updated_ts REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'sqlite'
+);
+
+CREATE TABLE IF NOT EXISTS ui_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_ts REAL NOT NULL,
+    updated_ts REAL NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'warning',
+    category TEXT NOT NULL DEFAULT 'action_validation',
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    help_prompt TEXT NOT NULL DEFAULT '',
+    action_kind TEXT NOT NULL DEFAULT '',
+    planet_coords TEXT NOT NULL DEFAULT '',
+    target_name TEXT NOT NULL DEFAULT '',
+    dedupe_key TEXT NOT NULL DEFAULT '',
+    occurrence_count INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'unread',
+    acknowledged_ts REAL,
+    details_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_ui_notifications_status_ts ON ui_notifications(status, updated_ts);
+CREATE INDEX IF NOT EXISTS idx_ui_notifications_dedupe ON ui_notifications(dedupe_key, status);
+
 CREATE TABLE IF NOT EXISTS economy_rates_cache (
     planet_id INTEGER PRIMARY KEY,
     coords TEXT NOT NULL,
@@ -1003,6 +1032,12 @@ class GameDatabase:
                         if legacy_snap.is_file():
                             import_legacy_snapshot_json(
                                 self._conn, legacy_snap, now_ts=now_ts, remove_after_import=True
+                            )
+                    if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "strategy_config_store"):
+                        legacy_cfg = self.db_path.parent.parent / "config.yaml"
+                        if legacy_cfg.is_file():
+                            import_legacy_config_yaml(
+                                self._conn, legacy_cfg, now_ts=now_ts, remove_after_import=True
                             )
                 if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "game_messages"):
                     self._backfill_reports_from_game_messages_locked(now_ts)
@@ -1625,6 +1660,7 @@ class GameDatabase:
         config_payload: Mapping[str, Any],
         *,
         ts: Optional[float] = None,
+        source: str = "sqlite",
     ) -> None:
         if not isinstance(config_payload, Mapping):
             return
@@ -1632,6 +1668,18 @@ class GameDatabase:
         cfg_dict = dict(config_payload)
         cfg_json = _json_dumps(cfg_dict)
         with self._lock:
+            if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "strategy_config_store"):
+                self._conn.execute(
+                    """
+                    INSERT INTO strategy_config_store(id, config_json, updated_ts, source)
+                    VALUES (1, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        config_json = excluded.config_json,
+                        updated_ts = excluded.updated_ts,
+                        source = excluded.source
+                    """,
+                    (cfg_json, now_ts, _sanitize_text(source or "sqlite")[:32]),
+                )
             self._save_meta_json_locked("strategy_config", cfg_dict, now_ts)
             last_cfg = self._conn.execute(
                 "SELECT config_json FROM config_history ORDER BY id DESC LIMIT 1"
@@ -1644,8 +1692,231 @@ class GameDatabase:
             self._conn.commit()
 
     def load_strategy_config_snapshot(self) -> Optional[dict[str, Any]]:
+        with self._lock:
+            if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "strategy_config_store"):
+                row = self._conn.execute(
+                    "SELECT config_json FROM strategy_config_store WHERE id = 1"
+                ).fetchone()
+                if row is not None:
+                    raw_txt = _raw_text(row["config_json"], "").strip()
+                    if raw_txt:
+                        try:
+                            parsed = json.loads(raw_txt)
+                            if isinstance(parsed, Mapping):
+                                return _sanitize_obj(dict(parsed))
+                        except ValueError:
+                            pass
         raw = self.load_meta_json("strategy_config")
         return dict(raw) if isinstance(raw, Mapping) else None
+
+    def create_or_bump_notification(
+        self,
+        *,
+        title: str,
+        message: str,
+        help_prompt: str = "",
+        severity: str = "warning",
+        category: str = "action_validation",
+        action_kind: str = "",
+        planet_coords: str = "",
+        target_name: str = "",
+        dedupe_key: str = "",
+        details: Optional[Mapping[str, Any]] = None,
+        ts: Optional[float] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Create an unread persistent UI notification or bump occurrence_count if an identical unread key exists."""
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        sev_s = _sanitize_text(severity or "warning").lower()
+        if sev_s not in ("error", "warning", "info"):
+            sev_s = "warning"
+        cat_s = _sanitize_text(category or "action_validation")[:48]
+        title_s = _sanitize_text(title or "Action Needs Review")[:180]
+        msg_s = _sanitize_text(message or "")[:1000]
+        help_s = _sanitize_text(help_prompt or "")[:1000]
+        kind_s = _sanitize_text(action_kind or "").upper()[:32]
+        pcoords_s = _sanitize_text(planet_coords or "")[:32]
+        tname_s = _sanitize_text(target_name or "")[:120]
+        dkey_s = _sanitize_text(
+            dedupe_key or f"{cat_s}:{kind_s}:{pcoords_s}:{tname_s}:{title_s}"
+        )[:180]
+        det_json = _json_dumps(_sanitize_obj(dict(details)) if isinstance(details, Mapping) else {})
+
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "ui_notifications"):
+                return None
+            existing = self._conn.execute(
+                """
+                SELECT id, occurrence_count FROM ui_notifications
+                WHERE dedupe_key = ? AND status = 'unread'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (dkey_s,),
+            ).fetchone()
+            if existing is not None:
+                nid = int(existing["id"])
+                new_cnt = max(1, _sql_int(existing["occurrence_count"], 1)) + 1
+                self._conn.execute(
+                    """
+                    UPDATE ui_notifications
+                    SET updated_ts = ?,
+                        severity = ?,
+                        title = ?,
+                        message = ?,
+                        help_prompt = ?,
+                        occurrence_count = ?,
+                        details_json = ?
+                    WHERE id = ?
+                    """,
+                    (now_ts, sev_s, title_s, msg_s, help_s, new_cnt, det_json, nid),
+                )
+            else:
+                cur = self._conn.execute(
+                    """
+                    INSERT INTO ui_notifications(
+                        created_ts, updated_ts, severity, category, title, message, help_prompt,
+                        action_kind, planet_coords, target_name, dedupe_key, occurrence_count,
+                        status, acknowledged_ts, details_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'unread', NULL, ?)
+                    """,
+                    (
+                        now_ts,
+                        now_ts,
+                        sev_s,
+                        cat_s,
+                        title_s,
+                        msg_s,
+                        help_s,
+                        kind_s,
+                        pcoords_s,
+                        tname_s,
+                        dkey_s,
+                        det_json,
+                    ),
+                )
+                nid = int(cur.lastrowid or 0)
+            self._conn.commit()
+            row = self._conn.execute("SELECT * FROM ui_notifications WHERE id = ?", (nid,)).fetchone()
+        return self._row_to_notification(row) if row is not None else None
+
+    @staticmethod
+    def _row_to_notification(r: sqlite3.Row) -> dict[str, Any]:
+        try:
+            det_obj = json.loads(_raw_text(r["details_json"], "{}"))
+        except ValueError:
+            det_obj = {}
+        ack_val = _safe_optional_float(r["acknowledged_ts"])
+        return _sanitize_obj(
+            {
+                "id": _sql_int(r["id"], 0),
+                "created_ts": _safe_float(r["created_ts"], 0.0),
+                "updated_ts": _safe_float(r["updated_ts"], 0.0),
+                "severity": _sanitize_text(_raw_text(r["severity"], "warning")),
+                "category": _sanitize_text(_raw_text(r["category"], "action_validation")),
+                "title": _sanitize_text(_raw_text(r["title"], "")),
+                "message": _sanitize_text(_raw_text(r["message"], "")),
+                "help_prompt": _sanitize_text(_raw_text(r["help_prompt"], "")),
+                "action_kind": _sanitize_text(_raw_text(r["action_kind"], "")),
+                "planet_coords": _sanitize_text(_raw_text(r["planet_coords"], "")),
+                "target_name": _sanitize_text(_raw_text(r["target_name"], "")),
+                "dedupe_key": _sanitize_text(_raw_text(r["dedupe_key"], "")),
+                "occurrence_count": max(1, _sql_int(r["occurrence_count"], 1)),
+                "status": _sanitize_text(_raw_text(r["status"], "unread")),
+                "acknowledged_ts": ack_val,
+                "details": det_obj if isinstance(det_obj, Mapping) else {},
+            }
+        )
+
+    def get_notifications(
+        self,
+        *,
+        status: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        lim = max(1, min(200, _sql_int(limit, 50)))
+        st_norm = _sanitize_text(status or "").strip().lower()
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "ui_notifications"):
+                return []
+            if st_norm in ("unread", "read", "dismissed"):
+                rows = self._conn.execute(
+                    "SELECT * FROM ui_notifications WHERE status = ? ORDER BY updated_ts DESC, id DESC LIMIT ?",
+                    (st_norm, lim),
+                ).fetchall()
+            elif st_norm == "active":
+                rows = self._conn.execute(
+                    "SELECT * FROM ui_notifications WHERE status != 'dismissed' ORDER BY updated_ts DESC, id DESC LIMIT ?",
+                    (lim,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM ui_notifications ORDER BY updated_ts DESC, id DESC LIMIT ?",
+                    (lim,),
+                ).fetchall()
+        return [self._row_to_notification(r) for r in rows]
+
+    def unread_notification_count(self) -> int:
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "ui_notifications"):
+                return 0
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM ui_notifications WHERE status = 'unread'"
+            ).fetchone()
+            return int(row[0]) if row is not None else 0
+
+    def acknowledge_notification(
+        self,
+        notification_id: int,
+        *,
+        status: str = "read",
+        ts: Optional[float] = None,
+    ) -> Optional[dict[str, Any]]:
+        nid = _sql_int(notification_id, 0)
+        if nid <= 0:
+            return None
+        st_norm = _sanitize_text(status or "read").strip().lower()
+        if st_norm not in ("read", "dismissed", "unread"):
+            st_norm = "read"
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        ack_ts = None if st_norm == "unread" else now_ts
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "ui_notifications"):
+                return None
+            self._conn.execute(
+                """
+                UPDATE ui_notifications
+                SET status = ?, acknowledged_ts = ?
+                WHERE id = ?
+                """,
+                (st_norm, ack_ts, nid),
+            )
+            self._conn.commit()
+            row = self._conn.execute("SELECT * FROM ui_notifications WHERE id = ?", (nid,)).fetchone()
+        return self._row_to_notification(row) if row is not None else None
+
+    def acknowledge_all_notifications(
+        self,
+        *,
+        status: str = "read",
+        ts: Optional[float] = None,
+    ) -> int:
+        st_norm = _sanitize_text(status or "read").strip().lower()
+        if st_norm not in ("read", "dismissed"):
+            st_norm = "read"
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "ui_notifications"):
+                return 0
+            cur = self._conn.execute(
+                """
+                UPDATE ui_notifications
+                SET status = ?, acknowledged_ts = ?
+                WHERE status = 'unread'
+                """,
+                (st_norm, now_ts),
+            )
+            changed = int(cur.rowcount or 0)
+            self._conn.commit()
+        return changed
 
     def get_rank_samples(self, *, limit: int = 240) -> list[dict[str, Any]]:
         with self._lock:
@@ -4837,6 +5108,8 @@ class GameDatabase:
             "rank_snapshots",
             "planet_snapshots",
             "state_snapshots",
+            "strategy_config_store",
+            "ui_notifications",
             "economy_rates_cache",
             "tutorial_progress",
             "action_history",
