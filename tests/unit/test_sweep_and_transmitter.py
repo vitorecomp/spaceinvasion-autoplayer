@@ -1527,6 +1527,84 @@ class TestSweepAndTransmitter(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_smart_sweep_updates_coverage_live_mid_sweep_and_resumes_unscanned_after_abort(self) -> None:
+        import time as _time
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory(prefix="si_live_cov_") as tmp:
+            tp = Path(tmp)
+            visited_batch1: list[tuple[int, int]] = []
+            visited_batch2: list[tuple[int, int]] = []
+            mid_sweep_snapshots: list[tuple[int, float, float]] = []
+            active_batch = {"num": 1}
+
+            class _LiveProgressClient:
+                def __init__(self, br_ref):
+                    self._br = br_ref
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_exc):
+                    return None
+
+                def ensure_in_game(self, **_kw):
+                    return None
+
+                def step_galaxy_system(self, *, galaxy: int, system: int, **_kw):
+                    if active_batch["num"] == 1:
+                        visited_batch1.append((galaxy, system))
+                        # Snapshot live in-progress summary AFTER page 1 has been persisted
+                        if len(visited_batch1) == 2:
+                            sm = self._br._smart_sweep_summary or {}
+                            mid_sweep_snapshots.append(
+                                (
+                                    int(sm.get("explored_systems", 0)),
+                                    float(sm.get("coverage_pct", 0.0)),
+                                    float(sm.get("universe_coverage_pct", 0.0)),
+                                )
+                            )
+                        # Simulate interruption right after page 3 (e.g. reload/pause)
+                        if len(visited_batch1) == 3:
+                            self._br._bot_control["paused"] = True
+                    else:
+                        visited_batch2.append((galaxy, system))
+                    return _make_galaxy_html(galaxy, system, include_debris=False), galaxy, system
+
+            bridge_holder: list[GameApiBridge] = []
+            bridge = GameApiBridge(
+                debug_port=19991,
+                config_path=tp / "cfg.yaml",
+                db_path=tp / "livecov.db",
+                log_dir=None,
+                client_factory=lambda _p: _LiveProgressClient(bridge_holder[0]),
+                ensure_session_fn=lambda: None,
+            )
+            bridge_holder.append(bridge)
+            try:
+                bridge._last_state = GameState(
+                    31, 7, "cmdr", _time.time(), (_make_planet(101, "02:380:12"),), active_planet_id=101
+                )
+                with patch.object(bridge._sweep_stop_event, "wait", return_value=False):
+                    r1 = bridge.run_galaxy_sweep(pages=6, delay_range=(0.0, 0.0))
+                # Live summary incremented mid-sweep right after page 1 (before batch 1 finished!)
+                self.assertEqual(mid_sweep_snapshots, [(1, 0.25, 0.02)])
+                self.assertEqual(r1["pages_scanned"], 3)
+                self.assertEqual(r1["explored_systems"], 3)
+                self.assertAlmostEqual(r1["coverage_pct"], 0.75)
+
+                # Unpause and run next batch -> resumes strictly from remaining unscanned systems (zero overlap!)
+                bridge._bot_control["paused"] = False
+                active_batch["num"] = 2
+                with patch.object(bridge._sweep_stop_event, "wait", return_value=False):
+                    r2 = bridge.run_galaxy_sweep(pages=4, delay_range=(0.0, 0.0))
+                self.assertEqual(r2["pages_scanned"], 4)
+                self.assertEqual(r2["explored_systems"], 7)
+                self.assertAlmostEqual(r2["coverage_pct"], 1.75)
+                self.assertEqual(set(visited_batch1).intersection(set(visited_batch2)), set())
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

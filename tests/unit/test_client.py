@@ -2557,6 +2557,46 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
             with self.assertRaises(AntiBotChallengeError):
                 client._check_page_guards(visible_class_only_html)
 
+    def test_step_galaxy_system_uses_live_ajax_result_coords_and_refreshes_json_element(self) -> None:
+        # Regression: after initial full load on 02:129, AJAX `window.si.navigate(2, 387)` leaves
+        # `<input value="129">`, inline `SI_TPL.galaxy`, and `location.href` stale at 129.
+        # `step_galaxy_system` MUST return `(2, 387)` AND `_sync_galaxy_json_textarea` must
+        # overwrite stale `#json-element` from live `window.si.result` (not skip when non-empty).
+        stale_html = (
+            "<html><body>"
+            "<script>SI_TPL.galaxy = { galaxy: 2, sun: 129 };</script>"
+            '<input name="galaxy" value="2"><input name="system" value="129">'
+            '<textarea id="json-element">{"position":{"galaxy":2,"system":129},"planets":{}}</textarea>'
+            "</body></html>"
+        )
+        drv = MagicMock()
+        drv.page_source = stale_html
+        scripts_run: list[str] = []
+
+        def _exec(script: str, *args):
+            scripts_run.append(script)
+            if "typeof window.si.navigate === 'function'" in script:
+                return {"ok": True, "g": 2, "s": 129, "busy": False}
+            if "window.si.navigate(targetG, targetS)" in script:
+                return None
+            if "resG:" in script:
+                return {"busy": False, "g": 2, "s": 387, "resG": 2, "resS": 387}
+            if "getElementById('json-element')" in script:
+                # Assert live window.si.result is always serialized even when je.value is non-empty
+                self.assertIn("if (window.si && window.si.result && window.si.result.planets)", script)
+                self.assertNotIn("if ((!v || v === 'null') && window.si", script)
+                return None
+            if "location.href" in script:
+                return "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&g=2&s=129"
+            return None
+
+        drv.execute_script.side_effect = _exec
+        cli = GameBrowserClient(drv, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        with patch.object(cli, "_switch_frame"):
+            _html, actual_gal, actual_sys = cli.step_galaxy_system(galaxy=2, system=387, pace=False)
+        self.assertEqual((actual_gal, actual_sys), (2, 387))
+        self.assertEqual(cli.last_galaxy_coords, (2, 387))
+
 
 if __name__ == "__main__":
     unittest.main()

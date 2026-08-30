@@ -4104,6 +4104,16 @@ class GameApiBridge:
                 cur_gal, cur_sys = sweep_targets[0]
                 planned_pages = len(sweep_targets)
                 scan_phase = str(smart_summary.get("scan_phase") or "exploratory")
+                known_scanned_keys: set[str] = {
+                    str(k)
+                    for k, ts_v in (self._get_scanned_systems() or {}).items()
+                    if _safe_api_float(ts_v, 0.0) > 0.0
+                }
+                scan_gal_set: set[int] = {
+                    _safe_api_int(g, 0)
+                    for g in (smart_summary.get("scan_galaxies") or owned_gals)
+                    if _safe_api_int(g, 0) > 0
+                }
 
             if dry_run:
                 if contiguous_tail is not None:
@@ -4279,6 +4289,33 @@ class GameApiBridge:
                     debris_found += debris_on_page
                     if collect_colonies:
                         colonies_found += free_on_page
+
+                    skey_now = f"{actual_gal:02d}:{actual_sys:03d}"
+                    if skey_now not in known_scanned_keys:
+                        known_scanned_keys.add(skey_now)
+                        sm_live = getattr(self, "_smart_sweep_summary", None)
+                        if isinstance(sm_live, dict):
+                            uni_tot_l = max(1, _safe_api_int(sm_live.get("universe_total_systems"), 5600))
+                            uni_exp_l = min(uni_tot_l, max(0, _safe_api_int(sm_live.get("universe_explored_systems"), 0)) + 1)
+                            sm_live["universe_explored_systems"] = uni_exp_l
+                            sm_live["universe_coverage_pct"] = round(min(100.0, (uni_exp_l / uni_tot_l) * 100.0), 2)
+                            if actual_gal in scan_gal_set:
+                                gal_tot_l = max(1, _safe_api_int(sm_live.get("total_systems"), 400))
+                                gal_exp_l = min(gal_tot_l, max(0, _safe_api_int(sm_live.get("explored_systems"), 0)) + 1)
+                                gal_un_l = max(0, gal_tot_l - gal_exp_l)
+                                sm_live["explored_systems"] = gal_exp_l
+                                sm_live["unscanned_systems"] = gal_un_l
+                                sm_live["coverage_pct"] = round(min(100.0, (gal_exp_l / gal_tot_l) * 100.0), 2)
+                                if gal_un_l == 0:
+                                    sm_live["scan_phase"] = "targeted_refresh"
+                            cur_samples = sm_live.get("sample_targets")
+                            if isinstance(cur_samples, list) and cur_samples:
+                                sm_live["sample_targets"] = [
+                                    s_it for s_it in cur_samples if str((s_it or {}).get("sector") or "") != skey_now
+                                ]
+                            sm_live["smart_summary_ts"] = round(time.time(), 3)
+                            self._smart_sweep_summary_ts = time.time()
+                        self._invalidate_dashboard_cache()
 
             # Next cursor: contiguous mode continues after the last scanned page; smart mode records the system
             # after the last visited sector (used only by explicit fallbacks / telemetry).

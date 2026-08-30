@@ -1377,13 +1377,13 @@ class GameBrowserClient:
         return self._wait_frame_ready("F_Hauptframe", expected_action="internalGalaxy", nav_token=nav_token)
 
     def _sync_galaxy_json_textarea(self) -> None:
-        """Mirror 2D Galaxy `window.si.result` / `<textarea id="json-element">.value` into `.textContent` so `page_source` serializes it."""
+        """Mirror live 2D Galaxy `window.si.result` into `<textarea id="json-element">` so `page_source` stays fresh across AJAX steps."""
         try:
             self.driver.execute_script(
                 "var je = document.getElementById('json-element');"
                 "if (!je) return;"
-                "var v = (typeof je.value === 'string') ? je.value.trim() : '';"
-                "if ((!v || v === 'null') && window.si && window.si.result && window.si.result.planets) {"
+                "var v = '';"
+                "if (window.si && window.si.result && window.si.result.planets) {"
                 "  try {"
                 "    var rawPl = window.si.result.planets;"
                 "    var outPl = {};"
@@ -1400,11 +1400,18 @@ class GameBrowserClient:
                 "        outPl[String(Number(pk) + (Array.isArray(rawPl) ? 1 : 0))] = copy;"
                 "      }"
                 "    }"
-                "    v = JSON.stringify({position: Object.assign({}, window.si.result.position || {}), planets: outPl});"
+                "    var posObj = Object.assign({}, window.si.result.position || {});"
+                "    if (!posObj.galaxy && window.si.galaxy) posObj.galaxy = Number(window.si.galaxy);"
+                "    if (!posObj.system && !posObj.sun && window.si.sun) posObj.system = Number(window.si.sun);"
+                "    v = JSON.stringify({position: posObj, planets: outPl});"
                 "  } catch (e) { v = ''; }"
                 "}"
-                "if (v && v !== 'null' && je.textContent !== v) {"
-                "  je.textContent = v;"
+                "if (!v || v === 'null') {"
+                "  v = (typeof je.value === 'string') ? je.value.trim() : '';"
+                "}"
+                "if (v && v !== 'null') {"
+                "  if (je.value !== v) je.value = v;"
+                "  if (je.textContent !== v) je.textContent = v;"
                 "}"
             )
         except Exception:
@@ -1625,6 +1632,7 @@ class GameBrowserClient:
         )
         deadline = time.monotonic() + min(4.0, max(0.4, self.timeout * 0.35))
         landed = False
+        landed_coords: Optional[tuple[int, int]] = None
         while time.monotonic() < deadline:
             time.sleep(0.08)
             self._switch_frame("F_Hauptframe")
@@ -1662,6 +1670,7 @@ class GameBrowserClient:
                     and status.get("resS") == sys_arg
                 ):
                     landed = True
+                    landed_coords = (gal_arg, sys_arg)
                     break
 
         if not landed:
@@ -1675,15 +1684,18 @@ class GameBrowserClient:
         self._sync_galaxy_json_textarea()
         html = self.driver.page_source or ""
         self._check_page_guards(html)
-        try:
-            cur_url = str(self.driver.execute_script("return location.href;") or "")
-        except Exception:
-            cur_url = ""
-        actual_gal, actual_sys = extract_galaxy_system_coords(
-            html,
-            url=cur_url,
-            default=(gal_arg, sys_arg),
-        )
+        if landed_coords is not None:
+            actual_gal, actual_sys = landed_coords
+        else:
+            try:
+                cur_url = str(self.driver.execute_script("return location.href;") or "")
+            except Exception:
+                cur_url = ""
+            actual_gal, actual_sys = extract_galaxy_system_coords(
+                html,
+                url=cur_url,
+                default=(gal_arg, sys_arg),
+            )
         self.last_galaxy_coords = (actual_gal, actual_sys)
         return html, actual_gal, actual_sys
 

@@ -931,10 +931,29 @@ def extract_galaxy_system_coords(
     url: str = "",
     default: tuple[int, int] = (1, 1),
 ) -> tuple[int, int]:
-    """Infer `(galaxy, system)` from Galaxy HTML inputs/selects/headers or URL query params."""
+    """Infer `(galaxy, system)` from Galaxy HTML JSON payload, inputs/selects/headers, or URL query params."""
     soup = BeautifulSoup(html or "", "html.parser")
     gal_found: Optional[int] = None
     sys_found: Optional[int] = None
+
+    # 0. Live 2D Galaxy `#json-element` payload (`window.si.result.position`) — authoritative after AJAX
+    #    `window.si.navigate(g, s)` because `<input value="...">`, inline `SI_TPL.galaxy`, and `location.href`
+    #    remain frozen on the initial full-page load coordinates.
+    json_el = soup.find(id="json-element")
+    if json_el is not None:
+        raw_jtxt = (json_el.string if json_el.string is not None else json_el.get_text("", strip=True)) or ""
+        if raw_jtxt.strip():
+            try:
+                parsed_j = json.loads(raw_jtxt)
+            except Exception:
+                parsed_j = None
+            if isinstance(parsed_j, Mapping):
+                pos_j = parsed_j.get("position")
+                src_pos = pos_j if isinstance(pos_j, Mapping) else parsed_j
+                jg = _valid_gal(src_pos.get("galaxy", src_pos.get("gal")))
+                js = _valid_sys(src_pos.get("system", src_pos.get("sun")))
+                if jg is not None and js is not None:
+                    return jg, js
 
     # 1. Input fields (`galaxy`/`gal`/`g`, `system`/`sun`/`s`)
     for inp in soup.find_all("input"):

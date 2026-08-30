@@ -1275,6 +1275,27 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertIsNone(msgs[0].spy_report)
         self.assertTrue(is_non_spy_notice_text(msgs[0].body_text))
 
+    def test_extract_galaxy_system_coords_prefers_live_json_element_over_stale_ajax_dom(self) -> None:
+        from spaceinvasion.fleet import extract_galaxy_system_coords
+
+        # After an in-place 2D Galaxy AJAX `window.si.navigate(2, 387)`, `<input value="129">`,
+        # inline `SI_TPL.galaxy = {galaxy: 2, sun: 129}`, and `location.href` remain frozen on
+        # the initial page load (02:129), while `#json-element` holds live `window.si.result`.
+        ajax_html = """
+        <html><body>
+          <script>SI_TPL.galaxy = { galaxy: 2, sun: 129 };</script>
+          <input name="galaxy" value="2" />
+          <input name="system" value="129" />
+          <textarea id="json-element">{"position":{"galaxy":2,"system":387},"planets":{}}</textarea>
+        </body></html>
+        """
+        gal, sys_n = extract_galaxy_system_coords(
+            ajax_html,
+            url="https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&g=2&s=129",
+            default=(1, 1),
+        )
+        self.assertEqual((gal, sys_n), (2, 387))
+
 
 if __name__ == "__main__":
     unittest.main()
