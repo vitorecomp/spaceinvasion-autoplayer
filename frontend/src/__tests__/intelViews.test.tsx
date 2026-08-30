@@ -833,17 +833,82 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
     });
   });
 
-  it("renders SectorsView with sortable columns, filters, and Refresh vs Discovery split controls", async () => {
+  it("renders SectorsView with all 14 galaxies, upcoming scan queue, sortable columns, and Refresh vs Discovery split controls", async () => {
     const sectorsSeed = {
       ok: true,
       origin_coords: "02:380:12",
-      galaxies_available: [2, 3],
+      galaxies_available: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+      galaxy_stats: Array.from({ length: 14 }, (_, idx) => {
+        const g = idx + 1;
+        return {
+          galaxy: g,
+          is_owned: g === 2,
+          in_sweep_scope: true,
+          scanned_count: g === 2 || g === 3 ? 1 : 0,
+          unscanned_count: g === 2 || g === 3 ? 399 : 400,
+          total_systems: 400,
+          coverage_pct: g === 2 || g === 3 ? 0.25 : 0,
+          occupied_count: g === 2 ? 11 : g === 3 ? 4 : 0,
+          debris_count: g === 2 ? 2 : 0,
+          target_count: g === 2 ? 3 : 0,
+          prime_free_count: g === 2 ? 1 : g === 3 ? 3 : 0,
+          queued_count: g === 1 || g === 2 ? 1 : 0,
+        };
+      }),
+      scan_queue: [
+        {
+          queue_pos: 1,
+          sector: "01:380",
+          galaxy: 1,
+          system: 380,
+          phase: "exploratory",
+          scanned: false,
+          last_scanned_ts: 0,
+          age_seconds: null,
+          scan_count: 0,
+          occupied_count: 0,
+          debris_count: 0,
+          target_count: 0,
+          free_count: 0,
+          prime_colony_free_count: 0,
+          direct_raid_count: 0,
+          owner_affinity_raid_count: 0,
+          system_distance: 400,
+          galaxy_delta: 1,
+          system_delta: 0,
+          score: 365.0,
+          reason: "unscanned sector (dist 400)",
+        },
+        {
+          queue_pos: 2,
+          sector: "02:382",
+          galaxy: 2,
+          system: 382,
+          phase: "targeted_refresh",
+          scanned: true,
+          last_scanned_ts: 1700001000,
+          age_seconds: 900,
+          scan_count: 4,
+          occupied_count: 11,
+          debris_count: 2,
+          target_count: 3,
+          free_count: 5,
+          prime_colony_free_count: 1,
+          direct_raid_count: 5,
+          owner_affinity_raid_count: 2,
+          system_distance: 2,
+          galaxy_delta: 0,
+          system_delta: 2,
+          score: 48.2,
+          reason: "near d=2, debris x2",
+        },
+      ],
       summary: {
         scanned_sectors: 2,
         total_scanned_all_galaxies: 2,
         explored_systems: 2,
-        total_systems: 400,
-        coverage_pct: 0.5,
+        total_systems: 5600,
+        coverage_pct: 0.04,
         universe_explored_systems: 2,
         universe_total_systems: 5600,
         universe_coverage_pct: 0.04,
@@ -861,12 +926,20 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
         discovery_pct: 80,
         effective_refresh_pct: 20,
         effective_discovery_pct: 80,
+        scan_all_galaxies: false,
+        queue_count: 2,
+        queue_discovery_count: 1,
+        queue_refresh_count: 1,
+        queue_galaxies: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
       },
       sectors: [
         {
           sector: "02:382",
           galaxy: 2,
           system: 382,
+          scanned: true,
+          queue_pos: 2,
+          queue_phase: "targeted_refresh",
           occupied_count: 11,
           max_slots: 16,
           active_occupied_count: 8,
@@ -893,6 +966,9 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
           sector: "03:010",
           galaxy: 3,
           system: 10,
+          scanned: true,
+          queue_pos: null,
+          queue_phase: null,
           occupied_count: 4,
           max_slots: 16,
           active_occupied_count: 4,
@@ -930,7 +1006,25 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
     expect(container.querySelector("#sec-kpi-coverage")?.textContent).toContain("UNI 0.0%");
     expect(container.querySelector("#sec-kpi-occupied")?.textContent).toContain("15 Occupied");
     expect(container.querySelector("#sec-kpi-debris")?.textContent).toContain("2 Debris");
+    // All 14 galaxy chips (G1..G14) + All G chip render
+    expect(container.querySelectorAll('[data-sec-gal]').length).toBe(15);
+    expect(container.querySelector('[data-sec-gal="14"]')?.textContent).toContain("G14 (0)");
+    // Upcoming Scan Queue table renders both discovery & refresh entries
+    expect(container.querySelector("#sec-queue-meta")?.textContent).toContain("2 QUEUED");
+    expect(container.querySelectorAll("#sectors-queue-tbody tr").length).toBe(2);
+    expect(container.querySelector("#sectors-queue-tbody")?.textContent).toContain("01:380");
+    expect(container.querySelector("#sectors-queue-tbody")?.textContent).toContain("DISCOVERY");
+    expect(container.querySelector("#sectors-queue-tbody")?.textContent).toContain("REFRESH");
+
+    // Filter queue to Discovery only, then reset to All
+    fireEvent.click(container.querySelector('[data-sec-qfilter="exploratory"]')!);
+    expect(container.querySelectorAll("#sectors-queue-tbody tr").length).toBe(1);
+    expect(container.querySelector("#sectors-queue-tbody")?.textContent).toContain("01:380");
+    fireEvent.click(container.querySelector('[data-sec-qfilter="all"]')!);
+    expect(container.querySelectorAll("#sectors-queue-tbody tr").length).toBe(2);
+
     expect(container.querySelector("#sectors-tbody")?.textContent).toContain("02:382");
+    expect(container.querySelector("#sectors-tbody")?.textContent).toContain("#2");
     expect(container.querySelector("#sectors-tbody")?.textContent).toContain("11 / 16");
     expect(container.querySelector("#sectors-tbody")?.textContent).toContain("2 sys");
     expect(container.querySelector("#sectors-tbody")?.textContent).toContain("1G · 370 sys");
@@ -951,9 +1045,15 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
     fireEvent.click(occHeaderBtn); // asc: 4/16 first
     expect(container.querySelectorAll("#sectors-tbody tr")[0].textContent).toContain("03:010");
 
-    // Trigger single-sector refresh on first row (03:010)
+    // Click Scan Now on queue item #1 (01:380) and single-sector refresh on first row (03:010)
+    fireEvent.click(container.querySelector("#sectors-queue-tbody tr button")!);
     fireEvent.click(container.querySelector("#sectors-tbody tr button")!);
     await waitFor(() => {
+      expect(
+        commandCalls.some(
+          (c) => c.command === "scan_galaxy" && c.galaxy === 1 && c.system === 380
+        )
+      ).toBe(true);
       expect(
         commandCalls.some(
           (c) => c.command === "scan_galaxy" && c.galaxy === 3 && c.system === 10
@@ -961,11 +1061,24 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
       ).toBe(true);
     });
 
-    // Edit Refresh % -> syncs Discovery % and saves config via Apply Split
+    // Clicking G4 chip requests galaxy 4 including unscanned sectors
+    fireEvent.click(container.querySelector('[data-sec-gal="4"]')!);
+    await waitFor(() => {
+      expect(
+        commandCalls.some(
+          (c) => c.command === "scanned_sectors" && c.galaxy === 4 && c.include_unscanned === true
+        )
+      ).toBe(true);
+    });
+
+    // Edit Refresh % + toggle All 14 Galaxies -> syncs Discovery % and saves config via Apply Split
     const refInput = container.querySelector("#sec-refresh-pct") as HTMLInputElement;
     const discInput = container.querySelector("#sec-discovery-pct") as HTMLInputElement;
+    const allGalsCb = container.querySelector("#sec-all-galaxies") as HTMLInputElement;
     fireEvent.change(refInput, { target: { value: "35" } });
+    fireEvent.click(allGalsCb);
     expect(discInput.value).toBe("65");
+    expect(allGalsCb.checked).toBe(true);
     expect(container.querySelector("#sec-split-readout")?.textContent).toContain(
       "35 Refresh · 65 Discovery"
     );
@@ -978,7 +1091,8 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
             c.command === "update_config" &&
             c.config?.galaxy_scan_refresh_pct === 35 &&
             c.config?.galaxy_sweep_pages === 100 &&
-            c.config?.galaxy_scan_explore_first === true
+            c.config?.galaxy_scan_explore_first === true &&
+            c.config?.galaxy_scan_all_galaxies === true
         )
       ).toBe(true);
     });

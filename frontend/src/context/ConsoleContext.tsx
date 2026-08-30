@@ -413,7 +413,7 @@ export interface ConsoleContextValue {
   refreshCombatForSelectedPlanet: (opts?: { refresh?: boolean }) => Promise<boolean>;
   sectorsData: Record<string, any> | null;
   setSectorsData: (data: Record<string, any> | null) => void;
-  refreshSectorsView: (galaxyOverride?: number) => Promise<void>;
+  refreshSectorsView: (galaxyOverride?: number, includeUnscannedOverride?: boolean) => Promise<void>;
   espData: Record<string, any> | null;
   setEspData: (data: Record<string, any> | null) => void;
   refreshEspionageView: () => Promise<void>;
@@ -906,12 +906,17 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   );
 
   const refreshSectorsView = useCallback(
-    async (galaxyOverride?: number) => {
+    async (galaxyOverride?: number, includeUnscannedOverride?: boolean) => {
       try {
         const gal =
           galaxyOverride !== undefined
             ? galaxyOverride
             : Math.max(0, Math.round(safeFiniteNumber(sharedLegacyState.sectorGalaxy, 0) ?? 0));
+        const curFilter = String(sharedLegacyState.sectorFilter || "all");
+        const incUnscanned =
+          includeUnscannedOverride !== undefined
+            ? includeUnscannedOverride
+            : gal > 0 || curFilter === "unscanned";
         const planet = selectActivePlanet(
           sharedLegacyState.dashboard,
           sharedLegacyState.selectedPlanetId
@@ -919,6 +924,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         const payload: Record<string, any> = {
           command: "scanned_sectors",
           limit: 5600,
+          include_unscanned: incUnscanned,
         };
         if (gal > 0) payload.galaxy = gal;
         if (planet?.planet_id) payload.planet_id = planet.planet_id;

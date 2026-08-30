@@ -317,6 +317,16 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
         step: 5,
       },
       {
+        key: "galaxy_scan_all_galaxies",
+        id: "cfg-galaxy_scan_all_galaxies",
+        title: "Smart Scan Scope: Discover Across All 14 Galaxies (G1–G14)",
+        boundsLabel: "default: false · boolean",
+        description:
+          "When enabled, smart galaxy sweeps and the Sectors Scan Queue expand beyond galaxies where you already own a colony to discover and refresh all 14 galaxies (G1–G14) outward from your colonies (nearest neighbor galaxies first). When disabled, sweeps stay inside owned galaxies unless a mixed Refresh/Discovery split (1–99%) has already finished 100% of owned galaxies. Boolean toggle.",
+        control: "checkbox",
+        defaultValue: false,
+      },
+      {
         key: "galaxy_scan_near_weight",
         id: "cfg-galaxy_scan_near_weight",
         title: "Smart Scan Phase 2: Near-Sector Proximity Weight",

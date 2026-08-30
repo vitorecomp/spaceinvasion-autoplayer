@@ -134,6 +134,7 @@ export interface StrategyConfigData {
   galaxy_scan_click_jitter_seconds?: number;
   galaxy_scan_explore_first?: boolean;
   galaxy_scan_refresh_pct?: number;
+  galaxy_scan_all_galaxies?: boolean;
   galaxy_scan_near_weight?: number;
   galaxy_scan_attack_weight?: number;
   reserved_spy_slots?: number;
@@ -232,10 +233,57 @@ export interface UniverseResearchMaxRow {
   [key: string]: any;
 }
 
+export interface GalaxyStatsItem {
+  galaxy: number;
+  is_owned?: boolean;
+  in_sweep_scope?: boolean;
+  scanned_count: number;
+  unscanned_count: number;
+  total_systems: number;
+  coverage_pct: number;
+  occupied_count: number;
+  debris_count: number;
+  target_count: number;
+  prime_free_count: number;
+  queued_count: number;
+  [key: string]: any;
+}
+
+export interface ScanQueueItem {
+  queue_pos: number;
+  sector: string;
+  galaxy: number;
+  system: number;
+  phase: "exploratory" | "targeted_refresh" | string;
+  scanned: boolean;
+  last_scanned_ts: number;
+  age_seconds: number | null;
+  scan_count: number;
+  occupied_count: number;
+  debris_count: number;
+  target_count: number;
+  free_count: number;
+  prime_colony_free_count: number;
+  direct_raid_count: number;
+  owner_affinity_raid_count: number;
+  frequent_owners?: string[];
+  system_distance: number | null;
+  circular_distance?: number | null;
+  galaxy_delta: number | null;
+  system_delta: number | null;
+  score: number;
+  importance?: number;
+  reason?: string;
+  [key: string]: any;
+}
+
 export interface ScannedSectorItem {
   sector: string;
   galaxy: number;
   system: number;
+  scanned?: boolean;
+  queue_pos?: number | null;
+  queue_phase?: string | null;
   occupied_count: number;
   max_slots?: number;
   active_occupied_count?: number;
@@ -265,6 +313,8 @@ export interface ScannedSectorItem {
 
 export interface ScannedSectorsSummary {
   scanned_sectors?: number;
+  unscanned_sectors_in_view?: number;
+  unscanned_total_all_galaxies?: number;
   total_scanned_all_galaxies?: number;
   explored_systems?: number;
   unscanned_systems?: number;
@@ -288,6 +338,7 @@ export interface ScannedSectorsSummary {
   sweep_interval_seconds?: number;
   allow_galaxy_scan?: boolean;
   explore_first?: boolean;
+  scan_all_galaxies?: boolean;
   refresh_pct?: number;
   discovery_pct?: number;
   effective_refresh_pct?: number;
@@ -296,6 +347,10 @@ export interface ScannedSectorsSummary {
   planned_discovery_pages?: number;
   next_batch_refresh_count?: number;
   next_batch_discovery_count?: number;
+  queue_count?: number;
+  queue_discovery_count?: number;
+  queue_refresh_count?: number;
+  queue_galaxies?: number[];
   scan_phase?: string;
   [key: string]: any;
 }
@@ -305,7 +360,11 @@ export interface ScannedSectorsPayload {
   command?: string;
   origin_coords?: string;
   galaxy_filter?: number;
+  include_unscanned?: boolean;
   galaxies_available?: number[];
+  galaxies_with_scans?: number[];
+  galaxy_stats?: GalaxyStatsItem[];
+  scan_queue?: ScanQueueItem[];
   summary?: ScannedSectorsSummary;
   sectors?: ScannedSectorItem[];
   [key: string]: any;

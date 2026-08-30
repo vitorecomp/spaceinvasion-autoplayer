@@ -461,6 +461,7 @@ class StrategyConfig:
     galaxy_scan_click_jitter_seconds: float = 0.6
     galaxy_scan_explore_first: bool = True
     galaxy_scan_refresh_pct: int = 0
+    galaxy_scan_all_galaxies: bool = False
     galaxy_scan_near_weight: float = 2.0
     galaxy_scan_attack_weight: float = 3.0
     reserved_spy_slots: int = 1
@@ -1152,6 +1153,7 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         ),
         galaxy_scan_explore_first=_safe_cfg_bool(data.get("galaxy_scan_explore_first"), True),
         galaxy_scan_refresh_pct=max(0, min(100, _safe_cfg_int(data.get("galaxy_scan_refresh_pct"), 0))),
+        galaxy_scan_all_galaxies=_safe_cfg_bool(data.get("galaxy_scan_all_galaxies"), False),
         galaxy_scan_near_weight=max(
             0.0, min(20.0, _safe_cfg_float(data.get("galaxy_scan_near_weight"), 2.0))
         ),
@@ -1382,6 +1384,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
     scan_click_jitter = max(0.0, min(30.0, _safe_cfg_float(cfg.galaxy_scan_click_jitter_seconds, 0.6)))
     scan_explore_first = _safe_cfg_bool(cfg.galaxy_scan_explore_first, True)
     scan_refresh_pct = max(0, min(100, _safe_cfg_int(cfg.galaxy_scan_refresh_pct, 0)))
+    scan_all_galaxies = _safe_cfg_bool(cfg.galaxy_scan_all_galaxies, False)
     scan_near_weight = max(0.0, min(20.0, _safe_cfg_float(cfg.galaxy_scan_near_weight, 2.0)))
     scan_attack_weight = max(0.0, min(20.0, _safe_cfg_float(cfg.galaxy_scan_attack_weight, 3.0)))
     res_spy_slots = max(0, min(10, _safe_cfg_int(cfg.reserved_spy_slots, 1)))
@@ -1441,6 +1444,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         f"galaxy_scan_click_jitter_seconds: {scan_click_jitter}",
         f"galaxy_scan_explore_first: {'true' if scan_explore_first else 'false'}",
         f"galaxy_scan_refresh_pct: {scan_refresh_pct}",
+        f"galaxy_scan_all_galaxies: {'true' if scan_all_galaxies else 'false'}",
         f"galaxy_scan_near_weight: {scan_near_weight}",
         f"galaxy_scan_attack_weight: {scan_attack_weight}",
         f"reserved_spy_slots: {res_spy_slots}",

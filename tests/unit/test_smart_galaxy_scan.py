@@ -582,10 +582,18 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="si_sec_api_") as tmp:
             tmp_path = Path(tmp)
             cfg_path = tmp_path / "config.yaml"
-            save_strategy_config(StrategyConfig(galaxy_scan_refresh_pct=25, galaxy_sweep_pages=80), cfg_path)
+            save_strategy_config(
+                StrategyConfig(
+                    galaxy_scan_refresh_pct=25,
+                    galaxy_sweep_pages=80,
+                    galaxy_scan_all_galaxies=True,
+                ),
+                cfg_path,
+            )
             reloaded = load_strategy_config(cfg_path)
             self.assertEqual(reloaded.galaxy_scan_refresh_pct, 25)
             self.assertEqual(reloaded.galaxy_sweep_pages, 80)
+            self.assertTrue(reloaded.galaxy_scan_all_galaxies)
 
             db = GameDatabase(tmp_path / "state.db")
             bridge: GameApiBridge | None = None
@@ -657,9 +665,23 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
                 res = bridge.handle_command({"command": "scanned_sectors"})
                 self.assertTrue(res["ok"])
                 self.assertEqual(res["origin_coords"], "02:150:05")
-                self.assertEqual(res["galaxies_available"], [2])
+                self.assertEqual(res["galaxies_available"], list(range(1, 15)))
+                self.assertEqual(res["galaxies_with_scans"], [2])
+                self.assertEqual(len(res["galaxy_stats"]), 14)
+                g2_stat = next(gs for gs in res["galaxy_stats"] if gs["galaxy"] == 2)
+                g3_stat = next(gs for gs in res["galaxy_stats"] if gs["galaxy"] == 3)
+                self.assertTrue(g2_stat["is_owned"])
+                self.assertEqual(g2_stat["scanned_count"], 2)
+                self.assertEqual(g2_stat["unscanned_count"], 398)
+                self.assertEqual(g3_stat["scanned_count"], 0)
+                self.assertEqual(g3_stat["unscanned_count"], 400)
+                self.assertEqual(len(res["scan_queue"]), 80)
+                self.assertEqual(res["scan_queue"][0]["queue_pos"], 1)
+                self.assertTrue(any(q["phase"] == "exploratory" for q in res["scan_queue"]))
+                self.assertTrue(any(q["phase"] == "targeted_refresh" for q in res["scan_queue"]))
                 self.assertEqual(len(res["sectors"]), 2)
                 by_sec = {s["sector"]: s for s in res["sectors"]}
+                self.assertTrue(by_sec["02:152"]["scanned"])
                 self.assertEqual(by_sec["02:152"]["occupied_count"], 1)
                 self.assertEqual(by_sec["02:152"]["debris_count"], 1)
                 self.assertEqual(by_sec["02:152"]["prime_colony_free_count"], 1)
@@ -670,19 +692,109 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
                 self.assertEqual(res["summary"]["discovery_pct"], 75)
                 self.assertEqual(res["summary"]["planned_refresh_pages"], 20)
                 self.assertEqual(res["summary"]["planned_discovery_pages"], 60)
+                self.assertTrue(res["summary"]["scan_all_galaxies"])
+                self.assertEqual(res["summary"]["queue_count"], 80)
+
+                # Single-galaxy view on unscanned G3 returns all 400 systems with distances
+                res_g3 = bridge.handle_command({"command": "scanned_sectors", "galaxy": 3})
+                self.assertTrue(res_g3["ok"])
+                self.assertEqual(res_g3["galaxy_filter"], 3)
+                self.assertEqual(len(res_g3["sectors"]), 400)
+                self.assertTrue(all(s["galaxy"] == 3 and not s["scanned"] for s in res_g3["sectors"]))
+                s3_150 = next(s for s in res_g3["sectors"] if s["sector"] == "03:150")
+                self.assertEqual(s3_150["system_distance"], 400)
+
+                # All-galaxy view with include_unscanned=True appends unscanned sectors across G1..G14
+                res_inc = bridge.handle_command({"command": "scanned_sectors", "include_unscanned": True})
+                self.assertTrue(res_inc["ok"])
+                self.assertGreater(len(res_inc["sectors"]), 2)
+                self.assertTrue(any(not s["scanned"] for s in res_inc["sectors"]))
 
                 upd = bridge.handle_command(
                     {
                         "command": "update_config",
-                        "config": {"galaxy_scan_refresh_pct": 40, "galaxy_sweep_pages": 50},
+                        "config": {
+                            "galaxy_scan_refresh_pct": 40,
+                            "galaxy_sweep_pages": 50,
+                            "galaxy_scan_all_galaxies": False,
+                        },
                     }
                 )
                 self.assertTrue(upd["ok"])
                 self.assertEqual(upd["config"]["galaxy_scan_refresh_pct"], 40)
+                self.assertFalse(upd["config"]["galaxy_scan_all_galaxies"])
                 res2 = bridge.handle_command({"command": "scanned_sectors"})
                 self.assertEqual(res2["summary"]["refresh_pct"], 40)
                 self.assertEqual(res2["summary"]["planned_refresh_pages"], 20)
                 self.assertEqual(res2["summary"]["planned_discovery_pages"], 30)
+                self.assertFalse(res2["summary"]["scan_all_galaxies"])
+                self.assertEqual(len(res2["scan_queue"]), 50)
+            finally:
+                if bridge is not None and bridge._db is not None:
+                    bridge._db.close()
+                db.close()
+
+    def test_mixed_split_spills_discovery_to_all_14_galaxies_when_owned_galaxy_is_full(self) -> None:
+        from spaceinvasion.api_server import GameApiBridge
+        from spaceinvasion.config import save_strategy_config, StrategyConfig
+        from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
+
+        now = 1_750_000_000.0
+        with tempfile.TemporaryDirectory(prefix="si_sec_spill_") as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.yaml"
+            # galaxy_scan_all_galaxies=False, but mixed 30% Refresh / 70% Discovery on a 100% scanned G2
+            save_strategy_config(
+                StrategyConfig(
+                    galaxy_scan_refresh_pct=30,
+                    galaxy_sweep_pages=40,
+                    galaxy_scan_all_galaxies=False,
+                ),
+                cfg_path,
+            )
+            db = GameDatabase(tmp_path / "state.db")
+            bridge: GameApiBridge | None = None
+            try:
+                for sys_i in range(1, 401):
+                    db.record_galaxy_scan(2, sys_i, [], ts=now - 1800.0 - sys_i)
+                bridge = GameApiBridge(
+                    config_path=cfg_path,
+                    db_path=tmp_path / "state.db",
+                )
+                bridge._last_state = GameState(
+                    universe_id=31,
+                    user_id=1,
+                    nickname="tester",
+                    timestamp=now,
+                    planets=(
+                        PlanetState(
+                            planet_id=101,
+                            name="Home",
+                            coords="02:380:12",
+                            planet_type="normal",
+                            temperature=28,
+                            fields_used=20,
+                            fields_max=300,
+                            resources=Resources(1000, 1000, 1000, 500),
+                            storage=Resources(50000, 50000, 50000, 50000),
+                            energy=EnergyBalance(100, 50),
+                        ),
+                    ),
+                    active_planet_id=101,
+                )
+
+                res = bridge.handle_command({"command": "scanned_sectors"})
+                self.assertTrue(res["ok"])
+                self.assertEqual(res["summary"]["queue_galaxies"], list(range(1, 15)))
+                q = res["scan_queue"]
+                self.assertEqual(len(q), 40)
+                disc_items = [it for it in q if it["phase"] == "exploratory"]
+                ref_items = [it for it in q if it["phase"] == "targeted_refresh"]
+                self.assertEqual(len(ref_items), 12)  # 30% of 40
+                self.assertEqual(len(disc_items), 28)  # 70% of 40
+                # Discovery expands into nearest neighbor galaxies G1 and G3!
+                self.assertTrue({it["galaxy"] for it in disc_items}.issubset({1, 3}))
+                self.assertTrue(all(it["galaxy"] == 2 for it in ref_items))
             finally:
                 if bridge is not None and bridge._db is not None:
                     bridge._db.close()
