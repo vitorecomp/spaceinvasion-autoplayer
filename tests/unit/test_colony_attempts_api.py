@@ -240,6 +240,10 @@ class TestColonyAttemptsApi(unittest.TestCase):
         self.assertEqual(rows[0]["fields_rolled"], 164)
         self.assertEqual(rows[1]["planet_id"], 202)
         self.assertEqual(rows[1]["fields_rolled"], 342)
+        summary = db.get_colony_attempts_summary()
+        self.assertEqual(summary["kept_count"], 1)
+        self.assertEqual(summary["by_coords"]["02:382:04"]["kept_count"], 0)
+        self.assertEqual(summary["by_coords"]["02:381:08"]["kept_count"], 1)
 
         # A restarted bridge hydrates the dedupe set and does not re-record on reappearance.
         bridge2 = self._make_bridge()

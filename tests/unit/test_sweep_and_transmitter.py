@@ -980,6 +980,61 @@ class TestSweepAndTransmitter(unittest.TestCase):
         self.assertTrue(res_ab.validated)
         self.assertEqual(clicked_els, ["confirmPlanetDeletion('02:380:08', 12999)", "executeDeletePlanet();"])
 
+        # 3b. Non-interactable/hidden del_trigger + delayed visible #delete-confirm falls back to JS click safely!
+        from selenium.common.exceptions import ElementNotInteractableException
+
+        js_clicks: list[str] = []
+        modal_state = {"visible": False, "pid": 0, "coords": ""}
+
+        class _HiddenFakeEl:
+            def __init__(self, oc: str, *, displayed_fn) -> None:
+                self._oc = oc
+                self._displayed_fn = displayed_fn
+
+            def get_attribute(self, name: str) -> str:
+                return self._oc if name == "onclick" else ""
+
+            def is_displayed(self) -> bool:
+                return bool(self._displayed_fn())
+
+            def click(self) -> None:
+                raise ElementNotInteractableException("element not interactable")
+
+        def _exec_js(script: str, *args):
+            if "arguments[0].click()" in script and args:
+                oc = args[0].get_attribute("onclick")
+                js_clicks.append(oc)
+                if "confirmPlanetDeletion" in oc:
+                    modal_state["visible"] = True
+                    modal_state["pid"] = 12999
+                    modal_state["coords"] = "02:380:08"
+                return None
+            if "_planet_deleteID" in script:
+                return {"pid": modal_state["pid"], "coords": modal_state["coords"]}
+            return None
+
+        fake_hidden_client = MagicMock()
+        fake_hidden_client.navigate_menu.return_value = settings_before
+        fake_hidden_client._wait_frame_ready.return_value = settings_after
+        fake_hidden_client.read_planets_overview.return_value = replace(st_col_top, planets=(homeworld,))
+        fake_hidden_client.driver.execute_script.side_effect = _exec_js
+
+        def _find_hidden_els(_by, sel: str):
+            if "confirmPlanetDeletion" in sel:
+                return [
+                    _HiddenFakeEl("confirmPlanetDeletion('02:380:12', 12476)", displayed_fn=lambda: False),
+                    _HiddenFakeEl("confirmPlanetDeletion('02:380:08', 12999)", displayed_fn=lambda: False),
+                ]
+            if "executeDeletePlanet" in sel:
+                return [_HiddenFakeEl("executeDeletePlanet();", displayed_fn=lambda: modal_state["visible"])]
+            return []
+
+        fake_hidden_client.driver.find_elements.side_effect = _find_hidden_els
+        res_hidden_ab = exec_ab.execute_action(fake_hidden_client, st_col_top, ab_act)
+        self.assertTrue(res_hidden_ab.executed, res_hidden_ab.message)
+        self.assertTrue(res_hidden_ab.validated)
+        self.assertEqual(js_clicks, ["confirmPlanetDeletion('02:380:08', 12999)", "executeDeletePlanet();"])
+
         # Attempting to execute ABANDON_COLONY against Homeworld 12476 is strictly blocked!
         bad_hw_act = replace(ab_act, planet_id=12476, planet_coords="02:380:12")
         res_hw = exec_ab.execute_action(fake_client, st_col_top, bad_hw_act)
@@ -1418,6 +1473,59 @@ class TestSweepAndTransmitter(unittest.TestCase):
         self.assertEqual(scans[0].target_name, "Galaxy [02:381]")
         self.assertIn("[explore:", scans[0].reason)
         self.assertTrue(scans[0].executable_now)
+
+    def test_espionage_intel_attaches_origin_and_distances(self) -> None:
+        import json
+        from spaceinvasion.combat.fleet import GalaxySlot, SpyReport
+
+        with tempfile.TemporaryDirectory(prefix="si_esp_dist_") as tmp_dir:
+            tp = Path(tmp_dir)
+            bridge = GameApiBridge(
+                debug_port=19992,
+                config_path=tp / "cfg.yaml",
+                db_path=tp / "esp.db",
+                log_dir=None,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                assert bridge._db is not None
+                origin = _make_planet(101, "02:380:12", ships={"s10": 8})
+                bridge._last_state = GameState(31, 7, "cmdr", 1_700_000_500.0, (origin,), active_planet_id=101)
+                bridge._db.record_galaxy_slots(
+                    [
+                        GalaxySlot(coords="02:383:02", position=2, name="Spacia", owner="Spacia", status_color="yellow", is_spacia=True),
+                        GalaxySlot(coords="03:392:05", position=5, name="Far", owner="FarUser", status_color="yellow"),
+                    ],
+                    ts=1_700_000_400.0,
+                )
+                bridge._db.record_spy_report(
+                    SpyReport(
+                        target_coords="02:383:02",
+                        planet_name="Spacia",
+                        owner="Spacia",
+                        is_spacia=True,
+                        resources=Resources(24000, 10000, 6000, 1000),
+                    ),
+                    ts=1_700_000_450.0,
+                )
+                resp = bridge.handle_command({"command": "espionage_intel"})
+                self.assertTrue(resp["ok"])
+                self.assertEqual(resp["origin_coords"], "02:380:12")
+                by_coords = {t["coords"]: t for t in resp["targets"]}
+                self.assertEqual(by_coords["02:383:02"]["system_distance"], 3)
+                self.assertEqual(by_coords["02:383:02"]["galaxy_delta"], 0)
+                self.assertEqual(by_coords["02:383:02"]["system_delta"], 3)
+                self.assertEqual(by_coords["02:383:02"]["position_delta"], 10)
+                self.assertAlmostEqual(by_coords["02:383:02"]["distance"], 2985.0)
+                self.assertEqual(by_coords["03:392:05"]["galaxy_delta"], 1)
+                self.assertEqual(by_coords["03:392:05"]["system_delta"], 12)
+                self.assertEqual(by_coords["03:392:05"]["system_distance"], 412)
+                self.assertAlmostEqual(by_coords["03:392:05"]["distance"], 20000.0)
+                self.assertEqual(resp["reports"][0]["system_distance"], 3)
+                self.assertAlmostEqual(resp["reports"][0]["distance"], 2985.0)
+                json.dumps(resp, allow_nan=False)
+            finally:
+                bridge.close()
 
 
 if __name__ == "__main__":

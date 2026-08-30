@@ -14,6 +14,80 @@ export interface EspionageViewProps {
   hidden?: boolean;
 }
 
+interface ParsedCoords {
+  g: number;
+  s: number;
+  p: number;
+}
+
+function parseCoordsTriple(raw: unknown): ParsedCoords | null {
+  const txt = String(raw ?? "").trim();
+  const m = txt.match(/(\d{1,2})\s*:\s*(\d{1,3})\s*:\s*(\d{1,2})/);
+  if (!m) return null;
+  const g = Number.parseInt(m[1], 10);
+  const s = Number.parseInt(m[2], 10);
+  const p = Number.parseInt(m[3], 10);
+  if (!Number.isFinite(g) || !Number.isFinite(s) || !Number.isFinite(p)) return null;
+  return { g, s, p };
+}
+
+export function formatEspionageDistance(
+  row: Record<string, any>,
+  originCoords: string,
+  targetCoords: string
+): { label: string; title: string } {
+  const oParsed = parseCoordsTriple(originCoords);
+  const tParsed = parseCoordsTriple(targetCoords);
+
+  let gDiff = finiteNum(row?.galaxy_delta, null);
+  let sDiff = finiteNum(row?.system_delta, null);
+  let pDiff = finiteNum(row?.position_delta, null);
+  let sysDist = finiteNum(row?.system_distance, null);
+  let flightDist = finiteNum(row?.distance, null);
+
+  if (oParsed && tParsed) {
+    if (gDiff === null) gDiff = Math.abs(oParsed.g - tParsed.g);
+    if (sDiff === null) sDiff = Math.abs(oParsed.s - tParsed.s);
+    if (pDiff === null) pDiff = Math.abs(oParsed.p - tParsed.p);
+    if (sysDist === null) sysDist = gDiff * 400 + sDiff;
+    if (flightDist === null) {
+      if (gDiff > 0) flightDist = 20000 * gDiff;
+      else if (sDiff > 0) flightDist = 2700 + 95 * sDiff;
+      else flightDist = 1000 + 5 * pDiff;
+    }
+  }
+
+  if (sysDist === null && gDiff === null && sDiff === null) {
+    return { label: "—", title: "Distance unavailable (missing origin or target coordinates)" };
+  }
+
+  const gInt = Math.max(0, Math.round(gDiff ?? 0));
+  const sInt = Math.max(0, Math.round(sDiff ?? Math.max(0, (sysDist ?? 0) - gInt * 400)));
+  const pInt = Math.max(0, Math.round(pDiff ?? 0));
+  const distStr =
+    flightDist !== null && flightDist >= 0 ? ` · Flight dist ${fmtInt(Math.round(flightDist))}` : "";
+  const fromStr = originCoords ? `From ${originCoords} · ` : "";
+
+  if (gInt > 0) {
+    const label = sInt > 0 ? `${gInt}G · ${sInt} sys` : `${gInt}G`;
+    return {
+      label,
+      title: `${fromStr}Δ${gInt} gal, Δ${sInt} sys${distStr}`,
+    };
+  }
+  if (sInt === 0) {
+    const posStr = pInt > 0 ? ` (pos Δ${pInt})` : "";
+    return {
+      label: "Same sys",
+      title: `${fromStr}Same system${posStr}${distStr}`,
+    };
+  }
+  return {
+    label: `${sInt} sys`,
+    title: `${fromStr}${sInt} solar systems away${distStr}`,
+  };
+}
+
 export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
   const {
     dashboard,
@@ -34,6 +108,9 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
   const espTab = uiPrefs.espTab === "reports" ? "reports" : "targets";
 
   const sum = espData?.summary || {};
+  const originCoords = String(
+    espData?.origin_coords || activePlanet?.coords || dashboard?.state?.planets?.[0]?.coords || ""
+  ).trim();
   const targets: Array<Record<string, any>> = Array.isArray(espData?.targets)
     ? espData!.targets
     : [];
@@ -209,7 +286,7 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
             <h2>Espionage Intelligence &amp; Spy Report Archive</h2>
             <span className="module-meta tabular" id="esp-meta-count">
               {espData
-                ? `${targets.length} TARGETS · ${reports.length} REPORTS`
+                ? `${targets.length} TARGETS · ${reports.length} REPORTS${originCoords ? ` · FROM ${originCoords}` : ""}`
                 : "0 TARGETS"}
             </span>
             <span
@@ -252,6 +329,7 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
               <thead>
                 <tr>
                   <th>Coords</th>
+                  <th className="col-right">Distance</th>
                   <th>Player / Planet</th>
                   <th>Status</th>
                   <th className="col-right">Fields</th>
@@ -264,13 +342,14 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
               <tbody id="esp-targets-tbody">
                 {targets.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="empty-cell">
+                    <td colSpan={9} className="empty-cell">
                       No espionage targets recorded yet. Run Scan Galaxy or Sync All Folders.
                     </td>
                   </tr>
                 ) : (
                   targets.map((t, idx) => {
                     const coords = String(t.coords || t.target_coords || "—");
+                    const dist = formatEspionageDistance(t, originCoords, coords);
                     const isSpacia = Boolean(t.is_spacia);
                     const isInact =
                       Boolean(t.is_inactive) || String(t.status_color || "") === "yellow";
@@ -295,6 +374,9 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
                     return (
                       <tr key={`${coords}-${idx}`}>
                         <td className="tabular">{coords}</td>
+                        <td className="col-right tabular" title={dist.title}>
+                          {dist.label}
+                        </td>
                         <td>
                           {[t.planet_name, t.owner].filter(Boolean).join(" · ") ||
                             "Uninhabited / Unknown"}
@@ -359,6 +441,7 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
                 <tr>
                   <th>Recorded</th>
                   <th>Coords</th>
+                  <th className="col-right">Distance</th>
                   <th>Owner / Planet</th>
                   <th className="col-right">Fields</th>
                   <th>Resources &amp; SpEq</th>
@@ -369,12 +452,14 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
               <tbody id="esp-reports-tbody">
                 {reports.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="empty-cell">
+                    <td colSpan={8} className="empty-cell">
                       No historical spy reports stored yet.
                     </td>
                   </tr>
                 ) : (
                   reports.map((r, idx) => {
+                    const rCoords = String(r.coords || r.target_coords || "—");
+                    const rDist = formatEspionageDistance(r, originCoords, rCoords);
                     const uf = finiteNum(r.uninhabited_fields, null);
                     const spEq = Math.round(finiteNum(r.spice_eq ?? r.loot_spice_eq, 0));
                     const bStr = formatUnitDictShort(r.buildings, 3);
@@ -386,7 +471,10 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
                         <td className="tabular">
                           {fmtShortDateTime(r.ts, r.msg_date_text)}
                         </td>
-                        <td className="tabular">{String(r.coords || "—")}</td>
+                        <td className="tabular">{rCoords}</td>
+                        <td className="col-right tabular" title={rDist.title}>
+                          {rDist.label}
+                        </td>
                         <td>
                           {[r.planet_name, r.owner].filter(Boolean).join(" · ") ||
                             (r.uninhabited_fields ? "Uninhabited Slot" : "Unknown")}

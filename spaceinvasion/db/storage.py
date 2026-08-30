@@ -6881,9 +6881,19 @@ class GameDatabase:
                     pending_dispatch_by_coords[norm_tc] = False
                 else:
                     c_entry["attempts_count"] += 1
-            elif ev in ("kept", "settled", "settled_kept"):
+            elif ev in ("kept", "settled_kept"):
                 kept_count += 1
                 c_entry["kept_count"] += 1
+                if pending_dispatch_by_coords.get(norm_tc, False):
+                    pending_dispatch_by_coords[norm_tc] = False
+                else:
+                    c_entry["attempts_count"] += 1
+            elif ev == "settled":
+                min_t_row = _safe_optional_int(r["min_fields_target"]) if r["min_fields_target"] is not None else None
+                eff_min_t = max(50, int(min_t_row)) if (min_t_row is not None and min_t_row >= 50) else 300
+                if f_rolled is not None and f_rolled >= eff_min_t:
+                    kept_count += 1
+                    c_entry["kept_count"] += 1
                 if pending_dispatch_by_coords.get(norm_tc, False):
                     pending_dispatch_by_coords[norm_tc] = False
                 else:

@@ -14712,7 +14712,64 @@
       }
     );
   };
+  function parseCoordsTriple(raw) {
+    const txt = String(raw ?? "").trim();
+    const m = txt.match(/(\d{1,2})\s*:\s*(\d{1,3})\s*:\s*(\d{1,2})/);
+    if (!m) return null;
+    const g = Number.parseInt(m[1], 10);
+    const s = Number.parseInt(m[2], 10);
+    const p = Number.parseInt(m[3], 10);
+    if (!Number.isFinite(g) || !Number.isFinite(s) || !Number.isFinite(p)) return null;
+    return { g, s, p };
+  }
+  function formatEspionageDistance(row, originCoords, targetCoords) {
+    const oParsed = parseCoordsTriple(originCoords);
+    const tParsed = parseCoordsTriple(targetCoords);
+    let gDiff = finiteNum(row == null ? void 0 : row.galaxy_delta, null);
+    let sDiff = finiteNum(row == null ? void 0 : row.system_delta, null);
+    let pDiff = finiteNum(row == null ? void 0 : row.position_delta, null);
+    let sysDist = finiteNum(row == null ? void 0 : row.system_distance, null);
+    let flightDist = finiteNum(row == null ? void 0 : row.distance, null);
+    if (oParsed && tParsed) {
+      if (gDiff === null) gDiff = Math.abs(oParsed.g - tParsed.g);
+      if (sDiff === null) sDiff = Math.abs(oParsed.s - tParsed.s);
+      if (pDiff === null) pDiff = Math.abs(oParsed.p - tParsed.p);
+      if (sysDist === null) sysDist = gDiff * 400 + sDiff;
+      if (flightDist === null) {
+        if (gDiff > 0) flightDist = 2e4 * gDiff;
+        else if (sDiff > 0) flightDist = 2700 + 95 * sDiff;
+        else flightDist = 1e3 + 5 * pDiff;
+      }
+    }
+    if (sysDist === null && gDiff === null && sDiff === null) {
+      return { label: "—", title: "Distance unavailable (missing origin or target coordinates)" };
+    }
+    const gInt = Math.max(0, Math.round(gDiff ?? 0));
+    const sInt = Math.max(0, Math.round(sDiff ?? Math.max(0, (sysDist ?? 0) - gInt * 400)));
+    const pInt = Math.max(0, Math.round(pDiff ?? 0));
+    const distStr = flightDist !== null && flightDist >= 0 ? ` · Flight dist ${fmtInt(Math.round(flightDist))}` : "";
+    const fromStr = originCoords ? `From ${originCoords} · ` : "";
+    if (gInt > 0) {
+      const label = sInt > 0 ? `${gInt}G · ${sInt} sys` : `${gInt}G`;
+      return {
+        label,
+        title: `${fromStr}Δ${gInt} gal, Δ${sInt} sys${distStr}`
+      };
+    }
+    if (sInt === 0) {
+      const posStr = pInt > 0 ? ` (pos Δ${pInt})` : "";
+      return {
+        label: "Same sys",
+        title: `${fromStr}Same system${posStr}${distStr}`
+      };
+    }
+    return {
+      label: `${sInt} sys`,
+      title: `${fromStr}${sInt} solar systems away${distStr}`
+    };
+  }
   const EspionageView = ({ hidden }) => {
+    var _a, _b, _c;
     const {
       dashboard,
       activePage,
@@ -14730,6 +14787,9 @@
     const isHidden = hidden ?? activePage !== "espionage";
     const espTab = uiPrefs.espTab === "reports" ? "reports" : "targets";
     const sum = (espData == null ? void 0 : espData.summary) || {};
+    const originCoords = String(
+      (espData == null ? void 0 : espData.origin_coords) || (activePlanet == null ? void 0 : activePlanet.coords) || ((_c = (_b = (_a = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a.planets) == null ? void 0 : _b[0]) == null ? void 0 : _c.coords) || ""
+    ).trim();
     const targets = Array.isArray(espData == null ? void 0 : espData.targets) ? espData.targets : [];
     const reports = Array.isArray(espData == null ? void 0 : espData.reports) ? espData.reports : [];
     const bestSpEq = targets.reduce(
@@ -14866,7 +14926,7 @@
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "SPY" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Espionage Intelligence & Spy Report Archive" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "esp-meta-count", children: espData ? `${targets.length} TARGETS · ${reports.length} REPORTS` : "0 TARGETS" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "esp-meta-count", children: espData ? `${targets.length} TARGETS · ${reports.length} REPORTS${originCoords ? ` · FROM ${originCoords}` : ""}` : "0 TARGETS" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   "span",
                   {
@@ -14903,6 +14963,7 @@
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "esp-pane-targets", hidden: espTab !== "targets", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Coords" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Distance" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Player / Planet" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Status" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Fields" }),
@@ -14911,8 +14972,9 @@
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Fleet / Defense" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "esp-targets-tbody", children: targets.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No espionage targets recorded yet. Run Scan Galaxy or Sync All Folders." }) }) : targets.map((t, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "esp-targets-tbody", children: targets.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 9, className: "empty-cell", children: "No espionage targets recorded yet. Run Scan Galaxy or Sync All Folders." }) }) : targets.map((t, idx) => {
                 const coords = String(t.coords || t.target_coords || "—");
+                const dist = formatEspionageDistance(t, originCoords, coords);
                 const isSpacia = Boolean(t.is_spacia);
                 const isInact = Boolean(t.is_inactive) || String(t.status_color || "") === "yellow";
                 const tags = [
@@ -14926,6 +14988,7 @@
                 const fdTxt = t.has_spy_intel ? fStr === "None" && dStr === "None" ? "Clear (0)" : `F:${fStr} / D:${dStr}` : "—";
                 return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: coords }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", title: dist.title, children: dist.label }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: [t.planet_name, t.owner].filter(Boolean).join(" · ") || "Uninhabited / Unknown" }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
                     "span",
@@ -14974,13 +15037,16 @@
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Recorded" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Coords" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Distance" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Owner / Planet" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Fields" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Resources & SpEq" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Buildings / Techs" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Fleet / Defense" })
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "esp-reports-tbody", children: reports.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 7, className: "empty-cell", children: "No historical spy reports stored yet." }) }) : reports.map((r, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "esp-reports-tbody", children: reports.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No historical spy reports stored yet." }) }) : reports.map((r, idx) => {
+                const rCoords = String(r.coords || r.target_coords || "—");
+                const rDist = formatEspionageDistance(r, originCoords, rCoords);
                 const uf = finiteNum(r.uninhabited_fields, null);
                 const spEq = Math.round(finiteNum(r.spice_eq ?? r.loot_spice_eq, 0));
                 const bStr = formatUnitDictShort(r.buildings, 3);
@@ -14989,7 +15055,8 @@
                 const dStr = formatUnitDictShort(r.defense, 3);
                 return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fmtShortDateTime(r.ts, r.msg_date_text) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: String(r.coords || "—") }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: rCoords }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", title: rDist.title, children: rDist.label }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: [r.planet_name, r.owner].filter(Boolean).join(" · ") || (r.uninhabited_fields ? "Uninhabited Slot" : "Unknown") }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: uf !== null && uf > 0 ? `${Math.round(uf)} fields` : "—" }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `${formatResourcesInline(r.resources)} (${fmtInt(spEq)} SpEq)` }),

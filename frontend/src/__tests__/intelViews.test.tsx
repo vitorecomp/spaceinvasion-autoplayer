@@ -383,9 +383,10 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
     });
   });
 
-  it("renders EspionageView targets & historical reports and dispatches Spy/Attack", async () => {
+  it("renders EspionageView targets & historical reports with Distance and dispatches Spy/Attack", async () => {
     const espSeed = {
-      summary: { spied_targets: 1, total_targets: 1, total_reports: 1, spacia_count: 1 },
+      origin_coords: "02:380:12",
+      summary: { spied_targets: 1, total_targets: 2, total_reports: 1, spacia_count: 1 },
       targets: [
         {
           coords: "02:383:02",
@@ -393,8 +394,24 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
           owner: "Spacia",
           is_spacia: true,
           has_spy_intel: true,
+          distance: 2985,
+          system_distance: 3,
+          galaxy_delta: 0,
+          system_delta: 3,
+          position_delta: 10,
           resources: { pig_iron: 40000, metal: 20000, kryptonite: 10000, spice: 5000 },
           spice_eq: 30000,
+          fleet: {},
+          defense: {},
+        },
+        {
+          coords: "03:392:05",
+          planet_name: "FarColony",
+          owner: "DistantOne",
+          is_inactive: true,
+          has_spy_intel: false,
+          resources: {},
+          spice_eq: 0,
           fleet: {},
           defense: {},
         },
@@ -425,12 +442,16 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
     await waitFor(() => {
       expect(container.querySelector("#esp-targets-tbody")?.textContent).toContain("02:383:02");
     });
+    expect(container.querySelector("#esp-meta-count")?.textContent).toContain("FROM 02:380:12");
+    expect(container.querySelector("#esp-targets-tbody")?.textContent).toContain("3 sys");
+    expect(container.querySelector("#esp-targets-tbody")?.textContent).toContain("1G · 12 sys");
+    expect(container.querySelector("#esp-reports-tbody")?.textContent).toContain("3 sys");
     expect(container.querySelector("#esp-reports-tbody")?.textContent).toContain("B:b1:12");
 
-    const buttons = Array.from(container.querySelectorAll("#esp-targets-tbody button")).map(
-      (b) => b.textContent
-    );
-    expect(buttons).toEqual(["Spy", "Sim", "Attack"]);
+    const firstRowButtons = Array.from(
+      container.querySelectorAll("#esp-targets-tbody tr:first-child button")
+    ).map((b) => b.textContent);
+    expect(firstRowButtons).toEqual(["Spy", "Sim", "Attack"]);
 
     fireEvent.click(container.querySelector("#esp-targets-tbody button")!);
     await waitFor(() => {

@@ -3367,19 +3367,48 @@ class ActionExecutor:
                     )
 
         pid_token_re = re.compile(rf"\b{int(planet.planet_id)}\b", re.ASCII)
+        norm_target_coords = ""
+        if coords_s:
+            m_tc = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", coords_s, re.ASCII)
+            if m_tc:
+                norm_target_coords = f"{int(m_tc.group(1)):02d}:{int(m_tc.group(2)):03d}:{int(m_tc.group(3)):02d}"
+
+        def _el_is_displayed(el: Any) -> bool:
+            fn = getattr(el, "is_displayed", None)
+            if not callable(fn):
+                return True
+            try:
+                return bool(fn())
+            except Exception:
+                return False
+
+        def _click_allow_js(el: Any) -> None:
+            if not _el_is_displayed(el):
+                client.driver.execute_script("arguments[0].click();", el)
+                return
+            try:
+                self._safe_click(client, el)
+            except (ElementNotInteractableException, ElementClickInterceptedException):
+                client.driver.execute_script("arguments[0].click();", el)
+
         client._switch_frame("F_Hauptframe")
         nav_token = self._mark_frame_nav(client)
+        click_stage = "find_trigger"
         try:
             del_candidates = client.driver.find_elements(
                 By.CSS_SELECTOR,
                 '[onclick*="confirmPlanetDeletion"], [onclick*="deletePlanet"]',
             )
-            del_trigger = None
+            visible_matches: list[Any] = []
+            hidden_matches: list[Any] = []
             for el in del_candidates:
                 oc = str(el.get_attribute("onclick") or "")
                 if pid_token_re.search(oc):
-                    del_trigger = el
-                    break
+                    if _el_is_displayed(el):
+                        visible_matches.append(el)
+                    else:
+                        hidden_matches.append(el)
+            del_trigger = visible_matches[0] if visible_matches else (hidden_matches[0] if hidden_matches else None)
             if del_trigger is None:
                 return ExecutionResult(
                     executed=False,
@@ -3389,40 +3418,87 @@ class ActionExecutor:
                 )
             oc_trigger = str(del_trigger.get_attribute("onclick") or "")
             if "confirmPlanetDeletion" in oc_trigger:
-                self._safe_click(client, del_trigger)
+                click_stage = "del_trigger"
+                _click_allow_js(del_trigger)
+                click_stage = "wait_confirm"
                 confirm_btn = None
-                deadline = time.monotonic() + 1.5
+                retried_js_trigger = False
+                start_wait = time.monotonic()
+                deadline = start_wait + 2.5
                 while time.monotonic() < deadline:
                     btns = client.driver.find_elements(
                         By.CSS_SELECTOR,
                         '#delete-confirm [onclick*="executeDeletePlanet"]',
                     )
-                    if btns:
-                        confirm_btn = btns[0]
+                    vis_btns = [b for b in btns if _el_is_displayed(b)]
+                    if vis_btns:
+                        confirm_btn = vis_btns[0]
                         break
+                    if not retried_js_trigger and (time.monotonic() - start_wait) >= 0.45:
+                        retried_js_trigger = True
+                        with contextlib.suppress(Exception):
+                            client.driver.execute_script("arguments[0].click();", del_trigger)
                     time.sleep(0.05)
                 if confirm_btn is None:
                     return ExecutionResult(
                         executed=False,
                         dry_run=False,
                         action=action,
-                        message=f"Aborted: #delete-confirm executeDeletePlanet button did not appear for [{coords_s}].",
+                        message=f"Aborted: #delete-confirm executeDeletePlanet button did not become visible for [{coords_s}].",
                     )
+                # Extra live safety check: confirm modal target matches planet_id / coords when exposed by JS.
+                modal_check: Any = None
+                with contextlib.suppress(Exception):
+                    modal_check = client.driver.execute_script(
+                        "return {"
+                        "pid: (typeof window._planet_deleteID !== 'undefined' ? window._planet_deleteID : null), "
+                        "coords: (document.getElementById('planet-delete-coords') ? document.getElementById('planet-delete-coords').textContent : '')"
+                        "};"
+                    )
+                if isinstance(modal_check, dict):
+                    js_pid = game_data.safe_optional_int(modal_check.get("pid"), None)
+                    if js_pid is not None and js_pid > 0 and js_pid != int(planet.planet_id):
+                        return ExecutionResult(
+                            executed=False,
+                            dry_run=False,
+                            action=action,
+                            message=(
+                                f"Aborted safety check: #delete-confirm targets planet_id={js_pid} "
+                                f"instead of {planet.planet_id} ([{coords_s}])."
+                            ),
+                        )
+                    js_coords_raw = str(modal_check.get("coords") or "").strip()
+                    if js_coords_raw and norm_target_coords:
+                        m_mc = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", js_coords_raw, re.ASCII)
+                        if m_mc:
+                            norm_mc = f"{int(m_mc.group(1)):02d}:{int(m_mc.group(2)):03d}:{int(m_mc.group(3)):02d}"
+                            if norm_mc != norm_target_coords:
+                                return ExecutionResult(
+                                    executed=False,
+                                    dry_run=False,
+                                    action=action,
+                                    message=(
+                                        f"Aborted safety check: #delete-confirm shows [{norm_mc}] "
+                                        f"instead of [{norm_target_coords}]."
+                                    ),
+                                )
                 self._pace_action(client, priority="interactive")
                 nav_token = self._mark_frame_nav(client)
                 time.sleep(random.uniform(*self.action_delay_range))
-                self._safe_click(client, confirm_btn)
+                click_stage = "confirm_btn"
+                _click_allow_js(confirm_btn)
             else:
                 self._pace_action(client, priority="interactive")
                 nav_token = self._mark_frame_nav(client)
                 time.sleep(random.uniform(*self.action_delay_range))
-                self._safe_click(client, del_trigger)
+                click_stage = "direct_delete"
+                _click_allow_js(del_trigger)
         except (StaleElementReferenceException, NoSuchElementException, ElementNotInteractableException, WebDriverException) as exc:
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
                 action=action,
-                message=f"Aborted: internalSettings planet deletion controls failed for [{coords_s}] ({type(exc).__name__}).",
+                message=f"Aborted: internalSettings planet deletion controls failed for [{coords_s}] at {click_stage} ({type(exc).__name__}).",
             )
 
         after_html = client._wait_frame_ready(

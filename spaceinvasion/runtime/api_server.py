@@ -49,6 +49,7 @@ from spaceinvasion.combat.fleet import (
     SHIP_SLUG_BY_KEY,
     InboxMessage,
     SpyReport,
+    _parse_coords_distance,
     extract_galaxy_system_coords,
     extract_message_folder_links,
     normalize_coords,
@@ -6043,6 +6044,55 @@ class GameApiBridge:
             coords_raw = payload.get("coords")
             coords_str = str(coords_raw).strip() if isinstance(coords_raw, str) and coords_raw.strip() else None
             with self._lock:
+                origin_coords = ""
+                if self._last_state is not None:
+                    spy_pid = _safe_api_int(getattr(self.strategy_config, "spy_dispatch_planet_id", 0), 0)
+                    orig_p = (
+                        next((p for p in self._last_state.planets if p.planet_id == spy_pid), None)
+                        if spy_pid > 0
+                        else None
+                    )
+                    if orig_p is None:
+                        orig_p = self._last_state.active_planet()
+                    if orig_p is None and self._last_state.planets:
+                        orig_p = self._last_state.planets[0]
+                    if orig_p is not None and orig_p.coords:
+                        origin_coords = normalize_coords(orig_p.coords)
+
+                m_orig_esp = (
+                    re.fullmatch(r"(\d+):(\d+):(\d+)", origin_coords, re.ASCII)
+                    if origin_coords
+                    else None
+                )
+                orig_gsp = (
+                    (int(m_orig_esp.group(1)), int(m_orig_esp.group(2)), int(m_orig_esp.group(3)))
+                    if m_orig_esp
+                    else None
+                )
+
+                def _esp_distance_fields(target_raw: Any) -> dict[str, Any]:
+                    norm_t = normalize_coords(target_raw) if target_raw else ""
+                    m_t = re.fullmatch(r"(\d+):(\d+):(\d+)", norm_t, re.ASCII) if norm_t else None
+                    if orig_gsp is None or m_t is None:
+                        return {
+                            "distance": None,
+                            "system_distance": None,
+                            "galaxy_delta": None,
+                            "system_delta": None,
+                            "position_delta": None,
+                        }
+                    tg, ts_i, tp = int(m_t.group(1)), int(m_t.group(2)), int(m_t.group(3))
+                    g_diff = abs(orig_gsp[0] - tg)
+                    s_diff = abs(orig_gsp[1] - ts_i)
+                    p_diff = abs(orig_gsp[2] - tp)
+                    return {
+                        "distance": round(float(_parse_coords_distance(origin_coords, norm_t)), 1),
+                        "system_distance": int(g_diff * 400 + s_diff),
+                        "galaxy_delta": int(g_diff),
+                        "system_delta": int(s_diff),
+                        "position_delta": int(p_diff),
+                    }
+
                 raw_targets = (
                     self._enrich_raid_targets(
                         self._db.get_spy_targets(limit=int(limit), include_own=False)
@@ -6059,6 +6109,7 @@ class GameApiBridge:
                     kryp = _safe_api_float(res_d.get("kryptonite", 0.0))
                     spc = _safe_api_float(res_d.get("spice", 0.0))
                     td["spice_eq"] = round(pig / 6.0 + met / 2.5 + kryp / 3.0 + spc, 1)
+                    td.update(_esp_distance_fields(td.get("coords") or td.get("target_coords")))
                     targets.append(td)
                 raw_reports = (
                     self._db.get_spy_reports(coords=coords_str, limit=int(limit))
@@ -6074,6 +6125,7 @@ class GameApiBridge:
                     kryp = _safe_api_float(res_d.get("kryptonite", 0.0))
                     spc = _safe_api_float(res_d.get("spice", 0.0))
                     rd["spice_eq"] = round(pig / 6.0 + met / 2.5 + kryp / 3.0 + spc, 1)
+                    rd.update(_esp_distance_fields(rd.get("coords") or rd.get("target_coords")))
                     reports.append(rd)
                 spied_targets_cnt = sum(
                     1
@@ -6093,6 +6145,7 @@ class GameApiBridge:
                         {
                             "ok": True,
                             "command": cmd,
+                            "origin_coords": origin_coords,
                             "summary": summary,
                             "targets": targets,
                             "reports": reports,
