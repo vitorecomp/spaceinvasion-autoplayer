@@ -2058,13 +2058,88 @@ def _parse_embedded_unit_val(entry: Any) -> int:
     return max(0, game_data.safe_int(s, 0))
 
 
+_INNER_MESSAGE_BODY_RE = re.compile(
+    r"(?:Message\s+from|Nachricht\s+von)\s+[^:]{1,60}:\s*(.+?)(?=\s*['\"]?\s*(?:Fleet\s+reports|Battle\s+reports|Espionage|System|User|Alliance)\s*[\u2605*]|\s*[\u2605*]\s*Favourites|\s*Received\s+on:\s*From:|\s*Empfangen\s+am:|$)",
+    re.IGNORECASE,
+)
+
+_EXPLICIT_SPY_REPORT_TOKENS: tuple[str, ...] = (
+    "espionage report",
+    "spionagebericht",
+    "spy report",
+    '"spy-report"',
+    "'spy-report'",
+)
+
+_NON_SPY_NOTICE_TOKENS: tuple[str, ...] = (
+    "fleet return",
+    "flottenrückkehr",
+    "flottenrueckkehr",
+    "returning from duty",
+    "is returning from",
+    "kehrt von",
+    "zurückgekehrt",
+    "zurueckgekehrt",
+    "were unloaded",
+    "wurden ausgeladen",
+    "the assignment was to:",
+    "der auftrag war:",
+    "to its home planet",
+    "zu seinem heimatplaneten",
+    "colonization report",
+    "kolonisierungsbericht",
+    "planet was colonized",
+    "planet wurde kolonisiert",
+    "colonization failed",
+    "kolonisierung fehlgeschlagen",
+    "battle report",
+    "combat report",
+    "kampfbericht",
+    "attacker",
+    "angreifer",
+    "plundered",
+    "looted",
+    "erbeutet",
+    "debris field",
+    "trümmerfeld",
+    "truemmerfeld",
+    "recycling report",
+    "space rubble",
+    "harvested",
+    "recycled",
+    "trümmerfeld abgebaut",
+    "delivered",
+    "geliefert",
+)
+
+
+def _extract_inner_message_body(text: str) -> str:
+    """Return the inner `Message from ...:` body when full `F_Hauptframe` chrome surrounds a read message."""
+    if not text:
+        return ""
+    m_inner = _INNER_MESSAGE_BODY_RE.search(text)
+    return m_inner.group(1).strip() if m_inner else text
+
+
+def is_non_spy_notice_text(text: str) -> bool:
+    """Return True when `text` is a fleet-return, battle, recycle, transport, or colonization notice — not a spy report."""
+    if not text:
+        return False
+    low = str(text).lower()
+    if any(tok in low for tok in _EXPLICIT_SPY_REPORT_TOKENS):
+        return False
+    return any(tok in low for tok in _NON_SPY_NOTICE_TOKENS)
+
+
 def parse_spy_report_html(html: str, *, target_coords: str = "") -> SpyReport:
     """Parse an espionage or uninhabited-ecology report snippet into `SpyReport`."""
     soup = BeautifulSoup(html, "html.parser")
     server_msg_id = _extract_element_msg_id(soup)
-    text = " ".join(soup.get_text(" ", strip=True).split())
+    _strip_own_planet_header_dom(soup)
+    full_text = " ".join(soup.get_text(" ", strip=True).split())
+    embedded_json = _extract_embedded_spy_json(full_text)
+    text = full_text if embedded_json is not None else _extract_inner_message_body(full_text)
     clean_raw_text = redact_sensitive(text)[:4000]
-    embedded_json = _extract_embedded_spy_json(text)
 
     coords = target_coords
     if embedded_json is not None and isinstance(embedded_json.get("planet"), Mapping):
@@ -2362,11 +2437,13 @@ def parse_spy_messages_html(
     )
 
     def _looks_like_spy_block(txt: str, el: Any = None) -> bool:
-        low = txt.lower()
+        inner_txt = _extract_inner_message_body(txt)
+        low_full = txt.lower()
+        low = inner_txt.lower()
         if not any(k in low for k in keywords):
             return False
         has_explicit_spy = any(
-            tok in low for tok in ("espionage report", "spionagebericht", "spy report")
+            tok in low or tok in low_full for tok in _EXPLICIT_SPY_REPORT_TOKENS
         )
         # Exclude unexpanded header-only `Colony [coords] spy report` rows that lack any payload
         if (
@@ -2384,32 +2461,10 @@ def parse_spy_messages_html(
             and not any(rk in low for rk in ("pig iron", "roheisen", "kryptonite", "kryptonit", "fields", "felder"))
         ):
             return False
-        # Exclude battle, recycle, and transport delivery messages that mention loot/debris resources
-        if not has_explicit_spy and any(
-            tok in low
-            for tok in (
-                "battle report",
-                "combat report",
-                "kampfbericht",
-                "attacker",
-                "angreifer",
-                "plundered",
-                "looted",
-                "erbeutet",
-                "debris field",
-                "trümmerfeld",
-                "truemmerfeld",
-                "recycling report",
-                "space rubble",
-                "harvested",
-                "recycled",
-                "trümmerfeld abgebaut",
-                "delivered",
-                "geliefert",
-            )
-        ):
+        # Exclude fleet-return, colonization, battle, recycle, and transport notices
+        if not has_explicit_spy and (is_non_spy_notice_text(inner_txt) or is_non_spy_notice_text(txt)):
             return False
-        return bool(_extract_spy_coords(txt) or (el is not None and _extract_spy_link_coords(el)))
+        return bool(_extract_spy_coords(inner_txt) or _extract_spy_coords(txt) or (el is not None and _extract_spy_link_coords(el)))
 
     blocks: list[str] = []
     # 1. Explicit message containers (merging adjacent body `<tr>` when header is a `<tr>`)
@@ -2451,15 +2506,23 @@ def parse_spy_messages_html(
             if not has_child_spy:
                 blocks.append(str(el))
 
-    # 3. Last resort: single report in whole page text
-    if not blocks and _looks_like_spy_block(soup.get_text(" ", strip=True), soup):
-        blocks.append(str(soup))
+    # 3. Last resort: single report in whole page text (only with explicit spy/uninhabited marker)
+    if not blocks:
+        page_txt = soup.get_text(" ", strip=True)
+        page_low = page_txt.lower()
+        if (
+            any(tok in page_low for tok in (*_EXPLICIT_SPY_REPORT_TOKENS, "uninhabited", "unbewohnt"))
+            and _looks_like_spy_block(page_txt, soup)
+        ):
+            blocks.append(str(soup))
 
     reports: list[SpyReport] = []
     seen_keys: set[tuple[str, str]] = set()
     for blk in blocks:
         rep = parse_spy_report_html(blk)
         if not rep.target_coords:
+            continue
+        if is_non_spy_notice_text(rep.raw_text):
             continue
         norm_c = _norm_coord_triple(rep.target_coords)
         if norm_c and norm_c in excl_norm:

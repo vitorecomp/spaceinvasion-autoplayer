@@ -3564,6 +3564,7 @@ class TestActionExecutor(unittest.TestCase):
         self.assertFalse(res_atk.validated)
         self.assertEqual(res_atk.target_cooldown_seconds, 6 * 3600.0)
         self.assertTrue(bool(res_atk.target_block_reason))
+        self.assertIn("available radios: TRANSPORT, SAVE", res_atk.message)
 
         # 3. _execute_spy on Step 2 with Spy (forbidden): out of your attackzone range -> 6h cooldown
         step2_az_html = (

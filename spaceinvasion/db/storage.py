@@ -24,6 +24,7 @@ from spaceinvasion.combat.fleet import (
     SpyReport,
     _classify_and_parse_inbox_block,
     grade_colony_candidate,
+    is_non_spy_notice_text,
     normalize_coords,
 )
 from spaceinvasion.core.logging_utils import (
@@ -2414,6 +2415,9 @@ class GameDatabase:
         now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
         raw_coords = _raw_text(report.target_coords, "").strip()
         norm_coords = normalize_coords(raw_coords)
+        raw_txt = _sanitize_text(getattr(report, "raw_text", "") or "")[:4000]
+        if not norm_coords or (raw_txt and is_non_spy_notice_text(raw_txt)):
+            return
         explicit_status = status_color is not None or bool(is_inactive) or bool(report.is_spacia)
         insert_inactive = bool(is_inactive or report.is_spacia or status_color == "yellow")
         insert_color = status_color or ("yellow" if insert_inactive else "light_red")
@@ -2442,7 +2446,6 @@ class GameDatabase:
         pname = _sanitize_text(getattr(report, "planet_name", "") or "")
         s_msg_id = _sanitize_text(getattr(report, "server_msg_id", "") or "")
         m_date = _sanitize_text(getattr(report, "msg_date_text", "") or "")
-        raw_txt = _sanitize_text(getattr(report, "raw_text", "") or "")[:4000]
         uninhabited_f = _sql_optional_int(getattr(report, "uninhabited_fields", None))
         with self._lock:
             self._coalesce_legacy_spy_target_locked(norm_coords, raw_coords)
@@ -3687,6 +3690,152 @@ class GameDatabase:
               )
             """
         )
+        if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_reports"):
+            has_galaxy_slots = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots")
+            poisoned_coords_rows = self._conn.execute(
+                """
+                SELECT DISTINCT st.coords
+                FROM spy_targets st
+                JOIN spy_reports sr ON sr.target_coords = st.coords
+                WHERE st.is_own_planet = 0
+                  AND (
+                      LOWER(sr.raw_text) LIKE '%fleet return%'
+                      OR LOWER(sr.raw_text) LIKE '%flottenrückkehr%'
+                      OR LOWER(sr.raw_text) LIKE '%flottenrueckkehr%'
+                      OR LOWER(sr.raw_text) LIKE '%returning from duty%'
+                      OR LOWER(sr.raw_text) LIKE '%were unloaded%'
+                      OR LOWER(sr.raw_text) LIKE '%the assignment was to:%'
+                  )
+                """
+            ).fetchall()
+            for p_row in poisoned_coords_rows:
+                p_coords = _raw_text(p_row["coords"], "").strip()
+                if not p_coords:
+                    continue
+                rep_rows = self._conn.execute(
+                    """
+                    SELECT ts, owner, planet_name, is_spacia,
+                           pig_iron, metal, kryptonite, spice,
+                           fleet_json, defense_json, dug_in, raw_text
+                    FROM spy_reports
+                    WHERE target_coords = ?
+                    ORDER BY ts DESC, id DESC
+                    """,
+                    (p_coords,),
+                ).fetchall()
+                if not rep_rows or not is_non_spy_notice_text(_raw_text(rep_rows[0]["raw_text"], "")):
+                    continue
+                valid_rep = next(
+                    (rr for rr in rep_rows if not is_non_spy_notice_text(_raw_text(rr["raw_text"], ""))),
+                    None,
+                )
+                gs_row = (
+                    self._conn.execute(
+                        """
+                        SELECT owner, planet_name, status_color, is_inactive, is_spacia, has_debris, last_scanned_ts
+                        FROM galaxy_slots
+                        WHERE coords = ?
+                        """,
+                        (p_coords,),
+                    ).fetchone()
+                    if has_galaxy_slots
+                    else None
+                )
+                if valid_rep is not None:
+                    v_owner = _sanitize_text(gs_row["owner"]) if gs_row is not None else _sanitize_text(valid_rep["owner"])
+                    v_pname = _sanitize_text(gs_row["planet_name"]) if gs_row is not None else _sanitize_text(valid_rep["planet_name"])
+                    v_is_spacia = int(bool(gs_row["is_spacia"])) if gs_row is not None else int(bool(valid_rep["is_spacia"]))
+                    v_status = _sanitize_text(gs_row["status_color"]) if gs_row is not None else ("yellow" if v_is_spacia else "light_red")
+                    v_inactive = int(bool(gs_row["is_inactive"])) if gs_row is not None else (1 if v_is_spacia or v_status == "yellow" else 0)
+                    v_debris = int(bool(gs_row["has_debris"])) if gs_row is not None else 0
+                    v_scanned = max(
+                        _safe_float(gs_row["last_scanned_ts"], 0.0) if gs_row is not None else 0.0,
+                        _safe_float(valid_rep["ts"], 0.0),
+                    )
+                    self._conn.execute(
+                        """
+                        UPDATE spy_targets
+                        SET owner = ?,
+                            planet_name = ?,
+                            status_color = ?,
+                            is_inactive = ?,
+                            is_spacia = ?,
+                            has_debris = ?,
+                            pig_iron = ?,
+                            metal = ?,
+                            kryptonite = ?,
+                            spice = ?,
+                            fleet_json = ?,
+                            defense_json = ?,
+                            dug_in = ?,
+                            last_scanned_ts = ?,
+                            last_spied_ts = ?
+                        WHERE coords = ?
+                        """,
+                        (
+                            v_owner,
+                            v_pname,
+                            v_status,
+                            v_inactive,
+                            v_is_spacia,
+                            v_debris,
+                            _sql_int(valid_rep["pig_iron"], 0),
+                            _sql_int(valid_rep["metal"], 0),
+                            _sql_int(valid_rep["kryptonite"], 0),
+                            _sql_int(valid_rep["spice"], 0),
+                            _raw_text(valid_rep["fleet_json"], "{}") or "{}",
+                            _raw_text(valid_rep["defense_json"], "{}") or "{}",
+                            int(bool(valid_rep["dug_in"])) if valid_rep["dug_in"] is not None else 0,
+                            v_scanned,
+                            _safe_float(valid_rep["ts"], 0.0),
+                            p_coords,
+                        ),
+                    )
+                else:
+                    r_owner = _sanitize_text(gs_row["owner"]) if gs_row is not None else ""
+                    r_pname = _sanitize_text(gs_row["planet_name"]) if gs_row is not None else ""
+                    r_status = _sanitize_text(gs_row["status_color"]) if gs_row is not None else "free"
+                    r_inactive = int(bool(gs_row["is_inactive"])) if gs_row is not None else 0
+                    r_spacia = int(bool(gs_row["is_spacia"])) if gs_row is not None else 0
+                    r_debris = int(bool(gs_row["has_debris"])) if gs_row is not None else 0
+                    r_scanned = _safe_float(gs_row["last_scanned_ts"], 0.0) if gs_row is not None else 0.0
+                    clear_blk = r_status == "free"
+                    self._conn.execute(
+                        """
+                        UPDATE spy_targets
+                        SET owner = ?,
+                            planet_name = ?,
+                            status_color = ?,
+                            is_inactive = ?,
+                            is_spacia = ?,
+                            has_debris = ?,
+                            pig_iron = 0,
+                            metal = 0,
+                            kryptonite = 0,
+                            spice = 0,
+                            fleet_json = '{}',
+                            defense_json = '{}',
+                            dug_in = 0,
+                            last_scanned_ts = CASE WHEN ? > 0 THEN ? ELSE last_scanned_ts END,
+                            last_spied_ts = 0.0,
+                            blocked_until_ts = CASE WHEN ? = 1 THEN 0.0 ELSE blocked_until_ts END,
+                            block_reason = CASE WHEN ? = 1 THEN '' ELSE block_reason END
+                        WHERE coords = ?
+                        """,
+                        (
+                            r_owner,
+                            r_pname,
+                            r_status,
+                            r_inactive,
+                            r_spacia,
+                            r_debris,
+                            r_scanned,
+                            r_scanned,
+                            1 if clear_blk else 0,
+                            1 if clear_blk else 0,
+                            p_coords,
+                        ),
+                    )
         if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots"):
             self._conn.execute(
                 """
@@ -3782,6 +3931,9 @@ class GameDatabase:
                 ).fetchall()
         out: list[dict[str, Any]] = []
         for r in rows:
+            raw_r = _sanitize_text(r["raw_text"]) if r["raw_text"] is not None else ""
+            if raw_r and is_non_spy_notice_text(raw_r):
+                continue
             uf = _safe_optional_int(r["uninhabited_fields"])
             dug = _safe_optional_int(r["dug_in"])
             norm_tc = normalize_coords(_raw_text(r["target_coords"], ""))

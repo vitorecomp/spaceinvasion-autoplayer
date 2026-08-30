@@ -1237,6 +1237,44 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual((g_strat["grade"], g_strat["probed"]), ("?", False))
         self.assertIn("Prime Large-Field Belt", g_strat["orbital_zone"])
 
+    def test_fleet_return_with_own_header_never_parsed_as_spacia_spy_report(self) -> None:
+        from spaceinvasion.fleet import (
+            is_non_spy_notice_text,
+            parse_inbox_messages_html,
+            parse_spy_messages_html,
+        )
+
+        # Live RETRO regression: expanded `fleet return` message containing F_Hauptframe own-planet
+        # resource bar + Tutorial reward text + `from Spacia Planet [02:380:14]` must NEVER be parsed
+        # as a SpyReport for 02:380:14 (which poisoned free rubble slots as fake 800k Spacia targets).
+        fleet_return_html = """
+        <html><body>
+          <table>
+            <tr id="msg_7881299569787197">
+              <td><input type="checkbox" id="check_7881299569787197" name="check_7881299569787197" value="7881299569787197" /></td>
+              <td>2026-11-17 14:19:26</td>
+              <td>System</td>
+              <td>
+                Colony [02:380:12] fleet return
+                <div class="si-expanded-body" data-si-expanded="1">
+                  02:380:12 Colony [02:380:12] Colony Pig iron 185.293 6% Metal 7.790 1% Kryptonite 656.686 41% Spice 551.163 69% Energy 342 / 5.954
+                  Tutorial 10 / 11 You receive the following resources: 10000 Pig iron, 10000 Metal, 10000 Kryptonite, 10000 Spice
+                  Message from System: Colony [02:380:12] fleet return One of your fleets (46 Recycler) is returning from duty
+                  from Spacia Planet [02:380:14] to its home planet Colony [02:380:12]. The assignment was to: Recycle.
+                  0 Pig iron, 0 Metal, 0 Kryptonite, 0 Spice were unloaded. ' Fleet reports&#9733; Favourites
+                </div>
+              </td>
+            </tr>
+          </table>
+        </body></html>
+        """
+        self.assertEqual(parse_spy_messages_html(fleet_return_html, exclude_coords=("02:380:12",)), ())
+        msgs = parse_inbox_messages_html(fleet_return_html, folder_type="inbox", exclude_coords=("02:380:12",))
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0].category, "fleet_return")
+        self.assertIsNone(msgs[0].spy_report)
+        self.assertTrue(is_non_spy_notice_text(msgs[0].body_text))
+
 
 if __name__ == "__main__":
     unittest.main()

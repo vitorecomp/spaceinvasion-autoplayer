@@ -3356,6 +3356,136 @@ def _plan_economy_for_planet(
     return mine_actions, priority_builds, advisories
 
 
+_METAL_CONSUMER_KINDS = ("BUILD", "WAIT_RESOURCES", "RESEARCH", "BUILD_SHIP")
+
+
+def p1_metal_shortfall(
+    planet: PlanetState,
+    actions: Sequence[PlannedAction],
+) -> tuple[int, Optional[PlannedAction]]:
+    """Largest Metal shortfall among `P0`/`P1` resource-consuming actions on `planet`.
+
+    Metal production (Blast furnace `b2`) may only be paused while every `P0`/`P1` item on the
+    colony already has enough Metal. Items whose Metal cost exceeds Metal storage (never
+    buildable) or that are blocked on unmet prerequisites are ignored.
+    """
+    sto_met = _safe_strategy_int(getattr(planet.storage, "metal", 0), 0)
+    best_miss = 0
+    best_act: Optional[PlannedAction] = None
+    for a in actions:
+        if a.planet_id != planet.planet_id or a.priority not in ("P0", "P1"):
+            continue
+        if a.kind not in _METAL_CONSUMER_KINDS:
+            continue
+        miss_m = _safe_strategy_int(getattr(a.missing, "metal", 0), 0)
+        if miss_m <= 0:
+            continue
+        rsn_low = _safe_strategy_str(a.reason).lower()
+        if "[unmet prereqs:" in rsn_low or "(requires research lab" in rsn_low or "(requires weapons factory" in rsn_low:
+            continue
+        if sto_met > 0 and _safe_strategy_int(getattr(a.cost, "metal", 0), 0) > sto_met:
+            continue
+        if miss_m > best_miss:
+            best_miss = miss_m
+            best_act = a
+    return best_miss, best_act
+
+
+def plan_p1_metal_resume_throttle(
+    state: GameState,
+    planet: PlanetState,
+    p1_metal_need: int,
+    p1_metal_act: PlannedAction,
+) -> Optional[PlannedAction]:
+    """Resume a paused (`0%`) Blast furnace at the highest energy-safe (and Pig-iron-sustainable) % for a P0/P1 item."""
+    if _norm_planet_type(planet) in ("asteroid", "raid") or p1_metal_need <= 0:
+        return None
+    b2_lvl = planet.building_level(BLAST_FURNACE)
+    if b2_lvl <= 0:
+        return None
+    rates = getattr(planet, "economy_rates", None) or {}
+    cur_b2_pct = max(0, min(100, _safe_strategy_int(rates.get("resource2", 100), 100)))
+    if cur_b2_pct > 0:
+        return None
+    cur_b1_pct = max(0, min(100, _safe_strategy_int(rates.get("resource1", 100), 100)))
+    res_pig = _safe_strategy_int(getattr(planet.resources, "pig_iron", 0), 0)
+    res_met = _safe_strategy_int(getattr(planet.resources, "metal", 0), 0)
+    sto_pig = _safe_strategy_int(getattr(planet.storage, "pig_iron", 0), 0)
+    sto_met = _safe_strategy_int(getattr(planet.storage, "metal", 0), 0)
+    pig_has_space = sto_pig <= 0 or res_pig * 100 < sto_pig * 99
+    metal_is_full = sto_met > 0 and res_met * 100 >= sto_met * 98
+    if metal_is_full and pig_has_space:
+        return None
+
+    e_prod = _safe_strategy_int(getattr(planet.energy, "produced", 0), 0)
+    e_used = _safe_strategy_int(getattr(planet.energy, "used", 0), 0)
+    e_net = _safe_strategy_int(getattr(planet.energy, "net", 0), 0)
+    is_power_p1 = (
+        p1_metal_act.kind in ("BUILD", "WAIT_RESOURCES", "BUILD_SHIP")
+        and p1_metal_act.target_id in (FUSION_PLANT, THERMOSOLAR_PLANT, SOLAR_CELLS_ID)
+    )
+    if e_net < 0 and not is_power_p1:
+        # Don't turn Blast furnace back on into an active energy deficit unless power itself needs Metal.
+        return None
+    mining_tech = max(0, _safe_strategy_int((state.researches or {}).get("r1", 0), 0))
+    speedup = _safe_strategy_float(getattr(state, "speedup_factor", 1.0), 1.0)
+    if speedup <= 0:
+        speedup = 1.0
+    prod_ratio = game_data.safe_big_ratio(e_prod, e_used, cap=1.0) if (e_used > 0 and e_prod < e_used) else 1.0
+    factor = speedup * prod_ratio
+    p_pig_gross = (
+        game_data.mine_production_per_hour(
+            PIG_IRON_MINE,
+            planet.building_level(PIG_IRON_MINE),
+            temperature=_safe_strategy_int(planet.temperature, 0),
+            mining_tech_level=mining_tech,
+        )
+        * factor
+        * (max(0, cur_b1_pct) / 100.0)
+    )
+    bf_pig_used_full = game_data.blast_furnace_pig_iron_used(b2_lvl) * factor
+    net_pig_at_100 = p_pig_gross - bf_pig_used_full
+    b2_full_energy = abs(_safe_strategy_int(game_data.building_level_stats(BLAST_FURNACE, b2_lvl).get("energy", 0) or 0, 0))
+    pause_pig_floor = math.ceil(max(500.0, bf_pig_used_full * 0.5)) if math.isfinite(bf_pig_used_full) else 500
+
+    target_pct = 100
+    pct_notes: list[str] = []
+    if b2_full_energy > 0 and e_net < b2_full_energy:
+        energy_pct = (max(0, e_net) * 100 // b2_full_energy) // 10 * 10
+        target_pct = max(10, min(100, int(energy_pct)))
+        pct_notes.append(f"energy-limited, net +{max(0, e_net)}")
+    pig_for_metal = 2 * p1_metal_need
+    if (
+        net_pig_at_100 < 0
+        and res_pig < pig_for_metal + pause_pig_floor
+        and math.isfinite(bf_pig_used_full)
+        and bf_pig_used_full > 0
+    ):
+        sust_pct = 10
+        for cand_pct in (100, 90, 80, 70, 60, 50, 40, 30, 20, 10):
+            if bf_pig_used_full * (cand_pct / 100.0) <= p_pig_gross * 0.85:
+                sust_pct = cand_pct
+                break
+        if sust_pct < target_pct:
+            target_pct = sust_pct
+            pct_notes.append("Pig-iron-sustainable")
+    note_s = f" ({', '.join(pct_notes)})" if pct_notes else ""
+    return PlannedAction(
+        priority="P1",
+        kind="THROTTLE_BUILDING",
+        planet_id=planet.planet_id,
+        planet_coords=_safe_strategy_str(planet.coords),
+        target_id=BLAST_FURNACE,
+        target_name=f"Blast furnace {target_pct}%",
+        target_level=target_pct,
+        reason=(
+            f"P1 {p1_metal_act.target_name} needs {p1_metal_need:,} more Metal: "
+            f"resume Blast furnace to {target_pct}%{note_s}"
+        ),
+        executable_now=True,
+    )
+
+
 def _plan_blast_furnace_throttle(
     state: GameState,
     planet: PlanetState,
@@ -3460,7 +3590,9 @@ def _plan_blast_furnace_throttle(
     metal_starved_with_positive_pig = bool(
         any_needs_metal and net_pig_at_100 >= 0 and res_pig >= pause_pig_floor
     )
+    p1_metal_need, p1_metal_act = p1_metal_shortfall(planet, p_acts)
     candidate: Optional[PlannedAction] = None
+    p1_resume_override = False
 
     if cur_b2_pct > 0:
         if metal_full_with_pig_space:
@@ -3478,6 +3610,9 @@ def _plan_blast_furnace_throttle(
                 ),
                 executable_now=True,
             )
+        elif p1_metal_need > 0:
+            # Never pause Metal production while any P0/P1 item still lacks Metal.
+            return None
         elif (
             top_needs_pig_only
             and not top_pig_storage_capped
@@ -3523,159 +3658,166 @@ def _plan_blast_furnace_throttle(
             return None
     else:
         # Currently paused (0%): apply energy-coupling lookahead and symmetric deadband before resuming 100%
-        if metal_full_with_pig_space or metal_cap_pct >= warn_ratio * 0.85:
+        if metal_full_with_pig_space:
             return None
-        if any(
-            a.priority == "P1"
-            and a.missing.pig_iron > 0
-            and not (sto_pig > 0 and a.cost.pig_iron > sto_pig)
-            for a in p_acts
-        ):
-            return None
-
-        resume_energy_cost = int(round(b2_full_energy * max(0, 100 - cur_b2_pct) / 100.0))
-        net_if_resumed = e_net - resume_energy_cost
-        if net_if_resumed < 0:
-            return None
-
-        active = state.active_planet()
-        is_active = active is not None and planet.planet_id == active.planet_id
-        eff_buildings, projected_net = _effective_building_levels_and_energy(
-            state,
-            planet,
-            is_active_planet=is_active,
-        )
-        projected_net_if_resumed = projected_net - resume_energy_cost
-        queued_counts = _queued_building_counts(state) if is_active else {}
-        queue_full = (
-            sum(queued_counts.values()) >= _max_build_slots(planet, state)
-            if is_active
-            else False
-        )
-        allow_remote = cfg.allow_multi_planet and not is_active
-
-        has_p1_power = any(
-            a.priority == "P1"
-            and a.kind in ("BUILD", "WAIT_RESOURCES", "BUILD_SHIP")
-            and a.target_id in (FUSION_PLANT, THERMOSOLAR_PLANT, SOLAR_CELLS_ID)
-            for a in p_acts
-        )
-        would_trigger_p1_power = has_p1_power
-        if not would_trigger_p1_power:
-            for a in p_acts:
-                tid = game_data.safe_optional_int(a.target_id, None)
-                if tid is None or tid in (FUSION_PLANT, THERMOSOLAR_PLANT, SOLAR_CELLS_ID):
-                    continue
-                if a.kind not in ("BUILD", "WAIT_RESOURCES"):
-                    continue
-                nxt_l = _safe_strategy_int(a.target_level, 0) or (_eff_level(planet, eff_buildings, tid) + 1)
-                if _energy_starvation_delta(tid, nxt_l, projected_net_if_resumed) < 0:
-                    would_trigger_p1_power = True
-                    break
-        if would_trigger_p1_power:
-            forbid_solar_bf = bool(getattr(cfg, "forbid_planetary_solar", False))
-            solar_offer = _ship_offer_map(planet).get(SOLAR_CELLS_ID)
-            f_rem_bf = _safe_strategy_int(planet.fields_remaining, 0)
-            hot_tight_bf = (
-                not forbid_solar_bf
-                and _norm_planet_type(planet) == "normal"
-                and _safe_strategy_int(planet.fields_max, 0) > 0
-                and 0 < f_rem_bf <= _safe_strategy_int(cfg.min_free_fields_warning, 20)
-                and _safe_strategy_int(planet.temperature, 0) >= _safe_strategy_int(cfg.hot_planet_solar_temp_threshold, 40)
-            )
-            use_solar_cells = (
-                (
-                    _norm_planet_type(planet) == "asteroid"
-                    or (not forbid_solar_bf and (not _planet_has_free_building_fields(planet) or hot_tight_bf))
-                )
-                and solar_offer is not None
-                and solar_offer.can_build
-                and cfg.allow_shipyard
-            )
-            if use_solar_cells:
-                assert solar_offer is not None
-                miss_pw = planet.resources.missing(solar_offer.cost)
-                can_exec_power = planet.resources.can_afford(solar_offer.cost)
-            else:
-                power_bid, _, _ = _pick_best_power_building(
-                    planet,
-                    eff_buildings,
-                    state.researches,
-                    forbid_planetary_solar=forbid_solar_bf,
-                )
-                power_lvl = _eff_level(planet, eff_buildings, power_bid) + 1
-                power_cost = _resources_from_dict(game_data.building_cost(power_bid, power_lvl))
-                power_offer = _offer_map(planet).get(power_bid)
-                if power_offer is not None:
-                    miss_pw = planet.resources.missing(power_offer.cost)
-                    can_exec_power = (
-                        (not queue_full)
-                        and power_offer.can_build
-                        and planet.resources.can_afford(power_offer.cost)
-                    )
-                else:
-                    miss_pw = planet.resources.missing(power_cost)
-                    prereq_ok = not game_data.missing_prerequisites(
-                        "buildings",
-                        power_bid,
-                        buildings=planet.buildings,
-                        researches=state.researches,
-                    )
-                    can_exec_power = (
-                        (not queue_full)
-                        and allow_remote
-                        and (not power_cost.is_zero())
-                        and planet.resources.can_afford(power_cost)
-                        and prereq_ok
-                    )
-            if not metal_starved_with_positive_pig and (
-                has_p1_power
-                or miss_pw.pig_iron > 0
-                or (not miss_pw.is_zero() and miss_pw.metal == 0)
-                or (not can_exec_power and miss_pw.metal == 0)
+        if p1_metal_need > 0 and p1_metal_act is not None:
+            # A P0/P1 item needs Metal: resume smelting at the highest energy-safe / Pig-iron-sustainable %
+            candidate = plan_p1_metal_resume_throttle(state, planet, p1_metal_need, p1_metal_act)
+            p1_resume_override = candidate is not None
+        else:
+            if metal_cap_pct >= warn_ratio * 0.85:
+                return None
+            if any(
+                a.priority == "P1"
+                and a.missing.pig_iron > 0
+                and not (sto_pig > 0 and a.cost.pig_iron > sto_pig)
+                for a in p_acts
             ):
                 return None
 
-        if (
-            top_needs_metal
-            or metal_starved_with_positive_pig
-            or (not top_needs_pig_only and any_needs_metal and net_pig_at_100 >= 0)
-        ):
-            resume_pig_min_i = max(2000, math.ceil(bf_pig_used_full * 0.6)) if math.isfinite(bf_pig_used_full) else 2000
-            if net_pig_at_100 >= 0 or res_pig >= resume_pig_min_i:
-                candidate = PlannedAction(
-                    priority="P1",
-                    kind="THROTTLE_BUILDING",
-                    planet_id=planet.planet_id,
-                    planet_coords=_safe_strategy_str(planet.coords),
-                    target_id=BLAST_FURNACE,
-                    target_name="Blast furnace 100%",
-                    target_level=100,
-                    reason="Metal needed for next priority build/research: resume Blast furnace to 100%",
-                    executable_now=True,
-                )
+            resume_energy_cost = int(round(b2_full_energy * max(0, 100 - cur_b2_pct) / 100.0))
+            net_if_resumed = e_net - resume_energy_cost
+            if net_if_resumed < 0:
+                return None
 
-        if candidate is None:
-            min_pig_for_bf = max(5000, math.ceil(bf_pig_used_full * 1.5)) if math.isfinite(bf_pig_used_full) else 5000
+            active = state.active_planet()
+            is_active = active is not None and planet.planet_id == active.planet_id
+            eff_buildings, projected_net = _effective_building_levels_and_energy(
+                state,
+                planet,
+                is_active_planet=is_active,
+            )
+            projected_net_if_resumed = projected_net - resume_energy_cost
+            queued_counts = _queued_building_counts(state) if is_active else {}
+            queue_full = (
+                sum(queued_counts.values()) >= _max_build_slots(planet, state)
+                if is_active
+                else False
+            )
+            allow_remote = cfg.allow_multi_planet and not is_active
+
+            has_p1_power = any(
+                a.priority == "P1"
+                and a.kind in ("BUILD", "WAIT_RESOURCES", "BUILD_SHIP")
+                and a.target_id in (FUSION_PLANT, THERMOSOLAR_PLANT, SOLAR_CELLS_ID)
+                for a in p_acts
+            )
+            would_trigger_p1_power = has_p1_power
+            if not would_trigger_p1_power:
+                for a in p_acts:
+                    tid = game_data.safe_optional_int(a.target_id, None)
+                    if tid is None or tid in (FUSION_PLANT, THERMOSOLAR_PLANT, SOLAR_CELLS_ID):
+                        continue
+                    if a.kind not in ("BUILD", "WAIT_RESOURCES"):
+                        continue
+                    nxt_l = _safe_strategy_int(a.target_level, 0) or (_eff_level(planet, eff_buildings, tid) + 1)
+                    if _energy_starvation_delta(tid, nxt_l, projected_net_if_resumed) < 0:
+                        would_trigger_p1_power = True
+                        break
+            if would_trigger_p1_power:
+                forbid_solar_bf = bool(getattr(cfg, "forbid_planetary_solar", False))
+                solar_offer = _ship_offer_map(planet).get(SOLAR_CELLS_ID)
+                f_rem_bf = _safe_strategy_int(planet.fields_remaining, 0)
+                hot_tight_bf = (
+                    not forbid_solar_bf
+                    and _norm_planet_type(planet) == "normal"
+                    and _safe_strategy_int(planet.fields_max, 0) > 0
+                    and 0 < f_rem_bf <= _safe_strategy_int(cfg.min_free_fields_warning, 20)
+                    and _safe_strategy_int(planet.temperature, 0) >= _safe_strategy_int(cfg.hot_planet_solar_temp_threshold, 40)
+                )
+                use_solar_cells = (
+                    (
+                        _norm_planet_type(planet) == "asteroid"
+                        or (not forbid_solar_bf and (not _planet_has_free_building_fields(planet) or hot_tight_bf))
+                    )
+                    and solar_offer is not None
+                    and solar_offer.can_build
+                    and cfg.allow_shipyard
+                )
+                if use_solar_cells:
+                    assert solar_offer is not None
+                    miss_pw = planet.resources.missing(solar_offer.cost)
+                    can_exec_power = planet.resources.can_afford(solar_offer.cost)
+                else:
+                    power_bid, _, _ = _pick_best_power_building(
+                        planet,
+                        eff_buildings,
+                        state.researches,
+                        forbid_planetary_solar=forbid_solar_bf,
+                    )
+                    power_lvl = _eff_level(planet, eff_buildings, power_bid) + 1
+                    power_cost = _resources_from_dict(game_data.building_cost(power_bid, power_lvl))
+                    power_offer = _offer_map(planet).get(power_bid)
+                    if power_offer is not None:
+                        miss_pw = planet.resources.missing(power_offer.cost)
+                        can_exec_power = (
+                            (not queue_full)
+                            and power_offer.can_build
+                            and planet.resources.can_afford(power_offer.cost)
+                        )
+                    else:
+                        miss_pw = planet.resources.missing(power_cost)
+                        prereq_ok = not game_data.missing_prerequisites(
+                            "buildings",
+                            power_bid,
+                            buildings=planet.buildings,
+                            researches=state.researches,
+                        )
+                        can_exec_power = (
+                            (not queue_full)
+                            and allow_remote
+                            and (not power_cost.is_zero())
+                            and planet.resources.can_afford(power_cost)
+                            and prereq_ok
+                        )
+                if not metal_starved_with_positive_pig and (
+                    has_p1_power
+                    or miss_pw.pig_iron > 0
+                    or (not miss_pw.is_zero() and miss_pw.metal == 0)
+                    or (not can_exec_power and miss_pw.metal == 0)
+                ):
+                    return None
+
             if (
-                not top_needs_pig_only
-                and net_pig_at_100 >= 0
-                and res_pig >= min_pig_for_bf
-                and res_pig >= (2 * res_met)
+                top_needs_metal
+                or metal_starved_with_positive_pig
+                or (not top_needs_pig_only and any_needs_metal and net_pig_at_100 >= 0)
             ):
-                candidate = PlannedAction(
-                    priority="P2",
-                    kind="THROTTLE_BUILDING",
-                    planet_id=planet.planet_id,
-                    planet_coords=_safe_strategy_str(planet.coords),
-                    target_id=BLAST_FURNACE,
-                    target_name="Blast furnace 100%",
-                    target_level=100,
-                    reason="Pig iron reserves healthy: resume Blast furnace smelting to 100%",
-                    executable_now=True,
-                )
+                resume_pig_min_i = max(2000, math.ceil(bf_pig_used_full * 0.6)) if math.isfinite(bf_pig_used_full) else 2000
+                if net_pig_at_100 >= 0 or res_pig >= resume_pig_min_i:
+                    candidate = PlannedAction(
+                        priority="P1",
+                        kind="THROTTLE_BUILDING",
+                        planet_id=planet.planet_id,
+                        planet_coords=_safe_strategy_str(planet.coords),
+                        target_id=BLAST_FURNACE,
+                        target_name="Blast furnace 100%",
+                        target_level=100,
+                        reason="Metal needed for next priority build/research: resume Blast furnace to 100%",
+                        executable_now=True,
+                    )
 
-    if candidate is not None and _check_bounce:
+            if candidate is None:
+                min_pig_for_bf = max(5000, math.ceil(bf_pig_used_full * 1.5)) if math.isfinite(bf_pig_used_full) else 5000
+                if (
+                    not top_needs_pig_only
+                    and net_pig_at_100 >= 0
+                    and res_pig >= min_pig_for_bf
+                    and res_pig >= (2 * res_met)
+                ):
+                    candidate = PlannedAction(
+                        priority="P2",
+                        kind="THROTTLE_BUILDING",
+                        planet_id=planet.planet_id,
+                        planet_coords=_safe_strategy_str(planet.coords),
+                        target_id=BLAST_FURNACE,
+                        target_name="Blast furnace 100%",
+                        target_level=100,
+                        reason="Pig iron reserves healthy: resume Blast furnace smelting to 100%",
+                        executable_now=True,
+                    )
+
+    if candidate is not None and _check_bounce and not p1_resume_override:
         new_pct = _safe_strategy_int(candidate.target_level, 0)
         delta_e = int(round(b2_full_energy * (new_pct - cur_b2_pct) / 100.0))
         new_rates = dict(rates)
@@ -5075,17 +5217,49 @@ def _reconcile_queue_metal_production(
                 break
 
         if first_metal_idx is None:
+            p1_need_met_q, p1_act_q = p1_metal_shortfall(planet, out_list)
+            if p1_need_met_q > 0 and p1_act_q is not None:
+                out_list = [
+                    a
+                    for a in out_list
+                    if not (
+                        a.planet_id == pid
+                        and a.manual_queue_id is None
+                        and a.kind == "THROTTLE_BUILDING"
+                        and a.target_id == BLAST_FURNACE
+                        and _safe_strategy_int(a.target_level, -1) == 0
+                        and "metal storage full" not in _safe_strategy_str(a.reason).lower()
+                        and "negative energy" not in _safe_strategy_str(a.reason).lower()
+                    )
+                ]
+                if cur_b2_pct == 0 and not any(
+                    a.planet_id == pid
+                    and a.kind == "THROTTLE_BUILDING"
+                    and a.target_id == BLAST_FURNACE
+                    and _safe_strategy_int(a.target_level, 0) > 0
+                    for a in out_list
+                ):
+                    resume_p1 = plan_p1_metal_resume_throttle(state, planet, p1_need_met_q, p1_act_q)
+                    if resume_p1 is not None:
+                        p1_idx_out = next((i for i, x in enumerate(out_list) if x is p1_act_q), 0)
+                        out_list.insert(p1_idx_out, resume_p1)
+                        projected_rates_by_pid[pid] = _safe_strategy_int(resume_p1.target_level, 100)
             continue
 
         m_act, m_spend, m_need_pig, m_need_met = queue_eval[first_metal_idx]
         earlier_items = queue_eval[:first_metal_idx]
-        earlier_pig_blocker = next(
-            (
-                (ea, esp, enp)
-                for (ea, esp, enp, enm) in earlier_items
-                if enp > 0 and enm == 0 and not (sto_pig > 0 and esp.pig_iron > sto_pig)
-            ),
-            None,
+        p1_need_met_q, _p1_act_q = p1_metal_shortfall(planet, out_list)
+        earlier_pig_blocker = (
+            None
+            if p1_need_met_q > 0  # Never hold Metal production at 0% while a P0/P1 item lacks Metal
+            else next(
+                (
+                    (ea, esp, enp)
+                    for (ea, esp, enp, enm) in earlier_items
+                    if enp > 0 and enm == 0 and not (sto_pig > 0 and esp.pig_iron > sto_pig)
+                ),
+                None,
+            )
         )
 
         if earlier_pig_blocker is not None:
@@ -5142,7 +5316,12 @@ def _reconcile_queue_metal_production(
         sum_pig_ahead_waiting = sum(
             esp.pig_iron for (ea, esp, _enp, _enm) in earlier_items if not ea.executable_now
         )
-        if sum_pig_ahead_waiting > 0 and net_pig_at_100 < 0 and res_pig < sum_pig_ahead_waiting + 500:
+        if (
+            p1_need_met_q <= 0
+            and sum_pig_ahead_waiting > 0
+            and net_pig_at_100 < 0
+            and res_pig < sum_pig_ahead_waiting + 500
+        ):
             continue
 
         # Active Metal frontier reached: strip any auto Blast furnace 0% pause on this colony
@@ -5160,12 +5339,24 @@ def _reconcile_queue_metal_production(
 
         if not metal_is_full and cur_b2_pct < 100:
             target_pct = 100
+            e_net_q = _safe_strategy_int(getattr(planet.energy, "net", 0), 0)
+            b2_full_e_q = abs(
+                _safe_strategy_int(game_data.building_level_stats(BLAST_FURNACE, b2_lvl).get("energy", 0) or 0, 0)
+            )
+            if b2_full_e_q > 0:
+                delta_e_full = int(round(b2_full_e_q * max(0, 100 - cur_b2_pct) / 100.0))
+                if e_net_q < delta_e_full:
+                    e_avail_total = max(0, e_net_q) + int(round(b2_full_e_q * cur_b2_pct / 100.0))
+                    energy_pct = (e_avail_total * 100 // b2_full_e_q) // 10 * 10
+                    target_pct = max(max(10, cur_b2_pct), min(100, int(energy_pct)))
             if m_need_pig > 0 and bf_pig_used_full > p_pig_gross > 0 and res_pig < m_spend.pig_iron:
-                target_pct = 10
+                sust_pct = 10
                 for cand_pct in (90, 80, 70, 60, 50, 40, 30, 20, 10):
                     if bf_pig_used_full * (cand_pct / 100.0) <= p_pig_gross * 0.85:
-                        target_pct = cand_pct
+                        sust_pct = cand_pct
                         break
+                if sust_pct < target_pct:
+                    target_pct = sust_pct
 
             if cur_b2_pct != target_pct:
                 # Replace any existing auto resume throttle on this colony so we place it cleanly ahead of m_act

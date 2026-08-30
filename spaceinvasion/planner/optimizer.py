@@ -9357,6 +9357,41 @@ def _materialize_planned_actions(
                         ),
                     )
 
+    # Never pause Metal production (Blast furnace 0%) while a P0/P1 item on that colony still lacks Metal
+    # (except Metal-storage-full overflow and negative-energy emergencies on full-field colonies), and
+    # resume a paused (0%) Blast furnace at the highest energy-safe % when a P0/P1 item needs Metal.
+    from spaceinvasion.planner.strategy import p1_metal_shortfall, plan_p1_metal_resume_throttle
+
+    p1_metal_by_pid: dict[int, tuple[int, Any]] = {}
+    for p_m in state.planets:
+        need_m, act_m = p1_metal_shortfall(p_m, plan)
+        if need_m > 0 and act_m is not None:
+            p1_metal_by_pid[p_m.planet_id] = (need_m, act_m)
+    if p1_metal_by_pid:
+        plan = [
+            a
+            for a in plan
+            if not (
+                a.kind == "THROTTLE_BUILDING"
+                and a.target_id == 2
+                and a.planet_id in p1_metal_by_pid
+                and _safe_int(a.target_level, -1) == 0
+                and getattr(a, "manual_queue_id", None) is None
+                and "metal storage full" not in _safe_action_str(a.reason).lower()
+                and "negative energy" not in _safe_action_str(a.reason).lower()
+            )
+        ]
+        if cfg.auto_throttle_blast_furnace and not cfg.merchant_mode:
+            for p_m in state.planets:
+                entry = p1_metal_by_pid.get(p_m.planet_id)
+                if entry is None:
+                    continue
+                if any(a.planet_id == p_m.planet_id and a.kind == "THROTTLE_BUILDING" and a.target_id == 2 for a in plan):
+                    continue
+                resume_act = plan_p1_metal_resume_throttle(state, p_m, entry[0], entry[1])
+                if resume_act is not None:
+                    plan.insert(0, resume_act)
+
     # Surface gated non-executable advisories when offers/targets exist but `allow_*` is False
     active_ptype = normalize_planet_type(active)
     if (

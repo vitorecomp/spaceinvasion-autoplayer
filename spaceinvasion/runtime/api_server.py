@@ -4579,8 +4579,20 @@ class GameApiBridge:
             folder_type=folder_type,
             exclude_coords=excl,
         )
-        page_spy_reports = list(
-            parse_spy_messages_html(html, exclude_coords=excl)
+        non_spy_msg_ids = {
+            m.server_msg_id
+            for m in messages
+            if m.server_msg_id and m.category != "spy_report"
+        }
+        f_low_ing = (folder_type or "").strip().lower()
+        page_spy_reports = (
+            [
+                rep
+                for rep in parse_spy_messages_html(html, exclude_coords=excl)
+                if not (rep.server_msg_id and rep.server_msg_id in non_spy_msg_ids)
+            ]
+            if f_low_ing in ("", "spio", "inbox")
+            else []
         )
         seen_spy_keys = {
             (normalize_coords(r.target_coords) or r.target_coords, r.server_msg_id)
@@ -4613,7 +4625,14 @@ class GameApiBridge:
                     if rk not in seen_new_spy:
                         seen_new_spy.add(rk)
                         reports_to_persist.append(msg.spy_report)
-            if not any(m.spy_report is not None for m in messages) and page_spy_reports:
+            if (
+                not any(m.spy_report is not None for m in messages)
+                and page_spy_reports
+                and not any(
+                    m.category in ("fleet_return", "battle_report", "recycle_report", "fleet_transport", "colonize_report", "counter_spy")
+                    for m in messages
+                )
+            ):
                 reports_to_persist = page_spy_reports
         else:
             reports_to_persist = page_spy_reports

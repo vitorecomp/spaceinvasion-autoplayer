@@ -2419,17 +2419,33 @@ class ActionExecutor:
                     )
                     if mission_kind in ("ATTACK", "SPY") and has_step2_controls:
                         inline_forb = self._extract_mission_forbidden_reason(send_html, mission_kind)
+                        avail_vals: list[str] = []
+                        for r_el in send_soup.select('input[type="radio"]'):
+                            r_nm = str(r_el.get("name") or "").strip().lower()
+                            r_vl = str(r_el.get("value") or "").strip()
+                            if r_vl and not any(tok in r_nm for tok in ("procent", "percent", "speed", "route", "geschwindigkeit")):
+                                if r_vl not in avail_vals:
+                                    avail_vals.append(r_vl)
+                        avail_hint = (
+                            f"available radios: {', '.join(avail_vals[:6])}"
+                            if avail_vals
+                            else "no mission radios rendered"
+                        )
+                        uninhab_hint = (
+                            " — target slot appears uninhabited/despawned"
+                            if any(v.upper() in ("KOLO", "COLONIZE", "KOLONISIEREN") for v in avail_vals)
+                            or (avail_vals and all(v.upper() == "SAVE" for v in avail_vals))
+                            else ""
+                        )
                         verb_unavail = "attacked" if mission_kind == "ATTACK" else "spied"
                         blk_msg = inline_forb or (
-                            f"Target cannot be {verb_unavail} on internalSendFleet ({mission_kind} mission unavailable)"
+                            f"Target cannot be {verb_unavail} on internalSendFleet "
+                            f"({mission_kind} mission unavailable; {avail_hint}{uninhab_hint})"
                         )
                         out_msg = (
                             f"Aborted: {inline_forb}."
                             if inline_forb
-                            else (
-                                f"Aborted: {mission_kind.title()} mission radio button not confirmed on internalSendFleet "
-                                f"(page bytes={len(send_html)})."
-                            )
+                            else f"Aborted: {blk_msg}."
                         )
                         return ExecutionResult(
                             executed=False,

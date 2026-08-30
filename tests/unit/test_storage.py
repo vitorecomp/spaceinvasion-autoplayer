@@ -1175,6 +1175,108 @@ class TestGameDatabase(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_record_spy_report_rejects_fleet_return_and_startup_repairs_poisoned_free_slots(self) -> None:
+        from spaceinvasion.combat.fleet import GalaxySlot, SpyReport
+        from spaceinvasion.core.state import Resources
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "spaceinvasion.db"
+            db = GameDatabase(db_path)
+            try:
+                # 1. Seed a genuine free slot in galaxy_slots (e.g. 02:379:02)
+                db.record_galaxy_slots(
+                    [
+                        GalaxySlot(
+                            coords="02:379:02",
+                            position=2,
+                            name="",
+                            owner="",
+                            status_color="free",
+                            is_spacia=False,
+                            has_debris=False,
+                            colonize_min_fields=100,
+                            colonize_max_fields=220,
+                            temperature=-33,
+                        )
+                    ],
+                    ts=1000.0,
+                )
+
+                # 2. record_spy_report must reject a poisoned fleet-return SpyReport
+                poison_raw = (
+                    "2026-11-17 13:04:40 System Colony [02:380:12] fleet return "
+                    "Message from System: Colony [02:380:12] fleet return One of your fleets (1 Recycler) "
+                    "is returning from duty from Spacia Planet [02:379:02] to its home planet Colony [02:380:12]. "
+                    "The assignment was to: Recycle. 0 Pig iron, 0 Metal, 0 Kryptonite, 0 Spice were unloaded."
+                )
+                db.record_spy_report(
+                    SpyReport(
+                        target_coords="02:379:02",
+                        owner="Spacia",
+                        planet_name="Colony",
+                        resources=Resources(120_668, 135_782, 614_098, 524_983),
+                        is_spacia=True,
+                        raw_text=poison_raw,
+                    ),
+                    ts=1100.0,
+                )
+                t_clean = db.get_spy_target_by_coords("02:379:02")
+                self.assertIsNotNone(t_clean)
+                assert t_clean is not None
+                self.assertEqual(t_clean["status_color"], "free")
+                self.assertFalse(t_clean["is_spacia"])
+                self.assertEqual(t_clean["resources"]["pig_iron"], 0)
+                self.assertFalse(t_clean["has_spy_intel"])
+
+                # 3. Simulate legacy poisoned DB state directly in SQLite (as occurred before the parser fix)
+                db._conn.execute(
+                    """
+                    UPDATE spy_targets
+                    SET owner = 'Spacia', planet_name = 'Colony', status_color = 'yellow',
+                        is_inactive = 1, is_spacia = 1,
+                        pig_iron = 120668, metal = 135782, kryptonite = 614098, spice = 524983,
+                        last_scanned_ts = 1200.0, last_spied_ts = 1200.0,
+                        blocked_until_ts = 9999.0,
+                        block_reason = 'Target cannot be attacked on internalSendFleet (ATTACK mission unavailable)'
+                    WHERE coords = '02:379:02'
+                    """
+                )
+                db._conn.execute(
+                    """
+                    INSERT INTO spy_reports(
+                        ts, target_coords, owner, planet_name, is_spacia,
+                        pig_iron, metal, kryptonite, spice, loot_spice_eq,
+                        buildings_json, fleet_json, defense_json, researches_json,
+                        dug_in, uninhabited_fields, server_msg_id, msg_date_text, raw_text
+                    ) VALUES (1200.0, '02:379:02', 'Spacia', 'Colony', 1,
+                              120668, 135782, 614098, 524983, 804106.5,
+                              '{}', '{}', '{}', '{}', 0, NULL, '7881', '2026-11-17 13:04:40', ?)
+                    """,
+                    (poison_raw,),
+                )
+                db._conn.commit()
+            finally:
+                db.close()
+
+            # 4. Reopening GameDatabase triggers _repair_spy_targets_locked -> non-destructively restores free slot!
+            db2 = GameDatabase(db_path)
+            try:
+                repaired = db2.get_spy_target_by_coords("02:379:02")
+                self.assertIsNotNone(repaired)
+                assert repaired is not None
+                self.assertEqual(repaired["status_color"], "free")
+                self.assertEqual(repaired["owner"], "")
+                self.assertEqual(repaired["planet_name"], "")
+                self.assertFalse(repaired["is_spacia"])
+                self.assertFalse(repaired["has_spy_intel"])
+                self.assertEqual(repaired["resources"], {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0})
+                self.assertEqual(repaired["block_reason"], "")
+                self.assertEqual(repaired["blocked_until_ts"], 0.0)
+                # Append-only spy_reports row remains in DB but is excluded from get_spy_reports API
+                self.assertEqual(db2.get_spy_reports(coords="02:379:02"), [])
+            finally:
+                db2.close()
+
 
 if __name__ == "__main__":
     unittest.main()

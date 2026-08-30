@@ -2158,6 +2158,12 @@ class GameBrowserClient:
                                         }
                                     }
                                     var cleanTxt = String((bodyEl && bodyEl.textContent) || '').replace(/\\s+/g, ' ').trim();
+                                    if (t.kind === 'read' && cleanTxt) {
+                                        var mInner = cleanTxt.match(/(?:Message\\s+from|Nachricht\\s+von)\\s+[^:]{1,60}:[\\s\\S]*?(?=\\s*['"]?\\s*(?:Fleet\\s+reports|Battle\\s+reports|Espionage|System|User|Alliance)\\s*[\\u2605*]|\\s*[\\u2605*]\\s*Favourites|\\s*Received\\s+on:\\s*From:|\\s*Empfangen\\s+am:|$)/i);
+                                        if (mInner && mInner[0] && mInner[0].trim().length > 4) {
+                                            cleanTxt = mInner[0].trim();
+                                        }
+                                    }
                                     if (cleanTxt.length > 4) {
                                         attachDiv(t.tr, cleanTxt.slice(0, 6000), '', '');
                                         expCount++;

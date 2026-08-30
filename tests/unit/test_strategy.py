@@ -2428,10 +2428,10 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertIsNotNone(merged_top[1].wait_hours)
         self.assertNotEqual(merged_top[1].wait_eta, "—")
 
-        # Case B: User has Pig iron mine -> L15 (needs ONLY Pig iron + Kryp, 0 Metal!) AHEAD (#1) of
-        #         Research lab -> L5 (#2, needs Metal), while b2 is currently running at 100%!
-        # -> Because #1 is ahead in the queue and starved for Pig iron, Blast furnace pauses to 0%
-        #    first, and #2 notes "[Metal production queued after Pig iron mine Pig iron completes]"!
+        # Case B: User has P2 Pig iron mine -> L15 (needs ONLY Pig iron + Kryp, 0 Metal!) AHEAD (#1) of
+        #         a P2 Research lab -> L5 (#2, needs Metal), while b2 is currently running at 100%!
+        # -> Because #1 is ahead in the queue and starved for Pig iron (and no P0/P1 item lacks Metal),
+        #    Blast furnace pauses to 0% first, and #2 notes "[Metal production queued after ...]"!
         st_running = replace(
             st_paused,
             planets=(replace(p_base, economy_rates={"resource1": 100, "resource2": 100}),),
@@ -2440,7 +2440,7 @@ class TestStrategyPlanner(unittest.TestCase):
             {
                 "id": 11,
                 "status": "pending",
-                "priority": "P1",
+                "priority": "P2",
                 "sort_rank": 100,
                 "kind": "BUILD",
                 "planet_id": 12476,
@@ -2452,7 +2452,7 @@ class TestStrategyPlanner(unittest.TestCase):
             {
                 "id": 12,
                 "status": "pending",
-                "priority": "P1",
+                "priority": "P2",
                 "sort_rank": 200,
                 "kind": "BUILD",
                 "planet_id": 12476,
@@ -2469,6 +2469,16 @@ class TestStrategyPlanner(unittest.TestCase):
         lab_behind = next(a for a in merged_behind if a.manual_queue_id == 12)
         self.assertIn("[Metal production queued after Pig iron mine Pig iron completes]", lab_behind.reason)
 
+        # Case B2: Same queue but BOTH items are P1 -> a P1 item lacks Metal, so Metal
+        #          production is NEVER paused to 0% (user rule: zero Metal only when all P1 items have Metal).
+        mq_pig_first_p1 = [{**mq_pig_first[0], "priority": "P1"}, {**mq_pig_first[1], "priority": "P1"}]
+        merged_p1, _ = merge_manual_queue_actions(st_running, [], mq_pig_first_p1, config=cfg)
+        self.assertFalse(
+            any(a.kind == "THROTTLE_BUILDING" and a.target_id == 2 and a.target_level == 0 for a in merged_p1)
+        )
+        lab_p1 = next(a for a in merged_p1 if a.manual_queue_id == 12)
+        self.assertNotIn("[Metal production queued after", lab_p1.reason)
+
         # Case C: Reordering Research lab (#12) AHEAD of Pig iron mine (#11) while b2=0%
         # -> Immediately flips Blast furnace 0% -> 100% because the Metal item is now #1 in the queue!
         mq_reordered = [
@@ -2480,6 +2490,139 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(merged_reordered[0].target_id, 2)
         self.assertEqual(merged_reordered[0].target_level, 100)
         self.assertEqual(merged_reordered[1].manual_queue_id, 12)
+
+    def test_blast_furnace_never_paused_while_p1_item_lacks_metal(self) -> None:
+        from spaceinvasion.planner.strategy import (
+            PlannedAction,
+            _plan_blast_furnace_throttle,
+            merge_manual_queue_actions,
+            p1_metal_shortfall,
+        )
+
+        # Live repro: b2 L21, Metal 15,854 / 800k, Pig 186,897; energy +342 net (b2 @100% costs 790).
+        planet = PlanetState(
+            planet_id=12476,
+            name="Colony",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=31,
+            fields_used=140,
+            fields_max=230,
+            resources=Resources(186_897, 15_854, 655_229, 555_701),
+            storage=Resources(3_200_000, 800_000, 1_600_000, 800_000),
+            energy=EnergyBalance(5954, 5612),
+            buildings={"b1": 21, "b2": 21, "b3": 21, "b4": 20, "b5": 23, "b7": 8, "b8": 6, "b9": 6, "b10": 6},
+            economy_rates={"resource1": 100, "resource2": 0},
+        )
+        st = GameState(31, 7, "cmdr", 10_000.0, (planet,), active_planet_id=12476, speedup_factor=10.0)
+        cfg = StrategyConfig(planner_mode="priority", auto_throttle_blast_furnace=True)
+
+        fusion_p1 = PlannedAction(
+            priority="P1",
+            kind="WAIT_RESOURCES",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=FUSION_PLANT,
+            target_name="Fusion plant",
+            target_level=24,
+            cost=Resources(1_046_068, 0, 418_427, 0),
+            missing=Resources(859_171, 0, 0, 0),
+            reason="User Queue #3: Queued upgrade",
+            executable_now=False,
+        )
+        colony_ship_p1 = PlannedAction(
+            priority="P1",
+            kind="BUILD_SHIP",
+            planet_id=12476,
+            planet_coords="02:380:12",
+            target_id=8,
+            target_name="Colony ship",
+            target_level=2,
+            cost=Resources(20_000, 20_000, 10_000, 0),
+            missing=Resources(0, 4_146, 0, 0),
+            reason="Build Colony ship (s8) to colonize a 300+ field planet",
+            executable_now=False,
+        )
+        need, act = p1_metal_shortfall(planet, [fusion_p1, colony_ship_p1])
+        self.assertEqual(need, 4_146)
+        self.assertIs(act, colony_ship_p1)
+
+        # 1. Paused (0%) + P1 Colony ship lacks Metal (even with a P1 Pig-iron-only item first)
+        #    -> resume at the highest energy-safe % (342/790 -> 40%), even with _check_bounce=True.
+        resume = _plan_blast_furnace_throttle(
+            st, planet, [fusion_p1, colony_ship_p1], cfg, now_ts=10_000.0, _check_bounce=True
+        )
+        self.assertIsNotNone(resume)
+        assert resume is not None
+        self.assertEqual((resume.kind, resume.priority, resume.target_id), ("THROTTLE_BUILDING", "P1", 2))
+        self.assertEqual(resume.target_level, 40)
+        self.assertIn("Colony ship", resume.reason)
+        self.assertTrue(resume.executable_now)
+
+        # 1b. Live merge_manual_queue_actions path: manual P1 Fusion plant + auto P1 Colony ship while b2=0%
+        mq_fusion = [
+            {
+                "id": 3,
+                "status": "pending",
+                "priority": "P1",
+                "sort_rank": 100,
+                "kind": "BUILD",
+                "planet_id": 12476,
+                "planet_coords": "02:380:12",
+                "target_id": FUSION_PLANT,
+                "target_name": "Fusion plant",
+                "target_level": 24,
+            }
+        ]
+        merged_live, _ = merge_manual_queue_actions(st, [colony_ship_p1], mq_fusion, config=cfg)
+        resume_merged = next(
+            (a for a in merged_live if a.kind == "THROTTLE_BUILDING" and a.target_id == 2),
+            None,
+        )
+        self.assertIsNotNone(resume_merged)
+        assert resume_merged is not None
+        self.assertEqual(resume_merged.target_level, 40)
+
+        # 2. Running (40%) + P1 Colony ship still lacks Metal -> never paused to 0%.
+        running = replace(planet, economy_rates={"resource1": 100, "resource2": 40}, energy=EnergyBalance(5954, 5928))
+        st_run = replace(st, planets=(running,))
+        self.assertIsNone(
+            _plan_blast_furnace_throttle(
+                st_run, running, [fusion_p1, colony_ship_p1], cfg, now_ts=10_000.0, _check_bounce=False
+            )
+        )
+
+        # 3. Once every P1 item has enough Metal, the Pig-iron-only P1 blocker may pause b2 to 0% again.
+        ship_ok = replace(colony_ship_p1, missing=Resources(), executable_now=True)
+        paused_again = _plan_blast_furnace_throttle(
+            st_run, running, [fusion_p1, ship_ok], cfg, now_ts=10_000.0, _check_bounce=False
+        )
+        self.assertIsNotNone(paused_again)
+        assert paused_again is not None
+        self.assertEqual(paused_again.target_level, 0)
+
+        # 4. Metal storage full still forces 0% even if a P1 item lacks Metal (overflow protection).
+        full = replace(
+            running,
+            resources=Resources(186_897, 800_000, 655_229, 555_701),
+        )
+        big_p1 = replace(colony_ship_p1, cost=Resources(0, 900_000, 0, 0), missing=Resources(0, 100_000, 0, 0))
+        st_full = replace(st, planets=(full,))
+        full_act = _plan_blast_furnace_throttle(
+            st_full, full, [big_p1], cfg, now_ts=10_000.0, _check_bounce=False
+        )
+        self.assertIsNotNone(full_act)
+        assert full_act is not None
+        self.assertEqual(full_act.target_level, 0)
+
+        # 5. Active negative energy deficit does not turn a paused (0%) Blast furnace back ON for a non-power P1 item.
+        neg_e = replace(planet, energy=EnergyBalance(5000, 5200))
+        st_neg_e = replace(st, planets=(neg_e,))
+        self.assertIsNone(
+            _plan_blast_furnace_throttle(
+                st_neg_e, neg_e, [fusion_p1, colony_ship_p1], cfg, now_ts=10_000.0, _check_bounce=False
+            )
+        )
 
     def test_fadata_dedup_spy_first_closest_distance_reserved_slots_designated_planet_and_colony_quota_probing(self) -> None:
         from spaceinvasion.core.state import QueueJob, is_in_flight_fleet_job, parse_home_metadata

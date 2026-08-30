@@ -6033,6 +6033,35 @@ class TestApiAndCommander(unittest.TestCase):
                     self.assertEqual(r1_row["holder"], "TopMiner")
                     dash = requests.get(f"{base_url}/dashboard?refresh=0", timeout=5).json()
                     self.assertIn("universe_research_max", dash)
+
+                    # 4. _ingest_and_delete_page_messages must never persist fleet-return notices as fake Spacia spy reports
+                    fleet_ret_html = """
+                    <html><body><table>
+                      <tr id="msg_7881299569787197">
+                        <td><input type="checkbox" id="check_7881299569787197" name="check_7881299569787197" value="7881299569787197" /></td>
+                        <td>2026-11-17 14:19:26</td>
+                        <td>System</td>
+                        <td>
+                          Colony [02:380:12] fleet return
+                          <div class="si-expanded-body" data-si-expanded="1">
+                            02:380:12 Colony [02:380:12] Colony Pig iron 185.293 6% Metal 7.790 1% Kryptonite 656.686 41% Spice 551.163 69%
+                            Message from System: Colony [02:380:12] fleet return One of your fleets (46 Recycler) is returning from duty
+                            from Spacia Planet [02:380:14] to its home planet Colony [02:380:12]. The assignment was to: Recycle.
+                            0 Pig iron, 0 Metal, 0 Kryptonite, 0 Spice were unloaded. ' Fleet reports&#9733; Favourites
+                          </div>
+                        </td>
+                      </tr>
+                    </table></body></html>
+                    """
+                    reps_ing, _cnt_ing, _del_ing, _post_ing = bridge._ingest_and_delete_page_messages(
+                        MagicMock(),
+                        fleet_ret_html,
+                        folder_type="inbox",
+                        own_coords={"02:380:12"},
+                        delete_after_persist=False,
+                    )
+                    self.assertEqual(reps_ing, [])
+                    self.assertIsNone(bridge._db.get_spy_target_by_coords("02:380:14"))
                 finally:
                     server.shutdown()
                     server.server_close()
