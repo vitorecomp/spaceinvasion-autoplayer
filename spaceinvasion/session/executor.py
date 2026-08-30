@@ -641,6 +641,35 @@ class ActionExecutor:
                 ) as exc:
                     switched = False
                     stale_during_switch = isinstance(exc, StaleElementReferenceException)
+            if not switched and chosen_opt is not None and chosen_val and not stale_during_switch:
+                # SpaceInvasion RETRO (data-theme="new") wraps <select name="planet"> inside
+                # <div style="display:none;"> (replacing it visually with #planet-chooser /
+                # div.planet-entry), so Selenium Select & option.click() raise
+                # ElementNotInteractableException. Trigger the hidden <select>'s matching
+                # option + onchange handler via JS to switch planets in-place on F_Hauptframe.
+                try:
+                    js_res = client.driver.execute_script(
+                        "var sel = arguments[0], val = arguments[1]; "
+                        "if (!sel || !val || !sel.options) return false; "
+                        "var matched = false; "
+                        "for (var i = 0; i < sel.options.length; i++) { "
+                        "  if (sel.options[i].value === val) { sel.selectedIndex = i; matched = true; break; } "
+                        "} "
+                        "if (!matched) return false; "
+                        "if (typeof sel.onchange === 'function') { sel.onchange(); return true; } "
+                        "sel.dispatchEvent(new Event('change', {bubbles: true})); "
+                        "return true;",
+                        select_el,
+                        chosen_val,
+                    )
+                    if js_res is True:
+                        switched = True
+                        stale_during_switch = False
+                except StaleElementReferenceException:
+                    switched = False
+                    stale_during_switch = True
+                except Exception:
+                    switched = False
             if switched:
                 break
             if stale_during_switch and attempt == 0:

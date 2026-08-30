@@ -2142,6 +2142,57 @@ class TestActionExecutor(unittest.TestCase):
         self.assertEqual(ex_c.last_observed_active_planet_id, 12477)
         self.assertTrue(ex_c.last_observed_active_planet_confirmed)
 
+        # (d) Live SpaceInvasion RETRO wraps <select name="planet"> in <div style="display:none;">
+        #     so Select.select_by_value and option.click() raise ElementNotInteractableException ->
+        #     JS onchange fallback switches planets cleanly and confirms active planet ID.
+        from selenium.common.exceptions import ElementNotInteractableException
+
+        opt_home = MagicMock()
+        opt_home.get_attribute.return_value = "indexInternal.es?action=internalBuildings&newPlanet=12476"
+        opt_home.is_selected.return_value = True
+        opt_col = MagicMock()
+        opt_col.get_attribute.return_value = "indexInternal.es?action=internalBuildings&newPlanet=12453"
+        opt_col.is_selected.return_value = False
+        opt_col.click.side_effect = ElementNotInteractableException("hidden inside display:none")
+
+        sel_hidden = MagicMock()
+        sel_hidden.tag_name = "select"
+        sel_hidden.get_dom_attribute.return_value = None
+        sel_hidden.find_elements.return_value = [opt_home, opt_col]
+
+        client_retro = MagicMock(spec=GameBrowserClient)
+        client_retro.driver = MagicMock()
+        client_retro.driver.find_element.return_value = sel_hidden
+        client_retro.driver.execute_script.side_effect = lambda script, *args: (
+            True if "sel.onchange" in str(script) else None
+        )
+        retro_before_html = (
+            '<div style="display:none;"><form name="fselect"><select name="planet" '
+            'onchange="location.href=this.options[this.selectedIndex].value;">'
+            '<option selected="selected" value="indexInternal.es?action=internalBuildings&newPlanet=12476">Home</option>'
+            '<option value="indexInternal.es?action=internalBuildings&newPlanet=12453">Colony</option>'
+            "</select></form></div>"
+        )
+        retro_after_html = (
+            '<div style="display:none;"><form name="fselect"><select name="planet">'
+            '<option value="indexInternal.es?action=internalBuildings&newPlanet=12476">Home</option>'
+            '<option selected="selected" value="indexInternal.es?action=internalBuildings&newPlanet=12453">Colony</option>'
+            "</select></form></div>"
+        )
+        client_retro._wait_frame_ready.return_value = retro_after_html
+
+        ex_d = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
+        with patch("spaceinvasion.executor.Select") as mock_sel_cls:
+            mock_sel_cls.return_value.select_by_value.side_effect = ElementNotInteractableException("hidden")
+            switched_d, updated_d = ex_d._select_planet_if_needed(
+                client_retro, 12453, html=retro_before_html, require_confirm=True
+            )
+        self.assertTrue(switched_d)
+        self.assertEqual(updated_d, retro_after_html)
+        client_retro._wait_frame_ready.assert_called_once()
+        self.assertEqual(ex_d.last_observed_active_planet_id, 12453)
+        self.assertTrue(ex_d.last_observed_active_planet_confirmed)
+
     def test_tier5_bounce_detection_raid_stats_preserved_stale_retry_and_german_missions(self) -> None:
         from bs4 import BeautifulSoup
         from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
