@@ -377,7 +377,17 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
         title: "Autonomous Espionage & Inactive/Spacia Raids",
         boundsLabel: "default: false · boolean",
         description:
-          "Enables closest-first P2 SPY scouting (s10 on inhabited planets and Spacia, refreshing intel older than 4h) and ATTACK plunder waves against yellow inactives and Spacia NPC planets (exempt from the 3/24h Bash cap unless server-blocked), bounded by 1 + b10 concurrent fleet slots. Boolean toggle.",
+          "Enables P1 SPY scouting (s10 on inhabited planets and Spacia, refreshing intel older than 4h) and P2 ATTACK/RECYCLE harvest waves against yellow inactives, Spacia NPC planets, and rubble fields ranked by total resources per round-trip flight time (res/h), bounded by 1 + b10 concurrent fleet slots. Boolean toggle.",
+        control: "checkbox",
+        defaultValue: false,
+      },
+      {
+        key: "allow_transport",
+        id: "cfg-allow_transport",
+        title: "Autonomous Inter-Planet Resource Transport",
+        boundsLabel: "default: false · boolean",
+        description:
+          "Dispatches P1 TRANSPORT flights (s3/s2/s1) strictly between your own planets to supply P1/P2 resource shortfalls and bootstrap young colonies from surplus planets (respecting Spice fuel reserves and 85% recipient storage caps). Runs at Fleet Priority #2: after SPY (#1) and ahead of COLONIZE (#3) and ATTACK/RECYCLE (#4). Boolean toggle.",
         control: "checkbox",
         defaultValue: false,
       },
@@ -387,7 +397,7 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
         title: "Reserved Spy Fleet Slots",
         boundsLabel: "default: 1 · 0–10 slots",
         description:
-          "Number of Fleet base (1 + b10) concurrent flight seats held exclusively for SPY probe missions whenever ready spy targets and stationed s10 probes exist, holding non-SPY ATTACK, RECYCLE, and COLONIZE dispatches at max_fleet_slots - eff_res so espionage never stalls behind slow raids. Accepts integers from 0 to 10.",
+          "Number of Fleet base (1 + b10) concurrent flight seats held exclusively for SPY probe missions (#1) whenever ready spy targets and stationed s10 probes exist, enforcing the 4-tier fleet priority SPY (#1) → TRANSPORT (#2) → COLONIZE (#3) → ATTACK & RECYCLE (#4, ranked by resource/flight_time). Accepts integers from 0 to 10.",
         control: "number",
         defaultValue: 1,
         min: 0,

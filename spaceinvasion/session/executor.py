@@ -29,13 +29,17 @@ from spaceinvasion.core import game_data
 from spaceinvasion.session.client import GameBrowserClient, PageViewLimiter
 from spaceinvasion.combat.fleet import (
     GalaxySlot,
+    fleet_cargo_capacity,
+    normalize_coords,
     parse_galaxy_system_html,
     parse_send_fleet_mission_block,
+    select_transport_ships,
 )
 from spaceinvasion.core.logging_utils import append_crash_debug_log, redact_sensitive
 from spaceinvasion.core.state import (
     GameState,
     QueueJob,
+    Resources,
     homeworld_planet_id,
     is_undersized_fresh_colony,
     normalize_planet_type,
@@ -204,6 +208,7 @@ class ActionExecutor:
         allow_fleetsave: bool = False,
         allow_raids: bool = False,
         allow_colonize: bool = False,
+        allow_transport: bool = False,
         allow_transmitter: bool = True,
         page_limiter: Optional[PageViewLimiter] = None,
         max_limiter_wait: Optional[float] = None,
@@ -215,6 +220,7 @@ class ActionExecutor:
         self.allow_fleetsave = allow_fleetsave
         self.allow_raids = allow_raids
         self.allow_colonize = allow_colonize
+        self.allow_transport = allow_transport
         self.allow_transmitter = allow_transmitter
         self.page_limiter = page_limiter
         self.max_limiter_wait: Optional[float] = _safe_optional_wait_limit(max_limiter_wait)
@@ -1930,6 +1936,8 @@ class ActionExecutor:
                 "colony",
                 "siedel",
             )
+        elif mission_kind == "TRANSPORT":
+            want_tokens = ("transport", "transportier", "liefer")
         else:
             want_tokens = ("spy", "spio", "spionier", "espionage")
 
@@ -2155,6 +2163,99 @@ class ActionExecutor:
                 return phrase
         return None
 
+    _TRANSPORT_INPUT_CANDIDATES: dict[str, tuple[str, ...]] = {
+        "pig_iron": (
+            "roheisen",
+            "roh",
+            "pig_iron",
+            "pigiron",
+            "res1",
+            "res_1",
+            "resource1",
+            "resource_1",
+            "r1",
+            "eisen",
+        ),
+        "metal": (
+            "metall",
+            "met",
+            "metal",
+            "res2",
+            "res_2",
+            "resource2",
+            "resource_2",
+            "r2",
+        ),
+        "kryptonite": (
+            "kryptonit",
+            "krypt",
+            "kryp",
+            "kryptonite",
+            "res3",
+            "res_3",
+            "resource3",
+            "resource_3",
+            "r3",
+        ),
+        "spice": (
+            "spice",
+            "spi",
+            "res4",
+            "res_4",
+            "resource4",
+            "resource_4",
+            "r4",
+        ),
+    }
+
+    def _fill_transport_cargo_inputs(
+        self,
+        client: GameBrowserClient,
+        form_css: str,
+        cargo_resources: Resources,
+    ) -> tuple[bool, list[str]]:
+        """Populate the 4 resource inputs on `internalSendFleet` after selecting the Transport radio."""
+        desired = {
+            "pig_iron": max(0, int(cargo_resources.pig_iron)),
+            "metal": max(0, int(cargo_resources.metal)),
+            "kryptonite": max(0, int(cargo_resources.kryptonite)),
+            "spice": max(0, int(cargo_resources.spice)),
+        }
+        if sum(desired.values()) <= 0:
+            return True, []
+
+        form_inputs = client.driver.find_elements(
+            By.CSS_SELECTOR,
+            f'{form_css} input[type="text"], {form_css} input[type="number"], {form_css} input:not([type])',
+        )
+        by_key: dict[str, Any] = {}
+        seen_names: list[str] = []
+        for inp in form_inputs:
+            nm = str(inp.get_attribute("name") or "").strip().lower()
+            iid = str(inp.get_attribute("id") or "").strip().lower()
+            if nm:
+                seen_names.append(nm)
+            if nm in ("gal", "sun", "pla", "sid", "todo") or any(k in nm for k in ("ship", "procent", "percent", "speed")):
+                continue
+            for rk, cands in self._TRANSPORT_INPUT_CANDIDATES.items():
+                if rk in by_key:
+                    continue
+                if nm in cands or iid in cands or any(c == nm.replace("-", "_") or c == iid.replace("-", "_") for c in cands):
+                    by_key[rk] = inp
+                    break
+
+        missing_keys = [rk for rk, val in desired.items() if val > 0 and rk not in by_key]
+        if missing_keys:
+            return False, seen_names
+
+        for rk, val in desired.items():
+            el = by_key.get(rk)
+            if el is None:
+                continue
+            safe_val = str(max(0, game_data.cap_json_int(val)))
+            self._set_text_input_value(client, el, safe_val)
+        return True, seen_names
+
     def _dispatch_fleet_mission(
         self,
         client: GameBrowserClient,
@@ -2164,6 +2265,7 @@ class ActionExecutor:
         ships_to_send: dict[str, int],
         mission_kind: str,
         active_planet_confirmed: bool = True,
+        cargo_resources: Optional[Resources] = None,
     ) -> ExecutionResult:
         tname_s = _safe_str(action.target_name)
         reason_s = _safe_str(action.reason)
@@ -2498,6 +2600,40 @@ class ActionExecutor:
                     )
                 if not mission_radio.is_selected():
                     self._safe_click(client, mission_radio)
+                if mission_kind == "TRANSPORT" and cargo_resources is not None and not cargo_resources.is_zero():
+                    time.sleep(0.15)
+                    cargo_ok, seen_cargo_inputs = self._fill_transport_cargo_inputs(
+                        client,
+                        form_css,
+                        cargo_resources,
+                    )
+                    if not cargo_ok:
+                        append_crash_debug_log(
+                            component="executor._dispatch_fleet_mission",
+                            event="transport_cargo_inputs_missing",
+                            details={
+                                "target": tname_s,
+                                "form_css": form_css,
+                                "seen_inputs": seen_cargo_inputs[:30],
+                                "cargo": {
+                                    "pig_iron": cargo_resources.pig_iron,
+                                    "metal": cargo_resources.metal,
+                                    "kryptonite": cargo_resources.kryptonite,
+                                    "spice": cargo_resources.spice,
+                                },
+                            },
+                        )
+                        return ExecutionResult(
+                            executed=False,
+                            dry_run=False,
+                            action=action,
+                            message=(
+                                "Aborted: Transport resource inputs could not be confirmed on internalSendFleet "
+                                f"(found inputs: {', '.join(seen_cargo_inputs[:10]) or 'none'})."
+                            ),
+                            validated=False,
+                            validation_error="Transport resource inputs missing on internalSendFleet.",
+                        )
                 launch_btn = client.driver.find_element(By.CSS_SELECTOR, launch_css)
                 if not paced2:
                     self._pace_action(client, priority="interactive")
@@ -2633,6 +2769,8 @@ class ActionExecutor:
             verb = "recycler harvest"
         elif mission_kind == "COLONIZE":
             verb = "colonization fleet"
+        elif mission_kind == "TRANSPORT":
+            verb = "inter-planet transport"
         else:
             verb = "attack"
         return ExecutionResult(
@@ -2956,6 +3094,105 @@ class ActionExecutor:
             active_planet_confirmed=active_planet_confirmed,
         )
 
+    def _execute_transport(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+        *,
+        active_planet_confirmed: bool = True,
+    ) -> ExecutionResult:
+        """Dispatch an inter-planet resource Transport strictly between two owned planets."""
+        origin = next((p for p in state.planets if p.planet_id == action.planet_id), None) or state.active_planet()
+        if origin is None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: origin planet_id={action.planet_id} not found in empire state.",
+            )
+        tname_s = _safe_str(action.target_name)
+        m_c = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", tname_s, re.ASCII)
+        norm_dest = normalize_coords(m_c.group(1)) if m_c else ""
+        dest = next(
+            (
+                p
+                for p in state.planets
+                if (action.target_id is not None and p.planet_id == action.target_id)
+                or (norm_dest and normalize_coords(p.coords) == norm_dest)
+            ),
+            None,
+        )
+        if dest is None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: Transport destination {norm_dest or tname_s!r} is not one of your own planets.",
+            )
+        if dest.planet_id == origin.planet_id:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: Transport origin and destination are the same planet [{origin.coords}].",
+            )
+        req_cargo = action.cost if isinstance(action.cost, Resources) else Resources()
+        if req_cargo.is_zero():
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message="Aborted: Transport cargo is zero.",
+            )
+        fuel_reserve = 500
+        safe_cargo = Resources(
+            pig_iron=min(max(0, req_cargo.pig_iron), max(0, origin.resources.pig_iron)),
+            metal=min(max(0, req_cargo.metal), max(0, origin.resources.metal)),
+            kryptonite=min(max(0, req_cargo.kryptonite), max(0, origin.resources.kryptonite)),
+            spice=min(max(0, req_cargo.spice), max(0, origin.resources.spice - fuel_reserve)),
+        )
+        total_units = safe_cargo.pig_iron + safe_cargo.metal + safe_cargo.kryptonite + safe_cargo.spice
+        if total_units <= 0:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: insufficient surplus resources on [{origin.coords}] to transport.",
+            )
+        miner_spec = game_data.safe_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
+        ships_to_send = select_transport_ships(origin.ships, total_units, miner_spec_level=miner_spec)
+        if not ships_to_send:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: no cargo ships (s1/s2/s3) stationed on [{origin.coords}].",
+            )
+        cap = fleet_cargo_capacity(ships_to_send, miner_spec_level=miner_spec)
+        if total_units > cap and cap > 0:
+            ratio = cap / float(total_units)
+            safe_cargo = Resources(
+                pig_iron=int(safe_cargo.pig_iron * ratio),
+                metal=int(safe_cargo.metal * ratio),
+                kryptonite=int(safe_cargo.kryptonite * ratio),
+                spice=int(safe_cargo.spice * ratio),
+            )
+        norm_act = replace(
+            action,
+            target_id=dest.planet_id,
+            target_name=f"Transport -> {normalize_coords(dest.coords)} ({dest.name})",
+        )
+        return self._dispatch_fleet_mission(
+            client,
+            state,
+            norm_act,
+            ships_to_send=ships_to_send,
+            mission_kind="TRANSPORT",
+            active_planet_confirmed=active_planet_confirmed,
+            cargo_resources=safe_cargo,
+        )
+
     def _execute_activate_transmitter(
         self,
         client: GameBrowserClient,
@@ -3179,6 +3416,7 @@ class ActionExecutor:
             "ESCAPE_FLIGHT",
             "SCAN_GALAXY",
             "SPY",
+            "TRANSPORT",
             "RECYCLE",
             "COLONIZE",
             "ATTACK",
@@ -3214,6 +3452,10 @@ class ActionExecutor:
                 suffix = f" ({max(1, game_data.cap_json_int(game_data.safe_int(action.target_level, 1)))}x s11)"
             elif action.kind == "COLONIZE":
                 suffix = " (1x s8)"
+            elif action.kind == "TRANSPORT":
+                c_dry = action.cost if isinstance(action.cost, Resources) else Resources()
+                c_tot = c_dry.pig_iron + c_dry.metal + c_dry.kryptonite + c_dry.spice
+                suffix = f" ({game_data.fmt_compact_int(c_tot, grouped=True)} res)"
             elif action.kind == "ABANDON_COLONY":
                 min_f_dry = max(50, game_data.safe_int(action.target_level, 300))
                 suffix = f" (< {game_data.fmt_compact_int(min_f_dry)} fields)"
@@ -3242,6 +3484,14 @@ class ActionExecutor:
                 dry_run=False,
                 action=action,
                 message="Guarded: live COLONIZE requires allow_colonize=true in config.",
+            )
+
+        if action.kind == "TRANSPORT" and not self.allow_transport:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message="Guarded: live TRANSPORT requires allow_transport=true in config.",
             )
 
         if action.kind == "ABANDON_COLONY" and not self.allow_colonize:
@@ -3310,6 +3560,13 @@ class ActionExecutor:
             )
         elif action.kind == "COLONIZE":
             res = self._execute_colonize(
+                client,
+                state,
+                action,
+                active_planet_confirmed=active_planet_confirmed,
+            )
+        elif action.kind == "TRANSPORT":
+            res = self._execute_transport(
                 client,
                 state,
                 action,

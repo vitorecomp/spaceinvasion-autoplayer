@@ -385,6 +385,14 @@ class Resources:
             and _safe_state_int(self.spice, 0) == 0
         )
 
+    def total(self) -> int:
+        return (
+            max(0, _safe_state_int(self.pig_iron, 0))
+            + max(0, _safe_state_int(self.metal, 0))
+            + max(0, _safe_state_int(self.kryptonite, 0))
+            + max(0, _safe_state_int(self.spice, 0))
+        )
+
     def format_short(self) -> str:
         parts = []
         pig = _safe_state_int(self.pig_iron, 0)

@@ -307,7 +307,7 @@ def _classify_node_category(kind: str, bid: Optional[int], sid: Optional[int]) -
         return "tutorial"
     if kind == "RESEARCH":
         return "research"
-    if kind in ("SCAN_GALAXY", "SPY", "RECYCLE", "COLONIZE", "ABANDON_COLONY"):
+    if kind in ("SCAN_GALAXY", "SPY", "TRANSPORT", "RECYCLE", "COLONIZE", "ABANDON_COLONY"):
         return "recon"
     if kind == "ATTACK":
         return "combat"
@@ -365,7 +365,7 @@ def _slot_key_for_action(kind: str, planet_id: int) -> Optional[str]:
         return f"planet:{planet_id}:build"
     if kind == "BUILD_SHIP":
         return f"planet:{planet_id}:shipyard"
-    if kind in ("ESCAPE_FLIGHT", "SCAN_GALAXY", "SPY", "ATTACK", "RECYCLE", "COLONIZE", "ABANDON_COLONY"):
+    if kind in ("ESCAPE_FLIGHT", "SCAN_GALAXY", "SPY", "TRANSPORT", "ATTACK", "RECYCLE", "COLONIZE", "ABANDON_COLONY"):
         return f"planet:{planet_id}:fleet"
     return None
 
@@ -440,7 +440,7 @@ def _match_ga_steps(
                 if so_pid in (0, pid) and (bid is None or so_bid is None or so_bid == bid):
                     lvl_rank = 0 if (tgt_lvl is not None and so_tlvl == tgt_lvl) else 1
                     candidates.append((valid_rank, lvl_rank * 1000 + pos, so))
-            elif kind in ("ATTACK", "SPY", "SCAN_GALAXY", "RECYCLE", "COLONIZE", "CLAIM_TUTORIAL", "ACTIVATE_TRANSMITTER") and so_kind == kind:
+            elif kind in ("ATTACK", "SPY", "TRANSPORT", "SCAN_GALAXY", "RECYCLE", "COLONIZE", "CLAIM_TUTORIAL", "ACTIVATE_TRANSMITTER") and so_kind == kind:
                 if kind in ("CLAIM_TUTORIAL", "ACTIVATE_TRANSMITTER") or so_pid in (0, pid):
                     candidates.append((valid_rank, pos, so))
 

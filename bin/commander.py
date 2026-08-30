@@ -365,6 +365,25 @@ def _action_to_command_payload(action: PlannedAction, *, dry_run: bool) -> dict:
             "planet_id": pid,
             "dry_run": dry_run,
         }
+    if action.kind == "TRANSPORT":
+        t_name = _safe_cmd_str(action.target_name)
+        m = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", t_name, re.ASCII)
+        cost_obj = action.cost
+        payload_tr: dict[str, Any] = {
+            "command": "transport",
+            "target_coords": m.group(1) if m else t_name,
+            "planet_id": pid,
+            "resources": {
+                "pig_iron": max(0, _safe_cmd_int(getattr(cost_obj, "pig_iron", 0), 0)),
+                "metal": max(0, _safe_cmd_int(getattr(cost_obj, "metal", 0), 0)),
+                "kryptonite": max(0, _safe_cmd_int(getattr(cost_obj, "kryptonite", 0), 0)),
+                "spice": max(0, _safe_cmd_int(getattr(cost_obj, "spice", 0), 0)),
+            },
+            "dry_run": dry_run,
+        }
+        if action.target_id is not None and _safe_cmd_int(action.target_id, 0) > 0:
+            payload_tr["dest_planet_id"] = _safe_cmd_int(action.target_id, 0)
+        return payload_tr
     if action.kind == "COLONIZE":
         t_name = _safe_cmd_str(action.target_name)
         m = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", t_name, re.ASCII)
@@ -424,7 +443,7 @@ def _hold_busy_fleet_slots(
     changed = False
     out: list[PlannedAction] = []
     for act in actions:
-        if act.kind in ("ATTACK", "SPY", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE") and act.planet_id in busy_pids:
+        if act.kind in ("ATTACK", "SPY", "TRANSPORT", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE") and act.planet_id in busy_pids:
             cur_reason = _safe_cmd_str(act.reason)
             new_reason = (
                 cur_reason
@@ -438,13 +457,35 @@ def _hold_busy_fleet_slots(
         out.append(act)
     if changed and re_sort_priority:
         prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+        def _cmd_fleet_subrank(a: PlannedAction) -> int:
+            if a.priority == "P1":
+                if a.kind == "ABANDON_COLONY":
+                    return 0
+                if a.kind == "SPY":
+                    return 1 if "(free slot)" in _safe_cmd_str(a.target_name).lower() else 2
+                if a.kind == "TRANSPORT":
+                    return 3
+                if a.kind == "COLONIZE":
+                    return 4
+                return 5
+            if a.priority == "P2":
+                if a.kind == "CLAIM_TUTORIAL":
+                    return 0
+                if a.kind == "SPY":
+                    return 1
+                if a.kind == "TRANSPORT":
+                    return 2
+                if a.kind == "COLONIZE":
+                    return 3
+                return 4
+            return 0
+
         out.sort(
             key=lambda a: (
                 prio_rank.get(a.priority, 9),
                 -1 if a.kind == "ALERT_HOSTILE" else (0 if a.executable_now else 1),
-                0
-                if (a.priority == "P2" and a.kind == "CLAIM_TUTORIAL")
-                else (1 if (a.priority == "P2" and a.kind == "SPY") else 2),
+                _cmd_fleet_subrank(a),
             )
         )
     return out
@@ -608,7 +649,7 @@ def run_commander_tick(
         if not res_dict.get("executed"):
             fail_msg_l = _safe_cmd_str(res_dict.get("message", "")).lower()
             if (
-                ready.kind in ("ATTACK", "SPY", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE")
+                ready.kind in ("ATTACK", "SPY", "TRANSPORT", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE")
                 and ("no ship input fields found on internalfleet" in fail_msg_l or "nofleet" in fail_msg_l)
             ):
                 pid_busy = _safe_cmd_int(ready.planet_id, 0)
@@ -622,7 +663,7 @@ def run_commander_tick(
                 state = game_state_from_dict(res_dict["state"])
                 actions = _compute_tick_actions(state, cur_mq)
                 continue
-            if ready.kind in ("ATTACK", "SPY", "RECYCLE", "COLONIZE") or fail_msg_l.startswith("no-op:"):
+            if ready.kind in ("ATTACK", "SPY", "TRANSPORT", "RECYCLE", "COLONIZE") or fail_msg_l.startswith("no-op:"):
                 continue
             break
         after_live = True

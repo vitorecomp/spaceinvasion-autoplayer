@@ -539,6 +539,7 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         "allow_raids",
         "allow_pvp_in_az",
         "allow_colonize",
+        "allow_transport",
         "allow_transmitter",
         "forbid_planetary_solar",
         "galaxy_scan_explore_first",
@@ -1288,6 +1289,7 @@ class GameApiBridge:
             allow_fleetsave=self.strategy_config.allow_fleetsave,
             allow_raids=self.strategy_config.allow_raids,
             allow_colonize=self.strategy_config.allow_colonize,
+            allow_transport=self.strategy_config.allow_transport,
             allow_transmitter=self.strategy_config.allow_transmitter,
             page_limiter=self._page_limiter,
             max_limiter_wait=self._executor_max_limiter_wait,
@@ -1299,6 +1301,7 @@ class GameApiBridge:
             allow_fleetsave=self.strategy_config.allow_fleetsave,
             allow_raids=self.strategy_config.allow_raids,
             allow_colonize=self.strategy_config.allow_colonize,
+            allow_transport=self.strategy_config.allow_transport,
             allow_transmitter=self.strategy_config.allow_transmitter,
             page_limiter=self._page_limiter,
             max_limiter_wait=self._executor_max_limiter_wait,
@@ -1704,7 +1707,7 @@ class GameApiBridge:
         changed = False
         out: list[PlannedAction] = []
         for act in actions:
-            if act.kind in ("ATTACK", "SPY", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE") and act.planet_id in busy_pids:
+            if act.kind in ("ATTACK", "SPY", "TRANSPORT", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE") and act.planet_id in busy_pids:
                 cur_reason = str(act.reason or "")
                 new_reason = (
                     cur_reason
@@ -1718,11 +1721,35 @@ class GameApiBridge:
             out.append(act)
         if changed and re_sort_priority:
             prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+            def _fleet_subrank(a: PlannedAction) -> int:
+                if a.priority == "P1":
+                    if a.kind == "ABANDON_COLONY":
+                        return 0
+                    if a.kind == "SPY":
+                        return 1 if "(free slot)" in str(a.target_name or "").lower() else 2
+                    if a.kind == "TRANSPORT":
+                        return 3
+                    if a.kind == "COLONIZE":
+                        return 4
+                    return 5
+                if a.priority == "P2":
+                    if a.kind == "CLAIM_TUTORIAL":
+                        return 0
+                    if a.kind == "SPY":
+                        return 1
+                    if a.kind == "TRANSPORT":
+                        return 2
+                    if a.kind == "COLONIZE":
+                        return 3
+                    return 4
+                return 0
+
             out.sort(
                 key=lambda a: (
                     prio_rank.get(a.priority, 9),
                     -1 if a.kind == "ALERT_HOSTILE" else (0 if a.executable_now else 1),
-                    0 if (a.priority == "P2" and a.kind == "CLAIM_TUTORIAL") else (1 if (a.priority == "P2" and a.kind == "SPY") else 2),
+                    _fleet_subrank(a),
                 )
             )
         return out
@@ -1747,10 +1774,51 @@ class GameApiBridge:
             for a in actions
             if a.kind == "SPY" and (a.executable_now or eff_cfg.allow_galaxy_scan or eff_cfg.allow_colonize)
         }
+
+        def _spy_res_for(p_o: PlanetState) -> int:
+            max_s = 1 + max(0, p_o.building_level(10))
+            has_dem = (
+                res_spy_cfg > 0
+                and _safe_api_int(p_o.ships.get("s10", 0), 0) > 0
+                and p_o.planet_id in spy_pids
+            )
+            return min(res_spy_cfg, max(0, max_s - 1)) if has_dem else 0
+
+        # Tier #2 reservations (TRANSPORT) and Tier #3 reservations (COLONIZE)
+        tr_count_by_pid: dict[int, int] = {}
+        col_count_by_pid: dict[int, int] = {}
+        for act in actions:
+            if act.priority == "P3":
+                continue
+            if act.kind == "TRANSPORT" and getattr(eff_cfg, "allow_transport", False):
+                p_o = planets_by_id.get(act.planet_id, default_p)
+                if any(_safe_api_int(p_o.ships.get(k, 0), 0) > 0 for k in ("s1", "s2", "s3")):
+                    tr_count_by_pid[p_o.planet_id] = tr_count_by_pid.get(p_o.planet_id, 0) + 1
+            elif act.kind == "COLONIZE" and getattr(eff_cfg, "allow_colonize", False):
+                p_o = planets_by_id.get(act.planet_id, default_p)
+                if _safe_api_int(p_o.ships.get("s8", 0), 0) > 0:
+                    col_count_by_pid[p_o.planet_id] = col_count_by_pid.get(p_o.planet_id, 0) + 1
+
+        tr_res_by_pid: dict[int, int] = {}
+        for pid_t, n_t in tr_count_by_pid.items():
+            p_o = planets_by_id.get(pid_t, default_p)
+            max_s = 1 + max(0, p_o.building_level(10))
+            tr_res_by_pid[pid_t] = min(n_t, max(0, max_s - _spy_res_for(p_o)))
+
+        col_res_by_pid: dict[int, int] = {}
+        for pid_c, n_c in col_count_by_pid.items():
+            p_o = planets_by_id.get(pid_c, default_p)
+            max_s = 1 + max(0, p_o.building_level(10))
+            col_res_by_pid[pid_c] = min(
+                n_c,
+                max(0, _safe_api_int(p_o.ships.get("s8", 0), 0)),
+                max(0, max_s - _spy_res_for(p_o) - tr_res_by_pid.get(pid_c, 0)),
+            )
+
         changed = False
         out: list[PlannedAction] = []
         for act in actions:
-            if act.kind not in ("SPY", "ATTACK", "RECYCLE", "COLONIZE") or act.priority == "P3":
+            if act.kind not in ("SPY", "TRANSPORT", "COLONIZE", "ATTACK", "RECYCLE") or act.priority == "P3":
                 out.append(act)
                 continue
             p_obj = planets_by_id.get(act.planet_id, default_p)
@@ -1769,12 +1837,10 @@ class GameApiBridge:
                         continue
                 out.append(act)
                 continue
-            has_spy_dem = (
-                res_spy_cfg > 0
-                and _safe_api_int(p_obj.ships.get("s10", 0), 0) > 0
-                and p_obj.planet_id in spy_pids
-            )
-            eff_res = min(res_spy_cfg, max(0, max_slots - 1)) if has_spy_dem else 0
+
+            eff_res = _spy_res_for(p_obj)
+            tr_res = tr_res_by_pid.get(p_obj.planet_id, 0)
+            col_res = col_res_by_pid.get(p_obj.planet_id, 0)
             if used_slots >= max_slots:
                 cur_r = str(act.reason or "")
                 new_r = (
@@ -1797,14 +1863,60 @@ class GameApiBridge:
                     changed = True
                     out.append(replace(act, executable_now=False, reason=new_r))
                     continue
+            elif act.kind in ("COLONIZE", "ATTACK", "RECYCLE") and tr_res > 0 and used_slots >= max_slots - eff_res - tr_res:
+                cur_r = str(act.reason or "")
+                new_r = (
+                    cur_r
+                    if "reserved for transport" in cur_r.lower()
+                    else f"{cur_r} [Hold: Fleet slot reserved for Transport ({used_slots}/{max_slots} in flight, {tr_res} reserved)]"
+                )
+                if act.executable_now or new_r != cur_r:
+                    changed = True
+                    out.append(replace(act, executable_now=False, reason=new_r))
+                    continue
+            elif act.kind in ("ATTACK", "RECYCLE") and col_res > 0 and used_slots >= max_slots - eff_res - tr_res - col_res:
+                cur_r = str(act.reason or "")
+                new_r = (
+                    cur_r
+                    if "reserved for colony" in cur_r.lower()
+                    else f"{cur_r} [Hold: Fleet slot reserved for Colony ship ({used_slots}/{max_slots} in flight, {col_res} reserved)]"
+                )
+                if act.executable_now or new_r != cur_r:
+                    changed = True
+                    out.append(replace(act, executable_now=False, reason=new_r))
+                    continue
             out.append(act)
         if changed and re_sort_priority:
             prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+            def _fleet_subrank_hold(a: PlannedAction) -> int:
+                if a.priority == "P1":
+                    if a.kind == "ABANDON_COLONY":
+                        return 0
+                    if a.kind == "SPY":
+                        return 1 if "(free slot)" in str(a.target_name or "").lower() else 2
+                    if a.kind == "TRANSPORT":
+                        return 3
+                    if a.kind == "COLONIZE":
+                        return 4
+                    return 5
+                if a.priority == "P2":
+                    if a.kind == "CLAIM_TUTORIAL":
+                        return 0
+                    if a.kind == "SPY":
+                        return 1
+                    if a.kind == "TRANSPORT":
+                        return 2
+                    if a.kind == "COLONIZE":
+                        return 3
+                    return 4
+                return 0
+
             out.sort(
                 key=lambda a: (
                     prio_rank.get(a.priority, 9),
                     -1 if a.kind == "ALERT_HOSTILE" else (0 if a.executable_now else 1),
-                    0 if (a.priority == "P2" and a.kind == "CLAIM_TUTORIAL") else (1 if (a.priority == "P2" and a.kind == "SPY") else 2),
+                    _fleet_subrank_hold(a),
                 )
             )
         return out
@@ -5282,7 +5394,7 @@ class GameApiBridge:
             if res.executed and res.action.kind == "THROTTLE_BUILDING":
                 pid_i = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
                 self._throttle_timestamps[pid_i] = time.time()
-            if res.action.kind in ("ATTACK", "SPY", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE"):
+            if res.action.kind in ("ATTACK", "SPY", "TRANSPORT", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE"):
                 pid_f = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
                 if pid_f > 0:
                     if res.executed:
@@ -5798,6 +5910,7 @@ class GameApiBridge:
                 "BUILD_SHIP",
                 "THROTTLE_BUILDING",
                 "SPY",
+                "TRANSPORT",
                 "ATTACK",
                 "RECYCLE",
                 "COLONIZE",
@@ -5846,7 +5959,7 @@ class GameApiBridge:
 
             if norm_kind in ("BUILD", "DEMOLISH_BUILDING", "RESEARCH", "BUILD_SHIP", "THROTTLE_BUILDING") and tid is None:
                 raise ApiRequestError(f"'{norm_kind}' requires 'target_id'.")
-            if norm_kind in ("SPY", "ATTACK", "RECYCLE", "COLONIZE") and not (tcoords.strip() or tname.strip()):
+            if norm_kind in ("SPY", "TRANSPORT", "ATTACK", "RECYCLE", "COLONIZE") and not (tcoords.strip() or tname.strip()):
                 raise ApiRequestError(f"'{norm_kind}' requires 'target_coords'.")
 
             with self._lock:
@@ -7315,6 +7428,7 @@ class GameApiBridge:
                     ex.allow_fleetsave = new_cfg.allow_fleetsave
                     ex.allow_raids = new_cfg.allow_raids
                     ex.allow_colonize = new_cfg.allow_colonize
+                    ex.allow_transport = new_cfg.allow_transport
                     ex.allow_transmitter = new_cfg.allow_transmitter
                     ex.max_actions_per_hour = _safe_hourly_budget(new_cfg.max_actions_per_hour, 60)
                     if "max_actions_per_hour" in raw_cfg:
@@ -7618,6 +7732,8 @@ class GameApiBridge:
                         if planned.kind == "ESCAPE_FLIGHT" and not self._live_executor.allow_fleetsave:
                             return None
                         if planned.kind in ("COLONIZE", "ABANDON_COLONY") and not self._live_executor.allow_colonize:
+                            return None
+                        if planned.kind == "TRANSPORT" and not self._live_executor.allow_transport:
                             return None
                         return _get_client()
 
@@ -8830,6 +8946,129 @@ class GameApiBridge:
                                     }
                                 )
                             )
+                        return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
+
+                    if cmd == "transport":
+                        raw_target_coords = payload.get("target_coords")
+                        dest_pid = _parse_command_int(
+                            "dest_planet_id",
+                            payload.get("dest_planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
+                        norm_target = ""
+                        if isinstance(raw_target_coords, str) and raw_target_coords.strip():
+                            m_tr = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", raw_target_coords.strip(), re.ASCII)
+                            if not m_tr:
+                                raise ApiRequestError(
+                                    "'transport' command 'target_coords' must be formatted as GG:SSS:PP."
+                                )
+                            norm_target = normalize_coords(m_tr.group(1))
+                        if not norm_target and dest_pid is None:
+                            raise ApiRequestError(
+                                "'transport' command requires 'target_coords' or 'dest_planet_id'."
+                            )
+                        raw_res = payload.get("resources")
+                        if not isinstance(raw_res, Mapping):
+                            raise ApiRequestError(
+                                "'transport' command requires a 'resources' object with pig_iron/metal/kryptonite/spice."
+                            )
+                        cargo_res = Resources(
+                            pig_iron=_parse_command_int("resources.pig_iron", raw_res.get("pig_iron", 0), min_val=0, max_val=game_data.MAX_JSON_SAFE_INT) or 0,
+                            metal=_parse_command_int("resources.metal", raw_res.get("metal", 0), min_val=0, max_val=game_data.MAX_JSON_SAFE_INT) or 0,
+                            kryptonite=_parse_command_int("resources.kryptonite", raw_res.get("kryptonite", 0), min_val=0, max_val=game_data.MAX_JSON_SAFE_INT) or 0,
+                            spice=_parse_command_int("resources.spice", raw_res.get("spice", 0), min_val=0, max_val=game_data.MAX_JSON_SAFE_INT) or 0,
+                        )
+                        if cargo_res.is_zero():
+                            raise ApiRequestError(
+                                "'transport' command requires at least one positive resource amount in 'resources'."
+                            )
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
+                        state = _resolve_fleet_command_state(pid, is_spy=True)
+                        dest_planet = (
+                            next((p for p in state.planets if p.planet_id == dest_pid), None)
+                            if dest_pid is not None
+                            else next((p for p in state.planets if normalize_coords(p.coords) == norm_target), None)
+                        )
+                        if dest_planet is None:
+                            planned_bad = PlannedAction(
+                                priority="P1",
+                                kind="TRANSPORT",
+                                planet_id=pid or (state.active_planet().planet_id if state.active_planet() else 0),
+                                planet_coords=(state.active_planet().coords if state.active_planet() else ""),
+                                target_id=dest_pid,
+                                target_name=f"Transport -> {norm_target or dest_pid}",
+                                cost=cargo_res,
+                                reason="Own-planet transport safety check",
+                                executable_now=False,
+                            )
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "dry_run": dry_run,
+                                        "message": f"Aborted: destination {norm_target or dest_pid} is not one of your own planets.",
+                                        "action": self._serialize_action(planned_bad, state),
+                                        "next_action": None,
+                                    }
+                                )
+                            )
+                        norm_dest = normalize_coords(dest_planet.coords)
+                        if pid is None:
+                            donor_p = next(
+                                (
+                                    p
+                                    for p in state.planets
+                                    if p.planet_id != dest_planet.planet_id
+                                    and any(_safe_api_int(p.ships.get(k, 0)) > 0 for k in ("s1", "s2", "s3"))
+                                ),
+                                None,
+                            )
+                            planet = donor_p or self._resolve_planet(state, None)
+                        else:
+                            planet = self._resolve_planet(state, pid)
+                        dest_label = f"Transport -> {norm_dest}" + (f" ({dest_planet.name})" if dest_planet.name else "")
+                        planned = PlannedAction(
+                            priority="P1",
+                            kind="TRANSPORT",
+                            planet_id=planet.planet_id,
+                            planet_coords=planet.coords,
+                            target_id=dest_planet.planet_id,
+                            target_name=dest_label,
+                            cost=cargo_res,
+                            reason="API inter-planet transport command",
+                            executable_now=True,
+                        )
+                        if planet.planet_id == dest_planet.planet_id:
+                            planned_same = replace(
+                                planned,
+                                reason="Own-planet transport safety check",
+                                executable_now=False,
+                            )
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "dry_run": dry_run,
+                                        "message": f"Aborted: origin and destination are the same planet ({norm_dest}).",
+                                        "action": self._serialize_action(planned_same, state),
+                                        "next_action": None,
+                                    }
+                                )
+                            )
+                        if not dry_run and not self._live_executor.allow_transport:
+                            return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
                         return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
 
                     if cmd == "abandon_colony":

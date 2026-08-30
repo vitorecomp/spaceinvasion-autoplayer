@@ -2723,9 +2723,12 @@ class TestStrategyPlanner(unittest.TestCase):
             reserved_spy_slots=1,
         )
         acts = plan_actions(st, config=cfg, now_ts=2000.0)
+        # SPY (#1) is P1 strictly ahead of ATTACK (P2)
+        p1_ready = [a for a in acts if a.priority == "P1" and a.executable_now]
         p2_ready = [a for a in acts if a.priority == "P2" and a.executable_now]
-        self.assertGreaterEqual(len(p2_ready), 2)
-        self.assertEqual(p2_ready[0].kind, "SPY")
+        self.assertTrue(any(a.kind == "SPY" for a in p1_ready))
+        self.assertEqual(p1_ready[0].kind, "SPY")
+        self.assertTrue(any(a.kind == "ATTACK" for a in p2_ready))
         # Nearby 02:381:04 comes ahead of distant 02:130:05!
         spy_targets_order = [a.target_name for a in acts if a.kind == "SPY"]
         idx_near = next(i for i, t in enumerate(spy_targets_order) if "02:381:04" in t)
@@ -2775,6 +2778,312 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertTrue(
             any(a.kind == "BUILD_SHIP" and a.planet_id == 102 and a.target_id == 10 for a in acts_desig)
         )
+
+    def test_fleet_usage_four_tier_priority_and_resource_per_time_ranking(self) -> None:
+        """Verify 4-tier fleet order (SPY -> TRANSPORT -> COLONIZE -> ATTACK/RECYCLE by res/time) across priority & ga_nn."""
+        from dataclasses import replace
+
+        # Donor/hub planet (101) has probes, transports, colony ships, raiders, recyclers, and huge surplus.
+        # Colony (102) is young & low on resources so TRANSPORT (#2) triggers immediately.
+        p1 = PlanetState(
+            planet_id=101,
+            name="Hub",
+            coords="02:380:01",
+            planet_type="planet",
+            temperature=20,
+            fields_used=60,
+            fields_max=300,
+            resources=Resources(250_000, 180_000, 140_000, 80_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(1000, 400),
+            buildings={"b1": 14, "b2": 12, "b3": 12, "b4": 10, "b5": 14, "b7": 8, "b8": 8, "b9": 6, "b10": 6},
+            ships={"s1": 20, "s2": 30, "s3": 20, "s4": 150, "s8": 2, "s10": 25, "s11": 25},
+        )
+        p2 = PlanetState(
+            planet_id=102,
+            name="YoungColony",
+            coords="02:380:02",
+            planet_type="planet",
+            temperature=15,
+            fields_used=4,
+            fields_max=310,
+            resources=Resources(500, 400, 200, 100),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(120, 40),
+            buildings={"b1": 2, "b2": 1, "b3": 1, "b4": 1, "b5": 3},
+            ships={},
+        )
+        # Targets craft exact interleaving between ATTACK and RECYCLE by res/flight_time:
+        # - Attack A (02:380:03, same system, ~400k loot -> ~200k plunder, very fast RT -> HIGHEST res/h)
+        # - Recycle A (02:380:04, same system, 120k debris, fast RT -> 2nd highest res/h)
+        # - Attack B (02:395:05, 15 sys away, ~80k loot -> ~40k plunder, slower RT -> 3rd res/h)
+        # - Recycle B (02:200:06, 180 sys away, 15k debris, very slow RT -> 4th/lowest res/h)
+        # Plus unspied inactive for SPY (#1) and probed >=300-field free slot for COLONIZE (#3).
+        raid_targets = (
+            {
+                "coords": "02:380:05",
+                "owner": "UnspiedInact",
+                "planet_name": "Dormant",
+                "is_inactive": True,
+                "status_color": "yellow",
+                "last_scanned_ts": 1995.0,
+                "last_spied_ts": 0.0,
+            },
+            {
+                "coords": "02:380:07",
+                "owner": "",
+                "status_color": "free",
+                "uninhabited_fields": 340,
+                "last_spied_ts": 1995.0,
+            },
+            {
+                "coords": "02:380:03",
+                "owner": "RichNear",
+                "planet_name": "RichNearP",
+                "is_inactive": True,
+                "status_color": "yellow",
+                "last_spied_ts": 1995.0,
+                "resources": {"pig_iron": 180_000, "metal": 120_000, "kryptonite": 60_000, "spice": 40_000},
+            },
+            {
+                "coords": "02:380:04",
+                "owner": "DebrisNear",
+                "planet_name": "NearRubble",
+                "has_debris": True,
+                "debris_pig_iron": 80_000,
+                "debris_metal": 40_000,
+                "debris_total": 120_000,
+                "last_scanned_ts": 1995.0,
+            },
+            {
+                "coords": "02:395:05",
+                "owner": "MidFar",
+                "planet_name": "MidFarP",
+                "is_inactive": True,
+                "status_color": "yellow",
+                "last_spied_ts": 1995.0,
+                "resources": {"pig_iron": 35_000, "metal": 25_000, "kryptonite": 12_000, "spice": 8_000},
+            },
+            {
+                "coords": "02:200:06",
+                "owner": "DebrisFar",
+                "planet_name": "FarRubble",
+                "has_debris": True,
+                "debris_pig_iron": 10_000,
+                "debris_metal": 5_000,
+                "debris_total": 15_000,
+                "last_scanned_ts": 1995.0,
+            },
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2),
+            active_planet_id=101,
+            researches={"r1": 4, "r2": 6, "r3": 4, "r4": 5, "r5": 4, "r6": 4, "r7": 4},
+            raid_targets=raid_targets,
+        )
+        base_cfg = StrategyConfig(
+            allow_raids=True,
+            allow_galaxy_scan=True,
+            allow_colonize=True,
+            allow_transport=True,
+            max_planets=4,
+            min_colony_fields=300,
+            reserved_spy_slots=1,
+        )
+
+        # 1. Verify strict 4-tier ordering AND unified ATTACK/RECYCLE interleaving in priority mode
+        acts_prio = plan_actions(st, config=replace(base_cfg, planner_mode="priority"), now_ts=2000.0)
+        fleet_prio = [a for a in acts_prio if a.kind in ("SPY", "TRANSPORT", "COLONIZE", "ATTACK", "RECYCLE") and a.executable_now]
+        idx_spy = next(i for i, a in enumerate(fleet_prio) if a.kind == "SPY")
+        idx_tr = next(i for i, a in enumerate(fleet_prio) if a.kind == "TRANSPORT")
+        idx_col = next(i for i, a in enumerate(fleet_prio) if a.kind == "COLONIZE")
+        idx_harv_first = next(i for i, a in enumerate(fleet_prio) if a.kind in ("ATTACK", "RECYCLE"))
+        self.assertLess(idx_spy, idx_tr)
+        self.assertLess(idx_tr, idx_col)
+        self.assertLess(idx_col, idx_harv_first)
+
+        # Verify unified P2 harvest pool interleaves ATTACK & RECYCLE strictly by res/h:
+        # 02:380:03 (ATTACK) -> 02:380:04 (RECYCLE) -> 02:395:05 (ATTACK) -> 02:200:06 (RECYCLE)
+        harvest_prio = [a for a in fleet_prio if a.kind in ("ATTACK", "RECYCLE")]
+        harvest_coords = [
+            (a.kind, next(c for c in ("02:380:03", "02:380:04", "02:395:05", "02:200:06") if c in a.target_name))
+            for a in harvest_prio
+            if any(c in a.target_name for c in ("02:380:03", "02:380:04", "02:395:05", "02:200:06"))
+        ]
+        self.assertEqual(
+            harvest_coords,
+            [
+                ("ATTACK", "02:380:03"),
+                ("RECYCLE", "02:380:04"),
+                ("ATTACK", "02:395:05"),
+                ("RECYCLE", "02:200:06"),
+            ],
+        )
+        for ha in harvest_prio:
+            self.assertEqual(ha.priority, "P2")
+            self.assertIn("res/h", ha.reason)
+            self.assertIn("RT", ha.reason)
+
+        # Case A: When near RECYCLE (120k debris at 02:380:04) competes with far ATTACK (40k loot at 02:395:05),
+        # RECYCLE ranks strictly BEFORE ATTACK!
+        st_rec_beats_atk = replace(
+            st,
+            raid_targets=(raid_targets[3], raid_targets[4]),
+        )
+        acts_rba = plan_actions(st_rec_beats_atk, config=replace(base_cfg, planner_mode="priority"), now_ts=2000.0)
+        harv_rba = [a for a in acts_rba if a.kind in ("ATTACK", "RECYCLE") and a.executable_now]
+        self.assertGreaterEqual(len(harv_rba), 2)
+        self.assertEqual(harv_rba[0].kind, "RECYCLE")
+        self.assertIn("02:380:04", harv_rba[0].target_name)
+        self.assertEqual(harv_rba[1].kind, "ATTACK")
+        self.assertIn("02:395:05", harv_rba[1].target_name)
+
+        # 2. Verify slot-reservation cascade when Fleet Base capacity is tight (b10=2 -> max 3 slots):
+        # With 1 active flight (2 free): SPY reserves 1 -> TRANSPORT gets 1 -> COLONIZE/ATTACK/RECYCLE held!
+        p1_tight = replace(p1, buildings={**p1.buildings, "b10": 2})
+        st_tight = replace(
+            st,
+            planets=(p1_tight, p2),
+            active_queues=(QueueJob(category="fleet", name="Attack → 02:380:15", remaining_seconds=200.0, detail="Outbound"),),
+        )
+        acts_tight = plan_actions(st_tight, config=replace(base_cfg, planner_mode="priority"), now_ts=2000.0)
+        spy_t = [a for a in acts_tight if a.kind == "SPY" and "02:380:05" in a.target_name]
+        tr_t = [a for a in acts_tight if a.kind == "TRANSPORT"]
+        col_t = [a for a in acts_tight if a.kind == "COLONIZE"]
+        harv_t = [a for a in acts_tight if a.kind in ("ATTACK", "RECYCLE")]
+        self.assertTrue(spy_t and spy_t[0].executable_now)
+        self.assertTrue(tr_t and tr_t[0].executable_now)
+        self.assertTrue(col_t and not col_t[0].executable_now)
+        self.assertTrue(harv_t and all(not a.executable_now for a in harv_t))
+
+        # 3. Verify same 4-tier ordering & RECYCLE-beats-far-ATTACK interleaving in ga_nn mode!
+        acts_ga = plan_actions(st, config=replace(base_cfg, planner_mode="ga_nn"), now_ts=2000.0)
+        fleet_ga = [a for a in acts_ga if a.kind in ("SPY", "TRANSPORT", "COLONIZE", "ATTACK", "RECYCLE") and a.executable_now]
+        self.assertTrue(any(a.kind == "SPY" for a in fleet_ga))
+        self.assertTrue(any(a.kind == "TRANSPORT" for a in fleet_ga))
+        self.assertTrue(any(a.kind == "COLONIZE" for a in fleet_ga))
+        ga_spy_i = next(i for i, a in enumerate(fleet_ga) if a.kind == "SPY")
+        ga_tr_i = next(i for i, a in enumerate(fleet_ga) if a.kind == "TRANSPORT")
+        ga_col_i = next(i for i, a in enumerate(fleet_ga) if a.kind == "COLONIZE")
+        self.assertLess(ga_spy_i, ga_tr_i)
+        self.assertLess(ga_tr_i, ga_col_i)
+        ga_harv_idxs = [i for i, a in enumerate(fleet_ga) if a.kind in ("ATTACK", "RECYCLE")]
+        if ga_harv_idxs:
+            self.assertLess(ga_col_i, ga_harv_idxs[0])
+
+        acts_ga_rba = plan_actions(st_rec_beats_atk, config=replace(base_cfg, planner_mode="ga_nn"), now_ts=2000.0)
+        ga_harv_rba = [a for a in acts_ga_rba if a.kind in ("ATTACK", "RECYCLE") and a.executable_now]
+        self.assertTrue(any(a.kind == "RECYCLE" and "02:380:04" in a.target_name for a in ga_harv_rba))
+        if any(a.kind == "ATTACK" for a in ga_harv_rba):
+            rec_i = next(i for i, a in enumerate(ga_harv_rba) if a.kind == "RECYCLE" and "02:380:04" in a.target_name)
+            atk_i = next(i for i, a in enumerate(ga_harv_rba) if a.kind == "ATTACK" and "02:395:05" in a.target_name)
+            self.assertLess(rec_i, atk_i)
+
+    def test_plan_interplanet_transports_shortfall_bootstrap_and_guards(self) -> None:
+        """Verify inter-planet TRANSPORT shortfall supply, young-colony bootstrap, and safety guards."""
+        from dataclasses import replace
+        from spaceinvasion.planner.strategy import plan_interplanet_transports
+
+        donor = PlanetState(
+            planet_id=201,
+            name="MainHub",
+            coords="02:380:01",
+            planet_type="planet",
+            temperature=20,
+            fields_used=80,
+            fields_max=300,
+            resources=Resources(100_000, 80_000, 60_000, 3_000),
+            storage=Resources(300_000, 300_000, 300_000, 300_000),
+            energy=EnergyBalance(800, 300),
+            buildings={"b1": 14, "b2": 12, "b3": 12, "b4": 10, "b10": 4},
+            ships={"s2": 10, "s1": 5},
+        )
+        dest = PlanetState(
+            planet_id=202,
+            name="ColonyB",
+            coords="02:380:02",
+            planet_type="planet",
+            temperature=15,
+            fields_used=40,
+            fields_max=300,
+            resources=Resources(1_000, 1_000, 500, 500),
+            storage=Resources(20_000, 20_000, 20_000, 20_000),
+            energy=EnergyBalance(200, 100),
+            buildings={"b1": 10, "b2": 8, "b3": 8, "b4": 6},
+            ships={},
+        )
+        shortfall_build = PlannedAction(
+            priority="P1",
+            kind="BUILD",
+            planet_id=202,
+            planet_coords="02:380:02",
+            target_id=1,
+            target_level=11,
+            target_name="Pig iron mine",
+            cost=Resources(18_000, 10_000, 0, 0),
+            missing=Resources(17_000, 9_000, 0, 0),
+            executable_now=False,
+            reason="Wait for mine resources",
+        )
+        # Donor also has a P1 build reserving 90k pig_iron -> only 10k pig_iron surplus left!
+        donor_reserve_act = PlannedAction(
+            priority="P1",
+            kind="BUILD",
+            planet_id=201,
+            planet_coords="02:380:01",
+            target_id=2,
+            target_level=13,
+            target_name="Blast furnace",
+            cost=Resources(90_000, 0, 0, 0),
+            missing=Resources(0, 0, 0, 0),
+            executable_now=True,
+            reason="Donor P1 upgrade",
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(donor, dest),
+            active_planet_id=201,
+            researches={"r4": 4, "r5": 4},
+        )
+
+        # 1. allow_transport=False returns no transports
+        cfg_off = StrategyConfig(allow_transport=False)
+        tr_off = plan_interplanet_transports(st, cfg_off, [shortfall_build, donor_reserve_act])
+        self.assertEqual(tr_off, [])
+
+        # 2. allow_transport=True respects donor P1 reserve (<=10k pig_iron), 85% dest storage cap, and Spice fuel reserve!
+        cfg_on = StrategyConfig(allow_transport=True, fleet_save_fuel_reserve_spice=2500)
+        tr_on = plan_interplanet_transports(st, cfg_on, [shortfall_build, donor_reserve_act])
+        self.assertEqual(len(tr_on), 1)
+        act = tr_on[0]
+        self.assertEqual(act.priority, "P1")
+        self.assertEqual(act.kind, "TRANSPORT")
+        self.assertTrue(act.executable_now)
+        self.assertEqual(act.planet_id, 201)
+        self.assertEqual(act.target_id, 202)
+        self.assertIn("02:380:02", act.target_name)
+        self.assertLessEqual(act.cost.pig_iron, 10_000)
+        self.assertLessEqual(act.cost.metal, 9_000)
+        self.assertEqual(act.cost.spice, 0)  # Spice not requested & fuel reserved
+
+        # 3. Inbound transport already in flight to 02:380:02 -> skipped!
+        st_inflight = replace(
+            st,
+            active_queues=(QueueJob(category="fleet", name="Transport → 02:380:02", remaining_seconds=120.0, detail="Outbound"),),
+        )
+        self.assertEqual(plan_interplanet_transports(st_inflight, cfg_on, [shortfall_build]), [])
+
+        # 4. Recipient already near 85% storage cap -> nothing packed over 85% cap!
+        dest_full = replace(dest, resources=Resources(18_000, 18_000, 18_000, 18_000))
+        st_full = replace(st, planets=(donor, dest_full))
+        self.assertEqual(plan_interplanet_transports(st_full, cfg_on, [shortfall_build]), [])
 
 
 if __name__ == "__main__":

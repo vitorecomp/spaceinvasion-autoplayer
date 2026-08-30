@@ -6067,6 +6067,206 @@ class TestApiAndCommander(unittest.TestCase):
                     server.server_close()
                     bridge.close()
 
+    def test_transport_api_command_commander_payload_and_4tier_slot_holds(self) -> None:
+        """Verify TRANSPORT API command, commander payload, config sync, and 4-tier slot reservation holds."""
+        from spaceinvasion.executor import ExecutionResult
+        from spaceinvasion.state import QueueJob
+        from spaceinvasion.strategy import PlannedAction
+
+        # 1. Commander payload mapping for TRANSPORT
+        tr_act = PlannedAction(
+            priority="P1",
+            kind="TRANSPORT",
+            planet_id=101,
+            planet_coords="02:380:01",
+            target_id=102,
+            target_name="ColonyB [02:380:02]",
+            cost=Resources(12_000, 6_000, 2_000, 0),
+            executable_now=True,
+            reason="Supply ColonyB",
+        )
+        payload = commander._action_to_command_payload(tr_act, dry_run=False)
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["command"], "transport")
+        self.assertEqual(payload["planet_id"], 101)
+        self.assertEqual(payload["dest_planet_id"], 102)
+        self.assertEqual(payload["target_coords"], "02:380:02")
+        self.assertEqual(
+            payload["resources"],
+            {"pig_iron": 12_000, "metal": 6_000, "kryptonite": 2_000, "spice": 0},
+        )
+
+        # 2. Bridge API transport validation, allow_transport config sync, dry-run & live mock execution
+        p1 = PlanetState(
+            planet_id=101,
+            name="Hub",
+            coords="02:380:01",
+            planet_type="planet",
+            temperature=20,
+            fields_used=50,
+            fields_max=300,
+            resources=Resources(100_000, 80_000, 50_000, 20_000),
+            storage=Resources(300_000, 300_000, 300_000, 300_000),
+            energy=EnergyBalance(500, 200),
+            buildings={"b10": 2},  # 3 total fleet slots
+            ships={"s2": 10, "s10": 10, "s11": 5, "s12": 1, "s4": 40},
+        )
+        p2 = PlanetState(
+            planet_id=102,
+            name="ColonyB",
+            coords="02:380:02",
+            planet_type="planet",
+            temperature=15,
+            fields_used=10,
+            fields_max=300,
+            resources=Resources(500, 500, 200, 100),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(100, 40),
+            buildings={},
+            ships={},
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2),
+            active_planet_id=101,
+            active_queues=(QueueJob(category="fleet", name="Attack → 02:380:14", remaining_seconds=120.0, detail="Outbound"),),
+            researches={"r4": 4, "r5": 4},
+        )
+        with tempfile.TemporaryDirectory(prefix="si_tr_api_") as tmp:
+            tmp_path = Path(tmp)
+            mock_cli = MagicMock()
+            mock_cli.__enter__.return_value = mock_cli
+            mock_cli.read_full_snapshot.return_value = st
+            mock_cli.read_snapshot.return_value = st
+            mock_cli.read_planets_overview.return_value = st
+            mock_cli.last_snapshot_observed_active_planet = True
+            bridge = GameApiBridge(
+                debug_port=1,
+                client_factory=lambda _port: mock_cli,
+                config_path=tmp_path / "config.yaml",
+                db_path=tmp_path / "state.db",
+                log_dir=tmp_path / "logs",
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                bridge._record_state(st)
+                self.assertFalse(bridge.strategy_config.allow_transport)
+                self.assertFalse(bridge._live_executor.allow_transport)
+
+                # Reject non-owned coordinates
+                res_foreign = bridge.handle_command(
+                    {
+                        "command": "transport",
+                        "planet_id": 101,
+                        "target_coords": "02:380:09",
+                        "resources": {"pig_iron": 5000},
+                        "dry_run": True,
+                    }
+                )
+                self.assertTrue(res_foreign["ok"])
+                self.assertFalse(res_foreign["executed"])
+                self.assertIn("own planet", res_foreign["message"].lower())
+
+                # Reject same origin/destination
+                res_same = bridge.handle_command(
+                    {
+                        "command": "transport",
+                        "planet_id": 101,
+                        "target_coords": "02:380:01",
+                        "resources": {"pig_iron": 5000},
+                        "dry_run": True,
+                    }
+                )
+                self.assertTrue(res_same["ok"])
+                self.assertFalse(res_same["executed"])
+                self.assertIn("same planet", res_same["message"].lower())
+
+                # Live transport blocked while allow_transport=False
+                res_blocked = bridge.handle_command(
+                    {
+                        "command": "transport",
+                        "planet_id": 101,
+                        "target_coords": "02:380:02",
+                        "resources": {"pig_iron": 5000},
+                        "dry_run": False,
+                    }
+                )
+                self.assertTrue(res_blocked["ok"])
+                self.assertFalse(res_blocked["executed"])
+                self.assertIn("allow_transport", res_blocked["message"])
+
+                # update_config enables allow_transport & syncs both executors
+                upd = bridge.handle_command({"command": "update_config", "config": {"allow_transport": True}})
+                self.assertTrue(upd["ok"])
+                self.assertTrue(bridge.strategy_config.allow_transport)
+                self.assertTrue(bridge._live_executor.allow_transport)
+                self.assertTrue(bridge._dry_executor.allow_transport)
+
+                # Dry-run transport succeeds without touching Chrome
+                res_dry = bridge.handle_command(
+                    {
+                        "command": "transport",
+                        "planet_id": 101,
+                        "target_coords": "02:380:02",
+                        "resources": {"pig_iron": 5000, "metal": 2000},
+                        "dry_run": True,
+                    }
+                )
+                self.assertTrue(res_dry["ok"])
+                self.assertTrue(res_dry["dry_run"])
+
+                # Live transport delegates to _live_executor when allow_transport=True
+                def _ok_tr(_c, _s, act, **_kw):
+                    return ExecutionResult(
+                        action=act,
+                        executed=True,
+                        validated=True,
+                        dry_run=False,
+                        message="Dispatched Transport to 02:380:02",
+                    )
+
+                with (
+                    patch("spaceinvasion.api_server.is_debug_port_open", return_value=True),
+                    patch.object(bridge._live_executor, "execute_action", side_effect=_ok_tr),
+                ):
+                    res_live = bridge.handle_command(
+                        {
+                            "command": "transport",
+                            "planet_id": 101,
+                            "target_coords": "02:380:02",
+                            "resources": {"pig_iron": 5000},
+                            "dry_run": False,
+                        }
+                    )
+                self.assertTrue(res_live["ok"])
+                self.assertTrue(res_live["executed"])
+
+                # 3. Verify 4-tier fleet slot holds: b10=2 (3 slots), 1 in flight -> 2 free slots.
+                # SPY reserves 1 -> TRANSPORT gets 1 -> COLONIZE, RECYCLE, ATTACK all held!
+                sample_actions = [
+                    PlannedAction(priority="P1", kind="SPY", planet_id=101, planet_coords="02:380:01", target_name="02:380:05", executable_now=True, reason="Spy"),
+                    PlannedAction(priority="P1", kind="TRANSPORT", planet_id=101, planet_coords="02:380:01", target_id=102, target_name="ColonyB [02:380:02]", cost=Resources(5000, 0, 0, 0), executable_now=True, reason="Supply"),
+                    PlannedAction(priority="P1", kind="COLONIZE", planet_id=101, planet_coords="02:380:01", target_name="02:380:07", executable_now=True, reason="Colonize"),
+                    PlannedAction(priority="P2", kind="RECYCLE", planet_id=101, planet_coords="02:380:01", target_name="Rubble -> 02:380:04", executable_now=True, reason="Recycle"),
+                    PlannedAction(priority="P2", kind="ATTACK", planet_id=101, planet_coords="02:380:01", target_name="02:380:03", executable_now=True, reason="Attack"),
+                ]
+                held = bridge._apply_fleet_slot_holds(st, sample_actions)
+                by_kind = {a.kind: a for a in held}
+                self.assertTrue(by_kind["SPY"].executable_now)
+                self.assertTrue(by_kind["TRANSPORT"].executable_now)
+                self.assertFalse(by_kind["COLONIZE"].executable_now)
+                self.assertFalse(by_kind["RECYCLE"].executable_now)
+                self.assertFalse(by_kind["ATTACK"].executable_now)
+                # Relative order between RECYCLE and ATTACK preserved (RECYCLE still before ATTACK)!
+                kinds_order = [a.kind for a in held]
+                self.assertLess(kinds_order.index("RECYCLE"), kinds_order.index("ATTACK"))
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

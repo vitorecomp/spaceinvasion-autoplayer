@@ -7189,6 +7189,7 @@
     if (k === "BUILD_SHIP") return "SHP";
     if (k === "ATTACK") return "ATK";
     if (k === "SPY") return "SPY";
+    if (k === "TRANSPORT") return "TRN";
     if (k === "RECYCLE") return "REC";
     if (k === "COLONIZE") return "COL";
     if (k === "SCAN_GALAXY") return "SCN";
@@ -9757,6 +9758,7 @@
     if (k === "BUILD_SHIP") return "SHP";
     if (k === "ATTACK") return "ATK";
     if (k === "SPY") return "SPY";
+    if (k === "TRANSPORT") return "TRN";
     if (k === "RECYCLE") return "REC";
     if (k === "COLONIZE") return "COL";
     if (k === "SCAN_GALAXY") return "SCN";
@@ -10468,6 +10470,7 @@
     "BUILD_DEFENSE",
     "DEFENSE",
     "SPY",
+    "TRANSPORT",
     "ATTACK",
     "RECYCLE",
     "COLONIZE",
@@ -10581,6 +10584,23 @@
         target_coords: m ? m[1] : action.target_name,
         quantity: Math.max(1, Math.round(finiteNum(action.target_level, 1))),
         planet_id: action.planet_id,
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "TRANSPORT") {
+      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
+      const c = action.cost || {};
+      return {
+        command: "transport",
+        target_coords: m ? m[1] : action.target_name,
+        dest_planet_id: action.target_id ?? void 0,
+        planet_id: action.planet_id,
+        resources: {
+          pig_iron: Math.max(0, Math.round(finiteNum(c.pig_iron, 0))),
+          metal: Math.max(0, Math.round(finiteNum(c.metal, 0))),
+          kryptonite: Math.max(0, Math.round(finiteNum(c.kryptonite, 0))),
+          spice: Math.max(0, Math.round(finiteNum(c.spice, 0)))
+        },
         dry_run: dryRun
       };
     }
@@ -12474,6 +12494,7 @@
     "allow_raids",
     "allow_pvp_in_az",
     "allow_colonize",
+    "allow_transport",
     "allow_transmitter",
     "forbid_planetary_solar"
   ];
@@ -13655,6 +13676,7 @@
                       ["allow_raids", "Auto Raids (Inactive/Spacia)"],
                       ["allow_pvp_in_az", "Allow PvP inside AZ"],
                       ["allow_colonize", "Auto Colonize"],
+                      ["allow_transport", "Auto Inter-Planet Transport"],
                       ["allow_transmitter", "Daily Free Transmitter"],
                       ["forbid_planetary_solar", "Forbid Solar on Planets (Asteroid Only)"]
                     ].map(([bKey, label]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", children: [
@@ -19733,7 +19755,16 @@
           id: "cfg-allow_raids",
           title: "Autonomous Espionage & Inactive/Spacia Raids",
           boundsLabel: "default: false · boolean",
-          description: "Enables closest-first P2 SPY scouting (s10 on inhabited planets and Spacia, refreshing intel older than 4h) and ATTACK plunder waves against yellow inactives and Spacia NPC planets (exempt from the 3/24h Bash cap unless server-blocked), bounded by 1 + b10 concurrent fleet slots. Boolean toggle.",
+          description: "Enables P1 SPY scouting (s10 on inhabited planets and Spacia, refreshing intel older than 4h) and P2 ATTACK/RECYCLE harvest waves against yellow inactives, Spacia NPC planets, and rubble fields ranked by total resources per round-trip flight time (res/h), bounded by 1 + b10 concurrent fleet slots. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: false
+        },
+        {
+          key: "allow_transport",
+          id: "cfg-allow_transport",
+          title: "Autonomous Inter-Planet Resource Transport",
+          boundsLabel: "default: false · boolean",
+          description: "Dispatches P1 TRANSPORT flights (s3/s2/s1) strictly between your own planets to supply P1/P2 resource shortfalls and bootstrap young colonies from surplus planets (respecting Spice fuel reserves and 85% recipient storage caps). Runs at Fleet Priority #2: after SPY (#1) and ahead of COLONIZE (#3) and ATTACK/RECYCLE (#4). Boolean toggle.",
           control: "checkbox",
           defaultValue: false
         },
@@ -19742,7 +19773,7 @@
           id: "cfg-reserved_spy_slots",
           title: "Reserved Spy Fleet Slots",
           boundsLabel: "default: 1 · 0–10 slots",
-          description: "Number of Fleet base (1 + b10) concurrent flight seats held exclusively for SPY probe missions whenever ready spy targets and stationed s10 probes exist, holding non-SPY ATTACK, RECYCLE, and COLONIZE dispatches at max_fleet_slots - eff_res so espionage never stalls behind slow raids. Accepts integers from 0 to 10.",
+          description: "Number of Fleet base (1 + b10) concurrent flight seats held exclusively for SPY probe missions (#1) whenever ready spy targets and stationed s10 probes exist, enforcing the 4-tier fleet priority SPY (#1) → TRANSPORT (#2) → COLONIZE (#3) → ATTACK & RECYCLE (#4, ranked by resource/flight_time). Accepts integers from 0 to 10.",
           control: "number",
           defaultValue: 1,
           min: 0,

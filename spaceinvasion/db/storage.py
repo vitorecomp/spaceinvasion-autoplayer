@@ -3889,7 +3889,62 @@ class GameDatabase:
                 """,
                 (max(1, _sql_int(limit, 50)),),
             ).fetchall()
-        return [self._row_to_spy_target_dict(r) for r in rows]
+        out = [self._row_to_spy_target_dict(r) for r in rows]
+        debris_coords = [t["coords"] for t in out if t.get("has_debris") and t.get("coords")]
+        if debris_coords:
+            debris_lookup: dict[str, tuple[int, int]] = {}
+            with self._lock:
+                placeholders = ",".join("?" for _ in debris_coords)
+                try:
+                    b_rows = self._conn.execute(
+                        f"""
+                        SELECT target_coords, debris_pig_iron, debris_metal, ts
+                        FROM battle_reports
+                        WHERE target_coords IN ({placeholders})
+                          AND (debris_pig_iron > 0 OR debris_metal > 0)
+                        ORDER BY ts DESC, id DESC
+                        """,
+                        tuple(debris_coords),
+                    ).fetchall()
+                    for br in b_rows:
+                        nc = normalize_coords(_raw_text(br["target_coords"], ""))
+                        if nc and nc not in debris_lookup:
+                            dp = game_data.cap_json_int(max(0, _safe_int(br["debris_pig_iron"], 0)))
+                            dm = game_data.cap_json_int(max(0, _safe_int(br["debris_metal"], 0)))
+                            if dp + dm > 0:
+                                debris_lookup[nc] = (dp, dm)
+                except sqlite3.Error:
+                    pass
+                missing_deb = [c for c in debris_coords if c not in debris_lookup]
+                if missing_deb:
+                    ph2 = ",".join("?" for _ in missing_deb)
+                    try:
+                        r_rows = self._conn.execute(
+                            f"""
+                            SELECT target_coords, debris_avail_pig, debris_avail_metal,
+                                   harvested_pig_iron, harvested_metal, ts
+                            FROM recycle_reports
+                            WHERE target_coords IN ({ph2})
+                            ORDER BY ts DESC, id DESC
+                            """,
+                            tuple(missing_deb),
+                        ).fetchall()
+                        for rr in r_rows:
+                            nc = normalize_coords(_raw_text(rr["target_coords"], ""))
+                            if nc and nc not in debris_lookup:
+                                dp = max(0, _safe_int(rr["debris_avail_pig"], 0) - _safe_int(rr["harvested_pig_iron"], 0))
+                                dm = max(0, _safe_int(rr["debris_avail_metal"], 0) - _safe_int(rr["harvested_metal"], 0))
+                                if dp + dm > 0:
+                                    debris_lookup[nc] = (game_data.cap_json_int(dp), game_data.cap_json_int(dm))
+                    except sqlite3.Error:
+                        pass
+            for t in out:
+                if t.get("has_debris") and t.get("coords") in debris_lookup:
+                    dp, dm = debris_lookup[t["coords"]]
+                    t["debris_pig_iron"] = dp
+                    t["debris_metal"] = dm
+                    t["debris_total"] = game_data.cap_json_int(dp + dm)
+        return out
 
     def get_spy_reports(
         self,

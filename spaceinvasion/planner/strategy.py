@@ -1407,6 +1407,247 @@ def _parse_gal_sys_pos(coords: Any) -> tuple[int, int, int]:
     return 1, 1, 1
 
 
+def plan_interplanet_transports(
+    state: GameState,
+    cfg: StrategyConfig,
+    existing_plan: Sequence[PlannedAction] = (),
+    *,
+    now_ts: Optional[float] = None,
+) -> list[PlannedAction]:
+    """Plan own-planet resource `TRANSPORT` shipments (Fleet Priority #2: after `SPY`, before `COLONIZE`)."""
+    del now_ts
+    if not getattr(cfg, "allow_transport", False) or not getattr(cfg, "allow_multi_planet", True):
+        return []
+    normal_planets = [
+        p for p in (state.planets or ()) if _norm_planet_type(p) not in ("asteroid", "raid")
+    ]
+    if len(normal_planets) < 2:
+        return []
+
+    _fleet = _get_fleet()
+    miner_spec = _safe_strategy_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
+    fuel_reserve = max(500, _safe_strategy_int(getattr(cfg, "fleet_save_fuel_reserve_spice", 500), 500))
+
+    # Skip destinations that already have an outbound Transport flight inbound
+    inbound_transport_coords: set[str] = set()
+    for q in (state.active_queues or ()):
+        if not is_in_flight_fleet_job(q):
+            continue
+        q_name = _safe_strategy_str(getattr(q, "name", ""))
+        q_det = _safe_strategy_str(getattr(q, "detail", "")).lower()
+        if "return" in q_det or "↩" in q_name:
+            continue
+        if "transport" in q_name.lower():
+            m_tr = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", q_name, re.ASCII)
+            if m_tr:
+                inbound_transport_coords.add(_fleet.normalize_coords(m_tr.group(1)))
+
+    # Protect each donor's own P0/P1 pending resource costs
+    p01_reserved_by_pid: dict[int, list[int]] = {}
+    for act in existing_plan:
+        if act.priority in ("P0", "P1") and act.kind not in ("TRANSPORT", "ATTACK", "RECYCLE", "SPY", "COLONIZE"):
+            buf = p01_reserved_by_pid.setdefault(act.planet_id, [0, 0, 0, 0])
+            buf[0] += max(0, _safe_strategy_int(act.cost.pig_iron, 0))
+            buf[1] += max(0, _safe_strategy_int(act.cost.metal, 0))
+            buf[2] += max(0, _safe_strategy_int(act.cost.kryptonite, 0))
+            buf[3] += max(0, _safe_strategy_int(act.cost.spice, 0))
+
+    # Compute per-colony resource demands: concrete P1/P2 missing shortfalls + young-colony bootstrap
+    demands: list[tuple[int, PlanetState, Resources, str]] = []
+    for dest in normal_planets:
+        norm_dest = _fleet.normalize_coords(dest.coords)
+        if not norm_dest or norm_dest in inbound_transport_coords:
+            continue
+        need_vals = [0, 0, 0, 0]
+        urgency = 9
+        need_label = ""
+        for act in existing_plan:
+            if act.planet_id != dest.planet_id:
+                continue
+            if act.priority not in ("P1", "P2") or act.kind not in ("BUILD", "WAIT_RESOURCES", "BUILD_SHIP", "RESEARCH"):
+                continue
+            if act.executable_now or act.missing.is_zero():
+                continue
+            act_urg = 0 if act.priority == "P1" else 1
+            if act_urg < urgency:
+                urgency = act_urg
+                need_label = _safe_strategy_str(act.target_name) or act.kind
+            need_vals[0] = max(need_vals[0], max(0, _safe_strategy_int(act.missing.pig_iron, 0)))
+            need_vals[1] = max(need_vals[1], max(0, _safe_strategy_int(act.missing.metal, 0)))
+            need_vals[2] = max(need_vals[2], max(0, _safe_strategy_int(act.missing.kryptonite, 0)))
+            need_vals[3] = max(need_vals[3], max(0, _safe_strategy_int(act.missing.spice, 0)))
+
+        total_on_dest = (
+            max(0, dest.resources.pig_iron)
+            + max(0, dest.resources.metal)
+            + max(0, dest.resources.kryptonite)
+            + max(0, dest.resources.spice)
+        )
+        is_young_colony = (dest.fields_used <= 15 or dest.building_level(1) < 8) and total_on_dest < 20_000
+        if is_young_colony:
+            starter = (15_000, 10_000, 6_000, 1_000)
+            cur_r = (dest.resources.pig_iron, dest.resources.metal, dest.resources.kryptonite, dest.resources.spice)
+            sto_r = (dest.storage.pig_iron, dest.storage.metal, dest.storage.kryptonite, dest.storage.spice)
+            for idx_r in range(4):
+                cap_r = int(sto_r[idx_r] * 0.70) if sto_r[idx_r] > 0 else starter[idx_r]
+                boot_gap = max(0, min(starter[idx_r], cap_r) - max(0, cur_r[idx_r]))
+                need_vals[idx_r] = max(need_vals[idx_r], boot_gap)
+            if not need_label:
+                urgency = 2
+                need_label = "colony bootstrap"
+
+        if sum(need_vals) <= 0:
+            continue
+        demands.append(
+            (
+                urgency,
+                dest,
+                Resources(
+                    pig_iron=need_vals[0],
+                    metal=need_vals[1],
+                    kryptonite=need_vals[2],
+                    spice=need_vals[3],
+                ),
+                need_label or "colony supply",
+            )
+        )
+
+    if not demands:
+        return []
+    demands.sort(key=lambda item: (item[0], -(item[2].pig_iron + item[2].metal + item[2].kryptonite + item[2].spice)))
+
+    # Track remaining donor ships and surplus resources across shipments in this tick
+    donor_ships_rem: dict[int, dict[str, int]] = {}
+    donor_surplus_rem: dict[int, list[int]] = {}
+    for p in normal_planets:
+        c_ships = {
+            k: max(0, _safe_strategy_int((p.ships or {}).get(k, 0), 0))
+            for k in ("s3", "s2", "s1")
+            if max(0, _safe_strategy_int((p.ships or {}).get(k, 0), 0)) > 0
+        }
+        if not c_ships:
+            continue
+        resv = p01_reserved_by_pid.get(p.planet_id, [0, 0, 0, 0])
+        cur_vals = [
+            max(0, p.resources.pig_iron),
+            max(0, p.resources.metal),
+            max(0, p.resources.kryptonite),
+            max(0, p.resources.spice),
+        ]
+        sto_vals = [
+            max(0, p.storage.pig_iron),
+            max(0, p.storage.metal),
+            max(0, p.storage.kryptonite),
+            max(0, p.storage.spice),
+        ]
+        surp: list[int] = []
+        for idx_r in range(4):
+            near_cap = sto_vals[idx_r] > 0 and cur_vals[idx_r] >= int(sto_vals[idx_r] * 0.85)
+            cushion = 0 if near_cap else min(int(cur_vals[idx_r] * 0.10), 5_000)
+            extra = fuel_reserve if idx_r == 3 else 0
+            surp.append(max(0, cur_vals[idx_r] - resv[idx_r] - cushion - extra))
+        if sum(surp) > 0:
+            donor_ships_rem[p.planet_id] = c_ships
+            donor_surplus_rem[p.planet_id] = surp
+
+    if not donor_ships_rem:
+        return []
+
+    planet_by_id = {p.planet_id: p for p in normal_planets}
+    out_transports: list[PlannedAction] = []
+    for urgency, dest, need_res, need_label in demands:
+        dest_free = Resources(
+            pig_iron=max(0, int(dest.storage.pig_iron * 0.85) - max(0, dest.resources.pig_iron)) if dest.storage.pig_iron > 0 else need_res.pig_iron,
+            metal=max(0, int(dest.storage.metal * 0.85) - max(0, dest.resources.metal)) if dest.storage.metal > 0 else need_res.metal,
+            kryptonite=max(0, int(dest.storage.kryptonite * 0.85) - max(0, dest.resources.kryptonite)) if dest.storage.kryptonite > 0 else need_res.kryptonite,
+            spice=max(0, int(dest.storage.spice * 0.85) - max(0, dest.resources.spice)) if dest.storage.spice > 0 else need_res.spice,
+        )
+        need_tot = need_res.pig_iron + need_res.metal + need_res.kryptonite + need_res.spice
+        best_cand: Optional[tuple[float, int, PlanetState, Resources, dict[str, int], float]] = None
+        for d_pid, d_ships in donor_ships_rem.items():
+            if d_pid == dest.planet_id or not d_ships:
+                continue
+            donor = planet_by_id[d_pid]
+            surp_vals = donor_surplus_rem.get(d_pid, [0, 0, 0, 0])
+            if sum(surp_vals) <= 0:
+                continue
+            max_cap = _fleet.fleet_cargo_capacity(d_ships, miner_spec_level=miner_spec)
+            if max_cap <= 0:
+                continue
+            surp_res = Resources(surp_vals[0], surp_vals[1], surp_vals[2], surp_vals[3])
+            cargo = _fleet.pack_transport_cargo(need_res, surp_res, dest_free, max_cap)
+            cargo_tot = cargo.pig_iron + cargo.metal + cargo.kryptonite + cargo.spice
+            if cargo_tot <= 0:
+                continue
+            # Require meaningful shipment unless it fully satisfies a concrete queued shortfall
+            if cargo_tot < 500 and not (urgency <= 1 and cargo_tot >= need_tot):
+                continue
+            chosen_ships = _fleet.select_transport_ships(d_ships, cargo_tot, miner_spec_level=miner_spec)
+            if not chosen_ships:
+                continue
+            flight_s = _fleet.estimate_fleet_flight_seconds(
+                donor.coords,
+                dest.coords,
+                chosen_ships,
+                researches=state.researches,
+                round_trip=True,
+            )
+            rph = _fleet.estimate_resource_per_hour(cargo_tot, flight_s)
+            if best_cand is None or (rph, cargo_tot) > (best_cand[0], best_cand[1]):
+                best_cand = (rph, cargo_tot, donor, cargo, chosen_ships, flight_s)
+
+        if best_cand is None:
+            continue
+        rph, cargo_tot, donor, cargo, chosen_ships, flight_s = best_cand
+        # Deduct reserved ships and surplus from donor pool
+        d_rem_ships = donor_ships_rem[donor.planet_id]
+        for sk, sq in chosen_ships.items():
+            left_q = max(0, d_rem_ships.get(sk, 0) - sq)
+            if left_q > 0:
+                d_rem_ships[sk] = left_q
+            else:
+                d_rem_ships.pop(sk, None)
+        d_rem_surp = donor_surplus_rem[donor.planet_id]
+        d_rem_surp[0] = max(0, d_rem_surp[0] - cargo.pig_iron)
+        d_rem_surp[1] = max(0, d_rem_surp[1] - cargo.metal)
+        d_rem_surp[2] = max(0, d_rem_surp[2] - cargo.kryptonite)
+        d_rem_surp[3] = max(0, d_rem_surp[3] - cargo.spice)
+
+        norm_dest = _fleet.normalize_coords(dest.coords)
+        ship_desc = ", ".join(f"{q}x {k}" for k, q in chosen_ships.items())
+        dur_txt = _fleet.format_flight_duration(flight_s)
+        rph_txt = game_data.fmt_compact_int(round(rph), grouped=True)
+        parts_r: list[str] = []
+        if cargo.pig_iron > 0:
+            parts_r.append(f"{game_data.fmt_compact_int(cargo.pig_iron, grouped=True)}P")
+        if cargo.metal > 0:
+            parts_r.append(f"{game_data.fmt_compact_int(cargo.metal, grouped=True)}M")
+        if cargo.kryptonite > 0:
+            parts_r.append(f"{game_data.fmt_compact_int(cargo.kryptonite, grouped=True)}K")
+        if cargo.spice > 0:
+            parts_r.append(f"{game_data.fmt_compact_int(cargo.spice, grouped=True)}S")
+        res_summary = "/".join(parts_r)
+        out_transports.append(
+            PlannedAction(
+                priority="P1",
+                kind="TRANSPORT",
+                planet_id=donor.planet_id,
+                planet_coords=_safe_strategy_str(donor.coords),
+                target_id=dest.planet_id,
+                target_level=None,
+                target_name=f"Transport -> {norm_dest} ({dest.name})",
+                cost=cargo,
+                missing=Resources(),
+                reason=(
+                    f"Supply {dest.name} [{norm_dest}] ({res_summary} · {game_data.fmt_compact_int(cargo_tot, grouped=True)} res / "
+                    f"{dur_txt}, {rph_txt} res/h via {ship_desc}) for {need_label}"
+                ),
+                executable_now=True,
+            )
+        )
+    return out_transports
+
+
 def _plan_combat_and_raid_actions(
     state: GameState,
     active: PlanetState,
@@ -1415,6 +1656,7 @@ def _plan_combat_and_raid_actions(
     scanned_systems: Optional[Mapping[str, float]] = None,
     now_ts: Optional[float] = None,
     raid_stats: Optional[Mapping[str, Any]] = None,
+    existing_plan: Sequence[PlannedAction] = (),
 ) -> list[PlannedAction]:
     """Plan Galaxy exploration sweep, Spy probe scouting, Space Rubble recycling, and scored Attack targets."""
     if state.tutorial is not None and state.tutorial.can_complete:
@@ -1589,6 +1831,7 @@ def _plan_combat_and_raid_actions(
         and not want_colony_probes
         and not cfg.allow_galaxy_scan
         and not cfg.allow_raids
+        and not getattr(cfg, "allow_transport", False)
         and not has_attack_fleet
         and not can_plan_spy
         and not has_recyclers
@@ -1866,18 +2109,40 @@ def _plan_combat_and_raid_actions(
             rec_qty = max(1, _safe_strategy_int(recycler_planet.ships.get("s11", 0), 1))
             hold_rec_inflight = bool(tutorial_recycle_pending and own_fleet_in_flight)
             can_exec_rec = bool((cfg.allow_raids or cfg.allow_galaxy_scan) and not hold_rec_inflight)
-            rec_gal, rec_sys, rec_pos = _parse_gal_sys_pos(recycler_planet.coords)
-            rec_dist = abs(rec_gal - t_gal) * 20000 + abs(rec_sys - t_sys) * 95 + abs(rec_pos - pos) * 5
+            miner_spec_rec = _safe_strategy_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
+            rec_cap = _fleet.fleet_cargo_capacity({"s11": rec_qty}, miner_spec_level=miner_spec_rec)
+            known_debris = _fleet.extract_target_debris_resources(raw)
+            is_est_debris = known_debris <= 0
+            exp_rubble_res = (
+                min(known_debris, rec_cap)
+                if known_debris > 0
+                else min(rec_cap, _fleet.DEFAULT_UNKNOWN_DEBRIS_RESOURCES)
+            )
+            rec_flight_s = _fleet.estimate_fleet_flight_seconds(
+                recycler_planet.coords,
+                norm_coords,
+                {"s11": rec_qty},
+                researches=state.researches,
+                round_trip=True,
+            )
+            rec_res_per_h = _fleet.estimate_resource_per_hour(exp_rubble_res, rec_flight_s)
+            rec_dur_txt = _fleet.format_flight_duration(rec_flight_s)
+            rec_rph_txt = game_data.fmt_compact_int(round(rec_res_per_h), grouped=True)
+            rec_res_txt = game_data.fmt_compact_int(exp_rubble_res, grouped=True)
             rec_lbl = f"Rubble -> {norm_coords}" + (f" ({owner or pname})" if (owner or pname) else "")
             rec_prefix = "Tutorial recycle: " if tutorial_recycle_pending else ""
-            rec_reason = f"{rec_prefix}Harvest space rubble at {norm_coords} with {rec_qty} Recycler(s)"
+            est_tag = "est. " if is_est_debris else ""
+            rec_reason = (
+                f"{rec_prefix}Harvest ~{rec_res_txt} {est_tag}rubble at {norm_coords} with {rec_qty} Recycler(s) "
+                f"({rec_dur_txt} RT · {rec_rph_txt} res/h)"
+            )
             if hold_rec_inflight:
                 rec_reason += " [Hold: Own fleet in transit]"
             elif not (cfg.allow_raids or cfg.allow_galaxy_scan):
                 rec_reason += " [Hold: allow_raids/allow_galaxy_scan disabled in Config]"
             recycle_actions.append(
                 (
-                    (0 if can_exec_rec else 1, rec_dist),
+                    (0 if can_exec_rec else 1, -rec_res_per_h, -exp_rubble_res, rec_flight_s),
                     PlannedAction(
                         priority="P2",
                         kind="RECYCLE",
@@ -2113,7 +2378,7 @@ def _plan_combat_and_raid_actions(
                         -raw_scanned_ts,
                     ),
                     PlannedAction(
-                        priority="P2",
+                        priority="P1",
                         kind="SPY",
                         planet_id=probe_planet.planet_id,
                         planet_coords=_safe_strategy_str(probe_planet.coords),
@@ -2166,15 +2431,34 @@ def _plan_combat_and_raid_actions(
             and not hold_tutorial_inflight
             and not hold_for_escape_tutorial
         )
-        if rec.loot_spice_equivalent > 0:
+        atk_total_res = max(0, int(getattr(rec, "total_plunder_resources", 0)))
+        if atk_total_res <= 0:
+            el = rec.combat.expected_loot
+            atk_total_res = max(0, el.pig_iron) + max(0, el.metal) + max(0, el.kryptonite) + max(0, el.spice)
+        atk_flight_s = float(getattr(rec, "flight_seconds", 0.0) or 0.0)
+        if atk_flight_s <= 0.0:
+            atk_flight_s = _fleet.estimate_fleet_flight_seconds(
+                origin.coords,
+                norm_coords,
+                sim_fleet,
+                researches=state.researches,
+                round_trip=True,
+            )
+        atk_res_per_h = _fleet.estimate_resource_per_hour(atk_total_res, atk_flight_s)
+        atk_dur_txt = _fleet.format_flight_duration(atk_flight_s)
+        atk_rph_txt = game_data.fmt_compact_int(round(atk_res_per_h), grouped=True)
+        atk_res_txt = game_data.fmt_compact_int(atk_total_res, grouped=True)
+        if atk_total_res > 0:
+            loot_note = f"~{atk_res_txt} res ({atk_dur_txt} RT · {atk_rph_txt} res/h)"
+        elif rec.loot_spice_equivalent > 0:
             loot_disp = (
                 game_data.fmt_compact_int(round(rec.loot_spice_equivalent), grouped=True)
                 if math.isfinite(rec.loot_spice_equivalent)
                 else "INF"
             )
-            loot_note = f"~{loot_disp} SpEq plunder"
+            loot_note = f"~{loot_disp} SpEq plunder ({atk_dur_txt} RT)"
         else:
-            loot_note = "scouted inactive target"
+            loot_note = f"scouted inactive target ({atk_dur_txt} RT)"
         gates: list[str] = []
         if hold_tutorial_inflight:
             gates.append("tutorial raid fleet already in transit")
@@ -2189,11 +2473,9 @@ def _plan_combat_and_raid_actions(
         gate_suffix = f" [Hold: {'; '.join(gates)}]" if gates else " [Safe >=1.4x]"
         tut_prefix = "Tutorial fight: " if tutorial_fight_pending else ""
 
-        o_gal, o_sys, o_pos = _parse_gal_sys_pos(origin.coords)
-        phys_dist = abs(o_gal - t_gal) * 20000 + abs(o_sys - t_sys) * 95 + abs(o_pos - pos) * 5
         scored_attacks.append(
             (
-                (0 if can_exec else 1, -rec.distance_score, -rec.loot_spice_equivalent, phys_dist),
+                (0 if can_exec else 1, -atk_res_per_h, -atk_total_res, atk_flight_s),
                 PlannedAction(
                     priority="P2",
                     kind="ATTACK",
@@ -2332,9 +2614,10 @@ def _plan_combat_and_raid_actions(
             executable_now=bool(cfg.allow_galaxy_scan),
         )
 
-    # Strict fleet priority: SPY (#1) -> parallel COLONIZE (#2) -> ATTACK / RECYCLE (#3).
-    # `reserved_spy_slots` protects SPY seats from ALL non-SPY missions (including COLONIZE); parallel COLONIZE
-    # flights reserve their slots against ATTACK / RECYCLE. Max fleet slots = `1 + b10`.
+    # Strict 4-tier fleet priority:
+    #   #1 SPY -> #2 TRANSPORT (between own planets) -> #3 parallel COLONIZE -> #4 ATTACK & RECYCLE (tied, ranked by res/flight_time).
+    # `reserved_spy_slots` protects SPY seats from ALL non-SPY missions (TRANSPORT, COLONIZE, ATTACK, RECYCLE);
+    # TRANSPORT reserves slots against COLONIZE/ATTACK/RECYCLE; COLONIZE reserves slots against ATTACK/RECYCLE.
     res_spy_cfg = max(0, _safe_strategy_int(getattr(cfg, "reserved_spy_slots", 1), 1))
     all_spy_planet_ids = {
         sa.planet_id
@@ -2354,8 +2637,40 @@ def _plan_combat_and_raid_actions(
         )
         return min(res_spy_cfg, max(0, _max_slots_for(p_obj) - 1)) if has_spy_demand_p else 0
 
-    # Parallel COLONIZE: up to min(remaining planet slots, stationed s8) distinct top-graded candidates, each
-    # assigned to a planet with a stationed Colony ship and gated by SPY reservation + in-tick dispatch index.
+    # Tier #2: Inter-planet TRANSPORT (yields only to SPY; reserves slots against COLONIZE, ATTACK, RECYCLE)
+    raw_transports = plan_interplanet_transports(state, cfg, existing_plan, now_ts=ref_now)
+    transport_actions: list[PlannedAction] = []
+    tr_dispatch_idx = 0
+    tr_count_by_planet: dict[int, int] = {}
+    for act_t in raw_transports:
+        exec_p_t = planet_by_id.get(act_t.planet_id, origin)
+        max_t = _max_slots_for(exec_p_t)
+        spy_res_t = _spy_res_for(exec_p_t)
+        slot_idx_t = used_fleet_slots + tr_dispatch_idx
+        rsn_t = act_t.reason
+        can_t = bool(act_t.executable_now and getattr(cfg, "allow_transport", False))
+        if can_t and slot_idx_t >= max_t:
+            can_t = False
+            if "in flight" not in rsn_t.lower():
+                rsn_t += f" [Hold: Fleet slots full ({slot_idx_t}/{max_t} in flight)]"
+        elif can_t and spy_res_t > 0 and slot_idx_t >= max_t - spy_res_t:
+            can_t = False
+            if "reserved for spy" not in rsn_t.lower():
+                rsn_t += (
+                    f" [Hold: Fleet slot reserved for Spy probes ({slot_idx_t}/{max_t} in flight, {spy_res_t} reserved)]"
+                )
+        if can_t:
+            tr_dispatch_idx += 1
+        if getattr(cfg, "allow_transport", False):
+            tr_count_by_planet[exec_p_t.planet_id] = tr_count_by_planet.get(exec_p_t.planet_id, 0) + 1
+        transport_actions.append(replace(act_t, executable_now=can_t, reason=rsn_t))
+    tr_res_by_planet: dict[int, int] = {}
+    for pid_t, n_t in tr_count_by_planet.items():
+        p_t = planet_by_id.get(pid_t)
+        if p_t is not None:
+            tr_res_by_planet[pid_t] = min(n_t, max(0, _max_slots_for(p_t) - _spy_res_for(p_t)))
+
+    # Tier #3: Parallel COLONIZE (yields to SPY and TRANSPORT; reserves slots against ATTACK and RECYCLE)
     colonize_actions.sort(key=lambda item: item[0])
     n_col_dispatch = min(open_colony_slots, max(1, total_stationed_s8))
     pool_left = [[e[0], int(e[1])] for e in s8_pool]
@@ -2374,6 +2689,7 @@ def _plan_combat_and_raid_actions(
             exec_p = planet_by_id.get(act_c.planet_id, origin)
         max_c = _max_slots_for(exec_p)
         spy_res_c = _spy_res_for(exec_p)
+        tr_res_c = tr_res_by_planet.get(exec_p.planet_id, 0)
         slot_idx = used_fleet_slots + col_dispatch_idx
         rsn_c = act_c.reason
         can_c = bool(act_c.executable_now and assign is not None)
@@ -2381,11 +2697,17 @@ def _plan_combat_and_raid_actions(
             can_c = False
             if "in flight" not in rsn_c.lower():
                 rsn_c += f" [Hold: Fleet slots full ({slot_idx}/{max_c} in flight)]"
-        elif can_c and slot_idx >= max_c - spy_res_c:
+        elif can_c and spy_res_c > 0 and slot_idx >= max_c - spy_res_c:
             can_c = False
             if "reserved for spy" not in rsn_c.lower():
                 rsn_c += (
                     f" [Hold: Fleet slot reserved for Spy probes ({slot_idx}/{max_c} in flight, {spy_res_c} reserved)]"
+                )
+        elif can_c and tr_res_c > 0 and slot_idx >= max_c - spy_res_c - tr_res_c:
+            can_c = False
+            if "reserved for transport" not in rsn_c.lower():
+                rsn_c += (
+                    f" [Hold: Fleet slot reserved for Transport ({slot_idx}/{max_c} in flight, {tr_res_c} reserved)]"
                 )
         if n_col_dispatch > 1:
             rsn_c += f" [Parallel colony {len(selected_colonize) + 1}/{n_col_dispatch}]"
@@ -2403,7 +2725,13 @@ def _plan_combat_and_raid_actions(
         if p_c is None:
             continue
         s8_here = max(0, _safe_strategy_int(p_c.ships.get("s8", 0), 0))
-        col_res_by_planet[pid_c] = min(n_c, open_colony_slots, s8_here, max(0, _max_slots_for(p_c) - _spy_res_for(p_c)))
+        tr_res_here = tr_res_by_planet.get(pid_c, 0)
+        col_res_by_planet[pid_c] = min(
+            n_c,
+            open_colony_slots,
+            s8_here,
+            max(0, _max_slots_for(p_c) - _spy_res_for(p_c) - tr_res_here),
+        )
 
     def _gate_non_spy_slot(act: PlannedAction) -> PlannedAction:
         p_obj = planet_by_id.get(act.planet_id, origin)
@@ -2414,6 +2742,7 @@ def _plan_combat_and_raid_actions(
                 rsn = f"{rsn} [Hold: Fleet slots full ({used_fleet_slots}/{max_p_slots} in flight)]"
             return replace(act, executable_now=False, reason=rsn) if act.executable_now or rsn != act.reason else act
         eff_res = _spy_res_for(p_obj)
+        tr_res = tr_res_by_planet.get(p_obj.planet_id, 0)
         col_res = col_res_by_planet.get(p_obj.planet_id, 0)
         if eff_res > 0 and used_fleet_slots >= max_p_slots - eff_res:
             rsn = act.reason
@@ -2423,7 +2752,15 @@ def _plan_combat_and_raid_actions(
                     f"({used_fleet_slots}/{max_p_slots} in flight, {eff_res} reserved)]"
                 )
             return replace(act, executable_now=False, reason=rsn) if act.executable_now or rsn != act.reason else act
-        if col_res > 0 and used_fleet_slots >= max_p_slots - eff_res - col_res:
+        if tr_res > 0 and used_fleet_slots >= max_p_slots - eff_res - tr_res:
+            rsn = act.reason
+            if "reserved for transport" not in rsn.lower():
+                rsn = (
+                    f"{rsn} [Hold: Fleet slot reserved for Transport "
+                    f"({used_fleet_slots}/{max_p_slots} in flight, {tr_res} reserved)]"
+                )
+            return replace(act, executable_now=False, reason=rsn) if act.executable_now or rsn != act.reason else act
+        if col_res > 0 and used_fleet_slots >= max_p_slots - eff_res - tr_res - col_res:
             rsn = act.reason
             if "reserved for colony" not in rsn.lower():
                 rsn = (
@@ -2433,14 +2770,14 @@ def _plan_combat_and_raid_actions(
             return replace(act, executable_now=False, reason=rsn) if act.executable_now or rsn != act.reason else act
         return act
 
-    scored_attacks = [
-        ((0 if (g := _gate_non_spy_slot(act)).executable_now else 1, *sk[1:]), g)
-        for sk, act in scored_attacks
-    ]
-    recycle_actions = [
-        ((0 if (g := _gate_non_spy_slot(act)).executable_now else 1, *sk[1:]), g)
-        for sk, act in recycle_actions
-    ]
+    # Tier #4: Unified ATTACK & RECYCLE pool — same priority, strictly ordered by resources per flight time!
+    harvest_actions: list[tuple[tuple[int, float, int, float], PlannedAction]] = []
+    for sk, act in scored_attacks:
+        g = _gate_non_spy_slot(act)
+        harvest_actions.append(((0 if g.executable_now else 1, sk[1], sk[2], sk[3]), g))
+    for sk, act in recycle_actions:
+        g = _gate_non_spy_slot(act)
+        harvest_actions.append(((0 if g.executable_now else 1, sk[1], sk[2], sk[3]), g))
 
     if tutorial_spy_pending and spy_actions:
         spy_actions.sort(key=lambda item: item[0])
@@ -2451,8 +2788,16 @@ def _plan_combat_and_raid_actions(
             out_tut_spy.insert(0, colony_ship_build_act)
         return out_tut_spy
 
-    if colonize_actions or colony_spy_actions or colony_ship_build_act is not None or scored_attacks or recycle_actions:
+    if transport_actions or colonize_actions or colony_spy_actions or colony_ship_build_act is not None or harvest_actions:
         out_actions: list[PlannedAction] = []
+        if colony_spy_actions:
+            colony_spy_actions.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in colony_spy_actions[:2])
+        if spy_actions:
+            spy_actions.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in spy_actions[:2])
+        if transport_actions:
+            out_actions.extend(transport_actions)
         if colonize_actions:
             colonize_actions.sort(key=lambda item: item[0])
             out_actions.extend(act for _, act in colonize_actions)
@@ -2460,18 +2805,9 @@ def _plan_combat_and_raid_actions(
             out_actions.append(colony_ship_build_act)
         if designated_probe_build_act is not None:
             out_actions.append(designated_probe_build_act)
-        if colony_spy_actions:
-            colony_spy_actions.sort(key=lambda item: item[0])
-            out_actions.extend(act for _, act in colony_spy_actions[:2])
-        if spy_actions:
-            spy_actions.sort(key=lambda item: item[0])
-            out_actions.extend(act for _, act in spy_actions[:2])
-        if scored_attacks:
-            scored_attacks.sort(key=lambda item: item[0])
-            out_actions.extend(act for _, act in scored_attacks[:3])
-        if recycle_actions:
-            recycle_actions.sort(key=lambda item: item[0])
-            out_actions.extend(act for _, act in recycle_actions[:2])
+        if harvest_actions:
+            harvest_actions.sort(key=lambda item: item[0])
+            out_actions.extend(act for _, act in harvest_actions[:5])
         if (want_colonize or want_colony_probes) and not colonize_actions and not colony_spy_actions:
             nxt_scan = _next_spiral_scan_action()
             if nxt_scan is not None:
@@ -4361,6 +4697,7 @@ def _build_pre_throttle_plan(
             or _tutorial_colonize_task(state) is not None
             or cfg.allow_colonize
             or cfg.allow_galaxy_scan
+            or getattr(cfg, "allow_transport", False)
         ):
             plan.extend(
                 _plan_combat_and_raid_actions(
@@ -4369,6 +4706,7 @@ def _build_pre_throttle_plan(
                     cfg,
                     scanned_systems=scanned_systems,
                     now_ts=now_ts,
+                    existing_plan=plan,
                 )
             )
 
@@ -4501,19 +4839,21 @@ def plan_actions(
 
     def _band_subrank(act: PlannedAction) -> tuple[int, int]:
         if act.priority == "P1":
-            # Fleet priority: ABANDON_COLONY -> SPY (#1) -> parallel COLONIZE (#2) -> Colony ship s8 -> probes -> scan
+            # Fleet priority: ABANDON_COLONY -> SPY (#1) -> TRANSPORT (#2) -> parallel COLONIZE (#3) -> Colony ship s8 -> probes -> scan
             if act.kind == "ABANDON_COLONY":
                 return (0, 0)
-            if act.kind == "SPY" and "(free slot)" in _safe_strategy_str(act.target_name).lower():
-                return (0, 1)
-            if act.kind == "COLONIZE":
-                return (0, 2)
-            if act.kind == "BUILD_SHIP" and game_data.safe_optional_int(act.target_id, None) == 8:
+            if act.kind == "SPY":
+                return (0, 1 if "(free slot)" in _safe_strategy_str(act.target_name).lower() else 2)
+            if act.kind == "TRANSPORT":
                 return (0, 3)
-            if act.kind == "BUILD_SHIP" and game_data.safe_optional_int(act.target_id, None) == 10 and "designated spy" in _safe_strategy_str(act.reason).lower():
+            if act.kind == "COLONIZE":
                 return (0, 4)
-            if act.kind == "SCAN_GALAXY":
+            if act.kind == "BUILD_SHIP" and game_data.safe_optional_int(act.target_id, None) == 8:
                 return (0, 5)
+            if act.kind == "BUILD_SHIP" and game_data.safe_optional_int(act.target_id, None) == 10 and "designated spy" in _safe_strategy_str(act.reason).lower():
+                return (0, 6)
+            if act.kind == "SCAN_GALAXY":
+                return (0, 7)
             if "negative energy" in _safe_strategy_str(act.reason).lower():
                 return (1, 0)
             return (2, 0)
@@ -4523,7 +4863,12 @@ def plan_actions(
             return (0, 0)
         if act.kind == "SPY":
             return (1 if "(free slot)" in _safe_strategy_str(act.target_name).lower() else 2, 0)
-        return (3, 0)
+        if act.kind == "TRANSPORT":
+            return (3, 0)
+        if act.kind == "COLONIZE":
+            return (4, 0)
+        # ATTACK and RECYCLE share exact same subrank (5, 0) so unified res/flight_time ordering is preserved
+        return (5, 0)
 
     plan.sort(
         key=lambda a: (
@@ -4889,17 +5234,41 @@ def merge_manual_queue_actions(
                 manual_sort_rank=srank,
             )
 
-        elif kind in ("SPY", "ATTACK", "RECYCLE", "COLONIZE"):
+        elif kind in ("SPY", "TRANSPORT", "ATTACK", "RECYCLE", "COLONIZE"):
             tc = _normalize_manual_coords(item.get("target_coords") or item.get("target_name"))
             if not tc:
                 continue
             ships_d = planet.ships or {}
             qty_opt = game_data.safe_optional_int(item.get("target_level"), None)
+            cargo_bundle = Resources()
+            tgt_id_out: Optional[int] = None
             if kind == "SPY":
                 qty = max(1, qty_opt or 1)
                 ready = _safe_strategy_int(ships_d.get("s10", 0), 0) >= 1
                 t_lbl = f"{tc} (Spy)"
                 rsn = f"{base_tag}: Dispatch {qty}x Spy probe to {tc}{note_suffix}" + ("" if ready else " (needs Spy probe s10)")
+            elif kind == "TRANSPORT":
+                dest_own = planets_by_coords.get(tc)
+                has_trans = sum(max(0, _safe_strategy_int(ships_d.get(k, 0), 0)) for k in ("s1", "s2", "s3")) >= 1
+                raw_res_q = item.get("resources") if isinstance(item.get("resources"), Mapping) else {}
+                cargo_bundle = Resources(
+                    pig_iron=max(0, _safe_strategy_int(raw_res_q.get("pig_iron", 0), 0)),
+                    metal=max(0, _safe_strategy_int(raw_res_q.get("metal", 0), 0)),
+                    kryptonite=max(0, _safe_strategy_int(raw_res_q.get("kryptonite", 0), 0)),
+                    spice=max(0, _safe_strategy_int(raw_res_q.get("spice", 0), 0)),
+                )
+                qty = None
+                tgt_id_out = dest_own.planet_id if dest_own is not None else None
+                own_ok = dest_own is not None and dest_own.planet_id != planet.planet_id
+                ready = bool(own_ok and has_trans and not cargo_bundle.is_zero())
+                t_lbl = f"Transport -> {tc}" + (f" ({dest_own.name})" if dest_own is not None and dest_own.name else "")
+                rsn = f"{base_tag}: Transport to own colony {tc}{note_suffix}"
+                if not own_ok:
+                    rsn += " (destination must be another owned planet)"
+                elif not has_trans:
+                    rsn += " (needs transport ship s1/s2/s3)"
+                elif cargo_bundle.is_zero():
+                    rsn += " (specify cargo resources)"
             elif kind == "COLONIZE":
                 qty = 1
                 ready = _safe_strategy_int(ships_d.get("s8", 0), 0) >= 1
@@ -4928,10 +5297,10 @@ def merge_manual_queue_actions(
                 kind=kind,
                 planet_id=planet.planet_id,
                 planet_coords=planet.coords,
-                target_id=None,
+                target_id=tgt_id_out,
                 target_name=t_lbl,
                 target_level=qty,
-                cost=Resources(),
+                cost=cargo_bundle,
                 missing=Resources(),
                 reason=rsn,
                 executable_now=ready,

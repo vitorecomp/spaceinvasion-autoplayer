@@ -128,6 +128,7 @@ export const DASH_FLEET_KINDS = new Set([
   "BUILD_DEFENSE",
   "DEFENSE",
   "SPY",
+  "TRANSPORT",
   "ATTACK",
   "RECYCLE",
   "COLONIZE",
@@ -255,6 +256,23 @@ export function actionPayloadFor(
       target_coords: m ? m[1] : action.target_name,
       quantity: Math.max(1, Math.round(finiteNum(action.target_level, 1))),
       planet_id: action.planet_id,
+      dry_run: dryRun,
+    };
+  }
+  if (action.kind === "TRANSPORT") {
+    const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
+    const c = action.cost || {};
+    return {
+      command: "transport",
+      target_coords: m ? m[1] : action.target_name,
+      dest_planet_id: action.target_id ?? undefined,
+      planet_id: action.planet_id,
+      resources: {
+        pig_iron: Math.max(0, Math.round(finiteNum((c as any).pig_iron, 0))),
+        metal: Math.max(0, Math.round(finiteNum((c as any).metal, 0))),
+        kryptonite: Math.max(0, Math.round(finiteNum((c as any).kryptonite, 0))),
+        spice: Math.max(0, Math.round(finiteNum((c as any).spice, 0))),
+      },
       dry_run: dryRun,
     };
   }

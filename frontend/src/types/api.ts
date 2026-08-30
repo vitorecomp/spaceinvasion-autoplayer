@@ -115,6 +115,7 @@ export interface StrategyConfigData {
   allow_raids?: boolean;
   allow_pvp_in_az?: boolean;
   allow_colonize?: boolean;
+  allow_transport?: boolean;
   allow_transmitter?: boolean;
   forbid_planetary_solar?: boolean;
   storage_warn_ratio?: number;

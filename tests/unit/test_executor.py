@@ -3653,6 +3653,176 @@ class TestActionExecutor(unittest.TestCase):
         self.assertEqual(res_spy.target_cooldown_seconds, 6 * 3600.0)
         self.assertIn("attackzone", (res_spy.target_block_reason or "").lower())
 
+    def test_execute_transport_own_planet_guard_cargo_inputs_and_abort_safety(self) -> None:
+        donor = PlanetState(
+            planet_id=101,
+            name="Home",
+            coords="02:380:12",
+            planet_type="normal",
+            fields_used=40,
+            fields_max=230,
+            temperature=25,
+            resources=Resources(200_000, 100_000, 100_000, 50_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(500, 300),
+            buildings={"b1": 10, "b10": 5},
+            ships={"s1": 10, "s2": 5},
+        )
+        colony = PlanetState(
+            planet_id=102,
+            name="Colony2",
+            coords="02:379:05",
+            planet_type="normal",
+            fields_used=5,
+            fields_max=320,
+            temperature=20,
+            resources=Resources(500, 200, 100, 0),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(50, 20),
+            buildings={"b1": 2},
+            ships={},
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=7,
+            nickname="cmdr",
+            timestamp=1_700_000_000.0,
+            planets=(donor, colony),
+            active_planet_id=101,
+            researches={"r4": 8, "r5": 7},
+        )
+        tr_act = PlannedAction(
+            priority="P1",
+            kind="TRANSPORT",
+            planet_id=101,
+            planet_coords="02:380:12",
+            target_id=102,
+            target_name="Transport -> 02:379:05 (Colony2)",
+            cost=Resources(pig_iron=10_000, metal=5_000, kryptonite=2_000, spice=1_000),
+            reason="Supply own colony",
+            executable_now=True,
+        )
+
+        # 1. Refused when allow_transport=False
+        ex_disabled = ActionExecutor(dry_run=False, allow_transport=False, action_delay_range=(0.0, 0.0))
+        res_dis = ex_disabled.execute_action(MagicMock(spec=GameBrowserClient), st, tr_act)
+        self.assertFalse(res_dis.executed)
+        self.assertIn("allow_transport", res_dis.message)
+
+        # 2. Refused for non-owned coordinates (never send resources to foreign planets!)
+        ex_live = ActionExecutor(dry_run=False, allow_transport=True, action_delay_range=(0.0, 0.0))
+        foreign_act = PlannedAction(
+            priority="P1",
+            kind="TRANSPORT",
+            planet_id=101,
+            planet_coords="02:380:12",
+            target_id=None,
+            target_name="Transport -> 02:399:09 (Stranger)",
+            cost=Resources(pig_iron=5_000),
+            reason="Bad foreign transport",
+            executable_now=True,
+        )
+        res_for = ex_live.execute_action(MagicMock(spec=GameBrowserClient), st, foreign_act)
+        self.assertFalse(res_for.executed)
+        self.assertIn("own planet", res_for.message.lower())
+
+        # 3. Missing cargo input fields on internalSendFleet -> aborts BEFORE clicking LAUNCH
+        step1_html = """
+        <form action="indexInternal.es?action=internalSendFleet">
+          <input name="ship_2" type="text" value="0"/>
+          <input name="gal" type="text"/><input name="sun" type="text"/><input name="pla" type="text"/>
+          <input type="submit" value="Continue"/>
+        </form>
+        """
+        step2_no_cargo_html = """
+        <form id="fleet" action="indexInternal.es?action=internalSendFleetFinish">
+          <label><input type="radio" name="todo" value="TRANSPORT"/> Transport</label>
+          <input id="goButton" type="submit" value="Launch"/>
+        </form>
+        """
+        def _mk_el(attrs: dict[str, str] | None = None):
+            el = MagicMock()
+            el.is_displayed.return_value = True
+            el.is_enabled.return_value = True
+            el.is_selected.return_value = False
+            amap = attrs or {}
+            el.get_attribute.side_effect = lambda a: amap.get(a, "")
+            return el
+
+        r_trn = _mk_el({"name": "todo", "value": "TRANSPORT"})
+        r_trn.is_selected.side_effect = [False, True]
+        launch_no_cargo = _mk_el({"id": "goButton"})
+        drv_nc = MagicMock()
+        drv_nc.find_elements.side_effect = lambda by, sel: (
+            [_mk_el({"name": "ship_2"})] if (by == "name" and sel == "ship_2") else ([r_trn] if "radio" in str(sel) else [])
+        )
+        drv_nc.find_element.side_effect = lambda by, sel: (
+            launch_no_cargo if "goButton" in str(sel) else _mk_el()
+        )
+        drv_nc.page_source = step2_no_cargo_html
+        cli_nc = MagicMock(spec=GameBrowserClient)
+        cli_nc.driver = drv_nc
+        cli_nc.navigate_menu.return_value = step1_html
+        cli_nc._wait_frame_ready.return_value = step2_no_cargo_html
+        cli_nc.read_planets_overview.return_value = st
+        res_nc = ex_live.execute_action(cli_nc, st, tr_act)
+        self.assertFalse(res_nc.executed)
+        self.assertIn("transport resource inputs", res_nc.message.lower())
+        launch_no_cargo.click.assert_not_called()
+
+        # 4. Happy-path live TRANSPORT fills all 4 cargo inputs and clicks Launch
+        step2_ok_html = """
+        <form id="fleet" action="indexInternal.es?action=internalSendFleetFinish">
+          <label><input type="radio" name="todo" value="TRANSPORT"/> Transport</label>
+          <input name="roheisen" type="text" value="0"/>
+          <input name="metall" type="text" value="0"/>
+          <input name="kryptonit" type="text" value="0"/>
+          <input name="spice" type="text" value="0"/>
+          <input id="goButton" type="submit" value="Launch"/>
+        </form>
+        """
+        r_trn2 = _mk_el({"name": "todo", "value": "TRANSPORT"})
+        r_trn2.is_selected.side_effect = [False, True]
+        inp_pig = _mk_el({"name": "roheisen"})
+        inp_met = _mk_el({"name": "metall"})
+        inp_kry = _mk_el({"name": "kryptonit"})
+        inp_spi = _mk_el({"name": "spice"})
+        inp_s2 = _mk_el({"name": "ship_2"})
+        launch_ok = _mk_el({"id": "goButton"})
+        by_name_ok = {
+            "ship_2": [inp_s2],
+            "roheisen": [inp_pig],
+            "metall": [inp_met],
+            "kryptonit": [inp_kry],
+            "spice": [inp_spi],
+        }
+        drv_ok = MagicMock()
+        drv_ok.find_elements.side_effect = lambda by, sel: (
+            by_name_ok.get(sel, [])
+            if by == "name"
+            else (
+                [r_trn2]
+                if "radio" in str(sel)
+                else ([inp_pig, inp_met, inp_kry, inp_spi] if 'input[type="text"]' in str(sel) else [])
+            )
+        )
+        drv_ok.find_element.side_effect = lambda by, sel: (
+            launch_ok if "goButton" in str(sel) else _mk_el()
+        )
+        drv_ok.page_source = step2_ok_html
+        cli_ok = MagicMock(spec=GameBrowserClient)
+        cli_ok.driver = drv_ok
+        cli_ok.navigate_menu.return_value = step1_html
+        cli_ok._wait_frame_ready.side_effect = [step2_ok_html, "<div>Fleet sent</div>"]
+        cli_ok.read_planets_overview.return_value = st
+        res_ok = ex_live.execute_action(cli_ok, st, tr_act)
+        self.assertTrue(res_ok.executed, res_ok.message)
+        inp_pig.send_keys.assert_called_once_with("10000")
+        inp_met.send_keys.assert_called_once_with("5000")
+        inp_kry.send_keys.assert_called_once_with("2000")
+        inp_spi.send_keys.assert_called_once_with("1000")
+        launch_ok.click.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

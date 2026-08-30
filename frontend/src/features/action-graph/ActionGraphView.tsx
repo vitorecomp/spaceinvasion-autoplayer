@@ -21,6 +21,7 @@ const AG_BOOL_FIELDS = [
   "allow_raids",
   "allow_pvp_in_az",
   "allow_colonize",
+  "allow_transport",
   "allow_transmitter",
   "forbid_planetary_solar",
 ];
@@ -1397,6 +1398,7 @@ export const ActionGraphView: React.FC = () => {
                   ["allow_raids", "Auto Raids (Inactive/Spacia)"],
                   ["allow_pvp_in_az", "Allow PvP inside AZ"],
                   ["allow_colonize", "Auto Colonize"],
+                  ["allow_transport", "Auto Inter-Planet Transport"],
                   ["allow_transmitter", "Daily Free Transmitter"],
                   ["forbid_planetary_solar", "Forbid Solar on Planets (Asteroid Only)"],
                 ] as const

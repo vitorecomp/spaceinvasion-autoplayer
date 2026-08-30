@@ -87,6 +87,10 @@ class GalaxySlot:
     colonize_max_fields: Optional[int] = None
     uninhabited_fields: Optional[int] = None
     temperature: Optional[int] = None
+    debris_pig_iron: int = 0
+    debris_metal: int = 0
+    debris_kryptonite: int = 0
+    debris_spice: int = 0
 
 
 @dataclass(frozen=True)
@@ -155,6 +159,9 @@ class RaidRecommendation:
     combat: CombatEstimate
     is_spacia: bool = False
     is_inactive: bool = False
+    total_plunder_resources: int = 0
+    flight_seconds: float = 0.0
+    resources_per_hour: float = 0.0
 
 
 _COORDS_NORM_RE = re.compile(
@@ -712,6 +719,235 @@ def _parse_coords_distance(a: Any, b: Any) -> float:
     if pa[1] != pb[1]:
         return 2700.0 + 95.0 * abs(pa[1] - pb[1])
     return 1000.0 + 5.0 * abs(pa[2] - pb[2])
+
+
+ENGINE_RESEARCH_BY_NAME: dict[str, str] = {
+    "rocket engine": "r4",
+    "diffusion engine": "r5",
+    "warp engine": "r6",
+}
+
+DEFAULT_UNKNOWN_DEBRIS_RESOURCES: int = 25_000
+
+
+def ship_effective_speed(
+    ship_key: Any,
+    researches: Optional[Mapping[str, Any]] = None,
+) -> float:
+    """Return effective SpaceInvasion ship speed (`base_speed * (1 + 0.10 * engine_level)`)."""
+    key_s = game_data.safe_key(ship_key)
+    slug = SHIP_SLUG_BY_KEY.get(key_s, key_s)
+    info = game_data.resolve_unit("ships", slug)
+    if not info:
+        return 0.0
+    stats = info.get("stats") or {}
+    base_speed = float(max(0, _safe_fleet_int(stats.get("speed", 0), 0)))
+    if base_speed <= 0.0:
+        return 0.0
+    eng_name = str(stats.get("engine") or "").strip().lower()
+    r_key = ENGINE_RESEARCH_BY_NAME.get(eng_name)
+    eng_lvl = 0
+    if r_key and isinstance(researches, Mapping):
+        eng_lvl = min(10_000, max(0, _safe_fleet_int(researches.get(r_key, 0), 0)))
+    return base_speed * (1.0 + 0.10 * eng_lvl)
+
+
+def fleet_effective_speed(
+    ships: Mapping[str, int],
+    researches: Optional[Mapping[str, Any]] = None,
+) -> float:
+    """Return the slowest mobile ship's effective speed in a multi-ship fleet."""
+    if not isinstance(ships, Mapping):
+        return 0.0
+    slowest: Optional[float] = None
+    for key, count in ships.items():
+        if _safe_fleet_int(count, 0) <= 0:
+            continue
+        key_s = game_data.safe_key(key)
+        if key_s in ("s9", "solar-cells"):
+            continue
+        spd = ship_effective_speed(key_s, researches)
+        if spd > 0.0 and (slowest is None or spd < slowest):
+            slowest = spd
+    return float(slowest or 0.0)
+
+
+def _flight_distance_units(origin_coords: Any, target_coords: Any) -> float:
+    """SpaceInvasion Classic linear flight distance calibrated to live RETRO timings."""
+    sa = game_data.safe_key(origin_coords) if origin_coords is not None else ""
+    sb = game_data.safe_key(target_coords) if target_coords is not None else ""
+    pa = [min(999_999, int(x[:9])) for x in re.findall(r"\d+", sa, re.ASCII)[:3]]
+    pb = [min(999_999, int(x[:9])) for x in re.findall(r"\d+", sb, re.ASCII)[:3]]
+    if len(pa) < 3 or len(pb) < 3:
+        return 1000.0
+    dg = abs(pa[0] - pb[0])
+    if dg > 0:
+        return 20_000.0 * dg
+    ds = abs(pa[1] - pb[1])
+    if ds > 0:
+        return 1000.0 + 175.0 * ds
+    dp = abs(pa[2] - pb[2])
+    if dp > 0:
+        return 1000.0 + 5.0 * dp
+    return 500.0
+
+
+def estimate_fleet_flight_seconds(
+    origin_coords: Any,
+    target_coords: Any,
+    ships: Mapping[str, int],
+    *,
+    researches: Optional[Mapping[str, Any]] = None,
+    round_trip: bool = True,
+) -> float:
+    """Estimate SpaceInvasion Classic flight duration in seconds (round-trip by default)."""
+    speed = fleet_effective_speed(ships, researches)
+    if speed <= 0.0:
+        speed = 3000.0  # Safe fallback (Small transport base speed)
+    dist = _flight_distance_units(origin_coords, target_coords)
+    one_way_s = 10.0 + (4765.0 * dist) / max(1.0, speed)
+    total_s = (2.0 * one_way_s) if round_trip else one_way_s
+    return round(max(1.0, total_s), 2)
+
+
+def estimate_resource_per_hour(total_resources: Any, flight_seconds: Any) -> float:
+    """Return expected resource throughput per hour (`total_resources / (flight_seconds / 3600)`)."""
+    try:
+        res_f = float(total_resources)
+        sec_f = float(flight_seconds)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not (math.isfinite(res_f) and math.isfinite(sec_f)) or res_f <= 0.0 or sec_f <= 0.0:
+        return 0.0
+    hours = max(sec_f / 3600.0, 1.0 / 3600.0)
+    val = res_f / hours
+    return round(val, 2) if math.isfinite(val) else 0.0
+
+
+def format_flight_duration(seconds: Any) -> str:
+    """Format a flight duration in seconds into a compact human string (`48m`, `1h 12m`)."""
+    try:
+        sec_f = float(seconds)
+    except (TypeError, ValueError, OverflowError):
+        return "0m"
+    if not math.isfinite(sec_f) or sec_f <= 0.0:
+        return "0m"
+    sec_i = int(round(sec_f))
+    if sec_i < 60:
+        return f"{sec_i}s"
+    mins_total = (sec_i + 30) // 60
+    if mins_total < 60:
+        return f"{mins_total}m"
+    hours, mins = divmod(mins_total, 60)
+    if hours < 24:
+        return f"{hours}h {mins:02d}m" if mins else f"{hours}h"
+    days, rem_h = divmod(hours, 24)
+    return f"{days}d {rem_h}h" if rem_h else f"{days}d"
+
+
+def extract_target_debris_resources(raw_target: Mapping[str, Any]) -> int:
+    """Extract known total debris resources (Pig iron + Metal + Kryptonite + Spice) from a target dict."""
+    if not isinstance(raw_target, Mapping):
+        return 0
+    explicit_total = max(0, _safe_fleet_int(raw_target.get("debris_total", 0), 0))
+    if explicit_total > 0:
+        return explicit_total
+    deb_map = raw_target.get("debris")
+    if isinstance(deb_map, Mapping):
+        map_total = sum(
+            max(0, _safe_fleet_int(deb_map.get(k, 0), 0))
+            for k in ("pig_iron", "metal", "kryptonite", "spice")
+        )
+        if map_total > 0:
+            return map_total
+    avail_map = raw_target.get("debris_available")
+    if isinstance(avail_map, Mapping):
+        avail_total = sum(
+            max(0, _safe_fleet_int(avail_map.get(k, 0), 0))
+            for k in ("pig_iron", "metal", "kryptonite", "spice")
+        )
+        if avail_total > 0:
+            return avail_total
+    flat_total = (
+        max(0, _safe_fleet_int(raw_target.get("debris_pig_iron", 0), 0))
+        + max(0, _safe_fleet_int(raw_target.get("debris_metal", 0), 0))
+        + max(0, _safe_fleet_int(raw_target.get("debris_kryptonite", 0), 0))
+        + max(0, _safe_fleet_int(raw_target.get("debris_spice", 0), 0))
+    )
+    return flat_total
+
+
+def select_transport_ships(
+    stationed_ships: Mapping[str, int],
+    cargo_units: int,
+    *,
+    miner_spec_level: int = 0,
+) -> dict[str, int]:
+    """Select the minimal stationed cargo ship mix (`s3` -> `s2` -> `s1`) able to carry `cargo_units`."""
+    if not isinstance(stationed_ships, Mapping) or cargo_units <= 0:
+        return {}
+    rem = int(cargo_units)
+    chosen: dict[str, int] = {}
+    # Prefer largest/fastest pure cargo hulls first: Transmitter (s3, 250k) -> Large transport (s2, 30k) -> Small transport (s1, 6k)
+    for skey in ("s3", "s2", "s1"):
+        avail = max(0, _safe_fleet_int(stationed_ships.get(skey, 0), 0))
+        if avail <= 0 or rem <= 0:
+            continue
+        cap_one = fleet_cargo_capacity({skey: 1}, miner_spec_level=miner_spec_level)
+        if cap_one <= 0:
+            continue
+        need_n = min(avail, (rem + cap_one - 1) // cap_one)
+        if need_n > 0:
+            chosen[skey] = need_n
+            rem = max(0, rem - need_n * cap_one)
+    return chosen
+
+
+def pack_transport_cargo(
+    need: Resources,
+    surplus: Resources,
+    dest_free_storage: Optional[Resources],
+    capacity: int,
+) -> Resources:
+    """Pack transport cargo satisfying `need` bounded by `surplus`, `dest_free_storage`, and `capacity`."""
+    cap_left = max(0, int(capacity))
+    if cap_left <= 0:
+        return Resources()
+    avail_by_res: dict[str, int] = {}
+    for rk in ("pig_iron", "metal", "kryptonite", "spice"):
+        n_v = max(0, int(getattr(need, rk, 0)))
+        s_v = max(0, int(getattr(surplus, rk, 0)))
+        bound = min(n_v, s_v)
+        if dest_free_storage is not None:
+            bound = min(bound, max(0, int(getattr(dest_free_storage, rk, 0))))
+        avail_by_res[rk] = bound
+    total_want = sum(avail_by_res.values())
+    if total_want <= 0:
+        return Resources()
+    if total_want <= cap_left:
+        return Resources(
+            pig_iron=avail_by_res["pig_iron"],
+            metal=avail_by_res["metal"],
+            kryptonite=avail_by_res["kryptonite"],
+            spice=avail_by_res["spice"],
+        )
+    # Proportionally allocate when total demand exceeds fleet cargo capacity, prioritizing rare resources for remainder
+    packed = {rk: int((avail_by_res[rk] * cap_left) // total_want) for rk in avail_by_res}
+    rem_cap = cap_left - sum(packed.values())
+    for rk in ("spice", "metal", "kryptonite", "pig_iron"):
+        if rem_cap <= 0:
+            break
+        room = avail_by_res[rk] - packed[rk]
+        take = min(room, rem_cap)
+        if take > 0:
+            packed[rk] += take
+            rem_cap -= take
+    return Resources(
+        pig_iron=packed["pig_iron"],
+        metal=packed["metal"],
+        kryptonite=packed["kryptonite"],
+        spice=packed["spice"],
+    )
 
 
 _GALAXY_POS_CELL_RE = re.compile(r"^\s*(?:#\s*)?\[?\s*0?(\d{1,2})\s*\]?\.?\s*$", re.ASCII)
@@ -3232,6 +3468,20 @@ def score_raid_target(
     # Wiki Spacia insight: slightly further/overlooked Spacia worlds upgrade mines higher
     bonus = 1.15 if (is_spacia and dist > 1020) else 1.0
     score = (combat.loot_spice_equivalent * bonus) / max(1.0, dist / 1000.0)
+    total_plunder = (
+        max(0, int(combat.expected_loot.pig_iron))
+        + max(0, int(combat.expected_loot.metal))
+        + max(0, int(combat.expected_loot.kryptonite))
+        + max(0, int(combat.expected_loot.spice))
+    )
+    flight_s = estimate_fleet_flight_seconds(
+        origin_coords,
+        slot.coords,
+        attacker_ships,
+        researches=attacker_researches,
+        round_trip=True,
+    )
+    res_per_h = estimate_resource_per_hour(total_plunder, flight_s)
     return RaidRecommendation(
         target_coords=slot.coords,
         target_owner=slot.owner or report.owner,
@@ -3241,6 +3491,9 @@ def score_raid_target(
         combat=combat,
         is_spacia=is_spacia,
         is_inactive=is_inactive,
+        total_plunder_resources=total_plunder,
+        flight_seconds=flight_s,
+        resources_per_hour=res_per_h,
     )
 
 
@@ -4022,38 +4275,111 @@ def score_galaxy_scan_sectors(
         primary_sys_by_gal.setdefault(cg, cs)
 
     scored: list[dict[str, Any]] = []
+    near_scale = eff_near_w * 2.5
+    default_staleness = (7.0 * 86400.0) / 1800.0
+    col_int = [(int(cg), int(cs)) for cg, cs in eff_colonies]
     for gal in active_galaxies:
         anchor_sys = primary_sys_by_gal.get(gal, eff_colonies[0][1])
         same_gal = gal in colony_gal_set
+        gal_prefix = f"{gal:02d}:"
+        same_gal_cols = tuple(cs for cg, cs in col_int if cg == gal)
+        other_gal_cols = tuple((250 * abs(gal - cg), cs) for cg, cs in col_int if cg != gal)
+        only_same_gal_fast = bool(same_gal_cols) and (n_sys <= 500 or not other_gal_cols)
         for sys_num in range(1, n_sys + 1):
-            dist = galaxy_sector_distance(
-                gal,
-                sys_num,
-                eff_colonies,
-                systems_per_galaxy=n_sys,
-            )
+            if only_same_gal_fast:
+                best_d = n_sys
+                for cs in same_gal_cols:
+                    delta = sys_num - cs
+                    if delta < 0:
+                        delta = -delta
+                    circ = n_sys - delta if (n_sys - delta) < delta else delta
+                    if circ < best_d:
+                        best_d = circ
+                        if best_d == 0:
+                            break
+                dist = best_d
+            else:
+                best_d = 10**9
+                for cs in same_gal_cols:
+                    delta = abs(sys_num - cs)
+                    circ = delta if delta <= (n_sys - delta) else (n_sys - delta)
+                    if circ < best_d:
+                        best_d = circ
+                for g_pen, cs in other_gal_cols:
+                    delta = abs(sys_num - cs)
+                    circ = delta if delta <= (n_sys - delta) else (n_sys - delta)
+                    cand_d = g_pen + circ
+                    if cand_d < best_d:
+                        best_d = cand_d
+                dist = best_d if best_d < 10**9 else 0
             if rad_cap >= 0 and dist > rad_cap:
                 continue
 
-            skey = f"{gal:02d}:{sys_num:03d}"
+            skey = f"{gal_prefix}{sys_num:03d}"
             sec = sectors_data.get(skey)
-            last_ts = _safe_scan_float(sec["last_scanned_ts"], 0.0) if sec else 0.0
+            prox_norm = (1.0 / (1.0 + dist / 20.0)) if same_gal else (0.15 / (1.0 + dist / 200.0))
+            near_score = near_scale * prox_norm
+            ring_offset = (sys_num - anchor_sys) % n_sys
+
+            if sec is None:
+                importance = 1.0 + near_score
+                refresh_score = importance * default_staleness
+                if explore_first:
+                    item_phase = "exploratory"
+                    reason = f"unscanned sector (dist {dist})"
+                else:
+                    item_phase = "targeted_refresh"
+                    if same_gal and dist <= 25 and eff_near_w > 0.0:
+                        reason = f"near d={dist}, age never"
+                    elif same_gal:
+                        reason = f"d={dist}, age never"
+                    else:
+                        reason = f"cross-gal d={dist}, age never"
+                scored.append(
+                    {
+                        "sector": skey,
+                        "galaxy": gal,
+                        "system": sys_num,
+                        "phase": item_phase,
+                        "scanned": False,
+                        "is_fresh": False,
+                        "score": round(refresh_score, 4),
+                        "importance": round(importance, 4),
+                        "near_score": round(near_score, 4),
+                        "attack_score": 0.0,
+                        "secondary_score": 0.0,
+                        "staleness_factor": round(default_staleness, 4),
+                        "distance": dist,
+                        "last_scanned_ts": 0.0,
+                        "age_seconds": None,
+                        "direct_raid_count": 0,
+                        "direct_loot_spice_eq": 0.0,
+                        "owner_affinity_raid_count": 0,
+                        "frequent_owners": [],
+                        "debris_count": 0,
+                        "target_count": 0,
+                        "free_count": 0,
+                        "reason": reason,
+                        "_same_gal": 0 if same_gal else 1,
+                        "_ring_offset": ring_offset,
+                    }
+                )
+                continue
+
+            last_ts = _safe_scan_float(sec["last_scanned_ts"], 0.0)
             scanned = last_ts > 0.0
             age_s: Optional[float] = round(max(0.0, eff_now - last_ts), 3) if scanned else None
             is_fresh = bool(scanned and age_s is not None and age_s < eff_fresh_s)
 
-            prox_norm = (1.0 / (1.0 + dist / 20.0)) if same_gal else (0.15 / (1.0 + dist / 200.0))
-            near_score = eff_near_w * 2.5 * prox_norm
-
-            direct_raids = int(sec["direct_raid_count"]) if sec else 0
-            direct_recency = float(sec["direct_recency_raid_score"]) if sec else 0.0
-            direct_loot = float(sec["direct_loot_spice_eq"]) if sec else 0.0
-            debris_cnt = int(sec["debris_count"]) if sec else 0
-            inact_cnt = int(sec["inactive_count"]) if sec else 0
-            spacia_cnt = int(sec["spacia_count"]) if sec else 0
-            target_cnt = max(int(sec["target_count"]) if sec else 0, inact_cnt + spacia_cnt)
-            free_cnt = int(sec["free_count"]) if sec else 0
-            prime_free_cnt = int(sec["prime_colony_free_count"]) if sec else 0
+            direct_raids = int(sec["direct_raid_count"])
+            direct_recency = float(sec["direct_recency_raid_score"])
+            direct_loot = float(sec["direct_loot_spice_eq"])
+            debris_cnt = int(sec["debris_count"])
+            inact_cnt = int(sec["inactive_count"])
+            spacia_cnt = int(sec["spacia_count"])
+            target_cnt = max(int(sec["target_count"]), inact_cnt + spacia_cnt)
+            free_cnt = int(sec["free_count"])
+            prime_free_cnt = int(sec["prime_colony_free_count"])
 
             eff_direct = max(direct_recency, 0.6 * float(direct_raids))
             direct_freq_sig = math.log1p(max(0.0, eff_direct))
@@ -4062,7 +4388,7 @@ def score_galaxy_scan_sectors(
             affinity_sig = 0.0
             owner_affinity_raids = 0
             freq_owners: list[str] = []
-            if sec and sec["owner_planet_counts"]:
+            if sec["owner_planet_counts"]:
                 owner_entries: list[tuple[int, float, str, int]] = []
                 for okey, pcnt in sec["owner_planet_counts"].items():
                     os_info = owner_stats.get(okey)
@@ -4124,7 +4450,6 @@ def score_galaxy_scan_sectors(
                 tags.append(f"age {_format_age_short(age_s)}")
                 reason = ", ".join(tags)
 
-            ring_offset = (sys_num - anchor_sys) % n_sys
             scored.append(
                 {
                     "sector": skey,

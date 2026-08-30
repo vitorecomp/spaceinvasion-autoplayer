@@ -442,6 +442,7 @@ class StrategyConfig:
     allow_raids: bool = False
     allow_pvp_in_az: bool = False
     allow_colonize: bool = False
+    allow_transport: bool = False
     allow_transmitter: bool = False
     forbid_planetary_solar: bool = False
     storage_warn_ratio: float = 0.85
@@ -1128,6 +1129,7 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         allow_raids=_safe_cfg_bool(data.get("allow_raids"), False),
         allow_pvp_in_az=_safe_cfg_bool(data.get("allow_pvp_in_az"), False),
         allow_colonize=_safe_cfg_bool(data.get("allow_colonize"), False),
+        allow_transport=_safe_cfg_bool(data.get("allow_transport"), False),
         allow_transmitter=_safe_cfg_bool(data.get("allow_transmitter"), False),
         forbid_planetary_solar=_safe_cfg_bool(data.get("forbid_planetary_solar"), False),
         storage_warn_ratio=max(0.1, min(0.99, _safe_cfg_float(data.get("storage_warn_ratio"), 0.85))),

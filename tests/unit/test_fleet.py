@@ -1296,6 +1296,73 @@ class TestFleetAndCombat(unittest.TestCase):
         )
         self.assertEqual((gal, sys_n), (2, 387))
 
+    def test_flight_time_resource_per_hour_and_transport_packing(self) -> None:
+        from spaceinvasion.combat.fleet import (
+            estimate_fleet_flight_seconds,
+            estimate_resource_per_hour,
+            extract_target_debris_resources,
+            fleet_cargo_capacity,
+            fleet_effective_speed,
+            pack_transport_cargo,
+            select_transport_ships,
+            ship_effective_speed,
+        )
+
+        # +10%/lvl engine research scaling (r4 Rocket, r5 Diffusion, r6 Warp)
+        s1_r0 = ship_effective_speed("s1", {})
+        s1_r8 = ship_effective_speed("s1", {"r4": 8})
+        self.assertAlmostEqual(s1_r8, s1_r0 * 1.8, places=4)
+        s11_r0 = ship_effective_speed("s11", {})
+        s11_r7 = ship_effective_speed("s11", {"r5": 7})
+        self.assertAlmostEqual(s11_r7, s11_r0 * 1.7, places=4)
+
+        # Mixed fleet travels at its slowest ship's effective speed
+        slowest = fleet_effective_speed({"s10": 5, "s1": 10, "s11": 2}, {"r4": 8, "r5": 7})
+        self.assertAlmostEqual(slowest, s11_r7, places=4)
+
+        # Flight duration increases monotonically with distance and doubles for round-trip
+        rt_same = estimate_fleet_flight_seconds("02:380:12", "02:380:14", {"s1": 10}, researches={"r4": 8}, round_trip=True)
+        rt_near = estimate_fleet_flight_seconds("02:380:12", "02:382:04", {"s1": 10}, researches={"r4": 8}, round_trip=True)
+        rt_far = estimate_fleet_flight_seconds("02:380:12", "02:300:04", {"s1": 10}, researches={"r4": 8}, round_trip=True)
+        ow_near = estimate_fleet_flight_seconds("02:380:12", "02:382:04", {"s1": 10}, researches={"r4": 8}, round_trip=False)
+        self.assertLess(rt_same, rt_near)
+        self.assertLess(rt_near, rt_far)
+        self.assertAlmostEqual(rt_near, ow_near * 2.0, places=2)
+
+        # Resource-per-hour = total_resources / (flight_seconds / 3600)
+        self.assertAlmostEqual(estimate_resource_per_hour(10_000, 1800.0), 20_000.0, places=2)
+        self.assertEqual(estimate_resource_per_hour(0, 1800.0), 0.0)
+
+        # score_raid_target populates total_plunder_resources, flight_seconds, resources_per_hour
+        slot = GalaxySlot(coords="02:380:04", position=4, name="Farm", owner="Idle", status_color="yellow")
+        rep = SpyReport(target_coords="02:380:04", owner="Idle", resources=Resources(40_000, 20_000, 10_000, 10_000))
+        rec = score_raid_target("02:380:12", slot, rep, {"s1": 10}, attacker_researches={"r4": 8})
+        self.assertIsNotNone(rec)
+        assert rec is not None
+        self.assertEqual(rec.total_plunder_resources, 40_000)
+        self.assertGreater(rec.flight_seconds, 0.0)
+        self.assertAlmostEqual(
+            rec.resources_per_hour,
+            estimate_resource_per_hour(rec.total_plunder_resources, rec.flight_seconds),
+            places=2,
+        )
+
+        # Debris extraction + transport ship selection (s3 -> s2 -> s1) + cargo packing
+        d_tot = extract_target_debris_resources({"debris_pig_iron": 15_000, "debris_metal": 25_000})
+        self.assertEqual(d_tot, 40_000)
+
+        chosen_ships = select_transport_ships({"s1": 10, "s2": 3, "s3": 1}, 70_000)
+        self.assertIn("s3", chosen_ships)
+        self.assertGreaterEqual(fleet_cargo_capacity(chosen_ships), 70_000)
+        packed = pack_transport_cargo(
+            need=Resources(pig_iron=30_000, metal=20_000, kryptonite=10_000, spice=5_000),
+            surplus=Resources(pig_iron=25_000, metal=50_000, kryptonite=50_000, spice=1_500),
+            dest_free_storage=Resources(pig_iron=50_000, metal=50_000, kryptonite=50_000, spice=50_000),
+            capacity=30_000,
+        )
+        self.assertEqual(packed.total(), 30_000)
+        self.assertLessEqual(packed.spice, 1_500)
+
 
 if __name__ == "__main__":
     unittest.main()
