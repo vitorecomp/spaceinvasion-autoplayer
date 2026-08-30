@@ -278,6 +278,47 @@
   background: var(--line-mid);
 }
 
+.gal-cov-pill {
+  padding: 4px 8px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+  background: var(--bg-panel-alt);
+  color: var(--cyan);
+  cursor: pointer;
+}
+
+.gal-cov-pill:hover {
+  border-color: var(--cyan);
+  background: var(--bg-header);
+}
+
+.gal-cov-pill.is-complete {
+  border-color: var(--mint);
+  color: var(--mint);
+}
+
+.gal-cov-inline {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--cyan);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+}
+
+.config-group-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .bf-pill {
   padding: 4px 8px;
   font-size: 0.86rem;

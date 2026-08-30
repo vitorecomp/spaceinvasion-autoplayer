@@ -62,6 +62,35 @@ export const AppHeader: React.FC = () => {
   const b2Pct = computeSelectedBlastFurnacePct(dashboard, activePlanet, buildingsEtaData);
   const bfText = b2Pct === 0 ? "B2: 0% PAUSED" : `B2: ${b2Pct}%`;
 
+  const galSweep = dashboard?.galaxy_sweep || null;
+  const galTotal = Math.max(0, Math.round(safeFiniteNumber(galSweep?.total_systems, 0) ?? 0));
+  const galExplored = Math.max(
+    0,
+    Math.round(safeFiniteNumber(galSweep?.explored_systems, 0) ?? 0)
+  );
+  const galCovRaw = safeFiniteNumber(galSweep?.coverage_pct, null);
+  const galCovPct =
+    galCovRaw !== null
+      ? Math.max(0, Math.min(100, galCovRaw))
+      : galTotal > 0
+        ? Math.max(0, Math.min(100, (galExplored / galTotal) * 100))
+        : null;
+  const galPhaseLabel =
+    String(galSweep?.scan_phase || "").toLowerCase() === "targeted_refresh"
+      ? "Targeted Refresh"
+      : "Exploratory";
+  const galList = Array.isArray(galSweep?.scan_galaxies) && galSweep!.scan_galaxies!.length > 0
+    ? galSweep!.scan_galaxies!.map((g) => `G${g}`).join(",")
+    : "Galaxy";
+  const galCovText =
+    galCovPct !== null
+      ? `GAL ${galCovPct.toFixed(1)}%`
+      : "GAL --%";
+  const galCovTitle =
+    galCovPct !== null
+      ? `${galList} explored: ${galExplored}/${galTotal} systems (${galCovPct.toFixed(1)}%) · Phase: ${galPhaseLabel}${galSweep?.in_progress ? " · Sweeping..." : ""}`
+      : "Galaxy exploration progress — click to open Espionage & Galaxy Scanner";
+
   const hostileCount = Array.isArray(gs.fleet_alerts)
     ? gs.fleet_alerts.filter((a) => a?.hostile).length
     : 0;
@@ -111,6 +140,15 @@ export const AppHeader: React.FC = () => {
         </div>
 
         <div className="ruler-cluster">
+          <button
+            type="button"
+            className={`gal-cov-pill tabular${galCovPct !== null && galCovPct >= 100 ? " is-complete" : ""}`}
+            id="hud-galaxy-coverage"
+            title={galCovTitle}
+            onClick={() => setActivePage("espionage")}
+          >
+            {galCovText}
+          </button>
           <button
             type="button"
             className={`bf-pill tabular${b2Pct === 0 ? " is-paused" : ""}`}

@@ -344,7 +344,29 @@ export const ConfigView: React.FC = () => {
               aria-labelledby={group.headingId}
             >
               <div className="config-group-head">
-                <h3 id={group.headingId}>{group.title}</h3>
+                <div className="config-group-title-row">
+                  <h3 id={group.headingId}>{group.title}</h3>
+                  {group.id === "galaxy" && dashboard?.galaxy_sweep ? (
+                    <span
+                      className="gal-cov-inline tabular"
+                      id="cfg-galaxy-coverage"
+                    >
+                      {`Explored: ${Math.max(
+                        0,
+                        Math.min(100, safeFiniteNumber(dashboard.galaxy_sweep.coverage_pct, 0) ?? 0)
+                      ).toFixed(1)}% (${Math.round(
+                        safeFiniteNumber(dashboard.galaxy_sweep.explored_systems, 0) ?? 0
+                      )}/${Math.round(
+                        safeFiniteNumber(dashboard.galaxy_sweep.total_systems, 400) ?? 400
+                      )} · ${
+                        String(dashboard.galaxy_sweep.scan_phase || "").toLowerCase() ===
+                        "targeted_refresh"
+                          ? "Targeted Refresh"
+                          : "Exploratory"
+                      })`}
+                    </span>
+                  ) : null}
+                </div>
                 <p className="config-group-sub">{group.subtitle}</p>
               </div>
               <div className="config-list">

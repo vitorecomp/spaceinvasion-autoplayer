@@ -8711,6 +8711,18 @@
     const specsText = activePlanet ? `TEMP ${tempVal === null ? "—" : tempVal}°C · FIELDS ${fUsedVal === null ? "—" : fUsedVal}/${fMaxVal === null ? "—" : fMaxVal}` : "TEMP --°C · FIELDS --/--";
     const b2Pct = computeSelectedBlastFurnacePct(dashboard, activePlanet, buildingsEtaData);
     const bfText = b2Pct === 0 ? "B2: 0% PAUSED" : `B2: ${b2Pct}%`;
+    const galSweep = (dashboard == null ? void 0 : dashboard.galaxy_sweep) || null;
+    const galTotal = Math.max(0, Math.round(safeFiniteNumber(galSweep == null ? void 0 : galSweep.total_systems, 0) ?? 0));
+    const galExplored = Math.max(
+      0,
+      Math.round(safeFiniteNumber(galSweep == null ? void 0 : galSweep.explored_systems, 0) ?? 0)
+    );
+    const galCovRaw = safeFiniteNumber(galSweep == null ? void 0 : galSweep.coverage_pct, null);
+    const galCovPct = galCovRaw !== null ? Math.max(0, Math.min(100, galCovRaw)) : galTotal > 0 ? Math.max(0, Math.min(100, galExplored / galTotal * 100)) : null;
+    const galPhaseLabel = String((galSweep == null ? void 0 : galSweep.scan_phase) || "").toLowerCase() === "targeted_refresh" ? "Targeted Refresh" : "Exploratory";
+    const galList = Array.isArray(galSweep == null ? void 0 : galSweep.scan_galaxies) && galSweep.scan_galaxies.length > 0 ? galSweep.scan_galaxies.map((g) => `G${g}`).join(",") : "Galaxy";
+    const galCovText = galCovPct !== null ? `GAL ${galCovPct.toFixed(1)}%` : "GAL --%";
+    const galCovTitle = galCovPct !== null ? `${galList} explored: ${galExplored}/${galTotal} systems (${galCovPct.toFixed(1)}%) · Phase: ${galPhaseLabel}${(galSweep == null ? void 0 : galSweep.in_progress) ? " · Sweeping..." : ""}` : "Galaxy exploration progress — click to open Espionage & Galaxy Scanner";
     const hostileCount = Array.isArray(gs.fleet_alerts) ? gs.fleet_alerts.filter((a) => a == null ? void 0 : a.hostile).length : 0;
     const unreadCnt = notifications.unread_count || 0;
     const captchaBlocked = Boolean((_a = dashboard == null ? void 0 : dashboard.bot_control) == null ? void 0 : _a.captcha_blocked);
@@ -8742,6 +8754,17 @@
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ruler-node tabular", id: "planet-specs", children: specsText })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ruler-cluster", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              type: "button",
+              className: `gal-cov-pill tabular${galCovPct !== null && galCovPct >= 100 ? " is-complete" : ""}`,
+              id: "hud-galaxy-coverage",
+              title: galCovTitle,
+              onClick: () => setActivePage("espionage"),
+              children: galCovText
+            }
+          ),
           /* @__PURE__ */ jsxRuntimeExports.jsx(
             "button",
             {
@@ -14684,6 +14707,7 @@
   };
   const EspionageView = ({ hidden }) => {
     const {
+      dashboard,
       activePage,
       setActivePage,
       activePlanet,
@@ -14705,6 +14729,11 @@
       (acc, t) => Math.max(acc, finiteNum(t == null ? void 0 : t.spice_eq, 0)),
       0
     );
+    const galSweep = (dashboard == null ? void 0 : dashboard.galaxy_sweep) || null;
+    const galTotal = Math.max(0, Math.round(finiteNum(galSweep == null ? void 0 : galSweep.total_systems, 0)));
+    const galExplored = Math.max(0, Math.round(finiteNum(galSweep == null ? void 0 : galSweep.explored_systems, 0)));
+    const galPct = galSweep && galSweep.coverage_pct != null ? Math.max(0, Math.min(100, finiteNum(galSweep.coverage_pct, 0))) : galTotal > 0 ? Math.max(0, Math.min(100, galExplored / galTotal * 100)) : null;
+    const galPhaseText = String((galSweep == null ? void 0 : galSweep.scan_phase) || "").toLowerCase() === "targeted_refresh" ? "Targeted Refresh" : "Exploratory";
     const handleSpyTarget = async (coords) => {
       try {
         showFeedback(`Dispatching spy probe to ${coords}...`, "ok");
@@ -14827,7 +14856,16 @@
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "SPY" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Espionage Intelligence & Spy Report Archive" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "esp-meta-count", children: espData ? `${targets.length} TARGETS · ${reports.length} REPORTS` : "0 TARGETS" })
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "esp-meta-count", children: espData ? `${targets.length} TARGETS · ${reports.length} REPORTS` : "0 TARGETS" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "span",
+                  {
+                    className: "gal-cov-inline tabular",
+                    id: "esp-galaxy-coverage",
+                    title: galPct !== null ? `Galaxy coverage: ${galExplored}/${galTotal} systems (${galPct.toFixed(1)}%) · ${galPhaseText}` : "Galaxy exploration percentage",
+                    children: galPct !== null ? `GALAXY EXPLORED ${galPct.toFixed(1)}% (${galExplored}/${galTotal} · ${galPhaseText})` : "GALAXY EXPLORED --%"
+                  }
+                )
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "tablist", "aria-label": "Espionage subtabs", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -15228,7 +15266,13 @@
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "COL" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Possible Colonies & Spied Field Grading" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "col-meta-count", children: colonyData ? `${filteredCands.length} / ${allCands.length} SLOTS` : "0 CANDIDATES" })
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "col-meta-count", children: colonyData ? `${filteredCands.length} / ${allCands.length} SLOTS` : "0 CANDIDATES" }),
+                (dashboard == null ? void 0 : dashboard.galaxy_sweep) ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gal-cov-inline tabular", id: "col-galaxy-coverage", children: `GALAXY EXPLORED ${Math.max(
+                  0,
+                  Math.min(100, finiteNum(dashboard.galaxy_sweep.coverage_pct, 0))
+                ).toFixed(1)}% (${fmtInt(dashboard.galaxy_sweep.explored_systems ?? 0)}/${fmtInt(
+                  dashboard.galaxy_sweep.total_systems ?? 400
+                )})` }) : null
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-toolbar", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-chips", role: "group", "aria-label": "Colony candidate filters", children: [
@@ -16961,7 +17005,24 @@
                 "aria-labelledby": group.headingId,
                 children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "config-group-head", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { id: group.headingId, children: group.title }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "config-group-title-row", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { id: group.headingId, children: group.title }),
+                      group.id === "galaxy" && (dashboard == null ? void 0 : dashboard.galaxy_sweep) ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "span",
+                        {
+                          className: "gal-cov-inline tabular",
+                          id: "cfg-galaxy-coverage",
+                          children: `Explored: ${Math.max(
+                            0,
+                            Math.min(100, safeFiniteNumber(dashboard.galaxy_sweep.coverage_pct, 0) ?? 0)
+                          ).toFixed(1)}% (${Math.round(
+                            safeFiniteNumber(dashboard.galaxy_sweep.explored_systems, 0) ?? 0
+                          )}/${Math.round(
+                            safeFiniteNumber(dashboard.galaxy_sweep.total_systems, 400) ?? 400
+                          )} · ${String(dashboard.galaxy_sweep.scan_phase || "").toLowerCase() === "targeted_refresh" ? "Targeted Refresh" : "Exploratory"})`
+                        }
+                      ) : null
+                    ] }),
                     /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "config-group-sub", children: group.subtitle })
                   ] }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "config-list", children: group.items.map((item) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "config-item", children: [

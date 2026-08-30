@@ -334,6 +334,16 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
             <span className="module-meta tabular" id="col-meta-count">
               {colonyData ? `${filteredCands.length} / ${allCands.length} SLOTS` : "0 CANDIDATES"}
             </span>
+            {dashboard?.galaxy_sweep ? (
+              <span className="gal-cov-inline tabular" id="col-galaxy-coverage">
+                {`GALAXY EXPLORED ${Math.max(
+                  0,
+                  Math.min(100, finiteNum(dashboard.galaxy_sweep.coverage_pct, 0))
+                ).toFixed(1)}% (${fmtInt(dashboard.galaxy_sweep.explored_systems ?? 0)}/${fmtInt(
+                  dashboard.galaxy_sweep.total_systems ?? 400
+                )})`}
+              </span>
+            ) : null}
           </div>
           <div className="filter-toolbar">
             <div className="filter-chips" role="group" aria-label="Colony candidate filters">

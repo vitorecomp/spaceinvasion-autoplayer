@@ -16,6 +16,7 @@ export interface EspionageViewProps {
 
 export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
   const {
+    dashboard,
     activePage,
     setActivePage,
     activePlanet,
@@ -44,6 +45,19 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
     (acc, t) => Math.max(acc, finiteNum(t?.spice_eq, 0)),
     0
   );
+  const galSweep = dashboard?.galaxy_sweep || null;
+  const galTotal = Math.max(0, Math.round(finiteNum(galSweep?.total_systems, 0)));
+  const galExplored = Math.max(0, Math.round(finiteNum(galSweep?.explored_systems, 0)));
+  const galPct =
+    galSweep && galSweep.coverage_pct != null
+      ? Math.max(0, Math.min(100, finiteNum(galSweep.coverage_pct, 0)))
+      : galTotal > 0
+        ? Math.max(0, Math.min(100, (galExplored / galTotal) * 100))
+        : null;
+  const galPhaseText =
+    String(galSweep?.scan_phase || "").toLowerCase() === "targeted_refresh"
+      ? "Targeted Refresh"
+      : "Exploratory";
 
   const handleSpyTarget = async (coords: string) => {
     try {
@@ -189,6 +203,19 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
               {espData
                 ? `${targets.length} TARGETS · ${reports.length} REPORTS`
                 : "0 TARGETS"}
+            </span>
+            <span
+              className="gal-cov-inline tabular"
+              id="esp-galaxy-coverage"
+              title={
+                galPct !== null
+                  ? `Galaxy coverage: ${galExplored}/${galTotal} systems (${galPct.toFixed(1)}%) · ${galPhaseText}`
+                  : "Galaxy exploration percentage"
+              }
+            >
+              {galPct !== null
+                ? `GALAXY EXPLORED ${galPct.toFixed(1)}% (${galExplored}/${galTotal} · ${galPhaseText})`
+                : "GALAXY EXPLORED --%"}
             </span>
           </div>
           <div className="tab-group" role="tablist" aria-label="Espionage subtabs">

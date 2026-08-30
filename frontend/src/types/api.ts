@@ -293,6 +293,19 @@ export interface DashboardPayload {
     [key: string]: any;
   };
   db_summary?: Record<string, any> | null;
+  galaxy_sweep?: {
+    cursor_galaxy?: number;
+    cursor_system?: number;
+    scan_phase?: string;
+    selection_mode?: string;
+    explored_systems?: number;
+    unscanned_systems?: number;
+    total_systems?: number;
+    coverage_pct?: number;
+    scan_galaxies?: number[];
+    in_progress?: boolean;
+    [key: string]: any;
+  } | null;
   universe_research_max?: UniverseResearchMaxRow[];
   notifications?: NotificationsState;
   [key: string]: any;
