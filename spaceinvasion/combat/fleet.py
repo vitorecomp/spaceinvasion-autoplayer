@@ -4196,6 +4196,7 @@ def select_smart_galaxy_scan_batch(
     raid_history: Optional[Sequence[Mapping[str, Any]]] = None,
     batch_size: int = 100,
     explore_first: bool = True,
+    refresh_pct: Optional[float] = None,
     near_weight: float = 2.0,
     attack_weight: float = 3.0,
     collect_colonies: bool = True,
@@ -4205,9 +4206,26 @@ def select_smart_galaxy_scan_batch(
     systems_per_galaxy: int = 400,
     now_ts: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Select a 2-phase smart galaxy scan batch (`exploratory` -> `targeted_refresh`) with smooth walk order."""
+    """Select a smart galaxy scan batch (`exploratory`, `mixed`, or `targeted_refresh`) with smooth walk order.
+
+    When `refresh_pct` (0..100) is configured above 0, allocates that share of `batch_size` to refreshing the
+    highest-priority already-scanned sectors and the remaining `100 - refresh_pct`% to discovering unscanned
+    sectors (spilling any unused quota into the other pool so the sweep budget is never wasted).
+    """
     n_sys = max(1, _safe_fleet_int(systems_per_galaxy, 400))
     eff_batch = max(1, _safe_fleet_int(batch_size, 100))
+
+    raw_refresh_pct = (
+        max(0.0, min(100.0, _safe_scan_float(refresh_pct, 0.0)))
+        if refresh_pct is not None
+        else None
+    )
+    use_explicit_split = raw_refresh_pct is not None and raw_refresh_pct > 0.0
+    eff_refresh_pct = (
+        raw_refresh_pct
+        if use_explicit_split
+        else (0.0 if explore_first else 100.0)
+    )
 
     own_colonies, _ = _extract_own_colonies_and_coords(
         own_coords,
@@ -4221,7 +4239,7 @@ def select_smart_galaxy_scan_batch(
         raid_targets=raid_targets,
         raid_stats=raid_stats,
         raid_history=raid_history,
-        explore_first=bool(explore_first),
+        explore_first=bool(explore_first or use_explicit_split),
         near_weight=near_weight,
         attack_weight=attack_weight,
         collect_colonies=collect_colonies,
@@ -4251,28 +4269,76 @@ def select_smart_galaxy_scan_batch(
     for cg, cs in own_colonies:
         primary_sys_by_gal.setdefault(cg, cs)
 
-    if explore_first and unscanned_systems > 0:
+    def _build_scanned_pool(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        pool = [dict(it, phase="targeted_refresh") for it in items if it["scanned"]]
+        pool.sort(
+            key=lambda it: (
+                0 if not it["is_fresh"] else 1,
+                -it["score"],
+                -it["importance"],
+                it["distance"],
+                it["galaxy"],
+                it["system"],
+            )
+        )
+        for it in pool:
+            if str(it.get("reason") or "").startswith("unscanned"):
+                it["reason"] = f"d={it['distance']}, age {_format_age_short(it['age_seconds'])}"
+        return pool
+
+    if use_explicit_split:
+        unscanned_pool = [dict(it, phase="exploratory") for it in ranked if not it["scanned"]]
+        scanned_pool = _build_scanned_pool(ranked)
+        target_ref = min(eff_batch, max(0, int(round(eff_batch * (eff_refresh_pct / 100.0)))))
+        target_exp = max(0, eff_batch - target_ref)
+        take_ref = list(scanned_pool[:target_ref])
+        take_exp = list(unscanned_pool[:target_exp])
+        if len(take_ref) < target_ref:
+            spill_exp = target_ref - len(take_ref)
+            take_exp.extend(unscanned_pool[len(take_exp) : len(take_exp) + spill_exp])
+        if len(take_exp) < target_exp:
+            spill_ref = target_exp - len(take_exp)
+            take_ref.extend(scanned_pool[len(take_ref) : len(take_ref) + spill_ref])
+
+        if smooth_walk and len(take_exp) > 1:
+            walk_exp = order_sectors_for_smooth_walk(
+                take_exp,
+                primary_colony_by_galaxy=primary_sys_by_gal,
+                systems_per_galaxy=n_sys,
+            )
+        else:
+            walk_exp = take_exp
+        if smooth_walk and len(take_ref) > 1:
+            walk_ref = order_sectors_for_smooth_walk(
+                take_ref,
+                primary_colony_by_galaxy=primary_sys_by_gal,
+                systems_per_galaxy=n_sys,
+            )
+        else:
+            walk_ref = take_ref
+
+        if walk_exp and walk_ref:
+            phase = "mixed"
+        elif walk_exp:
+            phase = "exploratory"
+        else:
+            phase = "targeted_refresh"
+
+        if eff_refresh_pct >= 100.0:
+            priority_selected = [*take_ref, *take_exp]
+            selected_sectors = [*walk_ref, *walk_exp]
+        else:
+            priority_selected = [*take_exp, *take_ref]
+            selected_sectors = [*walk_exp, *walk_ref]
+    elif explore_first and unscanned_systems > 0:
         phase = "exploratory"
         unscanned_pool = [dict(it, phase="exploratory") for it in ranked if not it["scanned"]]
         take_exp = unscanned_pool[:eff_batch]
         rem_budget = max(0, eff_batch - len(take_exp))
         take_ref: list[dict[str, Any]] = []
         if rem_budget > 0:
-            scanned_pool = [dict(it, phase="targeted_refresh") for it in ranked if it["scanned"]]
-            scanned_pool.sort(
-                key=lambda it: (
-                    0 if not it["is_fresh"] else 1,
-                    -it["score"],
-                    -it["importance"],
-                    it["distance"],
-                    it["galaxy"],
-                    it["system"],
-                )
-            )
-            for it in scanned_pool[:rem_budget]:
-                if it["reason"].startswith("unscanned"):
-                    it["reason"] = f"d={it['distance']}, age {_format_age_short(it['age_seconds'])}"
-                take_ref.append(it)
+            scanned_pool = _build_scanned_pool(ranked)
+            take_ref.extend(scanned_pool[:rem_budget])
         priority_selected = [*take_exp, *take_ref]
         if smooth_walk and len(take_exp) > 1:
             walk_exp = order_sectors_for_smooth_walk(
@@ -4345,6 +4411,8 @@ def select_smart_galaxy_scan_batch(
         "unscanned_systems": unscanned_systems,
         "total_systems": total_systems,
         "coverage_pct": coverage_pct,
+        "refresh_pct": round(eff_refresh_pct, 1),
+        "discovery_pct": round(100.0 - eff_refresh_pct, 1),
         "exploratory_count": len(walk_exp),
         "refresh_count": len(walk_ref),
         "selected_sectors": selected_sectors,

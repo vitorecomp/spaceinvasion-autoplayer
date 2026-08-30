@@ -57,6 +57,7 @@ from spaceinvasion.combat.fleet import (
     parse_inbox_messages_html,
     parse_spy_messages_html,
     plan_escape_flight,
+    score_galaxy_scan_sectors,
     select_smart_galaxy_scan_batch,
     simulate_raid_outcome,
 )
@@ -492,6 +493,7 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         "max_planets": (1, 50, False),
         "galaxy_sweep_interval_seconds": (30, 86400, False),
         "galaxy_sweep_pages": (1, 400, False),
+        "galaxy_scan_refresh_pct": (0, 100, False),
         "reserved_spy_slots": (0, 10, False),
         "hot_planet_solar_temp_threshold": (-273, 1000, False),
         "fleet_save_fuel_reserve_spice": (0, 1_000_000_000_000, False),
@@ -1898,6 +1900,10 @@ class GameApiBridge:
         "universe_explored_systems",
         "universe_total_systems",
         "universe_coverage_pct",
+        "refresh_pct",
+        "discovery_pct",
+        "exploratory_count",
+        "refresh_count",
         "scan_galaxies",
         "sample_targets",
     )
@@ -1953,6 +1959,7 @@ class GameApiBridge:
                 raid_stats=raid_stats if isinstance(raid_stats, Mapping) else None,
                 batch_size=max(1, min(400 * max(1, len(gal_list)), int(batch_size))),
                 explore_first=bool(getattr(cfg, "galaxy_scan_explore_first", True)),
+                refresh_pct=max(0, min(100, _safe_api_int(getattr(cfg, "galaxy_scan_refresh_pct", 0), 0))),
                 near_weight=max(0.0, min(20.0, _safe_api_float(getattr(cfg, "galaxy_scan_near_weight", 2.0), 2.0))),
                 attack_weight=max(0.0, min(20.0, _safe_api_float(getattr(cfg, "galaxy_scan_attack_weight", 3.0), 3.0))),
                 collect_colonies=bool(collect_colonies),
@@ -2014,6 +2021,16 @@ class GameApiBridge:
                 max(0.0, min(100.0, _safe_api_float(plan.get("universe_coverage_pct"), 0.0))),
                 2,
             ),
+            "refresh_pct": round(
+                max(0.0, min(100.0, _safe_api_float(plan.get("refresh_pct"), 0.0))),
+                1,
+            ),
+            "discovery_pct": round(
+                max(0.0, min(100.0, _safe_api_float(plan.get("discovery_pct"), 100.0))),
+                1,
+            ),
+            "exploratory_count": max(0, _safe_api_int(plan.get("exploratory_count"), 0)),
+            "refresh_count": max(0, _safe_api_int(plan.get("refresh_count"), 0)),
             "scan_galaxies": [
                 _safe_api_int(g, 1) for g in (plan.get("galaxies") or []) if _safe_api_int(g, 0) > 0
             ],
@@ -2056,6 +2073,10 @@ class GameApiBridge:
         st.setdefault("universe_explored_systems", summary.get("universe_explored_systems", 0))
         st.setdefault("universe_total_systems", summary.get("universe_total_systems", 5600))
         st.setdefault("universe_coverage_pct", summary.get("universe_coverage_pct", 0.0))
+        st.setdefault("refresh_pct", summary.get("refresh_pct", 0.0))
+        st.setdefault("discovery_pct", summary.get("discovery_pct", 100.0))
+        st.setdefault("exploratory_count", summary.get("exploratory_count", 0))
+        st.setdefault("refresh_count", summary.get("refresh_count", 0))
         st.setdefault("scan_galaxies", list(summary.get("scan_galaxies") or []))
         st.setdefault("sample_targets", [dict(s) for s in (summary.get("sample_targets") or [])])
         return st
@@ -6209,6 +6230,287 @@ class GameApiBridge:
                     )
                 )
 
+        if cmd == "scanned_sectors":
+            gal_filter = _parse_command_int(
+                "galaxy",
+                payload.get("galaxy"),
+                allow_none=True,
+                min_val=0,
+                max_val=14,
+            )
+            limit = _parse_command_int(
+                "limit",
+                payload.get("limit", 5600),
+                min_val=1,
+                max_val=5600,
+            ) or 5600
+            req_pid = _parse_command_int(
+                "planet_id",
+                payload.get("planet_id"),
+                allow_none=True,
+                min_val=1,
+                max_val=2**63 - 1,
+            )
+            with self._lock:
+                now_ts = time.time()
+                cfg = self.strategy_config
+                origin_coords = ""
+                if self._last_state is not None:
+                    orig_p = None
+                    if req_pid is not None:
+                        orig_p = next(
+                            (p for p in self._last_state.planets if p.planet_id == req_pid),
+                            None,
+                        )
+                    if orig_p is None:
+                        orig_p = self._last_state.active_planet()
+                    if orig_p is None and self._last_state.planets:
+                        orig_p = self._last_state.planets[0]
+                    if orig_p is not None and orig_p.coords:
+                        origin_coords = normalize_coords(orig_p.coords)
+                m_orig_sec = (
+                    re.fullmatch(r"(\d+):(\d+):(\d+)", origin_coords, re.ASCII)
+                    if origin_coords
+                    else None
+                )
+                orig_gs = (
+                    (int(m_orig_sec.group(1)), int(m_orig_sec.group(2)))
+                    if m_orig_sec
+                    else None
+                )
+
+                intel: Mapping[str, Any] = {}
+                get_intel = (
+                    getattr(self._db, "get_galaxy_sector_intel", None)
+                    if self._db is not None
+                    else None
+                )
+                if callable(get_intel):
+                    raw_intel = get_intel(galaxies=None, now_ts=now_ts)
+                    if isinstance(raw_intel, Mapping):
+                        intel = raw_intel
+
+                raw_sectors = intel.get("sectors")
+                sectors_map: Mapping[str, Any] = (
+                    raw_sectors if isinstance(raw_sectors, Mapping) else {}
+                )
+                scanned_gals_set: set[int] = set()
+                for sec_v in sectors_map.values():
+                    if not isinstance(sec_v, Mapping):
+                        continue
+                    if bool(sec_v.get("scanned")) or _safe_api_float(sec_v.get("last_scanned_ts"), 0.0) > 0.0:
+                        gi = _safe_api_int(sec_v.get("galaxy"), 0)
+                        if 1 <= gi <= 14:
+                            scanned_gals_set.add(gi)
+
+                galaxies_available = sorted(scanned_gals_set)
+                score_by_sector: dict[str, Mapping[str, Any]] = {}
+                if galaxies_available:
+                    allocated_normal = count_allocated_normal_planets(self._last_state)
+                    max_planets_cap = max(1, _safe_api_int(getattr(cfg, "max_planets", 11), 11))
+                    raid_stats = (
+                        getattr(self._last_state, "raid_stats", None)
+                        if self._last_state is not None
+                        else None
+                    )
+                    scored_rows = score_galaxy_scan_sectors(
+                        own_coords=self._own_sweep_coords_locked() or ([origin_coords] if origin_coords else ()),
+                        sector_intel=intel,
+                        galaxies=galaxies_available,
+                        scanned_systems=self._get_scanned_systems(),
+                        raid_targets=[r for r in (self._raid_targets or ()) if isinstance(r, Mapping)],
+                        raid_stats=raid_stats if isinstance(raid_stats, Mapping) else None,
+                        explore_first=False,
+                        near_weight=max(0.0, min(20.0, _safe_api_float(getattr(cfg, "galaxy_scan_near_weight", 2.0), 2.0))),
+                        attack_weight=max(0.0, min(20.0, _safe_api_float(getattr(cfg, "galaxy_scan_attack_weight", 3.0), 3.0))),
+                        collect_colonies=bool(allocated_normal < max_planets_cap),
+                        now_ts=now_ts,
+                    )
+                    for sc in scored_rows:
+                        skey_sc = str(sc.get("sector") or "")
+                        if skey_sc:
+                            score_by_sector[skey_sc] = sc
+
+                rows_out: list[dict[str, Any]] = []
+                total_scanned_all = 0
+                for skey, sec_raw in sectors_map.items():
+                    if not isinstance(sec_raw, Mapping):
+                        continue
+                    last_ts = _safe_api_float(sec_raw.get("last_scanned_ts"), 0.0)
+                    scan_cnt = max(0, _safe_api_int(sec_raw.get("scan_count"), 0))
+                    if last_ts <= 0.0 and not bool(sec_raw.get("scanned")):
+                        continue
+                    gal_i = _safe_api_int(sec_raw.get("galaxy"), 0)
+                    sys_i = _safe_api_int(sec_raw.get("system"), 0)
+                    if not (1 <= gal_i <= 14 and 1 <= sys_i <= 400):
+                        continue
+                    total_scanned_all += 1
+                    if gal_filter and gal_filter > 0 and gal_i != gal_filter:
+                        continue
+
+                    sc_info = score_by_sector.get(str(skey), {})
+                    age_s = (
+                        round(max(0.0, now_ts - last_ts), 1)
+                        if last_ts > 0.0
+                        else _safe_api_float(sec_raw.get("age_seconds"), 0.0)
+                    )
+                    occ_cnt = max(0, _safe_api_int(sec_raw.get("occupied_count"), 0))
+                    free_cnt = max(0, _safe_api_int(sec_raw.get("free_count"), 0))
+                    prime_cnt = max(0, _safe_api_int(sec_raw.get("prime_colony_free_count"), 0))
+                    inact_cnt = max(0, _safe_api_int(sec_raw.get("inactive_count"), 0))
+                    spacia_cnt = max(0, _safe_api_int(sec_raw.get("spacia_count"), 0))
+                    target_cnt = max(0, _safe_api_int(sec_raw.get("target_count"), inact_cnt + spacia_cnt))
+                    debris_cnt = max(0, _safe_api_int(sec_raw.get("debris_count"), 0))
+                    active_occ = max(0, occ_cnt - inact_cnt - spacia_cnt)
+
+                    if orig_gs is not None:
+                        g_diff = abs(orig_gs[0] - gal_i)
+                        s_diff = abs(orig_gs[1] - sys_i)
+                        sys_dist: Optional[int] = int(g_diff * 400 + s_diff)
+                        circ_dist: Optional[int] = (
+                            int(min(s_diff, 400 - s_diff)) if g_diff == 0 else int(g_diff * 400 + s_diff)
+                        )
+                    else:
+                        g_diff = None
+                        s_diff = None
+                        sys_dist = _safe_api_int(sc_info.get("distance"), -1) if sc_info else None
+                        if sys_dist is not None and sys_dist < 0:
+                            sys_dist = None
+                        circ_dist = sys_dist
+
+                    raw_freq = sec_raw.get("frequent_owners")
+                    freq_names: list[str] = []
+                    if isinstance(raw_freq, Sequence) and not isinstance(raw_freq, (str, bytes)):
+                        for fo in raw_freq[:3]:
+                            if isinstance(fo, Mapping) and fo.get("owner"):
+                                freq_names.append(f"{fo['owner']} ({_safe_api_int(fo.get('raid_count'), 0)})")
+                            elif isinstance(fo, str) and fo.strip():
+                                freq_names.append(fo.strip())
+
+                    rows_out.append(
+                        {
+                            "sector": f"{gal_i:02d}:{sys_i:03d}",
+                            "galaxy": gal_i,
+                            "system": sys_i,
+                            "occupied_count": occ_cnt,
+                            "max_slots": 16,
+                            "active_occupied_count": active_occ,
+                            "free_count": free_cnt,
+                            "prime_colony_free_count": prime_cnt,
+                            "debris_count": debris_cnt,
+                            "target_count": target_cnt,
+                            "inactive_count": inact_cnt,
+                            "spacia_count": spacia_cnt,
+                            "scan_count": max(1, scan_cnt) if last_ts > 0.0 else scan_cnt,
+                            "last_scanned_ts": round(last_ts, 3),
+                            "age_seconds": age_s,
+                            "system_distance": sys_dist,
+                            "circular_distance": circ_dist,
+                            "galaxy_delta": g_diff,
+                            "system_delta": s_diff,
+                            "direct_raid_count": max(0, _safe_api_int(sec_raw.get("direct_raid_count"), 0)),
+                            "direct_raid_24h_count": max(0, _safe_api_int(sec_raw.get("direct_raid_24h_count"), 0)),
+                            "direct_loot_spice_eq": round(
+                                max(0.0, _safe_api_float(sec_raw.get("direct_loot_spice_eq"), 0.0)), 1
+                            ),
+                            "owner_affinity_raid_count": max(
+                                0, _safe_api_int(sec_raw.get("owner_affinity_raid_count"), 0)
+                            ),
+                            "frequent_owners": freq_names,
+                            "score": round(_safe_api_float(sc_info.get("score"), 0.0), 2),
+                            "importance": round(_safe_api_float(sc_info.get("importance"), 0.0), 2),
+                            "reason": str(sc_info.get("reason") or ""),
+                        }
+                    )
+
+                rows_out.sort(
+                    key=lambda r: (
+                        -float(r["last_scanned_ts"]),
+                        r["system_distance"] if r["system_distance"] is not None else 10**9,
+                        int(r["galaxy"]),
+                        int(r["system"]),
+                    )
+                )
+
+                self._refresh_smart_sweep_summary_locked(now_ts=now_ts, force=False)
+                sweep_summary = self._merge_smart_sweep_summary_locked(self._get_galaxy_sweep_state_locked())
+
+                sweep_pages = max(1, min(400, _safe_api_int(getattr(cfg, "galaxy_sweep_pages", 100), 100)))
+                refresh_pct_cfg = max(0, min(100, _safe_api_int(getattr(cfg, "galaxy_scan_refresh_pct", 0), 0)))
+                explore_first_cfg = bool(getattr(cfg, "galaxy_scan_explore_first", True))
+                eff_refresh_pct = refresh_pct_cfg if refresh_pct_cfg > 0 else (0 if explore_first_cfg else 100)
+                planned_refresh_pages = int(round(sweep_pages * (eff_refresh_pct / 100.0)))
+                planned_discovery_pages = max(0, sweep_pages - planned_refresh_pages)
+
+                total_occ = sum(int(r["occupied_count"]) for r in rows_out)
+                total_free = sum(int(r["free_count"]) for r in rows_out)
+                total_prime = sum(int(r["prime_colony_free_count"]) for r in rows_out)
+                total_debris = sum(int(r["debris_count"]) for r in rows_out)
+                sectors_with_debris = sum(1 for r in rows_out if int(r["debris_count"]) > 0)
+                total_targets = sum(int(r["target_count"]) for r in rows_out)
+                total_spacia = sum(int(r["spacia_count"]) for r in rows_out)
+                total_inactives = sum(int(r["inactive_count"]) for r in rows_out)
+                stale_1h = sum(1 for r in rows_out if float(r["age_seconds"]) >= 3600.0)
+                total_raids = sum(int(r["direct_raid_count"]) for r in rows_out)
+
+                uni_exp = max(
+                    total_scanned_all,
+                    _safe_api_int(intel.get("universe_explored_systems"), sweep_summary.get("universe_explored_systems", 0)),
+                )
+                uni_tot = max(1, _safe_api_int(intel.get("universe_total_systems"), 5600))
+                uni_cov = round(min(100.0, (uni_exp / uni_tot) * 100.0), 2)
+
+                summary_out = {
+                    "scanned_sectors": len(rows_out),
+                    "total_scanned_all_galaxies": total_scanned_all,
+                    "explored_systems": _safe_api_int(sweep_summary.get("explored_systems"), total_scanned_all),
+                    "unscanned_systems": _safe_api_int(sweep_summary.get("unscanned_systems"), 0),
+                    "total_systems": _safe_api_int(sweep_summary.get("total_systems"), 400),
+                    "coverage_pct": round(_safe_api_float(sweep_summary.get("coverage_pct"), 0.0), 2),
+                    "universe_explored_systems": uni_exp,
+                    "universe_total_systems": uni_tot,
+                    "universe_coverage_pct": uni_cov,
+                    "total_occupied": total_occ,
+                    "avg_occupied": round(total_occ / len(rows_out), 1) if rows_out else 0.0,
+                    "total_free": total_free,
+                    "total_prime_free": total_prime,
+                    "total_debris_fields": total_debris,
+                    "sectors_with_debris": sectors_with_debris,
+                    "total_targets": total_targets,
+                    "total_spacia": total_spacia,
+                    "total_inactives": total_inactives,
+                    "stale_over_1h_count": stale_1h,
+                    "total_raids": total_raids,
+                    "sweep_pages": sweep_pages,
+                    "sweep_interval_seconds": _safe_api_int(getattr(cfg, "galaxy_sweep_interval_seconds", 270), 270),
+                    "allow_galaxy_scan": bool(getattr(cfg, "allow_galaxy_scan", False)),
+                    "explore_first": explore_first_cfg,
+                    "refresh_pct": refresh_pct_cfg,
+                    "discovery_pct": 100 - refresh_pct_cfg,
+                    "effective_refresh_pct": eff_refresh_pct,
+                    "effective_discovery_pct": 100 - eff_refresh_pct,
+                    "planned_refresh_pages": planned_refresh_pages,
+                    "planned_discovery_pages": planned_discovery_pages,
+                    "next_batch_refresh_count": _safe_api_int(sweep_summary.get("refresh_count"), planned_refresh_pages),
+                    "next_batch_discovery_count": _safe_api_int(
+                        sweep_summary.get("exploratory_count"), planned_discovery_pages
+                    ),
+                    "scan_phase": str(sweep_summary.get("scan_phase") or "exploratory"),
+                }
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "origin_coords": origin_coords,
+                            "galaxy_filter": gal_filter or 0,
+                            "galaxies_available": galaxies_available,
+                            "summary": summary_out,
+                            "sectors": rows_out[: int(limit)],
+                        }
+                    )
+                )
+
         if cmd == "colony_candidates":
             limit = _parse_command_int(
                 "limit",
@@ -6647,6 +6949,17 @@ class GameApiBridge:
                     if callable(save_cfg_fn):
                         save_cfg_fn(asdict(new_cfg))
                 self._invalidate_dashboard_cache()
+                if any(
+                    getattr(new_cfg, k, None) != getattr(prev_cfg, k, None)
+                    for k in (
+                        "galaxy_sweep_pages",
+                        "galaxy_scan_explore_first",
+                        "galaxy_scan_refresh_pct",
+                        "galaxy_scan_near_weight",
+                        "galaxy_scan_attack_weight",
+                    )
+                ):
+                    self._smart_sweep_summary_ts = 0.0
                 ga_params_changed = any(
                     getattr(new_cfg, k) != getattr(prev_cfg, k)
                     for k in (

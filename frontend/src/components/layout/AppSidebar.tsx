@@ -14,6 +14,7 @@ export const AppSidebar: React.FC = () => {
     setSelectedPlanetId,
     uiPrefs,
     setUiPref,
+    sectorsData,
     espData,
     colonyData,
     atkData,
@@ -87,6 +88,19 @@ export const AppSidebar: React.FC = () => {
   const isGaNn = cfgMode === "ga_nn";
 
   const counts = dashboard?.db_summary?.counts || {};
+  const secCnt = Math.max(
+    0,
+    Math.round(
+      safeFiniteNumber(
+        sectorsData?.summary?.total_scanned_all_galaxies ??
+          dashboard?.galaxy_sweep?.universe_explored_systems ??
+          dashboard?.galaxy_sweep?.explored_systems ??
+          counts.galaxy_scans ??
+          0,
+        0
+      ) ?? 0
+    )
+  );
   const spyCnt = Math.max(
     0,
     Math.round(
@@ -232,6 +246,7 @@ export const AppSidebar: React.FC = () => {
     { page: "dashboard", code: "DSH", title: "Dashboard" },
     { page: "buildings", code: "BLD", title: "Buildings & ETAs", badgeId: "nav-bld-badge", badgeText: "21" },
     { page: "combat", code: "CMB", title: "Combat & Fleet", badgeId: "nav-cmb-badge", badgeText: "1:1" },
+    { page: "sectors", code: "SEC", title: "Scanned Sectors", badgeId: "nav-sec-badge", badgeText: String(secCnt) },
     { page: "espionage", code: "SPY", title: "Espionage Intel", badgeId: "nav-spy-badge", badgeText: String(spyCnt) },
     { page: "colonies", code: "COL", title: "Possible Colonies", badgeId: "nav-col-badge", badgeText: String(colCnt) },
     { page: "attacks", code: "ATK", title: "Attack Results", badgeId: "nav-atk-badge", badgeText: String(atkCnt) },

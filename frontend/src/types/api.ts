@@ -2,6 +2,7 @@ export type PageKey =
   | "dashboard"
   | "buildings"
   | "combat"
+  | "sectors"
   | "espionage"
   | "colonies"
   | "attacks"
@@ -16,6 +17,7 @@ export const PAGE_TITLES: Record<PageKey, string> = {
   dashboard: "DASHBOARD // OVERVIEW",
   buildings: "BUILDINGS // LEVEL ETAS",
   combat: "COMBAT & FLEET // 1:1 SIM",
+  sectors: "GALAXY // SCANNED SECTORS",
   espionage: "ESPIONAGE // INTEL & ARCHIVE",
   colonies: "COLONIES // 300+ GRADING",
   attacks: "COMBAT // ATTACK RESULTS",
@@ -131,6 +133,7 @@ export interface StrategyConfigData {
   galaxy_scan_click_delay_seconds?: number;
   galaxy_scan_click_jitter_seconds?: number;
   galaxy_scan_explore_first?: boolean;
+  galaxy_scan_refresh_pct?: number;
   galaxy_scan_near_weight?: number;
   galaxy_scan_attack_weight?: number;
   reserved_spy_slots?: number;
@@ -229,6 +232,85 @@ export interface UniverseResearchMaxRow {
   [key: string]: any;
 }
 
+export interface ScannedSectorItem {
+  sector: string;
+  galaxy: number;
+  system: number;
+  occupied_count: number;
+  max_slots?: number;
+  active_occupied_count?: number;
+  free_count: number;
+  prime_colony_free_count: number;
+  debris_count: number;
+  target_count: number;
+  inactive_count: number;
+  spacia_count: number;
+  scan_count: number;
+  last_scanned_ts: number;
+  age_seconds: number | null;
+  system_distance: number | null;
+  circular_distance?: number | null;
+  galaxy_delta: number | null;
+  system_delta: number | null;
+  direct_raid_count: number;
+  direct_raid_24h_count?: number;
+  direct_loot_spice_eq?: number;
+  owner_affinity_raid_count: number;
+  frequent_owners?: string[];
+  score: number;
+  importance?: number;
+  reason?: string;
+  [key: string]: any;
+}
+
+export interface ScannedSectorsSummary {
+  scanned_sectors?: number;
+  total_scanned_all_galaxies?: number;
+  explored_systems?: number;
+  unscanned_systems?: number;
+  total_systems?: number;
+  coverage_pct?: number;
+  universe_explored_systems?: number;
+  universe_total_systems?: number;
+  universe_coverage_pct?: number;
+  total_occupied?: number;
+  avg_occupied?: number;
+  total_free?: number;
+  total_prime_free?: number;
+  total_debris_fields?: number;
+  sectors_with_debris?: number;
+  total_targets?: number;
+  total_spacia?: number;
+  total_inactives?: number;
+  stale_over_1h_count?: number;
+  total_raids?: number;
+  sweep_pages?: number;
+  sweep_interval_seconds?: number;
+  allow_galaxy_scan?: boolean;
+  explore_first?: boolean;
+  refresh_pct?: number;
+  discovery_pct?: number;
+  effective_refresh_pct?: number;
+  effective_discovery_pct?: number;
+  planned_refresh_pages?: number;
+  planned_discovery_pages?: number;
+  next_batch_refresh_count?: number;
+  next_batch_discovery_count?: number;
+  scan_phase?: string;
+  [key: string]: any;
+}
+
+export interface ScannedSectorsPayload {
+  ok?: boolean;
+  command?: string;
+  origin_coords?: string;
+  galaxy_filter?: number;
+  galaxies_available?: number[];
+  summary?: ScannedSectorsSummary;
+  sectors?: ScannedSectorItem[];
+  [key: string]: any;
+}
+
 export interface DashboardPayload {
   ok?: boolean;
   code_version?: string | null;
@@ -305,6 +387,10 @@ export interface DashboardPayload {
     universe_explored_systems?: number;
     universe_total_systems?: number;
     universe_coverage_pct?: number;
+    refresh_pct?: number;
+    discovery_pct?: number;
+    exploratory_count?: number;
+    refresh_count?: number;
     scan_galaxies?: number[];
     in_progress?: boolean;
     [key: string]: any;

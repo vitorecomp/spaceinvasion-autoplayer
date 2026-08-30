@@ -41,6 +41,8 @@ export interface UiPrefs {
   activeLogSource: "commander" | "game_api" | "sqlite" | string;
   agEdgeFilter: "all" | "deps";
   agParamTab: "core" | "scope";
+  sectorFilter: string;
+  sectorGalaxy: number;
   espTab: "targets" | "reports";
   colonyFilter: string;
   atkTab: "battles" | "blocks";
@@ -60,6 +62,8 @@ const DEFAULT_UI_PREFS: UiPrefs = {
   activeLogSource: "commander",
   agEdgeFilter: "all",
   agParamTab: "core",
+  sectorFilter: "all",
+  sectorGalaxy: 0,
   espTab: "targets",
   colonyFilter: "all",
   atkTab: "battles",
@@ -101,6 +105,9 @@ export interface LegacyWindowState {
   agParamTab: "core" | "scope";
   agSelectedNodeId: string | null;
   agSuppressNodeClick: boolean;
+  sectorFilter: string;
+  sectorGalaxy: number;
+  sectorsData: Record<string, any> | null;
   espTab: string;
   espData: Record<string, any> | null;
   colonyFilter: string;
@@ -148,6 +155,9 @@ function createInitialLegacyWindowState(): LegacyWindowState {
     agParamTab: "core",
     agSelectedNodeId: null,
     agSuppressNodeClick: false,
+    sectorFilter: "all",
+    sectorGalaxy: 0,
+    sectorsData: null,
     espTab: "targets",
     espData: null,
     colonyFilter: "all",
@@ -401,6 +411,9 @@ export interface ConsoleContextValue {
   combatData: Record<string, any> | null;
   setCombatData: (data: Record<string, any> | null) => void;
   refreshCombatForSelectedPlanet: (opts?: { refresh?: boolean }) => Promise<boolean>;
+  sectorsData: Record<string, any> | null;
+  setSectorsData: (data: Record<string, any> | null) => void;
+  refreshSectorsView: (galaxyOverride?: number) => Promise<void>;
   espData: Record<string, any> | null;
   setEspData: (data: Record<string, any> | null) => void;
   refreshEspionageView: () => Promise<void>;
@@ -519,6 +532,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
 
   const [buildingsEtaData, setBuildingsEtaDataState] = useState<Record<string, any> | null>(null);
   const [combatData, setCombatDataState] = useState<Record<string, any> | null>(null);
+  const [sectorsData, setSectorsDataState] = useState<Record<string, any> | null>(null);
   const [espData, setEspDataState] = useState<Record<string, any> | null>(null);
   const [colonyData, setColonyDataState] = useState<Record<string, any> | null>(null);
   const [atkData, setAtkDataState] = useState<Record<string, any> | null>(null);
@@ -572,6 +586,8 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   sharedLegacyState.activeLogSource = uiPrefs.activeLogSource;
   sharedLegacyState.agEdgeFilter = uiPrefs.agEdgeFilter;
   sharedLegacyState.agParamTab = uiPrefs.agParamTab;
+  sharedLegacyState.sectorFilter = uiPrefs.sectorFilter;
+  sharedLegacyState.sectorGalaxy = uiPrefs.sectorGalaxy;
   sharedLegacyState.espTab = uiPrefs.espTab;
   sharedLegacyState.colonyFilter = uiPrefs.colonyFilter;
   sharedLegacyState.atkTab = uiPrefs.atkTab;
@@ -580,6 +596,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   sharedLegacyState.notifFilter = uiPrefs.notifFilter;
   sharedLegacyState.buildingsEtaData = buildingsEtaData;
   sharedLegacyState.combatData = combatData;
+  sharedLegacyState.sectorsData = sectorsData;
   sharedLegacyState.espData = espData;
   sharedLegacyState.colonyData = colonyData;
   sharedLegacyState.atkData = atkData;
@@ -751,6 +768,11 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
     setCombatDataState(data);
   }, []);
 
+  const setSectorsData = useCallback((data: Record<string, any> | null) => {
+    sharedLegacyState.sectorsData = data;
+    setSectorsDataState(data);
+  }, []);
+
   const setEspData = useCallback((data: Record<string, any> | null) => {
     sharedLegacyState.espData = data;
     setEspDataState(data);
@@ -883,6 +905,32 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
     [setCombatData, showFeedback]
   );
 
+  const refreshSectorsView = useCallback(
+    async (galaxyOverride?: number) => {
+      try {
+        const gal =
+          galaxyOverride !== undefined
+            ? galaxyOverride
+            : Math.max(0, Math.round(safeFiniteNumber(sharedLegacyState.sectorGalaxy, 0) ?? 0));
+        const planet = selectActivePlanet(
+          sharedLegacyState.dashboard,
+          sharedLegacyState.selectedPlanetId
+        );
+        const payload: Record<string, any> = {
+          command: "scanned_sectors",
+          limit: 5600,
+        };
+        if (gal > 0) payload.galaxy = gal;
+        if (planet?.planet_id) payload.planet_id = planet.planet_id;
+        const data = await rawApiCommand(payload);
+        setSectorsData(data);
+      } catch (err: any) {
+        showFeedback(`Scanned sectors load failed: ${err.message}`, feedbackKindForError(err));
+      }
+    },
+    [setSectorsData, showFeedback]
+  );
+
   const refreshEspionageView = useCallback(async () => {
     try {
       const data = await rawApiCommand({ command: "espionage_intel", limit: 200 });
@@ -994,7 +1042,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         }
 
         const curPage = sharedLegacyState.activePage;
-        if (curPage === "espionage") {
+        if (curPage === "sectors") {
+          refreshSectorsView();
+        } else if (curPage === "espionage") {
           refreshEspionageView();
         } else if (curPage === "colonies") {
           refreshColoniesView();
@@ -1045,6 +1095,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       refreshColoniesView,
       refreshEspionageView,
       refreshRecyclersView,
+      refreshSectorsView,
       setActionGraphData,
       setApiStatus,
       setBuildingsEtaData,
@@ -1095,6 +1146,8 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         refreshBuildingsEtaForSelectedPlanet();
       } else if (target === "combat") {
         refreshCombatForSelectedPlanet({ refresh: false });
+      } else if (target === "sectors") {
+        refreshSectorsView();
       } else if (target === "espionage") {
         refreshEspionageView();
       } else if (target === "colonies") {
@@ -1121,6 +1174,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       refreshCombatForSelectedPlanet,
       refreshEspionageView,
       refreshRecyclersView,
+      refreshSectorsView,
       setActionGraphData,
     ]
   );
@@ -1136,6 +1190,8 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         refreshBuildingsEtaForSelectedPlanet();
         if (sharedLegacyState.activePage === "combat") {
           refreshCombatForSelectedPlanet({ refresh: false });
+        } else if (sharedLegacyState.activePage === "sectors") {
+          refreshSectorsView();
         } else if (sharedLegacyState.activePage === "colonies") {
           refreshColoniesView();
         }
@@ -1146,6 +1202,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       refreshBuildingsEtaForSelectedPlanet,
       refreshColoniesView,
       refreshCombatForSelectedPlanet,
+      refreshSectorsView,
     ]
   );
 
@@ -1460,6 +1517,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       combatData,
       setCombatData,
       refreshCombatForSelectedPlanet,
+      sectorsData,
+      setSectorsData,
+      refreshSectorsView,
       espData,
       setEspData,
       refreshEspionageView,
@@ -1543,6 +1603,8 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       refreshEspionageView,
       refreshNotificationCenter,
       refreshRecyclersView,
+      refreshSectorsView,
+      sectorsData,
       selectedPlanetId,
       setActionGraphData,
       setActivePage,
@@ -1555,6 +1617,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       setEspData,
       setLastOptimizerSummary,
       setRecData,
+      setSectorsData,
       setSelectedPlanetId,
       setUiPref,
       showFeedback,

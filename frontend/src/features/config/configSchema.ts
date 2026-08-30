@@ -304,6 +304,19 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
         defaultValue: true,
       },
       {
+        key: "galaxy_scan_refresh_pct",
+        id: "cfg-galaxy_scan_refresh_pct",
+        title: "Smart Scan Refresh vs Discovery Split (%)",
+        boundsLabel: "default: 0% · 0–100%",
+        description:
+          "Percentage of each galaxy sweep batch allocated to refreshing already-scanned sectors (by proximity, raid affinity, debris/targets, and staleness), while the remaining (100 − refresh)% discovers never-scanned systems. Set 0% for pure discovery first, 100% for refresh-only, or an intermediate split (for example 30% refresh / 70% discovery) to keep nearby farm sectors fresh while expanding universe coverage. Unused quota spills automatically to the other pool. Accepts integers from 0 to 100.",
+        control: "number",
+        defaultValue: 0,
+        min: 0,
+        max: 100,
+        step: 5,
+      },
+      {
         key: "galaxy_scan_near_weight",
         id: "cfg-galaxy_scan_near_weight",
         title: "Smart Scan Phase 2: Near-Sector Proximity Weight",

@@ -7410,6 +7410,7 @@
     dashboard: "DASHBOARD // OVERVIEW",
     buildings: "BUILDINGS // LEVEL ETAS",
     combat: "COMBAT & FLEET // 1:1 SIM",
+    sectors: "GALAXY // SCANNED SECTORS",
     espionage: "ESPIONAGE // INTEL & ARCHIVE",
     colonies: "COLONIES // 300+ GRADING",
     attacks: "COMBAT // ATTACK RESULTS",
@@ -7431,6 +7432,8 @@
     activeLogSource: "commander",
     agEdgeFilter: "all",
     agParamTab: "core",
+    sectorFilter: "all",
+    sectorGalaxy: 0,
     espTab: "targets",
     colonyFilter: "all",
     atkTab: "battles",
@@ -7471,6 +7474,9 @@
       agParamTab: "core",
       agSelectedNodeId: null,
       agSuppressNodeClick: false,
+      sectorFilter: "all",
+      sectorGalaxy: 0,
+      sectorsData: null,
       espTab: "targets",
       espData: null,
       colonyFilter: "all",
@@ -7718,6 +7724,7 @@
     const [uiPrefs, setUiPrefs] = reactExports.useState(initial.prefs);
     const [buildingsEtaData, setBuildingsEtaDataState] = reactExports.useState(null);
     const [combatData, setCombatDataState] = reactExports.useState(null);
+    const [sectorsData, setSectorsDataState] = reactExports.useState(null);
     const [espData, setEspDataState] = reactExports.useState(null);
     const [colonyData, setColonyDataState] = reactExports.useState(null);
     const [atkData, setAtkDataState] = reactExports.useState(null);
@@ -7762,6 +7769,8 @@
     sharedLegacyState.activeLogSource = uiPrefs.activeLogSource;
     sharedLegacyState.agEdgeFilter = uiPrefs.agEdgeFilter;
     sharedLegacyState.agParamTab = uiPrefs.agParamTab;
+    sharedLegacyState.sectorFilter = uiPrefs.sectorFilter;
+    sharedLegacyState.sectorGalaxy = uiPrefs.sectorGalaxy;
     sharedLegacyState.espTab = uiPrefs.espTab;
     sharedLegacyState.colonyFilter = uiPrefs.colonyFilter;
     sharedLegacyState.atkTab = uiPrefs.atkTab;
@@ -7770,6 +7779,7 @@
     sharedLegacyState.notifFilter = uiPrefs.notifFilter;
     sharedLegacyState.buildingsEtaData = buildingsEtaData;
     sharedLegacyState.combatData = combatData;
+    sharedLegacyState.sectorsData = sectorsData;
     sharedLegacyState.espData = espData;
     sharedLegacyState.colonyData = colonyData;
     sharedLegacyState.atkData = atkData;
@@ -7925,6 +7935,10 @@
       sharedLegacyState.combatData = data;
       setCombatDataState(data);
     }, []);
+    const setSectorsData = reactExports.useCallback((data) => {
+      sharedLegacyState.sectorsData = data;
+      setSectorsDataState(data);
+    }, []);
     const setEspData = reactExports.useCallback((data) => {
       sharedLegacyState.espData = data;
       setEspDataState(data);
@@ -8043,6 +8057,28 @@
       },
       [setCombatData, showFeedback]
     );
+    const refreshSectorsView = reactExports.useCallback(
+      async (galaxyOverride) => {
+        try {
+          const gal = galaxyOverride !== void 0 ? galaxyOverride : Math.max(0, Math.round(safeFiniteNumber(sharedLegacyState.sectorGalaxy, 0) ?? 0));
+          const planet = selectActivePlanet(
+            sharedLegacyState.dashboard,
+            sharedLegacyState.selectedPlanetId
+          );
+          const payload = {
+            command: "scanned_sectors",
+            limit: 5600
+          };
+          if (gal > 0) payload.galaxy = gal;
+          if (planet == null ? void 0 : planet.planet_id) payload.planet_id = planet.planet_id;
+          const data = await apiCommand(payload);
+          setSectorsData(data);
+        } catch (err) {
+          showFeedback(`Scanned sectors load failed: ${err.message}`, feedbackKindForError(err));
+        }
+      },
+      [setSectorsData, showFeedback]
+    );
     const refreshEspionageView = reactExports.useCallback(async () => {
       try {
         const data = await apiCommand({ command: "espionage_intel", limit: 200 });
@@ -8131,7 +8167,9 @@
             syncNotificationsPayload(nextDash.notifications);
           }
           const curPage = sharedLegacyState.activePage;
-          if (curPage === "espionage") {
+          if (curPage === "sectors") {
+            refreshSectorsView();
+          } else if (curPage === "espionage") {
             refreshEspionageView();
           } else if (curPage === "colonies") {
             refreshColoniesView();
@@ -8175,6 +8213,7 @@
         refreshColoniesView,
         refreshEspionageView,
         refreshRecyclersView,
+        refreshSectorsView,
         setActionGraphData,
         setApiStatus,
         setBuildingsEtaData,
@@ -8221,6 +8260,8 @@
           refreshBuildingsEtaForSelectedPlanet();
         } else if (target === "combat") {
           refreshCombatForSelectedPlanet({ refresh: false });
+        } else if (target === "sectors") {
+          refreshSectorsView();
         } else if (target === "espionage") {
           refreshEspionageView();
         } else if (target === "colonies") {
@@ -8247,6 +8288,7 @@
         refreshCombatForSelectedPlanet,
         refreshEspionageView,
         refreshRecyclersView,
+        refreshSectorsView,
         setActionGraphData
       ]
     );
@@ -8261,6 +8303,8 @@
           refreshBuildingsEtaForSelectedPlanet();
           if (sharedLegacyState.activePage === "combat") {
             refreshCombatForSelectedPlanet({ refresh: false });
+          } else if (sharedLegacyState.activePage === "sectors") {
+            refreshSectorsView();
           } else if (sharedLegacyState.activePage === "colonies") {
             refreshColoniesView();
           }
@@ -8270,7 +8314,8 @@
         persistUiPrefs,
         refreshBuildingsEtaForSelectedPlanet,
         refreshColoniesView,
-        refreshCombatForSelectedPlanet
+        refreshCombatForSelectedPlanet,
+        refreshSectorsView
       ]
     );
     const setUiPref = reactExports.useCallback(
@@ -8556,6 +8601,9 @@
         combatData,
         setCombatData,
         refreshCombatForSelectedPlanet,
+        sectorsData,
+        setSectorsData,
+        refreshSectorsView,
         espData,
         setEspData,
         refreshEspionageView,
@@ -8639,6 +8687,8 @@
         refreshEspionageView,
         refreshNotificationCenter,
         refreshRecyclersView,
+        refreshSectorsView,
+        sectorsData,
         selectedPlanetId,
         setActionGraphData,
         setActivePage,
@@ -8651,6 +8701,7 @@
         setEspData,
         setLastOptimizerSummary,
         setRecData,
+        setSectorsData,
         setSelectedPlanetId,
         setUiPref,
         showFeedback,
@@ -8842,7 +8893,7 @@
     ] });
   };
   const AppSidebar = () => {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
     const {
       dashboard,
       apiOnline,
@@ -8853,6 +8904,7 @@
       setSelectedPlanetId,
       uiPrefs,
       setUiPref,
+      sectorsData,
       espData,
       colonyData,
       atkData,
@@ -8891,11 +8943,20 @@
     ).toLowerCase();
     const isGaNn = cfgMode === "ga_nn";
     const counts = ((_c = dashboard == null ? void 0 : dashboard.db_summary) == null ? void 0 : _c.counts) || {};
+    const secCnt = Math.max(
+      0,
+      Math.round(
+        safeFiniteNumber(
+          ((_d = sectorsData == null ? void 0 : sectorsData.summary) == null ? void 0 : _d.total_scanned_all_galaxies) ?? ((_e = dashboard == null ? void 0 : dashboard.galaxy_sweep) == null ? void 0 : _e.universe_explored_systems) ?? ((_f = dashboard == null ? void 0 : dashboard.galaxy_sweep) == null ? void 0 : _f.explored_systems) ?? counts.galaxy_scans ?? 0,
+          0
+        ) ?? 0
+      )
+    );
     const spyCnt = Math.max(
       0,
       Math.round(
         safeFiniteNumber(
-          ((_d = espData == null ? void 0 : espData.summary) == null ? void 0 : _d.spied_targets) ?? counts.spy_reports ?? counts.spy_targets ?? 0,
+          ((_g = espData == null ? void 0 : espData.summary) == null ? void 0 : _g.spied_targets) ?? counts.spy_reports ?? counts.spy_targets ?? 0,
           0
         ) ?? 0
       )
@@ -8912,19 +8973,19 @@
     const atkCnt = Math.max(
       0,
       Math.round(
-        safeFiniteNumber(((_e = atkData == null ? void 0 : atkData.summary) == null ? void 0 : _e.total_battles) ?? counts.battle_reports ?? 0, 0) ?? 0
+        safeFiniteNumber(((_h = atkData == null ? void 0 : atkData.summary) == null ? void 0 : _h.total_battles) ?? counts.battle_reports ?? 0, 0) ?? 0
       )
     );
     const recCnt = Math.max(
       0,
       Math.round(
-        safeFiniteNumber(((_f = recData == null ? void 0 : recData.summary) == null ? void 0 : _f.total_runs) ?? counts.recycle_reports ?? 0, 0) ?? 0
+        safeFiniteNumber(((_i = recData == null ? void 0 : recData.summary) == null ? void 0 : _i.total_runs) ?? counts.recycle_reports ?? 0, 0) ?? 0
       )
     );
     const planCount = Array.isArray(dashboard == null ? void 0 : dashboard.plan) ? dashboard.plan.length : 0;
-    const rnkCur = ((_g = dashboard == null ? void 0 : dashboard.ranking) == null ? void 0 : _g.current) || {};
+    const rnkCur = ((_j = dashboard == null ? void 0 : dashboard.ranking) == null ? void 0 : _j.current) || {};
     const srvRank = safeFiniteNumber(rnkCur.server_rank, null);
-    const rankBadgeTxt = rnkCur.server_rank != null ? srvRank !== null ? `#${srvRank}` : "#—" : ((_h = rnkCur.attack_zone) == null ? void 0 : _h.label) || "#—";
+    const rankBadgeTxt = rnkCur.server_rank != null ? srvRank !== null ? `#${srvRank}` : "#—" : ((_k = rnkCur.attack_zone) == null ? void 0 : _k.label) || "#—";
     const onSync = async () => {
       var _a2, _b2, _c2, _d2;
       if ((_a2 = dashboard == null ? void 0 : dashboard.bot_control) == null ? void 0 : _a2.captcha_blocked) {
@@ -9023,6 +9084,7 @@
       { page: "dashboard", code: "DSH", title: "Dashboard" },
       { page: "buildings", code: "BLD", title: "Buildings & ETAs", badgeId: "nav-bld-badge", badgeText: "21" },
       { page: "combat", code: "CMB", title: "Combat & Fleet", badgeId: "nav-cmb-badge", badgeText: "1:1" },
+      { page: "sectors", code: "SEC", title: "Scanned Sectors", badgeId: "nav-sec-badge", badgeText: String(secCnt) },
       { page: "espionage", code: "SPY", title: "Espionage Intel", badgeId: "nav-spy-badge", badgeText: String(spyCnt) },
       { page: "colonies", code: "COL", title: "Possible Colonies", badgeId: "nav-col-badge", badgeText: String(colCnt) },
       { page: "attacks", code: "ATK", title: "Attack Results", badgeId: "nav-atk-badge", badgeText: String(atkCnt) },
@@ -15644,6 +15706,586 @@
       }
     );
   };
+  function formatShortAge(ageSeconds) {
+    const sec = finiteNum(ageSeconds, null);
+    if (sec === null || sec < 0) return "—";
+    const s = Math.round(sec);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    const remM = m % 60;
+    if (h < 24) return remM > 0 ? `${h}h ${remM}m ago` : `${h}h ago`;
+    const d = Math.floor(h / 24);
+    const remH = h % 24;
+    return remH > 0 ? `${d}d ${remH}h ago` : `${d}d ago`;
+  }
+  function formatSectorDistance(row) {
+    const sysDist = finiteNum(row.system_distance, null);
+    const gDiff = finiteNum(row.galaxy_delta, null);
+    const sDiff = finiteNum(row.system_delta, null);
+    const circ = finiteNum(row.circular_distance, null);
+    if (sysDist === null && gDiff === null && sDiff === null) {
+      return { label: "—", title: "Distance unavailable (no active origin colony)" };
+    }
+    const gInt = Math.max(0, Math.round(gDiff ?? 0));
+    const sInt = Math.max(0, Math.round(sDiff ?? Math.max(0, (sysDist ?? 0) - gInt * 400)));
+    if (gInt === 0 && sInt === 0) {
+      return { label: "Same sys", title: "Same solar system as active colony" };
+    }
+    if (gInt === 0) {
+      const circNote = circ !== null && circ !== sInt ? ` (wrap ${Math.round(circ)} sys)` : "";
+      return {
+        label: `${fmtInt(sInt)} sys`,
+        title: `Same galaxy · ${fmtInt(sInt)} systems away${circNote}`
+      };
+    }
+    return {
+      label: `${gInt}G · ${fmtInt(sInt)} sys`,
+      title: `${gInt} galaxy jump(s), ${fmtInt(sInt)} systems delta`
+    };
+  }
+  const SectorsView = ({ hidden }) => {
+    var _a, _b, _c;
+    const {
+      dashboard,
+      activePage,
+      activePlanet,
+      sectorsData,
+      refreshSectorsView,
+      showFeedback,
+      apiCommand: apiCommand2,
+      loadDashboard,
+      uiPrefs,
+      setUiPref
+    } = useConsole();
+    const isHidden = hidden ?? activePage !== "sectors";
+    const statusFilter = uiPrefs.sectorFilter || "all";
+    const galaxyFilter = Math.max(0, Math.round(finiteNum(uiPrefs.sectorGalaxy, 0)));
+    const summary = (sectorsData == null ? void 0 : sectorsData.summary) && typeof sectorsData.summary === "object" ? sectorsData.summary : {};
+    const [refreshPctInput, setRefreshPctInput] = reactExports.useState("0");
+    const [sweepPagesInput, setSweepPagesInput] = reactExports.useState("100");
+    const [savingSplit, setSavingSplit] = reactExports.useState(false);
+    const [sweeping, setSweeping] = reactExports.useState(false);
+    const [refreshingSector, setRefreshingSector] = reactExports.useState(null);
+    const cfgRefreshPct = summary.effective_refresh_pct ?? ((_a = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a.galaxy_scan_refresh_pct) ?? (((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.galaxy_scan_explore_first) === false ? 100 : 0);
+    const cfgSweepPages = summary.sweep_pages ?? ((_c = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c.galaxy_sweep_pages) ?? 100;
+    reactExports.useEffect(() => {
+      const rVal = Math.max(0, Math.min(100, Math.round(finiteNum(cfgRefreshPct, 0))));
+      setRefreshPctInput(String(rVal));
+    }, [cfgRefreshPct]);
+    reactExports.useEffect(() => {
+      const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(cfgSweepPages, 100))));
+      setSweepPagesInput(String(pVal));
+    }, [cfgSweepPages]);
+    const parsedRefreshPct = Math.max(
+      0,
+      Math.min(100, Math.round(finiteNum(refreshPctInput, 0)))
+    );
+    const parsedDiscoveryPct = 100 - parsedRefreshPct;
+    const parsedSweepPages = Math.max(
+      1,
+      Math.min(400, Math.round(finiteNum(sweepPagesInput, 100)))
+    );
+    const previewRefreshReq = Math.round(parsedSweepPages * parsedRefreshPct / 100);
+    const previewDiscoveryReq = Math.max(0, parsedSweepPages - previewRefreshReq);
+    const previewModeLabel = parsedRefreshPct <= 0 ? "EXPLORATORY (100% DISCOVERY)" : parsedRefreshPct >= 100 ? "REFRESH ONLY (100% REFRESH)" : `MIXED (${parsedRefreshPct}% REFRESH / ${parsedDiscoveryPct}% DISCOVERY)`;
+    const allSectors = reactExports.useMemo(
+      () => Array.isArray(sectorsData == null ? void 0 : sectorsData.sectors) ? sectorsData.sectors.filter((s) => s && typeof s === "object") : [],
+      [sectorsData]
+    );
+    const galaxiesAvailable = reactExports.useMemo(() => {
+      if (Array.isArray(sectorsData == null ? void 0 : sectorsData.galaxies_available) && sectorsData.galaxies_available.length > 0) {
+        return sectorsData.galaxies_available.map((g) => Math.round(finiteNum(g, 0))).filter((g) => g >= 1 && g <= 14);
+      }
+      const set = /* @__PURE__ */ new Set();
+      allSectors.forEach((s) => {
+        const gi = Math.round(finiteNum(s.galaxy, 0));
+        if (gi >= 1 && gi <= 14) set.add(gi);
+      });
+      return Array.from(set).sort((a, b) => a - b);
+    }, [allSectors, sectorsData]);
+    const filteredSectors = reactExports.useMemo(() => {
+      return allSectors.filter((s) => {
+        if (galaxyFilter > 0 && Math.round(finiteNum(s.galaxy, 0)) !== galaxyFilter) {
+          return false;
+        }
+        if (statusFilter === "debris") return finiteNum(s.debris_count, 0) > 0;
+        if (statusFilter === "targets") return finiteNum(s.target_count, 0) > 0;
+        if (statusFilter === "colony") return finiteNum(s.prime_colony_free_count, 0) > 0;
+        if (statusFilter === "stale") return finiteNum(s.age_seconds, 0) >= 3600;
+        return true;
+      });
+    }, [allSectors, galaxyFilter, statusFilter]);
+    const sectorSortCols = reactExports.useMemo(
+      () => ({
+        sector: (s) => Math.round(finiteNum(s.galaxy, 0)) * 1e3 + Math.round(finiteNum(s.system, 0)),
+        distance: (s) => finiteNum(s.system_distance, null),
+        occupied: {
+          accessor: (s) => finiteNum(s.occupied_count, 0),
+          defaultDirection: "desc"
+        },
+        debris: {
+          accessor: (s) => finiteNum(s.debris_count, 0),
+          defaultDirection: "desc"
+        },
+        targets: {
+          accessor: (s) => finiteNum(s.target_count, 0),
+          defaultDirection: "desc"
+        },
+        free: {
+          accessor: (s) => Math.round(finiteNum(s.prime_colony_free_count, 0)) * 100 + Math.round(finiteNum(s.free_count, 0)),
+          defaultDirection: "desc"
+        },
+        raidsScore: {
+          accessor: (s) => finiteNum(s.score, 0),
+          defaultDirection: "desc"
+        },
+        lastRefresh: {
+          accessor: (s) => finiteNum(s.last_scanned_ts, 0),
+          defaultDirection: "desc"
+        }
+      }),
+      []
+    );
+    const sectorSort = useTableSort(filteredSectors, sectorSortCols);
+    const handleSaveSplit = async () => {
+      const rVal = Math.max(0, Math.min(100, Math.round(finiteNum(refreshPctInput, 0))));
+      const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(sweepPagesInput, 100))));
+      setSavingSplit(true);
+      try {
+        await apiCommand2({
+          command: "update_config",
+          config: {
+            galaxy_scan_refresh_pct: rVal,
+            galaxy_sweep_pages: pVal,
+            galaxy_scan_explore_first: rVal < 100
+          }
+        });
+        const refReq = Math.round(pVal * rVal / 100);
+        const discReq = Math.max(0, pVal - refReq);
+        showFeedback(
+          `Sweep split saved: ${rVal}% Refresh (${refReq} req) / ${100 - rVal}% Discovery (${discReq} req) across ${pVal} req/sweep.`,
+          "ok"
+        );
+        await loadDashboard({ refresh: false, preserveConfig: false, force: true });
+        await refreshSectorsView(0);
+      } catch (err) {
+        showFeedback(`Failed saving sweep split: ${err.message}`, feedbackKindForError(err));
+      } finally {
+        setSavingSplit(false);
+      }
+    };
+    const handleRunSweep = async () => {
+      const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(sweepPagesInput, 100))));
+      setSweeping(true);
+      try {
+        showFeedback(
+          `Starting smart galaxy sweep (${pVal} pages · ${parsedRefreshPct}% Refresh / ${parsedDiscoveryPct}% Discovery)...`,
+          "ok"
+        );
+        const res = await apiCommand2({
+          command: "galaxy_sweep",
+          pages: pVal,
+          dry_run: false
+        });
+        showFeedback(res.message || "Galaxy sweep completed.", res.ok === false ? "warn" : "ok");
+        await loadDashboard({ refresh: false, force: true });
+        await refreshSectorsView(0);
+      } catch (err) {
+        showFeedback(`Galaxy sweep failed: ${err.message}`, feedbackKindForError(err));
+      } finally {
+        setSweeping(false);
+      }
+    };
+    const handleRefreshSingleSector = async (item) => {
+      setRefreshingSector(item.sector);
+      try {
+        showFeedback(`Refreshing galaxy sector [${item.sector}]...`, "ok");
+        const res = await apiCommand2({
+          command: "scan_galaxy",
+          galaxy: item.galaxy,
+          system: item.system,
+          planet_id: activePlanet == null ? void 0 : activePlanet.planet_id,
+          dry_run: false
+        });
+        showFeedback(
+          res.message || `Sector [${item.sector}] refreshed.`,
+          res.executed === false ? "warn" : "ok"
+        );
+        await loadDashboard({ refresh: false, force: true });
+        await refreshSectorsView(0);
+      } catch (err) {
+        showFeedback(`Sector [${item.sector}] refresh failed: ${err.message}`, feedbackKindForError(err));
+      } finally {
+        setRefreshingSector(null);
+      }
+    };
+    const sweepMeta = dashboard == null ? void 0 : dashboard.galaxy_sweep;
+    const galCovPct = Math.max(
+      0,
+      Math.min(100, finiteNum(summary.coverage_pct ?? (sweepMeta == null ? void 0 : sweepMeta.coverage_pct), 0))
+    );
+    const galExplored = Math.round(
+      finiteNum(summary.explored_systems ?? (sweepMeta == null ? void 0 : sweepMeta.explored_systems), allSectors.length)
+    );
+    const galTotal = Math.max(
+      1,
+      Math.round(finiteNum(summary.total_systems ?? (sweepMeta == null ? void 0 : sweepMeta.total_systems), 400))
+    );
+    const uniExplored = Math.round(
+      finiteNum(
+        summary.universe_explored_systems ?? (sweepMeta == null ? void 0 : sweepMeta.universe_explored_systems),
+        galExplored
+      )
+    );
+    const uniTotal = Math.max(
+      1,
+      Math.round(finiteNum(summary.universe_total_systems ?? (sweepMeta == null ? void 0 : sweepMeta.universe_total_systems), 5600))
+    );
+    const uniCovPct = Math.max(
+      0,
+      Math.min(
+        100,
+        finiteNum(
+          summary.universe_coverage_pct ?? (sweepMeta == null ? void 0 : sweepMeta.universe_coverage_pct),
+          uniExplored / uniTotal * 100
+        )
+      )
+    );
+    const originLabel = (sectorsData == null ? void 0 : sectorsData.origin_coords) || (activePlanet == null ? void 0 : activePlanet.coords) || "--";
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "section",
+      {
+        id: "view-sectors",
+        className: "page-view",
+        "aria-label": "Scanned galaxy sectors and refresh vs discovery split",
+        hidden: isHidden,
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "combat-top-cards sectors-top-cards", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "kpi-card", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Scanned Sectors & Coverage" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "kpi-value tabular", id: "sec-kpi-count", children: `${fmtInt(summary.scanned_sectors ?? allSectors.length)} Sectors` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", id: "sec-kpi-coverage", children: `GAL ${galCovPct.toFixed(1)}% (${fmtInt(galExplored)}/${fmtInt(galTotal)}) · UNI ${uniCovPct.toFixed(1)}% (${fmtInt(uniExplored)}/${fmtInt(uniTotal)})` })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "kpi-card", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Occupied Planets & Free Slots" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "kpi-value tabular", id: "sec-kpi-occupied", children: `${fmtInt(summary.total_occupied ?? 0)} Occupied` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", id: "sec-kpi-free", children: `Avg ${finiteNum(summary.avg_occupied, 0).toFixed(1)}/sys · ${fmtInt(summary.total_free ?? 0)} free (${fmtInt(summary.total_prime_free ?? 0)} prime 300+)` })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "kpi-card", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Debris Fields & Raid Targets" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "kpi-value tabular", id: "sec-kpi-debris", children: `${fmtInt(summary.total_debris_fields ?? 0)} Debris · ${fmtInt(summary.total_targets ?? 0)} Targets` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", id: "sec-kpi-targets-sub", children: `${fmtInt(summary.sectors_with_debris ?? 0)} sectors w/ debris · ${fmtInt(summary.total_spacia ?? 0)} SPC · ${fmtInt(summary.total_inactives ?? 0)} INA` })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "kpi-card sector-split-card", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Sweep Request Allocation (Refresh vs Discovery)" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sector-split-controls", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "sector-split-field tabular", htmlFor: "sec-refresh-pct", children: [
+                  "Refresh %",
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      type: "number",
+                      id: "sec-refresh-pct",
+                      min: 0,
+                      max: 100,
+                      step: 5,
+                      value: refreshPctInput,
+                      onChange: (e) => setRefreshPctInput(e.target.value)
+                    }
+                  )
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "sector-split-field tabular", htmlFor: "sec-discovery-pct", children: [
+                  "Discovery %",
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      type: "number",
+                      id: "sec-discovery-pct",
+                      min: 0,
+                      max: 100,
+                      step: 5,
+                      value: String(parsedDiscoveryPct),
+                      onChange: (e) => {
+                        const v = finiteNum(e.target.value, null);
+                        if (v === null) {
+                          setRefreshPctInput("100");
+                        } else {
+                          const clampedDisc = Math.max(0, Math.min(100, Math.round(v)));
+                          setRefreshPctInput(String(100 - clampedDisc));
+                        }
+                      }
+                    }
+                  )
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "sector-split-field tabular", htmlFor: "sec-sweep-pages", children: [
+                  "Req/Sweep",
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      type: "number",
+                      id: "sec-sweep-pages",
+                      min: 1,
+                      max: 400,
+                      step: 10,
+                      value: sweepPagesInput,
+                      onChange: (e) => setSweepPagesInput(e.target.value)
+                    }
+                  )
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn-primary btn-sm",
+                    id: "btn-sec-save-split",
+                    disabled: savingSplit,
+                    onClick: handleSaveSplit,
+                    children: savingSplit ? "Saving..." : "Apply Split"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn-secondary btn-sm",
+                    id: "btn-sec-run-sweep",
+                    disabled: sweeping,
+                    onClick: handleRunSweep,
+                    children: sweeping ? "Sweeping..." : "Run Sweep"
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "div",
+                {
+                  className: "sector-split-bar",
+                  role: "img",
+                  "aria-label": `Refresh ${parsedRefreshPct}% vs Discovery ${parsedDiscoveryPct}%`,
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "sector-split-refresh", style: { width: `${parsedRefreshPct}%` } }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "sector-split-discovery", style: { width: `${parsedDiscoveryPct}%` } })
+                  ]
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", id: "sec-split-readout", children: `Next batch: ${previewRefreshReq} Refresh · ${previewDiscoveryReq} Discovery (${previewModeLabel})` })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window page-fill", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "SEC" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Scanned Galaxy Sectors" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "sec-meta-count", children: `${fmtInt(filteredSectors.length)} / ${fmtInt(allSectors.length)} SECTORS · ORIGIN [${originLabel}]` })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-toolbar", children: [
+                galaxiesAvailable.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-chips", role: "group", "aria-label": "Galaxy filter", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: `chip-btn${galaxyFilter === 0 ? " active" : ""}`,
+                      "data-sec-gal": "0",
+                      onClick: () => setUiPref("sectorGalaxy", 0),
+                      children: "All G"
+                    }
+                  ),
+                  galaxiesAvailable.map((g) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: `chip-btn${galaxyFilter === g ? " active" : ""}`,
+                      "data-sec-gal": String(g),
+                      onClick: () => setUiPref("sectorGalaxy", g),
+                      children: `G${g}`
+                    },
+                    g
+                  ))
+                ] }) : null,
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "filter-chips", role: "group", "aria-label": "Sector status filter", children: [
+                  { key: "all", label: "All Sectors" },
+                  { key: "debris", label: "Has Debris" },
+                  { key: "targets", label: "Has Targets" },
+                  { key: "colony", label: "300+ Slots" },
+                  { key: "stale", label: "Stale (1h+)" }
+                ].map((f) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: `chip-btn${statusFilter === f.key ? " active" : ""}`,
+                    "data-sec-filter": f.key,
+                    onClick: () => setUiPref("sectorFilter", f.key),
+                    children: f.label
+                  },
+                  f.key
+                )) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn-secondary btn-sm",
+                    id: "btn-sec-refresh",
+                    onClick: () => refreshSectorsView(0),
+                    children: "Refresh DB"
+                  }
+                )
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data-table", id: "sectors-table", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Sector",
+                    sortKey: "sector",
+                    activeKey: sectorSort.sortKey,
+                    direction: sectorSort.sortDirection,
+                    onSort: sectorSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Distance",
+                    sortKey: "distance",
+                    activeKey: sectorSort.sortKey,
+                    direction: sectorSort.sortDirection,
+                    onSort: sectorSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Occupied",
+                    sortKey: "occupied",
+                    activeKey: sectorSort.sortKey,
+                    direction: sectorSort.sortDirection,
+                    onSort: sectorSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Debris",
+                    sortKey: "debris",
+                    activeKey: sectorSort.sortKey,
+                    direction: sectorSort.sortDirection,
+                    onSort: sectorSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Targets",
+                    sortKey: "targets",
+                    activeKey: sectorSort.sortKey,
+                    direction: sectorSort.sortDirection,
+                    onSort: sectorSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Free / 300+",
+                    sortKey: "free",
+                    activeKey: sectorSort.sortKey,
+                    direction: sectorSort.sortDirection,
+                    onSort: sectorSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Raids / Score",
+                    sortKey: "raidsScore",
+                    activeKey: sectorSort.sortKey,
+                    direction: sectorSort.sortDirection,
+                    onSort: sectorSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Last Refresh",
+                    sortKey: "lastRefresh",
+                    activeKey: sectorSort.sortKey,
+                    direction: sectorSort.sortDirection,
+                    onSort: sectorSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Ops" })
+              ] }) }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "sectors-tbody", children: sectorSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 9, className: "empty-state", children: sectorsData ? "No scanned sectors match the current filter." : "Click Refresh DB or run a Galaxy Sweep to populate scanned sectors." }) }) : sectorSort.sortedRows.map((sec) => {
+                const occ = Math.max(0, Math.round(finiteNum(sec.occupied_count, 0)));
+                const maxSlots = Math.max(1, Math.round(finiteNum(sec.max_slots, 16)));
+                const occPct = Math.min(100, Math.round(occ / maxSlots * 100));
+                const occFillCls = occ >= maxSlots ? "sector-occ-fill is-full" : occ >= 11 ? "sector-occ-fill is-dense" : "sector-occ-fill";
+                const debris = Math.max(0, Math.round(finiteNum(sec.debris_count, 0)));
+                const spacia = Math.max(0, Math.round(finiteNum(sec.spacia_count, 0)));
+                const inact = Math.max(0, Math.round(finiteNum(sec.inactive_count, 0)));
+                const targets = Math.max(0, Math.round(finiteNum(sec.target_count, 0)));
+                const free = Math.max(0, Math.round(finiteNum(sec.free_count, 0)));
+                const prime = Math.max(0, Math.round(finiteNum(sec.prime_colony_free_count, 0)));
+                const dRaids = Math.max(0, Math.round(finiteNum(sec.direct_raid_count, 0)));
+                const affRaids = Math.max(0, Math.round(finiteNum(sec.owner_affinity_raid_count, 0)));
+                const score = finiteNum(sec.score, 0);
+                const scans = Math.max(1, Math.round(finiteNum(sec.scan_count, 1)));
+                const distFmt = formatSectorDistance(sec);
+                const freqOwners = Array.isArray(sec.frequent_owners) ? sec.frequent_owners : [];
+                const isRowBusy = refreshingSector === sec.sector;
+                return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: sec.sector }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", title: distFmt.title, children: distFmt.label }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "td",
+                    {
+                      className: "tabular",
+                      title: `${occ} occupied out of ${maxSlots} slots (${Math.max(0, Math.round(finiteNum(sec.active_occupied_count, 0)))} active)`,
+                      children: /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "sector-occ-cell", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `${occ} / ${maxSlots}` }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "sector-occ-meter", "aria-hidden": "true", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: occFillCls, style: { width: `${occPct}%` } }) })
+                      ] })
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: debris > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "outcome-badge is-draw", children: `${debris} Debris` }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-muted", children: "0" }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: targets > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                    spacia > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "outcome-badge is-win", children: `${spacia} SPC` }) : null,
+                    " ",
+                    inact > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "outcome-badge is-pending", children: `${inact} INA` }) : null,
+                    spacia === 0 && inact === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "outcome-badge is-pending", children: `${targets} TGT` }) : null
+                  ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-muted", children: "0" }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "tabular", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `${free} free` }),
+                    prime > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "sector-subline", children: `${prime} prime 300+` }) : null
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "tabular", title: sec.reason || "", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: score.toFixed(1) }),
+                    dRaids > 0 || affRaids > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "sector-subline", children: `${dRaids} raids${affRaids > 0 ? ` · ${affRaids} aff` : ""}` }) : null,
+                    freqOwners.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "sector-subline", children: freqOwners.slice(0, 2).join(", ") }) : null
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "tabular", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: fmtShortDateTime(sec.last_scanned_ts) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "sector-subline", children: `${formatShortAge(sec.age_seconds)} · x${scans}` })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn btn-secondary btn-sm",
+                      disabled: isRowBusy,
+                      onClick: () => handleRefreshSingleSector(sec),
+                      children: isRowBusy ? "Scanning..." : "Refresh"
+                    }
+                  ) })
+                ] }, sec.sector);
+              }) })
+            ] }) })
+          ] })
+        ]
+      }
+    );
+  };
   function parseCoordsTriple(raw) {
     const txt = String(raw ?? "").trim();
     const m = txt.match(/(\d{1,2})\s*:\s*(\d{1,3})\s*:\s*(\d{1,2})/);
@@ -18544,6 +19186,18 @@
           defaultValue: true
         },
         {
+          key: "galaxy_scan_refresh_pct",
+          id: "cfg-galaxy_scan_refresh_pct",
+          title: "Smart Scan Refresh vs Discovery Split (%)",
+          boundsLabel: "default: 0% · 0–100%",
+          description: "Percentage of each galaxy sweep batch allocated to refreshing already-scanned sectors (by proximity, raid affinity, debris/targets, and staleness), while the remaining (100 − refresh)% discovers never-scanned systems. Set 0% for pure discovery first, 100% for refresh-only, or an intermediate split (for example 30% refresh / 70% discovery) to keep nearby farm sectors fresh while expanding universe coverage. Unused quota spills automatically to the other pool. Accepts integers from 0 to 100.",
+          control: "number",
+          defaultValue: 0,
+          min: 0,
+          max: 100,
+          step: 5
+        },
+        {
           key: "galaxy_scan_near_weight",
           id: "cfg-galaxy_scan_near_weight",
           title: "Smart Scan Phase 2: Near-Sector Proximity Weight",
@@ -19466,6 +20120,7 @@
             /* @__PURE__ */ jsxRuntimeExports.jsx(ActionGraphView, {}),
             /* @__PURE__ */ jsxRuntimeExports.jsx(BuildingsView, {}),
             /* @__PURE__ */ jsxRuntimeExports.jsx(CombatView, {}),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(SectorsView, {}),
             /* @__PURE__ */ jsxRuntimeExports.jsx(EspionageView, {}),
             /* @__PURE__ */ jsxRuntimeExports.jsx(ColoniesView, {}),
             /* @__PURE__ */ jsxRuntimeExports.jsx(AttacksView, {}),

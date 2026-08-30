@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConsoleProvider, useConsole } from "../context/ConsoleContext";
 import { DashboardPayload } from "../types/api";
 import { CombatView } from "../features/combat";
+import { SectorsView } from "../features/sectors";
 import { EspionageView } from "../features/espionage";
 import { ColoniesView } from "../features/colonies";
 import { AttacksView } from "../features/attacks";
@@ -172,6 +173,7 @@ const SAMPLE_DASHBOARD: DashboardPayload = {
 
 interface SeedHarnessProps {
   page: string;
+  sectorsSeed?: Record<string, any>;
   espSeed?: Record<string, any>;
   colSeed?: Record<string, any>;
   atkSeed?: Record<string, any>;
@@ -181,6 +183,7 @@ interface SeedHarnessProps {
 
 const SeedState: React.FC<Omit<SeedHarnessProps, "children">> = ({
   page,
+  sectorsSeed,
   espSeed,
   colSeed,
   atkSeed,
@@ -189,6 +192,7 @@ const SeedState: React.FC<Omit<SeedHarnessProps, "children">> = ({
   const {
     setDashboard,
     setCombatData,
+    setSectorsData,
     setEspData,
     setColonyData,
     setAtkData,
@@ -198,6 +202,7 @@ const SeedState: React.FC<Omit<SeedHarnessProps, "children">> = ({
   useEffect(() => {
     setDashboard(SAMPLE_DASHBOARD);
     if (SAMPLE_DASHBOARD.combat) setCombatData(SAMPLE_DASHBOARD.combat);
+    if (sectorsSeed) setSectorsData(sectorsSeed);
     if (espSeed) setEspData(espSeed);
     if (colSeed) setColonyData(colSeed);
     if (atkSeed) setAtkData(atkSeed);
@@ -208,12 +213,14 @@ const SeedState: React.FC<Omit<SeedHarnessProps, "children">> = ({
     espSeed,
     page,
     recSeed,
+    sectorsSeed,
     setAtkData,
     setColonyData,
     setCombatData,
     setDashboard,
     setEspData,
     setRecData,
+    setSectorsData,
   ]);
 
   return null;
@@ -823,6 +830,157 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
     });
     await waitFor(() => {
       expect(uniTbody.textContent).toContain("Empress [01:050:07]");
+    });
+  });
+
+  it("renders SectorsView with sortable columns, filters, and Refresh vs Discovery split controls", async () => {
+    const sectorsSeed = {
+      ok: true,
+      origin_coords: "02:380:12",
+      galaxies_available: [2, 3],
+      summary: {
+        scanned_sectors: 2,
+        total_scanned_all_galaxies: 2,
+        explored_systems: 2,
+        total_systems: 400,
+        coverage_pct: 0.5,
+        universe_explored_systems: 2,
+        universe_total_systems: 5600,
+        universe_coverage_pct: 0.04,
+        total_occupied: 15,
+        avg_occupied: 7.5,
+        total_free: 17,
+        total_prime_free: 4,
+        total_debris_fields: 2,
+        sectors_with_debris: 1,
+        total_targets: 3,
+        total_spacia: 1,
+        total_inactives: 2,
+        sweep_pages: 100,
+        refresh_pct: 20,
+        discovery_pct: 80,
+        effective_refresh_pct: 20,
+        effective_discovery_pct: 80,
+      },
+      sectors: [
+        {
+          sector: "02:382",
+          galaxy: 2,
+          system: 382,
+          occupied_count: 11,
+          max_slots: 16,
+          active_occupied_count: 8,
+          free_count: 5,
+          prime_colony_free_count: 1,
+          debris_count: 2,
+          target_count: 3,
+          inactive_count: 2,
+          spacia_count: 1,
+          scan_count: 4,
+          last_scanned_ts: 1700001000,
+          age_seconds: 900,
+          system_distance: 2,
+          circular_distance: 2,
+          galaxy_delta: 0,
+          system_delta: 2,
+          direct_raid_count: 5,
+          owner_affinity_raid_count: 2,
+          frequent_owners: ["FarmKing (5)"],
+          score: 48.2,
+          reason: "near d=2, debris x2",
+        },
+        {
+          sector: "03:010",
+          galaxy: 3,
+          system: 10,
+          occupied_count: 4,
+          max_slots: 16,
+          active_occupied_count: 4,
+          free_count: 12,
+          prime_colony_free_count: 3,
+          debris_count: 0,
+          target_count: 0,
+          inactive_count: 0,
+          spacia_count: 0,
+          scan_count: 1,
+          last_scanned_ts: 1700000200,
+          age_seconds: 7200,
+          system_distance: 770,
+          circular_distance: 770,
+          galaxy_delta: 1,
+          system_delta: 370,
+          direct_raid_count: 0,
+          owner_affinity_raid_count: 0,
+          frequent_owners: [],
+          score: 6.4,
+          reason: "cross-gal d=770",
+        },
+      ],
+    };
+
+    const { container } = render(
+      <Harness page="sectors" sectorsSeed={sectorsSeed}>
+        <SectorsView hidden={false} />
+      </Harness>
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("#sec-kpi-count")?.textContent).toContain("2 Sectors");
+    });
+    expect(container.querySelector("#sec-kpi-coverage")?.textContent).toContain("UNI 0.0%");
+    expect(container.querySelector("#sec-kpi-occupied")?.textContent).toContain("15 Occupied");
+    expect(container.querySelector("#sec-kpi-debris")?.textContent).toContain("2 Debris");
+    expect(container.querySelector("#sectors-tbody")?.textContent).toContain("02:382");
+    expect(container.querySelector("#sectors-tbody")?.textContent).toContain("11 / 16");
+    expect(container.querySelector("#sectors-tbody")?.textContent).toContain("2 sys");
+    expect(container.querySelector("#sectors-tbody")?.textContent).toContain("1G · 370 sys");
+
+    // Filter to debris-only sectors and verify sorting by Occupied
+    fireEvent.click(container.querySelector('[data-sec-filter="debris"]')!);
+    expect(container.querySelectorAll("#sectors-tbody tr").length).toBe(1);
+    expect(container.querySelector("#sectors-tbody")?.textContent).toContain("02:382");
+
+    // Reset filter to All Sectors and verify click-to-sort on Occupied (desc -> asc)
+    fireEvent.click(container.querySelector('[data-sec-filter="all"]')!);
+    expect(container.querySelectorAll("#sectors-tbody tr").length).toBe(2);
+    const occHeaderBtn = Array.from(container.querySelectorAll("#sectors-table thead button")).find(
+      (b) => b.textContent?.includes("Occupied")
+    )!;
+    fireEvent.click(occHeaderBtn); // desc: 11/16 first
+    expect(container.querySelectorAll("#sectors-tbody tr")[0].textContent).toContain("02:382");
+    fireEvent.click(occHeaderBtn); // asc: 4/16 first
+    expect(container.querySelectorAll("#sectors-tbody tr")[0].textContent).toContain("03:010");
+
+    // Trigger single-sector refresh on first row (03:010)
+    fireEvent.click(container.querySelector("#sectors-tbody tr button")!);
+    await waitFor(() => {
+      expect(
+        commandCalls.some(
+          (c) => c.command === "scan_galaxy" && c.galaxy === 3 && c.system === 10
+        )
+      ).toBe(true);
+    });
+
+    // Edit Refresh % -> syncs Discovery % and saves config via Apply Split
+    const refInput = container.querySelector("#sec-refresh-pct") as HTMLInputElement;
+    const discInput = container.querySelector("#sec-discovery-pct") as HTMLInputElement;
+    fireEvent.change(refInput, { target: { value: "35" } });
+    expect(discInput.value).toBe("65");
+    expect(container.querySelector("#sec-split-readout")?.textContent).toContain(
+      "35 Refresh · 65 Discovery"
+    );
+
+    fireEvent.click(container.querySelector("#btn-sec-save-split")!);
+    await waitFor(() => {
+      expect(
+        commandCalls.some(
+          (c) =>
+            c.command === "update_config" &&
+            c.config?.galaxy_scan_refresh_pct === 35 &&
+            c.config?.galaxy_sweep_pages === 100 &&
+            c.config?.galaxy_scan_explore_first === true
+        )
+      ).toBe(true);
     });
   });
 });

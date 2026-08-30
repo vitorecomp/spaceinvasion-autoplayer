@@ -1231,6 +1231,109 @@ tbody tr:hover {
   min-height: 180px;
 }
 
+/* Scanned Sectors: KPI cards, Refresh vs Discovery split bar, occupancy meter */
+
+.combat-top-cards.sectors-top-cards {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(320px, 1.8fr);
+}
+
+@media (max-width: 1180px) {
+  .combat-top-cards.sectors-top-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .combat-top-cards.sectors-top-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.sector-split-card {
+  gap: 6px;
+}
+
+.sector-split-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.sector-split-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.84rem;
+  color: var(--ink-muted);
+}
+
+.sector-split-field input {
+  width: 66px;
+  padding: 4px 7px;
+  font-size: 0.86rem;
+}
+
+.sector-split-bar {
+  display: flex;
+  width: 100%;
+  height: 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+}
+
+.sector-split-refresh {
+  background: var(--amber);
+  height: 100%;
+  transition: width 160ms ease;
+}
+
+.sector-split-discovery {
+  background: var(--cyan);
+  height: 100%;
+  transition: width 160ms ease;
+}
+
+.sector-occ-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sector-occ-meter {
+  display: inline-block;
+  width: 44px;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+  vertical-align: middle;
+}
+
+.sector-occ-fill {
+  display: block;
+  height: 100%;
+  background: var(--cyan);
+}
+
+.sector-occ-fill.is-dense {
+  background: var(--amber);
+}
+
+.sector-occ-fill.is-full {
+  background: #ff6873;
+}
+
+.sector-subline {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+  margin-top: 2px;
+}
+
 .msg-body-cell {
   max-width: 460px;
   white-space: normal;
