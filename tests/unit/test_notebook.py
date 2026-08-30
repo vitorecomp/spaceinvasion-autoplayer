@@ -1,4 +1,5 @@
-"""Tests for `notebooks/optimizer_experimentation.ipynb` (F20) and `notebooks/full_planner.ipynb`."""
+"""Tests for `notebooks/optimizer_experimentation.ipynb` (F20), `notebooks/full_planner.ipynb` and
+`notebooks/config_optimizer.ipynb`."""
 
 from __future__ import annotations
 
@@ -1646,17 +1647,17 @@ FULL_PLANNER_METADATA_FILES = (
 FULL_PLANNER_DATA_SECTIONS = [
     "1.1", "1.6", "2.3", "3", "4", "5", "6", "6.1", "6.2", "6.3", "6.4", "7.2", "7.3", "8.1", "8.2", "9",
 ]
-# Sections after the print section, in notebook order. Each of their code cells prints its own data.
-FULL_PLANNER_SELF_PRINTING_SECTIONS = ["11.1", "11.2", "11.3", "11.4", "11.5", "11.6"]
 # requirements.txt distributions whose import name differs from the distribution name.
 REQUIREMENT_IMPORT_NAMES = {"python-dotenv": "dotenv", "beautifulsoup4": "bs4"}
 
-# Runs the notebook in a fresh interpreter with some modules made unimportable, then reports what was imported.
-# argv: notebook path, working directory, JSON list of blocked top-level module names.
+# Runs a notebook in a fresh interpreter with some modules made unimportable, then reports what was imported.
+# argv: notebook path, working directory, JSON list of blocked top-level module names and, optionally, a folder
+# that replaces the notebook's METADATA_DIR as soon as a cell has defined it.
 FULL_PLANNER_SUBPROCESS_DRIVER = """
-import contextlib, importlib.abc, io, json, os, sys
+import contextlib, importlib.abc, io, json, os, pathlib, sys
 
 blocked = set(json.loads(sys.argv[3]))
+metadata_dir = pathlib.Path(sys.argv[4]) if len(sys.argv) > 4 else None
 
 
 class Blocker(importlib.abc.MetaPathFinder):
@@ -1675,42 +1676,12 @@ with contextlib.redirect_stdout(io.StringIO()):
     for cell in cells:
         source = "".join(cell["source"])
         if cell["cell_type"] == "code" and not source.lstrip().startswith("!"):
-            exec(compile(source, "full_planner", "exec"), namespace, namespace)
+            had_metadata_dir = "METADATA_DIR" in namespace
+            exec(compile(source, "notebook", "exec"), namespace, namespace)
+            if metadata_dir is not None and not had_metadata_dir and "METADATA_DIR" in namespace:
+                namespace["METADATA_DIR"] = metadata_dir
 print(json.dumps(sorted({name.split(".")[0] for name in sys.modules})))
 """
-
-
-def _full_planner_meta_parameters() -> dict[str, object]:
-    """The meta parameters of Section 11.1 that the tests plan with.
-
-    The values in the notebook's own cell are the user's to tune. Every test run therefore replaces them
-    with these, the values that the expectations of the tests were worked out for.
-    """
-    return {
-        "TARGET_SHIP_KEY": "s16",
-        "PRODUCTION_MONTH_DAYS": 30.0,
-        "RESEARCH_PERCENT_OF_UNIVERSE_MAX": 100.0,
-        "MIN_FLEET_PER_PLANET": {"s2": 10, "s10": 10, "s11": 10},
-        "MISC_BUILDING_LEVELS": {
-            "b6": 0, "b7": 12, "b8": 0, "b10": 5, "b11": 0, "b12": 0, "b13": 0, "b14": 0,
-            "b15": 0, "b16": 0, "b18": 0, "b19": 0, "b20": 0, "b21": 0,
-        },
-        "MISC_BUILDING_LEVELS_BY_SLOT": {1: {"b8": 12}},
-        "WAREHOUSE_HOURS_OF_PRODUCTION": 24.0,
-        "CENTRAL_PLANET_SLOT": 1,
-        "CENTRAL_PLANET_MIN_WAREHOUSE_LEVEL": 15,
-        "OPTIMIZED_BUILDING_MAX_LEVELS": {"b1": 50, "b2": 50, "b3": 50, "b4": 50, "b5": 50, "b9": 50, "b17": 50},
-        "CATALOGUE_GRID_SIZE": 100_000,
-        "CATALOGUE_PRIORITY_STEPS": 4,
-        "HILL_CLIMB_STEP_SIZES": (1, 2, 4, 8),
-        "GA_POPULATION_SIZE": 400,
-        "GA_GENERATIONS": 300,
-        "GA_TOURNAMENT_SIZE": 3,
-        "GA_CROSSOVER_RATE": 0.9,
-        "GA_MUTATION_RATE": 0.1,
-        "GA_ELITE_COUNT": 4,
-        "GA_RANDOM_SEED": 20261117,
-    }
 
 
 def _is_generated_data(name: str, value: object) -> bool:
@@ -1740,6 +1711,23 @@ def _undominated_rows(points: np.ndarray) -> np.ndarray:
     unique = np.unique(points, axis=0)
     beaten = [bool(((unique >= row).all(axis=1) & (unique > row).any(axis=1)).any()) for row in unique]
     return unique[~np.array(beaten)]
+
+
+def _databases_opened_by(call: object) -> list[Path]:
+    """Every database path that `sqlite3.connect` is asked to open while `call()` runs."""
+    opened: list[Path] = []
+    real_connect = sqlite3.connect
+
+    def recording_connect(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+        opened.append(Path(str(database)).resolve())
+        return real_connect(database, *args, **kwargs)
+
+    sqlite3.connect = recording_connect
+    try:
+        call()
+    finally:
+        sqlite3.connect = real_connect
+    return opened
 
 
 def _three_planet_state() -> GameState:
@@ -1852,16 +1840,16 @@ def _run_full_planner(
     metadata_dir: Path | None = None,
     last_cell: int | None = None,
     overrides: dict[str, object] | None = None,
+    label: str = "full_planner",
 ) -> tuple[dict, dict[int, str], dict[int, set[str]]]:
-    """Execute the notebook's code cells with `workspace` as working directory (the pip cell is skipped).
+    """Execute a notebook's code cells with `workspace` as working directory (the pip cell is skipped).
 
     Returns the namespace and, per code-cell index, the captured stdout and the global names the cell added.
     `metadata_dir` replaces the notebook's `METADATA_DIR` as soon as a cell has defined it, and `overrides`
-    does the same for any other global. The meta parameters of Section 11.1 always get the values of
-    `_full_planner_meta_parameters`, unless `overrides` names others. `last_cell` stops the run after that
-    code cell. The pandas display options the notebook sets are restored.
+    does the same for any other global. `last_cell` stops the run after that code cell, and `label` names the
+    notebook in tracebacks. The pandas display options the notebook sets are restored.
     """
-    replaced = {**_full_planner_meta_parameters(), **(overrides or {})}
+    replaced = overrides or {}
     ns: dict = {"__name__": "__main__"}
     stdout: dict[int, str] = {}
     new_names: dict[int, set[str]] = {}
@@ -1876,7 +1864,7 @@ def _run_full_planner(
             names_before = set(ns)
             cell_buf = io.StringIO()
             with contextlib.redirect_stdout(cell_buf):
-                exec(compile(_cell_source(cell), f"full_planner_cell_{idx}", "exec"), ns, ns)
+                exec(compile(_cell_source(cell), f"{label}_cell_{idx}", "exec"), ns, ns)
             stdout[idx] = cell_buf.getvalue()
             new_names[idx] = set(ns) - names_before
             if metadata_dir is not None and "METADATA_DIR" in new_names[idx]:
@@ -1891,7 +1879,7 @@ def _run_full_planner(
 
 
 class TestFullPlannerNotebook(unittest.TestCase):
-    """`notebooks/full_planner.ipynb`: layout rules, static metadata, generated data, printouts and the planner."""
+    """`notebooks/full_planner.ipynb`: layout rules, static metadata, generated data and printouts."""
 
     _assert_cell_ast_safe = TestExperimentationNotebook._assert_cell_ast_safe
 
@@ -1901,10 +1889,9 @@ class TestFullPlannerNotebook(unittest.TestCase):
         cls.cells = cls.nb["cells"]
         cls.code_positions = [pos for pos, cell in enumerate(cls.cells) if cell.get("cell_type") == "code"]
         cls.code_cells = [cls.cells[pos] for pos in cls.code_positions]
-        # Section 10 holds the print cells; the code cells after it are Section 11, which prints its own data.
+        # Section 10 holds the print cells: the last cells of the notebook.
         cls.print_idxs = [idx for idx, cell in enumerate(cls.code_cells) if cls._is_print_cell(cell)]
         cls.first_print_idx = cls.print_idxs[0]
-        cls.planner_idxs = list(range(cls.print_idxs[-1] + 1, len(cls.code_cells)))
         cls.universe_research_cell_idx = next(
             idx
             for idx, pos in enumerate(cls.code_positions)
@@ -1958,22 +1945,6 @@ class TestFullPlannerNotebook(unittest.TestCase):
             cls._other_runs[workspace] = _run_full_planner(cls.code_cells, workspace)
         return cls._other_runs[workspace]
 
-    def _rerun_planner(self, ns: dict, changes: dict[str, object]) -> dict:
-        """Section 11 executed again on a copy of a finished run, with other meta parameters.
-
-        Its cells only read what Sections 1 to 9 left behind, so the copy can share those objects.
-        """
-        rerun = {**ns, **changes}
-        with contextlib.redirect_stdout(io.StringIO()):
-            for idx in self.planner_idxs[1:]:
-                exec(compile(_cell_source(self.code_cells[idx]), f"full_planner_cell_{idx}", "exec"), rerun, rerun)
-        return rerun
-
-    def _notebook_meta_parameters(self) -> dict[str, object]:
-        """The meta parameters as the notebook's own Section 11.1 cell sets them."""
-        statements = ast.parse(_cell_source(self.code_cells[self.planner_idxs[0]])).body[:-1]
-        return {statement.target.id: ast.literal_eval(statement.value) for statement in statements}
-
     def _section_cells(self) -> list[tuple[str, int, int]]:
         """`(section number, data code-cell index, print code-cell index)` of every data-producing cell, in order."""
         ns, _, new_names = self._attack_run()
@@ -2014,6 +1985,9 @@ class TestFullPlannerNotebook(unittest.TestCase):
         for pos, cell in enumerate(self.cells):
             self.assertIn(cell.get("cell_type"), ("markdown", "code"))
             self.assertTrue(_cell_source(cell).strip(), f"Cell {pos} is empty")
+        # The notebook opens with its title and what it reads.
+        self.assertEqual(self.cells[0].get("cell_type"), "markdown")
+        self.assertTrue(_cell_source(self.cells[0]).startswith("# Full Planner"))
 
         for idx, pos in enumerate(self.code_positions):
             cell = self.cells[pos]
@@ -2106,43 +2080,12 @@ class TestFullPlannerNotebook(unittest.TestCase):
             self.assertIsInstance(print_body[0].value, ast.Call)
             self.assertEqual(print_body[0].value.func.id, "print_section_data")
 
-        # Section 11 is the last section: alternating description / code cell up to the end of the notebook.
-        planner_positions = [self.code_positions[idx] for idx in self.planner_idxs]
-        self.assertEqual(planner_positions, list(range(print_positions[-1] + 2, len(self.cells), 2)))
-        self.assertIn("## 11. ", _cell_source(self.cells[planner_positions[0] - 1]))
-        self.assertEqual(
-            [_last_heading_number(_cell_source(self.cells[pos - 1])) for pos in planner_positions],
-            FULL_PLANNER_SELF_PRINTING_SECTIONS,
-        )
-        for pos in planner_positions:
-            # Each of its cells ends by printing its own data, with print_section_data and nothing else.
-            body = ast.parse(_cell_source(self.cells[pos])).body
-            printers = [
-                node.func.id
-                for node in ast.walk(ast.Module(body=body, type_ignores=[]))
-                if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in ("print", "print_section_data")
-            ]
-            self.assertEqual(printers, ["print_section_data"], f"Cell {pos} must print once, with print_section_data")
-            self.assertIsInstance(body[-1], ast.Expr)
-            self.assertEqual(body[-1].value.func.id, "print_section_data")
-        # Its first cell holds the meta parameters and nothing else: assignments, then the printout.
-        meta_parameters = ast.parse(_cell_source(self.cells[planner_positions[0]])).body[:-1]
-        self.assertGreater(len(meta_parameters), 10)
-        for statement in meta_parameters:
-            self.assertIsInstance(statement, ast.AnnAssign, "The meta-parameter cell only assigns annotated constants")
-            self.assertRegex(statement.target.id, r"^[A-Z][A-Z0-9_]+$")
-            try:
-                ast.literal_eval(statement.value)
-            except ValueError:
-                self.fail(f"{statement.target.id} must be a plain value: the cell holds parameters, not results")
-        self.assertEqual(
-            [statement.target.id for statement in meta_parameters],
-            list(_full_planner_meta_parameters()),
-            "The tests replace every meta parameter; keep _full_planner_meta_parameters in step with the cell",
-        )
-        self.assertIn("### 11.1 Meta Parameters", _cell_source(self.cells[planner_positions[0] - 1]))
+        # Section 10 is the last section: the notebook ends with its last print cell. The search for the best
+        # empire configuration has its own notebook, so no cell here sets its meta parameters.
+        self.assertEqual(print_positions[-1], len(self.cells) - 1)
+        self.assertEqual(self.print_idxs[-1], len(self.code_cells) - 1)
+        for cell in self.code_cells[1:]:
+            self.assertNotRegex(_cell_source(cell), r"(?m)^(TARGET_SHIP_KEY|GA_RANDOM_SEED)\b")
 
     def test_notebook_is_saved_without_outputs(self) -> None:
         # The outputs of a run print game data: planets, coordinates, resources, the research of other players.
@@ -2241,6 +2184,16 @@ class TestFullPlannerNotebook(unittest.TestCase):
                 for row in conn.execute("EXPLAIN QUERY PLAN " + ns["SQL_RAID_DISPATCH_ORIGIN_JOIN"], ("x",))
             )
         self.assertIn("idx_action_history_ts", plan, "The raid/action join must use the timestamp index")
+        # No loader opens the live file: every connection goes to a temporary copy.
+        opened = _databases_opened_by(
+            lambda: [
+                ns[loader](ns["LIVE_DB_PATH"])
+                for loader in ("load_attack_telemetry", "load_live_planet_states", "load_universe_research_sources")
+            ]
+        )
+        self.assertGreaterEqual(len(opened), 3)
+        self.assertNotIn(ns["LIVE_DB_PATH"].resolve(), opened, "The live database must only be copied, never opened")
+        self.assertEqual({path.name for path in opened}, {"spaceinvasion.db"})
         self.assertEqual(self._workspace_fingerprint(self.attack_workspace), before)
 
         # resolve_repo_root's last resort: package importable, repository neither in cwd nor on sys.path.
@@ -3115,7 +3068,6 @@ class TestFullPlannerNotebook(unittest.TestCase):
             )
 
         # Section 10 on an empty account: empty tables / arrays / lists print cleanly, slots print in full.
-        print_idxs = [*self.print_idxs, *self.planner_idxs]
         cold_section9 = "".join(cold_stdout[i] for i in self.print_idxs)
         self.assertNotIn("...", cold_section9)
         self.assertIn(
@@ -3129,21 +3081,12 @@ class TestFullPlannerNotebook(unittest.TestCase):
         self.assertIn("[live_planet_states] list, len=0\n[]", cold_section9)
         self.assertIn("[per_target_success_rate] dict, len=0\n{}", cold_section9)
         self.assertEqual(cold_section9.count('"fields_max": 300'), 11)
-        for print_idx in print_idxs:
+        for print_idx in self.print_idxs:
             self.assertRegex(cold_stdout[print_idx], r"(?m)^Printed: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4} \| ")
 
-        # The planner works on an empty account too: nothing is known about anybody's research, slot 1 gets the
-        # Research lab, the other ten generic planets are twins, and the search still finds starbases to build.
+        # Nothing is known about anybody's research on an empty account.
         self.assertEqual(int(cold_ns["universe_research_df"]["universe_max_level"].sum()), 0)
         self.assertEqual(set(cold_ns["universe_research_df"]["max_source"]), {"none"})
-        self.assertEqual(cold_ns["plan_planets_df"]["free_fields"].tolist(), [271] + [283] * 10)
-        self.assertEqual(cold_ns["PRODUCTION_MODEL"].twin_planets, [0] + [1] * 10)
-        self.assertEqual(set(cold_ns["plan_building_levels_df"]["built_level"]), {0})
-        self.assertGreater(cold_ns["BEST_CONFIG_SUMMARY"]["ships_per_month"], 0.0)
-        self.assertEqual(
-            cold_ns["BEST_CONFIG_SUMMARY"]["levels_to_build"],
-            int(cold_ns["best_config_buildings_df"]["fields_used"].sum())
-        )
 
         # A missing database file is a cold start too.
         missing_db = self.cold_workspace / "state" / "missing.db"
@@ -3321,7 +3264,1089 @@ class TestFullPlannerNotebook(unittest.TestCase):
         )
         self.assertEqual(ns["research_key_aliases"]()["weapons technology"], "r8")
 
-    # ------------------------------------------------------------------ Section 11: best configuration
+    def _parse_printout(self, out: str) -> tuple[str, dict[str, list[str]]]:
+        """Check the frame of one `print_section_data` printout; return its section number and its item blocks."""
+        rule_eq = "=" * 100
+        item_rule = "\n" + "-" * 100 + "\n"
+        out_lines = out.rstrip("\n").split("\n")
+        self.assertEqual(out_lines[0], rule_eq)
+        self.assertEqual(out_lines[3], rule_eq)
+        title = re.fullmatch(r"Section ([\d.]+) data: \S.*", out_lines[1])
+        self.assertIsNotNone(title, f"Malformed printout title: {out_lines[1]!r}")
+        stamp = re.fullmatch(
+            r"Printed: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}) \| (\d+) item\(s\)",
+            out_lines[2],
+        )
+        self.assertIsNotNone(stamp, f"Missing print date/time header: {out_lines[2]!r}")
+        printed_at = datetime.datetime.strptime(stamp.group(1), "%Y-%m-%d %H:%M:%S %z")
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        self.assertLess(abs((now_utc - printed_at).total_seconds()), 600.0)
+        blocks = "\n".join(out_lines[4:]).split(item_rule)
+        self.assertEqual(len(blocks), int(stamp.group(2)))
+        named: dict[str, list[str]] = {}
+        for block in blocks:
+            block_lines = block.split("\n")
+            head = re.fullmatch(r"\[(?P<name>[^\]]+)\] (?P<desc>.+)", block_lines[0])
+            self.assertIsNotNone(head, f"Malformed item header: {block_lines[0]!r}")
+            self.assertNotIn(head.group("name"), named, "Each object is printed exactly once")
+            named[head.group("name")] = block_lines
+        return title.group(1), named
+
+    def test_every_generated_object_is_printed_in_full(self) -> None:
+        ns, stdout, new_names = self._attack_run()
+        sections = self._section_cells()
+        self.assertEqual([section for section, _, _ in sections], FULL_PLANNER_DATA_SECTIONS)
+        all_sections = sections
+
+        printed_text = "".join(stdout[print_idx] for _, _, print_idx in all_sections)
+        self.assertNotIn("...", printed_text, "Printouts must never be truncated")
+        self.assertNotRegex(printed_text, r"\de\+\d", "Large numbers must not print in scientific notation")
+        self.assertEqual(re.findall(r"sid=(?!REDACTED)", printed_text, flags=re.IGNORECASE), [])
+
+        printed_blocks: dict[str, list[str]] = {}
+        section_out: dict[str, str] = {}
+        for section, data_idx, print_idx in all_sections:
+            out = stdout[print_idx]
+            title_section, blocks = self._parse_printout(out)
+            self.assertEqual(
+                title_section,
+                section,
+                f"Print cell {print_idx} is titled Section {title_section} but prints the data of Section {section}",
+            )
+            self.assertRegex(
+                _cell_source(self.cells[self.code_positions[print_idx] - 1]),
+                rf"(?m)^### 10\.\d+ Section {re.escape(section)} Data\b",
+                f"The heading above print cell {print_idx} must name Section {section}",
+            )
+            section_out[section] = out
+            for name, block_lines in blocks.items():
+                self.assertNotIn(name, printed_blocks, "Each object is printed exactly once")
+                printed_blocks[name] = block_lines
+
+            # Every data name the matching cell defined must appear in its printout.
+            section_names = sorted(name for name in new_names[data_idx] if _is_generated_data(name, ns[name]))
+            self.assertGreater(len(section_names), 0)
+            for name in section_names:
+                self.assertRegex(
+                    out,
+                    rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])",
+                    f"{name!r} (generated by code cell {data_idx}) is missing from the printout of cell {print_idx}",
+                )
+
+        # Every DataFrame / ndarray the notebook generated is printed row for row / element for element.
+        for name, value in sorted(ns.items()):
+            if name.startswith("_") or not isinstance(value, (pd.DataFrame, np.ndarray)):
+                continue
+            self.assertIn(name, printed_blocks, f"{name} is generated but never printed")
+            block_lines = printed_blocks[name]
+            if isinstance(value, pd.DataFrame):
+                self.assertEqual(
+                    block_lines[0],
+                    f"[{name}] pandas.DataFrame, shape=({value.shape[0]}, {value.shape[1]})",
+                )
+                if value.empty:
+                    self.assertEqual(block_lines[1], f"(no rows) columns: {list(value.columns)}")
+                else:
+                    self.assertEqual(len(block_lines), 2 + len(value), f"{name} was not printed row for row")
+                    self.assertEqual(block_lines[1].split(), [str(col) for col in value.columns])
+            else:
+                self.assertEqual(
+                    block_lines[0],
+                    f"[{name}] numpy.ndarray, shape={value.shape}, dtype={value.dtype}",
+                )
+                tokens = " ".join(block_lines[1:]).replace("[", " ").replace("]", " ").split()
+                printed_vals = [float(tok) for tok in tokens]
+                self.assertEqual(len(printed_vals), value.size)
+                np.testing.assert_allclose(printed_vals, value.astype(np.float64).ravel(), rtol=0.0, atol=1e-6)
+
+        # Spot checks: paths, metadata, fixed-point timestamps, full-digit big integers, graph closure, planets.
+        self.assertIn(str(self.attack_workspace.resolve() / "state" / "spaceinvasion.db"), section_out["1.1"])
+        self.assertIn('  "b1": {"name": "Pig iron mine", ', section_out["1.6"])
+        self.assertIn('"max_planets": 11', section_out["1.6"])
+        self.assertIn(
+            "[attack_dispatch_ts_arr] numpy.ndarray, shape=(3,), dtype=float64\n"
+            "[1700000000 1700001000 1700003000]",
+            section_out["2.3"],
+        )
+        top_b17_metal = game_data.building_cost(17, 50)["metal"]
+        self.assertGreater(top_b17_metal, 10**20)
+        self.assertIn(f" {top_b17_metal} ", section_out["6.1"])
+        s7_closure_line = next(ln for ln in section_out["7.2"].split("\n") if ln.startswith('  "s7": '))
+        s7_closure = json.loads(s7_closure_line.split(": ", 1)[1].rstrip(","))
+        self.assertEqual(
+            set(s7_closure["all_prerequisites"]), set(ns["TECH_GRAPH"].transitive_requirements("s7"))
+        )
+        self.assertEqual(s7_closure["all_unlocks"], [])
+        self.assertIn('"b5": 7', section_out["6"])
+        self.assertEqual(section_out["6"].count('"fields_max": 300'), 10)
+        self.assertIn('"coords": "EMPTY:10"', section_out["6"])
+        # Section 9: the research table.
+        self.assertIn("[universe_research_df] pandas.DataFrame, shape=(15, 15)", section_out["9"])
+
+    def test_print_helpers_show_full_data_and_redact_session_tokens(self) -> None:
+        ns, _, _ = self._attack_run()
+        # Float formatting used by the printouts: no scientific notation for large values, no float noise.
+        for raw_val, expected_text in (
+            (1794880358.409, "1794880358.409"),
+            (123456789012.34, "123456789012.34"),
+            (8892.061995397919, "8892.061995"),
+            (8.600298e20, "860029799999999967232"),
+            (100.0, "100"),
+            (1.0 / 3.0, "0.333333"),
+            (0.5**21, "4.76837e-07"),
+            (-0.0, "0"),
+            (float("nan"), "nan"),
+        ):
+            self.assertEqual(ns["format_full_float"](raw_val), expected_text)
+
+        # print_section_data on data far beyond the pandas / numpy default display limits:
+        # nothing is elided, a non-default index is kept, and session tokens are redacted.
+        probe_df = pd.DataFrame(
+            {
+                "n": np.arange(2500),
+                "x": np.arange(2500) * 1e9 + 0.25,
+                "txt": ["z" * 150] * 2500,
+            }
+        )
+        probe_df.loc[7, "txt"] = "indexInternal.es?action=internalHome&sid=FAKE0123456789abcdef&x=1"
+        probe_arr = np.arange(3000, dtype=np.float64) + 1_794_880_000.25
+        probe_buf = io.StringIO()
+        with contextlib.redirect_stdout(probe_buf):
+            ns["print_section_data"](
+                "Probe",
+                [
+                    ("probe_df", probe_df),
+                    ("probe_arr", probe_arr),
+                    ("probe_dict", {"href": "indexGame.es?sid=FAKEfedcba9876543210", 7: (1, 2)}),
+                    ("probe_indexed", probe_df.tail(2).set_index("x")[["n"]]),
+                    ("probe_registry", {"probe": probe_df}),
+                ],
+            )
+        probe_out = probe_buf.getvalue()
+        self.assertNotIn("...", probe_out)
+        self.assertNotRegex(probe_out, r"\de\+\d")
+        item_rule = "\n" + "-" * 100 + "\n"
+        probe_blocks = probe_out.rstrip("\n").split("\n", 4)[4].split(item_rule)
+        self.assertEqual(len(probe_blocks), 5)
+        self.assertEqual(len(probe_blocks[0].split("\n")), 2 + 2500)
+        self.assertRegex(probe_blocks[0], r"(?m)^\s*2499\s+2499000000000\.25\s+z{150}$")
+        self.assertEqual(len(probe_blocks[1].replace("[", " ").replace("]", " ").split("\n", 1)[1].split()), 3000)
+        self.assertIn("1794882999.25]", probe_blocks[1])
+        self.assertNotIn("FAKE0123456789abcdef", probe_out)
+        self.assertNotIn("FAKEfedcba9876543210", probe_out)
+        self.assertEqual(probe_out.count("sid=REDACTED"), 2)
+        self.assertIn('  "7": [1, 2]', probe_blocks[2])
+        self.assertRegex(probe_blocks[3], r"(?m)^2499000000000\.25\s+2499$")
+        self.assertEqual(
+            probe_blocks[4].split("\n"),
+            [
+                "[probe_registry] dict, len=1 (registry of DataFrames; each table is printed in full by its own section)",
+                "  probe: shape=(2500, 3)",
+            ],
+        )
+
+
+# ---------------------------------------------------------------------------
+# notebooks/config_optimizer.ipynb
+# ---------------------------------------------------------------------------
+
+CONFIG_OPTIMIZER_PATH = REPO_ROOT / "notebooks" / "config_optimizer.ipynb"
+# The one file that the notebook writes, into its METADATA_DIR.
+CONFIG_OPTIMIZER_RESULT_FILE = "config_optimizer_result.json"
+# Section number of the heading above every code cell, in notebook order.
+CONFIG_OPTIMIZER_SECTIONS = [
+    "0", "0.1", "1", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.8", "2.9", "3.1", "3.2",
+    "4.1", "4.2", "4.3", "4.4", "4.5", "5",
+]
+# Sections whose code cell generates data and ends by printing it. Section 1, the meta parameters, only sets
+# values; Section 4.1 prints them.
+CONFIG_OPTIMIZER_PRINTING_SECTIONS = ["2.2", "2.5", "2.8", "3.1", "3.2", "4.1", "4.2", "4.3", "4.4", "4.5", "5"]
+# Names that both notebooks assign at top level, but not with the same statement, and why.
+CONFIG_OPTIMIZER_OWN_STATEMENTS = {
+    "colony_researches": "read by load_account_snapshot; full_planner takes it from its attack telemetry",
+    "GAME_PARAM_CONTEXT": "holds only the account-wide inputs that the optimizer uses",
+}
+# Helpers of Section 2 that full_planner does not have.
+CONFIG_OPTIMIZER_OWN_HELPERS = {"load_account_snapshot"}
+
+
+def _config_optimizer_meta_parameters() -> dict[str, object]:
+    """The meta parameters of Section 1 that the tests plan with.
+
+    The values in the notebook's own cell are the user's to tune. Every test run therefore replaces them
+    with these, the values that the expectations of the tests were worked out for.
+    """
+    return {
+        "TARGET_SHIP_KEY": "s16",
+        "PRODUCTION_MONTH_DAYS": 30.0,
+        "RESEARCH_PERCENT_OF_UNIVERSE_MAX": 100.0,
+        "MIN_FLEET_PER_PLANET": {"s2": 10, "s10": 10, "s11": 10},
+        "MISC_BUILDING_LEVELS": {
+            "b6": 0, "b7": 12, "b8": 0, "b10": 5, "b11": 0, "b12": 0, "b13": 0, "b14": 0,
+            "b15": 0, "b16": 0, "b18": 0, "b19": 0, "b20": 0, "b21": 0,
+        },
+        "MISC_BUILDING_LEVELS_BY_SLOT": {1: {"b8": 12}},
+        "WAREHOUSE_HOURS_OF_PRODUCTION": 24.0,
+        "CENTRAL_PLANET_SLOT": 1,
+        "CENTRAL_PLANET_MIN_WAREHOUSE_LEVEL": 15,
+        "OPTIMIZED_BUILDING_MAX_LEVELS": {"b1": 50, "b2": 50, "b3": 50, "b4": 50, "b5": 50, "b9": 50, "b17": 50},
+        "CATALOGUE_GRID_SIZE": 100_000,
+        "CATALOGUE_PRIORITY_STEPS": 4,
+        "HILL_CLIMB_STEP_SIZES": (1, 2, 4, 8),
+        "GA_POPULATION_SIZE": 400,
+        "GA_GENERATIONS": 300,
+        "GA_TOURNAMENT_SIZE": 3,
+        "GA_CROSSOVER_RATE": 0.9,
+        "GA_MUTATION_RATE": 0.1,
+        "GA_ELITE_COUNT": 4,
+        "GA_RANDOM_SEED": 20261117,
+    }
+
+
+def _run_config_optimizer(
+    code_cells: list[dict],
+    workspace: Path,
+    metadata_dir: Path,
+    *,
+    last_cell: int | None = None,
+    overrides: dict[str, object] | None = None,
+) -> tuple[dict, dict[int, str], dict[int, set[str]]]:
+    """Execute the code cells of config_optimizer.ipynb like `_run_full_planner` executes those of full_planner.
+
+    `metadata_dir` is not optional: the last cell of the notebook writes its result into METADATA_DIR, and a
+    test run must never write into the repository. The meta parameters of Section 1 always get the values of
+    `_config_optimizer_meta_parameters`, unless `overrides` names others.
+    """
+    if metadata_dir.resolve() == FULL_PLANNER_METADATA_DIR.resolve():
+        raise ValueError("A test run of config_optimizer.ipynb needs its own copy of notebooks/metadata/")
+    return _run_full_planner(
+        code_cells,
+        workspace,
+        metadata_dir=metadata_dir,
+        last_cell=last_cell,
+        overrides={**_config_optimizer_meta_parameters(), **(overrides or {})},
+        label="config_optimizer",
+    )
+
+
+def _top_level_definitions(code_cells: list[dict]) -> dict[str, tuple[int, str]]:
+    """`{name: (code-cell index, source text)}` of every function, class and assignment at the top level of a notebook.
+
+    The text of a function or class includes its decorators. A name that several statements assign keeps the
+    last one, the one that is in force when the notebook has run.
+    """
+    found: dict[str, tuple[int, str]] = {}
+    for idx, cell in enumerate(code_cells):
+        source = _cell_source(cell)
+        if source.lstrip().startswith("!"):
+            continue
+        lines = source.split("\n")
+        for node in ast.parse(source).body:
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                names = [node.name]
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                names = [sub.id for target in targets for sub in ast.walk(target) if isinstance(sub, ast.Name)]
+            else:
+                continue
+            first_line = min([node.lineno, *(decorator.lineno for decorator in getattr(node, "decorator_list", []))])
+            text = "\n".join(lines[first_line - 1:node.end_lineno])
+            for name in names:
+                found[name] = (idx, text)
+    return found
+
+
+def _json_document(value: object) -> object:
+    """`value` as it comes back from a JSON file: tuples as lists, every key as text."""
+    return json.loads(json.dumps(value))
+
+
+class TestConfigOptimizerNotebook(unittest.TestCase):
+    """`notebooks/config_optimizer.ipynb`: layout rules, the code it shares with full_planner, the optimizer of the
+    empire configuration, and the JSON file that it saves."""
+
+    _assert_cell_ast_safe = TestExperimentationNotebook._assert_cell_ast_safe
+    _parse_printout = TestFullPlannerNotebook._parse_printout
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.nb = json.loads(CONFIG_OPTIMIZER_PATH.read_text(encoding="utf-8"))
+        cls.cells = cls.nb["cells"]
+        cls.code_positions = [pos for pos, cell in enumerate(cls.cells) if cell.get("cell_type") == "code"]
+        cls.code_cells = [cls.cells[pos] for pos in cls.code_positions]
+        # The section number of the heading above each code cell ("" when a cell has none: the layout test says so).
+        cls.sections = [
+            (_last_heading_number(_cell_source(cls.cells[pos - 1])) or "") if pos > 0 else ""
+            for pos in cls.code_positions
+        ]
+        cls.parameters_idx = cls.sections.index("1")
+        cls.metadata_cell_idx = cls.sections.index("2.5")
+        cls.universe_research_cell_idx = cls.sections.index("3.2")
+        cls.optimizer_idxs = [idx for idx, section in enumerate(cls.sections) if section.startswith("4.")]
+        cls.save_idx = cls.sections.index("5")
+        tmp = tempfile.TemporaryDirectory(prefix="si_co_test_")
+        cls.addClassCleanup(tmp.cleanup)
+        cls.tmp_root = Path(tmp.name)
+        cls.attack_workspace = _build_full_planner_workspace(cls.tmp_root / "attacks", with_attacks=True)
+        cls.cold_workspace = _build_full_planner_workspace(cls.tmp_root / "cold", with_attacks=False)
+        cls.three_planet_workspace = _build_full_planner_workspace(
+            cls.tmp_root / "three_planets", with_attacks=True, state=_three_planet_state()
+        )
+        cls.universe_workspace = _build_full_planner_workspace(
+            cls.tmp_root / "universe", with_attacks=True, universe_research=True
+        )
+        cls.repository_metadata_before = cls._folder_fingerprint(FULL_PLANNER_METADATA_DIR)
+        cls._runs: dict[Path, tuple[dict, dict[int, str], dict[int, set[str]]]] = {}
+        cls._workspace_before_after: dict[Path, tuple[dict[str, str], dict[str, str]]] = {}
+        cls._metadata_copies = 0
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        # Every run of this class works on its own copy of the metadata folder: the repository's stays as it was.
+        if cls._folder_fingerprint(FULL_PLANNER_METADATA_DIR) != cls.repository_metadata_before:
+            raise AssertionError("A test run of config_optimizer.ipynb changed notebooks/metadata/ in the repository")
+
+    @staticmethod
+    def _folder_fingerprint(folder: Path) -> dict[str, str]:
+        return {
+            str(path.relative_to(folder)): _sha256_bytes(path) for path in sorted(folder.rglob("*")) if path.is_file()
+        }
+
+    @classmethod
+    def _metadata_copy(cls) -> Path:
+        """A fresh copy of `notebooks/metadata/` for one run: the folder that the run saves its result into."""
+        cls._metadata_copies += 1
+        target = cls.tmp_root / f"metadata_{cls._metadata_copies}" / "metadata"
+        shutil.copytree(FULL_PLANNER_METADATA_DIR, target)
+        return target
+
+    @classmethod
+    def _cached_run(cls, workspace: Path) -> tuple[dict, dict[int, str], dict[int, set[str]]]:
+        """The notebook executed once on a workspace of the class, with its own metadata copy (cached).
+
+        The fingerprints of the workspace before and after the run are kept in `_workspace_before_after`.
+        """
+        if workspace not in cls._runs:
+            before = cls._folder_fingerprint(workspace)
+            cls._runs[workspace] = _run_config_optimizer(cls.code_cells, workspace, cls._metadata_copy())
+            cls._workspace_before_after[workspace] = (before, cls._folder_fingerprint(workspace))
+        return cls._runs[workspace]
+
+    @classmethod
+    def _attack_run(cls) -> tuple[dict, dict[int, str], dict[int, set[str]]]:
+        """The notebook executed once on the workspace with three attacks (cached for the whole class)."""
+        return cls._cached_run(cls.attack_workspace)
+
+    def _rerun_planner(self, ns: dict, changes: dict[str, object]) -> dict:
+        """Section 4 executed again on a copy of a finished run, with other meta parameters.
+
+        Its cells only read what Sections 1 to 3 left behind, so the copy can share those objects. Section 5 is
+        not executed: a rerun saves nothing.
+        """
+        rerun = {**ns, **changes}
+        with contextlib.redirect_stdout(io.StringIO()):
+            for idx in self.optimizer_idxs:
+                exec(compile(_cell_source(self.code_cells[idx]), f"config_optimizer_cell_{idx}", "exec"), rerun, rerun)
+        return rerun
+
+    def _notebook_meta_parameters(self) -> dict[str, object]:
+        """The meta parameters as the notebook's own Section 1 cell sets them."""
+        statements = ast.parse(_cell_source(self.code_cells[self.parameters_idx])).body
+        return {statement.target.id: ast.literal_eval(statement.value) for statement in statements}
+
+    # ------------------------------------------------------------------ layout and hygiene
+
+    def test_layout_one_described_code_cell_per_component(self) -> None:
+        self.assertEqual((self.nb.get("nbformat"), self.nb.get("nbformat_minor")), (4, 5))
+        cell_ids = [cell.get("id") for cell in self.cells]
+        self.assertTrue(all(isinstance(cell_id, str) and cell_id.strip() for cell_id in cell_ids))
+        self.assertEqual(len(set(cell_ids)), len(cell_ids), "Cell ids must be unique")
+        for pos, cell in enumerate(self.cells):
+            self.assertIn(cell.get("cell_type"), ("markdown", "code"))
+            self.assertTrue(_cell_source(cell).strip(), f"Cell {pos} is empty")
+
+        # A title, then one description and one code cell per component, up to the cell that saves the result.
+        self.assertTrue(_cell_source(self.cells[0]).startswith("# Config Optimizer"))
+        self.assertEqual(self.code_positions, list(range(2, len(self.cells), 2)))
+        self.assertEqual([self.cells[pos - 1].get("cell_type") for pos in self.code_positions], ["markdown"] * 20)
+        self.assertEqual(self.sections, CONFIG_OPTIMIZER_SECTIONS)
+        for idx, cell in enumerate(self.code_cells[1:], start=1):
+            src = _cell_source(cell)
+            for ln in src.splitlines():
+                self.assertFalse(
+                    ln.lstrip().startswith(("%", "!")),
+                    f"Only the first code cell may hold shell or magic lines: {ln!r}",
+                )
+            if idx != self.save_idx:
+                self._assert_cell_ast_safe(src, f"config_optimizer code cell {idx}")
+
+        # Section 0: the first code cell only installs packages.
+        pip_lines = [
+            ln.strip()
+            for ln in _cell_source(self.code_cells[0]).splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        self.assertGreater(len(pip_lines), 0, "The first code cell must hold the !pip install lines")
+        for ln in pip_lines:
+            self.assertTrue(ln.startswith("!pip install "), f"The first code cell must only install packages: {ln!r}")
+
+        # Section 0.1: every import is in the second code cell, uses the canonical package path, and is used.
+        cells_with_imports = [
+            idx
+            for idx, cell in enumerate(self.code_cells[1:], start=1)
+            if any(
+                isinstance(node, (ast.Import, ast.ImportFrom))
+                for node in ast.walk(ast.parse(_cell_source(cell)))
+            )
+        ]
+        self.assertEqual(cells_with_imports, [1], "Every import belongs in the Imports cell")
+        imported_names: set[str] = set()
+        for node in ast.walk(ast.parse(_cell_source(self.code_cells[1]))):
+            if isinstance(node, ast.Import):
+                imported_names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported_names.update(alias.asname or alias.name for alias in node.names)
+                if (node.module or "").split(".")[0] == "spaceinvasion":
+                    self.assertEqual(
+                        importlib.import_module(node.module).__name__,
+                        node.module,
+                        f"Import {node.module} through its real package path, not a legacy alias",
+                    )
+        used_names = {
+            node.id
+            for cell in self.code_cells[1:]
+            for node in ast.walk(ast.parse(_cell_source(cell)))
+            if isinstance(node, ast.Name)
+        }
+        self.assertEqual(sorted(imported_names - used_names), [], "The Imports cell imports names nothing uses")
+
+        # Section 1: the meta parameters come right after the imports. The cell only assigns plain values.
+        self.assertEqual(self.parameters_idx, 2)
+        self.assertIn("## 1. Meta Parameters", _cell_source(self.cells[self.code_positions[2] - 1]))
+        meta_parameters = ast.parse(_cell_source(self.code_cells[2])).body
+        self.assertGreater(len(meta_parameters), 10)
+        for statement in meta_parameters:
+            self.assertIsInstance(statement, ast.AnnAssign, "The meta-parameter cell only assigns annotated constants")
+            self.assertRegex(statement.target.id, r"^[A-Z][A-Z0-9_]+$")
+            try:
+                ast.literal_eval(statement.value)
+            except ValueError:
+                self.fail(f"{statement.target.id} must be a plain value: the cell holds parameters, not results")
+        self.assertEqual(
+            [statement.target.id for statement in meta_parameters],
+            list(_config_optimizer_meta_parameters()),
+            "The tests replace every meta parameter; keep _config_optimizer_meta_parameters in step with the cell",
+        )
+
+        # Section 2: the helpers, with print_section_data first, because every later cell prints with it.
+        self.assertIn("## 2. Utils", _cell_source(self.cells[self.code_positions[3] - 1]))
+        first_helpers = {
+            node.name for node in ast.parse(_cell_source(self.code_cells[3])).body if isinstance(node, ast.FunctionDef)
+        }
+        self.assertIn("print_section_data", first_helpers)
+
+        # A cell that generates data ends by printing it, with one print_section_data call and nothing else.
+        # Every other cell only defines things: no statement of it prints or calls anything.
+        for idx, section in enumerate(self.sections[2:], start=2):
+            body = ast.parse(_cell_source(self.code_cells[idx])).body
+            top_level_calls = [
+                node for node in body if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+            ]
+            if section in CONFIG_OPTIMIZER_PRINTING_SECTIONS:
+                printers = [
+                    node.func.id
+                    for node in ast.walk(ast.Module(body=body, type_ignores=[]))
+                    if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id in ("print", "print_section_data")
+                ]
+                self.assertEqual(printers, ["print_section_data"], f"Section {section} must print once")
+                self.assertIs(body[-1], top_level_calls[-1], f"Section {section} must end with its printout")
+                self.assertEqual(body[-1].value.func.id, "print_section_data")
+                title = body[-1].value.args[0]
+                title_start = title.value if isinstance(title, ast.Constant) else title.values[0].value
+                self.assertTrue(
+                    title_start.startswith(f"Section {section} data: "),
+                    f"The printout of Section {section} is titled {title_start!r}",
+                )
+            else:
+                self.assertEqual(top_level_calls, [], f"Section {section} must only define values and helpers")
+
+        # Section 5, the last cell, is the only one that writes: one write_text, into the notebook's METADATA_DIR.
+        self.assertEqual(self.save_idx, len(self.code_cells) - 1)
+        self.assertEqual(self.code_positions[-1], len(self.cells) - 1)
+        save_tree = ast.parse(_cell_source(self.code_cells[self.save_idx]))
+        calls = [node for node in ast.walk(save_tree) if isinstance(node, ast.Call)]
+        self.assertNotIn("open", [node.func.id for node in calls if isinstance(node.func, ast.Name)])
+        writes = [
+            ast.unparse(node.func)
+            for node in calls
+            if isinstance(node.func, ast.Attribute) and node.func.attr in FORBIDDEN_WRITE_ATTRS | {"open"}
+        ]
+        self.assertEqual(writes, ["CONFIG_RESULT_PATH.write_text"])
+        result_path = next(
+            node
+            for node in save_tree.body
+            if isinstance(node, ast.AnnAssign) and node.target.id == "CONFIG_RESULT_PATH"
+        )
+        self.assertEqual(ast.unparse(result_path.value), "METADATA_DIR / CONFIG_RESULT_FILE_NAME")
+        file_name = next(
+            node
+            for node in ast.parse(_cell_source(self.code_cells[self.sections.index("2.2")])).body
+            if isinstance(node, ast.AnnAssign) and node.target.id == "CONFIG_RESULT_FILE_NAME"
+        )
+        self.assertEqual(ast.literal_eval(file_name.value), CONFIG_OPTIMIZER_RESULT_FILE)
+
+    def test_notebook_is_saved_without_outputs(self) -> None:
+        # The outputs of a run print game data: planets, coordinates, the research of other players. The notebook
+        # is therefore committed without them. This test fails after every run in the editor, until the outputs
+        # are cleared ("Clear All Outputs") and the notebook is saved.
+        ran = [
+            idx
+            for idx, cell in enumerate(self.code_cells)
+            if cell.get("outputs") != [] or cell.get("execution_count") is not None
+        ]
+        self.assertFalse(
+            ran,
+            f"{len(ran)} code cells of notebooks/config_optimizer.ipynb hold the outputs or execution counts of a "
+            "run; clear all outputs and save the notebook before committing it",
+        )
+
+    def test_pip_cell_installs_exactly_what_the_notebook_imports(self) -> None:
+        requirements = {
+            _requirement_name(line): line.strip()
+            for line in (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+        installed = {
+            _requirement_name(spec): spec
+            for spec in re.findall(r'"([^"]+)"', _cell_source(self.code_cells[0]))
+        }
+        self.assertGreater(len(installed), 0)
+        for name, spec in installed.items():
+            self.assertEqual(
+                requirements.get(name), spec, f"The pip cell must use the requirements.txt range of {name}"
+            )
+
+        # A fresh interpreter in which every requirement the pip cell leaves out cannot be imported. The run
+        # saves its result into a copy of the metadata folder.
+        left_out = sorted(REQUIREMENT_IMPORT_NAMES.get(name, name) for name in set(requirements) - set(installed))
+        metadata_dir = self._metadata_copy()
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                FULL_PLANNER_SUBPROCESS_DRIVER,
+                str(CONFIG_OPTIMIZER_PATH),
+                str(self.cold_workspace),
+                json.dumps(left_out),
+                str(metadata_dir),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT), "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"The notebook needs a package that its pip cell does not install ({left_out} were blocked):\n"
+            f"{result.stderr[-2000:]}",
+        )
+        loaded = set(json.loads(result.stdout.strip().splitlines()[-1]))
+        for name in installed:
+            self.assertIn(
+                REQUIREMENT_IMPORT_NAMES.get(name, name),
+                loaded,
+                f"The pip cell installs {name}, which the notebook never imports",
+            )
+        # That run, with the notebook's own meta parameters, saved a result too, and only there.
+        self.assertTrue((metadata_dir / CONFIG_OPTIMIZER_RESULT_FILE).is_file())
+        self.assertEqual(self._folder_fingerprint(FULL_PLANNER_METADATA_DIR), self.repository_metadata_before)
+
+    # ------------------------------------------------------------------ code shared with full_planner.ipynb
+
+    def test_shared_code_is_identical_to_full_planner(self) -> None:
+        full_planner_cells = [
+            cell
+            for cell in json.loads(FULL_PLANNER_PATH.read_text(encoding="utf-8"))["cells"]
+            if cell.get("cell_type") == "code"
+        ]
+        originals = _top_level_definitions(full_planner_cells)
+        copies = _top_level_definitions(self.code_cells)
+
+        # Every function, class and assignment that both notebooks have under one name is the same statement,
+        # character for character, unless the name is listed with the reason for its own version.
+        shared = sorted(set(copies) & set(originals))
+        for name in shared:
+            if name in CONFIG_OPTIMIZER_OWN_STATEMENTS:
+                continue
+            self.assertEqual(
+                copies[name][1],
+                originals[name][1],
+                f"{name} differs between config_optimizer.ipynb and full_planner.ipynb: change it in both notebooks",
+            )
+        for name in CONFIG_OPTIMIZER_OWN_STATEMENTS:
+            self.assertIn(name, shared, f"{name} is listed as an own version but is no longer shared")
+            self.assertNotEqual(
+                copies[name][1], originals[name][1], f"{name} is listed as an own version but is a copy"
+            )
+        self.assertGreater(len(shared), 60)
+
+        # Every helper of Section 2 is such a copy, except the ones listed as the notebook's own.
+        helper_cells = [idx for idx, section in enumerate(self.sections) if section.startswith("2.")]
+        helpers = {
+            node.name
+            for idx in helper_cells
+            for node in ast.parse(_cell_source(self.code_cells[idx])).body
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+        }
+        self.assertEqual(sorted(helpers - set(originals)), sorted(CONFIG_OPTIMIZER_OWN_HELPERS))
+        for name in (
+            "print_section_data",
+            "open_readonly_db_copy",
+            "load_live_planet_states",
+            "build_padded_empire_planets",
+            "planet_param_context",
+            "building_level_economy",
+            "TechnologyRequirementGraph",
+            "build_universe_research_table",
+            "build_monotonic_base_times",
+            "technology_multiplier",
+        ):
+            self.assertIn(name, helpers)
+        # The statements that load the inputs are copies too.
+        for name in ("live_planet_states", "empire_planet_states", "PLANET_PARAM_CONTEXTS", "TECH_GRAPH",
+                     "universe_research_sources", "universe_research_df", "UNIVERSE_RESEARCH_MAX_LEVELS",
+                     "TECHNOLOGY_METADATA", "RESOURCE_METADATA", "PLANNER_SETTINGS", "METADATA_DIR", "LIVE_DB_PATH"):
+            self.assertIn(name, shared)
+        # What moved here is no longer in full_planner: the optimizer has one home.
+        moved_cells = (self.parameters_idx, *self.optimizer_idxs, self.save_idx)
+        optimizer_names = {name for name, (idx, _) in copies.items() if idx in moved_cells}
+        self.assertGreater(len(optimizer_names), 80)
+        self.assertEqual(sorted(optimizer_names & set(originals)), [])
+
+    def test_inputs_are_the_ones_that_full_planner_reads(self) -> None:
+        full_planner_cells = [
+            cell
+            for cell in json.loads(FULL_PLANNER_PATH.read_text(encoding="utf-8"))["cells"]
+            if cell.get("cell_type") == "code"
+        ]
+        # full_planner up to its Section 9, the last one whose data this notebook also loads.
+        last_input_cell = next(
+            idx
+            for idx, cell in enumerate(full_planner_cells)
+            if "UNIVERSE_RESEARCH_MAX_LEVELS: dict" in _cell_source(cell)
+        )
+        for label, workspace in (
+            ("attacks", self.attack_workspace),
+            ("universe research", self.universe_workspace),
+            ("three planets", self.three_planet_workspace),
+            ("empty database", self.cold_workspace),
+        ):
+            with self.subTest(workspace=label):
+                theirs, _, _ = _run_full_planner(full_planner_cells, workspace, last_cell=last_input_cell)
+                ours, _, _ = self._cached_run(workspace)
+                self.assertEqual(ours["colony_researches"], theirs["colony_researches"])
+                self.assertEqual(
+                    ours["ACCOUNT_SNAPSHOT"],
+                    {
+                        "colony_researches": theirs["colony_researches"],
+                        "universe_speedup_factor": theirs["telemetry_bundle"]["universe_speedup_factor"],
+                    },
+                )
+                # The account context holds a part of full_planner's, with the same values.
+                self.assertEqual(
+                    sorted(ours["GAME_PARAM_CONTEXT"]), ["r1_mining_tech", "r2_energy_tech", "speedup_factor"]
+                )
+                for key, value in ours["GAME_PARAM_CONTEXT"].items():
+                    self.assertEqual(value, theirs["GAME_PARAM_CONTEXT"][key], key)
+                self.assertEqual(ours["live_planet_states"], theirs["live_planet_states"])
+                self.assertEqual(ours["empire_planet_states"], theirs["empire_planet_states"])
+                self.assertEqual(len(ours["PLANET_PARAM_CONTEXTS"]), len(theirs["PLANET_PARAM_CONTEXTS"]))
+                for own_context, their_context in zip(ours["PLANET_PARAM_CONTEXTS"], theirs["PLANET_PARAM_CONTEXTS"]):
+                    self.assertEqual(own_context, {key: their_context[key] for key in own_context})
+                    self.assertIn("planet_temperature_c", own_context)
+                self.assertEqual(ours["universe_research_sources"], theirs["universe_research_sources"])
+                pd.testing.assert_frame_equal(ours["universe_research_df"], theirs["universe_research_df"])
+                self.assertEqual(ours["UNIVERSE_RESEARCH_MAX_LEVELS"], theirs["UNIVERSE_RESEARCH_MAX_LEVELS"])
+                self.assertEqual(
+                    {key: getattr(ours["TECH_GRAPH"], key) for key in ("nodes", "prereqs_of", "topological_order")},
+                    {key: getattr(theirs["TECH_GRAPH"], key) for key in ("nodes", "prereqs_of", "topological_order")},
+                )
+        # The fixtures are not all alike: the comparison saw research levels, several planets and an empty account.
+        universe, _, _ = self._cached_run(self.universe_workspace)
+        self.assertGreater(universe["UNIVERSE_RESEARCH_MAX_LEVELS"]["r1"], 20)
+        three, _, _ = self._cached_run(self.three_planet_workspace)
+        self.assertEqual(len(three["live_planet_states"]), 3)
+        cold, _, _ = self._cached_run(self.cold_workspace)
+        self.assertEqual((cold["live_planet_states"], cold["colony_researches"]), ([], {}))
+
+    def test_account_snapshot_loader(self) -> None:
+        ns, _, _ = self._attack_run()
+        load = ns["load_account_snapshot"]
+        cold_start_speed = float(ns["PLANNER_SETTINGS"]["cold_start_colony"]["speedup_factor"])
+        attack_db = self.attack_workspace / "state" / "spaceinvasion.db"
+        # The research levels of the newest planet snapshot, and the speed of the bot's latest game state.
+        snapshot = load(attack_db)
+        self.assertEqual(snapshot, {"colony_researches": {"r2": 1}, "universe_speedup_factor": 5.0})
+        self.assertEqual(list(snapshot), ["colony_researches", "universe_speedup_factor"])
+        self.assertEqual(ns["ACCOUNT_SNAPSHOT"], snapshot)
+        self.assertEqual(ns["colony_researches"], {"r2": 1})
+        self.assertEqual(ns["GAME_PARAM_CONTEXT"], {"speedup_factor": 5.0, "r1_mining_tech": 0, "r2_energy_tech": 1})
+
+        # Without a database, or with an empty one: no research, and the speed of the cold-start colony.
+        nothing = {"colony_researches": {}, "universe_speedup_factor": cold_start_speed}
+        self.assertEqual(load(self.cold_workspace / "state" / "missing.db"), nothing)
+        self.assertEqual(load(self.cold_workspace / "state" / "spaceinvasion.db"), nothing)
+
+        # The speed of the fixture happens to be the cold-start speed, so the saved value is changed in a copy of
+        # the database: a positive number is used as it is, anything else falls back to the cold-start speed.
+        self.assertEqual(cold_start_speed, 5.0)
+        with tempfile.TemporaryDirectory(prefix="si_co_snapshot_") as tmp:
+            edited_db = Path(tmp) / "spaceinvasion.db"
+            for suffix in ("", "-wal", "-shm"):
+                if Path(f"{attack_db}{suffix}").is_file():
+                    shutil.copy2(f"{attack_db}{suffix}", f"{edited_db}{suffix}")
+            for saved_speed, expected in (
+                (7.5, 7.5),
+                (3, 3.0),
+                (0, cold_start_speed),
+                (2.5, 2.5),
+                (-2.0, cold_start_speed),
+                ("fast", cold_start_speed),
+                (None, cold_start_speed),
+                (float("inf"), cold_start_speed),
+            ):
+                with contextlib.closing(sqlite3.connect(edited_db)) as conn:
+                    state = json.loads(
+                        conn.execute("SELECT value FROM meta WHERE key = 'latest_game_state'").fetchone()[0]
+                    )
+                    state["speedup_factor"] = saved_speed
+                    conn.execute("UPDATE meta SET value = ? WHERE key = 'latest_game_state'", (json.dumps(state),))
+                    conn.commit()
+                self.assertEqual(load(edited_db), {"colony_researches": {"r2": 1}, "universe_speedup_factor": expected})
+            # The research levels are the ones of the newest planet snapshot; a level that is no number is dropped.
+            with contextlib.closing(sqlite3.connect(edited_db)) as conn:
+                columns = [row[1] for row in conn.execute("PRAGMA table_info(planet_snapshots)") if row[1] != "id"]
+                copied = ", ".join("?" if column in ("ts", "researches_json") else column for column in columns)
+                for ts, researches in (
+                    (1_600_000_000.0, '{"r1": 3}'), (1_800_000_000.0, '{"r1": 9, "r2": 4, "r5": "x"}')
+                ):
+                    conn.execute(
+                        f"INSERT INTO planet_snapshots ({', '.join(columns)}) SELECT {copied} FROM planet_snapshots "
+                        "WHERE id = (SELECT MIN(id) FROM planet_snapshots)",
+                        (ts, researches),
+                    )
+                conn.commit()
+            self.assertEqual(load(edited_db)["colony_researches"], {"r1": 9, "r2": 4})
+        # The live file is only copied. No loader of this notebook opens it: every connection goes to a temporary
+        # copy, and the workspace stays as it was.
+        opened = _databases_opened_by(
+            lambda: [
+                ns[loader](attack_db)
+                for loader in ("load_account_snapshot", "load_live_planet_states", "load_universe_research_sources")
+            ]
+        )
+        self.assertGreaterEqual(len(opened), 3)
+        self.assertNotIn(attack_db.resolve(), opened, "The live database must only be copied, never opened")
+        self.assertEqual({path.name for path in opened}, {"spaceinvasion.db"})
+        before, _ = self._workspace_before_after[self.attack_workspace]
+        self.assertEqual(self._folder_fingerprint(self.attack_workspace), before)
+
+    # ------------------------------------------------------------------ the saved result
+
+    def test_run_writes_only_the_result_file(self) -> None:
+        ns, _, _ = self._attack_run()
+        before, after = self._workspace_before_after[self.attack_workspace]
+        self.assertEqual(after, before, "Running the notebook must not create or change a file in its workspace")
+        self.assertFalse(LEGACY_ATTACK_JSON_PATH.exists())
+        self.assertEqual(ns["LIVE_DB_PATH"], self.attack_workspace.resolve() / "state" / "spaceinvasion.db")
+
+        # The metadata folder of the run gained the result file, and nothing else in it changed.
+        metadata_dir = ns["METADATA_DIR"]
+        self.assertNotEqual(metadata_dir.resolve(), FULL_PLANNER_METADATA_DIR.resolve())
+        self.assertEqual(ns["CONFIG_RESULT_PATH"], metadata_dir / CONFIG_OPTIMIZER_RESULT_FILE)
+        originals = {name: digest for name, digest in self.repository_metadata_before.items()
+                     if name != CONFIG_OPTIMIZER_RESULT_FILE}
+        after_run = self._folder_fingerprint(metadata_dir)
+        self.assertEqual(sorted(set(after_run) - set(originals)), [CONFIG_OPTIMIZER_RESULT_FILE])
+        self.assertEqual({name: after_run[name] for name in originals}, originals)
+        self.assertGreaterEqual(set(originals), set(FULL_PLANNER_METADATA_FILES))
+        # The repository's own metadata folder was not touched.
+        self.assertEqual(self._folder_fingerprint(FULL_PLANNER_METADATA_DIR), self.repository_metadata_before)
+        # A run that is pointed at the repository's folder is refused by the test runner itself.
+        with self.assertRaisesRegex(ValueError, "needs its own copy"):
+            _run_config_optimizer(self.code_cells, self.cold_workspace, FULL_PLANNER_METADATA_DIR)
+
+        scratch_globals = sorted(
+            name
+            for name, value in ns.items()
+            if name.startswith("_")
+            and not name.startswith("__")
+            and not callable(value)
+            and not isinstance(value, types.ModuleType)
+        )
+        self.assertEqual(
+            [name for name in scratch_globals if name not in ("_", "_cand")],
+            [],
+            "Top-level temporaries belong inside functions, not in the notebook namespace",
+        )
+
+        # The only database access is a query-only connection to a temporary copy.
+        with ns["open_readonly_db_copy"](ns["LIVE_DB_PATH"]) as conn:
+            self.assertNotEqual(
+                Path(conn.execute("PRAGMA database_list").fetchone()[2]).resolve(),
+                ns["LIVE_DB_PATH"].resolve(),
+            )
+            with self.assertRaises(sqlite3.OperationalError):
+                conn.execute("CREATE TABLE config_optimizer_probe (x)")
+        self.assertEqual(self._folder_fingerprint(self.attack_workspace), before)
+
+    def test_saved_result_document(self) -> None:
+        ns, _, _ = self._attack_run()
+        result = ns["CONFIG_RESULT"]
+        text = ns["CONFIG_RESULT_PATH"].read_text(encoding="utf-8")
+        # The file is CONFIG_RESULT as indented JSON, and reading it back gives the same document.
+        self.assertEqual(text, json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
+        self.assertEqual(json.loads(text), result)
+        self.assertEqual(_json_document(result), result, "CONFIG_RESULT must already be plain JSON data")
+        self.assertNotRegex(text, r"\b(NaN|Infinity)\b")
+        self.assertEqual(
+            list(result),
+            [
+                "description",
+                "schema_version",
+                "generated_at",
+                "meta_parameters",
+                "inputs",
+                "planned_research_levels",
+                "summary",
+                "search",
+                "limits",
+                "planets",
+            ],
+        )
+        self.assertIn("notebooks/config_optimizer.ipynb", result["description"])
+        self.assertEqual(result["schema_version"], 1)
+        generated_at = datetime.datetime.fromisoformat(result["generated_at"])
+        self.assertIsNotNone(generated_at.tzinfo, "generated_at must say which time zone it is in")
+        self.assertRegex(result["generated_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$")
+        self.assertLess(abs((datetime.datetime.now(datetime.timezone.utc) - generated_at).total_seconds()), 900.0)
+
+        # The meta parameters of the run: every name of the Section 1 cell, with the values the run used.
+        pinned = _config_optimizer_meta_parameters()
+        self.assertEqual(list(result["meta_parameters"]), list(pinned))
+        self.assertEqual(result["meta_parameters"], _json_document(pinned))
+        self.assertEqual(result["meta_parameters"]["MISC_BUILDING_LEVELS_BY_SLOT"], {"1": {"b8": 12}})
+        self.assertEqual(result["meta_parameters"]["HILL_CLIMB_STEP_SIZES"], [1, 2, 4, 8])
+
+        self.assertEqual(
+            result["inputs"],
+            {
+                "universe_speedup_factor": 5.0,
+                "owned_planets": 1,
+                "roster_planets": 11,
+                "own_research_levels": ns["colony_researches"],
+                "universe_research_max_levels": ns["UNIVERSE_RESEARCH_MAX_LEVELS"],
+            },
+        )
+        self.assertEqual(result["planned_research_levels"], ns["PLANNED_RESEARCH_LEVELS"])
+        self.assertEqual(result["summary"], _json_document(ns["BEST_CONFIG_SUMMARY"]))
+        self.assertEqual(result["summary"]["ships_per_month"], ns["BEST_CONFIG_SUMMARY"]["ships_per_month"])
+        self.assertGreater(result["summary"]["ships_per_month"], 0.0)
+        self.assertEqual(result["search"], _json_document(ns["GA_SUMMARY"]))
+        self.assertEqual(result["limits"], _json_document(ns["best_config_limits_df"].to_dict(orient="records")))
+        self.assertEqual([row["limit"] for row in result["limits"]], ["metal", "kryptonite", "spice", "shipyards"])
+
+        # One record per planet of the roster, in its order.
+        plans, buildings = ns["PLANET_PLANS"], ns["best_config_buildings_df"]
+        production, warehouses = ns["best_config_planets_df"], ns["best_config_warehouses_df"]
+        self.assertEqual(len(result["planets"]), 11)
+        identity = ["slot_index", "planet_id", "coords", "planet_status"]
+        for index, (record, table) in enumerate(zip(result["planets"], ns["PLANET_CONFIGURATIONS"].values())):
+            plan = plans[index]
+            self.assertEqual(
+                list(record),
+                [
+                    *identity,
+                    "is_central_planet",
+                    "pays_for_research",
+                    "temperature_c",
+                    "fields_max",
+                    "fields_used",
+                    "fields_free",
+                    "production",
+                    "warehouses",
+                    "buildings",
+                ],
+            )
+            self.assertEqual([record[key] for key in identity], [plan[key] for key in identity])
+            self.assertEqual(
+                (record["is_central_planet"], record["pays_for_research"], record["temperature_c"]),
+                (plan["is_central_planet"], plan["pays_for_research"], plan["temperature_c"]),
+            )
+            self.assertIs(type(record["is_central_planet"]), bool)
+            self.assertEqual(
+                [record[key] for key in ("fields_max", "fields_used", "fields_free")],
+                [int(buildings.loc[index, key]) for key in ("fields_max", "fields_used", "fields_free")],
+            )
+            self.assertEqual(
+                record["production"], _json_document(production.drop(columns=identity).iloc[index].to_dict())
+            )
+            own_warehouses = warehouses[warehouses["slot_index"] == plan["slot_index"]]
+            self.assertEqual(
+                record["warehouses"],
+                _json_document(own_warehouses.drop(columns=["slot_index", "coords"]).to_dict(orient="records")),
+            )
+            self.assertEqual([row["resource"] for row in record["warehouses"]], list(ns["RESOURCE_KEYS"]))
+            self.assertEqual(record["buildings"], _json_document(table.to_dict(orient="records")))
+            self.assertEqual(
+                {row["key"]: row["target_level"] for row in record["buildings"]},
+                {key: int(buildings.loc[index, key]) for key in table["key"]},
+            )
+        home = result["planets"][0]
+        self.assertEqual(
+            (home["coords"], home["planet_status"], home["is_central_planet"]), ("02:380:12", "colonized", True)
+        )
+        self.assertEqual(result["planets"][10]["coords"], "EMPTY:10")
+        fusion = next(row for row in home["buildings"] if row["key"] == "b5")
+        self.assertEqual((fusion["building"], fusion["role"], fusion["built_level"]), ("Fusion plant", "optimized", 7))
+        self.assertEqual(
+            sorted(fusion),
+            sorted(
+                [
+                    "key",
+                    "building",
+                    "role",
+                    "built_level",
+                    "target_level",
+                    "levels_to_build",
+                    "upgrade_cost_spice_eq",
+                    "last_level_build_time_s",
+                    "last_level_build_time_text",
+                ]
+            ),
+        )
+        # The printout of the cell names the file and what it holds, without repeating the tables.
+        _, stdout, _ = self._attack_run()
+        self.assertIn(f"Section 5 data: result saved as {CONFIG_OPTIMIZER_RESULT_FILE}", stdout[self.save_idx])
+        self.assertIn(str(ns["CONFIG_RESULT_PATH"]), stdout[self.save_idx])
+        self.assertIn('"planets": "list, len=11"', stdout[self.save_idx])
+        self.assertLess(len(stdout[self.save_idx]), 3000)
+
+        # json_ready: what JSON cannot write as it is.
+        json_ready = ns["json_ready"]
+        self.assertEqual(
+            json_ready(
+                {
+                    7: (1, 2.5, "x"),
+                    "array": np.array([[1, 2], [3, 4]]),
+                    "numbers": [np.int64(5), np.float64(0.5), np.bool_(True)],
+                    "not finite": [float("nan"), float("inf"), -float("inf"), np.float64("nan")],
+                    "plain": [None, True, False, 0, -1.25, "text"],
+                }
+            ),
+            {
+                "7": [1, 2.5, "x"],
+                "array": [[1, 2], [3, 4]],
+                "numbers": [5, 0.5, True],
+                "not finite": [None, None, None, None],
+                "plain": [None, True, False, 0, -1.25, "text"],
+            },
+        )
+        converted = json_ready({"numbers": [np.int64(5), np.float64(0.5), np.bool_(True)]})["numbers"]
+        self.assertEqual([type(value) for value in converted], [int, float, bool])
+        for unsupported in ({1, 2}, Path("x"), object()):
+            with self.assertRaisesRegex(TypeError, "Cannot save a value of type"):
+                json_ready({"value": unsupported})
+        self.assertEqual(
+            ns["table_records"](pd.DataFrame({"n": [1, 2], "x": [0.5, float("nan")], "t": ["a", "b"]})),
+            [{"n": 1, "x": 0.5, "t": "a"}, {"n": 2, "x": None, "t": "b"}],
+        )
+
+        # In this run the central planet also holds the Research lab, so the two flags agree on every planet.
+        self.assertEqual([planet["is_central_planet"] for planet in result["planets"]], [True] + [False] * 10)
+        self.assertEqual([planet["pays_for_research"] for planet in result["planets"]], [True] + [False] * 10)
+
+        # Another run replaces the file. Here: Section 4 again with a month of 15 days and the Research lab on
+        # slot 2, saved into the same folder.
+        other = self._rerun_planner(
+            ns, {"PRODUCTION_MONTH_DAYS": 15.0, "MISC_BUILDING_LEVELS_BY_SLOT": {2: {"b8": 12}}}
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(_cell_source(self.code_cells[self.save_idx]), "config_optimizer_save", "exec"), other, other)
+        try:
+            replaced = json.loads(ns["CONFIG_RESULT_PATH"].read_text(encoding="utf-8"))
+            self.assertEqual(replaced, other["CONFIG_RESULT"])
+            self.assertEqual(replaced["meta_parameters"]["PRODUCTION_MONTH_DAYS"], 15.0)
+            self.assertEqual(replaced["meta_parameters"]["MISC_BUILDING_LEVELS_BY_SLOT"], {"2": {"b8": 12}})
+            self.assertEqual(replaced["summary"]["hours_per_month"], 360.0)
+            self.assertNotEqual(replaced["summary"]["ships_per_month"], result["summary"]["ships_per_month"])
+            # The central planet is still slot 1, but slot 2 pays for the research now.
+            self.assertEqual([planet["is_central_planet"] for planet in replaced["planets"]], [True] + [False] * 10)
+            self.assertEqual(
+                [planet["pays_for_research"] for planet in replaced["planets"]], [False, True] + [False] * 9
+            )
+            self.assertEqual(
+                sorted(path.name for path in ns["METADATA_DIR"].iterdir()),
+                sorted({*self.repository_metadata_before, CONFIG_OPTIMIZER_RESULT_FILE}),
+            )
+        finally:  # leave the file of the cached run as that run wrote it
+            ns["CONFIG_RESULT_PATH"].write_text(text, encoding="utf-8")
+
+    def test_cold_start_on_an_empty_database(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            metadata_dir = self._metadata_copy()
+            cold_ns, cold_stdout, _ = _run_config_optimizer(self.code_cells, self.cold_workspace, metadata_dir)
+        # An empty account: no planet, no research, the speed of the cold-start colony, eleven generic planets.
+        self.assertEqual(len(cold_ns["live_planet_states"]), 0)
+        self.assertEqual(len(cold_ns["empire_planet_states"]), 11)
+        self.assertEqual(cold_ns["colony_researches"], {})
+        self.assertEqual(
+            cold_ns["GAME_PARAM_CONTEXT"],
+            {
+                "speedup_factor": float(cold_ns["PLANNER_SETTINGS"]["cold_start_colony"]["speedup_factor"]),
+                "r1_mining_tech": 0,
+                "r2_energy_tech": 0,
+            },
+        )
+        self.assertEqual(
+            {context["planet_status"] for context in cold_ns["PLANET_PARAM_CONTEXTS"]}, {"empty_colony_slot"}
+        )
+        for idx, out in cold_stdout.items():
+            if self.sections[idx] in CONFIG_OPTIMIZER_PRINTING_SECTIONS:
+                self.assertRegex(out, r"(?m)^Printed: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4} \| ")
+                self.assertNotIn("...", out)
+        self.assertIn("[live_planet_states] list, len=0\n[]", cold_stdout[self.sections.index("3.1")])
+
+        # The planner works on an empty account too: nothing is known about anybody's research, slot 1 gets the
+        # Research lab, the other ten generic planets are twins, and the search still finds starbases to build.
+        self.assertEqual(int(cold_ns["universe_research_df"]["universe_max_level"].sum()), 0)
+        self.assertEqual(set(cold_ns["universe_research_df"]["max_source"]), {"none"})
+        self.assertEqual(cold_ns["plan_planets_df"]["free_fields"].tolist(), [271] + [283] * 10)
+        self.assertEqual(cold_ns["PRODUCTION_MODEL"].twin_planets, [0] + [1] * 10)
+        self.assertEqual(set(cold_ns["plan_building_levels_df"]["built_level"]), {0})
+        self.assertGreater(cold_ns["BEST_CONFIG_SUMMARY"]["ships_per_month"], 0.0)
+        self.assertEqual(
+            cold_ns["BEST_CONFIG_SUMMARY"]["levels_to_build"],
+            int(cold_ns["best_config_buildings_df"]["fields_used"].sum()),
+        )
+        # Its result is saved like any other.
+        saved = json.loads((metadata_dir / CONFIG_OPTIMIZER_RESULT_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(saved, cold_ns["CONFIG_RESULT"])
+        self.assertEqual((saved["inputs"]["owned_planets"], saved["inputs"]["own_research_levels"]), (0, {}))
+        self.assertEqual({planet["planet_status"] for planet in saved["planets"]}, {"empty_colony_slot"})
+        self.assertEqual({row["built_level"] for planet in saved["planets"] for row in planet["buildings"]}, {0})
+
+        # A missing database file is a cold start too.
+        missing_db = self.cold_workspace / "state" / "missing.db"
+        self.assertFalse(cold_ns["has_database"](missing_db))
+        self.assertEqual(cold_ns["load_live_planet_states"](missing_db), [])
+        self.assertEqual(cold_ns["load_universe_research_sources"](missing_db)["ledger_rows"], [])
+
+    # ------------------------------------------------------------------ Section 4: best configuration
 
     def _toy_model(
         self,
@@ -3807,7 +4832,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
             (transport.ship_cost.tolist(), transport.target_requirements), ([3000.0, 3000.0], {"b9": 2, "b7": 3})
         )
 
-    # ------------------------------------------------------------------ Section 11: warehouses
+    # ------------------------------------------------------------------ Section 4: warehouses
 
     @staticmethod
     def _warehouse_level_for(amount: float) -> int:
@@ -3836,7 +4861,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         ship_cost: dict | None = None,
         reserve: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0),
     ) -> list[int]:
-        """The warehouse rules of Section 11, written out for one planet and one design.
+        """The warehouse rules of Section 4, written out for one planet and one design.
 
         `levels` are the design's levels of the optimized buildings, `ship_cost` the cost of the target ship
         when the design's shipyard builds it, and `reserve` what the central planet keeps for the empire.
@@ -5045,7 +6070,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         self.assertEqual(rounds.loc[0, "ships_per_month"], summary["ships_per_month"])
         self.assertEqual(list(rounds["round"]), [1])
 
-        # Section 11.6: one table per planet, with every building that the planet has or gets.
+        # Section 4.5: one table per planet, with every building that the planet has or gets.
         configurations = ns["PLANET_CONFIGURATIONS"]
         labels = list(configurations)
         self.assertEqual(len(labels), 11)
@@ -5082,6 +6107,103 @@ class TestFullPlannerNotebook(unittest.TestCase):
         self.assertGreater(home_table.loc["b5", "upgrade_cost_spice_eq"], 0.0)
         # A building that is neither built nor planned is left out.
         self.assertNotIn("b6", home_table.index)
+
+        # Build times. The last missing level of a building takes the base time that the catalog gives its
+        # target level, divided by (Development center + 1) * 2^Microsystem accelerator * universe speed, with
+        # the levels that the planet has in the configuration. A building with no level left to build takes none.
+        speed = float(ns["PLAN_ACCOUNT_CONTEXT"]["speedup_factor"])
+        self.assertGreater(speed, 1.0)
+
+        def catalog_time(key: str, level: int) -> float:
+            return float(game_data.BUILDING_BY_ID[int(key[1:])]["levels"][level]["base_time_s"])
+
+        timed, untimed = 0, 0
+        for table in configurations.values():
+            self.assertEqual(
+                list(table.columns),
+                [
+                    "key",
+                    "building",
+                    "role",
+                    "built_level",
+                    "target_level",
+                    "levels_to_build",
+                    "upgrade_cost_spice_eq",
+                    "last_level_build_time_s",
+                    "last_level_build_time_text",
+                ],
+            )
+            targets = {key: int(level) for key, level in zip(table["key"], table["target_level"])}
+            for _, entry in table.iterrows():
+                key = entry["key"]
+                if entry["levels_to_build"] == 0:
+                    expected = 0.0
+                    untimed += 1
+                else:
+                    # The Development center and the Microsystem accelerator are built at their level before.
+                    dev_center = targets["b7"] - (1 if key == "b7" else 0)
+                    accelerator = targets.get("b17", 0) - (1 if key == "b17" else 0)
+                    expected = catalog_time(key, targets[key]) / ((dev_center + 1) * 2**accelerator * speed)
+                    timed += 1
+                self.assertEqual(entry["last_level_build_time_s"], round(expected, 2), (key, targets[key]))
+                self.assertEqual(entry["last_level_build_time_text"], ns["fmt_duration"](expected))
+        self.assertGreater(timed, 100)
+        self.assertGreater(untimed, 0)
+        # One planet has a Microsystem accelerator: there the same Development center 12 is built that much faster.
+        yards = [index for index in range(1, 11) if buildings.loc[index, "b17"] > 0]
+        plain = [index for index in range(1, 11) if buildings.loc[index, "b17"] == 0]
+        self.assertTrue(yards and plain)
+        tables = list(configurations.values())
+        yard_table, plain_table = tables[yards[0]].set_index("key"), tables[plain[0]].set_index("key")
+        self.assertEqual(
+            plain_table.loc["b7", "last_level_build_time_s"],
+            round(catalog_time("b7", 12) / (12 * speed), 2),
+        )
+        self.assertAlmostEqual(
+            yard_table.loc["b7", "last_level_build_time_s"],
+            catalog_time("b7", 12) / (12 * speed) / 2 ** int(buildings.loc[yards[0], "b17"]),
+            delta=0.006,
+        )
+        self.assertEqual(
+            plain_table.loc["b7", "last_level_build_time_text"],
+            ns["fmt_duration"](catalog_time("b7", 12) / (12 * speed)),
+        )
+
+        # last_level_build_time on explicit levels: Development center 4, Microsystem accelerator 2, speed 5.
+        last_level = ns["last_level_build_time"]
+        levels = {"b1": 3, "b7": 4, "b17": 2}
+        self.assertEqual(last_level("b1", levels, 5.0), catalog_time("b1", 3) / (5 * 4 * 5.0))
+        self.assertEqual(last_level("b7", levels, 5.0), catalog_time("b7", 4) / (4 * 4 * 5.0))
+        self.assertEqual(last_level("b17", levels, 5.0), catalog_time("b17", 2) / (5 * 2 * 5.0))
+        self.assertEqual(last_level("b1", {**levels, "b1": 0}, 5.0), 0.0)
+        # Beyond 1e14 seconds the catalog kept the digits of a base time and lost its exponent: Kryptonite mine
+        # 68 reads less than 10 seconds. Such a time is rebuilt from the level before and the growth of the
+        # cost, and it agrees with the digits that survived.
+        mine_levels = game_data.BUILDING_BY_ID[3]["levels"]
+        self.assertGreater(catalog_time("b3", 67), 8e13)
+        self.assertLess(catalog_time("b3", 68), 10.0)
+        rebuilt = last_level("b3", {"b3": 68, "b7": 0, "b17": 0}, 1.0)
+        costs = [float(game_data.spice_equivalent(mine_levels[level]["cost"])) for level in (67, 68)]
+        self.assertAlmostEqual(rebuilt / (catalog_time("b3", 67) * costs[1] / costs[0]), 1.0, places=12)
+        self.assertAlmostEqual(rebuilt / (catalog_time("b3", 68) * 1e14), 1.0, delta=0.001)
+
+        # planet_configuration_table on explicit levels. The home planet has Fusion plant 7: a plan that keeps
+        # it there has nothing to build and takes no time; one more level takes the time of level 8.
+        table_of = ns["planet_configuration_table"]
+        built = plans[0]["built_levels"]
+        self.assertEqual(built["b5"], 7)
+        kept = table_of(plans[0], dict(built), 2.0).set_index("key")
+        self.assertEqual(kept["levels_to_build"].tolist(), [0] * len(kept))
+        self.assertEqual(kept["last_level_build_time_s"].tolist(), [0.0] * len(kept))
+        self.assertEqual(set(kept["last_level_build_time_text"]), {"0s"})
+        raised = table_of(plans[0], {**built, "b5": 8}, 2.0).set_index("key")
+        fusion_time = catalog_time("b5", 8) / ((built["b7"] + 1) * 2 ** built["b17"] * 2.0)
+        self.assertEqual(raised.loc["b5", "last_level_build_time_s"], round(fusion_time, 2))
+        self.assertEqual(raised.loc["b5", "last_level_build_time_text"], ns["fmt_duration"](fusion_time))
+        self.assertEqual(raised["last_level_build_time_s"].drop(index="b5").tolist(), [0.0] * (len(raised) - 1))
+        # A plan below the level that stands builds nothing either.
+        lowered = table_of(plans[0], {**built, "b5": 6}, 2.0).set_index("key")
+        self.assertEqual(lowered.loc["b5", ["levels_to_build", "last_level_build_time_s"]].tolist(), [0, 0.0])
 
     def test_meta_parameters_steer_the_plan(self) -> None:
         default_ns, _, _ = self._attack_run()
@@ -5123,7 +6245,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
         self.assertLess(
             changed["BEST_CONFIG_SUMMARY"]["investment_spice_eq"], 0.01 * default_summary["investment_spice_eq"]
         )
-        # With maximum levels this low every planet keeps free fields, and its label in Section 11.6 says how
+        # With maximum levels this low every planet keeps free fields, and its label in Section 4.5 says how
         # many of its fields it uses.
         self.assertTrue((buildings["fields_used"] < buildings["fields_max"]).all())
         self.assertEqual(
@@ -5448,86 +6570,61 @@ class TestFullPlannerNotebook(unittest.TestCase):
 
     # ------------------------------------------------------------------ printouts
 
-    def _parse_printout(self, out: str) -> tuple[str, dict[str, list[str]]]:
-        """Check the frame of one `print_section_data` printout; return its section number and its item blocks."""
-        rule_eq = "=" * 100
-        item_rule = "\n" + "-" * 100 + "\n"
-        out_lines = out.rstrip("\n").split("\n")
-        self.assertEqual(out_lines[0], rule_eq)
-        self.assertEqual(out_lines[3], rule_eq)
-        title = re.fullmatch(r"Section ([\d.]+) data: \S.*", out_lines[1])
-        self.assertIsNotNone(title, f"Malformed printout title: {out_lines[1]!r}")
-        stamp = re.fullmatch(
-            r"Printed: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}) \| (\d+) item\(s\)",
-            out_lines[2],
-        )
-        self.assertIsNotNone(stamp, f"Missing print date/time header: {out_lines[2]!r}")
-        printed_at = datetime.datetime.strptime(stamp.group(1), "%Y-%m-%d %H:%M:%S %z")
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
-        self.assertLess(abs((now_utc - printed_at).total_seconds()), 600.0)
-        blocks = "\n".join(out_lines[4:]).split(item_rule)
-        self.assertEqual(len(blocks), int(stamp.group(2)))
-        named: dict[str, list[str]] = {}
-        for block in blocks:
-            block_lines = block.split("\n")
-            head = re.fullmatch(r"\[(?P<name>[^\]]+)\] (?P<desc>.+)", block_lines[0])
-            self.assertIsNotNone(head, f"Malformed item header: {block_lines[0]!r}")
-            self.assertNotIn(head.group("name"), named, "Each object is printed exactly once")
-            named[head.group("name")] = block_lines
-        return title.group(1), named
+    # ------------------------------------------------------------------ printouts
 
     def test_every_generated_object_is_printed_in_full(self) -> None:
         ns, stdout, new_names = self._attack_run()
-        sections = self._section_cells()
-        self.assertEqual([section for section, _, _ in sections], FULL_PLANNER_DATA_SECTIONS)
-        # A cell of Section 11 prints its own data: it is its own print cell.
-        planner_sections = [
-            (_last_heading_number(_cell_source(self.cells[self.code_positions[idx] - 1])), idx, idx)
-            for idx in self.planner_idxs
+        # The cells that generate data, in notebook order. Code cells 0 and 1 install packages and import modules.
+        data_idxs = [
+            idx
+            for idx in range(2, len(self.code_cells))
+            if any(_is_generated_data(name, ns[name]) for name in new_names[idx])
         ]
-        self.assertEqual([section for section, _, _ in planner_sections], FULL_PLANNER_SELF_PRINTING_SECTIONS)
-        all_sections = [*sections, *planner_sections]
+        self.assertEqual([self.sections[idx] for idx in data_idxs], ["1", *CONFIG_OPTIMIZER_PRINTING_SECTIONS])
+        # A cell prints its own data. The meta parameters of Section 1 are the exception: the cell only sets
+        # values, and Section 4.1 prints them with the plan.
+        print_idx_of = {
+            idx: self.optimizer_idxs[0] if idx == self.parameters_idx else idx for idx in data_idxs
+        }
+        for idx in range(1, len(self.code_cells)):
+            if self.sections[idx] not in CONFIG_OPTIMIZER_PRINTING_SECTIONS:
+                self.assertEqual(stdout[idx], "", f"The cell of Section {self.sections[idx]} must print nothing")
 
-        printed_text = "".join(stdout[print_idx] for _, _, print_idx in all_sections)
+        printed_text = "".join(stdout[idx] for idx in data_idxs)
         self.assertNotIn("...", printed_text, "Printouts must never be truncated")
         self.assertNotRegex(printed_text, r"\de\+\d", "Large numbers must not print in scientific notation")
         self.assertEqual(re.findall(r"sid=(?!REDACTED)", printed_text, flags=re.IGNORECASE), [])
 
         printed_blocks: dict[str, list[str]] = {}
         section_out: dict[str, str] = {}
-        for section, data_idx, print_idx in all_sections:
-            out = stdout[print_idx]
-            title_section, blocks = self._parse_printout(out)
+        for idx in data_idxs[1:]:
+            section = self.sections[idx]
+            title_section, blocks = self._parse_printout(stdout[idx])
             self.assertEqual(
-                title_section,
-                section,
-                f"Print cell {print_idx} is titled Section {title_section} but prints the data of Section {section}",
+                title_section, section, f"The cell of Section {section} titles its printout Section {title_section}"
             )
-            if print_idx != data_idx:
-                self.assertRegex(
-                    _cell_source(self.cells[self.code_positions[print_idx] - 1]),
-                    rf"(?m)^### 10\.\d+ Section {re.escape(section)} Data\b",
-                    f"The heading above print cell {print_idx} must name Section {section}",
-                )
-            section_out[section] = out
+            section_out[section] = stdout[idx]
             for name, block_lines in blocks.items():
                 self.assertNotIn(name, printed_blocks, "Each object is printed exactly once")
                 printed_blocks[name] = block_lines
-
-            # Every data name the matching cell defined must appear in its printout.
-            section_names = sorted(name for name in new_names[data_idx] if _is_generated_data(name, ns[name]))
+        for idx in data_idxs:
+            # Every data name that the cell defined must appear in its printout.
+            out = stdout[print_idx_of[idx]]
+            section_names = sorted(name for name in new_names[idx] if _is_generated_data(name, ns[name]))
             self.assertGreater(len(section_names), 0)
             for name in section_names:
                 self.assertRegex(
                     out,
                     rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])",
-                    f"{name!r} (generated by code cell {data_idx}) is missing from the printout of cell {print_idx}",
+                    f"{name!r} (generated by code cell {idx}) is missing from the printout of cell {print_idx_of[idx]}",
                 )
 
         # Every DataFrame / ndarray the notebook generated is printed row for row / element for element.
+        tables_and_arrays = 0
         for name, value in sorted(ns.items()):
             if name.startswith("_") or not isinstance(value, (pd.DataFrame, np.ndarray)):
                 continue
+            tables_and_arrays += 1
             self.assertIn(name, printed_blocks, f"{name} is generated but never printed")
             block_lines = printed_blocks[name]
             if isinstance(value, pd.DataFrame):
@@ -5549,107 +6646,51 @@ class TestFullPlannerNotebook(unittest.TestCase):
                 printed_vals = [float(tok) for tok in tokens]
                 self.assertEqual(len(printed_vals), value.size)
                 np.testing.assert_allclose(printed_vals, value.astype(np.float64).ravel(), rtol=0.0, atol=1e-6)
+        self.assertGreaterEqual(tables_and_arrays, 14)
 
-        # Spot checks: paths, metadata, fixed-point timestamps, full-digit big integers, graph closure, planets.
-        self.assertIn(str(self.attack_workspace.resolve() / "state" / "spaceinvasion.db"), section_out["1.1"])
-        self.assertIn('  "b1": {"name": "Pig iron mine", ', section_out["1.6"])
-        self.assertIn('"max_planets": 11', section_out["1.6"])
+        # Spot checks: paths, metadata, the graph, the roster, the research table.
+        self.assertIn(str(self.attack_workspace.resolve() / "state" / "spaceinvasion.db"), section_out["2.2"])
+        self.assertIn(f"[CONFIG_RESULT_FILE_NAME] str = {CONFIG_OPTIMIZER_RESULT_FILE!r}", section_out["2.2"])
+        self.assertIn('"max_planets": 11', section_out["2.5"])
+        self.assertIn('  "r1": {"name": "Mining technology", ', section_out["2.5"])
+        graph = ns["TECH_GRAPH"]
+        self.assertIn("[TECH_GRAPH (TechnologyRequirementGraph summary)] dict, len=3", section_out["2.8"])
+        self.assertIn(f'"nodes": {len(graph.nodes)}', section_out["2.8"])
         self.assertIn(
-            "[attack_dispatch_ts_arr] numpy.ndarray, shape=(3,), dtype=float64\n"
-            "[1700000000 1700001000 1700003000]",
-            section_out["2.3"],
+            f'"edges": {sum(len(requirements) for requirements in graph.prereqs_of.values())}', section_out["2.8"]
         )
-        top_b17_metal = game_data.building_cost(17, 50)["metal"]
-        self.assertGreater(top_b17_metal, 10**20)
-        self.assertIn(f" {top_b17_metal} ", section_out["6.1"])
-        s7_closure_line = next(ln for ln in section_out["7.2"].split("\n") if ln.startswith('  "s7": '))
-        s7_closure = json.loads(s7_closure_line.split(": ", 1)[1].rstrip(","))
-        self.assertEqual(
-            set(s7_closure["all_prerequisites"]), set(ns["TECH_GRAPH"].transitive_requirements("s7"))
+        self.assertIn('"b5": 7', section_out["3.1"])
+        self.assertEqual(section_out["3.1"].count('"fields_max": 300'), 10)
+        self.assertIn('"coords": "EMPTY:10"', section_out["3.1"])
+        self.assertIn('[ACCOUNT_SNAPSHOT] dict, len=2', section_out["3.1"])
+        self.assertIn('"universe_speedup_factor": 5.0', section_out["3.1"])
+        self.assertIn("[universe_research_df] pandas.DataFrame, shape=(15, 15)", section_out["3.2"])
+        # Section 4: the meta parameters of the run, then the plan, the model, and the result in the titles.
+        used = _config_optimizer_meta_parameters()
+        self.assertTrue(
+            section_out["4.1"].split("\n")[1].startswith("Section 4.1 data: meta parameters, planned research")
         )
-        self.assertEqual(s7_closure["all_unlocks"], [])
-        self.assertIn('"b5": 7', section_out["6"])
-        self.assertEqual(section_out["6"].count('"fields_max": 300'), 10)
-        self.assertIn('"coords": "EMPTY:10"', section_out["6"])
-        # Section 9 and the planner: the research table, the meta parameters as set, and the result in the title.
-        self.assertIn("[universe_research_df] pandas.DataFrame, shape=(15, 15)", section_out["9"])
-        own_meta = self._notebook_meta_parameters()
-        self.assertIn(f"[TARGET_SHIP_KEY] str = {own_meta['TARGET_SHIP_KEY']!r}", section_out["11.1"])
-        self.assertIn(f'"GA_RANDOM_SEED": {own_meta["GA_RANDOM_SEED"]}', section_out["11.1"])
-        for building, level in own_meta["MISC_BUILDING_LEVELS"].items():
-            self.assertIn(f'"{building}": {level}', section_out["11.1"])
-        self.assertIn("[PRODUCTION_MODEL (EmpireProductionModel summary)] dict, len=10", section_out["11.3"])
+        self.assertIn(f"[TARGET_SHIP_KEY] str = {used['TARGET_SHIP_KEY']!r}", section_out["4.1"])
+        self.assertIn(
+            f"[WAREHOUSE_HOURS_OF_PRODUCTION] float = {used['WAREHOUSE_HOURS_OF_PRODUCTION']!r}", section_out["4.1"]
+        )
+        self.assertIn(f'"GA_RANDOM_SEED": {used["GA_RANDOM_SEED"]}', section_out["4.1"])
+        for building, level in used["OPTIMIZED_BUILDING_MAX_LEVELS"].items():
+            self.assertIn(f'"{building}": {level}', section_out["4.1"])
+        # The parameters are printed before the plan that follows from them.
+        self.assertLess(section_out["4.1"].index("[TARGET_SHIP_KEY]"), section_out["4.1"].index("[WAREHOUSE_KEYS]"))
+        for name in used:
+            self.assertRegex(section_out["4.1"], rf"(?<![A-Za-z0-9_]){name}(?![A-Za-z0-9_])")
+        self.assertIn("[PRODUCTION_MODEL (EmpireProductionModel summary)] dict, len=10", section_out["4.2"])
         self.assertRegex(
-            section_out["11.5"].split("\n")[1],
-            r"^Section 11\.5 data: best configuration, [\d,]+\.\d\d Imperial starbases per month \(bottleneck: \w+\)$",
+            section_out["4.4"].split("\n")[1],
+            r"^Section 4\.4 data: best configuration, [\d,]+\.\d\d Imperial starbases per month \(bottleneck: \w+\)$",
         )
-        self.assertIn(f"{ns['BEST_CONFIG_SUMMARY']['ships_per_month']:,.2f} Imperial starbases", section_out["11.5"])
-        # Section 11.6 prints one table per planet, under the label of that planet.
-        self.assertIn(f"{ns['BEST_CONFIG_SUMMARY']['ships_per_month']:,.2f} Imperial starbases", section_out["11.6"])
+        self.assertIn(f"{ns['BEST_CONFIG_SUMMARY']['ships_per_month']:,.2f} Imperial starbases", section_out["4.4"])
+        # Section 4.5 prints one table per planet, under the label of that planet.
+        self.assertIn(f"{ns['BEST_CONFIG_SUMMARY']['ships_per_month']:,.2f} Imperial starbases", section_out["4.5"])
         for label in ns["PLANET_CONFIGURATIONS"]:
-            self.assertIn(f"[PLANET_CONFIGURATIONS: {label}] pandas.DataFrame, shape=(", section_out["11.6"])
-
-    def test_print_helpers_show_full_data_and_redact_session_tokens(self) -> None:
-        ns, _, _ = self._attack_run()
-        # Float formatting used by the printouts: no scientific notation for large values, no float noise.
-        for raw_val, expected_text in (
-            (1794880358.409, "1794880358.409"),
-            (123456789012.34, "123456789012.34"),
-            (8892.061995397919, "8892.061995"),
-            (8.600298e20, "860029799999999967232"),
-            (100.0, "100"),
-            (1.0 / 3.0, "0.333333"),
-            (0.5**21, "4.76837e-07"),
-            (-0.0, "0"),
-            (float("nan"), "nan"),
-        ):
-            self.assertEqual(ns["format_full_float"](raw_val), expected_text)
-
-        # print_section_data on data far beyond the pandas / numpy default display limits:
-        # nothing is elided, a non-default index is kept, and session tokens are redacted.
-        probe_df = pd.DataFrame(
-            {
-                "n": np.arange(2500),
-                "x": np.arange(2500) * 1e9 + 0.25,
-                "txt": ["z" * 150] * 2500,
-            }
-        )
-        probe_df.loc[7, "txt"] = "indexInternal.es?action=internalHome&sid=FAKE0123456789abcdef&x=1"
-        probe_arr = np.arange(3000, dtype=np.float64) + 1_794_880_000.25
-        probe_buf = io.StringIO()
-        with contextlib.redirect_stdout(probe_buf):
-            ns["print_section_data"](
-                "Probe",
-                [
-                    ("probe_df", probe_df),
-                    ("probe_arr", probe_arr),
-                    ("probe_dict", {"href": "indexGame.es?sid=FAKEfedcba9876543210", 7: (1, 2)}),
-                    ("probe_indexed", probe_df.tail(2).set_index("x")[["n"]]),
-                    ("probe_registry", {"probe": probe_df}),
-                ],
-            )
-        probe_out = probe_buf.getvalue()
-        self.assertNotIn("...", probe_out)
-        self.assertNotRegex(probe_out, r"\de\+\d")
-        item_rule = "\n" + "-" * 100 + "\n"
-        probe_blocks = probe_out.rstrip("\n").split("\n", 4)[4].split(item_rule)
-        self.assertEqual(len(probe_blocks), 5)
-        self.assertEqual(len(probe_blocks[0].split("\n")), 2 + 2500)
-        self.assertRegex(probe_blocks[0], r"(?m)^\s*2499\s+2499000000000\.25\s+z{150}$")
-        self.assertEqual(len(probe_blocks[1].replace("[", " ").replace("]", " ").split("\n", 1)[1].split()), 3000)
-        self.assertIn("1794882999.25]", probe_blocks[1])
-        self.assertNotIn("FAKE0123456789abcdef", probe_out)
-        self.assertNotIn("FAKEfedcba9876543210", probe_out)
-        self.assertEqual(probe_out.count("sid=REDACTED"), 2)
-        self.assertIn('  "7": [1, 2]', probe_blocks[2])
-        self.assertRegex(probe_blocks[3], r"(?m)^2499000000000\.25\s+2499$")
-        self.assertEqual(
-            probe_blocks[4].split("\n"),
-            [
-                "[probe_registry] dict, len=1 (registry of DataFrames; each table is printed in full by its own section)",
-                "  probe: shape=(2500, 3)",
-            ],
-        )
+            self.assertIn(f"[PLANET_CONFIGURATIONS: {label}] pandas.DataFrame, shape=(", section_out["4.5"])
 
 
 if __name__ == "__main__":
