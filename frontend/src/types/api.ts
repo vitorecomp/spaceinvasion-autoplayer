@@ -302,6 +302,9 @@ export interface DashboardPayload {
     unscanned_systems?: number;
     total_systems?: number;
     coverage_pct?: number;
+    universe_explored_systems?: number;
+    universe_total_systems?: number;
+    universe_coverage_pct?: number;
     scan_galaxies?: number[];
     in_progress?: boolean;
     [key: string]: any;

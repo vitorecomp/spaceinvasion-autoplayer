@@ -3336,14 +3336,18 @@ class GameDatabase:
                 owner_agg[owner_s.lower()]["loot_spice_eq"] += extra_sp
 
         scan_meta: dict[tuple[int, int], dict[str, Any]] = {}
+        universe_scanned_sectors: set[tuple[int, int]] = set()
         for r in scan_rows:
             gal_i = _safe_int(r["galaxy"], 0)
             sys_i = _safe_int(r["system"], 0)
+            last_sc_r = _safe_float(r["last_scanned_ts"], 0.0)
+            if 1 <= gal_i <= 14 and 1 <= sys_i <= 400 and last_sc_r > 0.0:
+                universe_scanned_sectors.add((gal_i, sys_i))
             if gal_i not in active_gal_set or not (1 <= sys_i <= 400):
                 continue
             scan_meta[(gal_i, sys_i)] = {
-                "last_scanned_ts": _safe_float(r["last_scanned_ts"], 0.0),
-                "scan_count": 1 if _safe_float(r["last_scanned_ts"], 0.0) > 0.0 else 0,
+                "last_scanned_ts": last_sc_r,
+                "scan_count": 1 if last_sc_r > 0.0 else 0,
                 "occupied_count": max(0, _safe_int(r["occupied_count"], 0)),
                 "target_count": max(0, _safe_int(r["target_count"], 0)),
                 "free_count": max(0, _safe_int(r["free_count"], 0)),
@@ -3352,10 +3356,12 @@ class GameDatabase:
         for r in hist_rows:
             gal_i = _safe_int(r["galaxy"], 0)
             sys_i = _safe_int(r["system"], 0)
+            max_ts = _safe_float(r["max_ts"], 0.0)
+            if 1 <= gal_i <= 14 and 1 <= sys_i <= 400 and max_ts > 0.0:
+                universe_scanned_sectors.add((gal_i, sys_i))
             if gal_i not in active_gal_set or not (1 <= sys_i <= 400):
                 continue
             gsk = (gal_i, sys_i)
-            max_ts = _safe_float(r["max_ts"], 0.0)
             sc_cnt = max(0, _safe_int(r["scan_count"], 0))
             max_deb = max(0, _safe_int(r["max_debris"], 0))
             cur_sm = scan_meta.get(gsk)
@@ -3380,6 +3386,12 @@ class GameDatabase:
         unscanned_systems = max(0, total_systems - explored_systems)
         coverage_pct = (
             round((explored_systems / total_systems) * 100.0, 2) if total_systems > 0 else 0.0
+        )
+        universe_total_systems = 14 * 400
+        universe_explored_systems = len(universe_scanned_sectors)
+        universe_coverage_pct = round(
+            (universe_explored_systems / universe_total_systems) * 100.0,
+            2,
         )
 
         all_sector_keys: set[tuple[int, int]] = set()
@@ -3510,6 +3522,9 @@ class GameDatabase:
                 "unscanned_systems": game_data.cap_json_int(unscanned_systems),
                 "total_systems": game_data.cap_json_int(total_systems),
                 "coverage_pct": coverage_pct,
+                "universe_explored_systems": game_data.cap_json_int(universe_explored_systems),
+                "universe_total_systems": game_data.cap_json_int(universe_total_systems),
+                "universe_coverage_pct": universe_coverage_pct,
                 "owner_attack_counts": owner_attack_counts,
                 "owner_raid_stats": owner_raid_stats_out,
                 "sectors": sectors_out,

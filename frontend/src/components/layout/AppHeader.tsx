@@ -75,6 +75,18 @@ export const AppHeader: React.FC = () => {
       : galTotal > 0
         ? Math.max(0, Math.min(100, (galExplored / galTotal) * 100))
         : null;
+  const uniTotal = Math.max(1, Math.round(safeFiniteNumber(galSweep?.universe_total_systems, 5600) ?? 5600));
+  const uniExplored = Math.max(
+    0,
+    Math.round(safeFiniteNumber(galSweep?.universe_explored_systems, galExplored) ?? galExplored)
+  );
+  const uniCovRaw = safeFiniteNumber(galSweep?.universe_coverage_pct, null);
+  const uniCovPct =
+    uniCovRaw !== null
+      ? Math.max(0, Math.min(100, uniCovRaw))
+      : galCovPct !== null
+        ? Math.max(0, Math.min(100, (uniExplored / uniTotal) * 100))
+        : null;
   const galPhaseLabel =
     String(galSweep?.scan_phase || "").toLowerCase() === "targeted_refresh"
       ? "Targeted Refresh"
@@ -84,12 +96,12 @@ export const AppHeader: React.FC = () => {
     : "Galaxy";
   const galCovText =
     galCovPct !== null
-      ? `GAL ${galCovPct.toFixed(1)}%`
-      : "GAL --%";
+      ? `GAL ${galCovPct.toFixed(1)}% · UNI ${(uniCovPct ?? 0).toFixed(1)}%`
+      : "GAL --% · UNI --%";
   const galCovTitle =
     galCovPct !== null
-      ? `${galList} explored: ${galExplored}/${galTotal} systems (${galCovPct.toFixed(1)}%) · Phase: ${galPhaseLabel}${galSweep?.in_progress ? " · Sweeping..." : ""}`
-      : "Galaxy exploration progress — click to open Espionage & Galaxy Scanner";
+      ? `${galList} explored: ${galExplored}/${galTotal} systems (${galCovPct.toFixed(1)}%) · Universe: ${uniExplored}/${uniTotal} (${(uniCovPct ?? 0).toFixed(2)}%) · Phase: ${galPhaseLabel}${galSweep?.in_progress ? " · Sweeping..." : ""}`
+      : "Galaxy & Universe exploration progress — click to open Espionage & Galaxy Scanner";
 
   const hostileCount = Array.isArray(gs.fleet_alerts)
     ? gs.fleet_alerts.filter((a) => a?.hostile).length

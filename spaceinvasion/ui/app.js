@@ -8719,10 +8719,17 @@
     );
     const galCovRaw = safeFiniteNumber(galSweep == null ? void 0 : galSweep.coverage_pct, null);
     const galCovPct = galCovRaw !== null ? Math.max(0, Math.min(100, galCovRaw)) : galTotal > 0 ? Math.max(0, Math.min(100, galExplored / galTotal * 100)) : null;
+    const uniTotal = Math.max(1, Math.round(safeFiniteNumber(galSweep == null ? void 0 : galSweep.universe_total_systems, 5600) ?? 5600));
+    const uniExplored = Math.max(
+      0,
+      Math.round(safeFiniteNumber(galSweep == null ? void 0 : galSweep.universe_explored_systems, galExplored) ?? galExplored)
+    );
+    const uniCovRaw = safeFiniteNumber(galSweep == null ? void 0 : galSweep.universe_coverage_pct, null);
+    const uniCovPct = uniCovRaw !== null ? Math.max(0, Math.min(100, uniCovRaw)) : galCovPct !== null ? Math.max(0, Math.min(100, uniExplored / uniTotal * 100)) : null;
     const galPhaseLabel = String((galSweep == null ? void 0 : galSweep.scan_phase) || "").toLowerCase() === "targeted_refresh" ? "Targeted Refresh" : "Exploratory";
     const galList = Array.isArray(galSweep == null ? void 0 : galSweep.scan_galaxies) && galSweep.scan_galaxies.length > 0 ? galSweep.scan_galaxies.map((g) => `G${g}`).join(",") : "Galaxy";
-    const galCovText = galCovPct !== null ? `GAL ${galCovPct.toFixed(1)}%` : "GAL --%";
-    const galCovTitle = galCovPct !== null ? `${galList} explored: ${galExplored}/${galTotal} systems (${galCovPct.toFixed(1)}%) · Phase: ${galPhaseLabel}${(galSweep == null ? void 0 : galSweep.in_progress) ? " · Sweeping..." : ""}` : "Galaxy exploration progress — click to open Espionage & Galaxy Scanner";
+    const galCovText = galCovPct !== null ? `GAL ${galCovPct.toFixed(1)}% · UNI ${(uniCovPct ?? 0).toFixed(1)}%` : "GAL --% · UNI --%";
+    const galCovTitle = galCovPct !== null ? `${galList} explored: ${galExplored}/${galTotal} systems (${galCovPct.toFixed(1)}%) · Universe: ${uniExplored}/${uniTotal} (${(uniCovPct ?? 0).toFixed(2)}%) · Phase: ${galPhaseLabel}${(galSweep == null ? void 0 : galSweep.in_progress) ? " · Sweeping..." : ""}` : "Galaxy & Universe exploration progress — click to open Espionage & Galaxy Scanner";
     const hostileCount = Array.isArray(gs.fleet_alerts) ? gs.fleet_alerts.filter((a) => a == null ? void 0 : a.hostile).length : 0;
     const unreadCnt = notifications.unread_count || 0;
     const captchaBlocked = Boolean((_a = dashboard == null ? void 0 : dashboard.bot_control) == null ? void 0 : _a.captcha_blocked);
@@ -14733,6 +14740,9 @@
     const galTotal = Math.max(0, Math.round(finiteNum(galSweep == null ? void 0 : galSweep.total_systems, 0)));
     const galExplored = Math.max(0, Math.round(finiteNum(galSweep == null ? void 0 : galSweep.explored_systems, 0)));
     const galPct = galSweep && galSweep.coverage_pct != null ? Math.max(0, Math.min(100, finiteNum(galSweep.coverage_pct, 0))) : galTotal > 0 ? Math.max(0, Math.min(100, galExplored / galTotal * 100)) : null;
+    const uniTotal = Math.max(1, Math.round(finiteNum(galSweep == null ? void 0 : galSweep.universe_total_systems, 5600)));
+    const uniExplored = Math.max(0, Math.round(finiteNum(galSweep == null ? void 0 : galSweep.universe_explored_systems, galExplored)));
+    const uniPct = galSweep && galSweep.universe_coverage_pct != null ? Math.max(0, Math.min(100, finiteNum(galSweep.universe_coverage_pct, 0))) : galPct !== null ? Math.max(0, Math.min(100, uniExplored / uniTotal * 100)) : null;
     const galPhaseText = String((galSweep == null ? void 0 : galSweep.scan_phase) || "").toLowerCase() === "targeted_refresh" ? "Targeted Refresh" : "Exploratory";
     const handleSpyTarget = async (coords) => {
       try {
@@ -14862,8 +14872,8 @@
                   {
                     className: "gal-cov-inline tabular",
                     id: "esp-galaxy-coverage",
-                    title: galPct !== null ? `Galaxy coverage: ${galExplored}/${galTotal} systems (${galPct.toFixed(1)}%) · ${galPhaseText}` : "Galaxy exploration percentage",
-                    children: galPct !== null ? `GALAXY EXPLORED ${galPct.toFixed(1)}% (${galExplored}/${galTotal} · ${galPhaseText})` : "GALAXY EXPLORED --%"
+                    title: galPct !== null ? `Galaxy coverage: ${galExplored}/${galTotal} (${galPct.toFixed(1)}%) · Universe coverage: ${uniExplored}/${uniTotal} (${(uniPct ?? 0).toFixed(2)}%) · ${galPhaseText}` : "Galaxy and universe exploration percentage",
+                    children: galPct !== null ? `GAL ${galPct.toFixed(1)}% (${galExplored}/${galTotal}) · UNI ${(uniPct ?? 0).toFixed(1)}% (${fmtInt(uniExplored)}/${fmtInt(uniTotal)}) · ${galPhaseText}` : "GAL --% · UNI --%"
                   }
                 )
               ] }),
@@ -15267,12 +15277,21 @@
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "COL" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Possible Colonies & Spied Field Grading" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "col-meta-count", children: colonyData ? `${filteredCands.length} / ${allCands.length} SLOTS` : "0 CANDIDATES" }),
-                (dashboard == null ? void 0 : dashboard.galaxy_sweep) ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gal-cov-inline tabular", id: "col-galaxy-coverage", children: `GALAXY EXPLORED ${Math.max(
+                (dashboard == null ? void 0 : dashboard.galaxy_sweep) ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gal-cov-inline tabular", id: "col-galaxy-coverage", children: `GAL ${Math.max(
                   0,
                   Math.min(100, finiteNum(dashboard.galaxy_sweep.coverage_pct, 0))
                 ).toFixed(1)}% (${fmtInt(dashboard.galaxy_sweep.explored_systems ?? 0)}/${fmtInt(
                   dashboard.galaxy_sweep.total_systems ?? 400
-                )})` }) : null
+                )}) · UNI ${Math.max(
+                  0,
+                  Math.min(
+                    100,
+                    finiteNum(
+                      dashboard.galaxy_sweep.universe_coverage_pct,
+                      finiteNum(dashboard.galaxy_sweep.universe_explored_systems ?? dashboard.galaxy_sweep.explored_systems, 0) / Math.max(1, finiteNum(dashboard.galaxy_sweep.universe_total_systems, 5600)) * 100
+                    )
+                  )
+                ).toFixed(1)}%` }) : null
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-toolbar", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-chips", role: "group", "aria-label": "Colony candidate filters", children: [
@@ -17012,14 +17031,36 @@
                         {
                           className: "gal-cov-inline tabular",
                           id: "cfg-galaxy-coverage",
-                          children: `Explored: ${Math.max(
+                          children: `GAL ${Math.max(
                             0,
                             Math.min(100, safeFiniteNumber(dashboard.galaxy_sweep.coverage_pct, 0) ?? 0)
                           ).toFixed(1)}% (${Math.round(
                             safeFiniteNumber(dashboard.galaxy_sweep.explored_systems, 0) ?? 0
                           )}/${Math.round(
                             safeFiniteNumber(dashboard.galaxy_sweep.total_systems, 400) ?? 400
-                          )} · ${String(dashboard.galaxy_sweep.scan_phase || "").toLowerCase() === "targeted_refresh" ? "Targeted Refresh" : "Exploratory"})`
+                          )}) · UNI ${Math.max(
+                            0,
+                            Math.min(
+                              100,
+                              safeFiniteNumber(
+                                dashboard.galaxy_sweep.universe_coverage_pct,
+                                (safeFiniteNumber(
+                                  dashboard.galaxy_sweep.universe_explored_systems ?? dashboard.galaxy_sweep.explored_systems,
+                                  0
+                                ) ?? 0) / Math.max(
+                                  1,
+                                  safeFiniteNumber(dashboard.galaxy_sweep.universe_total_systems, 5600) ?? 5600
+                                ) * 100
+                              ) ?? 0
+                            )
+                          ).toFixed(1)}% (${Math.round(
+                            safeFiniteNumber(
+                              dashboard.galaxy_sweep.universe_explored_systems ?? dashboard.galaxy_sweep.explored_systems,
+                              0
+                            ) ?? 0
+                          )}/${Math.round(
+                            safeFiniteNumber(dashboard.galaxy_sweep.universe_total_systems, 5600) ?? 5600
+                          )}) · ${String(dashboard.galaxy_sweep.scan_phase || "").toLowerCase() === "targeted_refresh" ? "Targeted Refresh" : "Exploratory"}`
                         }
                       ) : null
                     ] }),

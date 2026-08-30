@@ -336,12 +336,23 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
             </span>
             {dashboard?.galaxy_sweep ? (
               <span className="gal-cov-inline tabular" id="col-galaxy-coverage">
-                {`GALAXY EXPLORED ${Math.max(
+                {`GAL ${Math.max(
                   0,
                   Math.min(100, finiteNum(dashboard.galaxy_sweep.coverage_pct, 0))
                 ).toFixed(1)}% (${fmtInt(dashboard.galaxy_sweep.explored_systems ?? 0)}/${fmtInt(
                   dashboard.galaxy_sweep.total_systems ?? 400
-                )})`}
+                )}) · UNI ${Math.max(
+                  0,
+                  Math.min(
+                    100,
+                    finiteNum(
+                      dashboard.galaxy_sweep.universe_coverage_pct,
+                      ((finiteNum(dashboard.galaxy_sweep.universe_explored_systems ?? dashboard.galaxy_sweep.explored_systems, 0)) /
+                        Math.max(1, finiteNum(dashboard.galaxy_sweep.universe_total_systems, 5600))) *
+                        100
+                    )
+                  )
+                ).toFixed(1)}%`}
               </span>
             ) : null}
           </div>

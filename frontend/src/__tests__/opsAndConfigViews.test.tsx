@@ -125,6 +125,9 @@ const MOCK_DASHBOARD: DashboardPayload = {
     unscanned_systems: 192,
     total_systems: 400,
     coverage_pct: 52.0,
+    universe_explored_systems: 208,
+    universe_total_systems: 5600,
+    universe_coverage_pct: 3.71,
     scan_galaxies: [2],
     in_progress: false,
   },
@@ -264,8 +267,8 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
     await waitFor(() => {
       expect(container.querySelectorAll(".config-group").length).toBeGreaterThanOrEqual(5);
     });
-    expect(container.querySelector("#hud-galaxy-coverage")?.textContent).toBe("GAL 52.0%");
-    expect(container.querySelector("#cfg-galaxy-coverage")?.textContent).toContain("52.0% (208/400");
+    expect(container.querySelector("#hud-galaxy-coverage")?.textContent).toBe("GAL 52.0% · UNI 3.7%");
+    expect(container.querySelector("#cfg-galaxy-coverage")?.textContent).toContain("GAL 52.0% (208/400) · UNI 3.7% (208/5600)");
 
     const configItems = container.querySelectorAll(".config-item");
     expect(configItems.length).toBeGreaterThanOrEqual(25);

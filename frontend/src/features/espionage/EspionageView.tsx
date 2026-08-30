@@ -54,6 +54,14 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
       : galTotal > 0
         ? Math.max(0, Math.min(100, (galExplored / galTotal) * 100))
         : null;
+  const uniTotal = Math.max(1, Math.round(finiteNum(galSweep?.universe_total_systems, 5600)));
+  const uniExplored = Math.max(0, Math.round(finiteNum(galSweep?.universe_explored_systems, galExplored)));
+  const uniPct =
+    galSweep && galSweep.universe_coverage_pct != null
+      ? Math.max(0, Math.min(100, finiteNum(galSweep.universe_coverage_pct, 0)))
+      : galPct !== null
+        ? Math.max(0, Math.min(100, (uniExplored / uniTotal) * 100))
+        : null;
   const galPhaseText =
     String(galSweep?.scan_phase || "").toLowerCase() === "targeted_refresh"
       ? "Targeted Refresh"
@@ -209,13 +217,13 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
               id="esp-galaxy-coverage"
               title={
                 galPct !== null
-                  ? `Galaxy coverage: ${galExplored}/${galTotal} systems (${galPct.toFixed(1)}%) · ${galPhaseText}`
-                  : "Galaxy exploration percentage"
+                  ? `Galaxy coverage: ${galExplored}/${galTotal} (${galPct.toFixed(1)}%) · Universe coverage: ${uniExplored}/${uniTotal} (${(uniPct ?? 0).toFixed(2)}%) · ${galPhaseText}`
+                  : "Galaxy and universe exploration percentage"
               }
             >
               {galPct !== null
-                ? `GALAXY EXPLORED ${galPct.toFixed(1)}% (${galExplored}/${galTotal} · ${galPhaseText})`
-                : "GALAXY EXPLORED --%"}
+                ? `GAL ${galPct.toFixed(1)}% (${galExplored}/${galTotal}) · UNI ${(uniPct ?? 0).toFixed(1)}% (${fmtInt(uniExplored)}/${fmtInt(uniTotal)}) · ${galPhaseText}`
+                : "GAL --% · UNI --%"}
             </span>
           </div>
           <div className="tab-group" role="tablist" aria-label="Espionage subtabs">

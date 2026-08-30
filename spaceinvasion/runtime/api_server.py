@@ -1894,6 +1894,9 @@ class GameApiBridge:
         "unscanned_systems",
         "total_systems",
         "coverage_pct",
+        "universe_explored_systems",
+        "universe_total_systems",
+        "universe_coverage_pct",
         "scan_galaxies",
         "sample_targets",
     )
@@ -1962,7 +1965,29 @@ class GameApiBridge:
                     error=exc,
                 )
             return None
-        return plan if isinstance(plan, Mapping) else None
+        if not isinstance(plan, Mapping):
+            return None
+        out_plan = dict(plan)
+        uni_tot = 14 * 400
+        if isinstance(intel, Mapping) and intel.get("universe_explored_systems") is not None:
+            uni_exp = max(0, _safe_api_int(intel.get("universe_explored_systems"), 0))
+            uni_tot = max(1, _safe_api_int(intel.get("universe_total_systems"), uni_tot))
+        else:
+            scanned_all = self._get_scanned_systems() or {}
+            uni_keys: set[tuple[int, int]] = set()
+            for sk, ts_v in scanned_all.items():
+                if _safe_api_float(ts_v, 0.0) <= 0.0:
+                    continue
+                m_s = re.search(r"(\d{1,2})\s*:\s*(\d{1,3})", str(sk), re.ASCII)
+                if m_s:
+                    gi_u, si_u = int(m_s.group(1)), int(m_s.group(2))
+                    if 1 <= gi_u <= 14 and 1 <= si_u <= 400:
+                        uni_keys.add((gi_u, si_u))
+            uni_exp = max(len(uni_keys), _safe_api_int(out_plan.get("explored_systems"), 0))
+        out_plan["universe_explored_systems"] = uni_exp
+        out_plan["universe_total_systems"] = uni_tot
+        out_plan["universe_coverage_pct"] = round(min(100.0, (uni_exp / uni_tot) * 100.0), 2)
+        return out_plan
 
     def _store_smart_sweep_summary_locked(
         self,
@@ -1982,6 +2007,12 @@ class GameApiBridge:
             "unscanned_systems": max(0, _safe_api_int(plan.get("unscanned_systems"), 0)),
             "total_systems": max(0, _safe_api_int(plan.get("total_systems"), 0)),
             "coverage_pct": round(max(0.0, min(100.0, _safe_api_float(plan.get("coverage_pct"), 0.0))), 2),
+            "universe_explored_systems": max(0, _safe_api_int(plan.get("universe_explored_systems"), 0)),
+            "universe_total_systems": max(1, _safe_api_int(plan.get("universe_total_systems"), 5600)),
+            "universe_coverage_pct": round(
+                max(0.0, min(100.0, _safe_api_float(plan.get("universe_coverage_pct"), 0.0))),
+                2,
+            ),
             "scan_galaxies": [
                 _safe_api_int(g, 1) for g in (plan.get("galaxies") or []) if _safe_api_int(g, 0) > 0
             ],
@@ -2021,6 +2052,9 @@ class GameApiBridge:
         st.setdefault("unscanned_systems", summary.get("unscanned_systems", 0))
         st.setdefault("total_systems", summary.get("total_systems", 0))
         st.setdefault("coverage_pct", summary.get("coverage_pct", 0.0))
+        st.setdefault("universe_explored_systems", summary.get("universe_explored_systems", 0))
+        st.setdefault("universe_total_systems", summary.get("universe_total_systems", 5600))
+        st.setdefault("universe_coverage_pct", summary.get("universe_coverage_pct", 0.0))
         st.setdefault("scan_galaxies", list(summary.get("scan_galaxies") or []))
         st.setdefault("sample_targets", [dict(s) for s in (summary.get("sample_targets") or [])])
         return st

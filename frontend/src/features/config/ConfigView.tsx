@@ -351,19 +351,45 @@ export const ConfigView: React.FC = () => {
                       className="gal-cov-inline tabular"
                       id="cfg-galaxy-coverage"
                     >
-                      {`Explored: ${Math.max(
+                      {`GAL ${Math.max(
                         0,
                         Math.min(100, safeFiniteNumber(dashboard.galaxy_sweep.coverage_pct, 0) ?? 0)
                       ).toFixed(1)}% (${Math.round(
                         safeFiniteNumber(dashboard.galaxy_sweep.explored_systems, 0) ?? 0
                       )}/${Math.round(
                         safeFiniteNumber(dashboard.galaxy_sweep.total_systems, 400) ?? 400
-                      )} · ${
+                      )}) · UNI ${Math.max(
+                        0,
+                        Math.min(
+                          100,
+                          safeFiniteNumber(
+                            dashboard.galaxy_sweep.universe_coverage_pct,
+                            ((safeFiniteNumber(
+                              dashboard.galaxy_sweep.universe_explored_systems ??
+                                dashboard.galaxy_sweep.explored_systems,
+                              0
+                            ) ?? 0) /
+                              Math.max(
+                                1,
+                                safeFiniteNumber(dashboard.galaxy_sweep.universe_total_systems, 5600) ?? 5600
+                              )) *
+                              100
+                          ) ?? 0
+                        )
+                      ).toFixed(1)}% (${Math.round(
+                        safeFiniteNumber(
+                          dashboard.galaxy_sweep.universe_explored_systems ??
+                            dashboard.galaxy_sweep.explored_systems,
+                          0
+                        ) ?? 0
+                      )}/${Math.round(
+                        safeFiniteNumber(dashboard.galaxy_sweep.universe_total_systems, 5600) ?? 5600
+                      )}) · ${
                         String(dashboard.galaxy_sweep.scan_phase || "").toLowerCase() ===
                         "targeted_refresh"
                           ? "Targeted Refresh"
                           : "Exploratory"
-                      })`}
+                      }`}
                     </span>
                   ) : null}
                 </div>
