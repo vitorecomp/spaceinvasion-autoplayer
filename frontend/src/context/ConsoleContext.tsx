@@ -370,6 +370,12 @@ export function buildClientFallbackActionGraph(dash: DashboardPayload | null | u
   };
 }
 
+export interface SectorQueuePreviewOverrides {
+  refresh_pct?: number;
+  sweep_pages?: number;
+  all_galaxies?: boolean;
+}
+
 export interface ConsoleContextValue {
   dashboard: DashboardPayload | null;
   setDashboard: React.Dispatch<React.SetStateAction<DashboardPayload | null>>;
@@ -413,7 +419,11 @@ export interface ConsoleContextValue {
   refreshCombatForSelectedPlanet: (opts?: { refresh?: boolean }) => Promise<boolean>;
   sectorsData: Record<string, any> | null;
   setSectorsData: (data: Record<string, any> | null) => void;
-  refreshSectorsView: (galaxyOverride?: number, includeUnscannedOverride?: boolean) => Promise<void>;
+  refreshSectorsView: (
+    galaxyOverride?: number,
+    includeUnscannedOverride?: boolean,
+    previewOverride?: SectorQueuePreviewOverrides | null
+  ) => Promise<void>;
   espData: Record<string, any> | null;
   setEspData: (data: Record<string, any> | null) => void;
   refreshEspionageView: () => Promise<void>;
@@ -571,6 +581,8 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   notifCenterOpenRef.current = notifCenterOpen;
   const uiPrefsRef = useRef<UiPrefs>(uiPrefs);
   uiPrefsRef.current = uiPrefs;
+  const sectorsReqSeqRef = useRef<number>(0);
+  const sectorPreviewRef = useRef<SectorQueuePreviewOverrides | null>(null);
 
   // Keep sharedLegacyState synchronized at all times for existing E2E & Node tests
   sharedLegacyState.dashboard = dashboard;
@@ -906,7 +918,15 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   );
 
   const refreshSectorsView = useCallback(
-    async (galaxyOverride?: number, includeUnscannedOverride?: boolean) => {
+    async (
+      galaxyOverride?: number,
+      includeUnscannedOverride?: boolean,
+      previewOverride?: SectorQueuePreviewOverrides | null
+    ) => {
+      if (previewOverride !== undefined) {
+        sectorPreviewRef.current = previewOverride;
+      }
+      const reqSeq = ++sectorsReqSeqRef.current;
       try {
         const gal =
           galaxyOverride !== undefined
@@ -928,9 +948,30 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         };
         if (gal > 0) payload.galaxy = gal;
         if (planet?.planet_id) payload.planet_id = planet.planet_id;
+        const activePreview = sectorPreviewRef.current;
+        if (activePreview) {
+          if (typeof activePreview.refresh_pct === "number") {
+            payload.preview_refresh_pct = activePreview.refresh_pct;
+          }
+          if (typeof activePreview.sweep_pages === "number") {
+            payload.preview_sweep_pages = activePreview.sweep_pages;
+          }
+          if (typeof activePreview.all_galaxies === "boolean") {
+            payload.preview_all_galaxies = activePreview.all_galaxies;
+          }
+        }
         const data = await rawApiCommand(payload);
-        setSectorsData(data);
+        if (reqSeq !== sectorsReqSeqRef.current) return;
+        if (
+          data &&
+          (Array.isArray(data.sectors) ||
+            Array.isArray(data.scan_queue) ||
+            (data.summary && typeof data.summary === "object"))
+        ) {
+          setSectorsData(data);
+        }
       } catch (err: any) {
+        if (reqSeq !== sectorsReqSeqRef.current) return;
         showFeedback(`Scanned sectors load failed: ${err.message}`, feedbackKindForError(err));
       }
     },

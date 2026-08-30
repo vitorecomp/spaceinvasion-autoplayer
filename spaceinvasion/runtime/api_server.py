@@ -1932,6 +1932,8 @@ class GameApiBridge:
         collect_colonies: bool,
         now_ts: float,
         sector_intel_override: Optional[Mapping[str, Any]] = None,
+        explore_first_override: Optional[bool] = None,
+        refresh_pct_override: Optional[int] = None,
     ) -> Optional[dict[str, Any]]:
         """Select the next smart sweep batch via SQLite `get_galaxy_sector_intel` + `select_smart_galaxy_scan_batch`."""
         cfg = self.strategy_config
@@ -1954,6 +1956,23 @@ class GameApiBridge:
                             error=exc,
                         )
         raid_stats = getattr(self._last_state, "raid_stats", None) if self._last_state is not None else None
+        eff_explore_first = (
+            bool(explore_first_override)
+            if explore_first_override is not None
+            else bool(getattr(cfg, "galaxy_scan_explore_first", True))
+        )
+        eff_refresh_pct = max(
+            0,
+            min(
+                100,
+                _safe_api_int(
+                    refresh_pct_override
+                    if refresh_pct_override is not None
+                    else getattr(cfg, "galaxy_scan_refresh_pct", 0),
+                    0,
+                ),
+            ),
+        )
         try:
             plan = select_smart_galaxy_scan_batch(
                 own_coords=self._own_sweep_coords_locked(),
@@ -1963,8 +1982,8 @@ class GameApiBridge:
                 raid_targets=[r for r in (self._raid_targets or ()) if isinstance(r, Mapping)],
                 raid_stats=raid_stats if isinstance(raid_stats, Mapping) else None,
                 batch_size=max(1, min(400 * max(1, len(gal_list)), int(batch_size))),
-                explore_first=bool(getattr(cfg, "galaxy_scan_explore_first", True)),
-                refresh_pct=max(0, min(100, _safe_api_int(getattr(cfg, "galaxy_scan_refresh_pct", 0), 0))),
+                explore_first=eff_explore_first,
+                refresh_pct=eff_refresh_pct,
                 near_weight=max(0.0, min(20.0, _safe_api_float(getattr(cfg, "galaxy_scan_near_weight", 2.0), 2.0))),
                 attack_weight=max(0.0, min(20.0, _safe_api_float(getattr(cfg, "galaxy_scan_attack_weight", 3.0), 3.0))),
                 collect_colonies=bool(collect_colonies),
@@ -3960,14 +3979,36 @@ class GameApiBridge:
                         gals.append(g)
         return gals or [1]
 
-    def _sweep_target_galaxies_locked(self, *, explicit_galaxy: Optional[int] = None) -> list[int]:
+    def _sweep_target_galaxies_locked(
+        self,
+        *,
+        explicit_galaxy: Optional[int] = None,
+        refresh_pct_override: Optional[int] = None,
+        all_galaxies_override: Optional[bool] = None,
+    ) -> list[int]:
         if explicit_galaxy is not None:
             return [max(1, min(14, int(explicit_galaxy)))]
         cfg = self.strategy_config
-        if bool(getattr(cfg, "galaxy_scan_all_galaxies", False)):
+        scan_all_gals = (
+            bool(all_galaxies_override)
+            if all_galaxies_override is not None
+            else bool(getattr(cfg, "galaxy_scan_all_galaxies", False))
+        )
+        if scan_all_gals:
             return list(range(1, 15))
         owned = self._owned_sweep_galaxies_locked()
-        refresh_pct_cfg = max(0, min(100, _safe_api_int(getattr(cfg, "galaxy_scan_refresh_pct", 0), 0)))
+        refresh_pct_cfg = max(
+            0,
+            min(
+                100,
+                _safe_api_int(
+                    refresh_pct_override
+                    if refresh_pct_override is not None
+                    else getattr(cfg, "galaxy_scan_refresh_pct", 0),
+                    0,
+                ),
+            ),
+        )
         if 0 < refresh_pct_cfg < 100:
             scanned = self._get_scanned_systems() or {}
             owned_set = set(owned)
@@ -6287,6 +6328,32 @@ class GameApiBridge:
                 min_val=1,
                 max_val=2**63 - 1,
             )
+            preview_refresh_pct = _parse_command_int(
+                "preview_refresh_pct",
+                payload.get("preview_refresh_pct"),
+                allow_none=True,
+                min_val=0,
+                max_val=100,
+            )
+            preview_sweep_pages = _parse_command_int(
+                "preview_sweep_pages",
+                payload.get("preview_sweep_pages"),
+                allow_none=True,
+                min_val=1,
+                max_val=400,
+            )
+            raw_preview_all_gals = payload.get("preview_all_galaxies")
+            if raw_preview_all_gals is None:
+                preview_all_galaxies: Optional[bool] = None
+            elif isinstance(raw_preview_all_gals, bool):
+                preview_all_galaxies = raw_preview_all_gals
+            else:
+                raise ApiRequestError("'scanned_sectors' field 'preview_all_galaxies' must be a boolean.")
+            is_preview = (
+                preview_refresh_pct is not None
+                or preview_sweep_pages is not None
+                or preview_all_galaxies is not None
+            )
             with self._lock:
                 now_ts = time.time()
                 cfg = self.strategy_config
@@ -6331,13 +6398,27 @@ class GameApiBridge:
                     raw_sectors if isinstance(raw_sectors, Mapping) else {}
                 )
 
+                saved_sweep_pages = max(1, min(400, _safe_api_int(getattr(cfg, "galaxy_sweep_pages", 100), 100)))
+                saved_refresh_pct = max(0, min(100, _safe_api_int(getattr(cfg, "galaxy_scan_refresh_pct", 0), 0)))
+                saved_explore_first = bool(getattr(cfg, "galaxy_scan_explore_first", True))
+                saved_scan_all_gals = bool(getattr(cfg, "galaxy_scan_all_galaxies", False))
+
+                sweep_pages = preview_sweep_pages if preview_sweep_pages is not None else saved_sweep_pages
+                refresh_pct_cfg = preview_refresh_pct if preview_refresh_pct is not None else saved_refresh_pct
+                explore_first_cfg = (refresh_pct_cfg < 100) if preview_refresh_pct is not None else saved_explore_first
+                scan_all_gals_cfg = (
+                    preview_all_galaxies if preview_all_galaxies is not None else saved_scan_all_gals
+                )
+
                 all_galaxies = list(range(1, 15))
                 owned_galaxies = self._owned_sweep_galaxies_locked()
                 owned_gal_set = set(owned_galaxies)
-                queue_galaxies = self._sweep_target_galaxies_locked()
+                queue_galaxies = self._sweep_target_galaxies_locked(
+                    refresh_pct_override=refresh_pct_cfg,
+                    all_galaxies_override=scan_all_gals_cfg,
+                )
                 queue_gal_set = set(queue_galaxies)
 
-                sweep_pages = max(1, min(400, _safe_api_int(getattr(cfg, "galaxy_sweep_pages", 100), 100)))
                 allocated_normal = count_allocated_normal_planets(self._last_state)
                 max_planets_cap = max(1, _safe_api_int(getattr(cfg, "max_planets", 11), 11))
                 collect_colonies = bool(allocated_normal < max_planets_cap)
@@ -6348,8 +6429,10 @@ class GameApiBridge:
                     collect_colonies=collect_colonies,
                     now_ts=now_ts,
                     sector_intel_override=intel or None,
+                    explore_first_override=explore_first_cfg,
+                    refresh_pct_override=refresh_pct_cfg,
                 )
-                if smart_plan is not None:
+                if smart_plan is not None and not is_preview:
                     self._store_smart_sweep_summary_locked(smart_plan, selection_mode="smart", now_ts=now_ts)
                 sweep_summary = self._merge_smart_sweep_summary_locked(self._get_galaxy_sweep_state_locked())
 
@@ -6666,10 +6749,10 @@ class GameApiBridge:
                     )
                 )
 
-                refresh_pct_cfg = max(0, min(100, _safe_api_int(getattr(cfg, "galaxy_scan_refresh_pct", 0), 0)))
-                explore_first_cfg = bool(getattr(cfg, "galaxy_scan_explore_first", True))
-                scan_all_gals_cfg = bool(getattr(cfg, "galaxy_scan_all_galaxies", False))
                 eff_refresh_pct = refresh_pct_cfg if refresh_pct_cfg > 0 else (0 if explore_first_cfg else 100)
+                saved_eff_refresh_pct = (
+                    saved_refresh_pct if saved_refresh_pct > 0 else (0 if saved_explore_first else 100)
+                )
                 planned_refresh_pages = int(round(sweep_pages * (eff_refresh_pct / 100.0)))
                 planned_discovery_pages = max(0, sweep_pages - planned_refresh_pages)
 
@@ -6696,16 +6779,19 @@ class GameApiBridge:
                 uni_cov = round(min(100.0, (uni_exp / uni_tot) * 100.0), 2)
                 q_disc_cnt = sum(1 for q in scan_queue if q["phase"] == "exploratory")
                 q_ref_cnt = len(scan_queue) - q_disc_cnt
+                scope_src: Mapping[str, Any] = (
+                    smart_plan if (is_preview and isinstance(smart_plan, Mapping)) else sweep_summary
+                )
 
                 summary_out = {
                     "scanned_sectors": len(scanned_rows),
                     "unscanned_sectors_in_view": unscanned_in_view,
                     "unscanned_total_all_galaxies": max(0, uni_tot - uni_exp),
                     "total_scanned_all_galaxies": total_scanned_all,
-                    "explored_systems": _safe_api_int(sweep_summary.get("explored_systems"), total_scanned_all),
-                    "unscanned_systems": _safe_api_int(sweep_summary.get("unscanned_systems"), 0),
-                    "total_systems": _safe_api_int(sweep_summary.get("total_systems"), 400),
-                    "coverage_pct": round(_safe_api_float(sweep_summary.get("coverage_pct"), 0.0), 2),
+                    "explored_systems": _safe_api_int(scope_src.get("explored_systems"), total_scanned_all),
+                    "unscanned_systems": _safe_api_int(scope_src.get("unscanned_systems"), 0),
+                    "total_systems": _safe_api_int(scope_src.get("total_systems"), len(queue_galaxies) * 400),
+                    "coverage_pct": round(_safe_api_float(scope_src.get("coverage_pct"), 0.0), 2),
                     "universe_explored_systems": uni_exp,
                     "universe_total_systems": uni_tot,
                     "universe_coverage_pct": uni_cov,
@@ -6729,6 +6815,9 @@ class GameApiBridge:
                     "discovery_pct": 100 - refresh_pct_cfg,
                     "effective_refresh_pct": eff_refresh_pct,
                     "effective_discovery_pct": 100 - eff_refresh_pct,
+                    "saved_refresh_pct": saved_eff_refresh_pct,
+                    "saved_sweep_pages": saved_sweep_pages,
+                    "saved_scan_all_galaxies": saved_scan_all_gals,
                     "planned_refresh_pages": planned_refresh_pages,
                     "planned_discovery_pages": planned_discovery_pages,
                     "next_batch_refresh_count": q_ref_cnt,
@@ -6737,13 +6826,14 @@ class GameApiBridge:
                     "queue_discovery_count": q_disc_cnt,
                     "queue_refresh_count": q_ref_cnt,
                     "queue_galaxies": list(queue_galaxies),
-                    "scan_phase": str(sweep_summary.get("scan_phase") or "exploratory"),
+                    "scan_phase": str(scope_src.get("scan_phase") or scope_src.get("phase") or "exploratory"),
                 }
                 return _sanitize_finite_json(
                     _redact_api_payload(
                         {
                             "ok": True,
                             "command": cmd,
+                            "preview": is_preview,
                             "origin_coords": origin_coords,
                             "galaxy_filter": gal_filter or 0,
                             "include_unscanned": include_unscanned,

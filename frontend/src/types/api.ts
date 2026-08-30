@@ -343,6 +343,9 @@ export interface ScannedSectorsSummary {
   discovery_pct?: number;
   effective_refresh_pct?: number;
   effective_discovery_pct?: number;
+  saved_refresh_pct?: number;
+  saved_sweep_pages?: number;
+  saved_scan_all_galaxies?: boolean;
   planned_refresh_pages?: number;
   planned_discovery_pages?: number;
   next_batch_refresh_count?: number;
@@ -358,6 +361,7 @@ export interface ScannedSectorsSummary {
 export interface ScannedSectorsPayload {
   ok?: boolean;
   command?: string;
+  preview?: boolean;
   origin_coords?: string;
   galaxy_filter?: number;
   include_unscanned?: boolean;

@@ -1071,9 +1071,10 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
       ).toBe(true);
     });
 
-    // Edit Refresh % + toggle All 14 Galaxies -> syncs Discovery % and saves config via Apply Split
+    // Edit Refresh % + toggle All 14 Galaxies -> syncs Discovery %, immediately previews queue, and saves via Apply Split
     const refInput = container.querySelector("#sec-refresh-pct") as HTMLInputElement;
     const discInput = container.querySelector("#sec-discovery-pct") as HTMLInputElement;
+    const pagesInput = container.querySelector("#sec-sweep-pages") as HTMLInputElement;
     const allGalsCb = container.querySelector("#sec-all-galaxies") as HTMLInputElement;
     fireEvent.change(refInput, { target: { value: "35" } });
     fireEvent.click(allGalsCb);
@@ -1082,6 +1083,34 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
     expect(container.querySelector("#sec-split-readout")?.textContent).toContain(
       "35 Refresh · 65 Discovery"
     );
+    expect(container.querySelector("#btn-sec-save-split")?.textContent).toBe("Apply Split*");
+    await waitFor(() => {
+      expect(
+        commandCalls.some(
+          (c) =>
+            c.command === "scanned_sectors" &&
+            c.preview_refresh_pct === 35 &&
+            c.preview_sweep_pages === 100 &&
+            c.preview_all_galaxies === true
+        )
+      ).toBe(true);
+    });
+
+    // Editing Discovery % and Req/Sweep also schedules a live queue preview
+    fireEvent.change(discInput, { target: { value: "80" } });
+    expect(refInput.value).toBe("20");
+    fireEvent.change(pagesInput, { target: { value: "50" } });
+    await waitFor(() => {
+      expect(
+        commandCalls.some(
+          (c) =>
+            c.command === "scanned_sectors" &&
+            c.preview_refresh_pct === 20 &&
+            c.preview_sweep_pages === 50 &&
+            c.preview_all_galaxies === true
+        )
+      ).toBe(true);
+    });
 
     fireEvent.click(container.querySelector("#btn-sec-save-split")!);
     await waitFor(() => {
@@ -1089,12 +1118,23 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
         commandCalls.some(
           (c) =>
             c.command === "update_config" &&
-            c.config?.galaxy_scan_refresh_pct === 35 &&
-            c.config?.galaxy_sweep_pages === 100 &&
+            c.config?.galaxy_scan_refresh_pct === 20 &&
+            c.config?.galaxy_sweep_pages === 50 &&
             c.config?.galaxy_scan_explore_first === true &&
             c.config?.galaxy_scan_all_galaxies === true
         )
       ).toBe(true);
+    });
+    // After Apply Split, subsequent scanned_sectors clears preview overrides
+    await waitFor(() => {
+      const saveIdx = commandCalls.findIndex((c) => c.command === "update_config");
+      const postSave = commandCalls
+        .slice(saveIdx + 1)
+        .find((c) => c.command === "scanned_sectors");
+      expect(postSave).toBeTruthy();
+      expect(postSave?.preview_refresh_pct).toBeUndefined();
+      expect(postSave?.preview_sweep_pages).toBeUndefined();
+      expect(postSave?.preview_all_galaxies).toBeUndefined();
     });
   });
 });

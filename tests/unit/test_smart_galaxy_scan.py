@@ -800,6 +800,108 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
                     bridge._db.close()
                 db.close()
 
+    def test_scanned_sectors_live_preview_rebuilds_queue_without_mutating_saved_config(self) -> None:
+        from spaceinvasion.api_server import GameApiBridge
+        from spaceinvasion.config import save_strategy_config, StrategyConfig
+        from spaceinvasion.state import EnergyBalance, GameState, PlanetState, Resources
+
+        now = 1_750_000_000.0
+        with tempfile.TemporaryDirectory(prefix="si_sec_prev_") as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.yaml"
+            save_strategy_config(
+                StrategyConfig(
+                    galaxy_scan_refresh_pct=0,
+                    galaxy_sweep_pages=100,
+                    galaxy_scan_all_galaxies=False,
+                ),
+                cfg_path,
+            )
+            db = GameDatabase(tmp_path / "state.db")
+            bridge: GameApiBridge | None = None
+            try:
+                for sys_i in range(1, 401):
+                    db.record_galaxy_scan(2, sys_i, [], ts=now - 1800.0 - sys_i)
+                bridge = GameApiBridge(
+                    config_path=cfg_path,
+                    db_path=tmp_path / "state.db",
+                )
+                bridge._last_state = GameState(
+                    universe_id=31,
+                    user_id=1,
+                    nickname="tester",
+                    timestamp=now,
+                    planets=(
+                        PlanetState(
+                            planet_id=101,
+                            name="Home",
+                            coords="02:380:12",
+                            planet_type="normal",
+                            temperature=28,
+                            fields_used=20,
+                            fields_max=300,
+                            resources=Resources(1000, 1000, 1000, 500),
+                            storage=Resources(50000, 50000, 50000, 50000),
+                            energy=EnergyBalance(100, 50),
+                        ),
+                    ),
+                    active_planet_id=101,
+                )
+
+                # Baseline saved config: 0% refresh, all_galaxies=False, G2 100% scanned -> 100 refresh in G2
+                base = bridge.handle_command({"command": "scanned_sectors"})
+                self.assertFalse(base["preview"])
+                self.assertEqual(base["summary"]["queue_count"], 100)
+                self.assertEqual(base["summary"]["queue_refresh_count"], 100)
+                self.assertEqual(base["summary"]["queue_discovery_count"], 0)
+                self.assertEqual(base["summary"]["queue_galaxies"], [2])
+
+                # Preview toggling All 14 Galaxies ON -> 100 discovery in G1/G3 without mutating saved config
+                prev_all = bridge.handle_command(
+                    {
+                        "command": "scanned_sectors",
+                        "preview_refresh_pct": 0,
+                        "preview_sweep_pages": 100,
+                        "preview_all_galaxies": True,
+                    }
+                )
+                self.assertTrue(prev_all["preview"])
+                self.assertEqual(prev_all["summary"]["queue_count"], 100)
+                self.assertEqual(prev_all["summary"]["queue_discovery_count"], 100)
+                self.assertEqual(prev_all["summary"]["queue_refresh_count"], 0)
+                self.assertEqual(prev_all["summary"]["queue_galaxies"], list(range(1, 15)))
+                self.assertTrue(prev_all["summary"]["scan_all_galaxies"])
+                self.assertFalse(prev_all["summary"]["saved_scan_all_galaxies"])
+                self.assertFalse(bridge.strategy_config.galaxy_scan_all_galaxies)
+
+                # Preview mixed 30% Refresh / 70% Discovery with 40 req/sweep -> 12 refresh + 28 discovery
+                prev_mix = bridge.handle_command(
+                    {
+                        "command": "scanned_sectors",
+                        "preview_refresh_pct": 30,
+                        "preview_sweep_pages": 40,
+                        "preview_all_galaxies": False,
+                    }
+                )
+                self.assertTrue(prev_mix["preview"])
+                self.assertEqual(prev_mix["summary"]["queue_count"], 40)
+                self.assertEqual(prev_mix["summary"]["queue_refresh_count"], 12)
+                self.assertEqual(prev_mix["summary"]["queue_discovery_count"], 28)
+                self.assertEqual(prev_mix["summary"]["saved_refresh_pct"], 0)
+                self.assertEqual(prev_mix["summary"]["saved_sweep_pages"], 100)
+                self.assertEqual(bridge.strategy_config.galaxy_scan_refresh_pct, 0)
+                self.assertEqual(bridge.strategy_config.galaxy_sweep_pages, 100)
+
+                # Subsequent non-preview read still returns original saved queue
+                after = bridge.handle_command({"command": "scanned_sectors"})
+                self.assertFalse(after["preview"])
+                self.assertEqual(after["summary"]["queue_refresh_count"], 100)
+                self.assertEqual(after["summary"]["queue_discovery_count"], 0)
+            finally:
+                if bridge is not None and bridge._db is not None:
+                    bridge._db.close()
+                db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

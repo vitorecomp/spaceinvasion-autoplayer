@@ -7756,6 +7756,8 @@
     notifCenterOpenRef.current = notifCenterOpen;
     const uiPrefsRef = reactExports.useRef(uiPrefs);
     uiPrefsRef.current = uiPrefs;
+    const sectorsReqSeqRef = reactExports.useRef(0);
+    const sectorPreviewRef = reactExports.useRef(null);
     sharedLegacyState.dashboard = dashboard;
     sharedLegacyState.apiOnline = apiOnline;
     sharedLegacyState.reconnectAttempts = reconnectAttempts;
@@ -8058,7 +8060,11 @@
       [setCombatData, showFeedback]
     );
     const refreshSectorsView = reactExports.useCallback(
-      async (galaxyOverride, includeUnscannedOverride) => {
+      async (galaxyOverride, includeUnscannedOverride, previewOverride) => {
+        if (previewOverride !== void 0) {
+          sectorPreviewRef.current = previewOverride;
+        }
+        const reqSeq = ++sectorsReqSeqRef.current;
         try {
           const gal = galaxyOverride !== void 0 ? galaxyOverride : Math.max(0, Math.round(safeFiniteNumber(sharedLegacyState.sectorGalaxy, 0) ?? 0));
           const curFilter = String(sharedLegacyState.sectorFilter || "all");
@@ -8074,9 +8080,25 @@
           };
           if (gal > 0) payload.galaxy = gal;
           if (planet == null ? void 0 : planet.planet_id) payload.planet_id = planet.planet_id;
+          const activePreview = sectorPreviewRef.current;
+          if (activePreview) {
+            if (typeof activePreview.refresh_pct === "number") {
+              payload.preview_refresh_pct = activePreview.refresh_pct;
+            }
+            if (typeof activePreview.sweep_pages === "number") {
+              payload.preview_sweep_pages = activePreview.sweep_pages;
+            }
+            if (typeof activePreview.all_galaxies === "boolean") {
+              payload.preview_all_galaxies = activePreview.all_galaxies;
+            }
+          }
           const data = await apiCommand(payload);
-          setSectorsData(data);
+          if (reqSeq !== sectorsReqSeqRef.current) return;
+          if (data && (Array.isArray(data.sectors) || Array.isArray(data.scan_queue) || data.summary && typeof data.summary === "object")) {
+            setSectorsData(data);
+          }
         } catch (err) {
+          if (reqSeq !== sectorsReqSeqRef.current) return;
           showFeedback(`Scanned sectors load failed: ${err.message}`, feedbackKindForError(err));
         }
       },
@@ -15772,40 +15794,141 @@
     const galaxyFilter = Math.max(0, Math.round(finiteNum(uiPrefs.sectorGalaxy, 0)));
     const summary = (sectorsData == null ? void 0 : sectorsData.summary) && typeof sectorsData.summary === "object" ? sectorsData.summary : {};
     const [refreshPctInput, setRefreshPctInput] = reactExports.useState("0");
+    const [discoveryPctInput, setDiscoveryPctInput] = reactExports.useState("100");
     const [sweepPagesInput, setSweepPagesInput] = reactExports.useState("100");
     const [allGalaxiesInput, setAllGalaxiesInput] = reactExports.useState(false);
+    const [splitDirty, setSplitDirty] = reactExports.useState(false);
+    const [previewPending, setPreviewPending] = reactExports.useState(false);
     const [queuePhaseFilter, setQueuePhaseFilter] = reactExports.useState("all");
     const [savingSplit, setSavingSplit] = reactExports.useState(false);
     const [sweeping, setSweeping] = reactExports.useState(false);
     const [refreshingSector, setRefreshingSector] = reactExports.useState(null);
-    const cfgRefreshPct = summary.effective_refresh_pct ?? ((_a = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a.galaxy_scan_refresh_pct) ?? (((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.galaxy_scan_explore_first) === false ? 100 : 0);
-    const cfgSweepPages = summary.sweep_pages ?? ((_c = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c.galaxy_sweep_pages) ?? 100;
-    const cfgAllGalaxies = Boolean(
-      summary.scan_all_galaxies ?? ((_d = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _d.galaxy_scan_all_galaxies) ?? false
+    const previewTimerRef = reactExports.useRef(null);
+    const isPreviewPayload = Boolean(sectorsData == null ? void 0 : sectorsData.preview);
+    const savedRefreshPct = Math.max(
+      0,
+      Math.min(
+        100,
+        Math.round(
+          finiteNum(
+            summary.saved_refresh_pct ?? (!isPreviewPayload ? summary.effective_refresh_pct : void 0) ?? ((_a = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a.galaxy_scan_refresh_pct) ?? (((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.galaxy_scan_explore_first) === false ? 100 : 0),
+            0
+          )
+        )
+      )
+    );
+    const savedSweepPages = Math.max(
+      1,
+      Math.min(
+        400,
+        Math.round(
+          finiteNum(
+            summary.saved_sweep_pages ?? (!isPreviewPayload ? summary.sweep_pages : void 0) ?? ((_c = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c.galaxy_sweep_pages),
+            100
+          )
+        )
+      )
+    );
+    const savedAllGalaxies = Boolean(
+      summary.saved_scan_all_galaxies ?? (!isPreviewPayload ? summary.scan_all_galaxies : void 0) ?? ((_d = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _d.galaxy_scan_all_galaxies) ?? false
     );
     reactExports.useEffect(() => {
-      const rVal = Math.max(0, Math.min(100, Math.round(finiteNum(cfgRefreshPct, 0))));
-      setRefreshPctInput(String(rVal));
-    }, [cfgRefreshPct]);
+      if (splitDirty || savingSplit) return;
+      setRefreshPctInput(String(savedRefreshPct));
+      setDiscoveryPctInput(String(100 - savedRefreshPct));
+      setSweepPagesInput(String(savedSweepPages));
+      setAllGalaxiesInput(savedAllGalaxies);
+    }, [savedRefreshPct, savedSweepPages, savedAllGalaxies, splitDirty, savingSplit]);
     reactExports.useEffect(() => {
-      const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(cfgSweepPages, 100))));
-      setSweepPagesInput(String(pVal));
-    }, [cfgSweepPages]);
-    reactExports.useEffect(() => {
-      setAllGalaxiesInput(cfgAllGalaxies);
-    }, [cfgAllGalaxies]);
+      return () => {
+        if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
+      };
+    }, []);
     const parsedRefreshPct = Math.max(
       0,
-      Math.min(100, Math.round(finiteNum(refreshPctInput, 0)))
+      Math.min(100, Math.round(finiteNum(refreshPctInput, savedRefreshPct)))
     );
     const parsedDiscoveryPct = 100 - parsedRefreshPct;
     const parsedSweepPages = Math.max(
       1,
-      Math.min(400, Math.round(finiteNum(sweepPagesInput, 100)))
+      Math.min(400, Math.round(finiteNum(sweepPagesInput, savedSweepPages)))
     );
     const previewRefreshReq = Math.round(parsedSweepPages * parsedRefreshPct / 100);
     const previewDiscoveryReq = Math.max(0, parsedSweepPages - previewRefreshReq);
     const previewModeLabel = parsedRefreshPct <= 0 ? "EXPLORATORY (100% DISCOVERY)" : parsedRefreshPct >= 100 ? "REFRESH ONLY (100% REFRESH)" : `MIXED (${parsedRefreshPct}% REFRESH / ${parsedDiscoveryPct}% DISCOVERY)`;
+    const scheduleQueuePreview = reactExports.useCallback(
+      (nextRefreshPct, nextSweepPages, nextAllGalaxies, immediate = false) => {
+        if (previewTimerRef.current) {
+          clearTimeout(previewTimerRef.current);
+          previewTimerRef.current = null;
+        }
+        const matchesSaved = nextRefreshPct === savedRefreshPct && nextSweepPages === savedSweepPages && nextAllGalaxies === savedAllGalaxies;
+        setSplitDirty(!matchesSaved);
+        const previewArg = matchesSaved ? null : {
+          refresh_pct: nextRefreshPct,
+          sweep_pages: nextSweepPages,
+          all_galaxies: nextAllGalaxies
+        };
+        const incUnscanned = galaxyFilter > 0 || statusFilter === "unscanned";
+        const runPreview = () => {
+          setPreviewPending(true);
+          void refreshSectorsView(galaxyFilter, incUnscanned, previewArg).finally(() => {
+            setPreviewPending(false);
+          });
+        };
+        if (immediate) {
+          runPreview();
+        } else {
+          setPreviewPending(true);
+          previewTimerRef.current = setTimeout(() => {
+            previewTimerRef.current = null;
+            runPreview();
+          }, 150);
+        }
+      },
+      [
+        galaxyFilter,
+        refreshSectorsView,
+        savedAllGalaxies,
+        savedRefreshPct,
+        savedSweepPages,
+        statusFilter
+      ]
+    );
+    const handleRefreshPctChange = (raw) => {
+      setRefreshPctInput(raw);
+      setSplitDirty(true);
+      const v = raw.trim() === "" ? null : finiteNum(raw, null);
+      if (v !== null) {
+        const clamped = Math.max(0, Math.min(100, Math.round(v)));
+        setDiscoveryPctInput(String(100 - clamped));
+        scheduleQueuePreview(clamped, parsedSweepPages, allGalaxiesInput, false);
+      }
+    };
+    const handleDiscoveryPctChange = (raw) => {
+      setDiscoveryPctInput(raw);
+      setSplitDirty(true);
+      const v = raw.trim() === "" ? null : finiteNum(raw, null);
+      if (v !== null) {
+        const clampedDisc = Math.max(0, Math.min(100, Math.round(v)));
+        const nextRef = 100 - clampedDisc;
+        setRefreshPctInput(String(nextRef));
+        scheduleQueuePreview(nextRef, parsedSweepPages, allGalaxiesInput, false);
+      }
+    };
+    const handleSweepPagesChange = (raw) => {
+      setSweepPagesInput(raw);
+      setSplitDirty(true);
+      const v = raw.trim() === "" ? null : finiteNum(raw, null);
+      if (v !== null && v >= 1) {
+        const clampedPages = Math.max(1, Math.min(400, Math.round(v)));
+        scheduleQueuePreview(parsedRefreshPct, clampedPages, allGalaxiesInput, false);
+      }
+    };
+    const handleAllGalaxiesToggle = (checked) => {
+      setAllGalaxiesInput(checked);
+      scheduleQueuePreview(parsedRefreshPct, parsedSweepPages, checked, true);
+    };
     const allSectors = reactExports.useMemo(
       () => Array.isArray(sectorsData == null ? void 0 : sectorsData.sectors) ? sectorsData.sectors.filter((s) => s && typeof s === "object") : [],
       [sectorsData]
@@ -15964,8 +16087,12 @@
       }
     };
     const handleSaveSplit = async () => {
-      const rVal = Math.max(0, Math.min(100, Math.round(finiteNum(refreshPctInput, 0))));
-      const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(sweepPagesInput, 100))));
+      if (previewTimerRef.current) {
+        clearTimeout(previewTimerRef.current);
+        previewTimerRef.current = null;
+      }
+      const rVal = Math.max(0, Math.min(100, Math.round(finiteNum(refreshPctInput, savedRefreshPct))));
+      const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(sweepPagesInput, savedSweepPages))));
       setSavingSplit(true);
       try {
         await apiCommand2({
@@ -15977,6 +16104,11 @@
             galaxy_scan_all_galaxies: allGalaxiesInput
           }
         });
+        setRefreshPctInput(String(rVal));
+        setDiscoveryPctInput(String(100 - rVal));
+        setSweepPagesInput(String(pVal));
+        setSplitDirty(false);
+        setPreviewPending(false);
         const refReq = Math.round(pVal * rVal / 100);
         const discReq = Math.max(0, pVal - refReq);
         const scopeLabel = allGalaxiesInput ? "All 14 Galaxies (G1-G14)" : "Owned Galaxies (+spillover)";
@@ -15984,8 +16116,8 @@
           `Sweep split saved: ${rVal}% Refresh (${refReq} req) / ${100 - rVal}% Discovery (${discReq} req) across ${pVal} req/sweep · Scope: ${scopeLabel}.`,
           "ok"
         );
+        await refreshSectorsView(galaxyFilter, galaxyFilter > 0 || statusFilter === "unscanned", null);
         await loadDashboard({ refresh: false, preserveConfig: false, force: true });
-        await refreshSectorsView(galaxyFilter, galaxyFilter > 0 || statusFilter === "unscanned");
       } catch (err) {
         showFeedback(`Failed saving sweep split: ${err.message}`, feedbackKindForError(err));
       } finally {
@@ -15993,11 +16125,29 @@
       }
     };
     const handleRunSweep = async () => {
-      const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(sweepPagesInput, 100))));
+      if (previewTimerRef.current) {
+        clearTimeout(previewTimerRef.current);
+        previewTimerRef.current = null;
+      }
+      const rVal = Math.max(0, Math.min(100, Math.round(finiteNum(refreshPctInput, savedRefreshPct))));
+      const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(sweepPagesInput, savedSweepPages))));
       setSweeping(true);
       try {
+        if (splitDirty) {
+          await apiCommand2({
+            command: "update_config",
+            config: {
+              galaxy_scan_refresh_pct: rVal,
+              galaxy_sweep_pages: pVal,
+              galaxy_scan_explore_first: rVal < 100,
+              galaxy_scan_all_galaxies: allGalaxiesInput
+            }
+          });
+          setSplitDirty(false);
+          setPreviewPending(false);
+        }
         showFeedback(
-          `Starting smart galaxy sweep (${pVal} pages · ${parsedRefreshPct}% Refresh / ${parsedDiscoveryPct}% Discovery)...`,
+          `Starting smart galaxy sweep (${pVal} pages · ${rVal}% Refresh / ${100 - rVal}% Discovery)...`,
           "ok"
         );
         const res = await apiCommand2({
@@ -16006,8 +16156,8 @@
           dry_run: false
         });
         showFeedback(res.message || "Galaxy sweep completed.", res.ok === false ? "warn" : "ok");
+        await refreshSectorsView(galaxyFilter, galaxyFilter > 0 || statusFilter === "unscanned", null);
         await loadDashboard({ refresh: false, force: true });
-        await refreshSectorsView(galaxyFilter, galaxyFilter > 0 || statusFilter === "unscanned");
       } catch (err) {
         showFeedback(`Galaxy sweep failed: ${err.message}`, feedbackKindForError(err));
       } finally {
@@ -16086,6 +16236,10 @@
     );
     const originLabel = (sectorsData == null ? void 0 : sectorsData.origin_coords) || (activePlanet == null ? void 0 : activePlanet.coords) || "--";
     const queueScopeLabel = Array.isArray(summary.queue_galaxies) && summary.queue_galaxies.length >= 14 ? "G1–G14" : Array.isArray(summary.queue_galaxies) && summary.queue_galaxies.length > 0 ? summary.queue_galaxies.map((g) => `G${g}`).join(", ") : allGalaxiesInput ? "G1–G14" : "Owned";
+    const summaryMatchesInputs = (sectorsData == null ? void 0 : sectorsData.summary) != null && Math.round(finiteNum(summary.effective_refresh_pct ?? summary.refresh_pct, -1)) === parsedRefreshPct && Math.round(finiteNum(summary.sweep_pages, -1)) === parsedSweepPages && Boolean(summary.scan_all_galaxies) === allGalaxiesInput;
+    const isShowingPreview = splitDirty || isPreviewPayload;
+    const ownedFullNoAllGals = summaryMatchesInputs && parsedDiscoveryPct > 0 && queueDiscCount === 0 && !allGalaxiesInput && galCovPct >= 100;
+    const splitReadoutText = !summaryMatchesInputs || previewPending ? `Updating queue: ${previewRefreshReq} Refresh · ${previewDiscoveryReq} Discovery (${previewModeLabel}) · Scope: ${allGalaxiesInput ? "G1–G14" : queueScopeLabel}` : ownedFullNoAllGals ? `${isShowingPreview ? "Preview (unsaved)" : "Actual queue"}: ${queueRefCount} Refresh · 0 Discovery (Scope ${queueScopeLabel} is 100% scanned — enable "All 14 Galaxies" to discover G1–G14)` : `${isShowingPreview ? "Preview (unsaved)" : "Actual queue"}: ${queueRefCount} Refresh · ${queueDiscCount} Discovery (${previewModeLabel}) · Scope: ${queueScopeLabel}`;
     return /* @__PURE__ */ jsxRuntimeExports.jsxs(
       "section",
       {
@@ -16124,7 +16278,13 @@
                       max: 100,
                       step: 5,
                       value: refreshPctInput,
-                      onChange: (e) => setRefreshPctInput(e.target.value)
+                      onChange: (e) => handleRefreshPctChange(e.target.value),
+                      onBlur: () => {
+                        if (refreshPctInput.trim() === "") {
+                          setRefreshPctInput(String(parsedRefreshPct));
+                          setDiscoveryPctInput(String(100 - parsedRefreshPct));
+                        }
+                      }
                     }
                   )
                 ] }),
@@ -16138,14 +16298,12 @@
                       min: 0,
                       max: 100,
                       step: 5,
-                      value: String(parsedDiscoveryPct),
-                      onChange: (e) => {
-                        const v = finiteNum(e.target.value, null);
-                        if (v === null) {
-                          setRefreshPctInput("100");
-                        } else {
-                          const clampedDisc = Math.max(0, Math.min(100, Math.round(v)));
-                          setRefreshPctInput(String(100 - clampedDisc));
+                      value: discoveryPctInput,
+                      onChange: (e) => handleDiscoveryPctChange(e.target.value),
+                      onBlur: () => {
+                        if (discoveryPctInput.trim() === "") {
+                          setDiscoveryPctInput(String(parsedDiscoveryPct));
+                          setRefreshPctInput(String(parsedRefreshPct));
                         }
                       }
                     }
@@ -16162,7 +16320,12 @@
                       max: 400,
                       step: 10,
                       value: sweepPagesInput,
-                      onChange: (e) => setSweepPagesInput(e.target.value)
+                      onChange: (e) => handleSweepPagesChange(e.target.value),
+                      onBlur: () => {
+                        if (sweepPagesInput.trim() === "") {
+                          setSweepPagesInput(String(parsedSweepPages));
+                        }
+                      }
                     }
                   )
                 ] }),
@@ -16179,7 +16342,7 @@
                           type: "checkbox",
                           id: "sec-all-galaxies",
                           checked: allGalaxiesInput,
-                          onChange: (e) => setAllGalaxiesInput(e.target.checked)
+                          onChange: (e) => handleAllGalaxiesToggle(e.target.checked)
                         }
                       ),
                       "All 14 Galaxies"
@@ -16194,7 +16357,7 @@
                     id: "btn-sec-save-split",
                     disabled: savingSplit,
                     onClick: handleSaveSplit,
-                    children: savingSplit ? "Saving..." : "Apply Split"
+                    children: savingSplit ? "Saving..." : splitDirty ? "Apply Split*" : "Apply Split"
                   }
                 ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -16221,7 +16384,7 @@
                   ]
                 }
               ),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", id: "sec-split-readout", children: `Next batch: ${previewRefreshReq} Refresh · ${previewDiscoveryReq} Discovery (${previewModeLabel}) · Scope: ${queueScopeLabel}` })
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", id: "sec-split-readout", children: splitReadoutText })
             ] })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window sectors-queue-window", id: "sectors-queue-window", children: [
@@ -16229,7 +16392,7 @@
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "QUE" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Upcoming Scan Queue" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "sec-queue-meta", children: `${fmtInt(scanQueue.length)} QUEUED · ${fmtInt(queueDiscCount)} DISCOVERY · ${fmtInt(queueRefCount)} REFRESH · SCOPE ${queueScopeLabel}` })
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "sec-queue-meta", children: `${fmtInt(scanQueue.length)} QUEUED · ${fmtInt(queueDiscCount)} DISCOVERY · ${fmtInt(queueRefCount)} REFRESH · SCOPE ${queueScopeLabel}${previewPending ? " · UPDATING..." : isShowingPreview ? " · PREVIEW (UNSAVED)" : ""}` })
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-toolbar", children: [
                 queueGalBreakdown.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "sector-queue-gal-pills tabular", "aria-label": "Queued sectors by galaxy", children: queueGalBreakdown.map((gb) => /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "sector-queue-badge", children: `G${gb.galaxy}: ${gb.count}` }, gb.galaxy)) }) : null,

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
@@ -94,44 +94,76 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
       : {};
 
   const [refreshPctInput, setRefreshPctInput] = useState<string>("0");
+  const [discoveryPctInput, setDiscoveryPctInput] = useState<string>("100");
   const [sweepPagesInput, setSweepPagesInput] = useState<string>("100");
   const [allGalaxiesInput, setAllGalaxiesInput] = useState<boolean>(false);
+  const [splitDirty, setSplitDirty] = useState<boolean>(false);
+  const [previewPending, setPreviewPending] = useState<boolean>(false);
   const [queuePhaseFilter, setQueuePhaseFilter] = useState<"all" | "exploratory" | "targeted_refresh">("all");
   const [savingSplit, setSavingSplit] = useState<boolean>(false);
   const [sweeping, setSweeping] = useState<boolean>(false);
   const [refreshingSector, setRefreshingSector] = useState<string | null>(null);
+  const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const cfgRefreshPct =
-    summary.effective_refresh_pct ??
-    dashboard?.config?.galaxy_scan_refresh_pct ??
-    (dashboard?.config?.galaxy_scan_explore_first === false ? 100 : 0);
-  const cfgSweepPages = summary.sweep_pages ?? dashboard?.config?.galaxy_sweep_pages ?? 100;
-  const cfgAllGalaxies = Boolean(
-    summary.scan_all_galaxies ?? dashboard?.config?.galaxy_scan_all_galaxies ?? false
+  const isPreviewPayload = Boolean(sectorsData?.preview);
+  const savedRefreshPct = Math.max(
+    0,
+    Math.min(
+      100,
+      Math.round(
+        finiteNum(
+          summary.saved_refresh_pct ??
+            (!isPreviewPayload ? summary.effective_refresh_pct : undefined) ??
+            dashboard?.config?.galaxy_scan_refresh_pct ??
+            (dashboard?.config?.galaxy_scan_explore_first === false ? 100 : 0),
+          0
+        )
+      )
+    )
+  );
+  const savedSweepPages = Math.max(
+    1,
+    Math.min(
+      400,
+      Math.round(
+        finiteNum(
+          summary.saved_sweep_pages ??
+            (!isPreviewPayload ? summary.sweep_pages : undefined) ??
+            dashboard?.config?.galaxy_sweep_pages,
+          100
+        )
+      )
+    )
+  );
+  const savedAllGalaxies = Boolean(
+    summary.saved_scan_all_galaxies ??
+      (!isPreviewPayload ? summary.scan_all_galaxies : undefined) ??
+      dashboard?.config?.galaxy_scan_all_galaxies ??
+      false
   );
 
   useEffect(() => {
-    const rVal = Math.max(0, Math.min(100, Math.round(finiteNum(cfgRefreshPct, 0))));
-    setRefreshPctInput(String(rVal));
-  }, [cfgRefreshPct]);
+    if (splitDirty || savingSplit) return;
+    setRefreshPctInput(String(savedRefreshPct));
+    setDiscoveryPctInput(String(100 - savedRefreshPct));
+    setSweepPagesInput(String(savedSweepPages));
+    setAllGalaxiesInput(savedAllGalaxies);
+  }, [savedRefreshPct, savedSweepPages, savedAllGalaxies, splitDirty, savingSplit]);
 
   useEffect(() => {
-    const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(cfgSweepPages, 100))));
-    setSweepPagesInput(String(pVal));
-  }, [cfgSweepPages]);
-
-  useEffect(() => {
-    setAllGalaxiesInput(cfgAllGalaxies);
-  }, [cfgAllGalaxies]);
+    return () => {
+      if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
+    };
+  }, []);
 
   const parsedRefreshPct = Math.max(
     0,
-    Math.min(100, Math.round(finiteNum(refreshPctInput, 0)))
+    Math.min(100, Math.round(finiteNum(refreshPctInput, savedRefreshPct)))
   );
   const parsedDiscoveryPct = 100 - parsedRefreshPct;
   const parsedSweepPages = Math.max(
     1,
-    Math.min(400, Math.round(finiteNum(sweepPagesInput, 100)))
+    Math.min(400, Math.round(finiteNum(sweepPagesInput, savedSweepPages)))
   );
   const previewRefreshReq = Math.round((parsedSweepPages * parsedRefreshPct) / 100);
   const previewDiscoveryReq = Math.max(0, parsedSweepPages - previewRefreshReq);
@@ -141,6 +173,94 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
       : parsedRefreshPct >= 100
         ? "REFRESH ONLY (100% REFRESH)"
         : `MIXED (${parsedRefreshPct}% REFRESH / ${parsedDiscoveryPct}% DISCOVERY)`;
+
+  const scheduleQueuePreview = useCallback(
+    (
+      nextRefreshPct: number,
+      nextSweepPages: number,
+      nextAllGalaxies: boolean,
+      immediate = false
+    ) => {
+      if (previewTimerRef.current) {
+        clearTimeout(previewTimerRef.current);
+        previewTimerRef.current = null;
+      }
+      const matchesSaved =
+        nextRefreshPct === savedRefreshPct &&
+        nextSweepPages === savedSweepPages &&
+        nextAllGalaxies === savedAllGalaxies;
+      setSplitDirty(!matchesSaved);
+      const previewArg = matchesSaved
+        ? null
+        : {
+            refresh_pct: nextRefreshPct,
+            sweep_pages: nextSweepPages,
+            all_galaxies: nextAllGalaxies,
+          };
+      const incUnscanned = galaxyFilter > 0 || statusFilter === "unscanned";
+      const runPreview = () => {
+        setPreviewPending(true);
+        void refreshSectorsView(galaxyFilter, incUnscanned, previewArg).finally(() => {
+          setPreviewPending(false);
+        });
+      };
+      if (immediate) {
+        runPreview();
+      } else {
+        setPreviewPending(true);
+        previewTimerRef.current = setTimeout(() => {
+          previewTimerRef.current = null;
+          runPreview();
+        }, 150);
+      }
+    },
+    [
+      galaxyFilter,
+      refreshSectorsView,
+      savedAllGalaxies,
+      savedRefreshPct,
+      savedSweepPages,
+      statusFilter,
+    ]
+  );
+
+  const handleRefreshPctChange = (raw: string) => {
+    setRefreshPctInput(raw);
+    setSplitDirty(true);
+    const v = raw.trim() === "" ? null : finiteNum(raw, null);
+    if (v !== null) {
+      const clamped = Math.max(0, Math.min(100, Math.round(v)));
+      setDiscoveryPctInput(String(100 - clamped));
+      scheduleQueuePreview(clamped, parsedSweepPages, allGalaxiesInput, false);
+    }
+  };
+
+  const handleDiscoveryPctChange = (raw: string) => {
+    setDiscoveryPctInput(raw);
+    setSplitDirty(true);
+    const v = raw.trim() === "" ? null : finiteNum(raw, null);
+    if (v !== null) {
+      const clampedDisc = Math.max(0, Math.min(100, Math.round(v)));
+      const nextRef = 100 - clampedDisc;
+      setRefreshPctInput(String(nextRef));
+      scheduleQueuePreview(nextRef, parsedSweepPages, allGalaxiesInput, false);
+    }
+  };
+
+  const handleSweepPagesChange = (raw: string) => {
+    setSweepPagesInput(raw);
+    setSplitDirty(true);
+    const v = raw.trim() === "" ? null : finiteNum(raw, null);
+    if (v !== null && v >= 1) {
+      const clampedPages = Math.max(1, Math.min(400, Math.round(v)));
+      scheduleQueuePreview(parsedRefreshPct, clampedPages, allGalaxiesInput, false);
+    }
+  };
+
+  const handleAllGalaxiesToggle = (checked: boolean) => {
+    setAllGalaxiesInput(checked);
+    scheduleQueuePreview(parsedRefreshPct, parsedSweepPages, checked, true);
+  };
 
   const allSectors: ScannedSectorItem[] = useMemo(
     () =>
@@ -339,8 +459,12 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
   };
 
   const handleSaveSplit = async () => {
-    const rVal = Math.max(0, Math.min(100, Math.round(finiteNum(refreshPctInput, 0))));
-    const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(sweepPagesInput, 100))));
+    if (previewTimerRef.current) {
+      clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = null;
+    }
+    const rVal = Math.max(0, Math.min(100, Math.round(finiteNum(refreshPctInput, savedRefreshPct))));
+    const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(sweepPagesInput, savedSweepPages))));
     setSavingSplit(true);
     try {
       await apiCommand({
@@ -352,6 +476,11 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
           galaxy_scan_all_galaxies: allGalaxiesInput,
         },
       });
+      setRefreshPctInput(String(rVal));
+      setDiscoveryPctInput(String(100 - rVal));
+      setSweepPagesInput(String(pVal));
+      setSplitDirty(false);
+      setPreviewPending(false);
       const refReq = Math.round((pVal * rVal) / 100);
       const discReq = Math.max(0, pVal - refReq);
       const scopeLabel = allGalaxiesInput ? "All 14 Galaxies (G1-G14)" : "Owned Galaxies (+spillover)";
@@ -359,8 +488,8 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
         `Sweep split saved: ${rVal}% Refresh (${refReq} req) / ${100 - rVal}% Discovery (${discReq} req) across ${pVal} req/sweep · Scope: ${scopeLabel}.`,
         "ok"
       );
+      await refreshSectorsView(galaxyFilter, galaxyFilter > 0 || statusFilter === "unscanned", null);
       await loadDashboard({ refresh: false, preserveConfig: false, force: true });
-      await refreshSectorsView(galaxyFilter, galaxyFilter > 0 || statusFilter === "unscanned");
     } catch (err: any) {
       showFeedback(`Failed saving sweep split: ${err.message}`, feedbackKindForError(err));
     } finally {
@@ -369,11 +498,29 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
   };
 
   const handleRunSweep = async () => {
-    const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(sweepPagesInput, 100))));
+    if (previewTimerRef.current) {
+      clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = null;
+    }
+    const rVal = Math.max(0, Math.min(100, Math.round(finiteNum(refreshPctInput, savedRefreshPct))));
+    const pVal = Math.max(1, Math.min(400, Math.round(finiteNum(sweepPagesInput, savedSweepPages))));
     setSweeping(true);
     try {
+      if (splitDirty) {
+        await apiCommand({
+          command: "update_config",
+          config: {
+            galaxy_scan_refresh_pct: rVal,
+            galaxy_sweep_pages: pVal,
+            galaxy_scan_explore_first: rVal < 100,
+            galaxy_scan_all_galaxies: allGalaxiesInput,
+          },
+        });
+        setSplitDirty(false);
+        setPreviewPending(false);
+      }
       showFeedback(
-        `Starting smart galaxy sweep (${pVal} pages · ${parsedRefreshPct}% Refresh / ${parsedDiscoveryPct}% Discovery)...`,
+        `Starting smart galaxy sweep (${pVal} pages · ${rVal}% Refresh / ${100 - rVal}% Discovery)...`,
         "ok"
       );
       const res = await apiCommand({
@@ -382,8 +529,8 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
         dry_run: false,
       });
       showFeedback(res.message || "Galaxy sweep completed.", res.ok === false ? "warn" : "ok");
+      await refreshSectorsView(galaxyFilter, galaxyFilter > 0 || statusFilter === "unscanned", null);
       await loadDashboard({ refresh: false, force: true });
-      await refreshSectorsView(galaxyFilter, galaxyFilter > 0 || statusFilter === "unscanned");
     } catch (err: any) {
       showFeedback(`Galaxy sweep failed: ${err.message}`, feedbackKindForError(err));
     } finally {
@@ -471,6 +618,25 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
         : allGalaxiesInput
           ? "G1–G14"
           : "Owned";
+  const summaryMatchesInputs =
+    sectorsData?.summary != null &&
+    Math.round(finiteNum(summary.effective_refresh_pct ?? summary.refresh_pct, -1)) ===
+      parsedRefreshPct &&
+    Math.round(finiteNum(summary.sweep_pages, -1)) === parsedSweepPages &&
+    Boolean(summary.scan_all_galaxies) === allGalaxiesInput;
+  const isShowingPreview = splitDirty || isPreviewPayload;
+  const ownedFullNoAllGals =
+    summaryMatchesInputs &&
+    parsedDiscoveryPct > 0 &&
+    queueDiscCount === 0 &&
+    !allGalaxiesInput &&
+    galCovPct >= 100;
+  const splitReadoutText =
+    !summaryMatchesInputs || previewPending
+      ? `Updating queue: ${previewRefreshReq} Refresh · ${previewDiscoveryReq} Discovery (${previewModeLabel}) · Scope: ${allGalaxiesInput ? "G1–G14" : queueScopeLabel}`
+      : ownedFullNoAllGals
+        ? `${isShowingPreview ? "Preview (unsaved)" : "Actual queue"}: ${queueRefCount} Refresh · 0 Discovery (Scope ${queueScopeLabel} is 100% scanned — enable "All 14 Galaxies" to discover G1–G14)`
+        : `${isShowingPreview ? "Preview (unsaved)" : "Actual queue"}: ${queueRefCount} Refresh · ${queueDiscCount} Discovery (${previewModeLabel}) · Scope: ${queueScopeLabel}`;
 
   return (
     <section
@@ -522,7 +688,13 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
                 max={100}
                 step={5}
                 value={refreshPctInput}
-                onChange={(e) => setRefreshPctInput(e.target.value)}
+                onChange={(e) => handleRefreshPctChange(e.target.value)}
+                onBlur={() => {
+                  if (refreshPctInput.trim() === "") {
+                    setRefreshPctInput(String(parsedRefreshPct));
+                    setDiscoveryPctInput(String(100 - parsedRefreshPct));
+                  }
+                }}
               />
             </label>
             <label className="sector-split-field tabular" htmlFor="sec-discovery-pct">
@@ -533,14 +705,12 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
                 min={0}
                 max={100}
                 step={5}
-                value={String(parsedDiscoveryPct)}
-                onChange={(e) => {
-                  const v = finiteNum(e.target.value, null);
-                  if (v === null) {
-                    setRefreshPctInput("100");
-                  } else {
-                    const clampedDisc = Math.max(0, Math.min(100, Math.round(v)));
-                    setRefreshPctInput(String(100 - clampedDisc));
+                value={discoveryPctInput}
+                onChange={(e) => handleDiscoveryPctChange(e.target.value)}
+                onBlur={() => {
+                  if (discoveryPctInput.trim() === "") {
+                    setDiscoveryPctInput(String(parsedDiscoveryPct));
+                    setRefreshPctInput(String(parsedRefreshPct));
                   }
                 }}
               />
@@ -554,7 +724,12 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
                 max={400}
                 step={10}
                 value={sweepPagesInput}
-                onChange={(e) => setSweepPagesInput(e.target.value)}
+                onChange={(e) => handleSweepPagesChange(e.target.value)}
+                onBlur={() => {
+                  if (sweepPagesInput.trim() === "") {
+                    setSweepPagesInput(String(parsedSweepPages));
+                  }
+                }}
               />
             </label>
             <label
@@ -566,7 +741,7 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
                 type="checkbox"
                 id="sec-all-galaxies"
                 checked={allGalaxiesInput}
-                onChange={(e) => setAllGalaxiesInput(e.target.checked)}
+                onChange={(e) => handleAllGalaxiesToggle(e.target.checked)}
               />
               All 14 Galaxies
             </label>
@@ -577,7 +752,7 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
               disabled={savingSplit}
               onClick={handleSaveSplit}
             >
-              {savingSplit ? "Saving..." : "Apply Split"}
+              {savingSplit ? "Saving..." : splitDirty ? "Apply Split*" : "Apply Split"}
             </button>
             <button
               type="button"
@@ -598,7 +773,7 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
             <span className="sector-split-discovery" style={{ width: `${parsedDiscoveryPct}%` }} />
           </div>
           <span className="kpi-sub tabular" id="sec-split-readout">
-            {`Next batch: ${previewRefreshReq} Refresh · ${previewDiscoveryReq} Discovery (${previewModeLabel}) · Scope: ${queueScopeLabel}`}
+            {splitReadoutText}
           </span>
         </div>
       </div>
@@ -609,7 +784,7 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
             <span className="module-code tabular">QUE</span>
             <h2>Upcoming Scan Queue</h2>
             <span className="module-meta tabular" id="sec-queue-meta">
-              {`${fmtInt(scanQueue.length)} QUEUED · ${fmtInt(queueDiscCount)} DISCOVERY · ${fmtInt(queueRefCount)} REFRESH · SCOPE ${queueScopeLabel}`}
+              {`${fmtInt(scanQueue.length)} QUEUED · ${fmtInt(queueDiscCount)} DISCOVERY · ${fmtInt(queueRefCount)} REFRESH · SCOPE ${queueScopeLabel}${previewPending ? " · UPDATING..." : isShowingPreview ? " · PREVIEW (UNSAVED)" : ""}`}
             </span>
           </div>
           <div className="filter-toolbar">
