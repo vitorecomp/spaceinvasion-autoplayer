@@ -1,6 +1,13 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
+import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
+import {
+  coordsSortKey,
+  timestampSortKey,
+  useTableSort,
+  type SortColumnMap,
+} from "../../hooks/useTableSort";
 import {
   finiteNum,
   fmtDurationCountdown,
@@ -38,6 +45,67 @@ export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
     ? atkData!.blocked_targets
     : [];
   const raids24 = Math.round(finiteNum(rStats.total_24h, 0));
+
+  const battleSortCols = useMemo<
+    SortColumnMap<
+      Record<string, any>,
+      "time" | "target" | "defender" | "outcome" | "rounds" | "loot" | "losses" | "debris"
+    >
+  >(
+    () => ({
+      time: {
+        accessor: (b) => timestampSortKey(b.ts, b.msg_date_text),
+        defaultDirection: "desc",
+      },
+      target: (b) => coordsSortKey(b.coords),
+      defender: (b) => String(b.defender_name || b.subject || "").trim() || null,
+      outcome: (b) => String(b.outcome || "draw").toLowerCase(),
+      rounds: {
+        accessor: (b) => finiteNum(b.rounds, null),
+        defaultDirection: "desc",
+      },
+      loot: {
+        accessor: (b) => finiteNum(b.loot?.spice_eq, 0),
+        defaultDirection: "desc",
+      },
+      losses: {
+        accessor: (b) =>
+          finiteNum(b.attacker_losses?.spice_eq, 0) + finiteNum(b.defender_losses?.spice_eq, 0),
+        defaultDirection: "desc",
+      },
+      debris: {
+        accessor: (b) =>
+          finiteNum(b.debris?.pig_iron, 0) + finiteNum(b.debris?.metal, 0),
+        defaultDirection: "desc",
+      },
+    }),
+    []
+  );
+
+  const blockSortCols = useMemo<
+    SortColumnMap<
+      Record<string, any>,
+      "coords" | "owner" | "bashHits" | "cooldown" | "reason"
+    >
+  >(
+    () => ({
+      coords: (bt) => coordsSortKey(bt.coords),
+      owner: (bt) => [bt.planet_name, bt.owner].filter(Boolean).join(" · ") || null,
+      bashHits: {
+        accessor: (bt) => finiteNum(bt.bash_hits, 0),
+        defaultDirection: "desc",
+      },
+      cooldown: {
+        accessor: (bt) => (bt.active_block ? finiteNum(bt.remaining_seconds, 0) : 0),
+        defaultDirection: "desc",
+      },
+      reason: (bt) => String(bt.block_reason || "").trim() || null,
+    }),
+    []
+  );
+
+  const battleSort = useTableSort(battles, battleSortCols);
+  const blockSort = useTableSort(blocks, blockSortCols);
 
   const handleSpyBlockTarget = async (coords: string) => {
     try {
@@ -153,25 +221,74 @@ export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
             <table>
               <thead>
                 <tr>
-                  <th>Time</th>
-                  <th>Target</th>
-                  <th>Defender</th>
-                  <th>Outcome</th>
-                  <th className="col-right">Rounds</th>
-                  <th>Plundered Loot</th>
-                  <th>Losses (Atk / Def)</th>
-                  <th>Debris Created</th>
+                  <SortableTh
+                    label="Time"
+                    sortKey="time"
+                    activeKey={battleSort.sortKey}
+                    direction={battleSort.sortDirection}
+                    onSort={battleSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Target"
+                    sortKey="target"
+                    activeKey={battleSort.sortKey}
+                    direction={battleSort.sortDirection}
+                    onSort={battleSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Defender"
+                    sortKey="defender"
+                    activeKey={battleSort.sortKey}
+                    direction={battleSort.sortDirection}
+                    onSort={battleSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Outcome"
+                    sortKey="outcome"
+                    activeKey={battleSort.sortKey}
+                    direction={battleSort.sortDirection}
+                    onSort={battleSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Rounds"
+                    sortKey="rounds"
+                    activeKey={battleSort.sortKey}
+                    direction={battleSort.sortDirection}
+                    onSort={battleSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Plundered Loot"
+                    sortKey="loot"
+                    activeKey={battleSort.sortKey}
+                    direction={battleSort.sortDirection}
+                    onSort={battleSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Losses (Atk / Def)"
+                    sortKey="losses"
+                    activeKey={battleSort.sortKey}
+                    direction={battleSort.sortDirection}
+                    onSort={battleSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Debris Created"
+                    sortKey="debris"
+                    activeKey={battleSort.sortKey}
+                    direction={battleSort.sortDirection}
+                    onSort={battleSort.requestSort}
+                  />
                 </tr>
               </thead>
               <tbody id="atk-battles-tbody">
-                {battles.length === 0 ? (
+                {battleSort.sortedRows.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="empty-cell">
                       Click Sync All Folders to archive in-game battle reports.
                     </td>
                   </tr>
                 ) : (
-                  battles.map((b, idx) => {
+                  battleSort.sortedRows.map((b, idx) => {
                     const outVal = String(b.outcome || "draw").toLowerCase();
                     const outCls =
                       outVal === "win" ? "is-win" : outVal === "loss" ? "is-loss" : "is-draw";
@@ -223,23 +340,55 @@ export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
             <table>
               <thead>
                 <tr>
-                  <th>Coords</th>
-                  <th>Owner / Planet</th>
-                  <th className="col-right">Bash Hits</th>
-                  <th className="col-right">Cooldown Left</th>
-                  <th>Server Protection Reason</th>
+                  <SortableTh
+                    label="Coords"
+                    sortKey="coords"
+                    activeKey={blockSort.sortKey}
+                    direction={blockSort.sortDirection}
+                    onSort={blockSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Owner / Planet"
+                    sortKey="owner"
+                    activeKey={blockSort.sortKey}
+                    direction={blockSort.sortDirection}
+                    onSort={blockSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Bash Hits"
+                    sortKey="bashHits"
+                    activeKey={blockSort.sortKey}
+                    direction={blockSort.sortDirection}
+                    onSort={blockSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Cooldown Left"
+                    sortKey="cooldown"
+                    activeKey={blockSort.sortKey}
+                    direction={blockSort.sortDirection}
+                    onSort={blockSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Server Protection Reason"
+                    sortKey="reason"
+                    activeKey={blockSort.sortKey}
+                    direction={blockSort.sortDirection}
+                    onSort={blockSort.requestSort}
+                  />
                   <th className="col-right">Ops</th>
                 </tr>
               </thead>
               <tbody id="atk-blocks-tbody">
-                {blocks.length === 0 ? (
+                {blockSort.sortedRows.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="empty-cell">
                       No active bash protection or server blocks recorded.
                     </td>
                   </tr>
                 ) : (
-                  blocks.map((bt, idx) => {
+                  blockSort.sortedRows.map((bt, idx) => {
                     const coords = String(bt.coords || "—");
                     return (
                       <tr key={`${coords}-${idx}`}>

@@ -1,6 +1,12 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
+import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
+import {
+  durationToSeconds,
+  useTableSort,
+  type SortColumnMap,
+} from "../../hooks/useTableSort";
 import { UniverseResearchMaxRow } from "../../types/api";
 import { clampPct, finiteNum, fmtInt } from "../../utils/formatters";
 import { RankTrajectorySvg } from "./RankTrajectorySvg";
@@ -191,6 +197,90 @@ export const RankingView: React.FC<RankingViewProps> = ({ hidden }) => {
     localUniRows ??
     (Array.isArray(dashboard?.universe_research_max) ? dashboard!.universe_research_max! : []);
 
+  const horizonSortCols = useMemo<
+    SortColumnMap<
+      Record<string, any>,
+      "horizon" | "steady" | "steadyAz" | "reinvested" | "reinvestedAz"
+    >
+  >(
+    () => ({
+      horizon: (row) => durationToSeconds(row.label) ?? (String(row.label || "").trim() || null),
+      steady: {
+        accessor: (row) => finiteNum(row.steady_points, null),
+        defaultDirection: "desc",
+      },
+      steadyAz: (row) => String(row.steady_az || "").trim() || null,
+      reinvested: {
+        accessor: (row) => finiteNum(row.compound_points, null),
+        defaultDirection: "desc",
+      },
+      reinvestedAz: (row) => String(row.compound_az || "").trim() || null,
+    }),
+    []
+  );
+
+  const milestoneSortCols = useMemo<
+    SortColumnMap<
+      Record<string, any>,
+      "milestone" | "remaining" | "steadyEta" | "compoundEta"
+    >
+  >(
+    () => ({
+      milestone: (m) => finiteNum(m.target_points, null) ?? (String(m.label || "").trim() || null),
+      remaining: (m) => finiteNum(m.missing_points, null),
+      steadyEta: (m) => durationToSeconds(m.steady_eta),
+      compoundEta: (m) => durationToSeconds(m.compound_eta),
+    }),
+    []
+  );
+
+  const uniSortCols = useMemo<
+    SortColumnMap<
+      UniverseResearchMaxRow,
+      "research" | "ownLevel" | "uniMax" | "gap" | "holder" | "catalogCap"
+    >
+  >(
+    () => ({
+      research: (r) => String(r.name || r.key || r.research_key || ""),
+      ownLevel: {
+        accessor: (r) => Math.max(0, Math.round(finiteNum(r.own_level, 0))),
+        defaultDirection: "desc",
+      },
+      uniMax: {
+        accessor: (r) => Math.max(0, Math.round(finiteNum(r.universe_max_level, 0))),
+        defaultDirection: "desc",
+      },
+      gap: {
+        accessor: (r) => {
+          const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+          const uniMax = Math.max(0, Math.round(finiteNum(r.universe_max_level, 0)));
+          return Math.max(0, Math.round(finiteNum(r.gap_to_max, Math.max(0, uniMax - ownLvl))));
+        },
+        defaultDirection: "desc",
+      },
+      holder: (r) => {
+        const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+        const uniMax = Math.max(0, Math.round(finiteNum(r.universe_max_level, 0)));
+        if (r.holder) {
+          return r.holder_coords ? `${r.holder} [${r.holder_coords}]` : String(r.holder);
+        }
+        return uniMax > 0 && ownLvl >= uniMax ? "You" : null;
+      },
+      catalogCap: {
+        accessor: (r) => {
+          const cap = finiteNum(r.catalog_max_level, null);
+          return cap !== null && cap > 0 ? cap : null;
+        },
+        defaultDirection: "desc",
+      },
+    }),
+    []
+  );
+
+  const horizonSort = useTableSort(horizons, horizonSortCols);
+  const milestoneSort = useTableSort(milestones, milestoneSortCols);
+  const uniSort = useTableSort(uniRows, uniSortCols);
+
   return (
     <section
       id="view-ranking"
@@ -268,22 +358,56 @@ export const RankingView: React.FC<RankingViewProps> = ({ hidden }) => {
                 <table>
                   <thead>
                     <tr>
-                      <th>Horizon</th>
-                      <th className="col-right">Steady</th>
-                      <th className="col-right">AZ</th>
-                      <th className="col-right">Reinvested</th>
-                      <th className="col-right">AZ</th>
+                      <SortableTh
+                        label="Horizon"
+                        sortKey="horizon"
+                        activeKey={horizonSort.sortKey}
+                        direction={horizonSort.sortDirection}
+                        onSort={horizonSort.requestSort}
+                      />
+                      <SortableTh
+                        label="Steady"
+                        sortKey="steady"
+                        activeKey={horizonSort.sortKey}
+                        direction={horizonSort.sortDirection}
+                        onSort={horizonSort.requestSort}
+                        align="right"
+                      />
+                      <SortableTh
+                        label="AZ"
+                        sortKey="steadyAz"
+                        activeKey={horizonSort.sortKey}
+                        direction={horizonSort.sortDirection}
+                        onSort={horizonSort.requestSort}
+                        align="right"
+                      />
+                      <SortableTh
+                        label="Reinvested"
+                        sortKey="reinvested"
+                        activeKey={horizonSort.sortKey}
+                        direction={horizonSort.sortDirection}
+                        onSort={horizonSort.requestSort}
+                        align="right"
+                      />
+                      <SortableTh
+                        label="AZ"
+                        sortKey="reinvestedAz"
+                        activeKey={horizonSort.sortKey}
+                        direction={horizonSort.sortDirection}
+                        onSort={horizonSort.requestSort}
+                        align="right"
+                      />
                     </tr>
                   </thead>
                   <tbody id="rnk-horizons-tbody">
-                    {horizons.length === 0 ? (
+                    {horizonSort.sortedRows.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="empty-cell">
                           Waiting for ranking forecast...
                         </td>
                       </tr>
                     ) : (
-                      horizons.map((row, idx) => {
+                      horizonSort.sortedRows.map((row, idx) => {
                         const sp = finiteNum(row.steady_points, null);
                         const sd = finiteNum(row.steady_delta, null);
                         const cp = finiteNum(row.compound_points, null);
@@ -315,21 +439,48 @@ export const RankingView: React.FC<RankingViewProps> = ({ hidden }) => {
                 <table>
                   <thead>
                     <tr>
-                      <th>Next Milestone</th>
-                      <th className="col-right">Remaining</th>
-                      <th className="col-right">Steady ETA</th>
-                      <th className="col-right">Compound ETA</th>
+                      <SortableTh
+                        label="Next Milestone"
+                        sortKey="milestone"
+                        activeKey={milestoneSort.sortKey}
+                        direction={milestoneSort.sortDirection}
+                        onSort={milestoneSort.requestSort}
+                      />
+                      <SortableTh
+                        label="Remaining"
+                        sortKey="remaining"
+                        activeKey={milestoneSort.sortKey}
+                        direction={milestoneSort.sortDirection}
+                        onSort={milestoneSort.requestSort}
+                        align="right"
+                      />
+                      <SortableTh
+                        label="Steady ETA"
+                        sortKey="steadyEta"
+                        activeKey={milestoneSort.sortKey}
+                        direction={milestoneSort.sortDirection}
+                        onSort={milestoneSort.requestSort}
+                        align="right"
+                      />
+                      <SortableTh
+                        label="Compound ETA"
+                        sortKey="compoundEta"
+                        activeKey={milestoneSort.sortKey}
+                        direction={milestoneSort.sortDirection}
+                        onSort={milestoneSort.requestSort}
+                        align="right"
+                      />
                     </tr>
                   </thead>
                   <tbody id="rnk-milestones-tbody">
-                    {milestones.length === 0 ? (
+                    {milestoneSort.sortedRows.length === 0 ? (
                       <tr>
                         <td colSpan={4} className="empty-cell">
                           Calculating milestones...
                         </td>
                       </tr>
                     ) : (
-                      milestones.map((m, idx) => {
+                      milestoneSort.sortedRows.map((m, idx) => {
                         const tgtPts = finiteNum(m.target_points, null);
                         const missPts = finiteNum(m.missing_points, null);
                         return (
@@ -367,23 +518,63 @@ export const RankingView: React.FC<RankingViewProps> = ({ hidden }) => {
               <table id="universe-research-max-table">
                 <thead>
                   <tr>
-                    <th>Research</th>
-                    <th className="col-right">Your Level</th>
-                    <th className="col-right">Universe Max</th>
-                    <th className="col-right">Delta / Gap</th>
-                    <th>Record Holder</th>
-                    <th className="col-right">Catalog Cap</th>
+                    <SortableTh
+                      label="Research"
+                      sortKey="research"
+                      activeKey={uniSort.sortKey}
+                      direction={uniSort.sortDirection}
+                      onSort={uniSort.requestSort}
+                    />
+                    <SortableTh
+                      label="Your Level"
+                      sortKey="ownLevel"
+                      activeKey={uniSort.sortKey}
+                      direction={uniSort.sortDirection}
+                      onSort={uniSort.requestSort}
+                      align="right"
+                    />
+                    <SortableTh
+                      label="Universe Max"
+                      sortKey="uniMax"
+                      activeKey={uniSort.sortKey}
+                      direction={uniSort.sortDirection}
+                      onSort={uniSort.requestSort}
+                      align="right"
+                    />
+                    <SortableTh
+                      label="Delta / Gap"
+                      sortKey="gap"
+                      activeKey={uniSort.sortKey}
+                      direction={uniSort.sortDirection}
+                      onSort={uniSort.requestSort}
+                      align="right"
+                    />
+                    <SortableTh
+                      label="Record Holder"
+                      sortKey="holder"
+                      activeKey={uniSort.sortKey}
+                      direction={uniSort.sortDirection}
+                      onSort={uniSort.requestSort}
+                    />
+                    <SortableTh
+                      label="Catalog Cap"
+                      sortKey="catalogCap"
+                      activeKey={uniSort.sortKey}
+                      direction={uniSort.sortDirection}
+                      onSort={uniSort.requestSort}
+                      align="right"
+                    />
                   </tr>
                 </thead>
                 <tbody id="universe-research-max-tbody">
-                  {uniRows.length === 0 ? (
+                  {uniSort.sortedRows.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="empty-cell">
                         Click Sync Records to load universe max research levels.
                       </td>
                     </tr>
                   ) : (
-                    uniRows.map((r) => {
+                    uniSort.sortedRows.map((r) => {
                       const rKey = String(r.key || r.research_key || `r${r.research_id}`);
                       const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
                       const uniMax = Math.max(0, Math.round(finiteNum(r.universe_max_level, 0)));

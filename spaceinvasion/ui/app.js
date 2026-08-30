@@ -9573,6 +9573,53 @@
       }
     );
   };
+  function SortableTh({
+    label,
+    sortKey,
+    activeKey,
+    direction,
+    onSort,
+    align = "left",
+    className,
+    title
+  }) {
+    const isActive = activeKey === sortKey && direction !== null;
+    const ariaSort = isActive ? direction === "asc" ? "ascending" : "descending" : "none";
+    const thClasses = [
+      "th-sortable",
+      align === "right" ? "col-right" : "",
+      isActive ? "is-sorted" : "",
+      className ?? ""
+    ].filter(Boolean).join(" ");
+    const labelText = typeof label === "string" ? label : "column";
+    const computedTitle = title ?? (isActive ? direction === "asc" ? `Sorted by ${labelText} (ascending) — click to toggle` : `Sorted by ${labelText} (descending) — click to toggle` : `Sort by ${labelText}`);
+    return /* @__PURE__ */ jsxRuntimeExports.jsx("th", { scope: "col", className: thClasses, "aria-sort": ariaSort, children: /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "button",
+      {
+        type: "button",
+        className: "th-sort-btn",
+        onClick: () => onSort(sortKey),
+        title: computedTitle,
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "th-sort-label", children: label }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "th-sort-icon", "aria-hidden": "true", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "span",
+              {
+                className: `th-sort-arrow th-sort-up${isActive && direction === "asc" ? " is-active" : ""}`
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "span",
+              {
+                className: `th-sort-arrow th-sort-down${isActive && direction === "desc" ? " is-active" : ""}`
+              }
+            )
+          ] })
+        ]
+      }
+    ) });
+  }
   function clampPct(val) {
     const n = safeFiniteNumber(val, 0) ?? 0;
     return Math.max(0, Math.min(100, n));
@@ -10030,6 +10077,246 @@
         ]
       }
     );
+  };
+  function isMissingSortValue(val) {
+    if (val === null || val === void 0) return true;
+    if (typeof val === "number") return !Number.isFinite(val);
+    if (typeof val === "string") return val.trim() === "";
+    return false;
+  }
+  function compareSortValues(a, b, direction) {
+    const aMiss = isMissingSortValue(a);
+    const bMiss = isMissingSortValue(b);
+    if (aMiss && bMiss) return 0;
+    if (aMiss) return 1;
+    if (bMiss) return -1;
+    let cmp = 0;
+    if (typeof a === "number" && typeof b === "number") {
+      cmp = a - b;
+    } else if (typeof a === "boolean" && typeof b === "boolean") {
+      cmp = Number(a) - Number(b);
+    } else {
+      cmp = String(a).localeCompare(String(b), void 0, {
+        numeric: true,
+        sensitivity: "base"
+      });
+    }
+    return direction === "asc" ? cmp : -cmp;
+  }
+  function resolveColumnSpec(config) {
+    if (!config) return null;
+    if (typeof config === "function") {
+      return { accessor: config, defaultDirection: "asc" };
+    }
+    return {
+      accessor: config.accessor,
+      defaultDirection: config.defaultDirection ?? "asc"
+    };
+  }
+  function useTableSort(rows, columns, options) {
+    const [sortState, setSortState] = reactExports.useState(() => ({
+      key: null,
+      direction: null
+    }));
+    const requestSort = reactExports.useCallback(
+      (key) => {
+        const spec = resolveColumnSpec(columns[key]);
+        const defaultDir = (spec == null ? void 0 : spec.defaultDirection) ?? "asc";
+        const flippedDir = defaultDir === "asc" ? "desc" : "asc";
+        setSortState((prev) => {
+          if (prev.key !== key) {
+            return { key, direction: defaultDir };
+          }
+          if (prev.direction === defaultDir) {
+            return { key, direction: flippedDir };
+          }
+          return { key: null, direction: null };
+        });
+      },
+      [columns]
+    );
+    const resetSort = reactExports.useCallback(() => {
+      setSortState({ key: null, direction: null });
+    }, []);
+    const sortedRows = reactExports.useMemo(() => {
+      const list = Array.isArray(rows) ? rows : [];
+      if (!sortState.key || !sortState.direction || list.length <= 1) {
+        return [...list];
+      }
+      const spec = resolveColumnSpec(columns[sortState.key]);
+      if (!spec) {
+        return [...list];
+      }
+      const dir = sortState.direction;
+      const decorated = list.map((row, idx) => ({
+        row,
+        idx,
+        val: spec.accessor(row)
+      }));
+      decorated.sort((a, b) => {
+        const cmp = compareSortValues(a.val, b.val, dir);
+        return cmp !== 0 ? cmp : a.idx - b.idx;
+      });
+      return decorated.map((item) => item.row);
+    }, [rows, columns, sortState.key, sortState.direction]);
+    return {
+      sortedRows,
+      sortKey: sortState.key,
+      sortDirection: sortState.direction,
+      requestSort,
+      resetSort
+    };
+  }
+  function coordsSortKey(raw) {
+    const txt = String(raw ?? "").trim();
+    const m = txt.match(/(\d{1,2})\s*:\s*(\d{1,3})(?:\s*:\s*(\d{1,2}))?/);
+    if (!m) return null;
+    const g = Number.parseInt(m[1], 10);
+    const s = Number.parseInt(m[2], 10);
+    const p = m[3] !== void 0 ? Number.parseInt(m[3], 10) : 0;
+    if (!Number.isFinite(g) || !Number.isFinite(s) || !Number.isFinite(p)) return null;
+    return g * 1e6 + s * 100 + p;
+  }
+  function prioritySortKey(raw) {
+    const txt = String(raw ?? "").trim().toUpperCase();
+    if (!txt) return null;
+    if (txt === "EXEC") return -2;
+    if (txt.startsWith("GAME")) return -1;
+    const m = txt.match(/^P(\d+)$/);
+    if (m) return Number.parseInt(m[1], 10);
+    return null;
+  }
+  const GRADE_RANK = {
+    "S+": 0,
+    S: 1,
+    "A+": 2,
+    A: 3,
+    "B+": 4,
+    B: 5,
+    "C+": 6,
+    C: 7,
+    D: 8,
+    F: 9
+  };
+  function gradeSortKey(raw) {
+    const txt = String(raw ?? "").trim().toUpperCase();
+    if (!txt || txt === "?" || txt === "—" || txt === "-") return null;
+    if (Object.prototype.hasOwnProperty.call(GRADE_RANK, txt)) {
+      return GRADE_RANK[txt];
+    }
+    return null;
+  }
+  function resourcesTotal(res) {
+    if (!res || typeof res !== "object") return null;
+    const obj = res;
+    const keys = ["pig_iron", "metal", "kryptonite", "spice"];
+    let found = false;
+    let total = 0;
+    for (const k of keys) {
+      const raw = obj[k];
+      if (raw === null || raw === void 0 || raw === "") continue;
+      const n = Number(raw);
+      if (Number.isFinite(n)) {
+        found = true;
+        total += n;
+      }
+    }
+    return found ? total : null;
+  }
+  function unitDictTotal(obj) {
+    if (!obj || typeof obj !== "object") return null;
+    let found = false;
+    let total = 0;
+    for (const val of Object.values(obj)) {
+      const n = Number(val);
+      if (Number.isFinite(n) && n > 0) {
+        found = true;
+        total += n;
+      }
+    }
+    return found ? total : null;
+  }
+  function durationToSeconds(raw) {
+    if (typeof raw === "number") {
+      return Number.isFinite(raw) ? raw : null;
+    }
+    const cleaned = String(raw ?? "").replace(/\([^)]*\)/g, "").trim().toLowerCase();
+    if (!cleaned || cleaned === "—" || cleaned === "-" || cleaned === "--" || cleaned === "blocked" || cleaned === "never" || cleaned === "n/a" || cleaned === "unknown") {
+      return null;
+    }
+    if (cleaned === "ready" || cleaned === "now" || cleaned === "instant" || cleaned === "cleared" || cleaned === "0" || cleaned === "0s") {
+      return 0;
+    }
+    const colonMatch = cleaned.match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/);
+    if (colonMatch) {
+      if (colonMatch[3] !== void 0) {
+        return Number(colonMatch[1]) * 3600 + Number(colonMatch[2]) * 60 + Number(colonMatch[3]);
+      }
+      return Number(colonMatch[1]) * 60 + Number(colonMatch[2]);
+    }
+    const tokenRe = /(\d+(?:\.\d+)?)\s*(w|d|h|m|s)\b/g;
+    let total = 0;
+    let matched = false;
+    let m;
+    while ((m = tokenRe.exec(cleaned)) !== null) {
+      matched = true;
+      const val = Number(m[1]);
+      const unit = m[2];
+      if (unit === "w") total += val * 7 * 86400;
+      else if (unit === "d") total += val * 86400;
+      else if (unit === "h") total += val * 3600;
+      else if (unit === "m") total += val * 60;
+      else if (unit === "s") total += val;
+    }
+    if (matched) return total;
+    const plainNum = Number(cleaned);
+    return Number.isFinite(plainNum) ? plainNum : null;
+  }
+  function timestampSortKey(ts, fallbackText) {
+    if (typeof ts === "number" && Number.isFinite(ts) && ts > 0) {
+      return ts;
+    }
+    if (typeof ts === "string" && ts.trim() !== "") {
+      const asNum = Number(ts.trim());
+      if (Number.isFinite(asNum) && asNum > 0) return asNum;
+      const parsed = Date.parse(ts.trim());
+      if (Number.isFinite(parsed)) return parsed / 1e3;
+    }
+    if (typeof fallbackText === "string" && fallbackText.trim() !== "") {
+      const parsed = Date.parse(fallbackText.trim());
+      if (Number.isFinite(parsed)) return parsed / 1e3;
+    }
+    return null;
+  }
+  const PLAN_ACTION_SORT_COLUMNS = {
+    priority: (act) => prioritySortKey(act.priority),
+    action: (act) => `${act.target_name || act.kind || ""}${act.target_level != null ? ` ${act.target_level}` : ""}`,
+    costMissing: (act) => resourcesTotal(act.cost) ?? resourcesTotal(act.missing),
+    waitEta: (act) => {
+      const rawWait = act.wait_eta !== void 0 && act.wait_eta !== null ? String(act.wait_eta).trim() : "";
+      if (rawWait === "—" || act.wait_hours === null) return null;
+      const wh = finiteNum(act.wait_hours, null);
+      if (wh !== null && (wh > 0 || act.executable_now || rawWait !== "")) {
+        return wh * 3600;
+      }
+      if (rawWait !== "") return durationToSeconds(rawWait);
+      return act.executable_now ? 0 : null;
+    },
+    totalEta: (act) => {
+      const rawWait = act.wait_eta !== void 0 && act.wait_eta !== null ? String(act.wait_eta).trim() : "";
+      const rawTotal = act.total_eta !== void 0 && act.total_eta !== null ? String(act.total_eta).trim() : "";
+      if (rawWait === "—" || rawTotal === "—" || act.wait_hours === null || act.total_hours === null) {
+        return null;
+      }
+      const ts = finiteNum(act.total_seconds, null);
+      if (ts !== null) return ts;
+      const th = finiteNum(act.total_hours, null);
+      if (th !== null) return th * 3600;
+      if (rawTotal !== "") return durationToSeconds(rawTotal);
+      if (act.duration_text) return durationToSeconds(act.duration_text);
+      return act.executable_now ? 0 : null;
+    },
+    reason: (act) => String(act.reason || "").trim() || null
   };
   const MQ_BUILDINGS_CATALOG = [
     { id: 1, name: "Pig iron mine" },
@@ -10491,7 +10778,8 @@
   }) => {
     const activeList = Array.isArray(execJobs) ? execJobs : [];
     const totalCount = activeList.length + plannedActions.length;
-    const topSlice = plannedActions.slice(0, 10);
+    const planSort = useTableSort(plannedActions, PLAN_ACTION_SORT_COLUMNS);
+    const topSlice = planSort.sortedRows.slice(0, 10);
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window dash-queue-card", id: cardId, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
@@ -10526,11 +10814,58 @@
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Prio" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Action" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Missing / Cost" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Wait ETA" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Total ETA / Finish" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            SortableTh,
+            {
+              label: "Prio",
+              sortKey: "priority",
+              activeKey: planSort.sortKey,
+              direction: planSort.sortDirection,
+              onSort: planSort.requestSort
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            SortableTh,
+            {
+              label: "Action",
+              sortKey: "action",
+              activeKey: planSort.sortKey,
+              direction: planSort.sortDirection,
+              onSort: planSort.requestSort
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            SortableTh,
+            {
+              label: "Missing / Cost",
+              sortKey: "costMissing",
+              activeKey: planSort.sortKey,
+              direction: planSort.sortDirection,
+              onSort: planSort.requestSort
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            SortableTh,
+            {
+              label: "Wait ETA",
+              sortKey: "waitEta",
+              activeKey: planSort.sortKey,
+              direction: planSort.sortDirection,
+              onSort: planSort.requestSort,
+              align: "right"
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            SortableTh,
+            {
+              label: "Total ETA / Finish",
+              sortKey: "totalEta",
+              activeKey: planSort.sortKey,
+              direction: planSort.sortDirection,
+              onSort: planSort.requestSort,
+              align: "right"
+            }
+          ),
           /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
         ] }) }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: execTbodyId, className: "dash-exec-tbody", hidden: activeList.length === 0, children: activeList.map((job, idx) => /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -10629,6 +10964,33 @@
     const gs = (dashboard == null ? void 0 : dashboard.state) || null;
     const planets = reactExports.useMemo(() => (gs == null ? void 0 : gs.planets) || [], [gs == null ? void 0 : gs.planets]);
     const chosenId = activePlanet == null ? void 0 : activePlanet.planet_id;
+    const colonySortCols = reactExports.useMemo(
+      () => ({
+        coords: (p) => coordsSortKey(p.coords),
+        colony: (p) => String(p.name || "Colony"),
+        state: (p) => {
+          var _a2, _b2, _c2, _d2;
+          const isActive = p.planet_id === chosenId;
+          const pigStor = finiteNum((_a2 = p.storage) == null ? void 0 : _a2.pig_iron, 0);
+          const pigAmt = finiteNum((_b2 = p.resources) == null ? void 0 : _b2.pig_iron, 0);
+          const spiStor = finiteNum((_c2 = p.storage) == null ? void 0 : _c2.spice, 0);
+          const spiAmt = finiteNum((_d2 = p.resources) == null ? void 0 : _d2.spice, 0);
+          const nearFull = pigStor > 0 && pigAmt / pigStor >= 0.85 || spiStor > 0 && spiAmt / spiStor >= 0.85;
+          return nearFull ? "NEAR-CAP" : isActive ? "ONLINE" : "READY";
+        },
+        fields: {
+          accessor: (p) => {
+            const fMax = finiteNum(p.fields_max, null);
+            const fUsed = finiteNum(p.fields_used, null);
+            if (fMax !== null) return fMax * 1e4 + (fUsed ?? 0);
+            return fUsed;
+          },
+          defaultDirection: "desc"
+        }
+      }),
+      [chosenId]
+    );
+    const colonySort = useTableSort(planets, colonySortCols);
     const currentEta = reactExports.useMemo(() => {
       var _a2;
       if (buildingsEtaData && activePlanet && ((_a2 = buildingsEtaData.planet) == null ? void 0 : _a2.planet_id) === activePlanet.planet_id) {
@@ -10925,12 +11287,49 @@
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "matrix-body", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Coords" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Colony" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "State" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Fields" })
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Coords",
+                        sortKey: "coords",
+                        activeKey: colonySort.sortKey,
+                        direction: colonySort.sortDirection,
+                        onSort: colonySort.requestSort
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Colony",
+                        sortKey: "colony",
+                        activeKey: colonySort.sortKey,
+                        direction: colonySort.sortDirection,
+                        onSort: colonySort.requestSort
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "State",
+                        sortKey: "state",
+                        activeKey: colonySort.sortKey,
+                        direction: colonySort.sortDirection,
+                        onSort: colonySort.requestSort
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Fields",
+                        sortKey: "fields",
+                        activeKey: colonySort.sortKey,
+                        direction: colonySort.sortDirection,
+                        onSort: colonySort.requestSort,
+                        align: "right"
+                      }
+                    )
                   ] }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "colony-tbody", children: planets.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 4, className: "empty-cell", children: dashboard ? "No colonies discovered." : "Waiting for snapshot..." }) }) : planets.map((p) => {
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "colony-tbody", children: colonySort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 4, className: "empty-cell", children: dashboard ? "No colonies discovered." : "Waiting for snapshot..." }) }) : colonySort.sortedRows.map((p) => {
                     var _a2, _b2, _c2, _d2;
                     const isActive = p.planet_id === chosenId;
                     const pigStor = finiteNum((_a2 = p.storage) == null ? void 0 : _a2.pig_iron, 0);
@@ -11617,6 +12016,7 @@
       }
       return allActions;
     }, [allActions, queueFilter]);
+    const actionSort = useTableSort(filteredActions, PLAN_ACTION_SORT_COLUMNS);
     const cfgMode = String(
       ((_a = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
     ).toLowerCase();
@@ -11786,15 +12186,71 @@
           /* @__PURE__ */ jsxRuntimeExports.jsx(ManualQueueComposer, {}),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "ops-plan-table", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Priority" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Action" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Cost / Missing" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Wait ETA" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Total ETA" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Reason" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Priority",
+                  sortKey: "priority",
+                  activeKey: actionSort.sortKey,
+                  direction: actionSort.sortDirection,
+                  onSort: actionSort.requestSort
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Action",
+                  sortKey: "action",
+                  activeKey: actionSort.sortKey,
+                  direction: actionSort.sortDirection,
+                  onSort: actionSort.requestSort
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Cost / Missing",
+                  sortKey: "costMissing",
+                  activeKey: actionSort.sortKey,
+                  direction: actionSort.sortDirection,
+                  onSort: actionSort.requestSort
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Wait ETA",
+                  sortKey: "waitEta",
+                  activeKey: actionSort.sortKey,
+                  direction: actionSort.sortDirection,
+                  onSort: actionSort.requestSort,
+                  align: "right"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Total ETA",
+                  sortKey: "totalEta",
+                  activeKey: actionSort.sortKey,
+                  direction: actionSort.sortDirection,
+                  onSort: actionSort.requestSort,
+                  align: "right"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Reason",
+                  sortKey: "reason",
+                  activeKey: actionSort.sortKey,
+                  direction: actionSort.sortDirection,
+                  onSort: actionSort.requestSort
+                }
+              ),
               /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Execute" })
             ] }) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "plan-tbody", children: filteredActions.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 7, className: "empty-cell", children: dashboard ? "No matching actions in queue." : "Waiting for plan..." }) }) : filteredActions.map((act, idx) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "plan-tbody", children: actionSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 7, className: "empty-cell", children: dashboard ? "No matching actions in queue." : "Waiting for plan..." }) }) : actionSort.sortedRows.map((act, idx) => /* @__PURE__ */ jsxRuntimeExports.jsx(
               PlanActionRow,
               {
                 action: act,
@@ -13175,6 +13631,17 @@
       }
     );
   };
+  const HORIZON_SORT_COLUMNS = {
+    target: (h) => finiteNum(h.level, null),
+    cost: (h) => resourcesTotal(h.cost),
+    build: (h) => finiteNum(h.build_seconds, null) ?? durationToSeconds(h.build_time_text),
+    reached: (h) => {
+      if (h.reach_eta === "—") return null;
+      const rh = finiteNum(h.reach_hours ?? h.total_hours, null);
+      if (rh !== null) return rh * 3600;
+      return durationToSeconds(h.reach_eta);
+    }
+  };
   const BuildingInspector = ({
     etaData,
     selectedRow: selected,
@@ -13188,6 +13655,11 @@
       enqueueManualCommand,
       toggleBlastFurnaceRate
     } = useConsole();
+    const horizons = reactExports.useMemo(
+      () => Array.isArray(selected == null ? void 0 : selected.horizons) ? selected.horizons : [],
+      [selected]
+    );
+    const horizonSort = useTableSort(horizons, HORIZON_SORT_COLUMNS);
     if (!selected) {
       return /* @__PURE__ */ jsxRuntimeExports.jsxs("aside", { className: "inspector-pane", id: "bld-inspector", "aria-label": "Selected level forecast", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inspector-head", children: [
@@ -13201,10 +13673,48 @@
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inspector-bf-hint", id: "insp-bf-hint", hidden: true }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Target" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Cost" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Build" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Reached" })
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Target",
+                sortKey: "target",
+                activeKey: horizonSort.sortKey,
+                direction: horizonSort.sortDirection,
+                onSort: horizonSort.requestSort
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Cost",
+                sortKey: "cost",
+                activeKey: horizonSort.sortKey,
+                direction: horizonSort.sortDirection,
+                onSort: horizonSort.requestSort
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Build",
+                sortKey: "build",
+                activeKey: horizonSort.sortKey,
+                direction: horizonSort.sortDirection,
+                onSort: horizonSort.requestSort,
+                align: "right"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Reached",
+                sortKey: "reached",
+                activeKey: horizonSort.sortKey,
+                direction: horizonSort.sortDirection,
+                onSort: horizonSort.requestSort,
+                align: "right"
+              }
+            )
           ] }) }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "insp-horizons-tbody", children: !etaData ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 4, className: "empty-cell", children: "Select a row for multi-level schedule." }) }) : null })
         ] }) }),
@@ -13269,7 +13779,6 @@
       const altWait = Number.isFinite(altHours) ? `${altHours.toFixed(1)}h` : "Blocked";
       bfHintText = `Bucket tip: Pausing Blast furnace (b2 → 0%) frees +${fmtInt(Math.round(bfUsed))} Pig/h (Pig iron wait improves from ${oldWait} to ${altWait}).`;
     }
-    const horizons = Array.isArray(selected.horizons) ? selected.horizons : [];
     const canQueueLive = isTurret ? false : Boolean(isResearch ? selected.can_research_live : selected.can_build_live);
     const unitId = isResearch ? selected.research_id : selected.building_id;
     const canPinQueue = !isTurret && unitId != null && nextLvl !== null && nextLvl > 0;
@@ -13369,12 +13878,50 @@
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inspector-bf-hint", id: "insp-bf-hint", hidden: !showBfHint, children: bfHintText }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Target" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Cost" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Build" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Reached" })
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            SortableTh,
+            {
+              label: "Target",
+              sortKey: "target",
+              activeKey: horizonSort.sortKey,
+              direction: horizonSort.sortDirection,
+              onSort: horizonSort.requestSort
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            SortableTh,
+            {
+              label: "Cost",
+              sortKey: "cost",
+              activeKey: horizonSort.sortKey,
+              direction: horizonSort.sortDirection,
+              onSort: horizonSort.requestSort
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            SortableTh,
+            {
+              label: "Build",
+              sortKey: "build",
+              activeKey: horizonSort.sortKey,
+              direction: horizonSort.sortDirection,
+              onSort: horizonSort.requestSort,
+              align: "right"
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            SortableTh,
+            {
+              label: "Reached",
+              sortKey: "reached",
+              activeKey: horizonSort.sortKey,
+              direction: horizonSort.sortDirection,
+              onSort: horizonSort.requestSort,
+              align: "right"
+            }
+          )
         ] }) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "insp-horizons-tbody", children: horizons.map((h, idx) => /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "insp-horizons-tbody", children: horizonSort.sortedRows.map((h, idx) => /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `L${h.level}` }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: formatResourcesInline(h.cost) }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: h.build_time_text }),
@@ -13531,6 +14078,84 @@
       () => Array.isArray(dashboard == null ? void 0 : dashboard.universe_research_max) ? dashboard.universe_research_max : [],
       [dashboard == null ? void 0 : dashboard.universe_research_max]
     );
+    const unitSortCols = reactExports.useMemo(
+      () => ({
+        unit: (row) => String(row.name || row.key || ""),
+        level: {
+          accessor: (row) => finiteNum(row.current_level, 0),
+          defaultDirection: "desc"
+        },
+        next: {
+          accessor: (row) => row.is_defense_turret ? null : finiteNum(row.next_level ?? row.target_level, null),
+          defaultDirection: "desc"
+        },
+        missing: (row) => row.is_defense_turret ? resourcesTotal(row.cost) : finiteNum(row.missing_total, null) ?? resourcesTotal(row.missing) ?? 0,
+        buildTime: (row) => finiteNum(row.build_seconds ?? row.build_time_seconds, null) ?? durationToSeconds(row.build_time_text),
+        resReady: (row) => {
+          if (row.is_defense_turret || row.wait_eta === "—") return null;
+          const wh = finiteNum(row.wait_hours, null);
+          if (wh !== null) return wh * 3600;
+          return durationToSeconds(row.wait_eta);
+        },
+        reached: (row) => {
+          if (row.is_defense_turret || row.reach_eta === "—") return null;
+          const rh = finiteNum(row.reach_hours ?? row.total_hours, null);
+          if (rh !== null) return rh * 3600;
+          return durationToSeconds(row.reach_eta);
+        }
+      }),
+      []
+    );
+    const uniMaxSortCols = reactExports.useMemo(
+      () => ({
+        research: (r) => String(r.name || r.slug || r.key || ""),
+        ownLevel: {
+          accessor: (r) => Math.max(0, Math.round(finiteNum(r.own_level, 0))),
+          defaultDirection: "desc"
+        },
+        uniMax: {
+          accessor: (r) => {
+            const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+            return Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
+          },
+          defaultDirection: "desc"
+        },
+        gap: {
+          accessor: (r) => {
+            const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+            const uni = Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
+            return Math.max(0, finiteNum(r.gap_to_max, uni - own));
+          },
+          defaultDirection: "desc"
+        },
+        spiedMax: {
+          accessor: (r) => Math.max(0, Math.round(finiteNum(r.spied_max_level, 0))),
+          defaultDirection: "desc"
+        },
+        holder: (r) => {
+          const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+          const uni = Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
+          if (r.holder) {
+            return `${r.holder}${r.holder_coords ? ` [${r.holder_coords}]` : ""}`;
+          }
+          return uni > 0 && own >= uni ? "You" : null;
+        },
+        catalogCap: {
+          accessor: (r) => {
+            const cap = finiteNum(r.catalog_max_level, null);
+            return cap !== null && cap > 0 ? cap : null;
+          },
+          defaultDirection: "desc"
+        },
+        updated: {
+          accessor: (r) => timestampSortKey(r.updated_ts),
+          defaultDirection: "desc"
+        }
+      }),
+      []
+    );
+    const unitSort = useTableSort(visibleRows, unitSortCols);
+    const uniMaxSort = useTableSort(universeMaxRows, uniMaxSortCols);
     const handleSyncEconomy = reactExports.useCallback(async () => {
       try {
         await apiCommand2({ command: "navigate", action: "internalEconomy", return_home: true });
@@ -13713,16 +14338,84 @@
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "split-workspace", hidden: isUniverseResearchTab, children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "bld-table", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Unit" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Lvl" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Next" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Missing Resources" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Build Time" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Res Ready" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Level Reached" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Unit",
+                    sortKey: "unit",
+                    activeKey: unitSort.sortKey,
+                    direction: unitSort.sortDirection,
+                    onSort: unitSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Lvl",
+                    sortKey: "level",
+                    activeKey: unitSort.sortKey,
+                    direction: unitSort.sortDirection,
+                    onSort: unitSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Next",
+                    sortKey: "next",
+                    activeKey: unitSort.sortKey,
+                    direction: unitSort.sortDirection,
+                    onSort: unitSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Missing Resources",
+                    sortKey: "missing",
+                    activeKey: unitSort.sortKey,
+                    direction: unitSort.sortDirection,
+                    onSort: unitSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Build Time",
+                    sortKey: "buildTime",
+                    activeKey: unitSort.sortKey,
+                    direction: unitSort.sortDirection,
+                    onSort: unitSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Res Ready",
+                    sortKey: "resReady",
+                    activeKey: unitSort.sortKey,
+                    direction: unitSort.sortDirection,
+                    onSort: unitSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Level Reached",
+                    sortKey: "reached",
+                    activeKey: unitSort.sortKey,
+                    direction: unitSort.sortDirection,
+                    onSort: unitSort.requestSort,
+                    align: "right"
+                  }
+                ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Control" })
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "eta-table-tbody", children: !etaData ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "Waiting for building catalog..." }) }) : visibleRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No items in selected category." }) }) : visibleRows.map((row, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "eta-table-tbody", children: !etaData ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "Waiting for building catalog..." }) }) : unitSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No items in selected category." }) }) : unitSort.sortedRows.map((row, idx) => {
                 const rowKey = row.key != null ? String(row.key).trim() : "";
                 const isSelected = Boolean(selectedRow && selectedRow.key === row.key);
                 const curLvl = finiteNum(row.current_level, 0);
@@ -13834,16 +14527,94 @@
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "bld-universe-research-table", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Research" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Your Level" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Universe Max" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Delta / Gap" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Spied Max" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Record Holder" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Catalog Cap" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Updated" })
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Research",
+                    sortKey: "research",
+                    activeKey: uniMaxSort.sortKey,
+                    direction: uniMaxSort.sortDirection,
+                    onSort: uniMaxSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Your Level",
+                    sortKey: "ownLevel",
+                    activeKey: uniMaxSort.sortKey,
+                    direction: uniMaxSort.sortDirection,
+                    onSort: uniMaxSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Universe Max",
+                    sortKey: "uniMax",
+                    activeKey: uniMaxSort.sortKey,
+                    direction: uniMaxSort.sortDirection,
+                    onSort: uniMaxSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Delta / Gap",
+                    sortKey: "gap",
+                    activeKey: uniMaxSort.sortKey,
+                    direction: uniMaxSort.sortDirection,
+                    onSort: uniMaxSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Spied Max",
+                    sortKey: "spiedMax",
+                    activeKey: uniMaxSort.sortKey,
+                    direction: uniMaxSort.sortDirection,
+                    onSort: uniMaxSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Record Holder",
+                    sortKey: "holder",
+                    activeKey: uniMaxSort.sortKey,
+                    direction: uniMaxSort.sortDirection,
+                    onSort: uniMaxSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Catalog Cap",
+                    sortKey: "catalogCap",
+                    activeKey: uniMaxSort.sortKey,
+                    direction: uniMaxSort.sortDirection,
+                    onSort: uniMaxSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Updated",
+                    sortKey: "updated",
+                    activeKey: uniMaxSort.sortKey,
+                    direction: uniMaxSort.sortDirection,
+                    onSort: uniMaxSort.requestSort,
+                    align: "right"
+                  }
+                )
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "bld-universe-research-tbody", children: universeMaxRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "Click Refresh Max Research to compute and persist universe research records." }) }) : universeMaxRows.map((r, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "bld-universe-research-tbody", children: uniMaxSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "Click Refresh Max Research to compute and persist universe research records." }) }) : uniMaxSort.sortedRows.map((r, idx) => {
                 const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
                 const uniMax = Math.max(ownLvl, Math.round(finiteNum(r.universe_max_level, ownLvl)));
                 const spiedMax = Math.max(0, Math.round(finiteNum(r.spied_max_level, 0)));
@@ -14375,6 +15146,52 @@
         return Boolean(coords) && !ownCoords.has(coords) && (t == null ? void 0 : t.status_color) !== "free";
       });
     }, [(_a = dashboard == null ? void 0 : dashboard.db_summary) == null ? void 0 : _a.spy_targets, (_b = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _b.planets, (_c = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _c.raid_targets]);
+    const shipSortCols = reactExports.useMemo(
+      () => ({
+        name: (s) => String(s.name || s.key || ""),
+        owned: { accessor: (s) => finiteNum(s.owned, 0), defaultDirection: "desc" },
+        atkShd: {
+          accessor: (s) => finiteNum(s.attack, 0) + finiteNum(s.shield, 0),
+          defaultDirection: "desc"
+        },
+        cargo: { accessor: (s) => finiteNum(s.cargo, 0), defaultDirection: "desc" }
+      }),
+      []
+    );
+    const defSortCols = reactExports.useMemo(
+      () => ({
+        name: (d) => String(d.name || d.key || ""),
+        owned: { accessor: (d) => finiteNum(d.owned, 0), defaultDirection: "desc" },
+        atkShd: {
+          accessor: (d) => finiteNum(d.attack, 0) + finiteNum(d.shield, 0),
+          defaultDirection: "desc"
+        },
+        hull: { accessor: (d) => finiteNum(d.hull, 0), defaultDirection: "desc" }
+      }),
+      []
+    );
+    const raidTargetSortCols = reactExports.useMemo(
+      () => ({
+        coords: (t) => coordsSortKey(t.coords || t.target_coords),
+        owner: (t) => [t.planet_name, t.owner].filter(Boolean).join(" · ") || null,
+        type: (t) => {
+          const color = String(t.status_color || "yellow");
+          return t.is_spacia ? "SPACIA" : color === "yellow" ? "INACTIVE" : color.toUpperCase();
+        },
+        loot: {
+          accessor: (t) => {
+            const r = t.resources || t;
+            const total = finiteNum(r.pig_iron, 0) + finiteNum(r.metal, 0) + finiteNum(r.kryptonite, 0) + finiteNum(r.spice, 0);
+            return total > 0 ? total : null;
+          },
+          defaultDirection: "desc"
+        }
+      }),
+      []
+    );
+    const shipSort = useTableSort(ships, shipSortCols);
+    const defSort = useTableSort(defenses, defSortCols);
+    const raidTargetSort = useTableSort(raidTargets, raidTargetSortCols);
     const handleNavJump = async (action) => {
       try {
         await apiCommand2({ command: "navigate", action });
@@ -14586,13 +15403,52 @@
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "combat-subpane", id: "cmb-pane-ships", hidden: subTab !== "ships", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Ship Class" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Owned" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "ATK / SHD" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Cargo" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Ship Class",
+                      sortKey: "name",
+                      activeKey: shipSort.sortKey,
+                      direction: shipSort.sortDirection,
+                      onSort: shipSort.requestSort
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Owned",
+                      sortKey: "owned",
+                      activeKey: shipSort.sortKey,
+                      direction: shipSort.sortDirection,
+                      onSort: shipSort.requestSort,
+                      align: "right"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "ATK / SHD",
+                      sortKey: "atkShd",
+                      activeKey: shipSort.sortKey,
+                      direction: shipSort.sortDirection,
+                      onSort: shipSort.requestSort,
+                      align: "right"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Cargo",
+                      sortKey: "cargo",
+                      activeKey: shipSort.sortKey,
+                      direction: shipSort.sortDirection,
+                      onSort: shipSort.requestSort,
+                      align: "right"
+                    }
+                  ),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Order" })
                 ] }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "cmb-ships-tbody", "data-testid": "combat-shipyard-tbody", children: ships.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 5, className: "empty-cell", children: "No shipyard telemetry yet." }) }) : ships.map((s) => {
+                /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "cmb-ships-tbody", "data-testid": "combat-shipyard-tbody", children: shipSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 5, className: "empty-cell", children: "No shipyard telemetry yet." }) }) : shipSort.sortedRows.map((s) => {
                   const uid = Number(s.unit_id);
                   const offer = offersById.get(uid);
                   return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
@@ -14641,12 +15497,51 @@
               ] }) }) }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "combat-subpane", id: "cmb-pane-defense", hidden: subTab !== "defense", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Defense Structure" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Owned" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "ATK / SHD" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Hull" })
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Defense Structure",
+                      sortKey: "name",
+                      activeKey: defSort.sortKey,
+                      direction: defSort.sortDirection,
+                      onSort: defSort.requestSort
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Owned",
+                      sortKey: "owned",
+                      activeKey: defSort.sortKey,
+                      direction: defSort.sortDirection,
+                      onSort: defSort.requestSort,
+                      align: "right"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "ATK / SHD",
+                      sortKey: "atkShd",
+                      activeKey: defSort.sortKey,
+                      direction: defSort.sortDirection,
+                      onSort: defSort.requestSort,
+                      align: "right"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Hull",
+                      sortKey: "hull",
+                      activeKey: defSort.sortKey,
+                      direction: defSort.sortDirection,
+                      onSort: defSort.requestSort,
+                      align: "right"
+                    }
+                  )
                 ] }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "cmb-def-tbody", children: defenses.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 4, className: "empty-cell", children: "No defense data." }) }) : defenses.map((d) => /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "cmb-def-tbody", children: defSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 4, className: "empty-cell", children: "No defense data." }) }) : defSort.sortedRows.map((d) => /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: `${d.name} (${d.key})` }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtInt(d.owned) }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `${fmtInt(d.attack)} / ${fmtInt(d.shield)}` }),
@@ -14655,13 +15550,50 @@
               ] }) }) }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "combat-subpane", id: "cmb-pane-targets", hidden: subTab !== "targets", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Coords" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Planet / Owner" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Type" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Loot (SpEq)" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Coords",
+                      sortKey: "coords",
+                      activeKey: raidTargetSort.sortKey,
+                      direction: raidTargetSort.sortDirection,
+                      onSort: raidTargetSort.requestSort
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Planet / Owner",
+                      sortKey: "owner",
+                      activeKey: raidTargetSort.sortKey,
+                      direction: raidTargetSort.sortDirection,
+                      onSort: raidTargetSort.requestSort
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Type",
+                      sortKey: "type",
+                      activeKey: raidTargetSort.sortKey,
+                      direction: raidTargetSort.sortDirection,
+                      onSort: raidTargetSort.requestSort
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Loot (SpEq)",
+                      sortKey: "loot",
+                      activeKey: raidTargetSort.sortKey,
+                      direction: raidTargetSort.sortDirection,
+                      onSort: raidTargetSort.requestSort,
+                      align: "right"
+                    }
+                  ),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
                 ] }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "cmb-targets-tbody", children: raidTargets.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 5, className: "empty-cell", children: 'Click "Scan Galaxy" to populate yellow inactive & Spacia targets.' }) }) : raidTargets.map((t) => {
+                /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "cmb-targets-tbody", children: raidTargetSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 5, className: "empty-cell", children: 'Click "Scan Galaxy" to populate yellow inactive & Spacia targets.' }) }) : raidTargetSort.sortedRows.map((t) => {
                   const coords = String(t.coords || t.target_coords || "—");
                   const resMap = t.resources || t;
                   const color = String(t.status_color || "yellow");
@@ -14721,6 +15653,28 @@
     const p = Number.parseInt(m[3], 10);
     if (!Number.isFinite(g) || !Number.isFinite(s) || !Number.isFinite(p)) return null;
     return { g, s, p };
+  }
+  function espionageDistanceSortKey(row, originCoords, targetCoords) {
+    const oParsed = parseCoordsTriple(originCoords);
+    const tParsed = parseCoordsTriple(targetCoords);
+    let gDiff = finiteNum(row == null ? void 0 : row.galaxy_delta, null);
+    let sDiff = finiteNum(row == null ? void 0 : row.system_delta, null);
+    let pDiff = finiteNum(row == null ? void 0 : row.position_delta, null);
+    let sysDist = finiteNum(row == null ? void 0 : row.system_distance, null);
+    const flightDist = finiteNum(row == null ? void 0 : row.distance, null);
+    if (oParsed && tParsed) {
+      if (gDiff === null) gDiff = Math.abs(oParsed.g - tParsed.g);
+      if (sDiff === null) sDiff = Math.abs(oParsed.s - tParsed.s);
+      if (pDiff === null) pDiff = Math.abs(oParsed.p - tParsed.p);
+      if (sysDist === null) sysDist = gDiff * 400 + sDiff;
+    }
+    if (sysDist === null && gDiff === null && sDiff === null) {
+      return flightDist !== null && flightDist >= 0 ? flightDist : null;
+    }
+    const gInt = Math.max(0, Math.round(gDiff ?? 0));
+    const sInt = Math.max(0, Math.round(sDiff ?? Math.max(0, (sysDist ?? 0) - gInt * 400)));
+    const pInt = Math.max(0, Math.round(pDiff ?? 0));
+    return (gInt * 400 + sInt) * 100 + pInt;
   }
   function formatEspionageDistance(row, originCoords, targetCoords) {
     const oParsed = parseCoordsTriple(originCoords);
@@ -14792,6 +15746,80 @@
     ).trim();
     const targets = Array.isArray(espData == null ? void 0 : espData.targets) ? espData.targets : [];
     const reports = Array.isArray(espData == null ? void 0 : espData.reports) ? espData.reports : [];
+    const targetSortCols = reactExports.useMemo(
+      () => ({
+        coords: (t) => coordsSortKey(t.coords || t.target_coords),
+        distance: (t) => espionageDistanceSortKey(t, originCoords, String(t.coords || t.target_coords || "")),
+        player: (t) => [t.planet_name, t.owner].filter(Boolean).join(" · ") || null,
+        status: (t) => {
+          const isSpacia = Boolean(t.is_spacia);
+          const isInact = Boolean(t.is_inactive) || String(t.status_color || "") === "yellow";
+          const tags = [
+            isSpacia ? "SPACIA" : isInact ? "INACTIVE" : String(t.status_color || "ACTIVE").toUpperCase()
+          ];
+          if (t.has_debris) tags.push("DEBRIS");
+          if (t.dug_in) tags.push("DUG-IN");
+          return tags.join(" · ");
+        },
+        fields: {
+          accessor: (t) => {
+            const uf = finiteNum(t.uninhabited_fields, null);
+            return uf !== null && uf > 0 ? Math.round(uf) : null;
+          },
+          defaultDirection: "desc"
+        },
+        resources: {
+          accessor: (t) => t.has_spy_intel ? resourcesTotal(t.resources) : null,
+          defaultDirection: "desc"
+        },
+        spiceEq: {
+          accessor: (t) => t.has_spy_intel ? finiteNum(t.spice_eq, null) : null,
+          defaultDirection: "desc"
+        },
+        fleetDef: {
+          accessor: (t) => t.has_spy_intel ? (unitDictTotal(t.fleet) ?? 0) + (unitDictTotal(t.defense) ?? 0) : null,
+          defaultDirection: "desc"
+        }
+      }),
+      [originCoords]
+    );
+    const reportSortCols = reactExports.useMemo(
+      () => ({
+        recorded: {
+          accessor: (r) => timestampSortKey(r.ts, r.msg_date_text),
+          defaultDirection: "desc"
+        },
+        coords: (r) => coordsSortKey(r.coords || r.target_coords),
+        distance: (r) => espionageDistanceSortKey(r, originCoords, String(r.coords || r.target_coords || "")),
+        owner: (r) => [r.planet_name, r.owner].filter(Boolean).join(" · ") || (r.uninhabited_fields ? "Uninhabited Slot" : null),
+        fields: {
+          accessor: (r) => {
+            const uf = finiteNum(r.uninhabited_fields, null);
+            return uf !== null && uf > 0 ? Math.round(uf) : null;
+          },
+          defaultDirection: "desc"
+        },
+        resources: {
+          accessor: (r) => finiteNum(r.spice_eq ?? r.loot_spice_eq, null) ?? resourcesTotal(r.resources),
+          defaultDirection: "desc"
+        },
+        buildings: {
+          accessor: (r) => {
+            const b = unitDictTotal(r.buildings);
+            const res = unitDictTotal(r.researches);
+            return b === null && res === null ? null : (b ?? 0) + (res ?? 0);
+          },
+          defaultDirection: "desc"
+        },
+        fleetDef: {
+          accessor: (r) => (unitDictTotal(r.fleet) ?? 0) + (unitDictTotal(r.defense) ?? 0),
+          defaultDirection: "desc"
+        }
+      }),
+      [originCoords]
+    );
+    const targetSort = useTableSort(targets, targetSortCols);
+    const reportSort = useTableSort(reports, reportSortCols);
     const bestSpEq = targets.reduce(
       (acc, t) => Math.max(acc, finiteNum(t == null ? void 0 : t.spice_eq, 0)),
       0
@@ -14962,17 +15990,92 @@
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "esp-pane-targets", hidden: espTab !== "targets", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Coords" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Distance" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Player / Planet" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Status" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Fields" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Resources (Pig / Met / Kry / Spi)" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Loot SpEq" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Fleet / Defense" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Coords",
+                    sortKey: "coords",
+                    activeKey: targetSort.sortKey,
+                    direction: targetSort.sortDirection,
+                    onSort: targetSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Distance",
+                    sortKey: "distance",
+                    activeKey: targetSort.sortKey,
+                    direction: targetSort.sortDirection,
+                    onSort: targetSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Player / Planet",
+                    sortKey: "player",
+                    activeKey: targetSort.sortKey,
+                    direction: targetSort.sortDirection,
+                    onSort: targetSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Status",
+                    sortKey: "status",
+                    activeKey: targetSort.sortKey,
+                    direction: targetSort.sortDirection,
+                    onSort: targetSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Fields",
+                    sortKey: "fields",
+                    activeKey: targetSort.sortKey,
+                    direction: targetSort.sortDirection,
+                    onSort: targetSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Resources (Pig / Met / Kry / Spi)",
+                    sortKey: "resources",
+                    activeKey: targetSort.sortKey,
+                    direction: targetSort.sortDirection,
+                    onSort: targetSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Loot SpEq",
+                    sortKey: "spiceEq",
+                    activeKey: targetSort.sortKey,
+                    direction: targetSort.sortDirection,
+                    onSort: targetSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Fleet / Defense",
+                    sortKey: "fleetDef",
+                    activeKey: targetSort.sortKey,
+                    direction: targetSort.sortDirection,
+                    onSort: targetSort.requestSort
+                  }
+                ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "esp-targets-tbody", children: targets.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 9, className: "empty-cell", children: "No espionage targets recorded yet. Run Scan Galaxy or Sync All Folders." }) }) : targets.map((t, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "esp-targets-tbody", children: targetSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 9, className: "empty-cell", children: "No espionage targets recorded yet. Run Scan Galaxy or Sync All Folders." }) }) : targetSort.sortedRows.map((t, idx) => {
                 const coords = String(t.coords || t.target_coords || "—");
                 const dist = formatEspionageDistance(t, originCoords, coords);
                 const isSpacia = Boolean(t.is_spacia);
@@ -15035,16 +16138,90 @@
             ] }) }) }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "esp-pane-reports", hidden: espTab !== "reports", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Recorded" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Coords" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Distance" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Owner / Planet" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Fields" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Resources & SpEq" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Buildings / Techs" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Fleet / Defense" })
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Recorded",
+                    sortKey: "recorded",
+                    activeKey: reportSort.sortKey,
+                    direction: reportSort.sortDirection,
+                    onSort: reportSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Coords",
+                    sortKey: "coords",
+                    activeKey: reportSort.sortKey,
+                    direction: reportSort.sortDirection,
+                    onSort: reportSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Distance",
+                    sortKey: "distance",
+                    activeKey: reportSort.sortKey,
+                    direction: reportSort.sortDirection,
+                    onSort: reportSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Owner / Planet",
+                    sortKey: "owner",
+                    activeKey: reportSort.sortKey,
+                    direction: reportSort.sortDirection,
+                    onSort: reportSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Fields",
+                    sortKey: "fields",
+                    activeKey: reportSort.sortKey,
+                    direction: reportSort.sortDirection,
+                    onSort: reportSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Resources & SpEq",
+                    sortKey: "resources",
+                    activeKey: reportSort.sortKey,
+                    direction: reportSort.sortDirection,
+                    onSort: reportSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Buildings / Techs",
+                    sortKey: "buildings",
+                    activeKey: reportSort.sortKey,
+                    direction: reportSort.sortDirection,
+                    onSort: reportSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Fleet / Defense",
+                    sortKey: "fleetDef",
+                    activeKey: reportSort.sortKey,
+                    direction: reportSort.sortDirection,
+                    onSort: reportSort.requestSort
+                  }
+                )
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "esp-reports-tbody", children: reports.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No historical spy reports stored yet." }) }) : reports.map((r, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "esp-reports-tbody", children: reportSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No historical spy reports stored yet." }) }) : reportSort.sortedRows.map((r, idx) => {
                 const rCoords = String(r.coords || r.target_coords || "—");
                 const rDist = formatEspionageDistance(r, originCoords, rCoords);
                 const uf = finiteNum(r.uninhabited_fields, null);
@@ -15169,6 +16346,60 @@
     );
     const keptCount = Math.round(finiteNum(attemptsSummary.kept_count, 0));
     const totalEvents = Math.round(finiteNum(attemptsSummary.total_events, attempts.length));
+    const candSortCols = reactExports.useMemo(
+      () => ({
+        grade: (c) => gradeSortKey(c.grade),
+        score: {
+          accessor: (c) => finiteNum(c.score, null),
+          defaultDirection: "desc"
+        },
+        coords: (c) => coordsSortKey(c.coords),
+        zone: (c) => finiteNum(c.position, null) ?? (String(c.orbital_band || "").trim() || null),
+        fields: {
+          accessor: (c) => {
+            const uf = finiteNum(c.uninhabited_fields, null);
+            if (uf !== null && uf > 0) return uf;
+            const cMax = finiteNum(c.colonize_max_fields, null);
+            if (cMax !== null && cMax > 0) return cMax;
+            return null;
+          },
+          defaultDirection: "desc"
+        },
+        distance: (c) => finiteNum(c.system_distance, null),
+        assessment: (c) => String(c.reason || "").trim() || null
+      }),
+      []
+    );
+    const attemptSortCols = reactExports.useMemo(
+      () => ({
+        coords: (a) => coordsSortKey(a.target_coords),
+        outcome: (a) => attemptOutcomeFor(a.event_type, minFieldsTarget).label,
+        rolledFields: {
+          accessor: (a) => {
+            const r = finiteNum(a.fields_rolled, null);
+            return r !== null && r > 0 ? r : null;
+          },
+          defaultDirection: "desc"
+        },
+        targetExpected: {
+          accessor: (a) => finiteNum(a.expected_max_fields, null) ?? finiteNum(a.min_fields_target, minFieldsTarget),
+          defaultDirection: "desc"
+        },
+        temp: {
+          accessor: (a) => finiteNum(a.temperature, null),
+          defaultDirection: "desc"
+        },
+        origin: (a) => coordsSortKey(a.origin_coords),
+        time: {
+          accessor: (a) => timestampSortKey(a.ts),
+          defaultDirection: "desc"
+        },
+        details: (a) => String(a.status_message || "").trim() || (a.grade ? `Grade ${a.grade}` : null)
+      }),
+      [minFieldsTarget]
+    );
+    const candSort = useTableSort(filteredCands, candSortCols);
+    const attemptSort = useTableSort(attempts, attemptSortCols);
     const handleSavePolicy = async () => {
       const minVal = Math.max(50, Math.min(600, Math.round(finiteNum(minFieldsInput, 300))));
       try {
@@ -15417,16 +16648,82 @@
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Grade" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Score" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Coords" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Orbital Zone" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Fields" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Distance" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Assessment" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Grade",
+                    sortKey: "grade",
+                    activeKey: candSort.sortKey,
+                    direction: candSort.sortDirection,
+                    onSort: candSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Score",
+                    sortKey: "score",
+                    activeKey: candSort.sortKey,
+                    direction: candSort.sortDirection,
+                    onSort: candSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Coords",
+                    sortKey: "coords",
+                    activeKey: candSort.sortKey,
+                    direction: candSort.sortDirection,
+                    onSort: candSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Orbital Zone",
+                    sortKey: "zone",
+                    activeKey: candSort.sortKey,
+                    direction: candSort.sortDirection,
+                    onSort: candSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Fields",
+                    sortKey: "fields",
+                    activeKey: candSort.sortKey,
+                    direction: candSort.sortDirection,
+                    onSort: candSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Distance",
+                    sortKey: "distance",
+                    activeKey: candSort.sortKey,
+                    direction: candSort.sortDirection,
+                    onSort: candSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Assessment",
+                    sortKey: "assessment",
+                    activeKey: candSort.sortKey,
+                    direction: candSort.sortDirection,
+                    onSort: candSort.requestSort
+                  }
+                ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Actions" })
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "col-candidates-tbody", children: filteredCands.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: colonyData ? "No matching colony slots. Click Scan Galaxy or probe free slots 7-12." : "Scan neighbor systems or sync spy reports to grade free planet slots." }) }) : filteredCands.map((c) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "col-candidates-tbody", children: candSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: colonyData ? "No matching colony slots. Click Scan Galaxy or probe free slots 7-12." : "Scan neighbor systems or sync spy reports to grade free planet slots." }) }) : candSort.sortedRows.map((c) => {
                 const coords = String(c.coords || "—");
                 const grade = String(c.grade || "?");
                 const uf = finiteNum(c.uninhabited_fields, null);
@@ -15496,16 +16793,92 @@
             ] }) }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "colonies-attempts-table", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Coords" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Outcome" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Rolled Fields" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Target / Expected" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Temp" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Origin" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Time" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Details / Reason" })
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Coords",
+                    sortKey: "coords",
+                    activeKey: attemptSort.sortKey,
+                    direction: attemptSort.sortDirection,
+                    onSort: attemptSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Outcome",
+                    sortKey: "outcome",
+                    activeKey: attemptSort.sortKey,
+                    direction: attemptSort.sortDirection,
+                    onSort: attemptSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Rolled Fields",
+                    sortKey: "rolledFields",
+                    activeKey: attemptSort.sortKey,
+                    direction: attemptSort.sortDirection,
+                    onSort: attemptSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Target / Expected",
+                    sortKey: "targetExpected",
+                    activeKey: attemptSort.sortKey,
+                    direction: attemptSort.sortDirection,
+                    onSort: attemptSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Temp",
+                    sortKey: "temp",
+                    activeKey: attemptSort.sortKey,
+                    direction: attemptSort.sortDirection,
+                    onSort: attemptSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Origin",
+                    sortKey: "origin",
+                    activeKey: attemptSort.sortKey,
+                    direction: attemptSort.sortDirection,
+                    onSort: attemptSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Time",
+                    sortKey: "time",
+                    activeKey: attemptSort.sortKey,
+                    direction: attemptSort.sortDirection,
+                    onSort: attemptSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Details / Reason",
+                    sortKey: "details",
+                    activeKey: attemptSort.sortKey,
+                    direction: attemptSort.sortDirection,
+                    onSort: attemptSort.requestSort
+                  }
+                )
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "colonies-attempts-tbody", children: attempts.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No colonization attempts recorded yet. Every Colony ship dispatch, kept 300+ roll, and deleted undersized roll is logged here." }) }) : attempts.map((a, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "colonies-attempts-tbody", children: attemptSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No colonization attempts recorded yet. Every Colony ship dispatch, kept 300+ roll, and deleted undersized roll is logged here." }) }) : attemptSort.sortedRows.map((a, idx) => {
                 const aCoords = String(a.target_coords || "—");
                 const aMin = Math.round(finiteNum(a.min_fields_target, minFieldsTarget));
                 const outcome = attemptOutcomeFor(a.event_type, aMin);
@@ -15558,6 +16931,61 @@
     const battles = Array.isArray(atkData == null ? void 0 : atkData.battles) ? atkData.battles : [];
     const blocks = Array.isArray(atkData == null ? void 0 : atkData.blocked_targets) ? atkData.blocked_targets : [];
     const raids24 = Math.round(finiteNum(rStats.total_24h, 0));
+    const battleSortCols = reactExports.useMemo(
+      () => ({
+        time: {
+          accessor: (b) => timestampSortKey(b.ts, b.msg_date_text),
+          defaultDirection: "desc"
+        },
+        target: (b) => coordsSortKey(b.coords),
+        defender: (b) => String(b.defender_name || b.subject || "").trim() || null,
+        outcome: (b) => String(b.outcome || "draw").toLowerCase(),
+        rounds: {
+          accessor: (b) => finiteNum(b.rounds, null),
+          defaultDirection: "desc"
+        },
+        loot: {
+          accessor: (b) => {
+            var _a;
+            return finiteNum((_a = b.loot) == null ? void 0 : _a.spice_eq, 0);
+          },
+          defaultDirection: "desc"
+        },
+        losses: {
+          accessor: (b) => {
+            var _a, _b;
+            return finiteNum((_a = b.attacker_losses) == null ? void 0 : _a.spice_eq, 0) + finiteNum((_b = b.defender_losses) == null ? void 0 : _b.spice_eq, 0);
+          },
+          defaultDirection: "desc"
+        },
+        debris: {
+          accessor: (b) => {
+            var _a, _b;
+            return finiteNum((_a = b.debris) == null ? void 0 : _a.pig_iron, 0) + finiteNum((_b = b.debris) == null ? void 0 : _b.metal, 0);
+          },
+          defaultDirection: "desc"
+        }
+      }),
+      []
+    );
+    const blockSortCols = reactExports.useMemo(
+      () => ({
+        coords: (bt) => coordsSortKey(bt.coords),
+        owner: (bt) => [bt.planet_name, bt.owner].filter(Boolean).join(" · ") || null,
+        bashHits: {
+          accessor: (bt) => finiteNum(bt.bash_hits, 0),
+          defaultDirection: "desc"
+        },
+        cooldown: {
+          accessor: (bt) => bt.active_block ? finiteNum(bt.remaining_seconds, 0) : 0,
+          defaultDirection: "desc"
+        },
+        reason: (bt) => String(bt.block_reason || "").trim() || null
+      }),
+      []
+    );
+    const battleSort = useTableSort(battles, battleSortCols);
+    const blockSort = useTableSort(blocks, blockSortCols);
     const handleSpyBlockTarget = async (coords) => {
       try {
         const res = await apiCommand2({
@@ -15657,16 +17085,89 @@
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "atk-pane-battles", hidden: atkTab !== "battles", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Time" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Target" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Defender" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Outcome" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Rounds" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Plundered Loot" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Losses (Atk / Def)" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Debris Created" })
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Time",
+                    sortKey: "time",
+                    activeKey: battleSort.sortKey,
+                    direction: battleSort.sortDirection,
+                    onSort: battleSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Target",
+                    sortKey: "target",
+                    activeKey: battleSort.sortKey,
+                    direction: battleSort.sortDirection,
+                    onSort: battleSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Defender",
+                    sortKey: "defender",
+                    activeKey: battleSort.sortKey,
+                    direction: battleSort.sortDirection,
+                    onSort: battleSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Outcome",
+                    sortKey: "outcome",
+                    activeKey: battleSort.sortKey,
+                    direction: battleSort.sortDirection,
+                    onSort: battleSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Rounds",
+                    sortKey: "rounds",
+                    activeKey: battleSort.sortKey,
+                    direction: battleSort.sortDirection,
+                    onSort: battleSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Plundered Loot",
+                    sortKey: "loot",
+                    activeKey: battleSort.sortKey,
+                    direction: battleSort.sortDirection,
+                    onSort: battleSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Losses (Atk / Def)",
+                    sortKey: "losses",
+                    activeKey: battleSort.sortKey,
+                    direction: battleSort.sortDirection,
+                    onSort: battleSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Debris Created",
+                    sortKey: "debris",
+                    activeKey: battleSort.sortKey,
+                    direction: battleSort.sortDirection,
+                    onSort: battleSort.requestSort
+                  }
+                )
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "atk-battles-tbody", children: battles.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "Click Sync All Folders to archive in-game battle reports." }) }) : battles.map((b, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "atk-battles-tbody", children: battleSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "Click Sync All Folders to archive in-game battle reports." }) }) : battleSort.sortedRows.map((b, idx) => {
                 var _a, _b, _c, _d, _e;
                 const outVal = String(b.outcome || "draw").toLowerCase();
                 const outCls = outVal === "win" ? "is-win" : outVal === "loss" ? "is-loss" : "is-draw";
@@ -15689,14 +17190,61 @@
             ] }) }) }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "atk-pane-blocks", hidden: atkTab !== "blocks", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Coords" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Owner / Planet" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Bash Hits" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Cooldown Left" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Server Protection Reason" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Coords",
+                    sortKey: "coords",
+                    activeKey: blockSort.sortKey,
+                    direction: blockSort.sortDirection,
+                    onSort: blockSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Owner / Planet",
+                    sortKey: "owner",
+                    activeKey: blockSort.sortKey,
+                    direction: blockSort.sortDirection,
+                    onSort: blockSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Bash Hits",
+                    sortKey: "bashHits",
+                    activeKey: blockSort.sortKey,
+                    direction: blockSort.sortDirection,
+                    onSort: blockSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Cooldown Left",
+                    sortKey: "cooldown",
+                    activeKey: blockSort.sortKey,
+                    direction: blockSort.sortDirection,
+                    onSort: blockSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Server Protection Reason",
+                    sortKey: "reason",
+                    activeKey: blockSort.sortKey,
+                    direction: blockSort.sortDirection,
+                    onSort: blockSort.requestSort
+                  }
+                ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "atk-blocks-tbody", children: blocks.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: "No active bash protection or server blocks recorded." }) }) : blocks.map((bt, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "atk-blocks-tbody", children: blockSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: "No active bash protection or server blocks recorded." }) }) : blockSort.sortedRows.map((bt, idx) => {
                 const coords = String(bt.coords || "—");
                 return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: coords }),
@@ -15754,6 +17302,73 @@
     const tMet = Math.round(finiteNum(sum.total_metal, 0));
     const tKry = Math.round(finiteNum(sum.total_kryptonite, 0));
     const tSpi = Math.round(finiteNum(sum.total_spice, 0));
+    const recycleSortCols = reactExports.useMemo(
+      () => ({
+        time: {
+          accessor: (r) => timestampSortKey(r.ts, r.msg_date_text),
+          defaultDirection: "desc"
+        },
+        coords: (r) => coordsSortKey(r.coords),
+        recyclers: {
+          accessor: (r) => {
+            const c = finiteNum(r.recycler_count, null);
+            return c !== null && c > 0 ? c : null;
+          },
+          defaultDirection: "desc"
+        },
+        pigIron: {
+          accessor: (r) => finiteNum(r.harvested_pig_iron, 0),
+          defaultDirection: "desc"
+        },
+        metal: {
+          accessor: (r) => finiteNum(r.harvested_metal, 0),
+          defaultDirection: "desc"
+        },
+        spiceEq: {
+          accessor: (r) => finiteNum(r.spice_eq, 0),
+          defaultDirection: "desc"
+        },
+        fieldBefore: {
+          accessor: (r) => {
+            const extra = finiteNum(r.harvested_kryptonite, 0) + finiteNum(r.harvested_spice, 0);
+            if (extra > 0) return extra;
+            const field = finiteNum(r.field_pig_iron, 0) + finiteNum(r.field_metal, 0);
+            return field > 0 ? field : null;
+          },
+          defaultDirection: "desc"
+        }
+      }),
+      []
+    );
+    const debrisSortCols = reactExports.useMemo(
+      () => ({
+        coords: (d) => coordsSortKey(d.coords),
+        owner: (d) => [d.planet_name, d.owner].filter(Boolean).join(" · ") || "Orbital Debris",
+        status: () => "RUBBLE FIELD",
+        lastSeen: {
+          accessor: (d) => timestampSortKey(d.last_scanned_ts),
+          defaultDirection: "desc"
+        }
+      }),
+      []
+    );
+    const emailSortCols = reactExports.useMemo(
+      () => ({
+        time: {
+          accessor: (m) => timestampSortKey(m.ts ?? m.ingested_ts, m.msg_date_text),
+          defaultDirection: "desc"
+        },
+        folderType: (m) => `${m.folder_type || "inbox"} · ${m.category || "general"}`,
+        sender: (m) => String(m.sender || "System"),
+        subject: (m) => String(m.subject || "").trim() || null,
+        coords: (m) => coordsSortKey(m.coords),
+        body: (m) => String(m.body_text || "").trim() || null
+      }),
+      []
+    );
+    const recycleSort = useTableSort(recycles, recycleSortCols);
+    const debrisSort = useTableSort(debris, debrisSortCols);
+    const emailSort = useTableSort(emails, emailSortCols);
     const rawKpiText = tKry > 0 || tSpi > 0 ? `${fmtInt(tPig)} Pig · ${fmtInt(tMet)} Met · ${fmtInt(tKry)} Kry · ${fmtInt(tSpi)} Spi` : `${fmtInt(tPig)} Pig · ${fmtInt(tMet)} Met`;
     const userCnt = Math.round(finiteNum(cats.general, 0));
     const retCnt = Math.round(finiteNum(cats.fleet_return, 0));
@@ -15864,15 +17479,82 @@
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "rec-pane-harvests", hidden: recTab !== "harvests", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Time" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Debris Coords" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Recyclers / Cap" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Pig Iron" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Metal" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Harvest SpEq" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Field Before" })
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Time",
+                    sortKey: "time",
+                    activeKey: recycleSort.sortKey,
+                    direction: recycleSort.sortDirection,
+                    onSort: recycleSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Debris Coords",
+                    sortKey: "coords",
+                    activeKey: recycleSort.sortKey,
+                    direction: recycleSort.sortDirection,
+                    onSort: recycleSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Recyclers / Cap",
+                    sortKey: "recyclers",
+                    activeKey: recycleSort.sortKey,
+                    direction: recycleSort.sortDirection,
+                    onSort: recycleSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Pig Iron",
+                    sortKey: "pigIron",
+                    activeKey: recycleSort.sortKey,
+                    direction: recycleSort.sortDirection,
+                    onSort: recycleSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Metal",
+                    sortKey: "metal",
+                    activeKey: recycleSort.sortKey,
+                    direction: recycleSort.sortDirection,
+                    onSort: recycleSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Harvest SpEq",
+                    sortKey: "spiceEq",
+                    activeKey: recycleSort.sortKey,
+                    direction: recycleSort.sortDirection,
+                    onSort: recycleSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Field Before",
+                    sortKey: "fieldBefore",
+                    activeKey: recycleSort.sortKey,
+                    direction: recycleSort.sortDirection,
+                    onSort: recycleSort.requestSort
+                  }
+                )
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rec-harvests-tbody", children: recycles.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 7, className: "empty-cell", children: "Click Sync All Folders to archive fleet recycling reports." }) }) : recycles.map((r, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rec-harvests-tbody", children: recycleSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 7, className: "empty-cell", children: "Click Sync All Folders to archive fleet recycling reports." }) }) : recycleSort.sortedRows.map((r, idx) => {
                 const rCnt = Math.round(finiteNum(r.recycler_count, 0));
                 const rCap = Math.round(finiteNum(r.cargo_capacity, 0));
                 const bPig = Math.round(finiteNum(r.field_pig_iron, 0));
@@ -15893,13 +17575,50 @@
             ] }) }) }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "rec-pane-debris", hidden: recTab !== "debris", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Coords" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Planet / Owner" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Status" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Last Seen" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Coords",
+                    sortKey: "coords",
+                    activeKey: debrisSort.sortKey,
+                    direction: debrisSort.sortDirection,
+                    onSort: debrisSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Planet / Owner",
+                    sortKey: "owner",
+                    activeKey: debrisSort.sortKey,
+                    direction: debrisSort.sortDirection,
+                    onSort: debrisSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Status",
+                    sortKey: "status",
+                    activeKey: debrisSort.sortKey,
+                    direction: debrisSort.sortDirection,
+                    onSort: debrisSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Last Seen",
+                    sortKey: "lastSeen",
+                    activeKey: debrisSort.sortKey,
+                    direction: debrisSort.sortDirection,
+                    onSort: debrisSort.requestSort,
+                    align: "right"
+                  }
+                ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Dispatch" })
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rec-debris-tbody", children: debris.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 5, className: "empty-cell", children: "No active floating debris fields spotted in scanned systems." }) }) : debris.map((d, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rec-debris-tbody", children: debrisSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 5, className: "empty-cell", children: "No active floating debris fields spotted in scanned systems." }) }) : debrisSort.sortedRows.map((d, idx) => {
                 const coords = String(d.coords || "—");
                 return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: coords }),
@@ -15932,14 +17651,68 @@
               )) }) }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Time" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Folder / Type" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Sender" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Subject" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Coords" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Message Body" })
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Time",
+                      sortKey: "time",
+                      activeKey: emailSort.sortKey,
+                      direction: emailSort.sortDirection,
+                      onSort: emailSort.requestSort
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Folder / Type",
+                      sortKey: "folderType",
+                      activeKey: emailSort.sortKey,
+                      direction: emailSort.sortDirection,
+                      onSort: emailSort.requestSort
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Sender",
+                      sortKey: "sender",
+                      activeKey: emailSort.sortKey,
+                      direction: emailSort.sortDirection,
+                      onSort: emailSort.requestSort
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Subject",
+                      sortKey: "subject",
+                      activeKey: emailSort.sortKey,
+                      direction: emailSort.sortDirection,
+                      onSort: emailSort.requestSort
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Coords",
+                      sortKey: "coords",
+                      activeKey: emailSort.sortKey,
+                      direction: emailSort.sortDirection,
+                      onSort: emailSort.requestSort
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Message Body",
+                      sortKey: "body",
+                      activeKey: emailSort.sortKey,
+                      direction: emailSort.sortDirection,
+                      onSort: emailSort.requestSort
+                    }
+                  )
                 ] }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rec-emails-tbody", children: emails.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: "No other emails or fleet notices archived yet." }) }) : emails.map((m, idx) => {
+                /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rec-emails-tbody", children: emailSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: "No other emails or fleet notices archived yet." }) }) : emailSort.sortedRows.map((m, idx) => {
                   const rawTxt = String(m.body_text || "").trim();
                   const bodyTxt = rawTxt.length > 260 ? `${rawTxt.slice(0, 260)}...` : rawTxt || "—";
                   return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
@@ -16165,6 +17938,71 @@
     const horizons = Array.isArray(rnk == null ? void 0 : rnk.horizons) ? rnk.horizons : [];
     const milestones = Array.isArray(rnk == null ? void 0 : rnk.milestones) ? rnk.milestones : [];
     const uniRows = localUniRows ?? (Array.isArray(dashboard == null ? void 0 : dashboard.universe_research_max) ? dashboard.universe_research_max : []);
+    const horizonSortCols = reactExports.useMemo(
+      () => ({
+        horizon: (row) => durationToSeconds(row.label) ?? (String(row.label || "").trim() || null),
+        steady: {
+          accessor: (row) => finiteNum(row.steady_points, null),
+          defaultDirection: "desc"
+        },
+        steadyAz: (row) => String(row.steady_az || "").trim() || null,
+        reinvested: {
+          accessor: (row) => finiteNum(row.compound_points, null),
+          defaultDirection: "desc"
+        },
+        reinvestedAz: (row) => String(row.compound_az || "").trim() || null
+      }),
+      []
+    );
+    const milestoneSortCols = reactExports.useMemo(
+      () => ({
+        milestone: (m) => finiteNum(m.target_points, null) ?? (String(m.label || "").trim() || null),
+        remaining: (m) => finiteNum(m.missing_points, null),
+        steadyEta: (m) => durationToSeconds(m.steady_eta),
+        compoundEta: (m) => durationToSeconds(m.compound_eta)
+      }),
+      []
+    );
+    const uniSortCols = reactExports.useMemo(
+      () => ({
+        research: (r) => String(r.name || r.key || r.research_key || ""),
+        ownLevel: {
+          accessor: (r) => Math.max(0, Math.round(finiteNum(r.own_level, 0))),
+          defaultDirection: "desc"
+        },
+        uniMax: {
+          accessor: (r) => Math.max(0, Math.round(finiteNum(r.universe_max_level, 0))),
+          defaultDirection: "desc"
+        },
+        gap: {
+          accessor: (r) => {
+            const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+            const uniMax = Math.max(0, Math.round(finiteNum(r.universe_max_level, 0)));
+            return Math.max(0, Math.round(finiteNum(r.gap_to_max, Math.max(0, uniMax - ownLvl))));
+          },
+          defaultDirection: "desc"
+        },
+        holder: (r) => {
+          const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+          const uniMax = Math.max(0, Math.round(finiteNum(r.universe_max_level, 0)));
+          if (r.holder) {
+            return r.holder_coords ? `${r.holder} [${r.holder_coords}]` : String(r.holder);
+          }
+          return uniMax > 0 && ownLvl >= uniMax ? "You" : null;
+        },
+        catalogCap: {
+          accessor: (r) => {
+            const cap = finiteNum(r.catalog_max_level, null);
+            return cap !== null && cap > 0 ? cap : null;
+          },
+          defaultDirection: "desc"
+        }
+      }),
+      []
+    );
+    const horizonSort = useTableSort(horizons, horizonSortCols);
+    const milestoneSort = useTableSort(milestones, milestoneSortCols);
+    const uniSort = useTableSort(uniRows, uniSortCols);
     return /* @__PURE__ */ jsxRuntimeExports.jsx(
       "section",
       {
@@ -16215,13 +18053,62 @@
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ranking-tables-stack", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Horizon" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Steady" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "AZ" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Reinvested" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "AZ" })
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Horizon",
+                        sortKey: "horizon",
+                        activeKey: horizonSort.sortKey,
+                        direction: horizonSort.sortDirection,
+                        onSort: horizonSort.requestSort
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Steady",
+                        sortKey: "steady",
+                        activeKey: horizonSort.sortKey,
+                        direction: horizonSort.sortDirection,
+                        onSort: horizonSort.requestSort,
+                        align: "right"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "AZ",
+                        sortKey: "steadyAz",
+                        activeKey: horizonSort.sortKey,
+                        direction: horizonSort.sortDirection,
+                        onSort: horizonSort.requestSort,
+                        align: "right"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Reinvested",
+                        sortKey: "reinvested",
+                        activeKey: horizonSort.sortKey,
+                        direction: horizonSort.sortDirection,
+                        onSort: horizonSort.requestSort,
+                        align: "right"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "AZ",
+                        sortKey: "reinvestedAz",
+                        activeKey: horizonSort.sortKey,
+                        direction: horizonSort.sortDirection,
+                        onSort: horizonSort.requestSort,
+                        align: "right"
+                      }
+                    )
                   ] }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rnk-horizons-tbody", children: horizons.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 5, className: "empty-cell", children: "Waiting for ranking forecast..." }) }) : horizons.map((row, idx) => {
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rnk-horizons-tbody", children: horizonSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 5, className: "empty-cell", children: "Waiting for ranking forecast..." }) }) : horizonSort.sortedRows.map((row, idx) => {
                     const sp = finiteNum(row.steady_points, null);
                     const sd = finiteNum(row.steady_delta, null);
                     const cp = finiteNum(row.compound_points, null);
@@ -16237,12 +18124,51 @@
                 ] }) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Next Milestone" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Remaining" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Steady ETA" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Compound ETA" })
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Next Milestone",
+                        sortKey: "milestone",
+                        activeKey: milestoneSort.sortKey,
+                        direction: milestoneSort.sortDirection,
+                        onSort: milestoneSort.requestSort
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Remaining",
+                        sortKey: "remaining",
+                        activeKey: milestoneSort.sortKey,
+                        direction: milestoneSort.sortDirection,
+                        onSort: milestoneSort.requestSort,
+                        align: "right"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Steady ETA",
+                        sortKey: "steadyEta",
+                        activeKey: milestoneSort.sortKey,
+                        direction: milestoneSort.sortDirection,
+                        onSort: milestoneSort.requestSort,
+                        align: "right"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Compound ETA",
+                        sortKey: "compoundEta",
+                        activeKey: milestoneSort.sortKey,
+                        direction: milestoneSort.sortDirection,
+                        onSort: milestoneSort.requestSort,
+                        align: "right"
+                      }
+                    )
                   ] }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rnk-milestones-tbody", children: milestones.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 4, className: "empty-cell", children: "Calculating milestones..." }) }) : milestones.map((m, idx) => {
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rnk-milestones-tbody", children: milestoneSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 4, className: "empty-cell", children: "Calculating milestones..." }) }) : milestoneSort.sortedRows.map((m, idx) => {
                     const tgtPts = finiteNum(m.target_points, null);
                     const missPts = finiteNum(m.missing_points, null);
                     return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
@@ -16272,14 +18198,72 @@
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "universe-research-max-table", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Research" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Your Level" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Universe Max" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Delta / Gap" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Record Holder" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Catalog Cap" })
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Research",
+                      sortKey: "research",
+                      activeKey: uniSort.sortKey,
+                      direction: uniSort.sortDirection,
+                      onSort: uniSort.requestSort
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Your Level",
+                      sortKey: "ownLevel",
+                      activeKey: uniSort.sortKey,
+                      direction: uniSort.sortDirection,
+                      onSort: uniSort.requestSort,
+                      align: "right"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Universe Max",
+                      sortKey: "uniMax",
+                      activeKey: uniSort.sortKey,
+                      direction: uniSort.sortDirection,
+                      onSort: uniSort.requestSort,
+                      align: "right"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Delta / Gap",
+                      sortKey: "gap",
+                      activeKey: uniSort.sortKey,
+                      direction: uniSort.sortDirection,
+                      onSort: uniSort.requestSort,
+                      align: "right"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Record Holder",
+                      sortKey: "holder",
+                      activeKey: uniSort.sortKey,
+                      direction: uniSort.sortDirection,
+                      onSort: uniSort.requestSort
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    SortableTh,
+                    {
+                      label: "Catalog Cap",
+                      sortKey: "catalogCap",
+                      activeKey: uniSort.sortKey,
+                      direction: uniSort.sortDirection,
+                      onSort: uniSort.requestSort,
+                      align: "right"
+                    }
+                  )
                 ] }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "universe-research-max-tbody", children: uniRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: "Click Sync Records to load universe max research levels." }) }) : uniRows.map((r) => {
+                /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "universe-research-max-tbody", children: uniSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: "Click Sync Records to load universe max research levels." }) }) : uniSort.sortedRows.map((r) => {
                   const rKey = String(r.key || r.research_key || `r${r.research_id}`);
                   const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
                   const uniMax = Math.max(0, Math.round(finiteNum(r.universe_max_level, 0)));
@@ -17027,6 +19011,33 @@
       }
     };
     const researchRows = Array.isArray(dashboard == null ? void 0 : dashboard.universe_research_max) ? dashboard.universe_research_max : localResearchRows || [];
+    const researchSortCols = reactExports.useMemo(
+      () => ({
+        research: (row) => String(row.name || row.key || row.research_key || ""),
+        ownLevel: {
+          accessor: (row) => Math.max(0, Math.round(safeFiniteNumber(row.own_level, 0) ?? 0)),
+          defaultDirection: "desc"
+        },
+        uniMax: {
+          accessor: (row) => Math.max(0, Math.round(safeFiniteNumber(row.universe_max_level, 0) ?? 0)),
+          defaultDirection: "desc"
+        },
+        holder: (row) => [row.holder, row.holder_coords ? `[${row.holder_coords}]` : ""].filter(Boolean).join(" ") || null,
+        catalogCap: {
+          accessor: (row) => {
+            const cap = safeFiniteNumber(row.catalog_max_level, null);
+            return cap !== null && cap > 0 ? Math.round(cap) : null;
+          },
+          defaultDirection: "desc"
+        },
+        updated: {
+          accessor: (row) => timestampSortKey(row.updated_ts),
+          defaultDirection: "desc"
+        }
+      }),
+      []
+    );
+    const researchSort = useTableSort(researchRows, researchSortCols);
     return /* @__PURE__ */ jsxRuntimeExports.jsx(
       "section",
       {
@@ -17220,14 +19231,72 @@
                   ] }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "cfg-universe-research-max-table", children: [
                     /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Research" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Your Level" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Universe Max" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Record Holder" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Catalog Cap" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Updated" })
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        SortableTh,
+                        {
+                          label: "Research",
+                          sortKey: "research",
+                          activeKey: researchSort.sortKey,
+                          direction: researchSort.sortDirection,
+                          onSort: researchSort.requestSort
+                        }
+                      ),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        SortableTh,
+                        {
+                          label: "Your Level",
+                          sortKey: "ownLevel",
+                          activeKey: researchSort.sortKey,
+                          direction: researchSort.sortDirection,
+                          onSort: researchSort.requestSort,
+                          align: "right"
+                        }
+                      ),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        SortableTh,
+                        {
+                          label: "Universe Max",
+                          sortKey: "uniMax",
+                          activeKey: researchSort.sortKey,
+                          direction: researchSort.sortDirection,
+                          onSort: researchSort.requestSort,
+                          align: "right"
+                        }
+                      ),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        SortableTh,
+                        {
+                          label: "Record Holder",
+                          sortKey: "holder",
+                          activeKey: researchSort.sortKey,
+                          direction: researchSort.sortDirection,
+                          onSort: researchSort.requestSort
+                        }
+                      ),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        SortableTh,
+                        {
+                          label: "Catalog Cap",
+                          sortKey: "catalogCap",
+                          activeKey: researchSort.sortKey,
+                          direction: researchSort.sortDirection,
+                          onSort: researchSort.requestSort,
+                          align: "right"
+                        }
+                      ),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        SortableTh,
+                        {
+                          label: "Updated",
+                          sortKey: "updated",
+                          activeKey: researchSort.sortKey,
+                          direction: researchSort.sortDirection,
+                          onSort: researchSort.requestSort,
+                          align: "right"
+                        }
+                      )
                     ] }) }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "cfg-universe-research-max-tbody", children: researchRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: "Click Refresh Max Research to populate and persist universe research records in SQLite." }) }) : researchRows.map((row) => {
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "cfg-universe-research-max-tbody", children: researchSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: "Click Refresh Max Research to populate and persist universe research records in SQLite." }) }) : researchSort.sortedRows.map((row) => {
                       const rKey = String(row.key || row.research_key || `r${row.research_id}`);
                       const ownLvl = Math.max(0, Math.round(safeFiniteNumber(row.own_level, 0) ?? 0));
                       const maxLvl = Math.max(

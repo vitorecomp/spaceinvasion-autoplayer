@@ -1,6 +1,12 @@
 import React from "react";
+import { SortableTh } from "../../components/SortableTh";
+import { useTableSort } from "../../hooks/useTableSort";
 import type { PlannedActionData, QueueJobData } from "../../types/api";
-import { ActiveExecJobRow, PlanActionRow } from "../operations/planActions";
+import {
+  ActiveExecJobRow,
+  PLAN_ACTION_SORT_COLUMNS,
+  PlanActionRow,
+} from "../operations/planActions";
 
 export interface DashboardQueueCardProps {
   cardId: string;
@@ -51,7 +57,8 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
 }) => {
   const activeList = Array.isArray(execJobs) ? execJobs : [];
   const totalCount = activeList.length + plannedActions.length;
-  const topSlice = plannedActions.slice(0, 10);
+  const planSort = useTableSort(plannedActions, PLAN_ACTION_SORT_COLUMNS);
+  const topSlice = planSort.sortedRows.slice(0, 10);
 
   return (
     <article className="hud-window dash-queue-card" id={cardId}>
@@ -89,11 +96,43 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
         <table>
           <thead>
             <tr>
-              <th>Prio</th>
-              <th>Action</th>
-              <th>Missing / Cost</th>
-              <th className="col-right">Wait ETA</th>
-              <th className="col-right">Total ETA / Finish</th>
+              <SortableTh
+                label="Prio"
+                sortKey="priority"
+                activeKey={planSort.sortKey}
+                direction={planSort.sortDirection}
+                onSort={planSort.requestSort}
+              />
+              <SortableTh
+                label="Action"
+                sortKey="action"
+                activeKey={planSort.sortKey}
+                direction={planSort.sortDirection}
+                onSort={planSort.requestSort}
+              />
+              <SortableTh
+                label="Missing / Cost"
+                sortKey="costMissing"
+                activeKey={planSort.sortKey}
+                direction={planSort.sortDirection}
+                onSort={planSort.requestSort}
+              />
+              <SortableTh
+                label="Wait ETA"
+                sortKey="waitEta"
+                activeKey={planSort.sortKey}
+                direction={planSort.sortDirection}
+                onSort={planSort.requestSort}
+                align="right"
+              />
+              <SortableTh
+                label="Total ETA / Finish"
+                sortKey="totalEta"
+                activeKey={planSort.sortKey}
+                direction={planSort.sortDirection}
+                onSort={planSort.requestSort}
+                align="right"
+              />
               <th className="col-right">Ops</th>
             </tr>
           </thead>

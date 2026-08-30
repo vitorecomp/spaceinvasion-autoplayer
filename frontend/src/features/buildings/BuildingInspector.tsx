@@ -1,6 +1,13 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
+import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
+import {
+  durationToSeconds,
+  resourcesTotal,
+  useTableSort,
+  type SortColumnMap,
+} from "../../hooks/useTableSort";
 import {
   bottleneckTag,
   finiteNum,
@@ -14,6 +21,21 @@ export interface BuildingInspectorProps {
   bfPct: number;
 }
 
+const HORIZON_SORT_COLUMNS: SortColumnMap<
+  Record<string, any>,
+  "target" | "cost" | "build" | "reached"
+> = {
+  target: (h) => finiteNum(h.level, null),
+  cost: (h) => resourcesTotal(h.cost),
+  build: (h) => finiteNum(h.build_seconds, null) ?? durationToSeconds(h.build_time_text),
+  reached: (h) => {
+    if (h.reach_eta === "—") return null;
+    const rh = finiteNum(h.reach_hours ?? h.total_hours, null);
+    if (rh !== null) return rh * 3600;
+    return durationToSeconds(h.reach_eta);
+  },
+};
+
 export const BuildingInspector: React.FC<BuildingInspectorProps> = ({
   etaData,
   selectedRow: selected,
@@ -26,6 +48,12 @@ export const BuildingInspector: React.FC<BuildingInspectorProps> = ({
     enqueueManualCommand,
     toggleBlastFurnaceRate,
   } = useConsole();
+
+  const horizons: Array<Record<string, any>> = useMemo(
+    () => (Array.isArray(selected?.horizons) ? selected!.horizons : []),
+    [selected]
+  );
+  const horizonSort = useTableSort(horizons, HORIZON_SORT_COLUMNS);
 
   if (!selected) {
     return (
@@ -56,10 +84,36 @@ export const BuildingInspector: React.FC<BuildingInspectorProps> = ({
           <table>
             <thead>
               <tr>
-                <th>Target</th>
-                <th>Cost</th>
-                <th className="col-right">Build</th>
-                <th className="col-right">Reached</th>
+                <SortableTh
+                  label="Target"
+                  sortKey="target"
+                  activeKey={horizonSort.sortKey}
+                  direction={horizonSort.sortDirection}
+                  onSort={horizonSort.requestSort}
+                />
+                <SortableTh
+                  label="Cost"
+                  sortKey="cost"
+                  activeKey={horizonSort.sortKey}
+                  direction={horizonSort.sortDirection}
+                  onSort={horizonSort.requestSort}
+                />
+                <SortableTh
+                  label="Build"
+                  sortKey="build"
+                  activeKey={horizonSort.sortKey}
+                  direction={horizonSort.sortDirection}
+                  onSort={horizonSort.requestSort}
+                  align="right"
+                />
+                <SortableTh
+                  label="Reached"
+                  sortKey="reached"
+                  activeKey={horizonSort.sortKey}
+                  direction={horizonSort.sortDirection}
+                  onSort={horizonSort.requestSort}
+                  align="right"
+                />
               </tr>
             </thead>
             <tbody id="insp-horizons-tbody">
@@ -148,10 +202,6 @@ export const BuildingInspector: React.FC<BuildingInspectorProps> = ({
     const altWait = Number.isFinite(altHours) ? `${altHours.toFixed(1)}h` : "Blocked";
     bfHintText = `Bucket tip: Pausing Blast furnace (b2 → 0%) frees +${fmtInt(Math.round(bfUsed))} Pig/h (Pig iron wait improves from ${oldWait} to ${altWait}).`;
   }
-
-  const horizons: Array<Record<string, any>> = Array.isArray(selected.horizons)
-    ? selected.horizons
-    : [];
 
   const canQueueLive = isTurret
     ? false
@@ -275,14 +325,40 @@ export const BuildingInspector: React.FC<BuildingInspectorProps> = ({
         <table>
           <thead>
             <tr>
-              <th>Target</th>
-              <th>Cost</th>
-              <th className="col-right">Build</th>
-              <th className="col-right">Reached</th>
+              <SortableTh
+                label="Target"
+                sortKey="target"
+                activeKey={horizonSort.sortKey}
+                direction={horizonSort.sortDirection}
+                onSort={horizonSort.requestSort}
+              />
+              <SortableTh
+                label="Cost"
+                sortKey="cost"
+                activeKey={horizonSort.sortKey}
+                direction={horizonSort.sortDirection}
+                onSort={horizonSort.requestSort}
+              />
+              <SortableTh
+                label="Build"
+                sortKey="build"
+                activeKey={horizonSort.sortKey}
+                direction={horizonSort.sortDirection}
+                onSort={horizonSort.requestSort}
+                align="right"
+              />
+              <SortableTh
+                label="Reached"
+                sortKey="reached"
+                activeKey={horizonSort.sortKey}
+                direction={horizonSort.sortDirection}
+                onSort={horizonSort.requestSort}
+                align="right"
+              />
             </tr>
           </thead>
           <tbody id="insp-horizons-tbody">
-            {horizons.map((h, idx) => (
+            {horizonSort.sortedRows.map((h, idx) => (
               <tr key={`hz-${h.level ?? idx}`}>
                 <td className="tabular">{`L${h.level}`}</td>
                 <td className="tabular">{formatResourcesInline(h.cost)}</td>

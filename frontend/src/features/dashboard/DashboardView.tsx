@@ -1,9 +1,15 @@
 import React, { useCallback, useMemo } from "react";
 import { flushSync } from "react-dom";
 import { feedbackKindForError } from "../../api/httpClient";
+import { SortableTh } from "../../components/SortableTh";
 import { GaNnScannerHud } from "../../components/layout/GaNnScannerHud";
 import { useConsole } from "../../context/ConsoleContext";
-import type { PlannedActionData, QueueJobData } from "../../types/api";
+import {
+  coordsSortKey,
+  useTableSort,
+  type SortColumnMap,
+} from "../../hooks/useTableSort";
+import type { PlanetData, PlannedActionData, QueueJobData } from "../../types/api";
 import {
   finiteNum,
   fmtClockTime,
@@ -129,6 +135,38 @@ export const DashboardView: React.FC = () => {
   const gs = dashboard?.state || null;
   const planets = useMemo(() => gs?.planets || [], [gs?.planets]);
   const chosenId = activePlanet?.planet_id;
+
+  const colonySortCols = useMemo<
+    SortColumnMap<PlanetData, "coords" | "colony" | "state" | "fields">
+  >(
+    () => ({
+      coords: (p) => coordsSortKey(p.coords),
+      colony: (p) => String(p.name || "Colony"),
+      state: (p) => {
+        const isActive = p.planet_id === chosenId;
+        const pigStor = finiteNum(p.storage?.pig_iron, 0);
+        const pigAmt = finiteNum(p.resources?.pig_iron, 0);
+        const spiStor = finiteNum(p.storage?.spice, 0);
+        const spiAmt = finiteNum(p.resources?.spice, 0);
+        const nearFull =
+          (pigStor > 0 && pigAmt / pigStor >= 0.85) ||
+          (spiStor > 0 && spiAmt / spiStor >= 0.85);
+        return nearFull ? "NEAR-CAP" : isActive ? "ONLINE" : "READY";
+      },
+      fields: {
+        accessor: (p) => {
+          const fMax = finiteNum(p.fields_max, null);
+          const fUsed = finiteNum(p.fields_used, null);
+          if (fMax !== null) return fMax * 10_000 + (fUsed ?? 0);
+          return fUsed;
+        },
+        defaultDirection: "desc",
+      },
+    }),
+    [chosenId]
+  );
+
+  const colonySort = useTableSort(planets, colonySortCols);
 
   const currentEta = useMemo(() => {
     if (
@@ -509,21 +547,46 @@ export const DashboardView: React.FC = () => {
               <table>
                 <thead>
                   <tr>
-                    <th>Coords</th>
-                    <th>Colony</th>
-                    <th>State</th>
-                    <th className="col-right">Fields</th>
+                    <SortableTh
+                      label="Coords"
+                      sortKey="coords"
+                      activeKey={colonySort.sortKey}
+                      direction={colonySort.sortDirection}
+                      onSort={colonySort.requestSort}
+                    />
+                    <SortableTh
+                      label="Colony"
+                      sortKey="colony"
+                      activeKey={colonySort.sortKey}
+                      direction={colonySort.sortDirection}
+                      onSort={colonySort.requestSort}
+                    />
+                    <SortableTh
+                      label="State"
+                      sortKey="state"
+                      activeKey={colonySort.sortKey}
+                      direction={colonySort.sortDirection}
+                      onSort={colonySort.requestSort}
+                    />
+                    <SortableTh
+                      label="Fields"
+                      sortKey="fields"
+                      activeKey={colonySort.sortKey}
+                      direction={colonySort.sortDirection}
+                      onSort={colonySort.requestSort}
+                      align="right"
+                    />
                   </tr>
                 </thead>
                 <tbody id="colony-tbody">
-                  {planets.length === 0 ? (
+                  {colonySort.sortedRows.length === 0 ? (
                     <tr>
                       <td colSpan={4} className="empty-cell">
                         {dashboard ? "No colonies discovered." : "Waiting for snapshot..."}
                       </td>
                     </tr>
                   ) : (
-                    planets.map((p) => {
+                    colonySort.sortedRows.map((p) => {
                       const isActive = p.planet_id === chosenId;
                       const pigStor = finiteNum(p.storage?.pig_iron, 0);
                       const pigAmt = finiteNum(p.resources?.pig_iron, 0);

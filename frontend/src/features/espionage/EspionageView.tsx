@@ -1,6 +1,15 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
+import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
+import {
+  coordsSortKey,
+  resourcesTotal,
+  timestampSortKey,
+  unitDictTotal,
+  useTableSort,
+  type SortColumnMap,
+} from "../../hooks/useTableSort";
 import {
   finiteNum,
   fmtInt,
@@ -29,6 +38,37 @@ function parseCoordsTriple(raw: unknown): ParsedCoords | null {
   const p = Number.parseInt(m[3], 10);
   if (!Number.isFinite(g) || !Number.isFinite(s) || !Number.isFinite(p)) return null;
   return { g, s, p };
+}
+
+export function espionageDistanceSortKey(
+  row: Record<string, any>,
+  originCoords: string,
+  targetCoords: string
+): number | null {
+  const oParsed = parseCoordsTriple(originCoords);
+  const tParsed = parseCoordsTriple(targetCoords);
+
+  let gDiff = finiteNum(row?.galaxy_delta, null);
+  let sDiff = finiteNum(row?.system_delta, null);
+  let pDiff = finiteNum(row?.position_delta, null);
+  let sysDist = finiteNum(row?.system_distance, null);
+  const flightDist = finiteNum(row?.distance, null);
+
+  if (oParsed && tParsed) {
+    if (gDiff === null) gDiff = Math.abs(oParsed.g - tParsed.g);
+    if (sDiff === null) sDiff = Math.abs(oParsed.s - tParsed.s);
+    if (pDiff === null) pDiff = Math.abs(oParsed.p - tParsed.p);
+    if (sysDist === null) sysDist = gDiff * 400 + sDiff;
+  }
+
+  if (sysDist === null && gDiff === null && sDiff === null) {
+    return flightDist !== null && flightDist >= 0 ? flightDist : null;
+  }
+
+  const gInt = Math.max(0, Math.round(gDiff ?? 0));
+  const sInt = Math.max(0, Math.round(sDiff ?? Math.max(0, (sysDist ?? 0) - gInt * 400)));
+  const pInt = Math.max(0, Math.round(pDiff ?? 0));
+  return (gInt * 400 + sInt) * 100 + pInt;
 }
 
 export function formatEspionageDistance(
@@ -117,6 +157,105 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
   const reports: Array<Record<string, any>> = Array.isArray(espData?.reports)
     ? espData!.reports
     : [];
+
+  const targetSortCols = useMemo<
+    SortColumnMap<
+      Record<string, any>,
+      "coords" | "distance" | "player" | "status" | "fields" | "resources" | "spiceEq" | "fleetDef"
+    >
+  >(
+    () => ({
+      coords: (t) => coordsSortKey(t.coords || t.target_coords),
+      distance: (t) =>
+        espionageDistanceSortKey(t, originCoords, String(t.coords || t.target_coords || "")),
+      player: (t) => [t.planet_name, t.owner].filter(Boolean).join(" · ") || null,
+      status: (t) => {
+        const isSpacia = Boolean(t.is_spacia);
+        const isInact = Boolean(t.is_inactive) || String(t.status_color || "") === "yellow";
+        const tags = [
+          isSpacia
+            ? "SPACIA"
+            : isInact
+              ? "INACTIVE"
+              : String(t.status_color || "ACTIVE").toUpperCase(),
+        ];
+        if (t.has_debris) tags.push("DEBRIS");
+        if (t.dug_in) tags.push("DUG-IN");
+        return tags.join(" · ");
+      },
+      fields: {
+        accessor: (t) => {
+          const uf = finiteNum(t.uninhabited_fields, null);
+          return uf !== null && uf > 0 ? Math.round(uf) : null;
+        },
+        defaultDirection: "desc",
+      },
+      resources: {
+        accessor: (t) => (t.has_spy_intel ? resourcesTotal(t.resources) : null),
+        defaultDirection: "desc",
+      },
+      spiceEq: {
+        accessor: (t) => (t.has_spy_intel ? finiteNum(t.spice_eq, null) : null),
+        defaultDirection: "desc",
+      },
+      fleetDef: {
+        accessor: (t) =>
+          t.has_spy_intel
+            ? (unitDictTotal(t.fleet) ?? 0) + (unitDictTotal(t.defense) ?? 0)
+            : null,
+        defaultDirection: "desc",
+      },
+    }),
+    [originCoords]
+  );
+
+  const reportSortCols = useMemo<
+    SortColumnMap<
+      Record<string, any>,
+      "recorded" | "coords" | "distance" | "owner" | "fields" | "resources" | "buildings" | "fleetDef"
+    >
+  >(
+    () => ({
+      recorded: {
+        accessor: (r) => timestampSortKey(r.ts, r.msg_date_text),
+        defaultDirection: "desc",
+      },
+      coords: (r) => coordsSortKey(r.coords || r.target_coords),
+      distance: (r) =>
+        espionageDistanceSortKey(r, originCoords, String(r.coords || r.target_coords || "")),
+      owner: (r) =>
+        [r.planet_name, r.owner].filter(Boolean).join(" · ") ||
+        (r.uninhabited_fields ? "Uninhabited Slot" : null),
+      fields: {
+        accessor: (r) => {
+          const uf = finiteNum(r.uninhabited_fields, null);
+          return uf !== null && uf > 0 ? Math.round(uf) : null;
+        },
+        defaultDirection: "desc",
+      },
+      resources: {
+        accessor: (r) =>
+          finiteNum(r.spice_eq ?? r.loot_spice_eq, null) ?? resourcesTotal(r.resources),
+        defaultDirection: "desc",
+      },
+      buildings: {
+        accessor: (r) => {
+          const b = unitDictTotal(r.buildings);
+          const res = unitDictTotal(r.researches);
+          return b === null && res === null ? null : (b ?? 0) + (res ?? 0);
+        },
+        defaultDirection: "desc",
+      },
+      fleetDef: {
+        accessor: (r) => (unitDictTotal(r.fleet) ?? 0) + (unitDictTotal(r.defense) ?? 0),
+        defaultDirection: "desc",
+      },
+    }),
+    [originCoords]
+  );
+
+  const targetSort = useTableSort(targets, targetSortCols);
+  const reportSort = useTableSort(reports, reportSortCols);
 
   const bestSpEq = targets.reduce(
     (acc, t) => Math.max(acc, finiteNum(t?.spice_eq, 0)),
@@ -328,26 +467,77 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
             <table>
               <thead>
                 <tr>
-                  <th>Coords</th>
-                  <th className="col-right">Distance</th>
-                  <th>Player / Planet</th>
-                  <th>Status</th>
-                  <th className="col-right">Fields</th>
-                  <th>Resources (Pig / Met / Kry / Spi)</th>
-                  <th className="col-right">Loot SpEq</th>
-                  <th>Fleet / Defense</th>
+                  <SortableTh
+                    label="Coords"
+                    sortKey="coords"
+                    activeKey={targetSort.sortKey}
+                    direction={targetSort.sortDirection}
+                    onSort={targetSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Distance"
+                    sortKey="distance"
+                    activeKey={targetSort.sortKey}
+                    direction={targetSort.sortDirection}
+                    onSort={targetSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Player / Planet"
+                    sortKey="player"
+                    activeKey={targetSort.sortKey}
+                    direction={targetSort.sortDirection}
+                    onSort={targetSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Status"
+                    sortKey="status"
+                    activeKey={targetSort.sortKey}
+                    direction={targetSort.sortDirection}
+                    onSort={targetSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Fields"
+                    sortKey="fields"
+                    activeKey={targetSort.sortKey}
+                    direction={targetSort.sortDirection}
+                    onSort={targetSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Resources (Pig / Met / Kry / Spi)"
+                    sortKey="resources"
+                    activeKey={targetSort.sortKey}
+                    direction={targetSort.sortDirection}
+                    onSort={targetSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Loot SpEq"
+                    sortKey="spiceEq"
+                    activeKey={targetSort.sortKey}
+                    direction={targetSort.sortDirection}
+                    onSort={targetSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Fleet / Defense"
+                    sortKey="fleetDef"
+                    activeKey={targetSort.sortKey}
+                    direction={targetSort.sortDirection}
+                    onSort={targetSort.requestSort}
+                  />
                   <th className="col-right">Ops</th>
                 </tr>
               </thead>
               <tbody id="esp-targets-tbody">
-                {targets.length === 0 ? (
+                {targetSort.sortedRows.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="empty-cell">
                       No espionage targets recorded yet. Run Scan Galaxy or Sync All Folders.
                     </td>
                   </tr>
                 ) : (
-                  targets.map((t, idx) => {
+                  targetSort.sortedRows.map((t, idx) => {
                     const coords = String(t.coords || t.target_coords || "—");
                     const dist = formatEspionageDistance(t, originCoords, coords);
                     const isSpacia = Boolean(t.is_spacia);
@@ -439,25 +629,75 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
             <table>
               <thead>
                 <tr>
-                  <th>Recorded</th>
-                  <th>Coords</th>
-                  <th className="col-right">Distance</th>
-                  <th>Owner / Planet</th>
-                  <th className="col-right">Fields</th>
-                  <th>Resources &amp; SpEq</th>
-                  <th>Buildings / Techs</th>
-                  <th>Fleet / Defense</th>
+                  <SortableTh
+                    label="Recorded"
+                    sortKey="recorded"
+                    activeKey={reportSort.sortKey}
+                    direction={reportSort.sortDirection}
+                    onSort={reportSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Coords"
+                    sortKey="coords"
+                    activeKey={reportSort.sortKey}
+                    direction={reportSort.sortDirection}
+                    onSort={reportSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Distance"
+                    sortKey="distance"
+                    activeKey={reportSort.sortKey}
+                    direction={reportSort.sortDirection}
+                    onSort={reportSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Owner / Planet"
+                    sortKey="owner"
+                    activeKey={reportSort.sortKey}
+                    direction={reportSort.sortDirection}
+                    onSort={reportSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Fields"
+                    sortKey="fields"
+                    activeKey={reportSort.sortKey}
+                    direction={reportSort.sortDirection}
+                    onSort={reportSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Resources & SpEq"
+                    sortKey="resources"
+                    activeKey={reportSort.sortKey}
+                    direction={reportSort.sortDirection}
+                    onSort={reportSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Buildings / Techs"
+                    sortKey="buildings"
+                    activeKey={reportSort.sortKey}
+                    direction={reportSort.sortDirection}
+                    onSort={reportSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Fleet / Defense"
+                    sortKey="fleetDef"
+                    activeKey={reportSort.sortKey}
+                    direction={reportSort.sortDirection}
+                    onSort={reportSort.requestSort}
+                  />
                 </tr>
               </thead>
               <tbody id="esp-reports-tbody">
-                {reports.length === 0 ? (
+                {reportSort.sortedRows.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="empty-cell">
                       No historical spy reports stored yet.
                     </td>
                   </tr>
                 ) : (
-                  reports.map((r, idx) => {
+                  reportSort.sortedRows.map((r, idx) => {
                     const rCoords = String(r.coords || r.target_coords || "—");
                     const rDist = formatEspionageDistance(r, originCoords, rCoords);
                     const uf = finiteNum(r.uninhabited_fields, null);

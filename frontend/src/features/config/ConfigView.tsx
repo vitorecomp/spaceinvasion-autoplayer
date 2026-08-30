@@ -1,9 +1,15 @@
-import React, { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { flushSync } from "react-dom";
 
 const useClientSyncEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
+import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
+import {
+  timestampSortKey,
+  useTableSort,
+  type SortColumnMap,
+} from "../../hooks/useTableSort";
 import { StrategyConfigData, UniverseResearchMaxRow } from "../../types/api";
 import {
   CONFIG_BOOL_KEYS,
@@ -287,6 +293,44 @@ export const ConfigView: React.FC = () => {
     ? dashboard!.universe_research_max!
     : localResearchRows || [];
 
+  const researchSortCols = useMemo<
+    SortColumnMap<
+      UniverseResearchMaxRow,
+      "research" | "ownLevel" | "uniMax" | "holder" | "catalogCap" | "updated"
+    >
+  >(
+    () => ({
+      research: (row) => String(row.name || row.key || row.research_key || ""),
+      ownLevel: {
+        accessor: (row) => Math.max(0, Math.round(safeFiniteNumber(row.own_level, 0) ?? 0)),
+        defaultDirection: "desc",
+      },
+      uniMax: {
+        accessor: (row) =>
+          Math.max(0, Math.round(safeFiniteNumber(row.universe_max_level, 0) ?? 0)),
+        defaultDirection: "desc",
+      },
+      holder: (row) =>
+        [row.holder, row.holder_coords ? `[${row.holder_coords}]` : ""]
+          .filter(Boolean)
+          .join(" ") || null,
+      catalogCap: {
+        accessor: (row) => {
+          const cap = safeFiniteNumber(row.catalog_max_level, null);
+          return cap !== null && cap > 0 ? Math.round(cap) : null;
+        },
+        defaultDirection: "desc",
+      },
+      updated: {
+        accessor: (row) => timestampSortKey(row.updated_ts),
+        defaultDirection: "desc",
+      },
+    }),
+    []
+  );
+
+  const researchSort = useTableSort(researchRows, researchSortCols);
+
   return (
     <section
       id="view-config"
@@ -508,23 +552,63 @@ export const ConfigView: React.FC = () => {
               <table id="cfg-universe-research-max-table">
                 <thead>
                   <tr>
-                    <th>Research</th>
-                    <th className="col-right">Your Level</th>
-                    <th className="col-right">Universe Max</th>
-                    <th>Record Holder</th>
-                    <th className="col-right">Catalog Cap</th>
-                    <th className="col-right">Updated</th>
+                    <SortableTh
+                      label="Research"
+                      sortKey="research"
+                      activeKey={researchSort.sortKey}
+                      direction={researchSort.sortDirection}
+                      onSort={researchSort.requestSort}
+                    />
+                    <SortableTh
+                      label="Your Level"
+                      sortKey="ownLevel"
+                      activeKey={researchSort.sortKey}
+                      direction={researchSort.sortDirection}
+                      onSort={researchSort.requestSort}
+                      align="right"
+                    />
+                    <SortableTh
+                      label="Universe Max"
+                      sortKey="uniMax"
+                      activeKey={researchSort.sortKey}
+                      direction={researchSort.sortDirection}
+                      onSort={researchSort.requestSort}
+                      align="right"
+                    />
+                    <SortableTh
+                      label="Record Holder"
+                      sortKey="holder"
+                      activeKey={researchSort.sortKey}
+                      direction={researchSort.sortDirection}
+                      onSort={researchSort.requestSort}
+                    />
+                    <SortableTh
+                      label="Catalog Cap"
+                      sortKey="catalogCap"
+                      activeKey={researchSort.sortKey}
+                      direction={researchSort.sortDirection}
+                      onSort={researchSort.requestSort}
+                      align="right"
+                    />
+                    <SortableTh
+                      label="Updated"
+                      sortKey="updated"
+                      activeKey={researchSort.sortKey}
+                      direction={researchSort.sortDirection}
+                      onSort={researchSort.requestSort}
+                      align="right"
+                    />
                   </tr>
                 </thead>
                 <tbody id="cfg-universe-research-max-tbody">
-                  {researchRows.length === 0 ? (
+                  {researchSort.sortedRows.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="empty-cell">
                         Click Refresh Max Research to populate and persist universe research records in SQLite.
                       </td>
                     </tr>
                   ) : (
-                    researchRows.map((row) => {
+                    researchSort.sortedRows.map((row) => {
                       const rKey = String(row.key || row.research_key || `r${row.research_id}`);
                       const ownLvl = Math.max(0, Math.round(safeFiniteNumber(row.own_level, 0) ?? 0));
                       const maxLvl = Math.max(

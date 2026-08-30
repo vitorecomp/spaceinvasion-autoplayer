@@ -69,6 +69,14 @@
   padding: 6px 8px;
 }
 
+.dash-queue-card table th.th-sortable {
+  padding: 0;
+}
+
+.dash-queue-card table th.th-sortable .th-sort-btn {
+  padding: 6px 8px;
+}
+
 .dash-q-count {
   display: inline-flex;
   align-items: center;

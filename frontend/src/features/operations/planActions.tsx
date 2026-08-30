@@ -1,4 +1,10 @@
 import React, { useEffect, useRef } from "react";
+import {
+  durationToSeconds,
+  prioritySortKey,
+  resourcesTotal,
+  type SortColumnMap,
+} from "../../hooks/useTableSort";
 import type { PlannedActionData, QueueJobData } from "../../types/api";
 import {
   bottleneckTag,
@@ -7,6 +13,54 @@ import {
   fmtHms,
   formatResourcesInline,
 } from "../../utils/formatters";
+
+export type PlanActionSortKey =
+  | "priority"
+  | "action"
+  | "costMissing"
+  | "waitEta"
+  | "totalEta"
+  | "reason";
+
+export const PLAN_ACTION_SORT_COLUMNS: SortColumnMap<PlannedActionData, PlanActionSortKey> = {
+  priority: (act) => prioritySortKey(act.priority),
+  action: (act) =>
+    `${act.target_name || act.kind || ""}${act.target_level != null ? ` ${act.target_level}` : ""}`,
+  costMissing: (act) => resourcesTotal(act.cost) ?? resourcesTotal(act.missing),
+  waitEta: (act) => {
+    const rawWait =
+      act.wait_eta !== undefined && act.wait_eta !== null ? String(act.wait_eta).trim() : "";
+    if (rawWait === "—" || act.wait_hours === null) return null;
+    const wh = finiteNum(act.wait_hours, null);
+    if (wh !== null && (wh > 0 || act.executable_now || rawWait !== "")) {
+      return wh * 3600;
+    }
+    if (rawWait !== "") return durationToSeconds(rawWait);
+    return act.executable_now ? 0 : null;
+  },
+  totalEta: (act) => {
+    const rawWait =
+      act.wait_eta !== undefined && act.wait_eta !== null ? String(act.wait_eta).trim() : "";
+    const rawTotal =
+      act.total_eta !== undefined && act.total_eta !== null ? String(act.total_eta).trim() : "";
+    if (
+      rawWait === "—" ||
+      rawTotal === "—" ||
+      act.wait_hours === null ||
+      act.total_hours === null
+    ) {
+      return null;
+    }
+    const ts = finiteNum(act.total_seconds, null);
+    if (ts !== null) return ts;
+    const th = finiteNum(act.total_hours, null);
+    if (th !== null) return th * 3600;
+    if (rawTotal !== "") return durationToSeconds(rawTotal);
+    if (act.duration_text) return durationToSeconds(act.duration_text);
+    return act.executable_now ? 0 : null;
+  },
+  reason: (act) => String(act.reason || "").trim() || null,
+};
 
 export const MQ_BUILDINGS_CATALOG = [
   { id: 1, name: "Pig iron mine" },

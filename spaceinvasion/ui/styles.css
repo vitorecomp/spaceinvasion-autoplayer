@@ -858,6 +858,102 @@ th {
   border-bottom: 1px solid var(--line-mid);
 }
 
+th.th-sortable {
+  padding: 0;
+  user-select: none;
+}
+
+.th-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.14s ease, background-color 0.14s ease;
+}
+
+th.th-sortable.col-right .th-sort-btn {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.th-sort-btn:hover {
+  color: var(--ink);
+  background: var(--row-hover);
+}
+
+.th-sort-btn:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: -2px;
+  color: var(--ink);
+}
+
+th.th-sortable.is-sorted {
+  color: var(--mint);
+  border-bottom-color: var(--mint);
+}
+
+.th-sort-label {
+  min-width: 0;
+}
+
+.th-sort-icon {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  opacity: 0.45;
+  transition: opacity 0.14s ease;
+}
+
+.th-sort-btn:hover .th-sort-icon,
+th.th-sortable.is-sorted .th-sort-icon {
+  opacity: 1;
+}
+
+.th-sort-arrow {
+  display: block;
+  width: 0;
+  height: 0;
+  border-left: 3.5px solid transparent;
+  border-right: 3.5px solid transparent;
+  opacity: 0.42;
+  transition: border-color 0.14s ease, opacity 0.14s ease;
+}
+
+.th-sort-up {
+  border-bottom: 4px solid var(--ink-muted);
+}
+
+.th-sort-down {
+  border-top: 4px solid var(--ink-muted);
+}
+
+.th-sort-btn:hover .th-sort-arrow {
+  opacity: 0.72;
+}
+
+.th-sort-up.is-active {
+  border-bottom-color: var(--mint);
+  opacity: 1;
+}
+
+.th-sort-down.is-active {
+  border-top-color: var(--mint);
+  opacity: 1;
+}
+
 td {
   padding: 8px 12px;
   border-bottom: 1px solid var(--line-dim);
@@ -1442,6 +1538,14 @@ tbody tr.is-manual-queued:hover {
 
 .dash-queue-card table th,
 .dash-queue-card table td {
+  padding: 6px 8px;
+}
+
+.dash-queue-card table th.th-sortable {
+  padding: 0;
+}
+
+.dash-queue-card table th.th-sortable .th-sort-btn {
   padding: 6px 8px;
 }
 

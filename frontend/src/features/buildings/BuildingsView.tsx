@@ -1,6 +1,14 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
+import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
+import {
+  durationToSeconds,
+  resourcesTotal,
+  timestampSortKey,
+  useTableSort,
+  type SortColumnMap,
+} from "../../hooks/useTableSort";
 import {
   bottleneckTag,
   clampPct,
@@ -148,6 +156,103 @@ export const BuildingsView: React.FC = () => {
       Array.isArray(dashboard?.universe_research_max) ? dashboard!.universe_research_max! : [],
     [dashboard?.universe_research_max]
   );
+
+  const unitSortCols = useMemo<
+    SortColumnMap<
+      Record<string, any>,
+      "unit" | "level" | "next" | "missing" | "buildTime" | "resReady" | "reached"
+    >
+  >(
+    () => ({
+      unit: (row) => String(row.name || row.key || ""),
+      level: {
+        accessor: (row) => finiteNum(row.current_level, 0),
+        defaultDirection: "desc",
+      },
+      next: {
+        accessor: (row) =>
+          row.is_defense_turret ? null : finiteNum(row.next_level ?? row.target_level, null),
+        defaultDirection: "desc",
+      },
+      missing: (row) =>
+        row.is_defense_turret
+          ? resourcesTotal(row.cost)
+          : (finiteNum(row.missing_total, null) ?? resourcesTotal(row.missing) ?? 0),
+      buildTime: (row) =>
+        finiteNum(row.build_seconds ?? row.build_time_seconds, null) ??
+        durationToSeconds(row.build_time_text),
+      resReady: (row) => {
+        if (row.is_defense_turret || row.wait_eta === "—") return null;
+        const wh = finiteNum(row.wait_hours, null);
+        if (wh !== null) return wh * 3600;
+        return durationToSeconds(row.wait_eta);
+      },
+      reached: (row) => {
+        if (row.is_defense_turret || row.reach_eta === "—") return null;
+        const rh = finiteNum(row.reach_hours ?? row.total_hours, null);
+        if (rh !== null) return rh * 3600;
+        return durationToSeconds(row.reach_eta);
+      },
+    }),
+    []
+  );
+
+  const uniMaxSortCols = useMemo<
+    SortColumnMap<
+      Record<string, any>,
+      "research" | "ownLevel" | "uniMax" | "gap" | "spiedMax" | "holder" | "catalogCap" | "updated"
+    >
+  >(
+    () => ({
+      research: (r) => String(r.name || r.slug || r.key || ""),
+      ownLevel: {
+        accessor: (r) => Math.max(0, Math.round(finiteNum(r.own_level, 0))),
+        defaultDirection: "desc",
+      },
+      uniMax: {
+        accessor: (r) => {
+          const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+          return Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
+        },
+        defaultDirection: "desc",
+      },
+      gap: {
+        accessor: (r) => {
+          const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+          const uni = Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
+          return Math.max(0, finiteNum(r.gap_to_max, uni - own));
+        },
+        defaultDirection: "desc",
+      },
+      spiedMax: {
+        accessor: (r) => Math.max(0, Math.round(finiteNum(r.spied_max_level, 0))),
+        defaultDirection: "desc",
+      },
+      holder: (r) => {
+        const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+        const uni = Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
+        if (r.holder) {
+          return `${r.holder}${r.holder_coords ? ` [${r.holder_coords}]` : ""}`;
+        }
+        return uni > 0 && own >= uni ? "You" : null;
+      },
+      catalogCap: {
+        accessor: (r) => {
+          const cap = finiteNum(r.catalog_max_level, null);
+          return cap !== null && cap > 0 ? cap : null;
+        },
+        defaultDirection: "desc",
+      },
+      updated: {
+        accessor: (r) => timestampSortKey(r.updated_ts),
+        defaultDirection: "desc",
+      },
+    }),
+    []
+  );
+
+  const unitSort = useTableSort(visibleRows, unitSortCols);
+  const uniMaxSort = useTableSort(universeMaxRows, uniMaxSortCols);
 
   const handleSyncEconomy = useCallback(async () => {
     try {
@@ -336,13 +441,60 @@ export const BuildingsView: React.FC = () => {
             <table id="bld-table">
               <thead>
                 <tr>
-                  <th>Unit</th>
-                  <th className="col-right">Lvl</th>
-                  <th className="col-right">Next</th>
-                  <th>Missing Resources</th>
-                  <th className="col-right">Build Time</th>
-                  <th className="col-right">Res Ready</th>
-                  <th className="col-right">Level Reached</th>
+                  <SortableTh
+                    label="Unit"
+                    sortKey="unit"
+                    activeKey={unitSort.sortKey}
+                    direction={unitSort.sortDirection}
+                    onSort={unitSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Lvl"
+                    sortKey="level"
+                    activeKey={unitSort.sortKey}
+                    direction={unitSort.sortDirection}
+                    onSort={unitSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Next"
+                    sortKey="next"
+                    activeKey={unitSort.sortKey}
+                    direction={unitSort.sortDirection}
+                    onSort={unitSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Missing Resources"
+                    sortKey="missing"
+                    activeKey={unitSort.sortKey}
+                    direction={unitSort.sortDirection}
+                    onSort={unitSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Build Time"
+                    sortKey="buildTime"
+                    activeKey={unitSort.sortKey}
+                    direction={unitSort.sortDirection}
+                    onSort={unitSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Res Ready"
+                    sortKey="resReady"
+                    activeKey={unitSort.sortKey}
+                    direction={unitSort.sortDirection}
+                    onSort={unitSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Level Reached"
+                    sortKey="reached"
+                    activeKey={unitSort.sortKey}
+                    direction={unitSort.sortDirection}
+                    onSort={unitSort.requestSort}
+                    align="right"
+                  />
                   <th className="col-right">Control</th>
                 </tr>
               </thead>
@@ -353,14 +505,14 @@ export const BuildingsView: React.FC = () => {
                       Waiting for building catalog...
                     </td>
                   </tr>
-                ) : visibleRows.length === 0 ? (
+                ) : unitSort.sortedRows.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="empty-cell">
                       No items in selected category.
                     </td>
                   </tr>
                 ) : (
-                  visibleRows.map((row: any, idx: number) => {
+                  unitSort.sortedRows.map((row: any, idx: number) => {
                     const rowKey = row.key != null ? String(row.key).trim() : "";
                     const isSelected = Boolean(selectedRow && selectedRow.key === row.key);
                     const curLvl = finiteNum(row.current_level, 0);
@@ -519,25 +671,79 @@ export const BuildingsView: React.FC = () => {
             <table id="bld-universe-research-table">
               <thead>
                 <tr>
-                  <th>Research</th>
-                  <th className="col-right">Your Level</th>
-                  <th className="col-right">Universe Max</th>
-                  <th className="col-right">Delta / Gap</th>
-                  <th className="col-right">Spied Max</th>
-                  <th>Record Holder</th>
-                  <th className="col-right">Catalog Cap</th>
-                  <th className="col-right">Updated</th>
+                  <SortableTh
+                    label="Research"
+                    sortKey="research"
+                    activeKey={uniMaxSort.sortKey}
+                    direction={uniMaxSort.sortDirection}
+                    onSort={uniMaxSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Your Level"
+                    sortKey="ownLevel"
+                    activeKey={uniMaxSort.sortKey}
+                    direction={uniMaxSort.sortDirection}
+                    onSort={uniMaxSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Universe Max"
+                    sortKey="uniMax"
+                    activeKey={uniMaxSort.sortKey}
+                    direction={uniMaxSort.sortDirection}
+                    onSort={uniMaxSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Delta / Gap"
+                    sortKey="gap"
+                    activeKey={uniMaxSort.sortKey}
+                    direction={uniMaxSort.sortDirection}
+                    onSort={uniMaxSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Spied Max"
+                    sortKey="spiedMax"
+                    activeKey={uniMaxSort.sortKey}
+                    direction={uniMaxSort.sortDirection}
+                    onSort={uniMaxSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Record Holder"
+                    sortKey="holder"
+                    activeKey={uniMaxSort.sortKey}
+                    direction={uniMaxSort.sortDirection}
+                    onSort={uniMaxSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Catalog Cap"
+                    sortKey="catalogCap"
+                    activeKey={uniMaxSort.sortKey}
+                    direction={uniMaxSort.sortDirection}
+                    onSort={uniMaxSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Updated"
+                    sortKey="updated"
+                    activeKey={uniMaxSort.sortKey}
+                    direction={uniMaxSort.sortDirection}
+                    onSort={uniMaxSort.requestSort}
+                    align="right"
+                  />
                 </tr>
               </thead>
               <tbody id="bld-universe-research-tbody">
-                {universeMaxRows.length === 0 ? (
+                {uniMaxSort.sortedRows.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="empty-cell">
                       Click Refresh Max Research to compute and persist universe research records.
                     </td>
                   </tr>
                 ) : (
-                  universeMaxRows.map((r, idx) => {
+                  uniMaxSort.sortedRows.map((r, idx) => {
                     const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
                     const uniMax = Math.max(ownLvl, Math.round(finiteNum(r.universe_max_level, ownLvl)));
                     const spiedMax = Math.max(0, Math.round(finiteNum(r.spied_max_level, 0)));

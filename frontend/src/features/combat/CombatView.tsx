@@ -1,6 +1,12 @@
 import React, { useMemo, useState } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
+import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
+import {
+  coordsSortKey,
+  useTableSort,
+  type SortColumnMap,
+} from "../../hooks/useTableSort";
 import { finiteNum, fmtInt } from "../../utils/formatters";
 import { CombatSimulator } from "./CombatSimulator";
 import { EscapeFlightPane } from "./EscapeFlightPane";
@@ -66,6 +72,66 @@ export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
       return Boolean(coords) && !ownCoords.has(coords) && t?.status_color !== "free";
     });
   }, [dashboard?.db_summary?.spy_targets, dashboard?.state?.planets, dashboard?.state?.raid_targets]);
+
+  const shipSortCols = useMemo<
+    SortColumnMap<Record<string, any>, "name" | "owned" | "atkShd" | "cargo">
+  >(
+    () => ({
+      name: (s) => String(s.name || s.key || ""),
+      owned: { accessor: (s) => finiteNum(s.owned, 0), defaultDirection: "desc" },
+      atkShd: {
+        accessor: (s) => finiteNum(s.attack, 0) + finiteNum(s.shield, 0),
+        defaultDirection: "desc",
+      },
+      cargo: { accessor: (s) => finiteNum(s.cargo, 0), defaultDirection: "desc" },
+    }),
+    []
+  );
+
+  const defSortCols = useMemo<
+    SortColumnMap<Record<string, any>, "name" | "owned" | "atkShd" | "hull">
+  >(
+    () => ({
+      name: (d) => String(d.name || d.key || ""),
+      owned: { accessor: (d) => finiteNum(d.owned, 0), defaultDirection: "desc" },
+      atkShd: {
+        accessor: (d) => finiteNum(d.attack, 0) + finiteNum(d.shield, 0),
+        defaultDirection: "desc",
+      },
+      hull: { accessor: (d) => finiteNum(d.hull, 0), defaultDirection: "desc" },
+    }),
+    []
+  );
+
+  const raidTargetSortCols = useMemo<
+    SortColumnMap<Record<string, any>, "coords" | "owner" | "type" | "loot">
+  >(
+    () => ({
+      coords: (t) => coordsSortKey(t.coords || t.target_coords),
+      owner: (t) => [t.planet_name, t.owner].filter(Boolean).join(" · ") || null,
+      type: (t) => {
+        const color = String(t.status_color || "yellow");
+        return t.is_spacia ? "SPACIA" : color === "yellow" ? "INACTIVE" : color.toUpperCase();
+      },
+      loot: {
+        accessor: (t) => {
+          const r = t.resources || t;
+          const total =
+            finiteNum(r.pig_iron, 0) +
+            finiteNum(r.metal, 0) +
+            finiteNum(r.kryptonite, 0) +
+            finiteNum(r.spice, 0);
+          return total > 0 ? total : null;
+        },
+        defaultDirection: "desc",
+      },
+    }),
+    []
+  );
+
+  const shipSort = useTableSort(ships, shipSortCols);
+  const defSort = useTableSort(defenses, defSortCols);
+  const raidTargetSort = useTableSort(raidTargets, raidTargetSortCols);
 
   const handleNavJump = async (action: string) => {
     try {
@@ -287,22 +353,49 @@ export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
               <table>
                 <thead>
                   <tr>
-                    <th>Ship Class</th>
-                    <th className="col-right">Owned</th>
-                    <th className="col-right">ATK / SHD</th>
-                    <th className="col-right">Cargo</th>
+                    <SortableTh
+                      label="Ship Class"
+                      sortKey="name"
+                      activeKey={shipSort.sortKey}
+                      direction={shipSort.sortDirection}
+                      onSort={shipSort.requestSort}
+                    />
+                    <SortableTh
+                      label="Owned"
+                      sortKey="owned"
+                      activeKey={shipSort.sortKey}
+                      direction={shipSort.sortDirection}
+                      onSort={shipSort.requestSort}
+                      align="right"
+                    />
+                    <SortableTh
+                      label="ATK / SHD"
+                      sortKey="atkShd"
+                      activeKey={shipSort.sortKey}
+                      direction={shipSort.sortDirection}
+                      onSort={shipSort.requestSort}
+                      align="right"
+                    />
+                    <SortableTh
+                      label="Cargo"
+                      sortKey="cargo"
+                      activeKey={shipSort.sortKey}
+                      direction={shipSort.sortDirection}
+                      onSort={shipSort.requestSort}
+                      align="right"
+                    />
                     <th className="col-right">Order</th>
                   </tr>
                 </thead>
                 <tbody id="cmb-ships-tbody" data-testid="combat-shipyard-tbody">
-                  {ships.length === 0 ? (
+                  {shipSort.sortedRows.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="empty-cell">
                         No shipyard telemetry yet.
                       </td>
                     </tr>
                   ) : (
-                    ships.map((s) => {
+                    shipSort.sortedRows.map((s) => {
                       const uid = Number(s.unit_id);
                       const offer = offersById.get(uid);
                       return (
@@ -362,21 +455,48 @@ export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
               <table>
                 <thead>
                   <tr>
-                    <th>Defense Structure</th>
-                    <th className="col-right">Owned</th>
-                    <th className="col-right">ATK / SHD</th>
-                    <th className="col-right">Hull</th>
+                    <SortableTh
+                      label="Defense Structure"
+                      sortKey="name"
+                      activeKey={defSort.sortKey}
+                      direction={defSort.sortDirection}
+                      onSort={defSort.requestSort}
+                    />
+                    <SortableTh
+                      label="Owned"
+                      sortKey="owned"
+                      activeKey={defSort.sortKey}
+                      direction={defSort.sortDirection}
+                      onSort={defSort.requestSort}
+                      align="right"
+                    />
+                    <SortableTh
+                      label="ATK / SHD"
+                      sortKey="atkShd"
+                      activeKey={defSort.sortKey}
+                      direction={defSort.sortDirection}
+                      onSort={defSort.requestSort}
+                      align="right"
+                    />
+                    <SortableTh
+                      label="Hull"
+                      sortKey="hull"
+                      activeKey={defSort.sortKey}
+                      direction={defSort.sortDirection}
+                      onSort={defSort.requestSort}
+                      align="right"
+                    />
                   </tr>
                 </thead>
                 <tbody id="cmb-def-tbody">
-                  {defenses.length === 0 ? (
+                  {defSort.sortedRows.length === 0 ? (
                     <tr>
                       <td colSpan={4} className="empty-cell">
                         No defense data.
                       </td>
                     </tr>
                   ) : (
-                    defenses.map((d) => (
+                    defSort.sortedRows.map((d) => (
                       <tr key={d.key || d.name}>
                         <td>{`${d.name} (${d.key})`}</td>
                         <td className="col-right tabular">{fmtInt(d.owned)}</td>
@@ -397,22 +517,47 @@ export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
               <table>
                 <thead>
                   <tr>
-                    <th>Coords</th>
-                    <th>Planet / Owner</th>
-                    <th>Type</th>
-                    <th className="col-right">Loot (SpEq)</th>
+                    <SortableTh
+                      label="Coords"
+                      sortKey="coords"
+                      activeKey={raidTargetSort.sortKey}
+                      direction={raidTargetSort.sortDirection}
+                      onSort={raidTargetSort.requestSort}
+                    />
+                    <SortableTh
+                      label="Planet / Owner"
+                      sortKey="owner"
+                      activeKey={raidTargetSort.sortKey}
+                      direction={raidTargetSort.sortDirection}
+                      onSort={raidTargetSort.requestSort}
+                    />
+                    <SortableTh
+                      label="Type"
+                      sortKey="type"
+                      activeKey={raidTargetSort.sortKey}
+                      direction={raidTargetSort.sortDirection}
+                      onSort={raidTargetSort.requestSort}
+                    />
+                    <SortableTh
+                      label="Loot (SpEq)"
+                      sortKey="loot"
+                      activeKey={raidTargetSort.sortKey}
+                      direction={raidTargetSort.sortDirection}
+                      onSort={raidTargetSort.requestSort}
+                      align="right"
+                    />
                     <th className="col-right">Ops</th>
                   </tr>
                 </thead>
                 <tbody id="cmb-targets-tbody">
-                  {raidTargets.length === 0 ? (
+                  {raidTargetSort.sortedRows.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="empty-cell">
                         Click &quot;Scan Galaxy&quot; to populate yellow inactive &amp; Spacia targets.
                       </td>
                     </tr>
                   ) : (
-                    raidTargets.map((t) => {
+                    raidTargetSort.sortedRows.map((t) => {
                       const coords = String(t.coords || t.target_coords || "—");
                       const resMap = t.resources || t;
                       const color = String(t.status_color || "yellow");

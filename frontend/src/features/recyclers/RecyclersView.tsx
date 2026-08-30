@@ -1,6 +1,13 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
+import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
+import {
+  coordsSortKey,
+  timestampSortKey,
+  useTableSort,
+  type SortColumnMap,
+} from "../../hooks/useTableSort";
 import { finiteNum, fmtInt, fmtShortDateTime } from "../../utils/formatters";
 
 export interface RecyclersViewProps {
@@ -53,6 +60,90 @@ export const RecyclersView: React.FC<RecyclersViewProps> = ({ hidden }) => {
   const tMet = Math.round(finiteNum(sum.total_metal, 0));
   const tKry = Math.round(finiteNum(sum.total_kryptonite, 0));
   const tSpi = Math.round(finiteNum(sum.total_spice, 0));
+
+  const recycleSortCols = useMemo<
+    SortColumnMap<
+      Record<string, any>,
+      "time" | "coords" | "recyclers" | "pigIron" | "metal" | "spiceEq" | "fieldBefore"
+    >
+  >(
+    () => ({
+      time: {
+        accessor: (r) => timestampSortKey(r.ts, r.msg_date_text),
+        defaultDirection: "desc",
+      },
+      coords: (r) => coordsSortKey(r.coords),
+      recyclers: {
+        accessor: (r) => {
+          const c = finiteNum(r.recycler_count, null);
+          return c !== null && c > 0 ? c : null;
+        },
+        defaultDirection: "desc",
+      },
+      pigIron: {
+        accessor: (r) => finiteNum(r.harvested_pig_iron, 0),
+        defaultDirection: "desc",
+      },
+      metal: {
+        accessor: (r) => finiteNum(r.harvested_metal, 0),
+        defaultDirection: "desc",
+      },
+      spiceEq: {
+        accessor: (r) => finiteNum(r.spice_eq, 0),
+        defaultDirection: "desc",
+      },
+      fieldBefore: {
+        accessor: (r) => {
+          const extra =
+            finiteNum(r.harvested_kryptonite, 0) + finiteNum(r.harvested_spice, 0);
+          if (extra > 0) return extra;
+          const field = finiteNum(r.field_pig_iron, 0) + finiteNum(r.field_metal, 0);
+          return field > 0 ? field : null;
+        },
+        defaultDirection: "desc",
+      },
+    }),
+    []
+  );
+
+  const debrisSortCols = useMemo<
+    SortColumnMap<Record<string, any>, "coords" | "owner" | "status" | "lastSeen">
+  >(
+    () => ({
+      coords: (d) => coordsSortKey(d.coords),
+      owner: (d) => [d.planet_name, d.owner].filter(Boolean).join(" · ") || "Orbital Debris",
+      status: () => "RUBBLE FIELD",
+      lastSeen: {
+        accessor: (d) => timestampSortKey(d.last_scanned_ts),
+        defaultDirection: "desc",
+      },
+    }),
+    []
+  );
+
+  const emailSortCols = useMemo<
+    SortColumnMap<
+      Record<string, any>,
+      "time" | "folderType" | "sender" | "subject" | "coords" | "body"
+    >
+  >(
+    () => ({
+      time: {
+        accessor: (m) => timestampSortKey(m.ts ?? m.ingested_ts, m.msg_date_text),
+        defaultDirection: "desc",
+      },
+      folderType: (m) => `${m.folder_type || "inbox"} · ${m.category || "general"}`,
+      sender: (m) => String(m.sender || "System"),
+      subject: (m) => String(m.subject || "").trim() || null,
+      coords: (m) => coordsSortKey(m.coords),
+      body: (m) => String(m.body_text || "").trim() || null,
+    }),
+    []
+  );
+
+  const recycleSort = useTableSort(recycles, recycleSortCols);
+  const debrisSort = useTableSort(debris, debrisSortCols);
+  const emailSort = useTableSort(emails, emailSortCols);
   const rawKpiText =
     tKry > 0 || tSpi > 0
       ? `${fmtInt(tPig)} Pig · ${fmtInt(tMet)} Met · ${fmtInt(tKry)} Kry · ${fmtInt(tSpi)} Spi`
@@ -188,24 +279,70 @@ export const RecyclersView: React.FC<RecyclersViewProps> = ({ hidden }) => {
             <table>
               <thead>
                 <tr>
-                  <th>Time</th>
-                  <th>Debris Coords</th>
-                  <th className="col-right">Recyclers / Cap</th>
-                  <th className="col-right">Pig Iron</th>
-                  <th className="col-right">Metal</th>
-                  <th className="col-right">Harvest SpEq</th>
-                  <th>Field Before</th>
+                  <SortableTh
+                    label="Time"
+                    sortKey="time"
+                    activeKey={recycleSort.sortKey}
+                    direction={recycleSort.sortDirection}
+                    onSort={recycleSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Debris Coords"
+                    sortKey="coords"
+                    activeKey={recycleSort.sortKey}
+                    direction={recycleSort.sortDirection}
+                    onSort={recycleSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Recyclers / Cap"
+                    sortKey="recyclers"
+                    activeKey={recycleSort.sortKey}
+                    direction={recycleSort.sortDirection}
+                    onSort={recycleSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Pig Iron"
+                    sortKey="pigIron"
+                    activeKey={recycleSort.sortKey}
+                    direction={recycleSort.sortDirection}
+                    onSort={recycleSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Metal"
+                    sortKey="metal"
+                    activeKey={recycleSort.sortKey}
+                    direction={recycleSort.sortDirection}
+                    onSort={recycleSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Harvest SpEq"
+                    sortKey="spiceEq"
+                    activeKey={recycleSort.sortKey}
+                    direction={recycleSort.sortDirection}
+                    onSort={recycleSort.requestSort}
+                    align="right"
+                  />
+                  <SortableTh
+                    label="Field Before"
+                    sortKey="fieldBefore"
+                    activeKey={recycleSort.sortKey}
+                    direction={recycleSort.sortDirection}
+                    onSort={recycleSort.requestSort}
+                  />
                 </tr>
               </thead>
               <tbody id="rec-harvests-tbody">
-                {recycles.length === 0 ? (
+                {recycleSort.sortedRows.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="empty-cell">
                       Click Sync All Folders to archive fleet recycling reports.
                     </td>
                   </tr>
                 ) : (
-                  recycles.map((r, idx) => {
+                  recycleSort.sortedRows.map((r, idx) => {
                     const rCnt = Math.round(finiteNum(r.recycler_count, 0));
                     const rCap = Math.round(finiteNum(r.cargo_capacity, 0));
                     const bPig = Math.round(finiteNum(r.field_pig_iron, 0));
@@ -252,22 +389,47 @@ export const RecyclersView: React.FC<RecyclersViewProps> = ({ hidden }) => {
             <table>
               <thead>
                 <tr>
-                  <th>Coords</th>
-                  <th>Planet / Owner</th>
-                  <th>Status</th>
-                  <th className="col-right">Last Seen</th>
+                  <SortableTh
+                    label="Coords"
+                    sortKey="coords"
+                    activeKey={debrisSort.sortKey}
+                    direction={debrisSort.sortDirection}
+                    onSort={debrisSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Planet / Owner"
+                    sortKey="owner"
+                    activeKey={debrisSort.sortKey}
+                    direction={debrisSort.sortDirection}
+                    onSort={debrisSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Status"
+                    sortKey="status"
+                    activeKey={debrisSort.sortKey}
+                    direction={debrisSort.sortDirection}
+                    onSort={debrisSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Last Seen"
+                    sortKey="lastSeen"
+                    activeKey={debrisSort.sortKey}
+                    direction={debrisSort.sortDirection}
+                    onSort={debrisSort.requestSort}
+                    align="right"
+                  />
                   <th className="col-right">Dispatch</th>
                 </tr>
               </thead>
               <tbody id="rec-debris-tbody">
-                {debris.length === 0 ? (
+                {debrisSort.sortedRows.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="empty-cell">
                       No active floating debris fields spotted in scanned systems.
                     </td>
                   </tr>
                 ) : (
-                  debris.map((d, idx) => {
+                  debrisSort.sortedRows.map((d, idx) => {
                     const coords = String(d.coords || "—");
                     return (
                       <tr key={`${coords}-${idx}`}>
@@ -320,23 +482,59 @@ export const RecyclersView: React.FC<RecyclersViewProps> = ({ hidden }) => {
             <table>
               <thead>
                 <tr>
-                  <th>Time</th>
-                  <th>Folder / Type</th>
-                  <th>Sender</th>
-                  <th>Subject</th>
-                  <th>Coords</th>
-                  <th>Message Body</th>
+                  <SortableTh
+                    label="Time"
+                    sortKey="time"
+                    activeKey={emailSort.sortKey}
+                    direction={emailSort.sortDirection}
+                    onSort={emailSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Folder / Type"
+                    sortKey="folderType"
+                    activeKey={emailSort.sortKey}
+                    direction={emailSort.sortDirection}
+                    onSort={emailSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Sender"
+                    sortKey="sender"
+                    activeKey={emailSort.sortKey}
+                    direction={emailSort.sortDirection}
+                    onSort={emailSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Subject"
+                    sortKey="subject"
+                    activeKey={emailSort.sortKey}
+                    direction={emailSort.sortDirection}
+                    onSort={emailSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Coords"
+                    sortKey="coords"
+                    activeKey={emailSort.sortKey}
+                    direction={emailSort.sortDirection}
+                    onSort={emailSort.requestSort}
+                  />
+                  <SortableTh
+                    label="Message Body"
+                    sortKey="body"
+                    activeKey={emailSort.sortKey}
+                    direction={emailSort.sortDirection}
+                    onSort={emailSort.requestSort}
+                  />
                 </tr>
               </thead>
               <tbody id="rec-emails-tbody">
-                {emails.length === 0 ? (
+                {emailSort.sortedRows.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="empty-cell">
                       No other emails or fleet notices archived yet.
                     </td>
                   </tr>
                 ) : (
-                  emails.map((m, idx) => {
+                  emailSort.sortedRows.map((m, idx) => {
                     const rawTxt = String(m.body_text || "").trim();
                     const bodyTxt =
                       rawTxt.length > 260 ? `${rawTxt.slice(0, 260)}...` : rawTxt || "—";

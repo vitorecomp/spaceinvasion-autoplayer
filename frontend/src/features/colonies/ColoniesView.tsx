@@ -1,6 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
+import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
+import {
+  coordsSortKey,
+  gradeSortKey,
+  timestampSortKey,
+  useTableSort,
+  type SortColumnMap,
+} from "../../hooks/useTableSort";
 import {
   ColonyAttemptCoordStats,
   ColonyAttemptItem,
@@ -142,6 +150,76 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
   );
   const keptCount = Math.round(finiteNum(attemptsSummary.kept_count, 0));
   const totalEvents = Math.round(finiteNum(attemptsSummary.total_events, attempts.length));
+
+  const candSortCols = useMemo<
+    SortColumnMap<
+      Record<string, any>,
+      "grade" | "score" | "coords" | "zone" | "fields" | "distance" | "assessment"
+    >
+  >(
+    () => ({
+      grade: (c) => gradeSortKey(c.grade),
+      score: {
+        accessor: (c) => finiteNum(c.score, null),
+        defaultDirection: "desc",
+      },
+      coords: (c) => coordsSortKey(c.coords),
+      zone: (c) => finiteNum(c.position, null) ?? (String(c.orbital_band || "").trim() || null),
+      fields: {
+        accessor: (c) => {
+          const uf = finiteNum(c.uninhabited_fields, null);
+          if (uf !== null && uf > 0) return uf;
+          const cMax = finiteNum(c.colonize_max_fields, null);
+          if (cMax !== null && cMax > 0) return cMax;
+          return null;
+        },
+        defaultDirection: "desc",
+      },
+      distance: (c) => finiteNum(c.system_distance, null),
+      assessment: (c) => String(c.reason || "").trim() || null,
+    }),
+    []
+  );
+
+  const attemptSortCols = useMemo<
+    SortColumnMap<
+      ColonyAttemptItem,
+      "coords" | "outcome" | "rolledFields" | "targetExpected" | "temp" | "origin" | "time" | "details"
+    >
+  >(
+    () => ({
+      coords: (a) => coordsSortKey(a.target_coords),
+      outcome: (a) => attemptOutcomeFor(a.event_type, minFieldsTarget).label,
+      rolledFields: {
+        accessor: (a) => {
+          const r = finiteNum(a.fields_rolled, null);
+          return r !== null && r > 0 ? r : null;
+        },
+        defaultDirection: "desc",
+      },
+      targetExpected: {
+        accessor: (a) =>
+          finiteNum(a.expected_max_fields, null) ??
+          finiteNum(a.min_fields_target, minFieldsTarget),
+        defaultDirection: "desc",
+      },
+      temp: {
+        accessor: (a) => finiteNum(a.temperature, null),
+        defaultDirection: "desc",
+      },
+      origin: (a) => coordsSortKey(a.origin_coords),
+      time: {
+        accessor: (a) => timestampSortKey(a.ts),
+        defaultDirection: "desc",
+      },
+      details: (a) =>
+        String(a.status_message || "").trim() || (a.grade ? `Grade ${a.grade}` : null),
+    }),
+    [minFieldsTarget]
+  );
+
+  const candSort = useTableSort(filteredCands, candSortCols);
+  const attemptSort = useTableSort(attempts, attemptSortCols);
 
   const handleSavePolicy = async () => {
     const minVal = Math.max(50, Math.min(600, Math.round(finiteNum(minFieldsInput, 300))));
@@ -406,18 +484,63 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
           <table>
             <thead>
               <tr>
-                <th>Grade</th>
-                <th className="col-right">Score</th>
-                <th>Coords</th>
-                <th>Orbital Zone</th>
-                <th className="col-right">Fields</th>
-                <th className="col-right">Distance</th>
-                <th>Assessment</th>
+                <SortableTh
+                  label="Grade"
+                  sortKey="grade"
+                  activeKey={candSort.sortKey}
+                  direction={candSort.sortDirection}
+                  onSort={candSort.requestSort}
+                />
+                <SortableTh
+                  label="Score"
+                  sortKey="score"
+                  activeKey={candSort.sortKey}
+                  direction={candSort.sortDirection}
+                  onSort={candSort.requestSort}
+                  align="right"
+                />
+                <SortableTh
+                  label="Coords"
+                  sortKey="coords"
+                  activeKey={candSort.sortKey}
+                  direction={candSort.sortDirection}
+                  onSort={candSort.requestSort}
+                />
+                <SortableTh
+                  label="Orbital Zone"
+                  sortKey="zone"
+                  activeKey={candSort.sortKey}
+                  direction={candSort.sortDirection}
+                  onSort={candSort.requestSort}
+                />
+                <SortableTh
+                  label="Fields"
+                  sortKey="fields"
+                  activeKey={candSort.sortKey}
+                  direction={candSort.sortDirection}
+                  onSort={candSort.requestSort}
+                  align="right"
+                />
+                <SortableTh
+                  label="Distance"
+                  sortKey="distance"
+                  activeKey={candSort.sortKey}
+                  direction={candSort.sortDirection}
+                  onSort={candSort.requestSort}
+                  align="right"
+                />
+                <SortableTh
+                  label="Assessment"
+                  sortKey="assessment"
+                  activeKey={candSort.sortKey}
+                  direction={candSort.sortDirection}
+                  onSort={candSort.requestSort}
+                />
                 <th className="col-right">Actions</th>
               </tr>
             </thead>
             <tbody id="col-candidates-tbody">
-              {filteredCands.length === 0 ? (
+              {candSort.sortedRows.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="empty-cell">
                     {colonyData
@@ -426,7 +549,7 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
                   </td>
                 </tr>
               ) : (
-                filteredCands.map((c) => {
+                candSort.sortedRows.map((c) => {
                   const coords = String(c.coords || "—");
                   const grade = String(c.grade || "?");
                   const uf = finiteNum(c.uninhabited_fields, null);
@@ -533,25 +656,77 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
           <table id="colonies-attempts-table">
             <thead>
               <tr>
-                <th>Coords</th>
-                <th>Outcome</th>
-                <th className="col-right">Rolled Fields</th>
-                <th className="col-right">Target / Expected</th>
-                <th className="col-right">Temp</th>
-                <th>Origin</th>
-                <th className="col-right">Time</th>
-                <th>Details / Reason</th>
+                <SortableTh
+                  label="Coords"
+                  sortKey="coords"
+                  activeKey={attemptSort.sortKey}
+                  direction={attemptSort.sortDirection}
+                  onSort={attemptSort.requestSort}
+                />
+                <SortableTh
+                  label="Outcome"
+                  sortKey="outcome"
+                  activeKey={attemptSort.sortKey}
+                  direction={attemptSort.sortDirection}
+                  onSort={attemptSort.requestSort}
+                />
+                <SortableTh
+                  label="Rolled Fields"
+                  sortKey="rolledFields"
+                  activeKey={attemptSort.sortKey}
+                  direction={attemptSort.sortDirection}
+                  onSort={attemptSort.requestSort}
+                  align="right"
+                />
+                <SortableTh
+                  label="Target / Expected"
+                  sortKey="targetExpected"
+                  activeKey={attemptSort.sortKey}
+                  direction={attemptSort.sortDirection}
+                  onSort={attemptSort.requestSort}
+                  align="right"
+                />
+                <SortableTh
+                  label="Temp"
+                  sortKey="temp"
+                  activeKey={attemptSort.sortKey}
+                  direction={attemptSort.sortDirection}
+                  onSort={attemptSort.requestSort}
+                  align="right"
+                />
+                <SortableTh
+                  label="Origin"
+                  sortKey="origin"
+                  activeKey={attemptSort.sortKey}
+                  direction={attemptSort.sortDirection}
+                  onSort={attemptSort.requestSort}
+                />
+                <SortableTh
+                  label="Time"
+                  sortKey="time"
+                  activeKey={attemptSort.sortKey}
+                  direction={attemptSort.sortDirection}
+                  onSort={attemptSort.requestSort}
+                  align="right"
+                />
+                <SortableTh
+                  label="Details / Reason"
+                  sortKey="details"
+                  activeKey={attemptSort.sortKey}
+                  direction={attemptSort.sortDirection}
+                  onSort={attemptSort.requestSort}
+                />
               </tr>
             </thead>
             <tbody id="colonies-attempts-tbody">
-              {attempts.length === 0 ? (
+              {attemptSort.sortedRows.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="empty-cell">
                     No colonization attempts recorded yet. Every Colony ship dispatch, kept 300+ roll, and deleted undersized roll is logged here.
                   </td>
                 </tr>
               ) : (
-                attempts.map((a, idx) => {
+                attemptSort.sortedRows.map((a, idx) => {
                   const aCoords = String(a.target_coords || "—");
                   const aMin = Math.round(finiteNum(a.min_fields_target, minFieldsTarget));
                   const outcome = attemptOutcomeFor(a.event_type, aMin);

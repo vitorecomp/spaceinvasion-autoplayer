@@ -1,9 +1,12 @@
 import React, { useCallback, useMemo } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
+import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
+import { useTableSort } from "../../hooks/useTableSort";
 import type { PlannedActionData } from "../../types/api";
 import { ManualQueueComposer } from "./ManualQueueComposer";
 import {
+  PLAN_ACTION_SORT_COLUMNS,
   PlanActionRow,
   actionPayloadFor,
   buildPinPayloadFromAction,
@@ -56,6 +59,8 @@ export const OperationsView: React.FC = () => {
     }
     return allActions;
   }, [allActions, queueFilter]);
+
+  const actionSort = useTableSort(filteredActions, PLAN_ACTION_SORT_COLUMNS);
 
   const cfgMode = String(
     dashboard?.config?.planner_mode || dashboard?.planner_mode || "priority"
@@ -231,24 +236,62 @@ export const OperationsView: React.FC = () => {
           <table id="ops-plan-table">
             <thead>
               <tr>
-                <th>Priority</th>
-                <th>Action</th>
-                <th>Cost / Missing</th>
-                <th className="col-right">Wait ETA</th>
-                <th className="col-right">Total ETA</th>
-                <th>Reason</th>
+                <SortableTh
+                  label="Priority"
+                  sortKey="priority"
+                  activeKey={actionSort.sortKey}
+                  direction={actionSort.sortDirection}
+                  onSort={actionSort.requestSort}
+                />
+                <SortableTh
+                  label="Action"
+                  sortKey="action"
+                  activeKey={actionSort.sortKey}
+                  direction={actionSort.sortDirection}
+                  onSort={actionSort.requestSort}
+                />
+                <SortableTh
+                  label="Cost / Missing"
+                  sortKey="costMissing"
+                  activeKey={actionSort.sortKey}
+                  direction={actionSort.sortDirection}
+                  onSort={actionSort.requestSort}
+                />
+                <SortableTh
+                  label="Wait ETA"
+                  sortKey="waitEta"
+                  activeKey={actionSort.sortKey}
+                  direction={actionSort.sortDirection}
+                  onSort={actionSort.requestSort}
+                  align="right"
+                />
+                <SortableTh
+                  label="Total ETA"
+                  sortKey="totalEta"
+                  activeKey={actionSort.sortKey}
+                  direction={actionSort.sortDirection}
+                  onSort={actionSort.requestSort}
+                  align="right"
+                />
+                <SortableTh
+                  label="Reason"
+                  sortKey="reason"
+                  activeKey={actionSort.sortKey}
+                  direction={actionSort.sortDirection}
+                  onSort={actionSort.requestSort}
+                />
                 <th className="col-right">Execute</th>
               </tr>
             </thead>
             <tbody id="plan-tbody">
-              {filteredActions.length === 0 ? (
+              {actionSort.sortedRows.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="empty-cell">
                     {dashboard ? "No matching actions in queue." : "Waiting for plan..."}
                   </td>
                 </tr>
               ) : (
-                filteredActions.map((act, idx) => (
+                actionSort.sortedRows.map((act, idx) => (
                   <PlanActionRow
                     key={`${act.manual_queue_id ?? "auto"}-${act.kind}-${act.planet_id}-${act.target_id ?? act.target_name}-${idx}`}
                     action={act}
