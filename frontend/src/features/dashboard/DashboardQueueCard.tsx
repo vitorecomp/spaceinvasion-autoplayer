@@ -12,6 +12,7 @@ export interface DashboardQueueCardProps {
   cardId: string;
   moduleCode: string;
   title: string;
+  scopeBadge?: string;
   countId: string;
   addBtnId: string;
   addBtnAriaLabel: string;
@@ -36,6 +37,7 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
   cardId,
   moduleCode,
   title,
+  scopeBadge,
   countId,
   addBtnId,
   addBtnAriaLabel,
@@ -69,6 +71,9 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
           <span className="module-meta tabular dash-q-count" id={countId}>
             {String(totalCount)}
           </span>
+          {scopeBadge ? (
+            <span className="module-meta tabular dash-q-scope">{scopeBadge}</span>
+          ) : null}
         </div>
         <div className="inline-actions">
           <button

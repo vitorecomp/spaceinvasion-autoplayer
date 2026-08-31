@@ -10,6 +10,7 @@ import {
   PlanActionRow,
   actionPayloadFor,
   buildPinPayloadFromAction,
+  dashboardQueueDomainForAction,
 } from "./planActions";
 
 const NAV_JUMP_TARGETS = [
@@ -25,6 +26,7 @@ export const OperationsView: React.FC = () => {
     dashboard,
     activePage,
     setActivePage,
+    setSelectedPlanetId,
     nowEpochSec,
     showFeedback,
     apiCommand,
@@ -34,7 +36,20 @@ export const OperationsView: React.FC = () => {
     enqueueManualCommand,
   } = useConsole();
 
+  const planets = useMemo(() => dashboard?.state?.planets || [], [dashboard?.state?.planets]);
   const queueFilter = uiPrefs.queueFilter || "all";
+  const rawPlanetScope = String(uiPrefs.opsPlanetScope || "all");
+  const scopedPlanet = useMemo(
+    () =>
+      rawPlanetScope !== "all"
+        ? planets.find((p) => String(p.planet_id) === rawPlanetScope) || null
+        : null,
+    [planets, rawPlanetScope]
+  );
+  const opsPlanetScope = scopedPlanet ? String(scopedPlanet.planet_id) : "all";
+  const opsQueueLayout: "table" | "parallel" =
+    planets.length > 1 && uiPrefs.opsQueueLayout === "parallel" ? "parallel" : "table";
+
   const allActions = useMemo(() => dashboard?.plan || [], [dashboard?.plan]);
 
   const manualList = useMemo(() => {
@@ -48,7 +63,7 @@ export const OperationsView: React.FC = () => {
 
   const pinnedCount = manualList.length;
 
-  const filteredActions = useMemo(() => {
+  const filterMatchedActions = useMemo(() => {
     if (queueFilter === "ready") {
       return allActions.filter((a) => Boolean(a.executable_now));
     }
@@ -59,6 +74,45 @@ export const OperationsView: React.FC = () => {
     }
     return allActions;
   }, [allActions, queueFilter]);
+
+  const planetCounts = useMemo(() => {
+    const map = new Map<number, { total: number; ready: number }>();
+    for (const p of planets) {
+      map.set(p.planet_id, { total: 0, ready: 0 });
+    }
+    for (const act of filterMatchedActions) {
+      if (dashboardQueueDomainForAction(act) === "research") continue;
+      const cur = map.get(Number(act.planet_id));
+      if (cur) {
+        cur.total += 1;
+        if (act.executable_now) cur.ready += 1;
+      }
+    }
+    return map;
+  }, [filterMatchedActions, planets]);
+
+  const filteredActions = useMemo(() => {
+    if (!scopedPlanet) return filterMatchedActions;
+    const pid = Number(scopedPlanet.planet_id);
+    return filterMatchedActions.filter((a) => Number(a.planet_id) === pid);
+  }, [filterMatchedActions, scopedPlanet]);
+
+  const parallelLanes = useMemo(() => {
+    const visiblePlanets = scopedPlanet ? [scopedPlanet] : planets;
+    const planetLanes = visiblePlanets.map((planet) => {
+      const actions = filterMatchedActions.filter(
+        (a) =>
+          Number(a.planet_id) === Number(planet.planet_id) &&
+          dashboardQueueDomainForAction(a) !== "research"
+      );
+      const readyCount = actions.filter((a) => Boolean(a.executable_now)).length;
+      return { planet, actions, readyCount };
+    });
+    const researchActions = filterMatchedActions.filter(
+      (a) => dashboardQueueDomainForAction(a) === "research"
+    );
+    return { planetLanes, researchActions };
+  }, [filterMatchedActions, planets, scopedPlanet]);
 
   const actionSort = useTableSort(filteredActions, PLAN_ACTION_SORT_COLUMNS);
 
@@ -197,6 +251,57 @@ export const OperationsView: React.FC = () => {
               </button>
             </div>
 
+            {planets.length > 1 ? (
+              <div className="filter-chips" role="group" aria-label="Planet queue scope">
+                <button
+                  type="button"
+                  className={`chip-btn tabular${opsPlanetScope === "all" ? " active" : ""}`}
+                  data-ops-planet="all"
+                  onClick={() => setUiPref("opsPlanetScope", "all")}
+                >
+                  {`All Planets (${planets.length})`}
+                </button>
+                {planets.map((p) => {
+                  const pidKey = String(p.planet_id);
+                  const st = planetCounts.get(p.planet_id) || { total: 0, ready: 0 };
+                  return (
+                    <button
+                      key={pidKey}
+                      type="button"
+                      className={`chip-btn tabular${opsPlanetScope === pidKey ? " active" : ""}${st.ready > 0 ? " has-ready" : ""}`}
+                      data-ops-planet={pidKey}
+                      onClick={() => setUiPref("opsPlanetScope", pidKey)}
+                    >
+                      {st.ready > 0
+                        ? `${p.coords || p.name} · ${st.ready} ready`
+                        : `${p.coords || p.name} (${st.total})`}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+
+            {planets.length > 1 ? (
+              <div className="filter-chips" role="group" aria-label="Queue layout mode">
+                <button
+                  type="button"
+                  className={`chip-btn${opsQueueLayout === "table" ? " active" : ""}`}
+                  data-ops-layout="table"
+                  onClick={() => setUiPref("opsQueueLayout", "table")}
+                >
+                  Unified Table
+                </button>
+                <button
+                  type="button"
+                  className={`chip-btn${opsQueueLayout === "parallel" ? " active" : ""}`}
+                  data-ops-layout="parallel"
+                  onClick={() => setUiPref("opsQueueLayout", "parallel")}
+                >
+                  Parallel by Planet
+                </button>
+              </div>
+            ) : null}
+
             <div className="inline-actions nav-matrix-inline">
               <button
                 type="button"
@@ -232,6 +337,136 @@ export const OperationsView: React.FC = () => {
 
         <ManualQueueComposer />
 
+        {opsQueueLayout === "parallel" ? (
+          <div className="ops-parallel-grid" id="ops-parallel-grid">
+            {parallelLanes.planetLanes.map(({ planet, actions, readyCount }) => {
+              const isActiveP =
+                dashboard?.state?.active_planet_id != null &&
+                Number(planet.planet_id) === Number(dashboard.state.active_planet_id);
+              return (
+                <article
+                  key={`lane-${planet.planet_id}`}
+                  className="hud-window ops-planet-lane-card"
+                  data-planet-lane={String(planet.planet_id)}
+                >
+                  <div className="window-bar window-bar-wrap">
+                    <div className="window-title-group">
+                      <span className="module-code tabular">{planet.coords || "PLN"}</span>
+                      <h3>{planet.name || "Colony"}</h3>
+                      <span className="module-meta tabular dash-q-count">
+                        {`${readyCount}/${actions.length}`}
+                      </span>
+                      <span className="module-meta tabular dash-q-scope">
+                        {`${planet.fields_used ?? "—"}/${planet.fields_max ?? "—"} F${isActiveP ? " · ACTIVE" : " · PARALLEL"}`}
+                      </span>
+                    </div>
+                    <div className="inline-actions">
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => {
+                          setSelectedPlanetId(planet.planet_id);
+                          const mqPlanet = document.getElementById("mq-planet") as HTMLSelectElement | null;
+                          if (mqPlanet) {
+                            mqPlanet.value = String(planet.planet_id);
+                            mqPlanet.dispatchEvent(new Event("change", { bubbles: true }));
+                          }
+                          document.getElementById("mq-target")?.focus();
+                        }}
+                      >
+                        + Queue Here
+                      </button>
+                    </div>
+                  </div>
+                  <div className="table-wrap table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Prio</th>
+                          <th>Action</th>
+                          <th>Missing / Cost</th>
+                          <th className="col-right">Wait ETA</th>
+                          <th className="col-right">Total ETA / Finish</th>
+                          <th className="col-right">Ops</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {actions.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="empty-cell">
+                              No matching planet actions.
+                            </td>
+                          </tr>
+                        ) : (
+                          actions.map((act, idx) => (
+                            <PlanActionRow
+                              key={`lane-${planet.planet_id}-${act.manual_queue_id ?? "auto"}-${act.kind}-${act.target_id ?? act.target_name}-${idx}`}
+                              action={act}
+                              compact={true}
+                              nowEpochSec={nowEpochSec}
+                              onDispatch={handleDispatch}
+                              onUpdateQueue={handleUpdateQueue}
+                              onCancelQueue={handleCancelQueue}
+                              onPinQueue={handlePinQueue}
+                            />
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </article>
+              );
+            })}
+
+            {parallelLanes.researchActions.length > 0 ? (
+              <article
+                className="hud-window ops-planet-lane-card ops-global-research-card"
+                data-planet-lane="global-research"
+              >
+                <div className="window-bar window-bar-wrap">
+                  <div className="window-title-group">
+                    <span className="module-code tabular">RES</span>
+                    <h3>Global Research Queue</h3>
+                    <span className="module-meta tabular dash-q-count">
+                      {String(parallelLanes.researchActions.length)}
+                    </span>
+                    <span className="module-meta tabular dash-q-scope">
+                      GLOBAL · 1 SHARED SLOT
+                    </span>
+                  </div>
+                </div>
+                <div className="table-wrap table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Prio</th>
+                        <th>Action</th>
+                        <th>Missing / Cost</th>
+                        <th className="col-right">Wait ETA</th>
+                        <th className="col-right">Total ETA / Finish</th>
+                        <th className="col-right">Ops</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {parallelLanes.researchActions.map((act, idx) => (
+                        <PlanActionRow
+                          key={`lane-res-${act.manual_queue_id ?? "auto"}-${act.target_id ?? act.target_name}-${idx}`}
+                          action={act}
+                          compact={true}
+                          nowEpochSec={nowEpochSec}
+                          onDispatch={handleDispatch}
+                          onUpdateQueue={handleUpdateQueue}
+                          onCancelQueue={handleCancelQueue}
+                          onPinQueue={handlePinQueue}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+            ) : null}
+          </div>
+        ) : (
         <div className="table-wrap table-scroll">
           <table id="ops-plan-table">
             <thead>
@@ -307,6 +542,7 @@ export const OperationsView: React.FC = () => {
             </tbody>
           </table>
         </div>
+        )}
       </article>
     </section>
   );

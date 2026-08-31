@@ -269,6 +269,41 @@ def _planet_has_free_building_fields(planet: PlanetState) -> bool:
     return f_used < f_max
 
 
+def _is_stale_remote_resource_wait(offer: Optional[BuildingOffer]) -> bool:
+    """Return True when a cached BuildingOffer only failed due to earlier resource shortage.
+
+    Non-active colonies are not re-scraped on every tick, so their cached `building_offers`
+    retain `can_build=False, status_text='Not enough resources'` even after colony resources
+    grow past the build cost. Genuine non-resource blocks (queue full, active build, unmet
+    prerequisites, no free fields, locked/demolish) always return False.
+    """
+    if offer is None or offer.can_build:
+        return False
+    st = _safe_strategy_str(getattr(offer, "status_text", "")).strip().lower()
+    if not st:
+        return True
+    blocking_tokens = (
+        "in progress",
+        "construction",
+        "queue",
+        "full",
+        "require",
+        "prereq",
+        "locked",
+        "blocked",
+        "field",
+        "max",
+        "unmet",
+        "demolish",
+        "research",
+        "occupied",
+        "already",
+        "not allowed",
+        "unavailable",
+    )
+    return not any(tok in st for tok in blocking_tokens)
+
+
 def _make_build_action(
     priority: str,
     planet: PlanetState,
@@ -284,10 +319,11 @@ def _make_build_action(
     offer = offers.get(building_id)
     allowed_on_planet = _is_building_allowed_on_planet(planet, building_id, offers)
     has_free_fields = _planet_has_free_building_fields(planet)
+    live_lvl = planet.building_level(building_id)
     cur_lvl = (
         max(0, _safe_strategy_int(effective_level, 0))
         if effective_level is not None
-        else planet.building_level(building_id)
+        else live_lvl
     )
     nxt_lvl = cur_lvl + 1
     wiki_cost = _resources_from_dict(game_data.building_cost(building_id, nxt_lvl))
@@ -303,8 +339,9 @@ def _make_build_action(
 
     if offer is None or not offer_matches:
         missing = planet.resources.missing(wiki_cost) if not wiki_cost.is_zero() else Resources()
+        offer_behind_live = offer is not None and offer_tgt is not None and offer_tgt <= live_lvl
         remote_ready = (
-            offer is None
+            (offer is None or offer_behind_live)
             and allowed_on_planet
             and has_free_fields
             and allow_remote_colony_build
@@ -346,11 +383,16 @@ def _make_build_action(
         )
 
     missing = planet.resources.missing(offer.cost)
+    stale_remote_unlock = (
+        allow_remote_colony_build
+        and _is_stale_remote_resource_wait(offer)
+        and not offer.cost.is_zero()
+    )
     can_exec = (
         allowed_on_planet
         and has_free_fields
         and prereq_ok
-        and offer.can_build
+        and (offer.can_build or stale_remote_unlock)
         and planet.resources.can_afford(offer.cost)
     )
     offer_bid = game_data.safe_optional_int(offer.building_id, building_id)
@@ -380,7 +422,7 @@ def _make_build_action(
         missing=missing,
         reason=out_reason,
         executable_now=can_exec,
-        action_href=(_safe_strategy_str(offer.build_href) or None) if can_exec else None,
+        action_href=(_safe_strategy_str(offer.build_href) or None) if (can_exec and offer.can_build) else None,
     )
 
 
@@ -5019,7 +5061,7 @@ def merge_manual_queue_actions(
                     b_offers,
                     effective_level=eff_cur,
                     researches=state.researches,
-                    allow_remote_colony_build=bool(cfg.allow_multi_planet),
+                    allow_remote_colony_build=bool(cfg.allow_multi_planet and not is_active_planet),
                 )
                 exec_now = raw_b.executable_now and not b_queue_full
                 rsn = f"{raw_b.reason} (build queue full)" if (raw_b.executable_now and b_queue_full) else raw_b.reason

@@ -3085,6 +3085,177 @@ class TestStrategyPlanner(unittest.TestCase):
         st_full = replace(st, planets=(donor, dest_full))
         self.assertEqual(plan_interplanet_transports(st_full, cfg_on, [shortfall_build]), [])
 
+    def test_remote_colony_stale_resource_offer_unlocks_parallel_builds(self) -> None:
+        """Non-active colonies with stale 'Not enough resources' cached offers must build in parallel
+        with the active planet (in both priority and ga_nn), while genuine non-resource blocks stay blocked."""
+        from spaceinvasion.planner.strategy import _make_build_action, merge_manual_queue_actions
+
+        active_p = PlanetState(
+            planet_id=12476,
+            name="Main",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=40,
+            fields_used=140,
+            fields_max=230,
+            resources=Resources(pig_iron=100_000, metal=20_000, kryptonite=100_000, spice=50_000),
+            storage=Resources(5_000_000, 5_000_000, 5_000_000, 5_000_000),
+            energy=EnergyBalance(produced=4000, used=3000),
+            buildings={"b1": 21, "b2": 21, "b3": 21, "b4": 17, "b5": 23, "b7": 10},
+            building_offers=(
+                BuildingOffer(
+                    building_id=1,
+                    name="Pig iron mine",
+                    current_level=21,
+                    target_level=22,
+                    cost=Resources(447_312, 0, 143_370, 0),
+                    can_build=False,
+                    status_text="Not enough resources",
+                ),
+            ),
+        )
+        # Secondary colony has plenty of resources now, but stale cached offers from earlier visit
+        remote_p = PlanetState(
+            planet_id=12453,
+            name="Colony 2",
+            coords="02:379:05",
+            planet_type="normal",
+            temperature=30,
+            fields_used=12,
+            fields_max=315,
+            resources=Resources(pig_iron=3000, metal=1000, kryptonite=1000, spice=0),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(produced=200, used=60),
+            buildings={"b1": 4, "b2": 3, "b3": 1, "b4": 0, "b5": 4, "b7": 1},
+            building_offers=(
+                BuildingOffer(
+                    building_id=1,
+                    name="Pig iron mine",
+                    current_level=4,
+                    target_level=5,
+                    cost=Resources(406, 0, 130, 0),
+                    can_build=False,
+                    status_text="Not enough resources",
+                ),
+                BuildingOffer(
+                    building_id=3,
+                    name="Kryptonite mine",
+                    current_level=1,
+                    target_level=2,
+                    cost=Resources(136, 0, 84, 0),
+                    can_build=False,
+                    status_text="Not enough resources",
+                ),
+                BuildingOffer(
+                    building_id=2,
+                    name="Blast furnace",
+                    current_level=3,
+                    target_level=4,
+                    cost=Resources(259, 0, 87, 0),
+                    can_build=False,
+                    status_text="Building in progress",
+                ),
+            ),
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(active_p, remote_p),
+            active_planet_id=12476,
+            researches={"r1": 10, "r2": 10},
+        )
+        cfg = StrategyConfig(allow_multi_planet=True)
+
+        # 1. Priority planner unlocks remote colony mines in parallel even while active planet waits on P1 manual queue!
+        base_plan = plan_actions(st, config=cfg)
+        manual_q = [
+            {
+                "id": 4,
+                "priority": "P1",
+                "sort_rank": 990,
+                "kind": "BUILD",
+                "planet_id": 12476,
+                "target_id": 1,
+                "target_name": "Pig iron mine",
+                "target_level": 22,
+            }
+        ]
+        merged, _ = merge_manual_queue_actions(st, base_plan, manual_q, config=cfg)
+        p1_main = next(a for a in merged if a.planet_id == 12476 and a.manual_queue_id == 4)
+        self.assertFalse(p1_main.executable_now)  # Main still waiting on pig_iron
+
+        remote_ready_builds = [
+            a for a in merged if a.planet_id == 12453 and a.kind == "BUILD" and a.executable_now
+        ]
+        self.assertTrue(
+            any(a.target_id in (1, 3) for a in remote_ready_builds),
+            f"Expected remote colony 12453 mines to unlock in parallel; got: {[(a.kind, a.target_id, a.executable_now) for a in merged if a.planet_id == 12453]}",
+        )
+        # Action href must be None when unlocked from stale cached offer so executor opens live DOM
+        for rb in remote_ready_builds:
+            self.assertIsNone(rb.action_href)
+
+        # 2. Genuine non-resource block ('Building in progress') must NOT be unlocked!
+        remote_offers = {o.building_id: o for o in remote_p.building_offers}
+        blocked_b2 = _make_build_action(
+            "P2",
+            remote_p,
+            2,
+            "Blast furnace",
+            "Upgrade furnace",
+            remote_offers,
+            researches=st.researches,
+            allow_remote_colony_build=True,
+        )
+        self.assertFalse(blocked_b2.executable_now)
+        self.assertEqual(blocked_b2.kind, "WAIT_RESOURCES")
+
+        # 3. Stale behind-live cached offer (offer.target_level <= live building level) unlocks via Wiki cost!
+        behind_offer = {
+            1: BuildingOffer(
+                building_id=1,
+                name="Pig iron mine",
+                current_level=3,
+                target_level=4,
+                cost=Resources(250, 0, 80, 0),
+                can_build=False,
+                status_text="Not enough resources",
+            )
+        }
+        behind_act = _make_build_action(
+            "P2",
+            remote_p,
+            1,
+            "Pig iron mine",
+            "Upgrade mine",
+            behind_offer,
+            researches=st.researches,
+            allow_remote_colony_build=True,
+        )
+        self.assertTrue(behind_act.executable_now)
+        self.assertEqual(behind_act.kind, "BUILD")
+        self.assertEqual(behind_act.target_level, 5)
+
+        # 4. GA+NN planner also unlocks remote colony stale resource offers in parallel!
+        ga_cfg = StrategyConfig(
+            planner_mode="ga_nn",
+            allow_multi_planet=True,
+            ga_population_size=8,
+            ga_generations=2,
+            ga_horizon_steps=6,
+            ga_seed=7,
+        )
+        ga_plan = plan_actions(st, config=ga_cfg)
+        ga_remote_builds = [
+            a for a in ga_plan if a.planet_id == 12453 and a.kind == "BUILD" and a.executable_now
+        ]
+        self.assertTrue(
+            len(ga_remote_builds) >= 1,
+            f"Expected GA+NN to unlock remote colony 12453 in parallel; got: {[(a.kind, a.target_id, a.executable_now, a.reason) for a in ga_plan if a.planet_id == 12453]}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

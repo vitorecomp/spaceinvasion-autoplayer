@@ -79,6 +79,36 @@ _LAST_SUMMARY_LOCK = threading.Lock()
 _LAST_OPTIMIZER_SUMMARY: Optional[dict[str, Any]] = None
 
 
+def _is_stale_remote_resource_wait(offer: Optional[BuildingOffer]) -> bool:
+    """Return True when a cached non-active colony BuildingOffer only failed due to
+    earlier resource shortage (not queue full, active build, prereq, field, or lock)."""
+    if offer is None or offer.can_build:
+        return False
+    st = str(getattr(offer, "status_text", "") or "").strip().lower()
+    if not st:
+        return True
+    blocking_tokens = (
+        "in progress",
+        "construction",
+        "queue",
+        "full",
+        "require",
+        "prereq",
+        "locked",
+        "blocked",
+        "field",
+        "max",
+        "unmet",
+        "demolish",
+        "research",
+        "occupied",
+        "already",
+        "not allowed",
+        "unavailable",
+    )
+    return not any(tok in st for tok in blocking_tokens)
+
+
 def get_last_optimizer_summary() -> Optional[dict[str, Any]]:
     """Return a thread-safe JSON-safe snapshot of the last `run_optimizer` summary."""
     with _LAST_SUMMARY_LOCK:
@@ -7336,8 +7366,14 @@ def _materialize_planned_actions(
                 prereq_5_ok = not game_data.missing_prerequisites(
                     "buildings", 5, buildings=p.buildings, researches=state.researches
                 )
+                stale_5_ok = (
+                    not is_act
+                    and cfg.allow_multi_planet
+                    and _is_stale_remote_resource_wait(offer)
+                    and not cost.is_zero()
+                )
                 offer_5_ok = (
-                    (offer_tgt5 == nxt_5 and offer.can_build and prereq_5_ok)
+                    (offer_tgt5 == nxt_5 and (offer.can_build or stale_5_ok) and prereq_5_ok)
                     if offer is not None
                     else (not is_act and cfg.allow_multi_planet and prereq_5_ok)
                 )
@@ -7371,7 +7407,11 @@ def _materialize_planned_actions(
                         missing=avail_p.missing(cost),
                         reason=f"Negative energy ({e_prod_s}/{e_used_s}); restore power",
                         executable_now=can_exec,
-                        action_href=(_safe_action_str(offer.build_href) or None if (can_exec and offer) else None),
+                        action_href=(
+                            _safe_action_str(offer.build_href) or None
+                            if (can_exec and offer and offer.can_build)
+                            else None
+                        ),
                     )
                 )
 
@@ -7477,8 +7517,14 @@ def _materialize_planned_actions(
                     prereq_5_d = not game_data.missing_prerequisites(
                         "buildings", 5, buildings=p.buildings, researches=state.researches
                     )
+                    stale_5_d_ok = (
+                        not is_act
+                        and cfg.allow_multi_planet
+                        and _is_stale_remote_resource_wait(offer5)
+                        and not cost5_d.is_zero()
+                    )
                     offer_5_d_ok = (
-                        (offer_tgt5_d == nxt_5_d and offer5.can_build and prereq_5_d)
+                        (offer_tgt5_d == nxt_5_d and (offer5.can_build or stale_5_d_ok) and prereq_5_d)
                         if offer5 is not None
                         else (not is_act and cfg.allow_multi_planet and prereq_5_d)
                     )
@@ -7512,7 +7558,11 @@ def _materialize_planned_actions(
                             missing=avail_p.missing(cost5_d),
                             reason=f"Upgrade Fusion plant before tearing down Thermosolar plant L{cur_b6} (needs +{safe_b6_loss} energy buffer)",
                             executable_now=can_exec_5d,
-                            action_href=(_safe_action_str(offer5.build_href) or None if (can_exec_5d and offer5) else None),
+                            action_href=(
+                                _safe_action_str(offer5.build_href) or None
+                                if (can_exec_5d and offer5 and offer5.can_build)
+                                else None
+                            ),
                         )
                     )
 
@@ -7532,8 +7582,14 @@ def _materialize_planned_actions(
                     prereq_w_ok = not game_data.missing_prerequisites(
                         "buildings", wh_id, buildings=p.buildings, researches=state.researches
                     )
+                    stale_w_ok = (
+                        not is_act
+                        and cfg.allow_multi_planet
+                        and _is_stale_remote_resource_wait(offer)
+                        and not cost.is_zero()
+                    )
                     offer_w_ok = (
-                        (offer_tgt_w == nxt_w and offer.can_build)
+                        (offer_tgt_w == nxt_w and (offer.can_build or stale_w_ok) and prereq_w_ok)
                         if offer is not None
                         else (not is_act and cfg.allow_multi_planet and prereq_w_ok)
                     )
@@ -7567,7 +7623,11 @@ def _materialize_planned_actions(
                             missing=avail_p.missing(cost),
                             reason=f"{rk.replace('_', ' ').title()} storage at {ratio * 100:.0f}% (5% cap risk)",
                             executable_now=can_exec,
-                            action_href=(_safe_action_str(offer.build_href) or None if (can_exec and offer) else None),
+                            action_href=(
+                                _safe_action_str(offer.build_href) or None
+                                if (can_exec and offer and offer.can_build)
+                                else None
+                            ),
                         )
                     )
 
@@ -7635,12 +7695,18 @@ def _materialize_planned_actions(
         )
         if b_offer is not None and o_tgt_b == nxt_s_lvl:
             c_res = b_offer.cost
+            stale_b_ok = (
+                not is_p_act
+                and cfg.allow_multi_planet
+                and _is_stale_remote_resource_wait(b_offer)
+                and not c_res.is_zero()
+            )
             can_ex = bool(
                 allow_build
                 and free_f
                 and slot_ok
                 and prereq_ok_now
-                and b_offer.can_build
+                and (b_offer.can_build or stale_b_ok)
                 and av_p.can_afford(c_res)
             )
             if can_ex:
@@ -7658,7 +7724,11 @@ def _materialize_planned_actions(
                 missing=av_p.missing(c_res),
                 reason=reason_str if can_ex else f"{reason_str} (waiting/queued)",
                 executable_now=can_ex,
-                action_href=(_safe_action_str(b_offer.build_href) or None) if can_ex else None,
+                action_href=(
+                    _safe_action_str(b_offer.build_href) or None
+                    if (can_ex and b_offer.can_build)
+                    else None
+                ),
             )
         else:
             c_res = _resources_from_dict(game_data.building_cost(bid_val, nxt_s_lvl))
@@ -8852,12 +8922,18 @@ def _materialize_planned_actions(
                 prereq_b_ok = not game_data.missing_prerequisites(
                     "buildings", bid, buildings=planet.buildings, researches=state.researches
                 )
+                stale_b_ok = (
+                    not is_active
+                    and cfg.allow_multi_planet
+                    and _is_stale_remote_resource_wait(offer)
+                    and not cost.is_zero()
+                )
                 can_exec = bool(
                     allow_build
                     and has_free_field
                     and queue_has_slot
                     and prereq_b_ok
-                    and offer.can_build
+                    and (offer.can_build or stale_b_ok)
                     and avail_p.can_afford(cost)
                 )
                 if can_exec:
@@ -8882,7 +8958,11 @@ def _materialize_planned_actions(
                         missing=missing,
                         reason=b_reason,
                         executable_now=can_exec,
-                        action_href=_safe_action_str(offer.build_href) or None if can_exec else None,
+                        action_href=(
+                            _safe_action_str(offer.build_href) or None
+                            if (can_exec and offer.can_build)
+                            else None
+                        ),
                     )
                 )
             else:

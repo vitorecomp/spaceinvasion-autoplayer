@@ -7430,6 +7430,9 @@
     selectedUnitKey: "b1",
     combatSubTab: "ships",
     queueFilter: "all",
+    dashQueuePlanetScope: "all",
+    opsPlanetScope: "all",
+    opsQueueLayout: "table",
     activeLogSource: "commander",
     agEdgeFilter: "all",
     agParamTab: "core",
@@ -10864,6 +10867,7 @@
     cardId,
     moduleCode,
     title,
+    scopeBadge,
     countId,
     addBtnId,
     addBtnAriaLabel,
@@ -10892,7 +10896,8 @@
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: moduleCode }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: title }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-count", id: countId, children: String(totalCount) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-count", id: countId, children: String(totalCount) }),
+          scopeBadge ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-scope", children: scopeBadge }) : null
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -11164,18 +11169,52 @@
       );
     }, [allPlanActions, dashboard]);
     const pinnedCount = manualList.length;
+    const rawDashScope = String(uiPrefs.dashQueuePlanetScope || "all");
+    const scopedDashPlanet = reactExports.useMemo(
+      () => rawDashScope !== "all" ? planets.find((p) => String(p.planet_id) === rawDashScope) || null : null,
+      [planets, rawDashScope]
+    );
+    const activeDashScope = scopedDashPlanet ? String(scopedDashPlanet.planet_id) : "all";
+    const planetQueueStats = reactExports.useMemo(() => {
+      const map = /* @__PURE__ */ new Map();
+      for (const p of planets) {
+        map.set(p.planet_id, { total: 0, ready: 0 });
+      }
+      for (const act of allPlanActions) {
+        if (dashboardQueueDomainForAction(act) === "research") continue;
+        const cur = map.get(Number(act.planet_id));
+        if (cur) {
+          cur.total += 1;
+          if (act.executable_now) cur.ready += 1;
+        }
+      }
+      return map;
+    }, [allPlanActions, planets]);
+    const scopedExecBuildingJobs = reactExports.useMemo(() => {
+      if (scopedDashPlanet && (gs == null ? void 0 : gs.active_planet_id) != null && Number(scopedDashPlanet.planet_id) !== Number(gs.active_planet_id)) {
+        return [];
+      }
+      return execBuildingJobs;
+    }, [execBuildingJobs, gs == null ? void 0 : gs.active_planet_id, scopedDashPlanet]);
     const { buildingActions, fleetActions, researchActions } = reactExports.useMemo(() => {
       const bld = [];
       const flt = [];
       const res = [];
+      const scopePid = scopedDashPlanet ? Number(scopedDashPlanet.planet_id) : null;
       for (const act of allPlanActions) {
         const dom = dashboardQueueDomainForAction(act);
-        if (dom === "research") res.push(act);
-        else if (dom === "fleet") flt.push(act);
-        else bld.push(act);
+        if (dom === "research") {
+          res.push(act);
+        } else if (scopePid !== null && Number(act.planet_id) !== scopePid) {
+          continue;
+        } else if (dom === "fleet") {
+          flt.push(act);
+        } else {
+          bld.push(act);
+        }
       }
       return { buildingActions: bld, fleetActions: flt, researchActions: res };
-    }, [allPlanActions]);
+    }, [allPlanActions, scopedDashPlanet]);
     const cfgMode = String(
       ((_c = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
     ).toLowerCase();
@@ -11504,9 +11543,59 @@
                   hidden: pinnedCount === 0,
                   children: `${pinnedCount} PINNED`
                 }
-              )
+              ),
+              planets.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "div",
+                {
+                  className: "filter-chips dash-planet-scope-chips",
+                  role: "group",
+                  "aria-label": "Filter building and fleet queues by planet",
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        type: "button",
+                        className: `chip-btn tabular${activeDashScope === "all" ? " active" : ""}`,
+                        "data-dash-planet-scope": "all",
+                        onClick: () => setUiPref("dashQueuePlanetScope", "all"),
+                        children: `All Planets (${planets.length})`
+                      }
+                    ),
+                    planets.map((p) => {
+                      const pidKey = String(p.planet_id);
+                      const stats = planetQueueStats.get(p.planet_id) || { total: 0, ready: 0 };
+                      return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "button",
+                        {
+                          type: "button",
+                          className: `chip-btn tabular${activeDashScope === pidKey ? " active" : ""}${stats.ready > 0 ? " has-ready" : ""}`,
+                          "data-dash-planet-scope": pidKey,
+                          title: `${p.name || "Colony"} [${p.coords}] — ${stats.ready} ready / ${stats.total} queued`,
+                          onClick: () => setUiPref("dashQueuePlanetScope", pidKey),
+                          children: stats.ready > 0 ? `${p.coords || p.name} · ${stats.ready} ready` : `${p.coords || p.name} (${stats.total})`
+                        },
+                        pidKey
+                      );
+                    })
+                  ]
+                }
+              ) : null
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
+              planets.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: "btn-dash-parallel-queues",
+                  onClick: () => {
+                    setUiPref("opsQueueLayout", "parallel");
+                    setUiPref("opsPlanetScope", activeDashScope);
+                    setActivePage("operations");
+                  },
+                  children: "Parallel by Planet →"
+                }
+              ) : null,
               /* @__PURE__ */ jsxRuntimeExports.jsx(
                 "button",
                 {
@@ -11536,6 +11625,7 @@
                 cardId: "dash-queue-card-building",
                 moduleCode: "NXQ",
                 title: "Building Queue",
+                scopeBadge: planets.length > 1 ? scopedDashPlanet ? scopedDashPlanet.coords || scopedDashPlanet.name : `PARALLEL · ${planets.length} PLANETS` : void 0,
                 countId: "dash-bld-q-count",
                 addBtnId: "btn-dash-add-queue",
                 addBtnAriaLabel: "Queue building command",
@@ -11545,9 +11635,9 @@
                 onGotoClick: () => setActivePage("buildings"),
                 execTbodyId: "dash-exec-building-tbody",
                 planTbodyId: "dash-plan-tbody",
-                execJobs: execBuildingJobs,
+                execJobs: scopedExecBuildingJobs,
                 plannedActions: buildingActions,
-                emptyText: dashboard ? "No queued building actions." : "Run Sync to populate building actions...",
+                emptyText: dashboard ? scopedDashPlanet ? `No queued building actions on ${scopedDashPlanet.coords || scopedDashPlanet.name}.` : "No queued building actions." : "Run Sync to populate building actions...",
                 nowEpochSec: effNowSec,
                 onDispatch: handleDispatch,
                 onUpdateQueue: handleUpdateQueue,
@@ -11561,6 +11651,7 @@
                 cardId: "dash-queue-card-fleet",
                 moduleCode: "FLT",
                 title: "Fleet Queue",
+                scopeBadge: planets.length > 1 ? scopedDashPlanet ? scopedDashPlanet.coords || scopedDashPlanet.name : "PER-PLANET" : void 0,
                 countId: "dash-fleet-q-count",
                 addBtnId: "btn-dash-add-fleet-queue",
                 addBtnAriaLabel: "Queue fleet or ship command",
@@ -11572,7 +11663,7 @@
                 planTbodyId: "dash-plan-fleet-tbody",
                 execJobs: execFleetJobs,
                 plannedActions: fleetActions,
-                emptyText: "No queued fleet or ship actions.",
+                emptyText: scopedDashPlanet ? `No queued fleet or ship actions on ${scopedDashPlanet.coords || scopedDashPlanet.name}.` : "No queued fleet or ship actions.",
                 nowEpochSec: effNowSec,
                 onDispatch: handleDispatch,
                 onUpdateQueue: handleUpdateQueue,
@@ -11586,6 +11677,7 @@
                 cardId: "dash-queue-card-research",
                 moduleCode: "RES",
                 title: "Research Queue",
+                scopeBadge: planets.length > 1 ? "GLOBAL · 1 SLOT" : void 0,
                 countId: "dash-research-q-count",
                 addBtnId: "btn-dash-add-res-queue",
                 addBtnAriaLabel: "Queue research command",
@@ -12088,11 +12180,12 @@
     { label: "Galaxy", action: "internalGalaxy" }
   ];
   const OperationsView = () => {
-    var _a;
+    var _a, _b;
     const {
       dashboard,
       activePage,
       setActivePage,
+      setSelectedPlanetId,
       nowEpochSec,
       showFeedback,
       apiCommand: apiCommand2,
@@ -12101,7 +12194,18 @@
       setUiPref,
       enqueueManualCommand
     } = useConsole();
+    const planets = reactExports.useMemo(() => {
+      var _a2;
+      return ((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.planets) || [];
+    }, [(_a = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a.planets]);
     const queueFilter = uiPrefs.queueFilter || "all";
+    const rawPlanetScope = String(uiPrefs.opsPlanetScope || "all");
+    const scopedPlanet = reactExports.useMemo(
+      () => rawPlanetScope !== "all" ? planets.find((p) => String(p.planet_id) === rawPlanetScope) || null : null,
+      [planets, rawPlanetScope]
+    );
+    const opsPlanetScope = scopedPlanet ? String(scopedPlanet.planet_id) : "all";
+    const opsQueueLayout = planets.length > 1 && uiPrefs.opsQueueLayout === "parallel" ? "parallel" : "table";
     const allActions = reactExports.useMemo(() => (dashboard == null ? void 0 : dashboard.plan) || [], [dashboard == null ? void 0 : dashboard.plan]);
     const manualList = reactExports.useMemo(() => {
       if (Array.isArray(dashboard == null ? void 0 : dashboard.manual_queue)) {
@@ -12112,7 +12216,7 @@
       );
     }, [allActions, dashboard]);
     const pinnedCount = manualList.length;
-    const filteredActions = reactExports.useMemo(() => {
+    const filterMatchedActions = reactExports.useMemo(() => {
       if (queueFilter === "ready") {
         return allActions.filter((a) => Boolean(a.executable_now));
       }
@@ -12123,9 +12227,43 @@
       }
       return allActions;
     }, [allActions, queueFilter]);
+    const planetCounts = reactExports.useMemo(() => {
+      const map = /* @__PURE__ */ new Map();
+      for (const p of planets) {
+        map.set(p.planet_id, { total: 0, ready: 0 });
+      }
+      for (const act of filterMatchedActions) {
+        if (dashboardQueueDomainForAction(act) === "research") continue;
+        const cur = map.get(Number(act.planet_id));
+        if (cur) {
+          cur.total += 1;
+          if (act.executable_now) cur.ready += 1;
+        }
+      }
+      return map;
+    }, [filterMatchedActions, planets]);
+    const filteredActions = reactExports.useMemo(() => {
+      if (!scopedPlanet) return filterMatchedActions;
+      const pid = Number(scopedPlanet.planet_id);
+      return filterMatchedActions.filter((a) => Number(a.planet_id) === pid);
+    }, [filterMatchedActions, scopedPlanet]);
+    const parallelLanes = reactExports.useMemo(() => {
+      const visiblePlanets = scopedPlanet ? [scopedPlanet] : planets;
+      const planetLanes = visiblePlanets.map((planet) => {
+        const actions = filterMatchedActions.filter(
+          (a) => Number(a.planet_id) === Number(planet.planet_id) && dashboardQueueDomainForAction(a) !== "research"
+        );
+        const readyCount = actions.filter((a) => Boolean(a.executable_now)).length;
+        return { planet, actions, readyCount };
+      });
+      const researchActions = filterMatchedActions.filter(
+        (a) => dashboardQueueDomainForAction(a) === "research"
+      );
+      return { planetLanes, researchActions };
+    }, [filterMatchedActions, planets, scopedPlanet]);
     const actionSort = useTableSort(filteredActions, PLAN_ACTION_SORT_COLUMNS);
     const cfgMode = String(
-      ((_a = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
+      ((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
     ).toLowerCase();
     const isGaNn = cfgMode === "ga_nn";
     const modeLabel = isGaNn ? "MODE: GA+NN" : "MODE: PRIORITY";
@@ -12254,6 +12392,55 @@
                   }
                 )
               ] }),
+              planets.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-chips", role: "group", "aria-label": "Planet queue scope", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: `chip-btn tabular${opsPlanetScope === "all" ? " active" : ""}`,
+                    "data-ops-planet": "all",
+                    onClick: () => setUiPref("opsPlanetScope", "all"),
+                    children: `All Planets (${planets.length})`
+                  }
+                ),
+                planets.map((p) => {
+                  const pidKey = String(p.planet_id);
+                  const st = planetCounts.get(p.planet_id) || { total: 0, ready: 0 };
+                  return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: `chip-btn tabular${opsPlanetScope === pidKey ? " active" : ""}${st.ready > 0 ? " has-ready" : ""}`,
+                      "data-ops-planet": pidKey,
+                      onClick: () => setUiPref("opsPlanetScope", pidKey),
+                      children: st.ready > 0 ? `${p.coords || p.name} · ${st.ready} ready` : `${p.coords || p.name} (${st.total})`
+                    },
+                    pidKey
+                  );
+                })
+              ] }) : null,
+              planets.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-chips", role: "group", "aria-label": "Queue layout mode", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: `chip-btn${opsQueueLayout === "table" ? " active" : ""}`,
+                    "data-ops-layout": "table",
+                    onClick: () => setUiPref("opsQueueLayout", "table"),
+                    children: "Unified Table"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: `chip-btn${opsQueueLayout === "parallel" ? " active" : ""}`,
+                    "data-ops-layout": "parallel",
+                    onClick: () => setUiPref("opsQueueLayout", "parallel"),
+                    children: "Parallel by Planet"
+                  }
+                )
+              ] }) : null,
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions nav-matrix-inline", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   "button",
@@ -12291,7 +12478,109 @@
             ] })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsx(ManualQueueComposer, {}),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "ops-plan-table", children: [
+          opsQueueLayout === "parallel" ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ops-parallel-grid", id: "ops-parallel-grid", children: [
+            parallelLanes.planetLanes.map(({ planet, actions, readyCount }) => {
+              var _a2;
+              const isActiveP = ((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.active_planet_id) != null && Number(planet.planet_id) === Number(dashboard.state.active_planet_id);
+              return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "article",
+                {
+                  className: "hud-window ops-planet-lane-card",
+                  "data-planet-lane": String(planet.planet_id),
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: planet.coords || "PLN" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: planet.name || "Colony" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-count", children: `${readyCount}/${actions.length}` }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-scope", children: `${planet.fields_used ?? "—"}/${planet.fields_max ?? "—"} F${isActiveP ? " · ACTIVE" : " · PARALLEL"}` })
+                      ] }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inline-actions", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "button",
+                        {
+                          type: "button",
+                          className: "btn btn-secondary btn-sm",
+                          onClick: () => {
+                            var _a3;
+                            setSelectedPlanetId(planet.planet_id);
+                            const mqPlanet = document.getElementById("mq-planet");
+                            if (mqPlanet) {
+                              mqPlanet.value = String(planet.planet_id);
+                              mqPlanet.dispatchEvent(new Event("change", { bubbles: true }));
+                            }
+                            (_a3 = document.getElementById("mq-target")) == null ? void 0 : _a3.focus();
+                          },
+                          children: "+ Queue Here"
+                        }
+                      ) })
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Prio" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Action" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Missing / Cost" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Wait ETA" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Total ETA / Finish" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
+                      ] }) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: actions.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: "No matching planet actions." }) }) : actions.map((act, idx) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        PlanActionRow,
+                        {
+                          action: act,
+                          compact: true,
+                          nowEpochSec,
+                          onDispatch: handleDispatch,
+                          onUpdateQueue: handleUpdateQueue,
+                          onCancelQueue: handleCancelQueue,
+                          onPinQueue: handlePinQueue
+                        },
+                        `lane-${planet.planet_id}-${act.manual_queue_id ?? "auto"}-${act.kind}-${act.target_id ?? act.target_name}-${idx}`
+                      )) })
+                    ] }) })
+                  ]
+                },
+                `lane-${planet.planet_id}`
+              );
+            }),
+            parallelLanes.researchActions.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "article",
+              {
+                className: "hud-window ops-planet-lane-card ops-global-research-card",
+                "data-planet-lane": "global-research",
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "window-bar window-bar-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "RES" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Global Research Queue" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-count", children: String(parallelLanes.researchActions.length) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-scope", children: "GLOBAL · 1 SHARED SLOT" })
+                  ] }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Prio" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Action" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Missing / Cost" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Wait ETA" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Total ETA / Finish" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
+                    ] }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: parallelLanes.researchActions.map((act, idx) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      PlanActionRow,
+                      {
+                        action: act,
+                        compact: true,
+                        nowEpochSec,
+                        onDispatch: handleDispatch,
+                        onUpdateQueue: handleUpdateQueue,
+                        onCancelQueue: handleCancelQueue,
+                        onPinQueue: handlePinQueue
+                      },
+                      `lane-res-${act.manual_queue_id ?? "auto"}-${act.target_id ?? act.target_name}-${idx}`
+                    )) })
+                  ] }) })
+                ]
+              }
+            ) : null
+          ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "ops-plan-table", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx(
                 SortableTh,

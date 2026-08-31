@@ -582,9 +582,9 @@ def run_commander_tick(
                 or "future/queued" in reason_l
             ):
                 continue
-            if active_p is not None and act.planet_id == active_p.planet_id and active_queue_full:
+            if active_p is None or act.planet_id != active_p.planet_id or active_queue_full:
                 continue
-            p_match = next((p for p in state.planets if p.planet_id == act.planet_id), None)
+            p_match = active_p
             if p_match is None or not p_match.resources.can_afford(act.cost):
                 continue
             offer = next((o for o in p_match.building_offers if o.building_id == act.target_id), None)

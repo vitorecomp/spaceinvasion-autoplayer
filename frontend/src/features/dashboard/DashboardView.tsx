@@ -282,18 +282,62 @@ export const DashboardView: React.FC = () => {
   }, [allPlanActions, dashboard]);
   const pinnedCount = manualList.length;
 
+  const rawDashScope = String(uiPrefs.dashQueuePlanetScope || "all");
+  const scopedDashPlanet = useMemo(
+    () =>
+      rawDashScope !== "all"
+        ? planets.find((p) => String(p.planet_id) === rawDashScope) || null
+        : null,
+    [planets, rawDashScope]
+  );
+  const activeDashScope = scopedDashPlanet ? String(scopedDashPlanet.planet_id) : "all";
+
+  const planetQueueStats = useMemo(() => {
+    const map = new Map<number, { total: number; ready: number }>();
+    for (const p of planets) {
+      map.set(p.planet_id, { total: 0, ready: 0 });
+    }
+    for (const act of allPlanActions) {
+      if (dashboardQueueDomainForAction(act) === "research") continue;
+      const cur = map.get(Number(act.planet_id));
+      if (cur) {
+        cur.total += 1;
+        if (act.executable_now) cur.ready += 1;
+      }
+    }
+    return map;
+  }, [allPlanActions, planets]);
+
+  const scopedExecBuildingJobs = useMemo(() => {
+    if (
+      scopedDashPlanet &&
+      gs?.active_planet_id != null &&
+      Number(scopedDashPlanet.planet_id) !== Number(gs.active_planet_id)
+    ) {
+      return [];
+    }
+    return execBuildingJobs;
+  }, [execBuildingJobs, gs?.active_planet_id, scopedDashPlanet]);
+
   const { buildingActions, fleetActions, researchActions } = useMemo(() => {
     const bld: PlannedActionData[] = [];
     const flt: PlannedActionData[] = [];
     const res: PlannedActionData[] = [];
+    const scopePid = scopedDashPlanet ? Number(scopedDashPlanet.planet_id) : null;
     for (const act of allPlanActions) {
       const dom = dashboardQueueDomainForAction(act);
-      if (dom === "research") res.push(act);
-      else if (dom === "fleet") flt.push(act);
-      else bld.push(act);
+      if (dom === "research") {
+        res.push(act);
+      } else if (scopePid !== null && Number(act.planet_id) !== scopePid) {
+        continue;
+      } else if (dom === "fleet") {
+        flt.push(act);
+      } else {
+        bld.push(act);
+      }
     }
     return { buildingActions: bld, fleetActions: flt, researchActions: res };
-  }, [allPlanActions]);
+  }, [allPlanActions, scopedDashPlanet]);
 
   const cfgMode = String(
     dashboard?.config?.planner_mode || dashboard?.planner_mode || "priority"
@@ -683,8 +727,56 @@ export const DashboardView: React.FC = () => {
           >
             {`${pinnedCount} PINNED`}
           </span>
+          {planets.length > 1 ? (
+            <div
+              className="filter-chips dash-planet-scope-chips"
+              role="group"
+              aria-label="Filter building and fleet queues by planet"
+            >
+              <button
+                type="button"
+                className={`chip-btn tabular${activeDashScope === "all" ? " active" : ""}`}
+                data-dash-planet-scope="all"
+                onClick={() => setUiPref("dashQueuePlanetScope", "all")}
+              >
+                {`All Planets (${planets.length})`}
+              </button>
+              {planets.map((p) => {
+                const pidKey = String(p.planet_id);
+                const stats = planetQueueStats.get(p.planet_id) || { total: 0, ready: 0 };
+                return (
+                  <button
+                    key={pidKey}
+                    type="button"
+                    className={`chip-btn tabular${activeDashScope === pidKey ? " active" : ""}${stats.ready > 0 ? " has-ready" : ""}`}
+                    data-dash-planet-scope={pidKey}
+                    title={`${p.name || "Colony"} [${p.coords}] — ${stats.ready} ready / ${stats.total} queued`}
+                    onClick={() => setUiPref("dashQueuePlanetScope", pidKey)}
+                  >
+                    {stats.ready > 0
+                      ? `${p.coords || p.name} · ${stats.ready} ready`
+                      : `${p.coords || p.name} (${stats.total})`}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
         <div className="inline-actions">
+          {planets.length > 1 ? (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              id="btn-dash-parallel-queues"
+              onClick={() => {
+                setUiPref("opsQueueLayout", "parallel");
+                setUiPref("opsPlanetScope", activeDashScope);
+                setActivePage("operations");
+              }}
+            >
+              Parallel by Planet →
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn btn-secondary btn-sm"
@@ -710,6 +802,13 @@ export const DashboardView: React.FC = () => {
           cardId="dash-queue-card-building"
           moduleCode="NXQ"
           title="Building Queue"
+          scopeBadge={
+            planets.length > 1
+              ? scopedDashPlanet
+                ? scopedDashPlanet.coords || scopedDashPlanet.name
+                : `PARALLEL · ${planets.length} PLANETS`
+              : undefined
+          }
           countId="dash-bld-q-count"
           addBtnId="btn-dash-add-queue"
           addBtnAriaLabel="Queue building command"
@@ -719,11 +818,13 @@ export const DashboardView: React.FC = () => {
           onGotoClick={() => setActivePage("buildings")}
           execTbodyId="dash-exec-building-tbody"
           planTbodyId="dash-plan-tbody"
-          execJobs={execBuildingJobs}
+          execJobs={scopedExecBuildingJobs}
           plannedActions={buildingActions}
           emptyText={
             dashboard
-              ? "No queued building actions."
+              ? scopedDashPlanet
+                ? `No queued building actions on ${scopedDashPlanet.coords || scopedDashPlanet.name}.`
+                : "No queued building actions."
               : "Run Sync to populate building actions..."
           }
           nowEpochSec={effNowSec}
@@ -737,6 +838,13 @@ export const DashboardView: React.FC = () => {
           cardId="dash-queue-card-fleet"
           moduleCode="FLT"
           title="Fleet Queue"
+          scopeBadge={
+            planets.length > 1
+              ? scopedDashPlanet
+                ? scopedDashPlanet.coords || scopedDashPlanet.name
+                : "PER-PLANET"
+              : undefined
+          }
           countId="dash-fleet-q-count"
           addBtnId="btn-dash-add-fleet-queue"
           addBtnAriaLabel="Queue fleet or ship command"
@@ -748,7 +856,11 @@ export const DashboardView: React.FC = () => {
           planTbodyId="dash-plan-fleet-tbody"
           execJobs={execFleetJobs}
           plannedActions={fleetActions}
-          emptyText="No queued fleet or ship actions."
+          emptyText={
+            scopedDashPlanet
+              ? `No queued fleet or ship actions on ${scopedDashPlanet.coords || scopedDashPlanet.name}.`
+              : "No queued fleet or ship actions."
+          }
           nowEpochSec={effNowSec}
           onDispatch={handleDispatch}
           onUpdateQueue={handleUpdateQueue}
@@ -760,6 +872,7 @@ export const DashboardView: React.FC = () => {
           cardId="dash-queue-card-research"
           moduleCode="RES"
           title="Research Queue"
+          scopeBadge={planets.length > 1 ? "GLOBAL · 1 SLOT" : undefined}
           countId="dash-research-q-count"
           addBtnId="btn-dash-add-res-queue"
           addBtnAriaLabel="Queue research command"

@@ -480,4 +480,129 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
       expect(container.querySelector("#feedback-banner")?.textContent).toContain("NTF-0042");
     });
   });
+
+  it("supports per-planet parallel queue filtering on Dashboard and Parallel by Planet layout on Operations", async () => {
+    const multiPlanetDash = {
+      ...MOCK_DASHBOARD,
+      state: {
+        ...MOCK_DASHBOARD.state,
+        planets: [
+          ...MOCK_DASHBOARD.state.planets,
+          {
+            planet_id: 12453,
+            name: "Colony 2",
+            coords: "02:379:05",
+            planet_type: "normal",
+            temperature: 28,
+            fields_used: 12,
+            fields_max: 315,
+            resources: { pig_iron: 2900, metal: 900, kryptonite: 950, spice: 0 },
+            storage: { pig_iron: 100000, metal: 100000, kryptonite: 100000, spice: 100000 },
+            energy: { produced: 120, used: 41 },
+            buildings: { b1: 4, b3: 1 },
+            ships: {},
+            defense: {},
+            economy_rates: { resource1: 100, resource2: 100, resource3: 100, resource4: 100 },
+          },
+        ],
+      },
+      plan: [
+        ...MOCK_DASHBOARD.plan,
+        {
+          priority: "P2",
+          kind: "BUILD",
+          planet_id: 12453,
+          planet_coords: "02:379:05",
+          target_id: 3,
+          target_name: "Kryptonite mine",
+          target_level: 2,
+          cost: { pig_iron: 136, metal: 0, kryptonite: 84, spice: 0 },
+          missing: { pig_iron: 0, metal: 0, kryptonite: 0, spice: 0 },
+          reason: "Upgrade colony mine in parallel",
+          executable_now: true,
+        },
+        {
+          priority: "P3",
+          kind: "RESEARCH",
+          planet_id: 12476,
+          planet_coords: "02:380:12",
+          target_id: 1,
+          target_name: "Mining technology",
+          target_level: 11,
+          cost: { pig_iron: 10000, metal: 0, kryptonite: 0, spice: 0 },
+          missing: { pig_iron: 5000, metal: 0, kryptonite: 0, spice: 0 },
+          reason: "Global research",
+          executable_now: false,
+        },
+      ],
+    };
+
+    const MultiSeed: React.FC<{ page: "dashboard" | "operations"; children: React.ReactNode }> = ({
+      page,
+      children,
+    }) => {
+      const Inner: React.FC = () => {
+        const { setDashboard, setActivePage } = useConsole();
+        useEffect(() => {
+          setDashboard(multiPlanetDash as any);
+          setActivePage(page);
+        }, [setActivePage, setDashboard]);
+        return null;
+      };
+      return (
+        <ConsoleProvider disableInitialFetch>
+          <Inner />
+          {children}
+        </ConsoleProvider>
+      );
+    };
+
+    // 1) Dashboard planet scope filters Building Queue while keeping Research Queue global
+    const dashRender = render(
+      <MultiSeed page="dashboard">
+        <DashboardView />
+      </MultiSeed>
+    );
+    await waitFor(() => {
+      expect(dashRender.container.querySelector('[data-dash-planet-scope="12453"]')).not.toBeNull();
+    });
+    expect(dashRender.container.querySelector("#dash-queue-card-research")?.textContent).toContain(
+      "GLOBAL · 1 SLOT"
+    );
+    fireEvent.click(dashRender.container.querySelector('[data-dash-planet-scope="12453"]')!);
+    await waitFor(() => {
+      const bldBody = dashRender.container.querySelector("#dash-plan-tbody")?.textContent || "";
+      expect(bldBody).toContain("Kryptonite mine");
+      expect(bldBody).not.toContain("Pig iron mine");
+      // Research stays global even when scoped to Colony 2!
+      const resBody =
+        dashRender.container.querySelector("#dash-plan-research-tbody")?.textContent || "";
+      expect(resBody).toContain("Mining technology");
+    });
+    dashRender.unmount();
+
+    // 2) Operations Parallel by Planet layout splits planets into independent side-by-side cards
+    const opsRender = render(
+      <MultiSeed page="operations">
+        <OperationsView />
+      </MultiSeed>
+    );
+    await waitFor(() => {
+      expect(opsRender.container.querySelector('[data-ops-layout="parallel"]')).not.toBeNull();
+    });
+    // Default layout keeps unified #ops-plan-table intact
+    expect(opsRender.container.querySelector("#ops-plan-table")).not.toBeNull();
+    fireEvent.click(opsRender.container.querySelector('[data-ops-layout="parallel"]')!);
+    await waitFor(() => {
+      expect(opsRender.container.querySelector('[data-planet-lane="12476"]')?.textContent).toContain(
+        "Pig iron mine"
+      );
+      expect(opsRender.container.querySelector('[data-planet-lane="12453"]')?.textContent).toContain(
+        "Kryptonite mine"
+      );
+      expect(
+        opsRender.container.querySelector('[data-planet-lane="global-research"]')?.textContent
+      ).toContain("Mining technology");
+    });
+  });
 });

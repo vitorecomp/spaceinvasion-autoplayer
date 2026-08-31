@@ -3666,12 +3666,23 @@ class GameApiBridge:
                 executable_now=can_exec,
                 action_href=None,
             )
+        from spaceinvasion.planner.strategy import _is_stale_remote_resource_wait
+
+        is_remote = planet.planet_id != state.active_planet_id
+        prereqs_met = not game_data.missing_prerequisites(
+            "buildings",
+            bid_int,
+            buildings=planet.buildings,
+            researches=state.researches,
+        )
         can_exec = planet_type_allowed and offer.can_build and planet.resources.can_afford(offer.cost)
         if (
             planet_type_allowed
             and not can_exec
-            and allow_live_verify
-            and "not enough" in (offer.status_text or "").lower()
+            and prereqs_met
+            and (allow_live_verify or is_remote)
+            and not offer.cost.is_zero()
+            and _is_stale_remote_resource_wait(offer)
             and planet.resources.can_afford(offer.cost)
         ):
             can_exec = True
@@ -3692,7 +3703,7 @@ class GameApiBridge:
             missing=planet.resources.missing(offer.cost),
             reason=reason,
             executable_now=can_exec,
-            action_href=offer.build_href if can_exec else None,
+            action_href=offer.build_href if (can_exec and offer.can_build) else None,
         )
 
     def _find_research_action(

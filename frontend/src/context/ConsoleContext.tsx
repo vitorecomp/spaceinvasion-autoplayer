@@ -38,6 +38,9 @@ export interface UiPrefs {
   selectedUnitKey: string;
   combatSubTab: "ships" | "defense" | "targets" | "escape" | string;
   queueFilter: string;
+  dashQueuePlanetScope: string;
+  opsPlanetScope: string;
+  opsQueueLayout: "table" | "parallel";
   activeLogSource: "commander" | "game_api" | "sqlite" | string;
   agEdgeFilter: "all" | "deps";
   agParamTab: "core" | "scope";
@@ -59,6 +62,9 @@ const DEFAULT_UI_PREFS: UiPrefs = {
   selectedUnitKey: "b1",
   combatSubTab: "ships",
   queueFilter: "all",
+  dashQueuePlanetScope: "all",
+  opsPlanetScope: "all",
+  opsQueueLayout: "table",
   activeLogSource: "commander",
   agEdgeFilter: "all",
   agParamTab: "core",

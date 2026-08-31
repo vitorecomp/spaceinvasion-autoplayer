@@ -1774,6 +1774,63 @@ tbody tr.is-manual-queued:hover {
   border-radius: var(--radius);
 }
 
+.dash-q-scope {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  background-color: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--radius);
+}
+
+.dash-planet-scope-chips {
+  margin-left: 4px;
+}
+
+.chip-btn.has-ready:not(.active) {
+  border-color: var(--mint);
+  color: var(--mint);
+}
+
+.ops-parallel-grid {
+  flex: 1 1 0;
+  min-height: 240px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+  gap: 12px;
+  padding: 12px;
+  overflow-y: auto;
+  align-content: start;
+}
+
+.ops-planet-lane-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ops-planet-lane-card h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.ops-planet-lane-card .table-scroll {
+  max-height: 440px;
+  overflow-y: auto;
+  overflow-x: auto;
+}
+
+.ops-global-research-card {
+  grid-column: 1 / -1;
+}
+
 .mode-badge {
   padding: 2px 8px;
   font-size: 0.86rem;
@@ -3481,6 +3538,7 @@ tbody tr.is-manual-queued:hover {
   .ag-control-panel,
   .ag-panel-body,
   .dash-lower-grid,
+  .ops-parallel-grid,
   .split-workspace,
   .combat-main-grid,
   .combat-subpane,
@@ -3527,6 +3585,7 @@ tbody tr.is-manual-queued:hover {
   .page-view.ag-view,
   .dash-upper-grid,
   .dash-lower-grid,
+  .ops-parallel-grid,
   .split-workspace,
   .combat-top-cards,
   .combat-top-cards.col-top-cards,
