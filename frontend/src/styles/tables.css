@@ -411,6 +411,63 @@ tbody tr:hover {
   min-height: 180px;
 }
 
+.table-pagination-bar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line-dim);
+  background: var(--bg-panel-alt);
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+}
+
+.table-page-summary {
+  white-space: nowrap;
+}
+
+.table-page-controls {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.table-page-size-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--ink-muted);
+}
+
+.table-page-size-select {
+  width: auto;
+  min-width: 62px;
+  padding: 2px 6px;
+  font-size: 0.82rem;
+}
+
+.table-page-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.table-page-indicator {
+  padding: 2px 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--radius);
+  white-space: nowrap;
+}
+
 /* Scanned Sectors: KPI cards, Refresh vs Discovery split bar, occupancy meter */
 .combat-top-cards.sectors-top-cards {
   grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(320px, 1.8fr);

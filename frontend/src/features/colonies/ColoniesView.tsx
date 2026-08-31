@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
+import { TablePagination } from "../../components/TablePagination";
 import { useConsole } from "../../context/ConsoleContext";
 import {
   coordsSortKey,
@@ -82,6 +83,10 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
 
   const [minFieldsInput, setMinFieldsInput] = useState<string>("300");
   const [allowColonizeInput, setAllowColonizeInput] = useState<boolean>(false);
+  const [candPage, setCandPage] = useState<number>(1);
+  const [candPageSize, setCandPageSize] = useState<number>(25);
+  const [attemptPage, setAttemptPage] = useState<number>(1);
+  const [attemptPageSize, setAttemptPageSize] = useState<number>(25);
 
   useEffect(() => {
     const cfgMin = colonyData?.min_colony_fields ?? dashboard?.config?.min_colony_fields;
@@ -220,6 +225,40 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
 
   const candSort = useTableSort(filteredCands, candSortCols);
   const attemptSort = useTableSort(attempts, attemptSortCols);
+
+  const candTotalPages = Math.max(1, Math.ceil(candSort.sortedRows.length / candPageSize));
+  const effectiveCandPage = Math.max(1, Math.min(candTotalPages, candPage));
+  const pagedCands = useMemo(() => {
+    const start = (effectiveCandPage - 1) * candPageSize;
+    return candSort.sortedRows.slice(start, start + candPageSize);
+  }, [candSort.sortedRows, effectiveCandPage, candPageSize]);
+
+  const attemptTotalPages = Math.max(1, Math.ceil(attemptSort.sortedRows.length / attemptPageSize));
+  const effectiveAttemptPage = Math.max(1, Math.min(attemptTotalPages, attemptPage));
+  const pagedAttempts = useMemo(() => {
+    const start = (effectiveAttemptPage - 1) * attemptPageSize;
+    return attemptSort.sortedRows.slice(start, start + attemptPageSize);
+  }, [attemptSort.sortedRows, effectiveAttemptPage, attemptPageSize]);
+
+  useEffect(() => {
+    setCandPage(1);
+  }, [colFilter, candSort.sortKey, candSort.sortDirection, candPageSize]);
+
+  useEffect(() => {
+    if (candPage > candTotalPages) {
+      setCandPage(candTotalPages);
+    }
+  }, [candPage, candTotalPages]);
+
+  useEffect(() => {
+    setAttemptPage(1);
+  }, [attemptSort.sortKey, attemptSort.sortDirection, attemptPageSize]);
+
+  useEffect(() => {
+    if (attemptPage > attemptTotalPages) {
+      setAttemptPage(attemptTotalPages);
+    }
+  }, [attemptPage, attemptTotalPages]);
 
   const handleSavePolicy = async () => {
     const minVal = Math.max(50, Math.min(600, Math.round(finiteNum(minFieldsInput, 300))));
@@ -540,7 +579,7 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
               </tr>
             </thead>
             <tbody id="col-candidates-tbody">
-              {candSort.sortedRows.length === 0 ? (
+              {pagedCands.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="empty-cell">
                     {colonyData
@@ -549,7 +588,7 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
                   </td>
                 </tr>
               ) : (
-                candSort.sortedRows.map((c) => {
+                pagedCands.map((c) => {
                   const coords = String(c.coords || "—");
                   const grade = String(c.grade || "?");
                   const uf = finiteNum(c.uninhabited_fields, null);
@@ -640,6 +679,16 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          idPrefix="col-cand"
+          totalItems={candSort.sortedRows.length}
+          page={effectiveCandPage}
+          pageSize={candPageSize}
+          pageSizeOptions={[25, 50, 100, 200]}
+          itemLabel="slots"
+          onPageChange={setCandPage}
+          onPageSizeChange={setCandPageSize}
+        />
       </article>
 
       <article className="hud-window col-attempts-window" aria-labelledby="col-attempts-title">
@@ -719,14 +768,14 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
               </tr>
             </thead>
             <tbody id="colonies-attempts-tbody">
-              {attemptSort.sortedRows.length === 0 ? (
+              {pagedAttempts.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="empty-cell">
                     No colonization attempts recorded yet. Every Colony ship dispatch, kept 300+ roll, and deleted undersized roll is logged here.
                   </td>
                 </tr>
               ) : (
-                attemptSort.sortedRows.map((a, idx) => {
+                pagedAttempts.map((a, idx) => {
                   const aCoords = String(a.target_coords || "—");
                   const aMin = Math.round(finiteNum(a.min_fields_target, minFieldsTarget));
                   const outcome = attemptOutcomeFor(a.event_type, aMin);
@@ -778,6 +827,16 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          idPrefix="col-att"
+          totalItems={attemptSort.sortedRows.length}
+          page={effectiveAttemptPage}
+          pageSize={attemptPageSize}
+          pageSizeOptions={[10, 25, 50, 100]}
+          itemLabel="events"
+          onPageChange={setAttemptPage}
+          onPageSizeChange={setAttemptPageSize}
+        />
       </article>
     </section>
   );

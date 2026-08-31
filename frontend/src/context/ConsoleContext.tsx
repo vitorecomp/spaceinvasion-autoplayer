@@ -995,7 +995,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
 
   const refreshColoniesView = useCallback(async () => {
     try {
-      const data = await rawApiCommand({ command: "colony_candidates", limit: 200 });
+      const data = await rawApiCommand({ command: "colony_candidates", limit: 1000 });
       setColonyData(data);
     } catch (err: any) {
       showFeedback(`Colony grading load failed: ${err.message}`, feedbackKindForError(err));

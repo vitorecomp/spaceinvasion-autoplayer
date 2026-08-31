@@ -8118,7 +8118,7 @@
     }, [setEspData, showFeedback]);
     const refreshColoniesView = reactExports.useCallback(async () => {
       try {
-        const data = await apiCommand({ command: "colony_candidates", limit: 200 });
+        const data = await apiCommand({ command: "colony_candidates", limit: 1e3 });
         setColonyData(data);
       } catch (err) {
         showFeedback(`Colony grading load failed: ${err.message}`, feedbackKindForError(err));
@@ -17681,6 +17681,105 @@
       }
     );
   };
+  const TablePagination = ({
+    idPrefix,
+    totalItems,
+    page,
+    pageSize,
+    pageSizeOptions = [25, 50, 100, 200],
+    itemLabel = "items",
+    onPageChange,
+    onPageSizeChange
+  }) => {
+    const safeSize = Math.max(1, Math.round(pageSize));
+    const totalPages = Math.max(1, Math.ceil(totalItems / safeSize));
+    const safePage = Math.max(1, Math.min(totalPages, Math.round(page)));
+    const startIdx = totalItems === 0 ? 0 : (safePage - 1) * safeSize + 1;
+    const endIdx = totalItems === 0 ? 0 : Math.min(totalItems, safePage * safeSize);
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "div",
+      {
+        className: "table-pagination-bar tabular",
+        id: `${idPrefix}-pagination`,
+        role: "navigation",
+        "aria-label": `${itemLabel} pagination`,
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "table-page-summary", id: `${idPrefix}-page-summary`, children: totalItems === 0 ? `0 ${itemLabel}` : `Showing ${startIdx}–${endIdx} of ${totalItems} ${itemLabel}` }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "table-page-controls", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "table-page-size-label", htmlFor: `${idPrefix}-page-size`, children: [
+              "Rows",
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "select",
+                {
+                  id: `${idPrefix}-page-size`,
+                  className: "table-page-size-select",
+                  value: String(safeSize),
+                  onChange: (e) => {
+                    const parsed = Number(e.target.value);
+                    if (Number.isFinite(parsed) && parsed >= 1) {
+                      onPageSizeChange(Math.round(parsed));
+                    }
+                  },
+                  children: pageSizeOptions.map((opt) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: String(opt), children: opt }, opt))
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "table-page-buttons", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `${idPrefix}-page-first`,
+                  "aria-label": "First page",
+                  disabled: safePage <= 1,
+                  onClick: () => onPageChange(1),
+                  children: "« First"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `${idPrefix}-page-prev`,
+                  "aria-label": "Previous page",
+                  disabled: safePage <= 1,
+                  onClick: () => onPageChange(Math.max(1, safePage - 1)),
+                  children: "‹ Prev"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "table-page-indicator", id: `${idPrefix}-page-indicator`, children: `Page ${safePage} / ${totalPages}` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `${idPrefix}-page-next`,
+                  "aria-label": "Next page",
+                  disabled: safePage >= totalPages,
+                  onClick: () => onPageChange(Math.min(totalPages, safePage + 1)),
+                  children: "Next ›"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `${idPrefix}-page-last`,
+                  "aria-label": "Last page",
+                  disabled: safePage >= totalPages,
+                  onClick: () => onPageChange(totalPages),
+                  children: "Last »"
+                }
+              )
+            ] })
+          ] })
+        ]
+      }
+    );
+  };
   function attemptOutcomeFor(eventType, minFields) {
     const ev = String(eventType ?? "").trim().toLowerCase();
     if (ev.includes("delet") || ev.includes("abandon") || ev.includes("undersized")) {
@@ -17728,6 +17827,10 @@
     const colFilter = uiPrefs.colonyFilter || "all";
     const [minFieldsInput, setMinFieldsInput] = reactExports.useState("300");
     const [allowColonizeInput, setAllowColonizeInput] = reactExports.useState(false);
+    const [candPage, setCandPage] = reactExports.useState(1);
+    const [candPageSize, setCandPageSize] = reactExports.useState(25);
+    const [attemptPage, setAttemptPage] = reactExports.useState(1);
+    const [attemptPageSize, setAttemptPageSize] = reactExports.useState(25);
     reactExports.useEffect(() => {
       var _a2, _b2;
       const cfgMin = (colonyData == null ? void 0 : colonyData.min_colony_fields) ?? ((_a2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a2.min_colony_fields);
@@ -17834,6 +17937,34 @@
     );
     const candSort = useTableSort(filteredCands, candSortCols);
     const attemptSort = useTableSort(attempts, attemptSortCols);
+    const candTotalPages = Math.max(1, Math.ceil(candSort.sortedRows.length / candPageSize));
+    const effectiveCandPage = Math.max(1, Math.min(candTotalPages, candPage));
+    const pagedCands = reactExports.useMemo(() => {
+      const start = (effectiveCandPage - 1) * candPageSize;
+      return candSort.sortedRows.slice(start, start + candPageSize);
+    }, [candSort.sortedRows, effectiveCandPage, candPageSize]);
+    const attemptTotalPages = Math.max(1, Math.ceil(attemptSort.sortedRows.length / attemptPageSize));
+    const effectiveAttemptPage = Math.max(1, Math.min(attemptTotalPages, attemptPage));
+    const pagedAttempts = reactExports.useMemo(() => {
+      const start = (effectiveAttemptPage - 1) * attemptPageSize;
+      return attemptSort.sortedRows.slice(start, start + attemptPageSize);
+    }, [attemptSort.sortedRows, effectiveAttemptPage, attemptPageSize]);
+    reactExports.useEffect(() => {
+      setCandPage(1);
+    }, [colFilter, candSort.sortKey, candSort.sortDirection, candPageSize]);
+    reactExports.useEffect(() => {
+      if (candPage > candTotalPages) {
+        setCandPage(candTotalPages);
+      }
+    }, [candPage, candTotalPages]);
+    reactExports.useEffect(() => {
+      setAttemptPage(1);
+    }, [attemptSort.sortKey, attemptSort.sortDirection, attemptPageSize]);
+    reactExports.useEffect(() => {
+      if (attemptPage > attemptTotalPages) {
+        setAttemptPage(attemptTotalPages);
+      }
+    }, [attemptPage, attemptTotalPages]);
     const handleSavePolicy = async () => {
       const minVal = Math.max(50, Math.min(600, Math.round(finiteNum(minFieldsInput, 300))));
       try {
@@ -18157,7 +18288,7 @@
                 ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Actions" })
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "col-candidates-tbody", children: candSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: colonyData ? "No matching colony slots. Click Scan Galaxy or probe free slots 7-12." : "Scan neighbor systems or sync spy reports to grade free planet slots." }) }) : candSort.sortedRows.map((c) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "col-candidates-tbody", children: pagedCands.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: colonyData ? "No matching colony slots. Click Scan Galaxy or probe free slots 7-12." : "Scan neighbor systems or sync spy reports to grade free planet slots." }) }) : pagedCands.map((c) => {
                 const coords = String(c.coords || "—");
                 const grade = String(c.grade || "?");
                 const uf = finiteNum(c.uninhabited_fields, null);
@@ -18217,7 +18348,20 @@
                   ] }) })
                 ] }, coords);
               }) })
-            ] }) })
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              TablePagination,
+              {
+                idPrefix: "col-cand",
+                totalItems: candSort.sortedRows.length,
+                page: effectiveCandPage,
+                pageSize: candPageSize,
+                pageSizeOptions: [25, 50, 100, 200],
+                itemLabel: "slots",
+                onPageChange: setCandPage,
+                onPageSizeChange: setCandPageSize
+              }
+            )
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window col-attempts-window", "aria-labelledby": "col-attempts-title", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "window-bar window-bar-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
@@ -18312,7 +18456,7 @@
                   }
                 )
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "colonies-attempts-tbody", children: attemptSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No colonization attempts recorded yet. Every Colony ship dispatch, kept 300+ roll, and deleted undersized roll is logged here." }) }) : attemptSort.sortedRows.map((a, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "colonies-attempts-tbody", children: pagedAttempts.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No colonization attempts recorded yet. Every Colony ship dispatch, kept 300+ roll, and deleted undersized roll is logged here." }) }) : pagedAttempts.map((a, idx) => {
                 const aCoords = String(a.target_coords || "—");
                 const aMin = Math.round(finiteNum(a.min_fields_target, minFieldsTarget));
                 const outcome = attemptOutcomeFor(a.event_type, aMin);
@@ -18340,7 +18484,20 @@
                   `${a.id ?? idx}-${aCoords}`
                 );
               }) })
-            ] }) })
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              TablePagination,
+              {
+                idPrefix: "col-att",
+                totalItems: attemptSort.sortedRows.length,
+                page: effectiveAttemptPage,
+                pageSize: attemptPageSize,
+                pageSizeOptions: [10, 25, 50, 100],
+                itemLabel: "events",
+                onPageChange: setAttemptPage,
+                onPageSizeChange: setAttemptPageSize
+              }
+            )
           ] })
         ]
       }

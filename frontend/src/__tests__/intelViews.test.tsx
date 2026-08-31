@@ -1137,4 +1137,97 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
       expect(postSave?.preview_all_galaxies).toBeUndefined();
     });
   });
+
+  it("paginates both Possible Colonies candidates and Tried Planets attempts cleanly", async () => {
+    const manyCandidates = Array.from({ length: 60 }, (_, idx) => ({
+      coords: `02:${String(101 + idx).padStart(3, "0")}:08`,
+      position: 8,
+      orbital_band: "Prime Large Belt",
+      grade: idx < 30 ? "S" : "A",
+      score: 100 - idx,
+      probed: idx < 30,
+      meets_target: idx < 30,
+      uninhabited_fields: idx < 30 ? 340 - idx : null,
+      system_distance: idx + 1,
+      reason: `Candidate #${idx + 1}`,
+    }));
+    const manyAttempts = Array.from({ length: 30 }, (_, idx) => ({
+      id: idx + 1,
+      ts: 1700001000 + idx * 60,
+      target_coords: `02:${String(201 + idx).padStart(3, "0")}:08`,
+      origin_coords: "02:380:12",
+      event_type: idx % 2 === 0 ? "deleted_undersized" : "kept",
+      fields_rolled: idx % 2 === 0 ? 220 : 320,
+      min_fields_target: 300,
+      status_message: `Attempt #${idx + 1}`,
+    }));
+
+    const { container } = render(
+      <Harness
+        page="colonies"
+        colSeed={{
+          min_colony_fields: 300,
+          allow_colonize: true,
+          qualified_count: 30,
+          probed_count: 30,
+          unprobed_count: 30,
+          grade_counts: { S: 30, A: 30 },
+          candidates: manyCandidates,
+          colony_attempts: manyAttempts,
+          colony_attempts_summary: {
+            unique_coords_tried: 30,
+            deleted_undersized_count: 15,
+            kept_count: 15,
+            total_events: 30,
+          },
+        }}
+      >
+        <ColoniesView />
+      </Harness>
+    );
+
+    await waitFor(() => {
+      expect(container.querySelectorAll("#col-candidates-tbody tr").length).toBe(25);
+    });
+    expect(container.querySelector("#col-cand-page-summary")?.textContent).toBe(
+      "Showing 1–25 of 60 slots"
+    );
+    expect(container.querySelector("#col-cand-page-indicator")?.textContent).toBe("Page 1 / 3");
+    expect(container.querySelector("#col-candidates-tbody")?.textContent).toContain("02:101:08");
+    expect(container.querySelector("#col-candidates-tbody")?.textContent).not.toContain("02:126:08");
+
+    // Next page -> slots 26–50
+    fireEvent.click(container.querySelector("#col-cand-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#col-cand-page-indicator")?.textContent).toBe("Page 2 / 3");
+      expect(container.querySelector("#col-candidates-tbody")?.textContent).toContain("02:126:08");
+    });
+
+    // Changing page size to 50 resets to Page 1 and shows 50 rows
+    fireEvent.change(container.querySelector("#col-cand-page-size")!, { target: { value: "50" } });
+    await waitFor(() => {
+      expect(container.querySelector("#col-cand-page-indicator")?.textContent).toBe("Page 1 / 2");
+      expect(container.querySelectorAll("#col-candidates-tbody tr").length).toBe(50);
+    });
+
+    // Switching filter resets to Page 1 cleanly
+    fireEvent.click(container.querySelector("#col-cand-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#col-cand-page-indicator")?.textContent).toBe("Page 2 / 2");
+    });
+    fireEvent.click(container.querySelector('[data-col-filter="qualified"]')!);
+    await waitFor(() => {
+      expect(container.querySelector("#col-cand-page-indicator")?.textContent).toBe("Page 1 / 1");
+      expect(container.querySelectorAll("#col-candidates-tbody tr").length).toBe(30);
+    });
+
+    // Tried Planets table also paginates independently (30 events -> 25 on Page 1, 5 on Page 2)
+    expect(container.querySelectorAll("#colonies-attempts-tbody tr").length).toBe(25);
+    expect(container.querySelector("#col-att-page-indicator")?.textContent).toBe("Page 1 / 2");
+    fireEvent.click(container.querySelector("#col-att-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#col-att-page-indicator")?.textContent).toBe("Page 2 / 2");
+      expect(container.querySelectorAll("#colonies-attempts-tbody tr").length).toBe(5);
+    });
+  });
 });
