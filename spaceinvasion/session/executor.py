@@ -323,6 +323,7 @@ class ActionExecutor:
                 client.driver.execute_script(
                     "arguments[0].value = arguments[1]; "
                     "arguments[0].dispatchEvent(new Event('input', {bubbles: true})); "
+                    "arguments[0].dispatchEvent(new Event('keyup', {bubbles: true})); "
                     "arguments[0].dispatchEvent(new Event('change', {bubbles: true}));",
                     el,
                     value,
@@ -2165,6 +2166,8 @@ class ActionExecutor:
 
     _TRANSPORT_INPUT_CANDIDATES: dict[str, tuple[str, ...]] = {
         "pig_iron": (
+            "fleet_roh",
+            "fleet_roheisen",
             "roheisen",
             "roh",
             "pig_iron",
@@ -2177,6 +2180,9 @@ class ActionExecutor:
             "eisen",
         ),
         "metal": (
+            "fleet_met",
+            "fleet_metall",
+            "fleet_metal",
             "metall",
             "met",
             "metal",
@@ -2187,9 +2193,15 @@ class ActionExecutor:
             "r2",
         ),
         "kryptonite": (
+            "fleet_kry",
+            "fleet_krypt",
+            "fleet_kryp",
+            "fleet_kryptonit",
+            "fleet_kryptonite",
             "kryptonit",
             "krypt",
             "kryp",
+            "kry",
             "kryptonite",
             "res3",
             "res_3",
@@ -2198,6 +2210,8 @@ class ActionExecutor:
             "r3",
         ),
         "spice": (
+            "fleet_spi",
+            "fleet_spice",
             "spice",
             "spi",
             "res4",
@@ -2252,6 +2266,10 @@ class ActionExecutor:
             el = by_key.get(rk)
             if el is None:
                 continue
+            if val <= 0:
+                existing_val = str(el.get_attribute("value") or "").strip()
+                if existing_val in ("", "0"):
+                    continue
             safe_val = str(max(0, game_data.cap_json_int(val)))
             self._set_text_input_value(client, el, safe_val)
         return True, seen_names
@@ -3161,7 +3179,11 @@ class ActionExecutor:
                 message=f"Aborted: insufficient surplus resources on [{origin.coords}] to transport.",
             )
         miner_spec = game_data.safe_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
-        ships_to_send = select_transport_ships(origin.ships, total_units, miner_spec_level=miner_spec)
+        ships_to_send = select_transport_ships(
+            origin.ships,
+            total_units + fuel_reserve,
+            miner_spec_level=miner_spec,
+        )
         if not ships_to_send:
             return ExecutionResult(
                 executed=False,
@@ -3170,8 +3192,10 @@ class ActionExecutor:
                 message=f"Aborted: no cargo ships (s1/s2/s3) stationed on [{origin.coords}].",
             )
         cap = fleet_cargo_capacity(ships_to_send, miner_spec_level=miner_spec)
-        if total_units > cap and cap > 0:
-            ratio = cap / float(total_units)
+        hold_fuel_buf = min(cap // 10, max(fuel_reserve, int(cap * 0.03))) if cap > 0 else 0
+        effective_cap = max(0, cap - hold_fuel_buf)
+        if total_units > effective_cap and effective_cap > 0:
+            ratio = effective_cap / float(total_units)
             safe_cargo = Resources(
                 pig_iron=int(safe_cargo.pig_iron * ratio),
                 metal=int(safe_cargo.metal * ratio),

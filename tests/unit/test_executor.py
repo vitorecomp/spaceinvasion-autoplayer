@@ -3823,6 +3823,71 @@ class TestActionExecutor(unittest.TestCase):
         inp_spi.send_keys.assert_called_once_with("1000")
         launch_ok.click.assert_called_once()
 
+        # 5. Live SpaceInvasion RETRO input names (fleet_roh, fleet_met, fleet_kry, fleet_spi)
+        #    + partial-zero cargo (skips untouched "0" inputs) + full-hold fuel headroom scaling
+        step2_retro_html = """
+        <form id="fleet" action="indexInternal.es?action=internalSendFleetFinish">
+          <label><input type="radio" name="todo" value="TRANSPORT"/> Transport</label>
+          <input name="fleet_roh" type="text" value="0"/>
+          <input name="fleet_met" type="text" value="0"/>
+          <input name="fleet_kry" type="text" value="0"/>
+          <input name="fleet_spi" type="text" value="0"/>
+          <input id="goButton" type="submit" value="Launch"/>
+        </form>
+        """
+        r_trn3 = _mk_el({"name": "todo", "value": "TRANSPORT"})
+        r_trn3.is_selected.side_effect = [False, True]
+        f_roh = _mk_el({"name": "fleet_roh", "value": "0"})
+        f_met = _mk_el({"name": "fleet_met", "value": "0"})
+        f_kry = _mk_el({"name": "fleet_kry", "value": "0"})
+        f_spi = _mk_el({"name": "fleet_spi", "value": "0"})
+        f_s2 = _mk_el({"name": "ship_2"})
+        launch_retro = _mk_el({"id": "goButton"})
+        by_name_retro = {
+            "ship_2": [f_s2],
+            "fleet_roh": [f_roh],
+            "fleet_met": [f_met],
+            "fleet_kry": [f_kry],
+            "fleet_spi": [f_spi],
+        }
+        drv_retro = MagicMock()
+        drv_retro.find_elements.side_effect = lambda by, sel: (
+            by_name_retro.get(sel, [])
+            if by == "name"
+            else (
+                [r_trn3]
+                if "radio" in str(sel)
+                else ([f_roh, f_met, f_kry, f_spi] if 'input[type="text"]' in str(sel) else [])
+            )
+        )
+        drv_retro.find_element.side_effect = lambda by, sel: (
+            launch_retro if "goButton" in str(sel) else _mk_el()
+        )
+        drv_retro.page_source = step2_retro_html
+        cli_retro = MagicMock(spec=GameBrowserClient)
+        cli_retro.driver = drv_retro
+        cli_retro.navigate_menu.return_value = step1_html
+        cli_retro._wait_frame_ready.side_effect = [step2_retro_html, "<div>Fleet sent</div>"]
+        cli_retro.read_planets_overview.return_value = st
+        partial_act = PlannedAction(
+            priority="P1",
+            kind="TRANSPORT",
+            planet_id=101,
+            planet_coords="02:380:12",
+            target_id=202,
+            target_name="Transport -> 02:379:05 (Colony2)",
+            cost=Resources(pig_iron=8_000, metal=0, kryptonite=3_000, spice=0),
+            reason="Supply own colony (RETRO fleet_* inputs)",
+            executable_now=True,
+        )
+        res_retro = ex_live.execute_action(cli_retro, st, partial_act)
+        self.assertTrue(res_retro.executed, res_retro.message)
+        f_roh.send_keys.assert_called_once_with("8000")
+        f_kry.send_keys.assert_called_once_with("3000")
+        f_met.send_keys.assert_not_called()
+        f_spi.send_keys.assert_not_called()
+        launch_retro.click.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
