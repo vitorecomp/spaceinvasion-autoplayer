@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import asdict, replace
+import errno
 import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +18,7 @@ from pathlib import Path
 import random
 import re
 import secrets
+import sys
 import threading
 import time
 from typing import Any, Callable, Deque, Optional, Sequence
@@ -9979,9 +9981,36 @@ class _RequestTooLargeError(Exception):
     """Raised when an HTTP POST request exceeds `MAX_REQUEST_BYTES`."""
 
 
+_CLIENT_DISCONNECT_ERRNOS = frozenset(
+    {
+        errno.EPIPE,
+        errno.ECONNRESET,
+        errno.ECONNABORTED,
+        getattr(errno, "ESHUTDOWN", errno.EPIPE),
+    }
+)
+
+
+def _is_client_disconnect_error(exc: Optional[BaseException]) -> bool:
+    """Return True for benign peer-disconnect socket errors (e.g. BrokenPipeError)."""
+    if exc is None:
+        return False
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+        return True
+    if isinstance(exc, OSError) and exc.errno in _CLIENT_DISCONNECT_ERRNOS:
+        return True
+    return False
+
+
 class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        exc = sys.exc_info()[1]
+        if _is_client_disconnect_error(exc):
+            return
+        super().handle_error(request, client_address)
 
 
 def create_api_server(
@@ -10054,6 +10083,33 @@ def create_api_server(
         }
 
     class Handler(BaseHTTPRequestHandler):
+        def _send_bytes(
+            self,
+            status: int,
+            raw: bytes,
+            *,
+            content_type: Optional[str] = None,
+            extra_headers: Optional[dict[str, str]] = None,
+        ) -> None:
+            try:
+                self.send_response(status)
+                if content_type is not None:
+                    self.send_header("Content-Type", content_type)
+                self.send_header("Cache-Control", "no-store")
+                if extra_headers:
+                    for hk, hv in extra_headers.items():
+                        self.send_header(str(hk), str(hv))
+                if raw or content_type is not None:
+                    self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                if raw:
+                    self.wfile.write(raw)
+            except OSError as exc:
+                if _is_client_disconnect_error(exc):
+                    self.close_connection = True
+                    return
+                raise
+
         def _send_json(
             self,
             status: int,
@@ -10063,15 +10119,12 @@ def create_api_server(
         ) -> None:
             clean_body = _sanitize_finite_json(body)
             raw = json.dumps(clean_body, allow_nan=False).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            if extra_headers:
-                for hk, hv in extra_headers.items():
-                    self.send_header(str(hk), str(hv))
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
+            self._send_bytes(
+                status,
+                raw,
+                content_type="application/json; charset=utf-8",
+                extra_headers=extra_headers,
+            )
 
         def _send_static(self, filename: str, content_type: str) -> None:
             asset_path = UI_DIR / filename
@@ -10079,12 +10132,7 @@ def create_api_server(
                 self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"Missing UI asset {filename}"})
                 return
             raw = asset_path.read_bytes()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
+            self._send_bytes(HTTPStatus.OK, raw, content_type=content_type)
 
         def log_message(self, format: str, *args: Any) -> None:
             return
@@ -10145,12 +10193,7 @@ def create_api_server(
                     }
                     ctype_asset = ext_types.get(ext, "application/octet-stream")
                     raw_asset = cand_path.read_bytes()
-                    self.send_response(HTTPStatus.OK)
-                    self.send_header("Content-Type", ctype_asset)
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", str(len(raw_asset)))
-                    self.end_headers()
-                    self.wfile.write(raw_asset)
+                    self._send_bytes(HTTPStatus.OK, raw_asset, content_type=ctype_asset)
                     return
                 if parsed.path == "/favicon.ico":
                     ico_path = UI_DIR / "favicon.ico"
@@ -10161,9 +10204,7 @@ def create_api_server(
                     if svg_path.is_file():
                         self._send_static("favicon.svg", "image/svg+xml")
                         return
-                    self.send_response(HTTPStatus.NO_CONTENT)
-                    self.send_header("Cache-Control", "no-store")
-                    self.end_headers()
+                    self._send_bytes(HTTPStatus.NO_CONTENT, b"")
                     return
                 if parsed.path == "/ui-version":
                     self._send_json(
@@ -10204,6 +10245,11 @@ def create_api_server(
                 self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, _build_antibot_response(exc))
             except SpaceInvasionAuthError as exc:
                 self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": _redact_api_payload(exc)})
+            except OSError as exc:
+                if _is_client_disconnect_error(exc):
+                    self.close_connection = True
+                    return
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": _redact_api_payload(exc)})
             except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": _redact_api_payload(exc)})
 
@@ -10249,6 +10295,12 @@ def create_api_server(
                 body = _build_antibot_response(exc)
             except SpaceInvasionAuthError as exc:
                 status_code = HTTPStatus.SERVICE_UNAVAILABLE
+                body = {"ok": False, "error": _redact_api_payload(exc)}
+            except OSError as exc:
+                if _is_client_disconnect_error(exc):
+                    self.close_connection = True
+                    return
+                status_code = HTTPStatus.INTERNAL_SERVER_ERROR
                 body = {"ok": False, "error": _redact_api_payload(exc)}
             except Exception as exc:
                 status_code = HTTPStatus.INTERNAL_SERVER_ERROR

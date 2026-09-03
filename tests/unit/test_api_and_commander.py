@@ -6267,6 +6267,72 @@ class TestApiAndCommander(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_broken_pipe_client_disconnect_suppressed_cleanly(self) -> None:
+        """Client disconnecting mid-response (GET /dashboard or POST /command) must not print BrokenPipeError tracebacks."""
+        import contextlib
+        import io
+        import socket
+        import time
+
+        entered = threading.Event()
+        release = threading.Event()
+        bridge = MagicMock()
+        bridge.log_dir = None
+
+        def _slow_dashboard(refresh: bool = False) -> dict[str, Any]:
+            entered.set()
+            release.wait(timeout=2.0)
+            return {"ok": True, "blob": "x" * 65536}
+
+        bridge.dashboard.side_effect = _slow_dashboard
+        bridge.health.return_value = {"ok": True}
+        bridge.handle_command.side_effect = lambda _p: _slow_dashboard(False)
+
+        server = create_api_server(bridge, host="127.0.0.1", port=0)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        err_buf = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err_buf):
+                # 1. GET /dashboard client drops connection before headers/body write
+                with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+                    sock.sendall(b"GET /dashboard?refresh=0 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+                    self.assertTrue(entered.wait(timeout=2.0))
+                # Socket is now closed; release handler to attempt write -> BrokenPipeError/ConnectionResetError
+                release.set()
+                time.sleep(0.1)
+
+                # 2. POST /command client drops connection before response write
+                entered.clear()
+                release.clear()
+                body_bytes = b'{"command":"plan"}'
+                with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+                    sock.sendall(
+                        f"POST /command HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {len(body_bytes)}\r\nConnection: close\r\n\r\n".encode("ascii")
+                        + body_bytes
+                    )
+                    self.assertTrue(entered.wait(timeout=2.0))
+                release.set()
+                time.sleep(0.1)
+
+            stderr_txt = err_buf.getvalue()
+            self.assertNotIn("BrokenPipeError", stderr_txt)
+            self.assertNotIn("ConnectionResetError", stderr_txt)
+            self.assertNotIn("Traceback", stderr_txt)
+
+            # 3. Server remains healthy for subsequent requests
+            import json as _json
+            import urllib.request as _urlreq
+
+            with _urlreq.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertTrue(_json.loads(resp.read().decode("utf-8"))["ok"])
+        finally:
+            release.set()
+            server.shutdown()
+            server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()
