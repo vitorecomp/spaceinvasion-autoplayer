@@ -557,6 +557,7 @@ class ActionExecutor:
         paced = False
         nav_token: Optional[str] = None
         switched = False
+        updated_html: Optional[str] = None
         dom_selected_pid: Optional[int] = None
 
         for attempt in range(2):
@@ -564,14 +565,14 @@ class ActionExecutor:
             try:
                 select_el = client.driver.find_element(By.CSS_SELECTOR, 'select[name="planet"]')
             except NoSuchElementException:
-                return False, None
+                return False, updated_html
             except (StaleElementReferenceException, ElementNotInteractableException, WebDriverException) as exc:
                 if isinstance(exc, StaleElementReferenceException) and attempt == 0:
                     continue
                 fallback_pid = dom_selected_pid if dom_selected_pid is not None else obs_html_pid
                 if fallback_pid is not None:
                     self._record_observed_planet(fallback_pid, confirmed=True)
-                return False, None
+                return False, updated_html
 
             chosen_val = target_value
             chosen_opt = None
@@ -598,6 +599,9 @@ class ActionExecutor:
                     if target_re.search(val):
                         if is_sel:
                             self._record_observed_planet(pid, confirmed=True)
+                            if attempt > 0:
+                                cur_page_html = str(getattr(client.driver, "page_source", "") or "")
+                                return True, (cur_page_html if cur_page_html.strip() else updated_html)
                             return False, None
                         chosen_val = val
                         chosen_opt = opt
@@ -607,22 +611,27 @@ class ActionExecutor:
                 fallback_pid = dom_selected_pid if dom_selected_pid is not None else obs_html_pid
                 if fallback_pid is not None:
                     self._record_observed_planet(fallback_pid, confirmed=True)
-                return False, None
+                return False, updated_html
 
             if dom_selected_pid is not None:
                 self._record_observed_planet(dom_selected_pid, confirmed=True)
             if chosen_val is None and chosen_opt is None:
-                return False, None
+                return False, updated_html
             if dom_has_newplanet and chosen_opt is None:
-                return False, None
+                return False, updated_html
             if chosen_opt is None and dom_selected_pid is not None and dom_selected_pid == pid:
+                if attempt > 0:
+                    cur_page_html = str(getattr(client.driver, "page_source", "") or "")
+                    return True, (cur_page_html if cur_page_html.strip() else updated_html)
                 return False, None
 
             if not paced:
                 self._pace_action(client, priority="interactive")
-                self._record_observed_planet(None, confirmed=False)
-                nav_token = self._mark_frame_nav(client)
                 paced = True
+            self._record_observed_planet(None, confirmed=False)
+            # Always stamp a fresh pre-navigation token on EVERY attempt so a retry after an
+            # `internalBuildings` countdown auto-reload never returns the stale document early.
+            nav_token = self._mark_frame_nav(client)
 
             switched = False
             stale_during_switch = False
@@ -677,27 +686,31 @@ class ActionExecutor:
                     stale_during_switch = True
                 except Exception:
                     switched = False
+
             if switched:
-                break
+                updated_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token)
+                obs_after = self._extract_selected_planet_id(updated_html or "")
+                if obs_after is not None:
+                    self._record_observed_planet(obs_after, confirmed=True)
+                    if obs_after == pid:
+                        return True, updated_html
+                    switched = False
+                    # Concurrent countdown auto-reload on `internalBuildings` can clear nav_token
+                    # while keeping the previous planet selected; retry once on the reloaded DOM.
+                    if attempt == 0:
+                        continue
+                    return False, updated_html
+                self._record_observed_planet(pid, confirmed=True)
+                return True, updated_html
+
             if stale_during_switch and attempt == 0:
                 continue
             break
 
-        updated_html: Optional[str] = None
-        if switched:
-            updated_html = client._wait_frame_ready("F_Hauptframe", nav_token=nav_token)
-            obs_after = self._extract_selected_planet_id(updated_html or "")
-            if obs_after is not None:
-                self._record_observed_planet(obs_after, confirmed=True)
-                if obs_after != pid:
-                    switched = False
-            else:
-                self._record_observed_planet(pid, confirmed=True)
-        else:
-            fallback_pid = dom_selected_pid if dom_selected_pid is not None else obs_html_pid
-            if fallback_pid is not None:
-                self._record_observed_planet(fallback_pid, confirmed=True)
-        return switched, updated_html
+        fallback_pid = dom_selected_pid if dom_selected_pid is not None else obs_html_pid
+        if fallback_pid is not None:
+            self._record_observed_planet(fallback_pid, confirmed=True)
+        return False, updated_html
 
     def _navigate_and_select_planet(
         self,
@@ -730,7 +743,13 @@ class ActionExecutor:
                     html=b_html_str,
                     require_confirm=True,
                 )
-                if self._confirmed_planet_mismatch(planet_id) is not None or (b_needs_switch and not switched):
+                confirmed_target = (
+                    self.last_observed_active_planet_id == planet_id
+                    and self.last_observed_active_planet_confirmed is True
+                )
+                if self._confirmed_planet_mismatch(planet_id) is not None or (
+                    b_needs_switch and not switched and not confirmed_target
+                ):
                     return ""
             return _call_with_optional_priority(
                 client.navigate_menu,
@@ -777,7 +796,13 @@ class ActionExecutor:
             switched, updated_html = self._select_planet_if_needed(client, planet_id, html=html_str)
             if switched and updated_html:
                 html = updated_html
-        if self._confirmed_planet_mismatch(planet_id) is not None or (needs_switch and not switched):
+        confirmed_target = (
+            self.last_observed_active_planet_id == planet_id
+            and self.last_observed_active_planet_confirmed is True
+        )
+        if self._confirmed_planet_mismatch(planet_id) is not None or (
+            needs_switch and not switched and not confirmed_target
+        ):
             return ""
         return html
 

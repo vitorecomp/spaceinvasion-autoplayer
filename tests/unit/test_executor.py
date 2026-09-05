@@ -2193,6 +2193,75 @@ class TestActionExecutor(unittest.TestCase):
         self.assertEqual(ex_d.last_observed_active_planet_id, 12453)
         self.assertTrue(ex_d.last_observed_active_planet_confirmed)
 
+        # (e) Countdown auto-reload race on internalBuildings (12453 -> 12476):
+        #     attempt 0 hits StaleElementReferenceException OR _wait_frame_ready returns
+        #     the countdown-reloaded 12453 page; attempt 1 must stamp a FRESH nav_token
+        #     and complete the switch to 12476 cleanly.
+        from selenium.common.exceptions import StaleElementReferenceException
+
+        opt_12453_sel = MagicMock()
+        opt_12453_sel.get_attribute.return_value = "indexInternal.es?action=internalBuildings&newPlanet=12453"
+        opt_12453_sel.is_selected.return_value = True
+        opt_12476_unsel = MagicMock()
+        opt_12476_unsel.get_attribute.return_value = "indexInternal.es?action=internalBuildings&newPlanet=12476"
+        opt_12476_unsel.is_selected.return_value = False
+        opt_12476_unsel.click.side_effect = ElementNotInteractableException("hidden")
+        sel_race = MagicMock()
+        sel_race.tag_name = "select"
+        sel_race.get_dom_attribute.return_value = None
+        sel_race.find_elements.return_value = [opt_12476_unsel, opt_12453_sel]
+
+        client_race = MagicMock(spec=GameBrowserClient)
+        client_race.driver = MagicMock()
+        client_race.driver.find_element.return_value = sel_race
+        client_race.driver.execute_script.side_effect = lambda script, *args: (
+            True if "sel.onchange" in str(script) else None
+        )
+        client_race._mark_frame_navigation.side_effect = ["tok-1", "tok-2"]
+        client_race._wait_frame_ready.side_effect = [retro_after_html, retro_before_html]
+
+        ex_e = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
+        with patch("spaceinvasion.executor.Select") as mock_sel_cls_e:
+            mock_sel_cls_e.return_value.select_by_value.side_effect = ElementNotInteractableException("hidden")
+            switched_e, updated_e = ex_e._select_planet_if_needed(
+                client_race, 12476, html=retro_after_html, require_confirm=True
+            )
+        self.assertTrue(switched_e)
+        self.assertEqual(updated_e, retro_before_html)
+        self.assertEqual(client_race._mark_frame_navigation.call_count, 2)
+        self.assertEqual(client_race._wait_frame_ready.call_count, 2)
+        self.assertEqual(client_race._wait_frame_ready.call_args_list[0].kwargs.get("nav_token"), "tok-1")
+        self.assertEqual(client_race._wait_frame_ready.call_args_list[1].kwargs.get("nav_token"), "tok-2")
+        self.assertEqual(ex_e.last_observed_active_planet_id, 12476)
+        self.assertTrue(ex_e.last_observed_active_planet_confirmed)
+
+        # (f) StaleElementReferenceException during attempt 0 also stamps a FRESH nav_token on attempt 1
+        client_stale_nav = MagicMock(spec=GameBrowserClient)
+        client_stale_nav.driver = MagicMock()
+        client_stale_nav.driver.find_element.return_value = sel_race
+        client_stale_nav.driver.execute_script.side_effect = lambda script, *args: (
+            True if "sel.onchange" in str(script) else None
+        )
+        client_stale_nav._mark_frame_navigation.side_effect = ["tok-a", "tok-b"]
+        client_stale_nav._wait_frame_ready.return_value = retro_before_html
+        ex_f = ActionExecutor(dry_run=False, action_delay_range=(0.0, 0.0))
+        with patch("spaceinvasion.executor.Select") as mock_sel_cls_f:
+            mock_sel_cls_f.return_value.select_by_value.side_effect = [
+                StaleElementReferenceException("countdown reload"),
+                ElementNotInteractableException("hidden"),
+            ]
+            opt_12476_unsel.click.side_effect = [
+                StaleElementReferenceException("countdown reload"),
+                ElementNotInteractableException("hidden"),
+            ]
+            switched_f, _ = ex_f._select_planet_if_needed(
+                client_stale_nav, 12476, html=retro_after_html, require_confirm=True
+            )
+        self.assertTrue(switched_f)
+        self.assertEqual(client_stale_nav._mark_frame_navigation.call_count, 2)
+        self.assertEqual(client_stale_nav._wait_frame_ready.call_args.kwargs.get("nav_token"), "tok-b")
+        self.assertEqual(ex_f.last_observed_active_planet_id, 12476)
+
     def test_tier5_bounce_detection_raid_stats_preserved_stale_retry_and_german_missions(self) -> None:
         from bs4 import BeautifulSoup
         from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
