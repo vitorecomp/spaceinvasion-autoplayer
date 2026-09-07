@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import signal
@@ -9,9 +10,69 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 RELOAD_CHILD_ENV = "SPACEINVASION_RELOAD_CHILD"
+
+
+def _file_sha256(path_str: str) -> Optional[str]:
+    """Return hex SHA-256 digest of `path_str`, or `None` if unreadable."""
+    try:
+        h = hashlib.sha256()
+        with open(path_str, "rb") as fh:
+            while True:
+                chunk = fh.read(65536)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _snapshot_digests(mtimes: Mapping[str, int]) -> dict[str, str]:
+    digests: dict[str, str] = {}
+    for path_str in mtimes:
+        digest = _file_sha256(path_str)
+        if digest is not None:
+            digests[path_str] = digest
+    return digests
+
+
+def _detect_content_changes(
+    prev_mtimes: Mapping[str, int],
+    prev_digests: Mapping[str, str],
+    curr_mtimes: Mapping[str, int],
+) -> tuple[list[str], dict[str, str]]:
+    """Return `(changed_paths, updated_digests)`, ignoring mtime-only touches and transient blips."""
+    next_digests = dict(prev_digests)
+    changed: list[str] = []
+
+    for path_str, mtime_ns in curr_mtimes.items():
+        if path_str not in prev_mtimes:
+            digest = _file_sha256(path_str)
+            if digest is not None:
+                next_digests[path_str] = digest
+                changed.append(path_str)
+            continue
+        if mtime_ns != prev_mtimes[path_str]:
+            digest = _file_sha256(path_str)
+            if digest is None:
+                # Transient read/stat failure during atomic write; keep prior digest.
+                continue
+            old_digest = prev_digests.get(path_str)
+            next_digests[path_str] = digest
+            if old_digest is None or digest != old_digest:
+                changed.append(path_str)
+
+    for path_str in list(prev_mtimes):
+        if path_str not in curr_mtimes:
+            # Only treat removal as a change when the path is genuinely absent on disk.
+            if not Path(path_str).exists():
+                next_digests.pop(path_str, None)
+                changed.append(path_str)
+
+    return changed, next_digests
 
 
 def snapshot_mtimes(paths: Sequence[Path]) -> dict[str, int]:
@@ -78,6 +139,7 @@ def watch_and_run(
     proc: Optional[subprocess.Popen] = None
     try:
         mtimes = snapshot_mtimes(watch_paths)
+        digests = _snapshot_digests(mtimes)
         proc = subprocess.Popen(list(cmd), env=env)
         print(f"[{label}] hot-reloader started (pid={proc.pid}, watching {len(mtimes)} files)", flush=True)
         while True:
@@ -86,14 +148,21 @@ def watch_and_run(
             current = snapshot_mtimes(watch_paths)
 
             if current != mtimes:
-                # Brief debounce so multi-file saves settle before respawn
+                # Brief debounce so multi-file saves settle before checking content hashes
                 time.sleep(debounce_seconds)
-                mtimes = snapshot_mtimes(watch_paths)
-                print(f"[{label}] code change detected -> hot-reloading...", flush=True)
-                _terminate_child(proc)
-                proc = subprocess.Popen(list(cmd), env=env)
-                print(f"[{label}] restarted (pid={proc.pid})", flush=True)
-                continue
+                settled = snapshot_mtimes(watch_paths)
+                changed, next_digests = _detect_content_changes(mtimes, digests, settled)
+                mtimes = settled
+                digests = next_digests
+                if changed:
+                    names = ", ".join(Path(p).name for p in changed[:4])
+                    if len(changed) > 4:
+                        names += f", +{len(changed) - 4} more"
+                    print(f"[{label}] code change detected ({names}) -> hot-reloading...", flush=True)
+                    _terminate_child(proc)
+                    proc = subprocess.Popen(list(cmd), env=env)
+                    print(f"[{label}] restarted (pid={proc.pid})", flush=True)
+                    continue
 
             if rc is not None:
                 if rc != 0:

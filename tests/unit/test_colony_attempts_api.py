@@ -253,6 +253,63 @@ class TestColonyAttemptsApi(unittest.TestCase):
         bridge2._record_state(_state(home, big, small_parsed))
         self.assertEqual(len(bridge2._db.get_colony_attempts(limit=10)), 2)
 
+    def test_abandon_colony_handle_command_invalidates_caches_without_attribute_error(self) -> None:
+        from unittest.mock import MagicMock, patch
+        from spaceinvasion.session.executor import ExecutionResult
+
+        home = _planet(101, "02:380:12")
+        col = _planet(202, "02:381:08", fields_max=180, fields_used=0, temperature=-12, buildings={}, ships={})
+        st = _state(home, col)
+        self.bridge._last_state = st
+        self.bridge._last_buildings_fetched = True
+        self.bridge._last_shipyard_sync_at = 12345.0
+        self.bridge._last_shipyard_sync_sig = (202, 1, ())
+        self.bridge._economy_rates[202] = {"resource1": 100, "resource2": 100}
+        self.bridge._economy_sync_timestamps[202] = 12345.0
+        self.bridge._throttle_timestamps[202] = 12345.0
+        self.bridge._fleet_slot_cooldown_until[202] = 99999.0
+        self.bridge._live_executor.allow_colonize = True
+
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value = fake_client
+        fake_client.__exit__.return_value = False
+        fake_client.read_full_snapshot.return_value = st
+        fake_client.last_snapshot_observed_active_planet = True
+        self.bridge._client_factory = lambda _port: fake_client
+
+        exec_res = ExecutionResult(
+            action=PlannedAction(
+                priority="P1",
+                kind="ABANDON_COLONY",
+                planet_id=202,
+                planet_coords="02:381:08",
+                target_level=300,
+                target_name="Delete colony 02:381:08 (180/300 fields)",
+                reason="Delete undersized colony",
+                executable_now=True,
+            ),
+            executed=True,
+            dry_run=False,
+            message="Colony deleted",
+        )
+        with patch.object(self.bridge._live_executor, "execute_action", return_value=exec_res):
+            res = self.bridge.handle_command(
+                {"command": "abandon_colony", "planet_id": 202, "dry_run": False}
+            )
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["executed"])
+        self.assertFalse(self.bridge._last_buildings_fetched)
+        self.assertEqual(self.bridge._last_shipyard_sync_at, 0.0)
+        self.assertIsNone(self.bridge._last_shipyard_sync_sig)
+        self.assertNotIn(202, self.bridge._economy_rates)
+        self.assertNotIn(202, self.bridge._economy_sync_timestamps)
+        self.assertNotIn(202, self.bridge._throttle_timestamps)
+        self.assertNotIn(202, self.bridge._fleet_slot_cooldown_until)
+        assert self.bridge._db is not None
+        rows = self.bridge._db.get_colony_attempts(limit=10)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["event_type"], "deleted_undersized")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1206,6 +1206,8 @@ class GameApiBridge:
         self._dash_static_cache_json: Optional[str] = None
         self._dash_ag_cache_key: Optional[Any] = None
         self._dash_ag_cache_json: Optional[str] = None
+        self._last_bot_control_payload: Optional[dict[str, Any]] = None
+        self._last_dashboard_payload: Optional[dict[str, Any]] = None
         resolved_db = (
             db_path
             if db_path is not None
@@ -2669,7 +2671,35 @@ class GameApiBridge:
         )
 
     def health(self) -> dict[str, Any]:
-        with self._lock:
+        acquired = self._lock.acquire(timeout=1.5)
+        if not acquired:
+            port_open = is_debug_port_open(self.debug_port)
+            rate_rem = self._page_limiter.rate_limit_remaining()
+            bot_ctrl_snap = dict(self._bot_control)
+            cap_blocked = bool(bot_ctrl_snap.get("captcha_blocked"))
+            in_game = port_open and not cap_blocked and (self._last_state is not None or rate_rem > 0.0)
+            current_url = self._last_url
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": port_open,
+                        "busy": True,
+                        "debug_port": self.debug_port,
+                        "debug_port_open": port_open,
+                        "in_game": in_game,
+                        "rate_limited": rate_rem > 0.0,
+                        "retry_after": round(rate_rem, 1),
+                        "page_views_last_60s": self._page_limiter.views_last_60s(),
+                        "page_view_limit_per_minute": self._page_limiter.max_views_per_minute,
+                        "rate_limit_hits": self._page_limiter.rate_limit_hits,
+                        "url": current_url if current_url else None,
+                        "action_batch_interval_seconds": self.strategy_config.action_batch_interval_seconds,
+                        "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
+                        "bot_control": bot_ctrl_snap,
+                    }
+                )
+            )
+        try:
             port_open = is_debug_port_open(self.debug_port)
             rate_rem = self._page_limiter.rate_limit_remaining()
             cap_blocked = bool(self._bot_control.get("captcha_blocked"))
@@ -2721,15 +2751,44 @@ class GameApiBridge:
                     }
                 )
             )
+        finally:
+            self._lock.release()
 
     def get_bot_control(self) -> dict[str, Any]:
-        with self._lock:
+        acquired = self._lock.acquire(timeout=1.5)
+        if not acquired:
+            cached = self._last_bot_control_payload
+            bot_ctrl_snap = dict(self._bot_control)
+            if isinstance(cached, Mapping):
+                fallback = dict(cached)
+                fallback.update(bot_ctrl_snap)
+                fallback["ok"] = True
+                fallback["busy"] = True
+                return _sanitize_finite_json(_redact_api_payload(fallback))
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": True,
+                        "busy": True,
+                        **bot_ctrl_snap,
+                        "scanned_systems": dict(self._scanned_systems),
+                        "throttle_cooldowns": {},
+                        "fleet_slot_cooldowns": {},
+                        "economy_sync_timestamps": dict(self._economy_sync_timestamps),
+                        "metal_production_by_planet": {},
+                        "manual_queue": [],
+                        "transmitter_status": {},
+                        "galaxy_sweep": {},
+                    }
+                )
+            )
+        try:
             metal_prod = {
                 str(pid): _safe_api_int(rates.get("resource2", 100), 100) > 0
                 for pid, rates in self._economy_rates.items()
                 if isinstance(rates, Mapping)
             }
-            return _sanitize_finite_json(
+            payload = _sanitize_finite_json(
                 _redact_api_payload(
                     {
                         "ok": True,
@@ -2749,6 +2808,11 @@ class GameApiBridge:
                     }
                 )
             )
+            if isinstance(payload, dict):
+                self._last_bot_control_payload = payload
+            return payload
+        finally:
+            self._lock.release()
 
     def _read_log_tail(self, filename: str, lines: int = 40) -> str:
         if self.log_dir is None:
@@ -3206,7 +3270,18 @@ class GameApiBridge:
 
     def dashboard(self, *, refresh: bool = False) -> dict[str, Any]:
         """Return combined UI telemetry, plan, buildings ETAs, combat, ranking, config, and logs."""
-        with self._lock:
+        if not refresh and isinstance(self._last_dashboard_payload, Mapping):
+            acquired = self._lock.acquire(timeout=2.0)
+            if not acquired:
+                fallback = dict(self._last_dashboard_payload)
+                fallback["bot_control"] = _sanitize_finite_json(
+                    _redact_api_payload(dict(self._bot_control))
+                )
+                fallback["busy"] = True
+                return fallback
+        else:
+            self._lock.acquire()
+        try:
             port_open = is_debug_port_open(self.debug_port)
             rate_rem = self._page_limiter.rate_limit_remaining()
             cap_blocked_dash = bool(self._bot_control.get("captcha_blocked"))
@@ -3390,7 +3465,7 @@ class GameApiBridge:
                 and isinstance(ag_obj.get("ga_summary"), dict)
             ):
                 ag_obj["ga_summary"]["elapsed_ms"] = env_opt["elapsed_ms"]
-            return {
+            result = {
                 "ok": envelope["ok"],
                 "server_boot_id": envelope["server_boot_id"],
                 **(ui_assets_clean if isinstance(ui_assets_clean, dict) else {}),
@@ -3413,6 +3488,10 @@ class GameApiBridge:
                 "db_summary": envelope["db_summary"],
                 "logs": envelope["logs"],
             }
+            self._last_dashboard_payload = result
+            return result
+        finally:
+            self._lock.release()
 
     get_dashboard = dashboard
 
@@ -9163,8 +9242,14 @@ class GameApiBridge:
                             )
                         res_ab = self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
                         if isinstance(res_ab, Mapping) and res_ab.get("executed"):
-                            self._fetched_buildings_planets.discard(planet.planet_id)
-                            self._fetched_shipyard_planets.discard(planet.planet_id)
+                            self._last_buildings_fetched = False
+                            self._last_shipyard_sync_at = 0.0
+                            self._last_shipyard_sync_sig = None
+                            self._economy_rates.pop(planet.planet_id, None)
+                            self._economy_sync_timestamps.pop(planet.planet_id, None)
+                            self._throttle_timestamps.pop(planet.planet_id, None)
+                            self._fleet_slot_cooldown_until.pop(planet.planet_id, None)
+                            self._invalidate_dashboard_cache()
                         return res_ab
 
                     if cmd == "attack":

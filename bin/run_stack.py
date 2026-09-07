@@ -69,13 +69,15 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _wait_api_health(url: str, timeout: float = 15.0, proc: Optional[subprocess.Popen] = None) -> bool:
+def _wait_api_health(url: str, timeout: float = 25.0, proc: Optional[subprocess.Popen] = None) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if proc is not None and proc.poll() is not None:
             return False
+        remaining = max(0.2, deadline - time.monotonic())
+        req_timeout = min(3.0, remaining)
         try:
-            with urllib.request.urlopen(f"{url}/health", timeout=1.0) as resp:
+            with urllib.request.urlopen(f"{url}/health", timeout=req_timeout) as resp:
                 if resp.status == 200:
                     return True
         except Exception:

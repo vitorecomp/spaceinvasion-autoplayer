@@ -6333,6 +6333,101 @@ class TestApiAndCommander(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_reloader_ignores_mtime_only_touch_without_content_change(self) -> None:
+        import os
+        import sys
+        import time
+        from spaceinvasion.reloader import watch_and_run
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            watched = tp / "watched.py"
+            watched.write_text("V = 1\n", encoding="utf-8")
+            pids_log = tp / "pids.txt"
+            ready = tp / "ready.flag"
+            exit_flag = tp / "exit.flag"
+
+            child_code = (
+                "import os, pathlib, sys, time\n"
+                f"open({str(pids_log)!r}, 'a', encoding='utf-8').write(f'{{os.getpid()}}\\n')\n"
+                f"pathlib.Path({str(ready)!r}).write_text('1', encoding='utf-8')\n"
+                "deadline = time.monotonic() + 10.0\n"
+                f"exit_p = pathlib.Path({str(exit_flag)!r})\n"
+                "while not exit_p.exists() and time.monotonic() < deadline:\n"
+                "    time.sleep(0.03)\n"
+                "sys.exit(0)\n"
+            )
+
+            def _touch_then_exit() -> None:
+                deadline = time.monotonic() + 5.0
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                st = watched.stat()
+                os.utime(watched, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+                time.sleep(0.3)
+                exit_flag.write_text("done", encoding="utf-8")
+
+            worker = threading.Thread(target=_touch_then_exit, daemon=True)
+            worker.start()
+            rc = watch_and_run(
+                label="TEST_TOUCH",
+                cmd=[sys.executable, "-c", child_code],
+                watch_paths=[watched],
+                poll_interval=0.05,
+                debounce_seconds=0.05,
+            )
+            worker.join(timeout=5.0)
+            self.assertEqual(rc, 0)
+            pids = [int(x) for x in pids_log.read_text(encoding="utf-8").splitlines() if x.strip()]
+            self.assertEqual(len(pids), 1)
+
+    def test_health_bot_status_and_dashboard_return_fast_when_lock_busy(self) -> None:
+        import time
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            bridge = GameApiBridge(
+                debug_port=9222,
+                log_dir=None,
+                config_path=tp / "cfg.yaml",
+                db_path=tp / "test.db",
+            )
+            try:
+                with patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=True):
+                    bridge._last_state = _sample_state()
+                    bridge._last_snapshot_at = time.monotonic()
+                    bridge._last_bot_control_payload = bridge.get_bot_control()
+                    bridge._last_dashboard_payload = bridge.dashboard(refresh=False)
+
+                    locked = threading.Event()
+                    release = threading.Event()
+
+                    def _hold_lock() -> None:
+                        with bridge._lock:
+                            locked.set()
+                            release.wait(timeout=10.0)
+
+                    holder = threading.Thread(target=_hold_lock, daemon=True)
+                    holder.start()
+                    self.assertTrue(locked.wait(timeout=2.0))
+                    try:
+                        h = bridge.health()
+                        self.assertTrue(h["ok"])
+                        self.assertTrue(h["busy"])
+
+                        bc = bridge.get_bot_control()
+                        self.assertTrue(bc["ok"])
+                        self.assertTrue(bc["busy"])
+
+                        dash = bridge.dashboard(refresh=False)
+                        self.assertTrue(dash["ok"])
+                        self.assertTrue(dash["busy"])
+                    finally:
+                        release.set()
+                        holder.join(timeout=3.0)
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

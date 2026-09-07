@@ -38,6 +38,7 @@ try:
     from selenium import webdriver
     from selenium.common.exceptions import NoSuchElementException, WebDriverException
     from selenium.webdriver.chrome.options import Options as ChromeOptions
+    from selenium.webdriver.chrome.service import Service as ChromeService
     from selenium.webdriver.common.by import By
     from selenium.webdriver.common.keys import Keys
 
@@ -45,6 +46,7 @@ try:
 except ImportError:  # pragma: no cover - guarded at runtime
     webdriver = None  # type: ignore[assignment]
     ChromeOptions = None  # type: ignore[assignment,misc]
+    ChromeService = None  # type: ignore[assignment,misc]
     By = None  # type: ignore[assignment]
     Keys = None  # type: ignore[assignment]
     NoSuchElementException = Exception  # type: ignore[assignment,misc]
@@ -236,6 +238,64 @@ def _safe_browser_err(exc: BaseException) -> str:
     return f"<{type(exc).__name__}>"
 
 
+def _configure_driver_timeouts(driver, timeout: float) -> None:
+    """Apply finite page-load, script, and WebDriver HTTP command timeouts."""
+    bounded = _finite_bounded_timeout(timeout, default=25.0, min_val=15.0, max_val=300.0)
+    driver.set_page_load_timeout(bounded)
+    set_script = getattr(driver, "set_script_timeout", None)
+    if callable(set_script):
+        try:
+            set_script(bounded)
+        except Exception:
+            pass
+    executor = getattr(driver, "command_executor", None)
+    if executor is not None and "unittest.mock" not in type(executor).__module__:
+        cmd_timeout = max(20.0, min(60.0, bounded + 10.0))
+        client_cfg = getattr(executor, "_client_config", None)
+        if client_cfg is not None and hasattr(client_cfg, "timeout"):
+            try:
+                client_cfg.timeout = cmd_timeout
+                old_conn = getattr(executor, "_conn", None)
+                get_mgr = getattr(executor, "_get_connection_manager", None)
+                if callable(get_mgr):
+                    if old_conn is not None and callable(getattr(old_conn, "clear", None)):
+                        try:
+                            old_conn.clear()
+                        except Exception:
+                            pass
+                    executor._conn = get_mgr()
+            except Exception:
+                pass
+
+
+def _close_driver_executor(driver) -> None:
+    """Release urllib3 pools on Selenium's command executor so sockets do not linger in CLOSE-WAIT."""
+    executor = getattr(driver, "command_executor", None)
+    if executor is None or "unittest.mock" in type(executor).__module__:
+        return
+    close_fn = getattr(executor, "close", None)
+    if callable(close_fn):
+        try:
+            close_fn()
+        except Exception:
+            pass
+
+
+def _stop_service_process(service) -> None:
+    """Stop a ChromeDriver service and force-reap its child process if it ignores shutdown."""
+    if service is None:
+        return
+    proc = getattr(service, "process", None)
+    stop_fn = getattr(service, "stop", None)
+    if callable(stop_fn):
+        try:
+            stop_fn()
+        except Exception:
+            pass
+    if isinstance(proc, subprocess.Popen):
+        _terminate_or_kill_process(proc)
+
+
 def attach_chrome_driver(
     port: int = DEFAULT_DEBUG_PORT,
     timeout: float = 25.0,
@@ -245,15 +305,27 @@ def attach_chrome_driver(
     _require_selenium()
     options = ChromeOptions()
     options.debugger_address = f"{host}:{port}"
+    service = ChromeService() if ChromeService is not None else None
     try:
-        driver = webdriver.Chrome(options=options)
+        driver = (
+            webdriver.Chrome(options=options, service=service)
+            if service is not None
+            else webdriver.Chrome(options=options)
+        )
     except WebDriverException as exc:
+        _stop_service_process(service)
         raise SpaceInvasionAuthError(
             f"Failed to attach Selenium to Chrome at {host}:{port}: {_safe_browser_err(exc)}"
         ) from exc
-    driver.set_page_load_timeout(
-        _finite_bounded_timeout(timeout, default=25.0, min_val=15.0, max_val=300.0)
-    )
+    except BaseException:
+        _stop_service_process(service)
+        raise
+    try:
+        _configure_driver_timeouts(driver, timeout)
+    except BaseException:
+        _close_driver_executor(driver)
+        _stop_service_process(getattr(driver, "service", None) or service)
+        raise
     return driver
 
 
@@ -274,14 +346,26 @@ def create_chrome_driver(config: BrowserConfig):
     if config.headless:
         options.add_argument("--headless=new")
 
+    service = ChromeService() if ChromeService is not None else None
     try:
-        driver = webdriver.Chrome(options=options)
+        driver = (
+            webdriver.Chrome(options=options, service=service)
+            if service is not None
+            else webdriver.Chrome(options=options)
+        )
     except WebDriverException as exc:
+        _stop_service_process(service)
         raise SpaceInvasionAuthError(f"Failed to start Chrome via Selenium: {_safe_browser_err(exc)}") from exc
+    except BaseException:
+        _stop_service_process(service)
+        raise
 
-    driver.set_page_load_timeout(
-        _finite_bounded_timeout(config.timeout, default=25.0, min_val=15.0, max_val=300.0)
-    )
+    try:
+        _configure_driver_timeouts(driver, config.timeout)
+    except BaseException:
+        _close_driver_executor(driver)
+        _stop_service_process(getattr(driver, "service", None) or service)
+        raise
     return driver
 
 
@@ -327,18 +411,19 @@ def close_or_detach_driver(
 ) -> None:
     """Detach from Chrome (leaving it open) or shut down WebDriver and Chrome."""
     if keep_running:
-        service = getattr(driver, "service", None)
-        if service is not None:
-            try:
-                service.stop()
-            except Exception:
-                pass
+        _close_driver_executor(driver)
+        _stop_service_process(getattr(driver, "service", None))
         return
 
+    service = getattr(driver, "service", None)
+    service_proc = getattr(service, "process", None)
     try:
         driver.quit()
     except Exception:
         pass
+    _close_driver_executor(driver)
+    if isinstance(service_proc, subprocess.Popen):
+        _terminate_or_kill_process(service_proc)
     _terminate_or_kill_process(launched_proc)
 
 

@@ -60,16 +60,15 @@ from spaceinvasion.planner.strategy import PlannedAction, merge_manual_queue_act
 
 WATCH_PATHS = (
     Path(__file__).resolve(),
-    Path("config.yaml"),
-    Path("spaceinvasion/core/config.py"),
-    Path("spaceinvasion/combat/fleet.py"),
-    Path("spaceinvasion/core/game_data.py"),
-    Path("spaceinvasion/planner/optimizer.py"),
-    Path("spaceinvasion/combat/ranking.py"),
-    Path("spaceinvasion/planner/strategy.py"),
-    Path("spaceinvasion/runtime/commander_client.py"),
-    Path("spaceinvasion/core/state.py"),
-    Path("spaceinvasion/core/logging_utils.py"),
+    _REPO_ROOT / "spaceinvasion/core/config.py",
+    _REPO_ROOT / "spaceinvasion/combat/fleet.py",
+    _REPO_ROOT / "spaceinvasion/core/game_data.py",
+    _REPO_ROOT / "spaceinvasion/planner/optimizer.py",
+    _REPO_ROOT / "spaceinvasion/combat/ranking.py",
+    _REPO_ROOT / "spaceinvasion/planner/strategy.py",
+    _REPO_ROOT / "spaceinvasion/runtime/commander_client.py",
+    _REPO_ROOT / "spaceinvasion/core/state.py",
+    _REPO_ROOT / "spaceinvasion/core/logging_utils.py",
 )
 
 _RATE_LIMIT_MARKERS = (
@@ -837,7 +836,7 @@ def main(argv: list[str] | None = None) -> int:
     if is_main:
         signal.signal(signal.SIGTERM, _shutdown_handler)
     strategy_cfg = load_strategy_config(args.config)
-    api = GameApiClient(base_url=args.api_url)
+    api = GameApiClient(base_url=args.api_url, timeout=60.0)
     run_loop = args.loop and not args.once
     iv_f = _safe_finite_float(args.interval)
     has_cli_interval = iv_f is not None and iv_f > 0.0
@@ -1148,6 +1147,27 @@ def main(argv: list[str] | None = None) -> int:
                                     loop_sleep = 3.0
                     else:
                         loop_sleep = 3.0
+            except Exception as exc:
+                exc_txt = _safe_cmd_str(exc)
+                tick_s = game_data.fmt_compact_int(tick)
+                print(
+                    f"[CMD tick {tick_s}] Unexpected error ({type(exc).__name__}: {redact_sensitive(exc_txt)}); "
+                    + ("retrying shortly." if run_loop else "aborting.")
+                )
+                try:
+                    from spaceinvasion.core.logging_utils import append_crash_debug_log
+
+                    append_crash_debug_log(
+                        component="commander.loop",
+                        event="unexpected_tick_error",
+                        error=exc,
+                        details={"tick": tick, "live": effective_live},
+                    )
+                except Exception:
+                    pass
+                if not run_loop:
+                    return 1
+                loop_sleep = 5.0
 
             if not run_loop:
                 break

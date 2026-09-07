@@ -835,6 +835,118 @@ class TestLoginCli(unittest.TestCase):
         self.assertLess((time.perf_counter() - t0) * 1000.0, 200.0)
         self.assertNotIn("DAG_PW_SEC", dag_out)
 
+    def test_attach_and_close_configures_timeouts_and_reaps_chromedriver_process(self) -> None:
+        import subprocess
+        import sys
+        from selenium.common.exceptions import WebDriverException
+        from spaceinvasion.session import browser as browser_mod
+
+        # 1. _configure_driver_timeouts sets page/script timeouts and finite command_executor pool timeout
+        class _FakeCfg:
+            timeout = None
+
+        class _FakePool:
+            def __init__(self) -> None:
+                self.cleared = False
+
+            def clear(self) -> None:
+                self.cleared = True
+
+        class _FakeExecutor:
+            def __init__(self) -> None:
+                self._client_config = _FakeCfg()
+                self._conn = _FakePool()
+                self.rebuilt = 0
+                self.closed = False
+
+            def _get_connection_manager(self) -> _FakePool:
+                self.rebuilt += 1
+                return _FakePool()
+
+            def close(self) -> None:
+                self.closed = True
+
+        class _FakeDriver:
+            def __init__(self, service) -> None:
+                self.page_load_timeout = None
+                self.script_timeout = None
+                self.command_executor = _FakeExecutor()
+                self.service = service
+
+            def set_page_load_timeout(self, t: float) -> None:
+                self.page_load_timeout = t
+
+            def set_script_timeout(self, t: float) -> None:
+                self.script_timeout = t
+
+        stub_proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            class _StubbornService:
+                def __init__(self, proc: subprocess.Popen) -> None:
+                    self.process = proc
+                    self.stopped = 0
+
+                def stop(self) -> None:
+                    self.stopped += 1  # Simulates chromedriver ignoring /shutdown
+
+            svc = _StubbornService(stub_proc)
+            drv = _FakeDriver(svc)
+            old_pool = drv.command_executor._conn
+            browser_mod._configure_driver_timeouts(drv, 25.0)
+            self.assertEqual(drv.page_load_timeout, 25.0)
+            self.assertEqual(drv.script_timeout, 25.0)
+            self.assertEqual(drv.command_executor._client_config.timeout, 35.0)
+            self.assertTrue(old_pool.cleared)
+            self.assertEqual(drv.command_executor.rebuilt, 1)
+
+            close_or_detach_driver(drv, keep_running=True)
+            self.assertEqual(svc.stopped, 1)
+            self.assertTrue(drv.command_executor.closed)
+            self.assertIsNotNone(stub_proc.poll())
+        finally:
+            if stub_proc.poll() is None:
+                stub_proc.kill()
+            stub_proc.wait(timeout=5.0)
+
+        # 2. Failed attach_chrome_driver reaps ChromeService process instead of leaking it
+        fail_proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            class _FailService:
+                def __init__(self) -> None:
+                    self.process = fail_proc
+                    self.stopped = 0
+
+                def stop(self) -> None:
+                    self.stopped += 1
+
+            created_svc = _FailService()
+            with (
+                unittest.mock.patch.object(browser_mod, "ChromeService", return_value=created_svc),
+                unittest.mock.patch.object(
+                    browser_mod.webdriver,
+                    "Chrome",
+                    side_effect=WebDriverException("session not created"),
+                ),
+            ):
+                with self.assertRaises(SpaceInvasionAuthError):
+                    browser_mod.attach_chrome_driver(port=9222, timeout=20.0)
+            self.assertEqual(created_svc.stopped, 1)
+            self.assertIsNotNone(fail_proc.poll())
+        finally:
+            if fail_proc.poll() is None:
+                fail_proc.kill()
+            fail_proc.wait(timeout=5.0)
+
 
 if __name__ == "__main__":
     unittest.main()
