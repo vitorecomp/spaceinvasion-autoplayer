@@ -172,7 +172,22 @@ _COORDS_NORM_RE = re.compile(
 
 def normalize_coords(coords: Any) -> str:
     """Normalize SpaceInvasion coordinates like `'2:380:4'` to `'02:380:04'`."""
-    raw = game_data.safe_key(coords).strip() if coords is not None else ""
+    if type(coords) is str:
+        if (
+            len(coords) == 9
+            and coords[2] == ":"
+            and coords[6] == ":"
+            and coords[0:2].isascii()
+            and coords[0:2].isdigit()
+            and coords[3:6].isascii()
+            and coords[3:6].isdigit()
+            and coords[7:9].isascii()
+            and coords[7:9].isdigit()
+        ):
+            return coords
+        raw = coords.strip()
+    else:
+        raw = game_data.safe_key(coords).strip() if coords is not None else ""
     m = _COORDS_NORM_RE.match(raw)
     if m:
         return f"{int(m.group(1)):02d}:{int(m.group(2)):03d}:{int(m.group(3)):02d}"

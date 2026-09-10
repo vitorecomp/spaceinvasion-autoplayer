@@ -468,6 +468,30 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
+.table-search-input {
+  width: 196px;
+  max-width: 100%;
+  min-height: 30px;
+  height: 30px;
+  padding: 4px 10px;
+  font-size: 0.82rem;
+  font-family: var(--font-mono);
+  color: var(--ink);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+}
+
+.table-search-input::placeholder {
+  color: var(--ink-muted);
+}
+
+.table-search-input:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 1px;
+  border-color: var(--cyan);
+}
+
 /* Scanned Sectors: KPI cards, Refresh vs Discovery split bar, occupancy meter */
 .combat-top-cards.sectors-top-cards {
   grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(320px, 1.8fr);

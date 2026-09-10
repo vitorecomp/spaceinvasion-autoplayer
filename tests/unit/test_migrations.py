@@ -22,8 +22,12 @@ from spaceinvasion.migrations import (
     ATTACK_HISTORY_SCHEMA_VERSION,
     DEFAULT_GAME_MIGRATION_RUNNER,
     GAME_DB_MIGRATIONS,
+    GAME_REQUIRED_TABLES,
+    HISTORY_TABLES,
+    HOT_TABLES,
     LATEST_SCHEMA_VERSION,
     SCHEMA_VERSION,
+    TABLE_TIER_BY_NAME,
     DatabaseMigrationRegistry,
     Migration,
     MigrationRunner,
@@ -541,7 +545,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
     def test_v009_universe_research_max_monotonic_ledger_and_append_only_history(self) -> None:
         from spaceinvasion.combat.fleet import SpyReport
 
-        self.assertEqual(LATEST_SCHEMA_VERSION, 11)
+        self.assertEqual(LATEST_SCHEMA_VERSION, 12)
         with tempfile.TemporaryDirectory(prefix="si_mig_v9_") as tmp:
             db_path = Path(tmp) / "v9.db"
             db_v8 = GameDatabase(db_path, attack_history_path="", target_schema_version=8)
@@ -621,7 +625,10 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
 
                 mig11 = db.run_migrations(target_version=11, backup=True)
                 self.assertEqual(mig11["version"], 11)
-                self.assertTrue(mig11["up_to_date"])
+                self.assertFalse(mig11["up_to_date"])
+                mig12 = db.run_migrations(target_version=LATEST_SCHEMA_VERSION, backup=False)
+                self.assertEqual(mig12["version"], 12)
+                self.assertTrue(mig12["up_to_date"])
                 chk = db.verify_schema(full_integrity=True)
                 self.assertTrue(chk["ok"], chk)
 
@@ -646,6 +653,178 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 self.assertEqual(ins["target_coords"], "02:150:08")
                 self.assertEqual(ins["fields_rolled"], 214)
                 self.assertEqual(db.summary()["counts"]["colony_attempts"], 1)
+            finally:
+                db.close()
+
+    def test_v012_hot_and_history_table_division_backfill_and_incremental_sync(self) -> None:
+        from spaceinvasion.combat.fleet import GalaxySlot, SpyReport
+
+        # Canonical hot vs history partition must be disjoint and cover all required tables
+        hot_set = set(HOT_TABLES)
+        hist_set = set(HISTORY_TABLES)
+        req_set = set(GAME_REQUIRED_TABLES)
+        self.assertEqual(len(hot_set), 15)
+        self.assertEqual(len(hist_set), 17)
+        self.assertEqual(len(req_set), 32)
+        self.assertEqual(hot_set & hist_set, set())
+        self.assertEqual(hot_set | hist_set, req_set)
+        self.assertEqual(len(TABLE_TIER_BY_NAME), 32)
+        for tbl in hot_set:
+            self.assertEqual(TABLE_TIER_BY_NAME[tbl], "hot")
+        for tbl in hist_set:
+            self.assertEqual(TABLE_TIER_BY_NAME[tbl], "history")
+
+        with tempfile.TemporaryDirectory(prefix="si_mig_v12_") as tmp:
+            db_path = Path(tmp) / "v12.db"
+            # Seed a V011 database with planets, galaxy scans, slots, spy report, raid, and discarded coord
+            db = GameDatabase(db_path, attack_history_path="", target_schema_version=11)
+            try:
+                self.assertEqual(db.get_schema_version()["version"], 11)
+                state = GameState(
+                    timestamp=1_760_000_000.0,
+                    universe_id=31,
+                    user_id=103603,
+                    nickname="tester",
+                    active_planet_id=101,
+                    planets=(
+                        PlanetState(
+                            planet_id=101,
+                            name="Home",
+                            coords="02:150:05",
+                            planet_type="normal",
+                            temperature=30,
+                            resources=Resources(1000, 2000, 3000, 4000),
+                            storage=Resources(50000, 50000, 50000, 50000),
+                            energy=EnergyBalance(produced=200, used=150),
+                            fields_used=40,
+                            fields_max=320,
+                        ),
+                    ),
+                )
+                db.record_state_snapshot(state)
+                db.record_full_state_snapshot(state, source="test_v11")
+                db.record_galaxy_scan(
+                    2,
+                    150,
+                    slots=[
+                        GalaxySlot(
+                            coords="02:150:05",
+                            position=5,
+                            name="Home",
+                            owner="tester",
+                            status_color="white",
+                        ),
+                        GalaxySlot(
+                            coords="02:150:08",
+                            position=8,
+                            name="",
+                            owner="",
+                            status_color="free",
+                            colonize_min_fields=240,
+                            colonize_max_fields=340,
+                            temperature=30,
+                        ),
+                        GalaxySlot(
+                            coords="02:150:09",
+                            position=9,
+                            name="",
+                            owner="",
+                            status_color="free",
+                            colonize_min_fields=220,
+                            colonize_max_fields=330,
+                            temperature=25,
+                        ),
+                        GalaxySlot(
+                            coords="02:150:10",
+                            position=10,
+                            name="FarmA",
+                            owner="IdleGuy",
+                            status_color="yellow",
+                            has_debris=True,
+                        ),
+                    ],
+                    ts=1_760_000_010.0,
+                )
+                db.record_spy_report(
+                    SpyReport(
+                        target_coords="02:150:08",
+                        owner="",
+                        uninhabited_fields=335,
+                    ),
+                    ts=1_760_000_020.0,
+                )
+                db.record_raid("02:150:10", attacked_ts=1_760_000_030.0, outcome="win")
+                db.discard_colony_candidate("02:150:09", ts=1_760_000_040.0)
+
+                v11_intel = db.get_galaxy_sector_intel(now_ts=1_760_000_100.0)
+                v11_cands = db.get_colony_candidates(
+                    origin_coords="02:150:05",
+                    min_fields_target=300,
+                    exclude_coords={"02:150:05"},
+                    limit=50,
+                )
+
+                # Upgrade V011 -> V012 with backup & backfill
+                mig12 = db.run_migrations(target_version=12, backup=True)
+                self.assertEqual(mig12["version"], 12)
+                self.assertTrue(mig12["up_to_date"])
+                chk = db.verify_schema(full_integrity=True)
+                self.assertTrue(chk["ok"], chk)
+                self.assertEqual(chk["table_tiers"]["hot_count"], 15)
+                self.assertEqual(chk["table_tiers"]["history_count"], 17)
+
+                summ = db.summary()
+                self.assertEqual(summ["counts"]["latest_state_hot"], 1)
+                self.assertEqual(summ["counts"]["empire_planets_hot"], 1)
+                self.assertEqual(summ["counts"]["galaxy_sector_hot"], 1)
+                self.assertEqual(summ["counts"]["colony_candidates_hot"], 2)
+                self.assertEqual(set(summ["table_tiers"]["hot"]), hot_set)
+                self.assertEqual(set(summ["table_tiers"]["history"]), hist_set)
+
+                # Hot latest state reader matches full state snapshot
+                latest_hot = db.get_latest_state_hot(include_payload=True)
+                self.assertIsNotNone(latest_hot)
+                assert latest_hot is not None
+                self.assertEqual(latest_hot["active_planet_id"], 101)
+                self.assertEqual(latest_hot["source"], "test_v11")
+
+                # Exact parity between V011 full-scan reads and V012 hot-table reads
+                v12_intel = db.get_galaxy_sector_intel(now_ts=1_760_000_100.0)
+                v12_cands = db.get_colony_candidates(
+                    origin_coords="02:150:05",
+                    min_fields_target=300,
+                    exclude_coords={"02:150:05"},
+                    limit=50,
+                )
+                self.assertEqual(v12_intel, v11_intel)
+                self.assertEqual(v12_cands, v11_cands)
+                self.assertEqual([c["coords"] for c in v12_cands], ["02:150:08"])
+
+                # Incremental hot-table maintenance stays in sync on writes & restore
+                db.restore_colony_candidate("02:150:09", ts=1_760_000_050.0)
+                v12_after_restore = db.get_colony_candidates(
+                    origin_coords="02:150:05",
+                    min_fields_target=300,
+                    exclude_coords={"02:150:05"},
+                    limit=50,
+                )
+                self.assertEqual(
+                    {c["coords"] for c in v12_after_restore},
+                    {"02:150:08", "02:150:09"},
+                )
+
+                rebuilt = db.rebuild_hot_tables(ts=1_760_000_100.0)
+                self.assertEqual(rebuilt["galaxy_sector_hot"], 1)
+                self.assertEqual(rebuilt["colony_candidates_hot"], 2)
+                self.assertEqual(
+                    db.get_colony_candidates(
+                        origin_coords="02:150:05",
+                        min_fields_target=300,
+                        exclude_coords={"02:150:05"},
+                        limit=50,
+                    ),
+                    v12_after_restore,
+                )
             finally:
                 db.close()
 

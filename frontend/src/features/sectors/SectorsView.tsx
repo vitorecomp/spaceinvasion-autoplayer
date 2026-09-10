@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
+import { TablePagination } from "../../components/TablePagination";
 import { useConsole } from "../../context/ConsoleContext";
 import { useTableSort, type SortColumnMap } from "../../hooks/useTableSort";
 import type {
@@ -100,6 +101,11 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
   const [splitDirty, setSplitDirty] = useState<boolean>(false);
   const [previewPending, setPreviewPending] = useState<boolean>(false);
   const [queuePhaseFilter, setQueuePhaseFilter] = useState<"all" | "exploratory" | "targeted_refresh">("all");
+  const [sectorSearch, setSectorSearch] = useState<string>("");
+  const [queuePage, setQueuePage] = useState<number>(1);
+  const [queuePageSize, setQueuePageSize] = useState<number>(25);
+  const [sectorPage, setSectorPage] = useState<number>(1);
+  const [sectorPageSize, setSectorPageSize] = useState<number>(25);
   const [savingSplit, setSavingSplit] = useState<boolean>(false);
   const [sweeping, setSweeping] = useState<boolean>(false);
   const [refreshingSector, setRefreshingSector] = useState<string | null>(null);
@@ -382,21 +388,27 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
   const queueSort = useTableSort(filteredQueue, queueSortCols);
 
   const filteredSectors = useMemo(() => {
+    const needle = sectorSearch.trim().toLowerCase();
     return allSectors.filter((s) => {
       if (galaxyFilter > 0 && Math.round(finiteNum(s.galaxy, 0)) !== galaxyFilter) {
         return false;
       }
       const scanned = isSectorRowScanned(s);
-      if (statusFilter === "scanned") return scanned;
-      if (statusFilter === "unscanned") return !scanned;
-      if (statusFilter === "queued") return finiteNum(s.queue_pos, 0) > 0;
-      if (statusFilter === "debris") return finiteNum(s.debris_count, 0) > 0;
-      if (statusFilter === "targets") return finiteNum(s.target_count, 0) > 0;
-      if (statusFilter === "colony") return finiteNum(s.prime_colony_free_count, 0) > 0;
-      if (statusFilter === "stale") return scanned && finiteNum(s.age_seconds, 0) >= 3600;
-      return true;
+      if (statusFilter === "scanned" && !scanned) return false;
+      if (statusFilter === "unscanned" && scanned) return false;
+      if (statusFilter === "queued" && finiteNum(s.queue_pos, 0) <= 0) return false;
+      if (statusFilter === "debris" && finiteNum(s.debris_count, 0) <= 0) return false;
+      if (statusFilter === "targets" && finiteNum(s.target_count, 0) <= 0) return false;
+      if (statusFilter === "colony" && finiteNum(s.prime_colony_free_count, 0) <= 0) return false;
+      if (statusFilter === "stale" && !(scanned && finiteNum(s.age_seconds, 0) >= 3600)) {
+        return false;
+      }
+      if (!needle) return true;
+      const owners = Array.isArray(s.frequent_owners) ? s.frequent_owners.join(" ") : "";
+      const hay = `${s.sector || ""} ${owners} ${s.reason || ""}`.toLowerCase();
+      return hay.includes(needle);
     });
-  }, [allSectors, galaxyFilter, statusFilter]);
+  }, [allSectors, galaxyFilter, statusFilter, sectorSearch]);
 
   const sectorSortCols = useMemo<
     SortColumnMap<
@@ -445,6 +457,40 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
   );
 
   const sectorSort = useTableSort(filteredSectors, sectorSortCols);
+
+  const queueTotalPages = Math.max(1, Math.ceil(queueSort.sortedRows.length / queuePageSize));
+  const effectiveQueuePage = Math.max(1, Math.min(queueTotalPages, queuePage));
+  const pagedQueue = useMemo(() => {
+    const start = (effectiveQueuePage - 1) * queuePageSize;
+    return queueSort.sortedRows.slice(start, start + queuePageSize);
+  }, [queueSort.sortedRows, effectiveQueuePage, queuePageSize]);
+
+  const sectorTotalPages = Math.max(1, Math.ceil(sectorSort.sortedRows.length / sectorPageSize));
+  const effectiveSectorPage = Math.max(1, Math.min(sectorTotalPages, sectorPage));
+  const pagedSectors = useMemo(() => {
+    const start = (effectiveSectorPage - 1) * sectorPageSize;
+    return sectorSort.sortedRows.slice(start, start + sectorPageSize);
+  }, [sectorSort.sortedRows, effectiveSectorPage, sectorPageSize]);
+
+  useEffect(() => {
+    setQueuePage(1);
+  }, [queuePhaseFilter, queueSort.sortKey, queueSort.sortDirection, queuePageSize]);
+
+  useEffect(() => {
+    if (queuePage > queueTotalPages) {
+      setQueuePage(queueTotalPages);
+    }
+  }, [queuePage, queueTotalPages]);
+
+  useEffect(() => {
+    setSectorPage(1);
+  }, [galaxyFilter, statusFilter, sectorSearch, sectorSort.sortKey, sectorSort.sortDirection, sectorPageSize]);
+
+  useEffect(() => {
+    if (sectorPage > sectorTotalPages) {
+      setSectorPage(sectorTotalPages);
+    }
+  }, [sectorPage, sectorTotalPages]);
 
   const handleSelectGalaxy = (g: number) => {
     setUiPref("sectorGalaxy", g);
@@ -874,7 +920,7 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
               </tr>
             </thead>
             <tbody id="sectors-queue-tbody">
-              {queueSort.sortedRows.length === 0 ? (
+              {pagedQueue.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="empty-state">
                     {scanQueue.length > 0
@@ -883,7 +929,7 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
                   </td>
                 </tr>
               ) : (
-                queueSort.sortedRows.map((qItem) => {
+                pagedQueue.map((qItem) => {
                   const isDisc = qItem.phase === "exploratory";
                   const distFmt = formatSectorDistance(qItem);
                   const isRowBusy = refreshingSector === qItem.sector;
@@ -943,6 +989,16 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          idPrefix="sec-queue"
+          totalItems={queueSort.sortedRows.length}
+          page={effectiveQueuePage}
+          pageSize={queuePageSize}
+          pageSizeOptions={[10, 25, 50, 100]}
+          itemLabel="queued sectors"
+          onPageChange={setQueuePage}
+          onPageSizeChange={setQueuePageSize}
+        />
       </article>
 
       <article className="hud-window page-fill sectors-all-window" id="sectors-all-window">
@@ -1011,6 +1067,15 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
                 </button>
               ))}
             </div>
+            <input
+              type="search"
+              id="sec-search"
+              className="table-search-input"
+              placeholder="Search sector / owner..."
+              aria-label="Search scanned sectors"
+              value={sectorSearch}
+              onChange={(e) => setSectorSearch(e.target.value)}
+            />
             <button
               type="button"
               className="btn btn-secondary btn-sm"
@@ -1088,7 +1153,7 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
               </tr>
             </thead>
             <tbody id="sectors-tbody">
-              {sectorSort.sortedRows.length === 0 ? (
+              {pagedSectors.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="empty-state">
                     {sectorsData
@@ -1097,7 +1162,7 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
                   </td>
                 </tr>
               ) : (
-                sectorSort.sortedRows.map((sec) => {
+                pagedSectors.map((sec) => {
                   const scanned = isSectorRowScanned(sec);
                   const occ = Math.max(0, Math.round(finiteNum(sec.occupied_count, 0)));
                   const maxSlots = Math.max(1, Math.round(finiteNum(sec.max_slots, 16)));
@@ -1239,6 +1304,16 @@ export const SectorsView: React.FC<SectorsViewProps> = ({ hidden }) => {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          idPrefix="sec-all"
+          totalItems={sectorSort.sortedRows.length}
+          page={effectiveSectorPage}
+          pageSize={sectorPageSize}
+          pageSizeOptions={[25, 50, 100, 200]}
+          itemLabel="sectors"
+          onPageChange={setSectorPage}
+          onPageSizeChange={setSectorPageSize}
+        />
       </article>
     </section>
   );

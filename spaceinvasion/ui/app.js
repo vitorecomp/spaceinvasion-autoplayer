@@ -7761,6 +7761,9 @@
     const uiPrefsRef = reactExports.useRef(uiPrefs);
     uiPrefsRef.current = uiPrefs;
     const sectorsReqSeqRef = reactExports.useRef(0);
+    const inFlightSectorsCountRef = reactExports.useRef(0);
+    const coloniesReqSeqRef = reactExports.useRef(0);
+    const inFlightColoniesCountRef = reactExports.useRef(0);
     const sectorPreviewRef = reactExports.useRef(null);
     sharedLegacyState.dashboard = dashboard;
     sharedLegacyState.apiOnline = apiOnline;
@@ -8064,11 +8067,15 @@
       [setCombatData, showFeedback]
     );
     const refreshSectorsView = reactExports.useCallback(
-      async (galaxyOverride, includeUnscannedOverride, previewOverride) => {
+      async (galaxyOverride, includeUnscannedOverride, previewOverride, opts) => {
+        if ((opts == null ? void 0 : opts.background) && inFlightSectorsCountRef.current > 0) {
+          return;
+        }
         if (previewOverride !== void 0) {
           sectorPreviewRef.current = previewOverride;
         }
         const reqSeq = ++sectorsReqSeqRef.current;
+        inFlightSectorsCountRef.current += 1;
         try {
           const gal = galaxyOverride !== void 0 ? galaxyOverride : Math.max(0, Math.round(safeFiniteNumber(sharedLegacyState.sectorGalaxy, 0) ?? 0));
           const curFilter = String(sharedLegacyState.sectorFilter || "all");
@@ -8104,6 +8111,8 @@
         } catch (err) {
           if (reqSeq !== sectorsReqSeqRef.current) return;
           showFeedback(`Scanned sectors load failed: ${err.message}`, feedbackKindForError(err));
+        } finally {
+          inFlightSectorsCountRef.current = Math.max(0, inFlightSectorsCountRef.current - 1);
         }
       },
       [setSectorsData, showFeedback]
@@ -8116,14 +8125,26 @@
         showFeedback(`Espionage data load failed: ${err.message}`, feedbackKindForError(err));
       }
     }, [setEspData, showFeedback]);
-    const refreshColoniesView = reactExports.useCallback(async () => {
-      try {
-        const data = await apiCommand({ command: "colony_candidates", limit: 1e3 });
-        setColonyData(data);
-      } catch (err) {
-        showFeedback(`Colony grading load failed: ${err.message}`, feedbackKindForError(err));
-      }
-    }, [setColonyData, showFeedback]);
+    const refreshColoniesView = reactExports.useCallback(
+      async (opts) => {
+        if ((opts == null ? void 0 : opts.background) && inFlightColoniesCountRef.current > 0) {
+          return;
+        }
+        const reqSeq = ++coloniesReqSeqRef.current;
+        inFlightColoniesCountRef.current += 1;
+        try {
+          const data = await apiCommand({ command: "colony_candidates", limit: 1e3 });
+          if (reqSeq !== coloniesReqSeqRef.current) return;
+          setColonyData(data);
+        } catch (err) {
+          if (reqSeq !== coloniesReqSeqRef.current) return;
+          showFeedback(`Colony grading load failed: ${err.message}`, feedbackKindForError(err));
+        } finally {
+          inFlightColoniesCountRef.current = Math.max(0, inFlightColoniesCountRef.current - 1);
+        }
+      },
+      [setColonyData, showFeedback]
+    );
     const refreshAttacksView = reactExports.useCallback(async () => {
       try {
         const data = await apiCommand({ command: "attack_results", limit: 200 });
@@ -8197,11 +8218,11 @@
           }
           const curPage = sharedLegacyState.activePage;
           if (curPage === "sectors") {
-            refreshSectorsView();
+            refreshSectorsView(void 0, void 0, void 0, { background: true });
           } else if (curPage === "espionage") {
             refreshEspionageView();
           } else if (curPage === "colonies") {
-            refreshColoniesView();
+            refreshColoniesView({ background: true });
           } else if (curPage === "attacks") {
             refreshAttacksView();
           } else if (curPage === "recyclers") {
@@ -8277,6 +8298,9 @@
         const target = PAGE_TITLES[normKey] ? normKey : "dashboard";
         sharedLegacyState.activePage = target;
         setActivePageState(target);
+        if (target === "dashboard" || target === "operations") {
+          setNowEpochSec(Math.floor(Date.now() / 1e3));
+        }
         setUiPrefs((prev) => {
           const next = prev.sidebarOpen ? { ...prev, sidebarOpen: false } : prev;
           persistUiPrefs(target, sharedLegacyState.selectedPlanetId, next);
@@ -8387,6 +8411,7 @@
     const openNotificationCenter = reactExports.useCallback(async () => {
       setNotifCenterOpen(true);
       notifCenterOpenRef.current = true;
+      setNowEpochSec(Math.floor(Date.now() / 1e3));
       await refreshNotificationCenter();
     }, [refreshNotificationCenter]);
     const closeNotificationCenter = reactExports.useCallback(() => {
@@ -8537,7 +8562,9 @@
       checkApiHealthAndHotReload();
       loadDashboard({ refresh: false, preserveConfig: false });
       const tickTimer = setInterval(() => {
-        if (document.visibilityState === "visible") {
+        if (document.visibilityState !== "visible") return;
+        const curPage = sharedLegacyState.activePage;
+        if (curPage === "dashboard" || curPage === "operations" || notifCenterOpenRef.current) {
           setNowEpochSec(Math.floor(Date.now() / 1e3));
         }
       }, 1e3);
@@ -16042,6 +16069,105 @@
       }
     );
   };
+  const TablePagination = ({
+    idPrefix,
+    totalItems,
+    page,
+    pageSize,
+    pageSizeOptions = [25, 50, 100, 200],
+    itemLabel = "items",
+    onPageChange,
+    onPageSizeChange
+  }) => {
+    const safeSize = Math.max(1, Math.round(pageSize));
+    const totalPages = Math.max(1, Math.ceil(totalItems / safeSize));
+    const safePage = Math.max(1, Math.min(totalPages, Math.round(page)));
+    const startIdx = totalItems === 0 ? 0 : (safePage - 1) * safeSize + 1;
+    const endIdx = totalItems === 0 ? 0 : Math.min(totalItems, safePage * safeSize);
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "div",
+      {
+        className: "table-pagination-bar tabular",
+        id: `${idPrefix}-pagination`,
+        role: "navigation",
+        "aria-label": `${itemLabel} pagination`,
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "table-page-summary", id: `${idPrefix}-page-summary`, children: totalItems === 0 ? `0 ${itemLabel}` : `Showing ${startIdx}–${endIdx} of ${totalItems} ${itemLabel}` }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "table-page-controls", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "table-page-size-label", htmlFor: `${idPrefix}-page-size`, children: [
+              "Rows",
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "select",
+                {
+                  id: `${idPrefix}-page-size`,
+                  className: "table-page-size-select",
+                  value: String(safeSize),
+                  onChange: (e) => {
+                    const parsed = Number(e.target.value);
+                    if (Number.isFinite(parsed) && parsed >= 1) {
+                      onPageSizeChange(Math.round(parsed));
+                    }
+                  },
+                  children: pageSizeOptions.map((opt) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: String(opt), children: opt }, opt))
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "table-page-buttons", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `${idPrefix}-page-first`,
+                  "aria-label": "First page",
+                  disabled: safePage <= 1,
+                  onClick: () => onPageChange(1),
+                  children: "« First"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `${idPrefix}-page-prev`,
+                  "aria-label": "Previous page",
+                  disabled: safePage <= 1,
+                  onClick: () => onPageChange(Math.max(1, safePage - 1)),
+                  children: "‹ Prev"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "table-page-indicator", id: `${idPrefix}-page-indicator`, children: `Page ${safePage} / ${totalPages}` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `${idPrefix}-page-next`,
+                  "aria-label": "Next page",
+                  disabled: safePage >= totalPages,
+                  onClick: () => onPageChange(Math.min(totalPages, safePage + 1)),
+                  children: "Next ›"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `${idPrefix}-page-last`,
+                  "aria-label": "Last page",
+                  disabled: safePage >= totalPages,
+                  onClick: () => onPageChange(totalPages),
+                  children: "Last »"
+                }
+              )
+            ] })
+          ] })
+        ]
+      }
+    );
+  };
   const ALL_GALAXIES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
   function formatShortAge(ageSeconds) {
     const sec = finiteNum(ageSeconds, null);
@@ -16111,6 +16237,11 @@
     const [splitDirty, setSplitDirty] = reactExports.useState(false);
     const [previewPending, setPreviewPending] = reactExports.useState(false);
     const [queuePhaseFilter, setQueuePhaseFilter] = reactExports.useState("all");
+    const [sectorSearch, setSectorSearch] = reactExports.useState("");
+    const [queuePage, setQueuePage] = reactExports.useState(1);
+    const [queuePageSize, setQueuePageSize] = reactExports.useState(25);
+    const [sectorPage, setSectorPage] = reactExports.useState(1);
+    const [sectorPageSize, setSectorPageSize] = reactExports.useState(25);
     const [savingSplit, setSavingSplit] = reactExports.useState(false);
     const [sweeping, setSweeping] = reactExports.useState(false);
     const [refreshingSector, setRefreshingSector] = reactExports.useState(null);
@@ -16340,21 +16471,27 @@
     );
     const queueSort = useTableSort(filteredQueue, queueSortCols);
     const filteredSectors = reactExports.useMemo(() => {
+      const needle = sectorSearch.trim().toLowerCase();
       return allSectors.filter((s) => {
         if (galaxyFilter > 0 && Math.round(finiteNum(s.galaxy, 0)) !== galaxyFilter) {
           return false;
         }
         const scanned = isSectorRowScanned(s);
-        if (statusFilter === "scanned") return scanned;
-        if (statusFilter === "unscanned") return !scanned;
-        if (statusFilter === "queued") return finiteNum(s.queue_pos, 0) > 0;
-        if (statusFilter === "debris") return finiteNum(s.debris_count, 0) > 0;
-        if (statusFilter === "targets") return finiteNum(s.target_count, 0) > 0;
-        if (statusFilter === "colony") return finiteNum(s.prime_colony_free_count, 0) > 0;
-        if (statusFilter === "stale") return scanned && finiteNum(s.age_seconds, 0) >= 3600;
-        return true;
+        if (statusFilter === "scanned" && !scanned) return false;
+        if (statusFilter === "unscanned" && scanned) return false;
+        if (statusFilter === "queued" && finiteNum(s.queue_pos, 0) <= 0) return false;
+        if (statusFilter === "debris" && finiteNum(s.debris_count, 0) <= 0) return false;
+        if (statusFilter === "targets" && finiteNum(s.target_count, 0) <= 0) return false;
+        if (statusFilter === "colony" && finiteNum(s.prime_colony_free_count, 0) <= 0) return false;
+        if (statusFilter === "stale" && !(scanned && finiteNum(s.age_seconds, 0) >= 3600)) {
+          return false;
+        }
+        if (!needle) return true;
+        const owners = Array.isArray(s.frequent_owners) ? s.frequent_owners.join(" ") : "";
+        const hay = `${s.sector || ""} ${owners} ${s.reason || ""}`.toLowerCase();
+        return hay.includes(needle);
       });
-    }, [allSectors, galaxyFilter, statusFilter]);
+    }, [allSectors, galaxyFilter, statusFilter, sectorSearch]);
     const sectorSortCols = reactExports.useMemo(
       () => ({
         sector: (s) => Math.round(finiteNum(s.galaxy, 0)) * 1e3 + Math.round(finiteNum(s.system, 0)),
@@ -16387,6 +16524,34 @@
       []
     );
     const sectorSort = useTableSort(filteredSectors, sectorSortCols);
+    const queueTotalPages = Math.max(1, Math.ceil(queueSort.sortedRows.length / queuePageSize));
+    const effectiveQueuePage = Math.max(1, Math.min(queueTotalPages, queuePage));
+    const pagedQueue = reactExports.useMemo(() => {
+      const start = (effectiveQueuePage - 1) * queuePageSize;
+      return queueSort.sortedRows.slice(start, start + queuePageSize);
+    }, [queueSort.sortedRows, effectiveQueuePage, queuePageSize]);
+    const sectorTotalPages = Math.max(1, Math.ceil(sectorSort.sortedRows.length / sectorPageSize));
+    const effectiveSectorPage = Math.max(1, Math.min(sectorTotalPages, sectorPage));
+    const pagedSectors = reactExports.useMemo(() => {
+      const start = (effectiveSectorPage - 1) * sectorPageSize;
+      return sectorSort.sortedRows.slice(start, start + sectorPageSize);
+    }, [sectorSort.sortedRows, effectiveSectorPage, sectorPageSize]);
+    reactExports.useEffect(() => {
+      setQueuePage(1);
+    }, [queuePhaseFilter, queueSort.sortKey, queueSort.sortDirection, queuePageSize]);
+    reactExports.useEffect(() => {
+      if (queuePage > queueTotalPages) {
+        setQueuePage(queueTotalPages);
+      }
+    }, [queuePage, queueTotalPages]);
+    reactExports.useEffect(() => {
+      setSectorPage(1);
+    }, [galaxyFilter, statusFilter, sectorSearch, sectorSort.sortKey, sectorSort.sortDirection, sectorPageSize]);
+    reactExports.useEffect(() => {
+      if (sectorPage > sectorTotalPages) {
+        setSectorPage(sectorTotalPages);
+      }
+    }, [sectorPage, sectorTotalPages]);
     const handleSelectGalaxy = (g) => {
       setUiPref("sectorGalaxy", g);
       refreshSectorsView(g, g > 0 || statusFilter === "unscanned");
@@ -16798,7 +16963,7 @@
                 ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Ops" })
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "sectors-queue-tbody", children: queueSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-state", children: scanQueue.length > 0 ? "No queued sectors match the selected phase filter." : "Click Refresh DB to load the smart scanner queue." }) }) : queueSort.sortedRows.map((qItem) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "sectors-queue-tbody", children: pagedQueue.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-state", children: scanQueue.length > 0 ? "No queued sectors match the selected phase filter." : "Click Refresh DB to load the smart scanner queue." }) }) : pagedQueue.map((qItem) => {
                 const isDisc = qItem.phase === "exploratory";
                 const distFmt = formatSectorDistance(qItem);
                 const isRowBusy = refreshingSector === qItem.sector;
@@ -16835,7 +17000,20 @@
                   ) })
                 ] }, `${qItem.queue_pos}-${qItem.sector}`);
               }) })
-            ] }) })
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              TablePagination,
+              {
+                idPrefix: "sec-queue",
+                totalItems: queueSort.sortedRows.length,
+                page: effectiveQueuePage,
+                pageSize: queuePageSize,
+                pageSizeOptions: [10, 25, 50, 100],
+                itemLabel: "queued sectors",
+                onPageChange: setQueuePage,
+                onPageSizeChange: setQueuePageSize
+              }
+            )
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window page-fill sectors-all-window", id: "sectors-all-window", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
@@ -16899,6 +17077,18 @@
                   },
                   f.key
                 )) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    type: "search",
+                    id: "sec-search",
+                    className: "table-search-input",
+                    placeholder: "Search sector / owner...",
+                    "aria-label": "Search scanned sectors",
+                    value: sectorSearch,
+                    onChange: (e) => setSectorSearch(e.target.value)
+                  }
+                ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   "button",
                   {
@@ -16995,7 +17185,7 @@
                 ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Ops" })
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "sectors-tbody", children: sectorSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 9, className: "empty-state", children: sectorsData ? "No sectors match the current galaxy or status filter." : "Click Refresh DB or run a Galaxy Sweep to populate sectors." }) }) : sectorSort.sortedRows.map((sec) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "sectors-tbody", children: pagedSectors.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 9, className: "empty-state", children: sectorsData ? "No sectors match the current galaxy or status filter." : "Click Refresh DB or run a Galaxy Sweep to populate sectors." }) }) : pagedSectors.map((sec) => {
                 const scanned = isSectorRowScanned(sec);
                 const occ = Math.max(0, Math.round(finiteNum(sec.occupied_count, 0)));
                 const maxSlots = Math.max(1, Math.round(finiteNum(sec.max_slots, 16)));
@@ -17072,7 +17262,20 @@
                   ) })
                 ] }, sec.sector);
               }) })
-            ] }) })
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              TablePagination,
+              {
+                idPrefix: "sec-all",
+                totalItems: sectorSort.sortedRows.length,
+                page: effectiveSectorPage,
+                pageSize: sectorPageSize,
+                pageSizeOptions: [25, 50, 100, 200],
+                itemLabel: "sectors",
+                onPageChange: setSectorPage,
+                onPageSizeChange: setSectorPageSize
+              }
+            )
           ] })
         ]
       }
@@ -17681,105 +17884,6 @@
       }
     );
   };
-  const TablePagination = ({
-    idPrefix,
-    totalItems,
-    page,
-    pageSize,
-    pageSizeOptions = [25, 50, 100, 200],
-    itemLabel = "items",
-    onPageChange,
-    onPageSizeChange
-  }) => {
-    const safeSize = Math.max(1, Math.round(pageSize));
-    const totalPages = Math.max(1, Math.ceil(totalItems / safeSize));
-    const safePage = Math.max(1, Math.min(totalPages, Math.round(page)));
-    const startIdx = totalItems === 0 ? 0 : (safePage - 1) * safeSize + 1;
-    const endIdx = totalItems === 0 ? 0 : Math.min(totalItems, safePage * safeSize);
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-      "div",
-      {
-        className: "table-pagination-bar tabular",
-        id: `${idPrefix}-pagination`,
-        role: "navigation",
-        "aria-label": `${itemLabel} pagination`,
-        children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "table-page-summary", id: `${idPrefix}-page-summary`, children: totalItems === 0 ? `0 ${itemLabel}` : `Showing ${startIdx}–${endIdx} of ${totalItems} ${itemLabel}` }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "table-page-controls", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "table-page-size-label", htmlFor: `${idPrefix}-page-size`, children: [
-              "Rows",
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "select",
-                {
-                  id: `${idPrefix}-page-size`,
-                  className: "table-page-size-select",
-                  value: String(safeSize),
-                  onChange: (e) => {
-                    const parsed = Number(e.target.value);
-                    if (Number.isFinite(parsed) && parsed >= 1) {
-                      onPageSizeChange(Math.round(parsed));
-                    }
-                  },
-                  children: pageSizeOptions.map((opt) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: String(opt), children: opt }, opt))
-                }
-              )
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "table-page-buttons", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  type: "button",
-                  className: "btn btn-secondary btn-sm",
-                  id: `${idPrefix}-page-first`,
-                  "aria-label": "First page",
-                  disabled: safePage <= 1,
-                  onClick: () => onPageChange(1),
-                  children: "« First"
-                }
-              ),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  type: "button",
-                  className: "btn btn-secondary btn-sm",
-                  id: `${idPrefix}-page-prev`,
-                  "aria-label": "Previous page",
-                  disabled: safePage <= 1,
-                  onClick: () => onPageChange(Math.max(1, safePage - 1)),
-                  children: "‹ Prev"
-                }
-              ),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "table-page-indicator", id: `${idPrefix}-page-indicator`, children: `Page ${safePage} / ${totalPages}` }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  type: "button",
-                  className: "btn btn-secondary btn-sm",
-                  id: `${idPrefix}-page-next`,
-                  "aria-label": "Next page",
-                  disabled: safePage >= totalPages,
-                  onClick: () => onPageChange(Math.min(totalPages, safePage + 1)),
-                  children: "Next ›"
-                }
-              ),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  type: "button",
-                  className: "btn btn-secondary btn-sm",
-                  id: `${idPrefix}-page-last`,
-                  "aria-label": "Last page",
-                  disabled: safePage >= totalPages,
-                  onClick: () => onPageChange(totalPages),
-                  children: "Last »"
-                }
-              )
-            ] })
-          ] })
-        ]
-      }
-    );
-  };
   function attemptOutcomeFor(eventType, minFields) {
     const ev = String(eventType ?? "").trim().toLowerCase();
     if (ev.includes("delet") || ev.includes("abandon") || ev.includes("undersized")) {
@@ -17827,6 +17931,7 @@
     const colFilter = uiPrefs.colonyFilter || "all";
     const [minFieldsInput, setMinFieldsInput] = reactExports.useState("300");
     const [allowColonizeInput, setAllowColonizeInput] = reactExports.useState(false);
+    const [candSearch, setCandSearch] = reactExports.useState("");
     const [candPage, setCandPage] = reactExports.useState(1);
     const [candPageSize, setCandPageSize] = reactExports.useState(25);
     const [attemptPage, setAttemptPage] = reactExports.useState(1);
@@ -17848,30 +17953,48 @@
       (_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.min_colony_fields
     ]);
     const gc = (colonyData == null ? void 0 : colonyData.grade_counts) || {};
-    const allCands = Array.isArray(colonyData == null ? void 0 : colonyData.candidates) ? colonyData.candidates : [];
+    const allCands = reactExports.useMemo(
+      () => Array.isArray(colonyData == null ? void 0 : colonyData.candidates) ? colonyData.candidates : [],
+      [colonyData]
+    );
     const filteredCands = reactExports.useMemo(() => {
-      if (colFilter === "probed") {
-        return allCands.filter((c) => Boolean(c.probed));
-      }
-      if (colFilter === "qualified") {
-        return allCands.filter((c) => Boolean(c.meets_target));
-      }
-      if (colFilter === "unprobed") {
-        return allCands.filter((c) => !c.probed);
-      }
-      return allCands;
-    }, [allCands, colFilter]);
+      const needle = candSearch.trim().toLowerCase();
+      return allCands.filter((c) => {
+        if (colFilter === "probed" && !c.probed) return false;
+        if (colFilter === "qualified" && !c.meets_target) return false;
+        if (colFilter === "unprobed" && Boolean(c.probed)) return false;
+        if (!needle) return true;
+        const hay = [
+          c.coords,
+          c.grade,
+          c.orbital_band,
+          c.fields_display,
+          c.reason,
+          c.position != null ? `pos ${c.position}` : ""
+        ].filter(Boolean).join(" ").toLowerCase();
+        return hay.includes(needle);
+      });
+    }, [allCands, colFilter, candSearch]);
     const minFieldsTarget = Math.max(
       1,
       Math.round(
         finiteNum((colonyData == null ? void 0 : colonyData.min_colony_fields) ?? ((_c = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c.min_colony_fields), 300)
       )
     );
-    const attempts = Array.isArray(colonyData == null ? void 0 : colonyData.colony_attempts) ? colonyData.colony_attempts.filter(
-      (a) => a && typeof a === "object"
-    ) : [];
-    const attemptsSummary = (colonyData == null ? void 0 : colonyData.colony_attempts_summary) && typeof colonyData.colony_attempts_summary === "object" ? colonyData.colony_attempts_summary : {};
-    const attemptsByCoords = (colonyData == null ? void 0 : colonyData.attempts_by_coords) && typeof colonyData.attempts_by_coords === "object" ? colonyData.attempts_by_coords : attemptsSummary.by_coords && typeof attemptsSummary.by_coords === "object" ? attemptsSummary.by_coords : {};
+    const attempts = reactExports.useMemo(
+      () => Array.isArray(colonyData == null ? void 0 : colonyData.colony_attempts) ? colonyData.colony_attempts.filter(
+        (a) => a && typeof a === "object"
+      ) : [],
+      [colonyData]
+    );
+    const attemptsSummary = reactExports.useMemo(
+      () => (colonyData == null ? void 0 : colonyData.colony_attempts_summary) && typeof colonyData.colony_attempts_summary === "object" ? colonyData.colony_attempts_summary : {},
+      [colonyData]
+    );
+    const attemptsByCoords = reactExports.useMemo(
+      () => (colonyData == null ? void 0 : colonyData.attempts_by_coords) && typeof colonyData.attempts_by_coords === "object" ? colonyData.attempts_by_coords : attemptsSummary.by_coords && typeof attemptsSummary.by_coords === "object" ? attemptsSummary.by_coords : {},
+      [colonyData, attemptsSummary]
+    );
     const triedCount = Math.round(
       finiteNum(attemptsSummary.unique_coords_tried, Object.keys(attemptsByCoords).length)
     );
@@ -17951,7 +18074,7 @@
     }, [attemptSort.sortedRows, effectiveAttemptPage, attemptPageSize]);
     reactExports.useEffect(() => {
       setCandPage(1);
-    }, [colFilter, candSort.sortKey, candSort.sortDirection, candPageSize]);
+    }, [colFilter, candSearch, candSort.sortKey, candSort.sortDirection, candPageSize]);
     reactExports.useEffect(() => {
       if (candPage > candTotalPages) {
         setCandPage(candTotalPages);
@@ -18199,6 +18322,18 @@
                     }
                   )
                 ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    type: "search",
+                    id: "col-search",
+                    className: "table-search-input",
+                    placeholder: "Search coords / zone...",
+                    "aria-label": "Search colony candidates",
+                    value: candSearch,
+                    onChange: (e) => setCandSearch(e.target.value)
+                  }
+                ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   "button",
                   {

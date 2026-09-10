@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
+import heapq
 import json
 import math
 import os
@@ -38,10 +39,14 @@ from spaceinvasion.db.migrations import (
     ATTACK_HISTORY_SCHEMA_VERSION,
     DEFAULT_GAME_MIGRATION_RUNNER,
     GAME_DB_MIGRATIONS,
+    HISTORY_TABLES,
+    HOT_TABLES,
     LATEST_SCHEMA_VERSION,
     PROTECTED_META_KEYS,
     SCHEMA_LEDGER_DDL,
     SCHEMA_VERSION,
+    TABLE_TIER_BY_NAME,
+    backfill_v012_hot_tables,
     create_sqlite_backup,
     import_legacy_attack_history_json,
     import_legacy_config_yaml,
@@ -215,6 +220,29 @@ def _raw_text(
         return str(value)
     except Exception:
         return f"<{type(value).__name__}>"
+
+
+_SAFE_STATUS_COLORS: frozenset[str] = frozenset(
+    {
+        "",
+        "free",
+        "yellow",
+        "white",
+        "green",
+        "blue",
+        "red",
+        "purple",
+        "orange",
+        "gray",
+        "grey",
+        "inactive",
+        "vacation",
+        "banned",
+        "spacia",
+    }
+)
+_NORM_GSP_RE = re.compile(r"(\d{2}):(\d{3}):(\d{2})", re.ASCII)
+_ANY_GSP_RE = re.compile(r"(\d+):(\d+):(\d+)", re.ASCII)
 
 
 def _sanitize_text(text: Any) -> str:
@@ -1051,6 +1079,10 @@ class GameDatabase:
                 self._last_slot_history_sig: Optional[tuple[float, tuple[str, ...]]] = None
                 self._summary_cache_ver: Optional[tuple[int, int, int]] = None
                 self._summary_cache_json: Optional[str] = None
+                self._galaxy_intel_base_ver: Optional[tuple[int, int]] = None
+                self._galaxy_intel_base_cache: dict[tuple[int, ...], dict[str, Any]] = {}
+                self._colony_cand_cache_ver: Optional[tuple[int, int]] = None
+                self._colony_cand_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
                 now_ts = time.time()
                 self._migration_result = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
                     self._conn,
@@ -1396,6 +1428,694 @@ class GameDatabase:
         with self._lock:
             self._conn.close()
 
+    def _db_version_locked(self) -> tuple[int, int]:
+        dv_row = self._conn.execute("PRAGMA data_version").fetchone()
+        dv = int(dv_row[0]) if dv_row is not None else 0
+        return (int(self._conn.total_changes), dv)
+
+    def _invalidate_hot_caches_locked(self) -> None:
+        self._galaxy_intel_base_ver = None
+        self._galaxy_intel_base_cache = None
+        self._colony_cand_cache_ver = None
+        self._colony_cand_cache = {}
+        self._summary_cache_ver = None
+        self._summary_cache_json = None
+
+    @staticmethod
+    def _parse_norm_gsp_fast(raw_c: Any) -> Optional[tuple[str, int, int, int]]:
+        if type(raw_c) is str:
+            nc = raw_c if (len(raw_c) == 9 and raw_c[2] == ":" and raw_c[6] == ":" and raw_c[0:2].isdigit() and raw_c[3:6].isdigit() and raw_c[7:9].isdigit()) else normalize_coords(raw_c.strip())
+        else:
+            nc = normalize_coords(_raw_text(raw_c, "").strip())
+        if not nc:
+            return None
+        if len(nc) == 9 and nc[2] == ":" and nc[6] == ":" and nc[0:2].isdigit() and nc[3:6].isdigit() and nc[7:9].isdigit():
+            return (nc, int(nc[0:2]), int(nc[3:6]), int(nc[7:9]))
+        m = _NORM_GSP_RE.match(nc)
+        if not m:
+            return None
+        return (nc, int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    def rebuild_hot_tables(self, *, ts: Optional[float] = None) -> dict[str, int]:
+        """Rebuild V012 hot operational projection tables idempotently from source/history tables."""
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        with self._lock:
+            counts = backfill_v012_hot_tables(self._conn, now_ts)
+            self._conn.commit()
+            self._invalidate_hot_caches_locked()
+        return {str(k): int(v) for k, v in counts.items()}
+
+    def _upsert_latest_state_hot_locked(
+        self,
+        *,
+        source_snapshot_id: int,
+        ts: float,
+        source: str,
+        universe_id: int,
+        user_id: int,
+        nickname: str,
+        active_planet_id: int,
+        planet_count: int,
+        planned_action_count: int,
+        state_json: str,
+        plan_json: str,
+        now_ts: float,
+    ) -> None:
+        if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "latest_state_hot"):
+            return
+        self._conn.execute(
+            """
+            INSERT INTO latest_state_hot(
+                id, source_snapshot_id, ts, source, universe_id, user_id,
+                nickname, active_planet_id, planet_count, planned_action_count,
+                state_json, plan_json, updated_ts
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                source_snapshot_id = excluded.source_snapshot_id,
+                ts = excluded.ts,
+                source = excluded.source,
+                universe_id = excluded.universe_id,
+                user_id = excluded.user_id,
+                nickname = excluded.nickname,
+                active_planet_id = excluded.active_planet_id,
+                planet_count = excluded.planet_count,
+                planned_action_count = excluded.planned_action_count,
+                state_json = excluded.state_json,
+                plan_json = excluded.plan_json,
+                updated_ts = excluded.updated_ts
+            """,
+            (
+                int(source_snapshot_id),
+                round(float(ts), 3),
+                source,
+                int(universe_id),
+                int(user_id),
+                nickname,
+                int(active_planet_id),
+                int(planet_count),
+                int(planned_action_count),
+                state_json,
+                plan_json,
+                round(float(now_ts), 3),
+            ),
+        )
+
+    def _upsert_empire_planets_hot_locked(self, state: GameState, now_ts: float) -> set[tuple[int, int]]:
+        touched_sectors: set[tuple[int, int]] = set()
+        if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "empire_planets_hot"):
+            return touched_sectors
+        ts_r = round(float(now_ts), 3)
+        prev_coords_rows = self._conn.execute(
+            "SELECT planet_id, coords FROM empire_planets_hot WHERE is_active = 1"
+        ).fetchall()
+        prev_by_pid = {int(r[0]): str(r[1] or "") for r in prev_coords_rows}
+        active_pids: list[int] = []
+        for planet in state.planets:
+            pid_sql = _sql_int(planet.planet_id, 0)
+            if pid_sql <= 0:
+                continue
+            active_pids.append(pid_sql)
+            norm_c = normalize_coords(_raw_text(planet.coords, "").strip())
+            if prev_by_pid.get(pid_sql) != norm_c:
+                for cand_c in (prev_by_pid.get(pid_sql, ""), norm_c):
+                    parsed_c = self._parse_norm_gsp_fast(cand_c)
+                    if parsed_c is not None and 1 <= parsed_c[1] <= 14 and 1 <= parsed_c[2] <= 400:
+                        touched_sectors.add((parsed_c[1], parsed_c[2]))
+            self._conn.execute(
+                """
+                INSERT INTO empire_planets_hot(
+                    planet_id, universe_id, coords, name, planet_type,
+                    temperature, fields_used, fields_max,
+                    pig_iron, metal, kryptonite, spice,
+                    energy_produced, energy_used, is_active, updated_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                ON CONFLICT(planet_id) DO UPDATE SET
+                    universe_id = excluded.universe_id,
+                    coords = excluded.coords,
+                    name = excluded.name,
+                    planet_type = excluded.planet_type,
+                    temperature = excluded.temperature,
+                    fields_used = excluded.fields_used,
+                    fields_max = excluded.fields_max,
+                    pig_iron = excluded.pig_iron,
+                    metal = excluded.metal,
+                    kryptonite = excluded.kryptonite,
+                    spice = excluded.spice,
+                    energy_produced = excluded.energy_produced,
+                    energy_used = excluded.energy_used,
+                    is_active = 1,
+                    updated_ts = excluded.updated_ts
+                """,
+                (
+                    pid_sql,
+                    _sql_int(state.universe_id, 0),
+                    norm_c,
+                    _sanitize_text(planet.name),
+                    normalize_planet_type(planet),
+                    _sql_int(planet.temperature, 0),
+                    _sql_int(planet.fields_used, 0),
+                    _sql_int(planet.fields_max, 0),
+                    _sql_int(planet.resources.pig_iron, 0),
+                    _sql_int(planet.resources.metal, 0),
+                    _sql_int(planet.resources.kryptonite, 0),
+                    _sql_int(planet.resources.spice, 0),
+                    _sql_int(planet.energy.produced, 0),
+                    _sql_int(planet.energy.used, 0),
+                    ts_r,
+                ),
+            )
+        if active_pids:
+            ph = ", ".join("?" for _ in active_pids)
+            self._conn.execute(
+                f"UPDATE empire_planets_hot SET is_active = 0, updated_ts = ? WHERE is_active = 1 AND planet_id NOT IN ({ph})",
+                (ts_r, *active_pids),
+            )
+        return touched_sectors
+
+    def _load_discarded_colony_coords_locked(self) -> set[str]:
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key = 'discarded_colony_coords' LIMIT 1"
+        ).fetchone()
+        if row is None or not row[0]:
+            return set()
+        try:
+            parsed = json.loads(str(row[0]))
+        except (TypeError, ValueError):
+            return set()
+        if not isinstance(parsed, Mapping):
+            return set()
+        out: set[str] = set()
+        for k in parsed.keys():
+            nk = normalize_coords(_raw_text(k, "").strip())
+            if nk:
+                out.add(nk)
+        return out
+
+    def _sync_discarded_colony_hot_locked(self, discarded_norm: set[str], now_ts: float) -> None:
+        if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "colony_candidates_hot"):
+            return
+        ts_r = round(float(now_ts), 3)
+        self._conn.execute(
+            "UPDATE colony_candidates_hot SET is_discarded = 0, updated_ts = ? WHERE is_discarded = 1",
+            (ts_r,),
+        )
+        if discarded_norm:
+            coords_list = sorted(discarded_norm)
+            for idx in range(0, len(coords_list), 200):
+                chunk = coords_list[idx : idx + 200]
+                ph = ", ".join("?" for _ in chunk)
+                self._conn.execute(
+                    f"UPDATE colony_candidates_hot SET is_discarded = 1, updated_ts = ? WHERE coords IN ({ph})",
+                    (ts_r, *chunk),
+                )
+
+    def _refresh_colony_candidates_hot_locked(self, coords_iter: Iterable[str], now_ts: float) -> None:
+        if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "colony_candidates_hot"):
+            return
+        norm_coords = sorted({normalize_coords(_raw_text(c, "").strip()) for c in coords_iter if normalize_coords(_raw_text(c, "").strip())})
+        if not norm_coords:
+            return
+        ts_r = round(float(now_ts), 3)
+        discarded_norm = self._load_discarded_colony_coords_locked()
+        cur = self._conn.cursor()
+        cur.row_factory = None
+        has_slots = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots")
+        has_spy = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets")
+        has_reports = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_reports")
+        has_slot_cmax = has_slots and self._has_column_locked("galaxy_slots", "colonize_max_fields")
+        has_spy_cmax = has_spy and self._has_column_locked("spy_targets", "colonize_max_fields")
+
+        merged: dict[str, list[Any]] = {}
+        for idx in range(0, len(norm_coords), 200):
+            chunk = norm_coords[idx : idx + 200]
+            ph = ", ".join("?" for _ in chunk)
+            if has_slots:
+                s_cols = (
+                    "coords, colonize_min_fields, colonize_max_fields, temperature, last_scanned_ts"
+                    if has_slot_cmax
+                    else "coords, NULL, NULL, NULL, last_scanned_ts"
+                )
+                for r in cur.execute(
+                    f"SELECT {s_cols} FROM galaxy_slots WHERE status_color = 'free' AND coords IN ({ph})",
+                    chunk,
+                ).fetchall():
+                    nc = normalize_coords(_raw_text(r[0], ""))
+                    if not nc:
+                        continue
+                    merged[nc] = [
+                        None,
+                        _safe_optional_int(r[1]),
+                        _safe_optional_int(r[2]),
+                        _safe_optional_int(r[3]),
+                        0.0,
+                        _safe_float(r[4], 0.0),
+                        0,
+                        0.0,
+                        "",
+                    ]
+            if has_spy:
+                st_cmin = "colonize_min_fields" if has_spy_cmax else "NULL"
+                st_cmax = "colonize_max_fields" if has_spy_cmax else "NULL"
+                st_temp = "temperature" if has_spy_cmax else "NULL"
+                st_cmax_or = "OR colonize_max_fields IS NOT NULL" if has_spy_cmax else ""
+                for sr in cur.execute(
+                    f"""
+                    SELECT coords, uninhabited_fields, {st_cmin}, {st_cmax}, {st_temp},
+                           last_spied_ts, last_scanned_ts, spy_count, blocked_until_ts, block_reason
+                    FROM spy_targets
+                    WHERE coords IN ({ph})
+                      AND merged_into = '' AND is_own_planet = 0
+                      AND (
+                          status_color = 'free'
+                          OR ((uninhabited_fields IS NOT NULL {st_cmax_or}) AND owner = '' AND is_spacia = 0)
+                      )
+                    """,
+                    chunk,
+                ).fetchall():
+                    nc = normalize_coords(_raw_text(sr[0], ""))
+                    if not nc:
+                        continue
+                    entry = merged.get(nc)
+                    if entry is None:
+                        entry = [None, None, None, None, 0.0, 0.0, 0, 0.0, ""]
+                        merged[nc] = entry
+                    uf = _safe_optional_int(sr[1])
+                    if uf is not None:
+                        entry[0] = uf
+                    cmin = _safe_optional_int(sr[2])
+                    if cmin is not None and entry[1] is None:
+                        entry[1] = cmin
+                    cmax = _safe_optional_int(sr[3])
+                    if cmax is not None and entry[2] is None:
+                        entry[2] = cmax
+                    temp = _safe_optional_int(sr[4])
+                    if temp is not None and entry[3] is None:
+                        entry[3] = temp
+                    lsp = _safe_float(sr[5], 0.0)
+                    if lsp > entry[4]:
+                        entry[4] = lsp
+                    lsc = _safe_float(sr[6], 0.0)
+                    if lsc > entry[5]:
+                        entry[5] = lsc
+                    scnt = _safe_int(sr[7], 0)
+                    if scnt > entry[6]:
+                        entry[6] = scnt
+                    b_until = _safe_float(sr[8], 0.0)
+                    b_rsn = _sanitize_text(sr[9] or "")
+                    b_low = b_rsn.lower()
+                    if "can't be attacked" not in b_low and "cannot be attacked" not in b_low and b_until > entry[7]:
+                        entry[7] = b_until
+                        entry[8] = b_rsn
+            if has_reports:
+                for rr in cur.execute(
+                    f"""
+                    SELECT target_coords, MAX(uninhabited_fields), MAX(ts), COUNT(*)
+                    FROM spy_reports
+                    WHERE target_coords IN ({ph})
+                      AND uninhabited_fields IS NOT NULL AND owner = '' AND is_spacia = 0
+                    GROUP BY target_coords
+                    """,
+                    chunk,
+                ).fetchall():
+                    nc = normalize_coords(_raw_text(rr[0], ""))
+                    if not nc:
+                        continue
+                    entry = merged.get(nc)
+                    if entry is None:
+                        entry = [None, None, None, None, 0.0, 0.0, 0, 0.0, ""]
+                        merged[nc] = entry
+                    uf = _safe_optional_int(rr[1])
+                    if uf is not None:
+                        entry[0] = uf
+                    rts = _safe_float(rr[2], 0.0)
+                    if rts > entry[4]:
+                        entry[4] = rts
+                    rcnt = _safe_int(rr[3], 0)
+                    if rcnt > entry[6]:
+                        entry[6] = rcnt
+
+        upsert_params: list[tuple[Any, ...]] = []
+        inactive_coords: list[str] = []
+        for nc in norm_coords:
+            entry = merged.get(nc)
+            if entry is None:
+                inactive_coords.append(nc)
+                continue
+            parsed_c = self._parse_norm_gsp_fast(nc)
+            gal_i = parsed_c[1] if parsed_c is not None else 0
+            sys_i = parsed_c[2] if parsed_c is not None else 0
+            pos_i = parsed_c[3] if parsed_c is not None else 0
+            uf, cmin, cmax, temp, lsp, lsc, scnt, b_until, b_rsn = entry
+            uf_pos = uf if (uf is not None and uf > 0) else None
+            cmin_pos = cmin if (cmin is not None and cmin > 0) else None
+            cmax_pos = cmax if (cmax is not None and cmax > 0) else None
+            eff_cmax = cmin_pos if (cmin_pos is not None and cmax_pos is not None and cmin_pos > cmax_pos) else cmax_pos
+            max_est = uf_pos if uf_pos is not None else (eff_cmax if eff_cmax is not None else 0)
+            is_probed = 1 if (uf_pos is not None or eff_cmax is not None) else 0
+            is_disc = 1 if nc in discarded_norm else 0
+            upsert_params.append(
+                (
+                    nc,
+                    gal_i,
+                    sys_i,
+                    pos_i,
+                    uf,
+                    cmin,
+                    cmax,
+                    max_est,
+                    temp,
+                    is_probed,
+                    lsp,
+                    lsc,
+                    scnt,
+                    b_until,
+                    b_rsn,
+                    is_disc,
+                    1,
+                    ts_r,
+                )
+            )
+        if upsert_params:
+            cur.executemany(
+                """
+                INSERT INTO colony_candidates_hot(
+                    coords, galaxy, system, position,
+                    uninhabited_fields, colonize_min_fields, colonize_max_fields, max_fields_est,
+                    temperature, is_probed, last_spied_ts, last_scanned_ts, spy_count,
+                    blocked_until_ts, block_reason, is_discarded, is_active, updated_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(coords) DO UPDATE SET
+                    galaxy = excluded.galaxy,
+                    system = excluded.system,
+                    position = excluded.position,
+                    uninhabited_fields = excluded.uninhabited_fields,
+                    colonize_min_fields = excluded.colonize_min_fields,
+                    colonize_max_fields = excluded.colonize_max_fields,
+                    max_fields_est = excluded.max_fields_est,
+                    temperature = excluded.temperature,
+                    is_probed = excluded.is_probed,
+                    last_spied_ts = excluded.last_spied_ts,
+                    last_scanned_ts = excluded.last_scanned_ts,
+                    spy_count = excluded.spy_count,
+                    blocked_until_ts = excluded.blocked_until_ts,
+                    block_reason = excluded.block_reason,
+                    is_discarded = excluded.is_discarded,
+                    is_active = 1,
+                    updated_ts = excluded.updated_ts
+                """,
+                upsert_params,
+            )
+        if inactive_coords:
+            for idx in range(0, len(inactive_coords), 200):
+                chunk = inactive_coords[idx : idx + 200]
+                ph = ", ".join("?" for _ in chunk)
+                cur.execute(
+                    f"UPDATE colony_candidates_hot SET is_active = 0, updated_ts = ? WHERE coords IN ({ph}) AND is_active = 1",
+                    (ts_r, *chunk),
+                )
+
+    def _load_own_coords_locked(self) -> set[str]:
+        own_coords: set[str] = set()
+        cur = self._conn.cursor()
+        cur.row_factory = None
+        if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "empire_planets_hot"):
+            ep_rows = cur.execute("SELECT DISTINCT coords FROM empire_planets_hot WHERE coords != ''").fetchall()
+            for r in ep_rows:
+                parsed = self._parse_norm_gsp_fast(r[0])
+                if parsed is not None:
+                    own_coords.add(parsed[0])
+            if not ep_rows and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "planet_snapshots"):
+                for r in cur.execute("SELECT DISTINCT coords FROM planet_snapshots WHERE coords != ''").fetchall():
+                    parsed = self._parse_norm_gsp_fast(r[0])
+                    if parsed is not None:
+                        own_coords.add(parsed[0])
+        elif DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "planet_snapshots"):
+            for r in cur.execute("SELECT DISTINCT coords FROM planet_snapshots WHERE coords != ''").fetchall():
+                parsed = self._parse_norm_gsp_fast(r[0])
+                if parsed is not None:
+                    own_coords.add(parsed[0])
+        if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets") and self._has_column_locked("spy_targets", "is_own_planet"):
+            for r in cur.execute("SELECT coords FROM spy_targets WHERE is_own_planet = 1").fetchall():
+                parsed = self._parse_norm_gsp_fast(r[0])
+                if parsed is not None:
+                    own_coords.add(parsed[0])
+        return own_coords
+
+    def _refresh_galaxy_sectors_hot_locked(self, sectors: Iterable[tuple[int, int]], now_ts: float) -> None:
+        if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_sector_hot"):
+            return
+        valid_sectors = sorted({(int(g), int(s)) for g, s in sectors if 1 <= int(g) <= 14 and 1 <= int(s) <= 400})
+        if not valid_sectors:
+            return
+        ts_r = round(float(now_ts), 3)
+        own_coords = self._load_own_coords_locked()
+        cur = self._conn.cursor()
+        cur.row_factory = None
+        has_scans = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_scans")
+        has_scan_hist = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_scan_history")
+        has_slots = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots")
+        has_spy = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets")
+        has_slot_cmax = has_slots and self._has_column_locked("galaxy_slots", "colonize_max_fields")
+        has_spy_cmax = has_spy and self._has_column_locked("spy_targets", "colonize_max_fields")
+
+        sec_params: list[tuple[Any, ...]] = []
+        for gal_i, sys_i in valid_sectors:
+            last_ts = 0.0
+            scan_cnt = 0
+            sm_occ = 0
+            sm_tgt = 0
+            sm_free = 0
+            hist_deb = 0
+            if has_scans:
+                sr = cur.execute(
+                    "SELECT last_scanned_ts, occupied_count, target_count, free_count FROM galaxy_scans WHERE galaxy = ? AND system = ?",
+                    (gal_i, sys_i),
+                ).fetchone()
+                if sr is not None:
+                    last_ts = _safe_float(sr[0], 0.0)
+                    scan_cnt = 1 if last_ts > 0.0 else 0
+                    sm_occ = max(0, _safe_int(sr[1], 0))
+                    sm_tgt = max(0, _safe_int(sr[2], 0))
+                    sm_free = max(0, _safe_int(sr[3], 0))
+            if has_scan_hist:
+                hr = cur.execute(
+                    "SELECT COUNT(*), MAX(ts), MAX(debris_count) FROM galaxy_scan_history WHERE galaxy = ? AND system = ?",
+                    (gal_i, sys_i),
+                ).fetchone()
+                if hr is not None and _safe_int(hr[0], 0) > 0:
+                    scan_cnt = max(scan_cnt, max(0, _safe_int(hr[0], 0)))
+                    last_ts = max(last_ts, _safe_float(hr[1], 0.0))
+                    hist_deb = max(hist_deb, max(0, _safe_int(hr[2], 0)))
+
+            occ_set: set[str] = set()
+            debris_set: set[str] = set()
+            inact_set: set[str] = set()
+            spacia_set: set[str] = set()
+            free_set: set[str] = set()
+            prime_set: set[str] = set()
+            owner_display: dict[str, str] = {}
+            owner_coords: dict[str, set[str]] = {}
+            coord_owner: dict[str, str] = {}
+
+            if has_slots:
+                s_cmax = "colonize_max_fields" if has_slot_cmax else "NULL"
+                for r in cur.execute(
+                    f"""
+                    SELECT coords, owner, status_color, is_inactive, is_spacia, has_debris, {s_cmax}
+                    FROM galaxy_slots
+                    WHERE galaxy = ? AND system = ?
+                    """,
+                    (gal_i, sys_i),
+                ).fetchall():
+                    parsed = self._parse_norm_gsp_fast(r[0])
+                    if parsed is None:
+                        continue
+                    nc, _, _, pos_i = parsed
+                    scolor = _sanitize_text(r[2] or "free").strip().lower() or "free"
+                    is_sp = bool(r[4])
+                    owner_s = _sanitize_text(r[1] or "").strip()
+                    if scolor != "free":
+                        occ_set.add(nc)
+                    if bool(r[5]):
+                        debris_set.add(nc)
+                    if nc in own_coords:
+                        continue
+                    if is_sp or owner_s.lower() == "spacia":
+                        spacia_set.add(nc)
+                    elif scolor == "yellow" or (bool(r[3]) and scolor != "free"):
+                        inact_set.add(nc)
+                    if owner_s and scolor != "free" and not is_sp and owner_s.lower() != "spacia":
+                        okey = owner_s.lower()
+                        owner_display.setdefault(okey, owner_s)
+                        owner_coords.setdefault(okey, set()).add(nc)
+                        coord_owner[nc] = owner_s
+                    if scolor == "free":
+                        free_set.add(nc)
+                        cmax = _safe_int(r[6], 0)
+                        if cmax >= 300 or (cmax == 0 and 7 <= pos_i <= 12):
+                            prime_set.add(nc)
+
+            if has_spy:
+                lo_c = f"{gal_i:02d}:{sys_i:03d}:00"
+                hi_c = f"{gal_i:02d}:{sys_i:03d}:99"
+                st_cmax = "colonize_max_fields" if has_spy_cmax else "NULL"
+                for r in cur.execute(
+                    f"""
+                    SELECT coords, owner, status_color, is_inactive, is_spacia,
+                           has_debris, uninhabited_fields, {st_cmax}, is_own_planet, merged_into
+                    FROM spy_targets
+                    WHERE coords >= ? AND coords <= ? AND merged_into = ''
+                    """,
+                    (lo_c, hi_c),
+                ).fetchall():
+                    if bool(r[8]) or str(r[9] or "").strip():
+                        continue
+                    parsed = self._parse_norm_gsp_fast(r[0])
+                    if parsed is None:
+                        continue
+                    nc, g_r, s_r, pos_i = parsed
+                    if g_r != gal_i or s_r != sys_i or nc in own_coords:
+                        continue
+                    scolor = _sanitize_text(r[2] or "yellow").strip().lower() or "yellow"
+                    is_sp = bool(r[4])
+                    owner_s = _sanitize_text(r[1] or "").strip()
+                    if scolor != "free":
+                        occ_set.add(nc)
+                    if bool(r[5]):
+                        debris_set.add(nc)
+                    if is_sp or owner_s.lower() == "spacia":
+                        spacia_set.add(nc)
+                    elif scolor == "yellow" or (bool(r[3]) and scolor != "free"):
+                        inact_set.add(nc)
+                    if owner_s and scolor != "free" and not is_sp and owner_s.lower() != "spacia":
+                        okey = owner_s.lower()
+                        owner_display[okey] = owner_s
+                        owner_coords.setdefault(okey, set()).add(nc)
+                        coord_owner[nc] = owner_s
+                    if scolor == "free":
+                        free_set.add(nc)
+                        uf = _safe_int(r[6], 0)
+                        cmax = _safe_int(r[7], 0)
+                        if uf >= 300 or cmax >= 300 or (uf == 0 and cmax == 0 and 7 <= pos_i <= 12):
+                            prime_set.add(nc)
+
+            occ_cnt = max(sm_occ, len(occ_set))
+            inact_cnt = len(inact_set)
+            spacia_cnt = len(spacia_set)
+            tgt_cnt = max(sm_tgt, inact_cnt + spacia_cnt)
+            deb_cnt = len(debris_set)
+            free_cnt = max(sm_free, len(free_set))
+            prime_cnt = len(prime_set)
+
+            owners_list: list[str] = []
+            owner_counts: dict[str, int] = {}
+            for okey in sorted(owner_coords.keys()):
+                pcnt = len(owner_coords[okey])
+                if pcnt <= 0:
+                    continue
+                disp = owner_display.get(okey, okey)
+                owners_list.append(disp)
+                owner_counts[disp] = pcnt
+            co_norm = {
+                nc: owner_display.get(ov.lower(), ov)
+                for nc, ov in sorted(coord_owner.items())
+                if nc not in spacia_set
+            }
+            sec_params.append(
+                (
+                    gal_i,
+                    sys_i,
+                    round(last_ts, 3),
+                    scan_cnt,
+                    occ_cnt,
+                    tgt_cnt,
+                    inact_cnt,
+                    spacia_cnt,
+                    deb_cnt,
+                    free_cnt,
+                    prime_cnt,
+                    hist_deb,
+                    json.dumps(owners_list, separators=(",", ":"), ensure_ascii=False),
+                    json.dumps(owner_counts, separators=(",", ":"), ensure_ascii=False),
+                    json.dumps(co_norm, separators=(",", ":"), ensure_ascii=False),
+                    json.dumps(sorted(spacia_set), separators=(",", ":"), ensure_ascii=False),
+                    ts_r,
+                )
+            )
+        if sec_params:
+            cur.executemany(
+                """
+                INSERT INTO galaxy_sector_hot(
+                    galaxy, system, last_scanned_ts, scan_count,
+                    occupied_count, target_count, inactive_count, spacia_count,
+                    debris_count, free_count, prime_colony_free_count, hist_debris_max,
+                    owners_json, owner_planet_counts_json, coord_owners_json, spacia_coords_json,
+                    updated_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(galaxy, system) DO UPDATE SET
+                    last_scanned_ts = excluded.last_scanned_ts,
+                    scan_count = excluded.scan_count,
+                    occupied_count = excluded.occupied_count,
+                    target_count = excluded.target_count,
+                    inactive_count = excluded.inactive_count,
+                    spacia_count = excluded.spacia_count,
+                    debris_count = excluded.debris_count,
+                    free_count = excluded.free_count,
+                    prime_colony_free_count = excluded.prime_colony_free_count,
+                    hist_debris_max = excluded.hist_debris_max,
+                    owners_json = excluded.owners_json,
+                    owner_planet_counts_json = excluded.owner_planet_counts_json,
+                    coord_owners_json = excluded.coord_owners_json,
+                    spacia_coords_json = excluded.spacia_coords_json,
+                    updated_ts = excluded.updated_ts
+                """,
+                sec_params,
+            )
+
+    def _ensure_hot_tables_synced_locked(self, *, check_sectors: bool = False, check_colonies: bool = False) -> bool:
+        if check_sectors:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_sector_hot"):
+                return False
+            hot_cnt = int(self._conn.execute("SELECT COUNT(*) FROM galaxy_sector_hot").fetchone()[0])
+            scan_cnt = (
+                int(self._conn.execute("SELECT COUNT(*) FROM galaxy_scans").fetchone()[0])
+                if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_scans")
+                else 0
+            )
+            need_rebuild = hot_cnt < scan_cnt
+            if not need_rebuild and hot_cnt == 0:
+                if (
+                    (DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots")
+                     and self._conn.execute("SELECT 1 FROM galaxy_slots LIMIT 1").fetchone() is not None)
+                    or (DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets")
+                        and self._conn.execute("SELECT 1 FROM spy_targets LIMIT 1").fetchone() is not None)
+                ):
+                    need_rebuild = True
+            if need_rebuild:
+                backfill_v012_hot_tables(self._conn, time.time())
+                self._conn.commit()
+            return True
+        if check_colonies:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "colony_candidates_hot"):
+                return False
+            has_any_hot = self._conn.execute("SELECT 1 FROM colony_candidates_hot LIMIT 1").fetchone() is not None
+            if not has_any_hot:
+                need_rebuild = False
+                if (
+                    (DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_slots")
+                     and self._conn.execute("SELECT 1 FROM galaxy_slots WHERE status_color = 'free' LIMIT 1").fetchone() is not None)
+                    or (DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets")
+                        and self._conn.execute("SELECT 1 FROM spy_targets WHERE status_color = 'free' OR uninhabited_fields IS NOT NULL LIMIT 1").fetchone() is not None)
+                    or (DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_reports")
+                        and self._conn.execute("SELECT 1 FROM spy_reports WHERE uninhabited_fields IS NOT NULL AND owner = '' AND is_spacia = 0 LIMIT 1").fetchone() is not None)
+                ):
+                    need_rebuild = True
+                if need_rebuild:
+                    backfill_v012_hot_tables(self._conn, time.time())
+                    self._conn.commit()
+            return True
+        return False
+
     def record_state_snapshot(
         self,
         state: GameState,
@@ -1600,7 +2320,7 @@ class GameDatabase:
                     (now_ts,),
                 )
 
-            # 4. Mark player's own planet coordinates in spy_targets (non-destructive; never deletes rows)
+            # 4. Mark player's own planet coordinates in spy_targets & empire_planets_hot (non-destructive; never deletes rows)
             own_norm_coords = [
                 normalize_coords(_raw_text(p.coords, "").strip())
                 for p in state.planets
@@ -1612,6 +2332,11 @@ class GameDatabase:
                     f"UPDATE spy_targets SET is_own_planet = 1 WHERE coords IN ({ph_own})",
                     own_norm_coords,
                 )
+            touched_own_sectors = self._upsert_empire_planets_hot_locked(state, now_ts)
+            if own_norm_coords:
+                self._refresh_colony_candidates_hot_locked(own_norm_coords, now_ts)
+            if touched_own_sectors:
+                self._refresh_galaxy_sectors_hot_locked(touched_own_sectors, now_ts)
 
             # 5. Full latest GameState snapshot (queues, offers, alerts, unread badges)
             self._save_latest_game_state_locked(state, now_ts)
@@ -1632,6 +2357,14 @@ class GameDatabase:
             """,
             (clean_key, _json_dumps(payload), round(_safe_float(now_ts, time.time()), 3)),
         )
+        if clean_key == "discarded_colony_coords":
+            disc_set: set[str] = set()
+            if isinstance(payload, Mapping):
+                for k in payload.keys():
+                    nk = normalize_coords(_raw_text(k, "").strip())
+                    if nk:
+                        disc_set.add(nk)
+            self._sync_discarded_colony_hot_locked(disc_set, now_ts)
 
     def save_meta_json(self, key: str, payload: Any, *, ts: Optional[float] = None) -> None:
         now_ts = _safe_float(ts, time.time()) if ts is not None else time.time()
@@ -2069,6 +2802,8 @@ class GameDatabase:
                     last_ts = _safe_optional_float(last_row["ts"])
                     if last_ts is not None and abs(now_ts - last_ts) < min_interval_seconds:
                         return _sql_int(last_row["id"], 0)
+            state_json_str = _json_dumps(state_payload)
+            plan_json_str = _json_dumps(plan_payload)
             cur = self._conn.execute(
                 """
                 INSERT INTO state_snapshots(
@@ -2085,13 +2820,69 @@ class GameDatabase:
                     _sql_int(state.active_planet_id or 0, 0),
                     _sql_int(len(state.planets), 0),
                     _sql_int(len(plan_payload), 0),
-                    _json_dumps(state_payload),
-                    _json_dumps(plan_payload),
+                    state_json_str,
+                    plan_json_str,
                 ),
             )
             row_id = int(cur.lastrowid or 0)
+            self._upsert_latest_state_hot_locked(
+                source_snapshot_id=row_id,
+                ts=now_ts,
+                source=src_clean,
+                universe_id=_sql_int(state.universe_id, 0),
+                user_id=_sql_int(state.user_id, 0),
+                nickname=_sanitize_text(state.nickname)[:120],
+                active_planet_id=_sql_int(state.active_planet_id or 0, 0),
+                planet_count=_sql_int(len(state.planets), 0),
+                planned_action_count=_sql_int(len(plan_payload), 0),
+                state_json=state_json_str,
+                plan_json=plan_json_str,
+                now_ts=now_ts,
+            )
             self._conn.commit()
             return row_id
+
+    def get_latest_state_hot(self, *, include_payload: bool = True) -> Optional[dict[str, Any]]:
+        """Read the latest operational state snapshot from `latest_state_hot` (fallback: `state_snapshots`)."""
+        with self._lock:
+            row = None
+            if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "latest_state_hot"):
+                cols = (
+                    "source_snapshot_id AS id, ts, source, universe_id, user_id, nickname, "
+                    "active_planet_id, planet_count, planned_action_count"
+                    + (", state_json, plan_json" if include_payload else "")
+                )
+                row = self._conn.execute(f"SELECT {cols} FROM latest_state_hot WHERE id = 1 LIMIT 1").fetchone()
+            if row is None and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "state_snapshots"):
+                cols = (
+                    "id, ts, source, universe_id, user_id, nickname, active_planet_id, "
+                    "planet_count, planned_action_count"
+                    + (", state_json, plan_json" if include_payload else "")
+                )
+                row = self._conn.execute(f"SELECT {cols} FROM state_snapshots ORDER BY id DESC LIMIT 1").fetchone()
+        if row is None:
+            return None
+        item: dict[str, Any] = {
+            "id": _sql_int(row["id"], 0),
+            "ts": _safe_float(row["ts"], 0.0),
+            "source": _sanitize_text(_raw_text(row["source"], "advisor")),
+            "universe_id": _sql_int(row["universe_id"], 0),
+            "user_id": _sql_int(row["user_id"], 0),
+            "nickname": _sanitize_text(_raw_text(row["nickname"], "")),
+            "active_planet_id": _sql_int(row["active_planet_id"], 0),
+            "planet_count": _sql_int(row["planet_count"], 0),
+            "planned_action_count": _sql_int(row["planned_action_count"], 0),
+        }
+        if include_payload:
+            try:
+                item["state"] = json.loads(_raw_text(row["state_json"], "{}"))
+            except ValueError:
+                item["state"] = {}
+            try:
+                item["plan"] = json.loads(_raw_text(row["plan_json"], "[]"))
+            except ValueError:
+                item["plan"] = []
+        return _sanitize_obj(item)
 
     def get_state_snapshots(self, *, limit: int = 20, include_payload: bool = False) -> list[dict[str, Any]]:
         """Return recent full state/plan snapshots from `state_snapshots`."""
@@ -2530,6 +3321,10 @@ class GameDatabase:
                     raw_txt,
                 ),
             )
+            self._refresh_colony_candidates_hot_locked((norm_coords,), now_ts)
+            parsed_sr = self._parse_norm_gsp_fast(norm_coords)
+            if parsed_sr is not None and 1 <= parsed_sr[1] <= 14 and 1 <= parsed_sr[2] <= 400:
+                self._refresh_galaxy_sectors_hot_locked(((parsed_sr[1], parsed_sr[2]),), now_ts)
             self._conn.commit()
 
     def _has_column_locked(self, table: str, column: str) -> bool:
@@ -2720,11 +3515,18 @@ class GameDatabase:
             )
             if slots and append_hist:
                 self._last_slot_history_sig = (now_ts, sig_coords)
+            touched_coords: set[str] = set()
+            touched_sectors: set[tuple[int, int]] = set()
             for slot in slots:
                 self._upsert_galaxy_slot_locked(slot, now_ts, append_history=append_hist)
                 has_debris = 1 if bool(getattr(slot, "has_debris", False)) else 0
                 raw_slot_coords = _raw_text(slot.coords, "").strip()
                 norm_slot_coords = normalize_coords(raw_slot_coords)
+                if norm_slot_coords:
+                    touched_coords.add(norm_slot_coords)
+                    parsed_sc = self._parse_norm_gsp_fast(norm_slot_coords)
+                    if parsed_sc is not None and 1 <= parsed_sc[1] <= 14 and 1 <= parsed_sc[2] <= 400:
+                        touched_sectors.add((parsed_sc[1], parsed_sc[2]))
                 if slot.status_color == "free" and not has_debris:
                     if norm_slot_coords:
                         slot_uf = _sql_optional_int(getattr(slot, "uninhabited_fields", None))
@@ -2835,6 +3637,10 @@ class GameDatabase:
                     ),
                 )
                 saved += 1
+            if touched_coords:
+                self._refresh_colony_candidates_hot_locked(touched_coords, now_ts)
+            if touched_sectors:
+                self._refresh_galaxy_sectors_hot_locked(touched_sectors, now_ts)
             self._conn.commit()
         return saved
 
@@ -2868,8 +3674,14 @@ class GameDatabase:
             )
             if slots and append_hist:
                 self._last_slot_history_sig = (now_ts, sig_coords)
+            touched_coords: set[str] = set()
             for slot in slots:
                 self._upsert_galaxy_slot_locked(slot, now_ts, append_history=append_hist)
+                nc_s = normalize_coords(_raw_text(getattr(slot, "coords", ""), "").strip())
+                if nc_s:
+                    touched_coords.add(nc_s)
+            gal_sql = _sql_int(galaxy, 0)
+            sys_sql = _sql_int(system, 0)
             self._conn.execute(
                 """
                 INSERT INTO galaxy_scans(
@@ -2882,8 +3694,8 @@ class GameDatabase:
                     free_count = excluded.free_count
                 """,
                 (
-                    _sql_int(galaxy, 0),
-                    _sql_int(system, 0),
+                    gal_sql,
+                    sys_sql,
                     now_ts,
                     _sql_int(occupied_count, 0),
                     _sql_int(target_count, 0),
@@ -2898,8 +3710,8 @@ class GameDatabase:
                 """,
                 (
                     now_ts,
-                    _sql_int(galaxy, 0),
-                    _sql_int(system, 0),
+                    gal_sql,
+                    sys_sql,
                     _sql_int(occupied_count, 0),
                     _sql_int(target_count, 0),
                     _sql_int(free_count, 0),
@@ -2907,6 +3719,10 @@ class GameDatabase:
                     _sql_int(asteroid_count, 0),
                 ),
             )
+            if touched_coords:
+                self._refresh_colony_candidates_hot_locked(touched_coords, now_ts)
+            if 1 <= gal_sql <= 14 and 1 <= sys_sql <= 400:
+                self._refresh_galaxy_sectors_hot_locked(((gal_sql, sys_sql),), now_ts)
             self._conn.commit()
 
     def get_galaxy_slots(
@@ -3020,6 +3836,453 @@ class GameDatabase:
                 gi = _safe_int(g_raw, 0)
                 if 1 <= gi <= 14 and gi not in req_galaxies:
                     req_galaxies.append(gi)
+
+        hot_base: Optional[dict[str, Any]] = None
+        with self._lock:
+            use_hot = self._ensure_hot_tables_synced_locked(check_sectors=True)
+            if use_hot:
+                db_ver = self._db_version_locked()
+                base_key = (db_ver, tuple(req_galaxies))
+                if self._galaxy_intel_base_ver == base_key and self._galaxy_intel_base_cache is not None:
+                    hot_base = self._galaxy_intel_base_cache
+                else:
+                    cur = self._conn.cursor()
+                    cur.row_factory = None
+                    hot_rows = cur.execute(
+                        """
+                        SELECT galaxy, system, last_scanned_ts, scan_count,
+                               occupied_count, target_count, inactive_count, spacia_count,
+                               debris_count, free_count, prime_colony_free_count,
+                               owners_json, owner_planet_counts_json, coord_owners_json, spacia_coords_json
+                        FROM galaxy_sector_hot
+                        """
+                    ).fetchall()
+                    own_coords_hot = self._load_own_coords_locked()
+                    has_raids_h = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "raid_history")
+                    has_battles_h = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "battle_reports")
+                    norm_raids_h = self._query_norm_raid_rows_locked() if has_raids_h else []
+                    battle_rows_h = (
+                        cur.execute(
+                            """
+                            SELECT target_coords, defender, MAX(loot_spice_eq), SUM(loot_spice_eq)
+                            FROM battle_reports
+                            WHERE target_coords != ''
+                            GROUP BY target_coords, defender
+                            """
+                        ).fetchall()
+                        if has_battles_h
+                        else []
+                    )
+
+                    discovered_gals_h: set[int] = set()
+                    universe_scanned_cnt = 0
+                    for hr in hot_rows:
+                        g_i = int(hr[0])
+                        s_i = int(hr[1])
+                        if 1 <= g_i <= 14:
+                            discovered_gals_h.add(g_i)
+                            if 1 <= s_i <= 400 and float(hr[2] or 0.0) > 0.0:
+                                universe_scanned_cnt += 1
+
+                    active_galaxies_h = req_galaxies if req_galaxies else (sorted(discovered_gals_h) or [1])
+                    active_gal_set_h = set(active_galaxies_h)
+
+                    spacia_coords_h: set[str] = set()
+                    coord_owner_h: dict[str, str] = {}
+                    owner_display_h: dict[str, str] = {}
+                    owner_sectors_all_h: dict[str, set[str]] = {}
+                    active_sectors_h: dict[tuple[int, int], tuple[Any, ...]] = {}
+                    explored_active_cnt = 0
+
+                    for hr in hot_rows:
+                        g_i = int(hr[0])
+                        s_i = int(hr[1])
+                        if not (1 <= g_i <= 14 and 1 <= s_i <= 400):
+                            continue
+                        skey_all = f"{g_i:02d}:{s_i:03d}"
+                        last_ts_r = float(hr[2] or 0.0)
+                        sp_raw = hr[14]
+                        if sp_raw and sp_raw != "[]":
+                            try:
+                                for sc in json.loads(sp_raw):
+                                    if sc:
+                                        spacia_coords_h.add(sc)
+                            except ValueError:
+                                pass
+                        co_raw = hr[13]
+                        if co_raw and co_raw != "{}":
+                            try:
+                                co_dict = json.loads(co_raw)
+                                if isinstance(co_dict, dict):
+                                    for nc_k, ov in co_dict.items():
+                                        if nc_k and ov and nc_k not in own_coords_hot and nc_k not in spacia_coords_h:
+                                            coord_owner_h[nc_k] = ov
+                                            ok = ov.lower()
+                                            owner_display_h.setdefault(ok, ov)
+                                            owner_sectors_all_h.setdefault(ok, set()).add(skey_all)
+                            except ValueError:
+                                pass
+                        if g_i not in active_gal_set_h:
+                            continue
+                        if last_ts_r > 0.0:
+                            explored_active_cnt += 1
+                        owners_raw = hr[11]
+                        opc_raw = hr[12]
+                        owners_list_r: tuple[str, ...] = ()
+                        opc_items: tuple[tuple[str, str, int], ...] = ()
+                        if owners_raw and owners_raw != "[]":
+                            try:
+                                o_parsed = json.loads(owners_raw)
+                                if isinstance(o_parsed, list):
+                                    owners_list_r = tuple(str(x) for x in o_parsed)
+                            except ValueError:
+                                pass
+                        if opc_raw and opc_raw != "{}":
+                            try:
+                                opc_parsed = json.loads(opc_raw)
+                                if isinstance(opc_parsed, dict):
+                                    opc_items = tuple(
+                                        (str(k).lower(), str(k), int(v))
+                                        for k, v in opc_parsed.items()
+                                        if int(v) > 0
+                                    )
+                            except ValueError:
+                                pass
+                        active_sectors_h[(g_i, s_i)] = (
+                            skey_all,
+                            round(last_ts_r, 3),
+                            game_data.cap_json_int(max(0, int(hr[3] or 0))),
+                            game_data.cap_json_int(max(0, int(hr[4] or 0))),
+                            game_data.cap_json_int(max(0, int(hr[5] or 0))),
+                            game_data.cap_json_int(max(0, int(hr[6] or 0))),
+                            game_data.cap_json_int(max(0, int(hr[7] or 0))),
+                            game_data.cap_json_int(max(0, int(hr[8] or 0))),
+                            game_data.cap_json_int(max(0, int(hr[9] or 0))),
+                            game_data.cap_json_int(max(0, int(hr[10] or 0))),
+                            owners_list_r,
+                            opc_items,
+                        )
+
+                    battle_loot_by_coord_h: dict[str, float] = {}
+                    battle_extra_owners_h: dict[tuple[int, int], dict[str, set[str]]] = {}
+                    for br in battle_rows_h:
+                        parsed_b = self._parse_norm_gsp_fast(br[0])
+                        if parsed_b is None:
+                            continue
+                        nc_b, gb_i, sb_i, _ = parsed_b
+                        def_name = _sanitize_text(br[1] or "").strip()
+                        sum_sp = max(0.0, _safe_float(br[3], 0.0))
+                        battle_loot_by_coord_h[nc_b] = battle_loot_by_coord_h.get(nc_b, 0.0) + sum_sp
+                        if (
+                            def_name
+                            and def_name.lower() != "spacia"
+                            and nc_b not in own_coords_hot
+                            and nc_b not in spacia_coords_h
+                            and nc_b not in coord_owner_h
+                        ):
+                            coord_owner_h[nc_b] = def_name
+                            ok_b = def_name.lower()
+                            owner_display_h.setdefault(ok_b, def_name)
+                            if 1 <= gb_i <= 14 and 1 <= sb_i <= 400:
+                                owner_sectors_all_h.setdefault(ok_b, set()).add(f"{gb_i:02d}:{sb_i:03d}")
+                                if gb_i in active_gal_set_h:
+                                    battle_extra_owners_h.setdefault((gb_i, sb_i), {}).setdefault(ok_b, set()).add(nc_b)
+
+                    hot_base = {
+                        "active_galaxies": [game_data.cap_json_int(g) for g in active_galaxies_h],
+                        "active_gal_set": active_gal_set_h,
+                        "explored_systems": game_data.cap_json_int(explored_active_cnt),
+                        "universe_explored_systems": game_data.cap_json_int(universe_scanned_cnt),
+                        "own_coords": own_coords_hot,
+                        "spacia_coords": spacia_coords_h,
+                        "coord_owner": coord_owner_h,
+                        "owner_display_by_key": owner_display_h,
+                        "owner_sectors_all": {k: sorted(v) for k, v in owner_sectors_all_h.items()},
+                        "active_sectors": active_sectors_h,
+                        "battle_extra_owners": battle_extra_owners_h,
+                        "battle_loot_by_coord": battle_loot_by_coord_h,
+                        "norm_raids": norm_raids_h,
+                    }
+                    self._galaxy_intel_base_ver = base_key
+                    self._galaxy_intel_base_cache = hot_base
+
+        if hot_base is not None:
+            active_galaxies_h = hot_base["active_galaxies"]
+            active_gal_set_h = hot_base["active_gal_set"]
+            own_coords_h = hot_base["own_coords"]
+            spacia_coords_h = hot_base["spacia_coords"]
+            coord_owner_h = hot_base["coord_owner"]
+            owner_display_h = hot_base["owner_display_by_key"]
+            owner_sectors_all_h = hot_base["owner_sectors_all"]
+            active_sectors_h = hot_base["active_sectors"]
+            battle_extra_owners_h = hot_base["battle_extra_owners"]
+            battle_loot_by_coord_h = hot_base["battle_loot_by_coord"]
+            norm_raids_h = hot_base["norm_raids"]
+
+            owner_agg_h: dict[str, dict[str, Any]] = {}
+            sector_raid_agg_h: dict[tuple[int, int], dict[str, Any]] = {}
+            raid_loot_by_coord_h: dict[str, float] = {}
+
+            for rr in norm_raids_h:
+                nc_r = rr["target_coords"]
+                if not nc_r or nc_r in own_coords_h:
+                    continue
+                parsed_r = self._parse_norm_gsp_fast(nc_r)
+                if parsed_r is None:
+                    continue
+                _, gr_i, sr_i, _ = parsed_r
+                rts = _safe_float(rr["attacked_ts"], 0.0)
+                age_r = max(0.0, eff_now - rts) if rts > 0.0 else 0.0
+                decay = 0.25 + 0.75 * math.exp(-age_r / (7.0 * 86400.0))
+                sp_eq = max(0.0, _safe_float(rr["loot_spice_eq"], 0.0))
+                won = bool(rr["won"])
+                raid_loot_by_coord_h[nc_r] = raid_loot_by_coord_h.get(nc_r, 0.0) + sp_eq
+
+                owner_s = coord_owner_h.get(nc_r, "")
+                if owner_s and nc_r not in spacia_coords_h and owner_s.lower() != "spacia":
+                    okey = owner_s.lower()
+                    disp = owner_display_h.get(okey, owner_s)
+                    oa = owner_agg_h.get(okey)
+                    if oa is None:
+                        oa = {
+                            "owner": disp,
+                            "raid_count": 0,
+                            "raid_wins": 0,
+                            "raid_24h_count": 0,
+                            "raid_7d_count": 0,
+                            "recency_raid_score": 0.0,
+                            "loot_spice_eq": 0.0,
+                            "last_attacked_ts": 0.0,
+                        }
+                        owner_agg_h[okey] = oa
+                    oa["raid_count"] += 1
+                    if won:
+                        oa["raid_wins"] += 1
+                    if rts > 0.0 and age_r <= 86400.0:
+                        oa["raid_24h_count"] += 1
+                    if rts > 0.0 and age_r <= 7.0 * 86400.0:
+                        oa["raid_7d_count"] += 1
+                    oa["recency_raid_score"] += decay
+                    oa["loot_spice_eq"] += sp_eq
+                    if rts > oa["last_attacked_ts"]:
+                        oa["last_attacked_ts"] = rts
+
+                if gr_i in active_gal_set_h and 1 <= sr_i <= 400:
+                    gsk_r = (gr_i, sr_i)
+                    sa = sector_raid_agg_h.get(gsk_r)
+                    if sa is None:
+                        sa = {
+                            "direct_raid_count": 0,
+                            "direct_raid_wins": 0,
+                            "direct_raid_24h_count": 0,
+                            "direct_raid_7d_count": 0,
+                            "direct_recency_raid_score": 0.0,
+                            "direct_loot_spice_eq": 0.0,
+                            "last_attacked_ts": 0.0,
+                        }
+                        sector_raid_agg_h[gsk_r] = sa
+                    sa["direct_raid_count"] += 1
+                    if won:
+                        sa["direct_raid_wins"] += 1
+                    if rts > 0.0 and age_r <= 86400.0:
+                        sa["direct_raid_24h_count"] += 1
+                    if rts > 0.0 and age_r <= 7.0 * 86400.0:
+                        sa["direct_raid_7d_count"] += 1
+                    sa["direct_recency_raid_score"] += decay
+                    sa["direct_loot_spice_eq"] += sp_eq
+                    if rts > sa["last_attacked_ts"]:
+                        sa["last_attacked_ts"] = rts
+
+            for nc_b, b_sp in battle_loot_by_coord_h.items():
+                r_sp = raid_loot_by_coord_h.get(nc_b, 0.0)
+                if b_sp <= r_sp:
+                    continue
+                extra_sp = b_sp - r_sp
+                parsed_b = self._parse_norm_gsp_fast(nc_b)
+                if parsed_b is not None:
+                    gsk_b = (parsed_b[1], parsed_b[2])
+                    if gsk_b in sector_raid_agg_h:
+                        sector_raid_agg_h[gsk_b]["direct_loot_spice_eq"] += extra_sp
+                owner_s = coord_owner_h.get(nc_b, "")
+                if owner_s:
+                    ok_b = owner_s.lower()
+                    if ok_b in owner_agg_h:
+                        owner_agg_h[ok_b]["loot_spice_eq"] += extra_sp
+
+            all_gsks_h: set[tuple[int, int]] = set(active_sectors_h.keys())
+            if sector_raid_agg_h:
+                all_gsks_h.update(sector_raid_agg_h.keys())
+            if battle_extra_owners_h:
+                all_gsks_h.update(battle_extra_owners_h.keys())
+
+            sectors_out_h: dict[str, dict[str, Any]] = {}
+            has_owner_agg = bool(owner_agg_h)
+            for gsk in sorted(all_gsks_h):
+                gal_i, sys_i = gsk
+                hs = active_sectors_h.get(gsk)
+                if hs is not None:
+                    (
+                        skey,
+                        last_ts,
+                        scan_cnt,
+                        occ_cnt,
+                        target_cnt,
+                        inact_cnt,
+                        spacia_cnt,
+                        debris_cnt,
+                        free_cnt,
+                        prime_cnt,
+                        owners_tup,
+                        opc_items,
+                    ) = hs
+                    scanned = last_ts > 0.0
+                    age_s = round(max(0.0, eff_now - last_ts), 3) if scanned else None
+                else:
+                    skey = f"{gal_i:02d}:{sys_i:03d}"
+                    last_ts = 0.0
+                    scanned = False
+                    age_s = None
+                    scan_cnt = occ_cnt = target_cnt = inact_cnt = spacia_cnt = debris_cnt = free_cnt = prime_cnt = 0
+                    owners_tup = ()
+                    opc_items = ()
+
+                ra = sector_raid_agg_h.get(gsk)
+                if ra is not None:
+                    d_raids = game_data.cap_json_int(int(ra["direct_raid_count"]))
+                    d_wins = game_data.cap_json_int(int(ra["direct_raid_wins"]))
+                    d_24h = game_data.cap_json_int(int(ra["direct_raid_24h_count"]))
+                    d_7d = game_data.cap_json_int(int(ra["direct_raid_7d_count"]))
+                    d_recency = round(float(ra["direct_recency_raid_score"]), 4)
+                    d_loot = round(float(ra["direct_loot_spice_eq"]), 2)
+                    last_atk_ts = round(float(ra["last_attacked_ts"]), 3)
+                else:
+                    d_raids = d_wins = d_24h = d_7d = 0
+                    d_recency = d_loot = last_atk_ts = 0.0
+
+                extra_bo = battle_extra_owners_h.get(gsk)
+                if extra_bo:
+                    merged_ok: dict[str, int] = {ok: cnt for ok, _disp, cnt in opc_items}
+                    for ok_b, cset in extra_bo.items():
+                        merged_ok[ok_b] = merged_ok.get(ok_b, 0) + len(cset)
+                    owners_list_o: list[str] = []
+                    owner_planet_counts_o: dict[str, int] = {}
+                    freq_owners_out_o: list[dict[str, Any]] = []
+                    affinity_raid_cnt_o = 0
+                    for ok in sorted(merged_ok.keys()):
+                        pcnt = merged_ok[ok]
+                        if pcnt <= 0:
+                            continue
+                        disp = owner_display_h.get(ok, ok)
+                        owners_list_o.append(disp)
+                        owner_planet_counts_o[disp] = pcnt
+                        if has_owner_agg:
+                            oa = owner_agg_h.get(ok)
+                            if oa is not None and int(oa["raid_count"]) > 0:
+                                rcnt = int(oa["raid_count"])
+                                affinity_raid_cnt_o += rcnt
+                                freq_owners_out_o.append(
+                                    {
+                                        "owner": disp,
+                                        "raid_count": game_data.cap_json_int(rcnt),
+                                        "planets_in_sector": game_data.cap_json_int(pcnt),
+                                        "loot_spice_eq": round(float(oa["loot_spice_eq"]), 2),
+                                    }
+                                )
+                    if len(freq_owners_out_o) > 1:
+                        freq_owners_out_o.sort(key=lambda item: (-int(item["raid_count"]), str(item["owner"])))
+                else:
+                    owners_list_o = list(owners_tup)
+                    owner_planet_counts_o = {disp: cnt for _ok, disp, cnt in opc_items}
+                    freq_owners_out_o = []
+                    affinity_raid_cnt_o = 0
+                    if has_owner_agg and opc_items:
+                        for ok, disp, pcnt in opc_items:
+                            oa = owner_agg_h.get(ok)
+                            if oa is not None and int(oa["raid_count"]) > 0:
+                                rcnt = int(oa["raid_count"])
+                                affinity_raid_cnt_o += rcnt
+                                freq_owners_out_o.append(
+                                    {
+                                        "owner": disp,
+                                        "raid_count": game_data.cap_json_int(rcnt),
+                                        "planets_in_sector": game_data.cap_json_int(pcnt),
+                                        "loot_spice_eq": round(float(oa["loot_spice_eq"]), 2),
+                                    }
+                                )
+                        if len(freq_owners_out_o) > 1:
+                            freq_owners_out_o.sort(key=lambda item: (-int(item["raid_count"]), str(item["owner"])))
+
+                sectors_out_h[skey] = {
+                    "sector": skey,
+                    "galaxy": game_data.cap_json_int(gal_i),
+                    "system": game_data.cap_json_int(sys_i),
+                    "scanned": scanned,
+                    "last_scanned_ts": last_ts,
+                    "age_seconds": age_s,
+                    "scan_count": scan_cnt,
+                    "occupied_count": occ_cnt,
+                    "target_count": target_cnt,
+                    "inactive_count": inact_cnt,
+                    "spacia_count": spacia_cnt,
+                    "debris_count": debris_cnt,
+                    "free_count": free_cnt,
+                    "prime_colony_free_count": prime_cnt,
+                    "direct_raid_count": d_raids,
+                    "direct_raid_wins": d_wins,
+                    "direct_raid_24h_count": d_24h,
+                    "direct_raid_7d_count": d_7d,
+                    "direct_recency_raid_score": d_recency,
+                    "direct_loot_spice_eq": d_loot,
+                    "last_attacked_ts": last_atk_ts,
+                    "owners": owners_list_o,
+                    "owner_planet_counts": owner_planet_counts_o,
+                    "frequent_owners": freq_owners_out_o,
+                    "owner_affinity_raid_count": game_data.cap_json_int(affinity_raid_cnt_o),
+                }
+
+            sorted_owners_h = sorted(
+                owner_agg_h.items(),
+                key=lambda kv: (-int(kv[1]["raid_count"]), -float(kv[1]["loot_spice_eq"]), str(kv[1]["owner"])),
+            )
+            owner_attack_counts_h: dict[str, int] = {}
+            owner_raid_stats_h: dict[str, dict[str, Any]] = {}
+            for okey, oa in sorted_owners_h:
+                disp = str(oa["owner"])
+                rcnt = int(oa["raid_count"])
+                owner_attack_counts_h[disp] = game_data.cap_json_int(rcnt)
+                owner_raid_stats_h[disp] = {
+                    "owner": disp,
+                    "raid_count": game_data.cap_json_int(rcnt),
+                    "raid_wins": game_data.cap_json_int(int(oa["raid_wins"])),
+                    "raid_24h_count": game_data.cap_json_int(int(oa["raid_24h_count"])),
+                    "raid_7d_count": game_data.cap_json_int(int(oa["raid_7d_count"])),
+                    "recency_raid_score": round(float(oa["recency_raid_score"]), 4),
+                    "loot_spice_eq": round(float(oa["loot_spice_eq"]), 2),
+                    "last_attacked_ts": round(float(oa["last_attacked_ts"]), 3),
+                    "known_sectors": list(owner_sectors_all_h.get(okey, ())),
+                }
+
+            explored_h = int(hot_base["explored_systems"])
+            total_sys_h = len(active_galaxies_h) * 400
+            unscanned_h = max(0, total_sys_h - explored_h)
+            cov_pct_h = round((explored_h / total_sys_h) * 100.0, 2) if total_sys_h > 0 else 0.0
+            univ_total_h = 14 * 400
+            univ_exp_h = int(hot_base["universe_explored_systems"])
+            univ_cov_h = round((univ_exp_h / univ_total_h) * 100.0, 2)
+            return {
+                "now_ts": eff_now,
+                "galaxies": list(active_galaxies_h),
+                "explored_systems": game_data.cap_json_int(explored_h),
+                "unscanned_systems": game_data.cap_json_int(unscanned_h),
+                "total_systems": game_data.cap_json_int(total_sys_h),
+                "coverage_pct": cov_pct_h,
+                "universe_explored_systems": game_data.cap_json_int(univ_exp_h),
+                "universe_total_systems": game_data.cap_json_int(univ_total_h),
+                "universe_coverage_pct": univ_cov_h,
+                "owner_attack_counts": owner_attack_counts_h,
+                "owner_raid_stats": owner_raid_stats_h,
+                "sectors": sectors_out_h,
+            }
 
         with self._lock:
             has_scans = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_scans")
@@ -3662,6 +4925,7 @@ class GameDatabase:
     def _repair_spy_targets_locked(self) -> None:
         if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "spy_targets"):
             return
+        changes_before = int(self._conn.total_changes)
         self._conn.execute(
             """
             UPDATE spy_targets
@@ -3856,6 +5120,11 @@ class GameDatabase:
                   )
                 """
             )
+        if int(self._conn.total_changes) > changes_before and (
+            DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "galaxy_sector_hot")
+            or DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "colony_candidates_hot")
+        ):
+            backfill_v012_hot_tables(self._conn, time.time())
         self._conn.commit()
 
     def get_spy_targets(
@@ -4571,39 +5840,208 @@ class GameDatabase:
         eff_own = exclude_coords if exclude_coords is not None else own_coords
         eff_min = min_fields_target if min_fields_target is not None else min_colony_fields
         own_norm = {normalize_coords(c) for c in (eff_own or ()) if normalize_coords(c)}
-        discarded_norm = self.get_discarded_colony_coords()
         norm_origin = normalize_coords(origin_coords) if origin_coords else ""
         min_tgt = max(50, min(600, _safe_int(eff_min, 300)))
+        eff_limit = max(1, _safe_int(limit, 200))
+        cache_key = (norm_origin, min_tgt, tuple(sorted(own_norm)), bool(include_discarded), eff_limit)
+
+        hot_rows: Optional[list[tuple[Any, ...]]] = None
+        discarded_norm: set[str] = set()
+        db_ver: tuple[int, int] = (0, 0)
+
         with self._lock:
-            has_st_cmax = self._has_column_locked("spy_targets", "colonize_max_fields")
-            free_rows = self._conn.execute(
-                """
-                SELECT *
-                FROM galaxy_slots
-                WHERE status_color = 'free'
-                ORDER BY galaxy ASC, system ASC, position ASC
-                """
-            ).fetchall()
-            st_cmax_or = "OR colonize_max_fields IS NOT NULL" if has_st_cmax else ""
-            spy_free_rows = self._conn.execute(
-                f"""
-                SELECT *
-                FROM spy_targets
-                WHERE merged_into = '' AND is_own_planet = 0
-                  AND (
-                      status_color = 'free'
-                      OR ((uninhabited_fields IS NOT NULL {st_cmax_or}) AND owner = '' AND is_spacia = 0)
-                  )
-                """
-            ).fetchall()
-            rep_free_rows = self._conn.execute(
-                """
-                SELECT target_coords, MAX(uninhabited_fields) AS max_fields, MAX(ts) AS last_ts, COUNT(*) AS rep_cnt
-                FROM spy_reports
-                WHERE uninhabited_fields IS NOT NULL AND owner = '' AND is_spacia = 0
-                GROUP BY target_coords
-                """
-            ).fetchall()
+            db_ver = self._db_version_locked()
+            if self._colony_cand_cache_ver == db_ver and cache_key in self._colony_cand_cache:
+                return [dict(item) for item in self._colony_cand_cache[cache_key]]
+            use_hot = self._ensure_hot_tables_synced_locked(check_colonies=True)
+            discarded_norm = self._load_discarded_colony_coords_locked()
+            if use_hot:
+                cur = self._conn.cursor()
+                cur.row_factory = None
+                where_sql = "is_active = 1" if include_discarded else "is_active = 1 AND is_discarded = 0"
+                hot_rows = cur.execute(
+                    f"""
+                    SELECT coords, galaxy, system, position,
+                           uninhabited_fields, colonize_min_fields, colonize_max_fields,
+                           temperature, last_spied_ts, last_scanned_ts, spy_count,
+                           blocked_until_ts, block_reason
+                    FROM colony_candidates_hot
+                    WHERE {where_sql}
+                    """
+                ).fetchall()
+            else:
+                has_st_cmax = self._has_column_locked("spy_targets", "colonize_max_fields")
+                free_rows = self._conn.execute(
+                    """
+                    SELECT *
+                    FROM galaxy_slots
+                    WHERE status_color = 'free'
+                    ORDER BY galaxy ASC, system ASC, position ASC
+                    """
+                ).fetchall()
+                st_cmax_or = "OR colonize_max_fields IS NOT NULL" if has_st_cmax else ""
+                spy_free_rows = self._conn.execute(
+                    f"""
+                    SELECT *
+                    FROM spy_targets
+                    WHERE merged_into = '' AND is_own_planet = 0
+                      AND (
+                          status_color = 'free'
+                          OR ((uninhabited_fields IS NOT NULL {st_cmax_or}) AND owner = '' AND is_spacia = 0)
+                      )
+                    """
+                ).fetchall()
+                rep_free_rows = self._conn.execute(
+                    """
+                    SELECT target_coords, MAX(uninhabited_fields) AS max_fields, MAX(ts) AS last_ts, COUNT(*) AS rep_cnt
+                    FROM spy_reports
+                    WHERE uninhabited_fields IS NOT NULL AND owner = '' AND is_spacia = 0
+                    GROUP BY target_coords
+                    """
+                ).fetchall()
+
+        def _sort_key(item: dict[str, Any]) -> tuple[int, float, float, str]:
+            eff_max = float(
+                item["uninhabited_fields"]
+                if item.get("uninhabited_fields") is not None
+                else (item.get("colonize_max_fields") or 0)
+            )
+            if item["meets_target"]:
+                tier = 0
+                primary = -eff_max
+            elif not item["spied"] and 7 <= int(item["position"]) <= 12:
+                tier = 1
+                primary = float(item["distance"])
+            elif not item["spied"]:
+                tier = 2
+                primary = -float(item["score"])
+            else:
+                tier = 3
+                primary = -eff_max
+            return (tier, primary, float(item["distance"]), str(item["coords"]))
+
+        if hot_rows is not None:
+            orig_nums = (
+                [min(999_999, int(x[:9])) for x in re.findall(r"\d+", norm_origin, re.ASCII)[:3]]
+                if norm_origin
+                else []
+            )
+            orig_valid = len(orig_nums) >= 3
+            orig_g = orig_nums[0] if orig_valid else 0
+            orig_s = orig_nums[1] if orig_valid else 0
+            orig_p = orig_nums[2] if orig_valid else 0
+            orig_bad = bool(norm_origin) and not orig_valid
+            has_own_filter = bool(own_norm)
+            check_disc_py = (not include_discarded) and bool(discarded_norm)
+
+            ranked_entries: list[tuple[tuple[int, float, float, str], tuple[Any, ...]]] = []
+            for r in hot_rows:
+                nc = r[0]
+                if not nc:
+                    continue
+                if has_own_filter and nc in own_norm:
+                    continue
+                if check_disc_py and nc in discarded_norm:
+                    continue
+                gal = r[1]
+                sys_num = r[2]
+                pos = r[3]
+                if orig_bad or (gal == 0 and sys_num == 0 and pos == 0):
+                    dist = 100.0
+                elif orig_valid:
+                    if orig_g != gal:
+                        dist = 20000.0 * abs(orig_g - gal)
+                    elif orig_s != sys_num:
+                        dist = 2700.0 + 95.0 * abs(orig_s - sys_num)
+                    else:
+                        dist = 1000.0 + 5.0 * abs(orig_p - pos)
+                else:
+                    dist = 1000.0
+                dist_r = round(dist, 1)
+
+                uf = r[4]
+                cmin = r[5]
+                cmax = r[6]
+                fields_val = uf if (uf is not None and uf > 0) else None
+                cmin_val = cmin if (cmin is not None and cmin > 0) else None
+                cmax_val = cmax if (cmax is not None and cmax > 0) else None
+                if cmin_val is not None and cmax_val is not None and cmin_val > cmax_val:
+                    cmax_val = cmin_val
+
+                if fields_val is not None:
+                    if fields_val >= min_tgt:
+                        tier = 0
+                    else:
+                        tier = 3
+                    primary = -float(fields_val)
+                elif cmax_val is not None:
+                    if cmax_val >= min_tgt:
+                        tier = 0
+                    else:
+                        tier = 3
+                    primary = -float(cmax_val)
+                elif 7 <= pos <= 12:
+                    tier = 1
+                    primary = dist_r
+                else:
+                    tier = 2
+                    if 4 <= pos <= 6:
+                        pot = 56 - abs(pos - 5) * 3
+                    elif 13 <= pos <= 16:
+                        pot = 48 - abs(pos - 14) * 2
+                    else:
+                        pot = 30
+                    d_pen = min(5, int(max(0.0, dist - 1000.0) / 800.0))
+                    sc = max(5, min(85, pot - d_pen))
+                    primary = -float(sc)
+
+                ranked_entries.append(((tier, primary, dist_r, nc), r))
+
+            if len(ranked_entries) > eff_limit:
+                top_entries = heapq.nsmallest(eff_limit, ranked_entries, key=lambda x: x[0])
+            else:
+                ranked_entries.sort(key=lambda x: x[0])
+                top_entries = ranked_entries
+
+            graded_hot: list[dict[str, Any]] = []
+            for _rk, r in top_entries:
+                nc = str(r[0])
+                uf = _safe_optional_int(r[4])
+                cmin = _safe_optional_int(r[5])
+                cmax = _safe_optional_int(r[6])
+                temp = _safe_optional_int(r[7])
+                lsp = _safe_float(r[8], 0.0)
+                lsc = _safe_float(r[9], 0.0)
+                has_intel_c = uf is not None or cmax is not None
+                g = grade_colony_candidate(
+                    norm_origin or nc,
+                    nc,
+                    uninhabited_fields=uf,
+                    colonize_min_fields=cmin,
+                    colonize_max_fields=cmax,
+                    temperature=temp,
+                    spied=has_intel_c,
+                    min_fields_target=min_tgt,
+                    last_spied_ts=lsp,
+                    last_scanned_ts=lsc,
+                )
+                g["spy_count"] = game_data.cap_json_int(max(0, _safe_int(r[10], 0)))
+                g["blocked_until_ts"] = _safe_float(r[11], 0.0)
+                g["block_reason"] = _sanitize_text(r[12]) if r[12] else ""
+                g["discarded"] = nc in discarded_norm
+                graded_hot.append(g)
+
+            graded_hot.sort(key=_sort_key)
+            result_hot = graded_hot[:eff_limit]
+            with self._lock:
+                if self._db_version_locked() == db_ver:
+                    if self._colony_cand_cache_ver != db_ver:
+                        self._colony_cand_cache_ver = db_ver
+                        self._colony_cand_cache = {}
+                    if len(self._colony_cand_cache) >= 16:
+                        self._colony_cand_cache.clear()
+                    self._colony_cand_cache[cache_key] = [dict(item) for item in result_hot]
+            return result_hot
 
         merged: dict[str, dict[str, Any]] = {}
         for r in free_rows:
@@ -4713,28 +6151,8 @@ class GameDatabase:
             g["discarded"] = nc in discarded_norm
             graded.append(_sanitize_obj(g))
 
-        def _sort_key(item: dict[str, Any]) -> tuple[int, float, float, str]:
-            eff_max = float(
-                item["uninhabited_fields"]
-                if item.get("uninhabited_fields") is not None
-                else (item.get("colonize_max_fields") or 0)
-            )
-            if item["meets_target"]:
-                tier = 0
-                primary = -eff_max
-            elif not item["spied"] and 7 <= int(item["position"]) <= 12:
-                tier = 1
-                primary = float(item["distance"])
-            elif not item["spied"]:
-                tier = 2
-                primary = -float(item["score"])
-            else:
-                tier = 3
-                primary = -eff_max
-            return (tier, primary, float(item["distance"]), str(item["coords"]))
-
         graded.sort(key=_sort_key)
-        return graded[: max(1, _safe_int(limit, 200))]
+        return graded[:eff_limit]
 
     def get_galaxy_slot_history(
         self,
@@ -4837,6 +6255,9 @@ class GameDatabase:
                 "UPDATE galaxy_slots SET has_debris = ? WHERE coords = ?",
                 (flag, norm_c),
             )
+            parsed_deb = self._parse_norm_gsp_fast(norm_c)
+            if parsed_deb is not None and 1 <= parsed_deb[1] <= 14 and 1 <= parsed_deb[2] <= 400:
+                self._refresh_galaxy_sectors_hot_locked(((parsed_deb[1], parsed_deb[2]),), time.time())
             self._conn.commit()
 
     def record_target_block(
@@ -4937,6 +6358,10 @@ class GameDatabase:
                     clean_reason,
                 ),
             )
+            self._refresh_colony_candidates_hot_locked((norm_c,), now_val)
+            parsed_blk = self._parse_norm_gsp_fast(norm_c)
+            if parsed_blk is not None and 1 <= parsed_blk[1] <= 14 and 1 <= parsed_blk[2] <= 400:
+                self._refresh_galaxy_sectors_hot_locked(((parsed_blk[1], parsed_blk[2]),), now_val)
             self._conn.commit()
             self._sync_attack_history_file_locked()
 
@@ -4967,7 +6392,7 @@ class GameDatabase:
                     _json_dumps(norm_loot),
                 ),
             )
-            self._conn.execute(
+            cur_upd = self._conn.execute(
                 """
                 UPDATE spy_targets
                 SET blocked_until_ts = 0.0, block_reason = ''
@@ -4975,6 +6400,8 @@ class GameDatabase:
                 """,
                 (norm_coords, round(ts_val, 3)),
             )
+            if int(cur_upd.rowcount or 0) > 0:
+                self._refresh_colony_candidates_hot_locked((norm_coords,), ts_val)
             self._conn.commit()
             self._sync_attack_history_file_locked()
 
@@ -6331,6 +7758,10 @@ class GameDatabase:
             if self._summary_cache_json is not None and self._summary_cache_ver == cur_ver:
                 return json.loads(self._summary_cache_json)
         tables = (
+            "latest_state_hot",
+            "empire_planets_hot",
+            "galaxy_sector_hot",
+            "colony_candidates_hot",
             "rank_snapshots",
             "planet_snapshots",
             "state_snapshots",
@@ -6371,6 +7802,19 @@ class GameDatabase:
                     if tbl in existing_tables
                     else 0
                 )
+            meta_row_cnt = (
+                int(self._conn.execute("SELECT COUNT(*) FROM meta").fetchone()[0])
+                if "meta" in existing_tables
+                else 0
+            )
+            hot_counts = {
+                tbl: (meta_row_cnt if tbl == "meta" else counts.get(tbl, 0))
+                for tbl in HOT_TABLES
+            }
+            history_counts = {
+                tbl: counts.get(tbl, 0)
+                for tbl in HISTORY_TABLES
+            }
             meta_keys = (
                 {
                     _sanitize_text(_raw_text(r["key"], ""))
@@ -6424,6 +7868,14 @@ class GameDatabase:
                     ],
                 },
                 "counts": counts,
+                "table_tiers": {
+                    "hot": list(HOT_TABLES),
+                    "history": list(HISTORY_TABLES),
+                    "hot_counts": hot_counts,
+                    "history_counts": history_counts,
+                    "hot_total_rows": sum(hot_counts.values()),
+                    "history_total_rows": sum(history_counts.values()),
+                },
                 "message_categories": msg_cats,
                 "persisted_meta_keys": sorted(k for k in meta_keys if k),
                 "tutorial_history": tut_rows,

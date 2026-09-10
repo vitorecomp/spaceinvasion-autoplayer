@@ -83,6 +83,7 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
 
   const [minFieldsInput, setMinFieldsInput] = useState<string>("300");
   const [allowColonizeInput, setAllowColonizeInput] = useState<boolean>(false);
+  const [candSearch, setCandSearch] = useState<string>("");
   const [candPage, setCandPage] = useState<number>(1);
   const [candPageSize, setCandPageSize] = useState<number>(25);
   const [attemptPage, setAttemptPage] = useState<number>(1);
@@ -105,22 +106,32 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
   ]);
 
   const gc = colonyData?.grade_counts || {};
-  const allCands: Array<Record<string, any>> = Array.isArray(colonyData?.candidates)
-    ? colonyData!.candidates
-    : [];
+  const allCands: Array<Record<string, any>> = useMemo(
+    () => (Array.isArray(colonyData?.candidates) ? colonyData!.candidates : []),
+    [colonyData]
+  );
 
   const filteredCands = useMemo(() => {
-    if (colFilter === "probed") {
-      return allCands.filter((c) => Boolean(c.probed));
-    }
-    if (colFilter === "qualified") {
-      return allCands.filter((c) => Boolean(c.meets_target));
-    }
-    if (colFilter === "unprobed") {
-      return allCands.filter((c) => !c.probed);
-    }
-    return allCands;
-  }, [allCands, colFilter]);
+    const needle = candSearch.trim().toLowerCase();
+    return allCands.filter((c) => {
+      if (colFilter === "probed" && !c.probed) return false;
+      if (colFilter === "qualified" && !c.meets_target) return false;
+      if (colFilter === "unprobed" && Boolean(c.probed)) return false;
+      if (!needle) return true;
+      const hay = [
+        c.coords,
+        c.grade,
+        c.orbital_band,
+        c.fields_display,
+        c.reason,
+        c.position != null ? `pos ${c.position}` : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [allCands, colFilter, candSearch]);
 
   const minFieldsTarget = Math.max(
     1,
@@ -128,21 +139,31 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
       finiteNum(colonyData?.min_colony_fields ?? dashboard?.config?.min_colony_fields, 300)
     )
   );
-  const attempts: ColonyAttemptItem[] = Array.isArray(colonyData?.colony_attempts)
-    ? (colonyData!.colony_attempts as ColonyAttemptItem[]).filter(
-        (a) => a && typeof a === "object"
-      )
-    : [];
-  const attemptsSummary: ColonyAttemptsSummary =
-    colonyData?.colony_attempts_summary && typeof colonyData.colony_attempts_summary === "object"
-      ? (colonyData.colony_attempts_summary as ColonyAttemptsSummary)
-      : {};
-  const attemptsByCoords: Record<string, ColonyAttemptCoordStats> =
-    colonyData?.attempts_by_coords && typeof colonyData.attempts_by_coords === "object"
-      ? (colonyData.attempts_by_coords as Record<string, ColonyAttemptCoordStats>)
-      : attemptsSummary.by_coords && typeof attemptsSummary.by_coords === "object"
-        ? attemptsSummary.by_coords
-        : {};
+  const attempts: ColonyAttemptItem[] = useMemo(
+    () =>
+      Array.isArray(colonyData?.colony_attempts)
+        ? (colonyData!.colony_attempts as ColonyAttemptItem[]).filter(
+            (a) => a && typeof a === "object"
+          )
+        : [],
+    [colonyData]
+  );
+  const attemptsSummary: ColonyAttemptsSummary = useMemo(
+    () =>
+      colonyData?.colony_attempts_summary && typeof colonyData.colony_attempts_summary === "object"
+        ? (colonyData.colony_attempts_summary as ColonyAttemptsSummary)
+        : {},
+    [colonyData]
+  );
+  const attemptsByCoords: Record<string, ColonyAttemptCoordStats> = useMemo(
+    () =>
+      colonyData?.attempts_by_coords && typeof colonyData.attempts_by_coords === "object"
+        ? (colonyData.attempts_by_coords as Record<string, ColonyAttemptCoordStats>)
+        : attemptsSummary.by_coords && typeof attemptsSummary.by_coords === "object"
+          ? attemptsSummary.by_coords
+          : {},
+    [colonyData, attemptsSummary]
+  );
   const triedCount = Math.round(
     finiteNum(attemptsSummary.unique_coords_tried, Object.keys(attemptsByCoords).length)
   );
@@ -242,7 +263,7 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
 
   useEffect(() => {
     setCandPage(1);
-  }, [colFilter, candSort.sortKey, candSort.sortDirection, candPageSize]);
+  }, [colFilter, candSearch, candSort.sortKey, candSort.sortDirection, candPageSize]);
 
   useEffect(() => {
     if (candPage > candTotalPages) {
@@ -508,6 +529,15 @@ export const ColoniesView: React.FC<ColoniesViewProps> = ({ hidden }) => {
                 Unprobed (?)
               </button>
             </div>
+            <input
+              type="search"
+              id="col-search"
+              className="table-search-input"
+              placeholder="Search coords / zone..."
+              aria-label="Search colony candidates"
+              value={candSearch}
+              onChange={(e) => setCandSearch(e.target.value)}
+            />
             <button
               type="button"
               className="btn btn-secondary btn-sm"

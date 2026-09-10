@@ -1229,5 +1229,118 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
       expect(container.querySelector("#col-att-page-indicator")?.textContent).toBe("Page 2 / 2");
       expect(container.querySelectorAll("#colonies-attempts-tbody tr").length).toBe(5);
     });
+
+    // Quick search filters candidates and resets page cleanly
+    fireEvent.change(container.querySelector("#col-search")!, { target: { value: "02:105:08" } });
+    await waitFor(() => {
+      expect(container.querySelectorAll("#col-candidates-tbody tr").length).toBe(1);
+      expect(container.querySelector("#col-candidates-tbody")?.textContent).toContain("02:105:08");
+    });
+  });
+
+  it("paginates both Scanned Sectors queue and all-galaxy tables and supports quick search", async () => {
+    const manyQueue = Array.from({ length: 35 }, (_, idx) => ({
+      queue_pos: idx + 1,
+      sector: `02:${String(101 + idx).padStart(3, "0")}`,
+      galaxy: 2,
+      system: 101 + idx,
+      phase: idx < 20 ? "exploratory" : "targeted_refresh",
+      scanned: idx >= 20,
+      age_seconds: idx >= 20 ? 1800 : null,
+      scan_count: idx >= 20 ? 2 : 0,
+      occupied_count: idx >= 20 ? 8 : 0,
+      debris_count: idx % 3 === 0 ? 1 : 0,
+      target_count: idx % 2 === 0 ? 2 : 0,
+      system_distance: idx + 1,
+      score: 90 - idx,
+      reason: `Queue reason #${idx + 1}`,
+    }));
+    const manySectors = Array.from({ length: 60 }, (_, idx) => ({
+      sector: `01:${String(101 + idx).padStart(3, "0")}`,
+      galaxy: 1,
+      system: 101 + idx,
+      scanned: true,
+      last_scanned_ts: 1700001000 + idx * 60,
+      age_seconds: 120 + idx,
+      scan_count: 1,
+      occupied_count: 6,
+      max_slots: 16,
+      free_count: 10,
+      prime_colony_free_count: idx < 15 ? 2 : 0,
+      debris_count: idx % 4 === 0 ? 1 : 0,
+      target_count: 1,
+      spacia_count: 1,
+      inactive_count: 0,
+      system_distance: idx + 1,
+      score: 80 - idx * 0.5,
+      frequent_owners: idx === 42 ? ["TargetOwner (5)"] : [],
+      reason: `Sector #${idx + 1}`,
+    }));
+
+    const { container } = render(
+      <Harness
+        page="sectors"
+        sectorsSeed={{
+          origin_coords: "01:100:08",
+          summary: {
+            scanned_sectors: 60,
+            total_scanned_all_galaxies: 60,
+            explored_systems: 60,
+            total_systems: 400,
+            coverage_pct: 15,
+            universe_explored_systems: 60,
+            universe_total_systems: 5600,
+            universe_coverage_pct: 1.07,
+            queue_discovery_count: 20,
+            queue_refresh_count: 15,
+          },
+          scan_queue: manyQueue,
+          sectors: manySectors,
+        }}
+      >
+        <SectorsView />
+      </Harness>
+    );
+
+    // Queue table paginates 35 rows -> 25 on Page 1, 10 on Page 2
+    await waitFor(() => {
+      expect(container.querySelectorAll("#sectors-queue-tbody tr").length).toBe(25);
+    });
+    expect(container.querySelector("#sec-queue-page-summary")?.textContent).toBe(
+      "Showing 1–25 of 35 queued sectors"
+    );
+    expect(container.querySelector("#sec-queue-page-indicator")?.textContent).toBe("Page 1 / 2");
+    fireEvent.click(container.querySelector("#sec-queue-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#sec-queue-page-indicator")?.textContent).toBe("Page 2 / 2");
+      expect(container.querySelectorAll("#sectors-queue-tbody tr").length).toBe(10);
+    });
+
+    // Sectors table paginates 60 rows -> 25 on Page 1, page navigation + page size works
+    expect(container.querySelectorAll("#sectors-tbody tr").length).toBe(25);
+    expect(container.querySelector("#sec-all-page-summary")?.textContent).toBe(
+      "Showing 1–25 of 60 sectors"
+    );
+    expect(container.querySelector("#sec-all-page-indicator")?.textContent).toBe("Page 1 / 3");
+    fireEvent.click(container.querySelector("#sec-all-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#sec-all-page-indicator")?.textContent).toBe("Page 2 / 3");
+      expect(container.querySelector("#sectors-tbody")?.textContent).toContain("01:126");
+    });
+
+    // Changing page size resets to Page 1 cleanly
+    fireEvent.change(container.querySelector("#sec-all-page-size")!, { target: { value: "50" } });
+    await waitFor(() => {
+      expect(container.querySelector("#sec-all-page-indicator")?.textContent).toBe("Page 1 / 2");
+      expect(container.querySelectorAll("#sectors-tbody tr").length).toBe(50);
+    });
+
+    // Quick search filters sectors by owner or sector coords and resets to Page 1
+    fireEvent.change(container.querySelector("#sec-search")!, { target: { value: "TargetOwner" } });
+    await waitFor(() => {
+      expect(container.querySelectorAll("#sectors-tbody tr").length).toBe(1);
+      expect(container.querySelector("#sectors-tbody")?.textContent).toContain("01:143");
+      expect(container.querySelector("#sec-all-page-indicator")?.textContent).toBe("Page 1 / 1");
+    });
   });
 });

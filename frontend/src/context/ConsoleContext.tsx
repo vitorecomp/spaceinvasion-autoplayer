@@ -428,14 +428,15 @@ export interface ConsoleContextValue {
   refreshSectorsView: (
     galaxyOverride?: number,
     includeUnscannedOverride?: boolean,
-    previewOverride?: SectorQueuePreviewOverrides | null
+    previewOverride?: SectorQueuePreviewOverrides | null,
+    opts?: { background?: boolean }
   ) => Promise<void>;
   espData: Record<string, any> | null;
   setEspData: (data: Record<string, any> | null) => void;
   refreshEspionageView: () => Promise<void>;
   colonyData: Record<string, any> | null;
   setColonyData: (data: Record<string, any> | null) => void;
-  refreshColoniesView: () => Promise<void>;
+  refreshColoniesView: (opts?: { background?: boolean }) => Promise<void>;
   atkData: Record<string, any> | null;
   setAtkData: (data: Record<string, any> | null) => void;
   refreshAttacksView: () => Promise<void>;
@@ -588,6 +589,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   const uiPrefsRef = useRef<UiPrefs>(uiPrefs);
   uiPrefsRef.current = uiPrefs;
   const sectorsReqSeqRef = useRef<number>(0);
+  const inFlightSectorsCountRef = useRef<number>(0);
+  const coloniesReqSeqRef = useRef<number>(0);
+  const inFlightColoniesCountRef = useRef<number>(0);
   const sectorPreviewRef = useRef<SectorQueuePreviewOverrides | null>(null);
 
   // Keep sharedLegacyState synchronized at all times for existing E2E & Node tests
@@ -927,12 +931,17 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
     async (
       galaxyOverride?: number,
       includeUnscannedOverride?: boolean,
-      previewOverride?: SectorQueuePreviewOverrides | null
+      previewOverride?: SectorQueuePreviewOverrides | null,
+      opts?: { background?: boolean }
     ) => {
+      if (opts?.background && inFlightSectorsCountRef.current > 0) {
+        return;
+      }
       if (previewOverride !== undefined) {
         sectorPreviewRef.current = previewOverride;
       }
       const reqSeq = ++sectorsReqSeqRef.current;
+      inFlightSectorsCountRef.current += 1;
       try {
         const gal =
           galaxyOverride !== undefined
@@ -979,6 +988,8 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       } catch (err: any) {
         if (reqSeq !== sectorsReqSeqRef.current) return;
         showFeedback(`Scanned sectors load failed: ${err.message}`, feedbackKindForError(err));
+      } finally {
+        inFlightSectorsCountRef.current = Math.max(0, inFlightSectorsCountRef.current - 1);
       }
     },
     [setSectorsData, showFeedback]
@@ -993,14 +1004,26 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
     }
   }, [setEspData, showFeedback]);
 
-  const refreshColoniesView = useCallback(async () => {
-    try {
-      const data = await rawApiCommand({ command: "colony_candidates", limit: 1000 });
-      setColonyData(data);
-    } catch (err: any) {
-      showFeedback(`Colony grading load failed: ${err.message}`, feedbackKindForError(err));
-    }
-  }, [setColonyData, showFeedback]);
+  const refreshColoniesView = useCallback(
+    async (opts?: { background?: boolean }) => {
+      if (opts?.background && inFlightColoniesCountRef.current > 0) {
+        return;
+      }
+      const reqSeq = ++coloniesReqSeqRef.current;
+      inFlightColoniesCountRef.current += 1;
+      try {
+        const data = await rawApiCommand({ command: "colony_candidates", limit: 1000 });
+        if (reqSeq !== coloniesReqSeqRef.current) return;
+        setColonyData(data);
+      } catch (err: any) {
+        if (reqSeq !== coloniesReqSeqRef.current) return;
+        showFeedback(`Colony grading load failed: ${err.message}`, feedbackKindForError(err));
+      } finally {
+        inFlightColoniesCountRef.current = Math.max(0, inFlightColoniesCountRef.current - 1);
+      }
+    },
+    [setColonyData, showFeedback]
+  );
 
   const refreshAttacksView = useCallback(async () => {
     try {
@@ -1096,11 +1119,11 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
 
         const curPage = sharedLegacyState.activePage;
         if (curPage === "sectors") {
-          refreshSectorsView();
+          refreshSectorsView(undefined, undefined, undefined, { background: true });
         } else if (curPage === "espionage") {
           refreshEspionageView();
         } else if (curPage === "colonies") {
-          refreshColoniesView();
+          refreshColoniesView({ background: true });
         } else if (curPage === "attacks") {
           refreshAttacksView();
         } else if (curPage === "recyclers") {
@@ -1186,6 +1209,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         : "dashboard";
       sharedLegacyState.activePage = target;
       setActivePageState(target);
+      if (target === "dashboard" || target === "operations") {
+        setNowEpochSec(Math.floor(Date.now() / 1000));
+      }
       setUiPrefs((prev) => {
         const next = prev.sidebarOpen ? { ...prev, sidebarOpen: false } : prev;
         persistUiPrefs(target, sharedLegacyState.selectedPlanetId, next);
@@ -1302,6 +1328,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   const openNotificationCenter = useCallback(async () => {
     setNotifCenterOpen(true);
     notifCenterOpenRef.current = true;
+    setNowEpochSec(Math.floor(Date.now() / 1000));
     await refreshNotificationCenter();
   }, [refreshNotificationCenter]);
 
@@ -1466,7 +1493,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
     loadDashboard({ refresh: false, preserveConfig: false });
 
     const tickTimer = setInterval(() => {
-      if (document.visibilityState === "visible") {
+      if (document.visibilityState !== "visible") return;
+      const curPage = sharedLegacyState.activePage;
+      if (curPage === "dashboard" || curPage === "operations" || notifCenterOpenRef.current) {
         setNowEpochSec(Math.floor(Date.now() / 1000));
       }
     }, 1000);

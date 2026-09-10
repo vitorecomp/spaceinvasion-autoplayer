@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import asdict, replace
 import errno
+import functools
 import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -278,6 +279,14 @@ def _redact_api_key(
     return _bounded_api_str(key)
 
 
+@functools.lru_cache(maxsize=512)
+def _is_clean_api_key(key: str) -> bool:
+    """Fast cached check for short ASCII dict keys containing no secret tokens."""
+    if not key or len(key) > 64 or not key.isascii():
+        return False
+    return _scrub_api_str(key) == key and not is_secret_dict_key(key)
+
+
 def _redact_api_payload(
     value: Any,
     *,
@@ -286,9 +295,86 @@ def _redact_api_payload(
     _budget: Optional[list[int]] = None,
 ) -> Any:
     """Recursively scrub session tokens and secret key-value fields from API responses."""
+    tv = type(value)
+    if value is None or tv is bool or tv is int or tv is float:
+        return value
+    if tv is str:
+        return value if (len(value) < 3 and value.isascii()) else _scrub_api_str(value)
+    if tv is dict:
+        seen = _seen if _seen is not None else set()
+        budget = _budget if _budget is not None else [_MAX_API_TREE_NODES]
+        vid = id(value)
+        if vid in seen:
+            return "[Cycle]"
+        if _depth >= _MAX_API_TREE_DEPTH or budget[0] <= 0:
+            return "[Truncated]"
+        budget[0] -= 1
+        seen.add(vid)
+        try:
+            out: dict[Any, Any] = {}
+            next_depth = _depth + 1
+            for k, v in value.items():
+                if budget[0] <= 0:
+                    out["[Truncated]"] = "[Truncated]"
+                    break
+                if type(k) is str and _is_clean_api_key(k):
+                    tv_v = type(v)
+                    if v is None or tv_v is bool or tv_v is int or tv_v is float:
+                        out[k] = v
+                    elif tv_v is str:
+                        out[k] = v if (len(v) < 3 and v.isascii()) else _scrub_api_str(v)
+                    else:
+                        out[k] = _redact_api_payload(
+                            v, _depth=next_depth, _seen=seen, _budget=budget
+                        )
+                    continue
+                clean_k = _redact_api_key(k)
+                if isinstance(clean_k, str) and is_secret_dict_key(clean_k):
+                    if v is None or v == "":
+                        out[clean_k] = v
+                    elif isinstance(v, (bytes, bytearray)) and len(v) == 0:
+                        out[clean_k] = ""
+                    else:
+                        out[clean_k] = "REDACTED"
+                else:
+                    out[clean_k] = _redact_api_payload(
+                        v, _depth=next_depth, _seen=seen, _budget=budget
+                    )
+            return out
+        finally:
+            seen.discard(vid)
+    if tv is list:
+        seen = _seen if _seen is not None else set()
+        budget = _budget if _budget is not None else [_MAX_API_TREE_NODES]
+        vid = id(value)
+        if vid in seen:
+            return "[Cycle]"
+        if _depth >= _MAX_API_TREE_DEPTH or budget[0] <= 0:
+            return "[Truncated]"
+        budget[0] -= 1
+        seen.add(vid)
+        try:
+            out_list: list[Any] = []
+            next_depth = _depth + 1
+            for v in value:
+                if budget[0] <= 0:
+                    out_list.append("[Truncated]")
+                    break
+                tv_v = type(v)
+                if v is None or tv_v is bool or tv_v is int or tv_v is float:
+                    out_list.append(v)
+                elif tv_v is str:
+                    out_list.append(v if (len(v) < 3 and v.isascii()) else _scrub_api_str(v))
+                else:
+                    out_list.append(
+                        _redact_api_payload(v, _depth=next_depth, _seen=seen, _budget=budget)
+                    )
+            return out_list
+        finally:
+            seen.discard(vid)
     if isinstance(value, str):
         return _scrub_api_str(value)
-    if value is None or isinstance(value, (bool, int, float)):
+    if isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, (bytes, bytearray)):
         return _scrub_api_str(bytes(value).decode("utf-8", errors="replace"))
@@ -318,33 +404,33 @@ def _redact_api_payload(
                     return "<unprintable>"
                 return _redact_api_payload(raw, _depth=_depth + 1, _seen=seen, _budget=budget)
             if isinstance(value, Mapping):
-                out: dict[Any, Any] = {}
+                out_map: dict[Any, Any] = {}
                 for k, v in value.items():
                     if budget[0] <= 0:
-                        out["[Truncated]"] = "[Truncated]"
+                        out_map["[Truncated]"] = "[Truncated]"
                         break
                     clean_k = _redact_api_key(k)
                     if isinstance(clean_k, str) and is_secret_dict_key(clean_k):
                         if v is None or v == "":
-                            out[clean_k] = v
+                            out_map[clean_k] = v
                         elif isinstance(v, (bytes, bytearray)) and len(v) == 0:
-                            out[clean_k] = ""
+                            out_map[clean_k] = ""
                         else:
-                            out[clean_k] = "REDACTED"
+                            out_map[clean_k] = "REDACTED"
                     else:
-                        out[clean_k] = _redact_api_payload(
+                        out_map[clean_k] = _redact_api_payload(
                             v, _depth=_depth + 1, _seen=seen, _budget=budget
                         )
-                return out
-            out_list: list[Any] = []
+                return out_map
+            out_seq: list[Any] = []
             for v in value:
                 if budget[0] <= 0:
-                    out_list.append("[Truncated]")
+                    out_seq.append("[Truncated]")
                     break
-                out_list.append(
+                out_seq.append(
                     _redact_api_payload(v, _depth=_depth + 1, _seen=seen, _budget=budget)
                 )
-            return out_list
+            return out_seq
         finally:
             seen.discard(vid)
     return value
@@ -791,10 +877,27 @@ def _sanitize_finite_json(
                     return _bounded_api_str(raw)
                 if is_dict:
                     out_d: dict[str, Any] = {}
+                    next_d = d + 1
                     for k, v in val.items():
                         if budget[0] <= 0:
                             out_d["[Truncated]"] = "[Truncated]"
                             break
+                        if type(k) is str and _is_clean_api_key(k):
+                            tv_v = type(v)
+                            if v is None or tv_v is bool:
+                                out_d[k] = v
+                            elif tv_v is str:
+                                out_d[k] = v if len(v) < 5 else _scrub_api_str(v)
+                            elif tv_v is int:
+                                if -_MAX_API_JSON_INT <= v <= _MAX_API_JSON_INT:
+                                    out_d[k] = v
+                                else:
+                                    out_d[k] = _MAX_API_JSON_INT if v > 0 else -_MAX_API_JSON_INT
+                            elif tv_v is float:
+                                out_d[k] = v if math.isfinite(v) else 0.0
+                            else:
+                                out_d[k] = _walk(v, next_d)
+                            continue
                         if type(k) is str:
                             clean_k = k if len(k) < 5 else _scrub_api_str(k)
                         else:
@@ -807,7 +910,7 @@ def _sanitize_finite_json(
                             else:
                                 out_d[clean_k] = "REDACTED"
                         else:
-                            out_d[clean_k] = _walk(v, d + 1)
+                            out_d[clean_k] = _walk(v, next_d)
                     return out_d
                 if isinstance(val, Mapping):
                     out: dict[str, Any] = {}
@@ -1162,6 +1265,9 @@ class GameApiBridge:
             self.strategy_config = StrategyConfig()
         self.log_dir = log_dir
         self._lock = threading.Lock()
+        # Dedicated lightweight lock for read-only SQLite intel/colony views so
+        # UI polls never block behind Chrome/Selenium actions holding `_lock`.
+        self._intel_read_lock = threading.RLock()
         self._page_limiter = page_limiter or PageViewLimiter()
         self._max_limiter_wait = _safe_limiter_wait(max_limiter_wait, 8.0)
         if executor_max_limiter_wait is None:
@@ -2025,9 +2131,9 @@ class GameApiBridge:
         "sample_targets",
     )
 
-    def _own_sweep_coords_locked(self) -> list[str]:
+    def _own_sweep_coords_locked(self, *, state_override: Optional[GameState] = None) -> list[str]:
         out: list[str] = []
-        st = self._last_state
+        st = state_override if state_override is not None else self._last_state
         if st is None:
             return out
         ap = st.active_planet()
@@ -2050,9 +2156,13 @@ class GameApiBridge:
         sector_intel_override: Optional[Mapping[str, Any]] = None,
         explore_first_override: Optional[bool] = None,
         refresh_pct_override: Optional[int] = None,
+        scanned_systems_override: Optional[Mapping[str, float]] = None,
+        state_override: Optional[GameState] = None,
+        raid_targets_override: Optional[Sequence[Mapping[str, Any]]] = None,
     ) -> Optional[dict[str, Any]]:
         """Select the next smart sweep batch via SQLite `get_galaxy_sector_intel` + `select_smart_galaxy_scan_batch`."""
         cfg = self.strategy_config
+        st_ref = state_override if state_override is not None else self._last_state
         gal_list = [g for g in (max(1, min(14, _safe_api_int(x, 1))) for x in galaxies)]
         intel: Optional[Mapping[str, Any]] = (
             sector_intel_override if isinstance(sector_intel_override, Mapping) else None
@@ -2071,7 +2181,13 @@ class GameApiBridge:
                             event="sector_intel_error",
                             error=exc,
                         )
-        raid_stats = getattr(self._last_state, "raid_stats", None) if self._last_state is not None else None
+        raid_stats = getattr(st_ref, "raid_stats", None) if st_ref is not None else None
+        scanned_sys = (
+            scanned_systems_override
+            if scanned_systems_override is not None
+            else self._get_scanned_systems()
+        )
+        raid_src = raid_targets_override if raid_targets_override is not None else (self._raid_targets or ())
         eff_explore_first = (
             bool(explore_first_override)
             if explore_first_override is not None
@@ -2091,11 +2207,11 @@ class GameApiBridge:
         )
         try:
             plan = select_smart_galaxy_scan_batch(
-                own_coords=self._own_sweep_coords_locked(),
+                own_coords=self._own_sweep_coords_locked(state_override=st_ref),
                 sector_intel=intel,
                 galaxies=gal_list or None,
-                scanned_systems=self._get_scanned_systems(),
-                raid_targets=[r for r in (self._raid_targets or ()) if isinstance(r, Mapping)],
+                scanned_systems=scanned_sys,
+                raid_targets=[r for r in raid_src if isinstance(r, Mapping)],
                 raid_stats=raid_stats if isinstance(raid_stats, Mapping) else None,
                 batch_size=max(1, min(400 * max(1, len(gal_list)), int(batch_size))),
                 explore_first=eff_explore_first,
@@ -2121,7 +2237,7 @@ class GameApiBridge:
             uni_exp = max(0, _safe_api_int(intel.get("universe_explored_systems"), 0))
             uni_tot = max(1, _safe_api_int(intel.get("universe_total_systems"), uni_tot))
         else:
-            scanned_all = self._get_scanned_systems() or {}
+            scanned_all = scanned_sys or {}
             uni_keys: set[tuple[int, int]] = set()
             for sk, ts_v in scanned_all.items():
                 if _safe_api_float(ts_v, 0.0) <= 0.0:
@@ -4170,10 +4286,11 @@ class GameApiBridge:
         self._raid_targets = self._enrich_raid_targets(list(by_coords.values())[:250])
         return saved
 
-    def _owned_sweep_galaxies_locked(self) -> list[int]:
+    def _owned_sweep_galaxies_locked(self, *, state_override: Optional[GameState] = None) -> list[int]:
         gals: list[int] = []
-        if self._last_state is not None:
-            for p in self._last_state.planets:
+        st = state_override if state_override is not None else self._last_state
+        if st is not None:
+            for p in st.planets:
                 if normalize_planet_type(p) == "raid":
                     continue
                 m = re.search(r"(\d{1,2}):(\d{1,3})", str(p.coords or ""), re.ASCII)
@@ -4189,6 +4306,8 @@ class GameApiBridge:
         explicit_galaxy: Optional[int] = None,
         refresh_pct_override: Optional[int] = None,
         all_galaxies_override: Optional[bool] = None,
+        state_override: Optional[GameState] = None,
+        scanned_systems_override: Optional[Mapping[str, float]] = None,
     ) -> list[int]:
         if explicit_galaxy is not None:
             return [max(1, min(14, int(explicit_galaxy)))]
@@ -4200,7 +4319,7 @@ class GameApiBridge:
         )
         if scan_all_gals:
             return list(range(1, 15))
-        owned = self._owned_sweep_galaxies_locked()
+        owned = self._owned_sweep_galaxies_locked(state_override=state_override)
         refresh_pct_cfg = max(
             0,
             min(
@@ -4214,7 +4333,11 @@ class GameApiBridge:
             ),
         )
         if 0 < refresh_pct_cfg < 100:
-            scanned = self._get_scanned_systems() or {}
+            scanned = (
+                scanned_systems_override
+                if scanned_systems_override is not None
+                else self._get_scanned_systems()
+            ) or {}
             owned_set = set(owned)
             owned_scanned: set[tuple[int, int]] = set()
             for sk, ts_v in scanned.items():
@@ -6559,21 +6682,25 @@ class GameApiBridge:
                 or preview_sweep_pages is not None
                 or preview_all_galaxies is not None
             )
-            with self._lock:
+            with self._intel_read_lock:
                 now_ts = time.time()
                 cfg = self.strategy_config
+                state_snap = self._last_state
+                db_snap = self._db
+                raid_targets_snap = [r for r in (self._raid_targets or ()) if isinstance(r, Mapping)]
+                scanned_systems_snap = self._get_scanned_systems()
                 origin_coords = ""
-                if self._last_state is not None:
+                if state_snap is not None:
                     orig_p = None
                     if req_pid is not None:
                         orig_p = next(
-                            (p for p in self._last_state.planets if p.planet_id == req_pid),
+                            (p for p in state_snap.planets if p.planet_id == req_pid),
                             None,
                         )
                     if orig_p is None:
-                        orig_p = self._last_state.active_planet()
-                    if orig_p is None and self._last_state.planets:
-                        orig_p = self._last_state.planets[0]
+                        orig_p = state_snap.active_planet()
+                    if orig_p is None and state_snap.planets:
+                        orig_p = state_snap.planets[0]
                     if orig_p is not None and orig_p.coords:
                         origin_coords = normalize_coords(orig_p.coords)
                 m_orig_sec = (
@@ -6589,8 +6716,8 @@ class GameApiBridge:
 
                 intel: Mapping[str, Any] = {}
                 get_intel = (
-                    getattr(self._db, "get_galaxy_sector_intel", None)
-                    if self._db is not None
+                    getattr(db_snap, "get_galaxy_sector_intel", None)
+                    if db_snap is not None
                     else None
                 )
                 if callable(get_intel):
@@ -6616,15 +6743,17 @@ class GameApiBridge:
                 )
 
                 all_galaxies = list(range(1, 15))
-                owned_galaxies = self._owned_sweep_galaxies_locked()
+                owned_galaxies = self._owned_sweep_galaxies_locked(state_override=state_snap)
                 owned_gal_set = set(owned_galaxies)
                 queue_galaxies = self._sweep_target_galaxies_locked(
                     refresh_pct_override=refresh_pct_cfg,
                     all_galaxies_override=scan_all_gals_cfg,
+                    state_override=state_snap,
+                    scanned_systems_override=scanned_systems_snap,
                 )
                 queue_gal_set = set(queue_galaxies)
 
-                allocated_normal = count_allocated_normal_planets(self._last_state)
+                allocated_normal = count_allocated_normal_planets(state_snap)
                 max_planets_cap = max(1, _safe_api_int(getattr(cfg, "max_planets", 11), 11))
                 collect_colonies = bool(allocated_normal < max_planets_cap)
 
@@ -6636,10 +6765,13 @@ class GameApiBridge:
                     sector_intel_override=intel or None,
                     explore_first_override=explore_first_cfg,
                     refresh_pct_override=refresh_pct_cfg,
+                    scanned_systems_override=scanned_systems_snap,
+                    state_override=state_snap,
+                    raid_targets_override=raid_targets_snap,
                 )
                 if smart_plan is not None and not is_preview:
                     self._store_smart_sweep_summary_locked(smart_plan, selection_mode="smart", now_ts=now_ts)
-                sweep_summary = self._merge_smart_sweep_summary_locked(self._get_galaxy_sweep_state_locked())
+                sweep_summary = self._get_galaxy_sweep_state_locked(now_ts=now_ts, include_smart=False)
 
                 def _calc_sector_dist(
                     gal_i: int, sys_i: int, fallback_dist: Any = None
@@ -6806,16 +6938,16 @@ class GameApiBridge:
                 score_by_sector: dict[str, Mapping[str, Any]] = {}
                 if score_galaxies:
                     raid_stats = (
-                        getattr(self._last_state, "raid_stats", None)
-                        if self._last_state is not None
+                        getattr(state_snap, "raid_stats", None)
+                        if state_snap is not None
                         else None
                     )
                     scored_rows = score_galaxy_scan_sectors(
-                        own_coords=self._own_sweep_coords_locked() or ([origin_coords] if origin_coords else ()),
+                        own_coords=self._own_sweep_coords_locked(state_override=state_snap) or ([origin_coords] if origin_coords else ()),
                         sector_intel=intel,
                         galaxies=score_galaxies,
-                        scanned_systems=self._get_scanned_systems(),
-                        raid_targets=[r for r in (self._raid_targets or ()) if isinstance(r, Mapping)],
+                        scanned_systems=scanned_systems_snap,
+                        raid_targets=raid_targets_snap,
                         raid_stats=raid_stats if isinstance(raid_stats, Mapping) else None,
                         explore_first=False,
                         near_weight=max(0.0, min(20.0, _safe_api_float(getattr(cfg, "galaxy_scan_near_weight", 2.0), 2.0))),
@@ -7060,24 +7192,28 @@ class GameApiBridge:
                 max_val=1000,
             ) or 200
             inc_discarded = bool(payload.get("include_discarded", False))
-            with self._lock:
-                ap = self._last_state.active_planet() if self._last_state is not None else None
+            with self._intel_read_lock:
+                state_snap = self._last_state
+                cfg_snap = self.strategy_config
+                db_snap = self._db
+                ap = state_snap.active_planet() if state_snap is not None else None
                 origin_coords = ap.coords if ap is not None else ""
-                min_fields = max(50, _safe_api_int(self.strategy_config.min_colony_fields, 300))
+                min_fields = max(50, _safe_api_int(cfg_snap.min_colony_fields, 300))
+                own_coords_snap = self._own_planet_coords(state_snap)
                 candidates = (
-                    self._db.get_colony_candidates(
+                    db_snap.get_colony_candidates(
                         origin_coords=origin_coords,
                         min_fields_target=min_fields,
-                        exclude_coords=self._own_planet_coords(),
+                        exclude_coords=own_coords_snap,
                         include_discarded=inc_discarded,
                         limit=int(limit),
                     )
-                    if self._db is not None
+                    if db_snap is not None
                     else []
                 )
                 discarded_count = (
-                    len(self._db.get_discarded_colony_coords())
-                    if self._db is not None and hasattr(self._db, "get_discarded_colony_coords")
+                    len(db_snap.get_discarded_colony_coords())
+                    if db_snap is not None and hasattr(db_snap, "get_discarded_colony_coords")
                     else 0
                 )
                 grade_counts: dict[str, int] = {"S": 0, "A+": 0, "A": 0, "B": 0, "C": 0, "D": 0, "?": 0}
@@ -7091,11 +7227,11 @@ class GameApiBridge:
                 spy_probes = 0
                 planet_count = 0
                 allocated_normal_planets = 0
-                max_planets = max(1, _safe_api_int(getattr(self.strategy_config, "max_planets", 11), 11))
-                if self._last_state is not None:
-                    planet_count = len(self._last_state.planets)
-                    allocated_normal_planets = count_allocated_normal_planets(self._last_state)
-                    for p in self._last_state.planets:
+                max_planets = max(1, _safe_api_int(getattr(cfg_snap, "max_planets", 11), 11))
+                if state_snap is not None:
+                    planet_count = len(state_snap.planets)
+                    allocated_normal_planets = count_allocated_normal_planets(state_snap)
+                    for p in state_snap.planets:
                         colony_ships += max(0, _safe_api_int(p.ships.get("s8", 0)))
                         spy_probes += max(0, _safe_api_int(p.ships.get("s10", 0)))
                 needed_colonies = max(0, max_planets - allocated_normal_planets)
@@ -7107,8 +7243,8 @@ class GameApiBridge:
                             "command": cmd,
                             "origin_coords": origin_coords,
                             "min_colony_fields": min_fields,
-                            "allow_colonize": bool(self.strategy_config.allow_colonize),
-                            "allow_galaxy_scan": bool(self.strategy_config.allow_galaxy_scan),
+                            "allow_colonize": bool(cfg_snap.allow_colonize),
+                            "allow_galaxy_scan": bool(cfg_snap.allow_galaxy_scan),
                             "colony_ships": colony_ships,
                             "spy_probes": spy_probes,
                             "planet_count": planet_count,

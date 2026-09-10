@@ -31,7 +31,7 @@ DEFAULT_RANK_HISTORY_JSON_PATH = Path("state") / "rank_history.json"
 DEFAULT_SNAPSHOT_JSON_PATH = Path("state") / "snapshot.json"
 DEFAULT_CONFIG_YAML_PATH = Path("config.yaml")
 
-LATEST_SCHEMA_VERSION: int = 11
+LATEST_SCHEMA_VERSION: int = 12
 SCHEMA_VERSION: str = str(LATEST_SCHEMA_VERSION)
 ATTACK_HISTORY_SCHEMA_VERSION: int = 2
 
@@ -786,10 +786,152 @@ CREATE INDEX IF NOT EXISTS idx_colony_attempts_ts
     ON colony_attempts(ts);
 """,
     ),
+    Migration(
+        version=12,
+        name="v012_hot_and_history_table_division",
+        description="Divide operational hot projection tables (latest_state_hot, empire_planets_hot, galaxy_sector_hot, colony_candidates_hot) from append-only history tables without deleting historical data.",
+        sql="""
+CREATE TABLE IF NOT EXISTS latest_state_hot (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    source_snapshot_id INTEGER NOT NULL DEFAULT 0,
+    ts REAL NOT NULL DEFAULT 0.0,
+    source TEXT NOT NULL DEFAULT 'advisor',
+    universe_id INTEGER NOT NULL DEFAULT 0,
+    user_id INTEGER NOT NULL DEFAULT 0,
+    nickname TEXT NOT NULL DEFAULT '',
+    active_planet_id INTEGER NOT NULL DEFAULT 0,
+    planet_count INTEGER NOT NULL DEFAULT 0,
+    planned_action_count INTEGER NOT NULL DEFAULT 0,
+    state_json TEXT NOT NULL DEFAULT '{}',
+    plan_json TEXT NOT NULL DEFAULT '[]',
+    updated_ts REAL NOT NULL DEFAULT 0.0
+);
+
+CREATE TABLE IF NOT EXISTS empire_planets_hot (
+    planet_id INTEGER PRIMARY KEY,
+    universe_id INTEGER NOT NULL DEFAULT 0,
+    coords TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    planet_type TEXT NOT NULL DEFAULT 'normal',
+    temperature INTEGER NOT NULL DEFAULT 0,
+    fields_used INTEGER NOT NULL DEFAULT 0,
+    fields_max INTEGER NOT NULL DEFAULT 0,
+    pig_iron INTEGER NOT NULL DEFAULT 0,
+    metal INTEGER NOT NULL DEFAULT 0,
+    kryptonite INTEGER NOT NULL DEFAULT 0,
+    spice INTEGER NOT NULL DEFAULT 0,
+    energy_produced INTEGER NOT NULL DEFAULT 0,
+    energy_used INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    updated_ts REAL NOT NULL DEFAULT 0.0
+);
+CREATE INDEX IF NOT EXISTS idx_empire_planets_hot_coords
+    ON empire_planets_hot(coords, is_active);
+
+CREATE TABLE IF NOT EXISTS galaxy_sector_hot (
+    galaxy INTEGER NOT NULL,
+    system INTEGER NOT NULL,
+    last_scanned_ts REAL NOT NULL DEFAULT 0.0,
+    scan_count INTEGER NOT NULL DEFAULT 0,
+    occupied_count INTEGER NOT NULL DEFAULT 0,
+    target_count INTEGER NOT NULL DEFAULT 0,
+    inactive_count INTEGER NOT NULL DEFAULT 0,
+    spacia_count INTEGER NOT NULL DEFAULT 0,
+    debris_count INTEGER NOT NULL DEFAULT 0,
+    free_count INTEGER NOT NULL DEFAULT 0,
+    prime_colony_free_count INTEGER NOT NULL DEFAULT 0,
+    hist_debris_max INTEGER NOT NULL DEFAULT 0,
+    owners_json TEXT NOT NULL DEFAULT '[]',
+    owner_planet_counts_json TEXT NOT NULL DEFAULT '{}',
+    coord_owners_json TEXT NOT NULL DEFAULT '{}',
+    spacia_coords_json TEXT NOT NULL DEFAULT '[]',
+    updated_ts REAL NOT NULL DEFAULT 0.0,
+    PRIMARY KEY (galaxy, system)
+);
+CREATE INDEX IF NOT EXISTS idx_galaxy_sector_hot_ts
+    ON galaxy_sector_hot(last_scanned_ts);
+
+CREATE TABLE IF NOT EXISTS colony_candidates_hot (
+    coords TEXT PRIMARY KEY,
+    galaxy INTEGER NOT NULL DEFAULT 0,
+    system INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL DEFAULT 0,
+    uninhabited_fields INTEGER,
+    colonize_min_fields INTEGER,
+    colonize_max_fields INTEGER,
+    max_fields_est INTEGER NOT NULL DEFAULT 0,
+    temperature INTEGER,
+    is_probed INTEGER NOT NULL DEFAULT 0,
+    last_spied_ts REAL NOT NULL DEFAULT 0.0,
+    last_scanned_ts REAL NOT NULL DEFAULT 0.0,
+    spy_count INTEGER NOT NULL DEFAULT 0,
+    blocked_until_ts REAL NOT NULL DEFAULT 0.0,
+    block_reason TEXT NOT NULL DEFAULT '',
+    is_discarded INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    updated_ts REAL NOT NULL DEFAULT 0.0
+);
+CREATE INDEX IF NOT EXISTS idx_colony_candidates_hot_rank
+    ON colony_candidates_hot(is_active, is_discarded, is_probed, max_fields_est DESC, position, coords);
+CREATE INDEX IF NOT EXISTS idx_colony_candidates_hot_sys
+    ON colony_candidates_hot(galaxy, system, is_active);
+""",
+        data_hook_name="backfill_v012_hot_tables",
+    ),
 )
+
+# Canonical table tier division:
+# - HOT_TABLES: bounded operational / materialized current-state projections read on live UI & planner paths.
+# - HISTORY_TABLES: strictly append-only longitudinal event & snapshot ledgers (never pruned or deleted).
+HOT_TABLES: tuple[str, ...] = (
+    "meta",
+    "latest_state_hot",
+    "empire_planets_hot",
+    "galaxy_sector_hot",
+    "colony_candidates_hot",
+    "strategy_config_store",
+    "economy_rates_cache",
+    "tutorial_progress",
+    "spy_targets",
+    "galaxy_scans",
+    "galaxy_slots",
+    "ui_notifications",
+    "universe_research_max",
+    "manual_queue",
+    "schema_migrations",
+)
+
+HISTORY_TABLES: tuple[str, ...] = (
+    "rank_snapshots",
+    "planet_snapshots",
+    "state_snapshots",
+    "action_history",
+    "config_history",
+    "spy_reports",
+    "galaxy_scan_history",
+    "galaxy_slot_history",
+    "raid_history",
+    "bash_blocks",
+    "game_messages",
+    "battle_reports",
+    "recycle_reports",
+    "manual_queue_events",
+    "universe_research_max_history",
+    "colony_attempts",
+    "schema_migration_events",
+)
+
+TABLE_TIER_BY_NAME: dict[str, str] = {
+    **{tbl: "hot" for tbl in HOT_TABLES},
+    **{tbl: "history" for tbl in HISTORY_TABLES},
+}
 
 GAME_REQUIRED_TABLES: tuple[str, ...] = (
     "meta",
+    "latest_state_hot",
+    "empire_planets_hot",
+    "galaxy_sector_hot",
+    "colony_candidates_hot",
     "rank_snapshots",
     "planet_snapshots",
     "state_snapshots",
@@ -1090,28 +1232,37 @@ class MigrationRunner:
             and detected_ver == target_ver
             and len(applied_rows) >= len(self.migrations)
         )
-        return _clean_json_obj(
-            {
-                "schema_family": self.schema_family,
-                "db_path": ":memory:" if db_path is None else str(db_path),
-                "version": detected_ver,
-                "version_tag": f"V{detected_ver:03d}" if detected_ver > 0 else "V000",
-                "target_version": target_ver,
-                "target_version_tag": f"V{target_ver:03d}",
-                "user_version": user_ver,
-                "meta_schema_version": meta_map.get("schema_version"),
-                "schema_checksum": meta_map.get("schema_checksum") or (self.head_checksum if up_to_date else ""),
-                "expected_head_checksum": self.head_checksum,
-                "up_to_date": up_to_date,
-                "newer_than_code": newer_than_code,
-                "applied_count": len(applied_rows),
-                "pending_count": len(pending_specs),
-                "applied_migrations": list(applied_rows.values()),
-                "pending_migrations": pending_specs,
-                "checksum_drift": drift,
-                "events": events,
+        table_tiers_out: Optional[dict[str, Any]] = None
+        if self.schema_family == "game":
+            table_tiers_out = {
+                "hot": list(HOT_TABLES),
+                "history": list(HISTORY_TABLES),
+                "hot_count": len(HOT_TABLES),
+                "history_count": len(HISTORY_TABLES),
             }
-        )
+        payload_out: dict[str, Any] = {
+            "schema_family": self.schema_family,
+            "db_path": ":memory:" if db_path is None else str(db_path),
+            "version": detected_ver,
+            "version_tag": f"V{detected_ver:03d}" if detected_ver > 0 else "V000",
+            "target_version": target_ver,
+            "target_version_tag": f"V{target_ver:03d}",
+            "user_version": user_ver,
+            "meta_schema_version": meta_map.get("schema_version"),
+            "schema_checksum": meta_map.get("schema_checksum") or (self.head_checksum if up_to_date else ""),
+            "expected_head_checksum": self.head_checksum,
+            "up_to_date": up_to_date,
+            "newer_than_code": newer_than_code,
+            "applied_count": len(applied_rows),
+            "pending_count": len(pending_specs),
+            "applied_migrations": list(applied_rows.values()),
+            "pending_migrations": pending_specs,
+            "checksum_drift": drift,
+            "events": events,
+        }
+        if table_tiers_out is not None:
+            payload_out["table_tiers"] = table_tiers_out
+        return _clean_json_obj(payload_out)
 
     @staticmethod
     def _ensure_ledger_tables(conn: sqlite3.Connection) -> None:
@@ -1432,26 +1583,751 @@ class MigrationRunner:
             and version_synced
             and bool(status["up_to_date"])
         )
-        return _clean_json_obj(
-            {
-                "ok": ok,
-                "sqlite_check_mode": pragma_name,
-                "sqlite_integrity_ok": sqlite_ok,
-                "sqlite_messages": chk_messages[:20],
-                "missing_tables": missing_tables,
-                "missing_columns": missing_columns,
-                "version_synced": version_synced,
-                "version": status["version"],
-                "version_tag": status["version_tag"],
-                "target_version": status["target_version"],
-                "up_to_date": status["up_to_date"],
-                "checksum_drift": status["checksum_drift"],
-                "schema_checksum": status["schema_checksum"],
-            }
+        verify_out: dict[str, Any] = {
+            "ok": ok,
+            "sqlite_check_mode": pragma_name,
+            "sqlite_integrity_ok": sqlite_ok,
+            "sqlite_messages": chk_messages[:20],
+            "missing_tables": missing_tables,
+            "missing_columns": missing_columns,
+            "version_synced": version_synced,
+            "version": status["version"],
+            "version_tag": status["version_tag"],
+            "target_version": status["target_version"],
+            "up_to_date": status["up_to_date"],
+            "checksum_drift": status["checksum_drift"],
+            "schema_checksum": status["schema_checksum"],
+        }
+        if "table_tiers" in status:
+            verify_out["table_tiers"] = status["table_tiers"]
+        return _clean_json_obj(verify_out)
+
+
+_V012_COORDS_RE = re.compile(
+    r"^\s*\[?\s*(\d{1,2})\s*[:/\-]\s*(\d{1,3})\s*[:/\-]\s*(\d{1,2})\s*\]?\s*$",
+    re.ASCII,
+)
+_V012_NORM_GSP_RE = re.compile(r"^(\d{2}):(\d{3}):(\d{2})$", re.ASCII)
+
+
+def _v012_norm_coords(raw: Any) -> str:
+    if type(raw) is str:
+        if (
+            len(raw) == 9
+            and raw[2] == ":"
+            and raw[6] == ":"
+            and raw[0:2].isascii()
+            and raw[0:2].isdigit()
+            and raw[3:6].isascii()
+            and raw[3:6].isdigit()
+            and raw[7:9].isascii()
+            and raw[7:9].isdigit()
+        ):
+            return raw
+        s = raw.strip()
+    elif raw is None:
+        return ""
+    else:
+        s = str(raw).strip()
+    if not s:
+        return ""
+    m = _V012_COORDS_RE.match(s)
+    if m:
+        return f"{int(m.group(1)):02d}:{int(m.group(2)):03d}:{int(m.group(3)):02d}"
+    return s
+
+
+def _v012_parse_gsp(raw: Any) -> Optional[tuple[str, int, int, int]]:
+    nc = _v012_norm_coords(raw)
+    if not nc:
+        return None
+    if len(nc) == 9 and nc[2] == ":" and nc[6] == ":" and nc[0:2].isdigit() and nc[3:6].isdigit() and nc[7:9].isdigit():
+        return (nc, int(nc[0:2]), int(nc[3:6]), int(nc[7:9]))
+    m = _V012_NORM_GSP_RE.match(nc)
+    if not m:
+        return None
+    return (nc, int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def _v012_safe_int(val: Any, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    if type(val) is int:
+        return val
+    if type(val) is float:
+        return int(val) if math.isfinite(val) else default
+    try:
+        s = str(val).strip()
+        if not s:
+            return default
+        f = float(s)
+        return int(f) if math.isfinite(f) else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _v012_safe_opt_int(val: Any) -> Optional[int]:
+    if val is None or isinstance(val, bool):
+        return None
+    if type(val) is int:
+        return val
+    if type(val) is float:
+        return int(val) if math.isfinite(val) else None
+    try:
+        s = str(val).strip()
+        if not s:
+            return None
+        f = float(s)
+        return int(f) if math.isfinite(f) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _v012_safe_float(val: Any, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    if type(val) is float:
+        return val if math.isfinite(val) else default
+    if type(val) is int:
+        return float(val)
+    try:
+        f = float(str(val).strip())
+        return f if math.isfinite(f) else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _v012_clean_text(val: Any) -> str:
+    if val is None:
+        return ""
+    s = val if type(val) is str else str(val)
+    if not s:
+        return ""
+    return str(redact_sensitive(s))
+
+
+def _v012_table_cols(cur: sqlite3.Cursor, table_name: str) -> set[str]:
+    try:
+        return {str(r[1]) for r in cur.execute(f"PRAGMA table_info({_quote_ident(table_name)});").fetchall()}
+    except sqlite3.DatabaseError:
+        return set()
+
+
+def backfill_v012_hot_tables(conn: sqlite3.Connection, now_ts: float) -> dict[str, Any]:
+    """Idempotently populate V012 hot operational projection tables from history/source tables (zero deletes)."""
+    ts_r = round(float(now_ts), 3)
+    cur = conn.cursor()
+    cur.row_factory = None
+    has_tbl = MigrationRunner._table_exists
+
+    counts: dict[str, int] = {
+        "latest_state_hot": 0,
+        "empire_planets_hot": 0,
+        "colony_candidates_hot": 0,
+        "galaxy_sector_hot": 0,
+    }
+
+    # 1. latest_state_hot (single-row latest snapshot from state_snapshots)
+    if has_tbl(conn, "latest_state_hot") and has_tbl(conn, "state_snapshots"):
+        snap_row = cur.execute(
+            """
+            SELECT id, ts, source, universe_id, user_id, nickname,
+                   active_planet_id, planet_count, planned_action_count,
+                   state_json, plan_json
+            FROM state_snapshots
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if snap_row is not None:
+            cur.execute(
+                """
+                INSERT INTO latest_state_hot(
+                    id, source_snapshot_id, ts, source, universe_id, user_id,
+                    nickname, active_planet_id, planet_count, planned_action_count,
+                    state_json, plan_json, updated_ts
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    source_snapshot_id = excluded.source_snapshot_id,
+                    ts = excluded.ts,
+                    source = excluded.source,
+                    universe_id = excluded.universe_id,
+                    user_id = excluded.user_id,
+                    nickname = excluded.nickname,
+                    active_planet_id = excluded.active_planet_id,
+                    planet_count = excluded.planet_count,
+                    planned_action_count = excluded.planned_action_count,
+                    state_json = excluded.state_json,
+                    plan_json = excluded.plan_json,
+                    updated_ts = excluded.updated_ts
+                """,
+                (
+                    _v012_safe_int(snap_row[0], 0),
+                    _v012_safe_float(snap_row[1], 0.0),
+                    _v012_clean_text(snap_row[2])[:32] or "advisor",
+                    _v012_safe_int(snap_row[3], 0),
+                    _v012_safe_int(snap_row[4], 0),
+                    _v012_clean_text(snap_row[5])[:120],
+                    _v012_safe_int(snap_row[6], 0),
+                    _v012_safe_int(snap_row[7], 0),
+                    _v012_safe_int(snap_row[8], 0),
+                    str(snap_row[9] or "{}"),
+                    str(snap_row[10] or "[]"),
+                    ts_r,
+                ),
+            )
+            counts["latest_state_hot"] = 1
+
+    # 2. empire_planets_hot (latest row per planet_id from planet_snapshots)
+    own_coords: set[str] = set()
+    if has_tbl(conn, "planet_snapshots"):
+        psnap_rows = cur.execute(
+            """
+            SELECT p.planet_id, p.universe_id, p.coords, p.name, p.planet_type,
+                   p.temperature, p.fields_used, p.fields_max,
+                   p.pig_iron, p.metal, p.kryptonite, p.spice,
+                   p.energy_produced, p.energy_used, p.ts
+            FROM planet_snapshots p
+            JOIN (
+                SELECT planet_id, MAX(id) AS max_id
+                FROM planet_snapshots
+                GROUP BY planet_id
+            ) latest ON p.id = latest.max_id
+            """
+        ).fetchall()
+        ep_params: list[tuple[Any, ...]] = []
+        for r in psnap_rows:
+            pid = _v012_safe_int(r[0], 0)
+            nc = _v012_norm_coords(r[2])
+            if nc:
+                parsed_c = _v012_parse_gsp(nc)
+                if parsed_c is not None:
+                    own_coords.add(parsed_c[0])
+            if pid <= 0:
+                continue
+            ep_params.append(
+                (
+                    pid,
+                    _v012_safe_int(r[1], 0),
+                    nc,
+                    _v012_clean_text(r[3]),
+                    _v012_clean_text(r[4]) or "normal",
+                    _v012_safe_int(r[5], 0),
+                    _v012_safe_int(r[6], 0),
+                    _v012_safe_int(r[7], 0),
+                    _v012_safe_int(r[8], 0),
+                    _v012_safe_int(r[9], 0),
+                    _v012_safe_int(r[10], 0),
+                    _v012_safe_int(r[11], 0),
+                    _v012_safe_int(r[12], 0),
+                    _v012_safe_int(r[13], 0),
+                    1,
+                    _v012_safe_float(r[14], ts_r),
+                )
+            )
+        if has_tbl(conn, "empire_planets_hot") and ep_params:
+            cur.executemany(
+                """
+                INSERT INTO empire_planets_hot(
+                    planet_id, universe_id, coords, name, planet_type,
+                    temperature, fields_used, fields_max,
+                    pig_iron, metal, kryptonite, spice,
+                    energy_produced, energy_used, is_active, updated_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(planet_id) DO UPDATE SET
+                    universe_id = excluded.universe_id,
+                    coords = excluded.coords,
+                    name = excluded.name,
+                    planet_type = excluded.planet_type,
+                    temperature = excluded.temperature,
+                    fields_used = excluded.fields_used,
+                    fields_max = excluded.fields_max,
+                    pig_iron = excluded.pig_iron,
+                    metal = excluded.metal,
+                    kryptonite = excluded.kryptonite,
+                    spice = excluded.spice,
+                    energy_produced = excluded.energy_produced,
+                    energy_used = excluded.energy_used,
+                    is_active = excluded.is_active,
+                    updated_ts = excluded.updated_ts
+                """,
+                ep_params,
+            )
+            counts["empire_planets_hot"] = len(ep_params)
+
+        # Also preserve historical own planet coords if any planet_id changed coords across snapshots
+        for r in cur.execute("SELECT DISTINCT coords FROM planet_snapshots WHERE coords != ''").fetchall():
+            parsed_c = _v012_parse_gsp(r[0])
+            if parsed_c is not None:
+                own_coords.add(parsed_c[0])
+
+    # Load discarded colony coords from meta
+    discarded_norm: set[str] = set()
+    if has_tbl(conn, "meta"):
+        disc_row = cur.execute("SELECT value FROM meta WHERE key = 'discarded_colony_coords' LIMIT 1").fetchone()
+        if disc_row is not None and disc_row[0]:
+            try:
+                disc_parsed = json.loads(str(disc_row[0]))
+                if isinstance(disc_parsed, Mapping):
+                    for k in disc_parsed.keys():
+                        nk = _v012_norm_coords(k)
+                        if nk:
+                            discarded_norm.add(nk)
+            except (TypeError, ValueError):
+                pass
+
+    has_slots = has_tbl(conn, "galaxy_slots")
+    has_spy = has_tbl(conn, "spy_targets")
+    has_reports = has_tbl(conn, "spy_reports")
+    has_scans = has_tbl(conn, "galaxy_scans")
+    has_scan_hist = has_tbl(conn, "galaxy_scan_history")
+
+    slot_cols_set = _v012_table_cols(cur, "galaxy_slots") if has_slots else set()
+    spy_cols_set = _v012_table_cols(cur, "spy_targets") if has_spy else set()
+
+    # 3. colony_candidates_hot (free slots merged across galaxy_slots + spy_targets + spy_reports)
+    if has_tbl(conn, "colony_candidates_hot"):
+        merged_col: dict[str, list[Any]] = {}
+        # Value tuple list: [uf, cmin, cmax, temp, last_spied, last_scanned, spy_cnt, blk_until, blk_reason]
+        if has_slots:
+            s_cmin = "colonize_min_fields" if "colonize_min_fields" in slot_cols_set else "NULL"
+            s_cmax = "colonize_max_fields" if "colonize_max_fields" in slot_cols_set else "NULL"
+            s_temp = "temperature" if "temperature" in slot_cols_set else "NULL"
+            for r in cur.execute(
+                f"""
+                SELECT coords, {s_cmin}, {s_cmax}, {s_temp}, last_scanned_ts
+                FROM galaxy_slots
+                WHERE status_color = 'free'
+                """
+            ).fetchall():
+                nc = _v012_norm_coords(r[0])
+                if not nc:
+                    continue
+                merged_col[nc] = [
+                    None,
+                    _v012_safe_opt_int(r[1]),
+                    _v012_safe_opt_int(r[2]),
+                    _v012_safe_opt_int(r[3]),
+                    0.0,
+                    _v012_safe_float(r[4], 0.0),
+                    0,
+                    0.0,
+                    "",
+                ]
+
+        if has_spy:
+            st_cmin = "colonize_min_fields" if "colonize_min_fields" in spy_cols_set else "NULL"
+            st_cmax = "colonize_max_fields" if "colonize_max_fields" in spy_cols_set else "NULL"
+            st_temp = "temperature" if "temperature" in spy_cols_set else "NULL"
+            st_uf = "uninhabited_fields" if "uninhabited_fields" in spy_cols_set else "NULL"
+            st_merged = "merged_into = ''" if "merged_into" in spy_cols_set else "1=1"
+            st_own = "is_own_planet = 0" if "is_own_planet" in spy_cols_set else "1=1"
+            st_scnt = "spy_count" if "spy_count" in spy_cols_set else "0"
+            st_buntil = "blocked_until_ts" if "blocked_until_ts" in spy_cols_set else "0.0"
+            st_brsn = "block_reason" if "block_reason" in spy_cols_set else "''"
+            st_cmax_or = "OR colonize_max_fields IS NOT NULL" if "colonize_max_fields" in spy_cols_set else ""
+            st_uf_cond = f"(uninhabited_fields IS NOT NULL {st_cmax_or})" if "uninhabited_fields" in spy_cols_set else "0"
+            for sr in cur.execute(
+                f"""
+                SELECT coords, {st_uf}, {st_cmin}, {st_cmax}, {st_temp},
+                       last_spied_ts, last_scanned_ts, {st_scnt}, {st_buntil}, {st_brsn}
+                FROM spy_targets
+                WHERE {st_merged} AND {st_own}
+                  AND (
+                      status_color = 'free'
+                      OR ({st_uf_cond} AND owner = '' AND is_spacia = 0)
+                  )
+                """
+            ).fetchall():
+                nc = _v012_norm_coords(sr[0])
+                if not nc:
+                    continue
+                entry = merged_col.get(nc)
+                if entry is None:
+                    entry = [None, None, None, None, 0.0, 0.0, 0, 0.0, ""]
+                    merged_col[nc] = entry
+                uf = _v012_safe_opt_int(sr[1])
+                if uf is not None:
+                    entry[0] = uf
+                cmin = _v012_safe_opt_int(sr[2])
+                if cmin is not None and entry[1] is None:
+                    entry[1] = cmin
+                cmax = _v012_safe_opt_int(sr[3])
+                if cmax is not None and entry[2] is None:
+                    entry[2] = cmax
+                temp = _v012_safe_opt_int(sr[4])
+                if temp is not None and entry[3] is None:
+                    entry[3] = temp
+                lsp = _v012_safe_float(sr[5], 0.0)
+                if lsp > entry[4]:
+                    entry[4] = lsp
+                lsc = _v012_safe_float(sr[6], 0.0)
+                if lsc > entry[5]:
+                    entry[5] = lsc
+                scnt = _v012_safe_int(sr[7], 0)
+                if scnt > entry[6]:
+                    entry[6] = scnt
+                b_until = _v012_safe_float(sr[8], 0.0)
+                b_rsn = _v012_clean_text(sr[9])
+                b_low = b_rsn.lower()
+                if (
+                    "can't be attacked" not in b_low
+                    and "cannot be attacked" not in b_low
+                    and b_until > entry[7]
+                ):
+                    entry[7] = b_until
+                    entry[8] = b_rsn
+
+        if has_reports:
+            for rr in cur.execute(
+                """
+                SELECT target_coords, MAX(uninhabited_fields), MAX(ts), COUNT(*)
+                FROM spy_reports
+                WHERE uninhabited_fields IS NOT NULL AND owner = '' AND is_spacia = 0
+                GROUP BY target_coords
+                """
+            ).fetchall():
+                nc = _v012_norm_coords(rr[0])
+                if not nc:
+                    continue
+                entry = merged_col.get(nc)
+                if entry is None:
+                    entry = [None, None, None, None, 0.0, 0.0, 0, 0.0, ""]
+                    merged_col[nc] = entry
+                uf = _v012_safe_opt_int(rr[1])
+                if uf is not None:
+                    entry[0] = uf
+                rts = _v012_safe_float(rr[2], 0.0)
+                if rts > entry[4]:
+                    entry[4] = rts
+                rcnt = _v012_safe_int(rr[3], 0)
+                if rcnt > entry[6]:
+                    entry[6] = rcnt
+
+        cur.execute(
+            "UPDATE colony_candidates_hot SET is_active = 0, updated_ts = ? WHERE is_active = 1",
+            (ts_r,),
         )
+        col_params: list[tuple[Any, ...]] = []
+        for nc, entry in merged_col.items():
+            parsed_c = _v012_parse_gsp(nc)
+            gal_i = parsed_c[1] if parsed_c is not None else 0
+            sys_i = parsed_c[2] if parsed_c is not None else 0
+            pos_i = parsed_c[3] if parsed_c is not None else 0
+            uf, cmin, cmax, temp, lsp, lsc, scnt, b_until, b_rsn = entry
+            uf_pos = uf if (uf is not None and uf > 0) else None
+            cmin_pos = cmin if (cmin is not None and cmin > 0) else None
+            cmax_pos = cmax if (cmax is not None and cmax > 0) else None
+            if cmin_pos is not None and cmax_pos is not None and cmin_pos > cmax_pos:
+                eff_cmax = cmin_pos
+            else:
+                eff_cmax = cmax_pos
+            max_est = uf_pos if uf_pos is not None else (eff_cmax if eff_cmax is not None else 0)
+            is_probed = 1 if (uf_pos is not None or eff_cmax is not None) else 0
+            is_disc = 1 if nc in discarded_norm else 0
+            col_params.append(
+                (
+                    nc,
+                    gal_i,
+                    sys_i,
+                    pos_i,
+                    uf,
+                    cmin,
+                    cmax,
+                    max_est,
+                    temp,
+                    is_probed,
+                    lsp,
+                    lsc,
+                    scnt,
+                    b_until,
+                    b_rsn,
+                    is_disc,
+                    1,
+                    ts_r,
+                )
+            )
+        if col_params:
+            cur.executemany(
+                """
+                INSERT INTO colony_candidates_hot(
+                    coords, galaxy, system, position,
+                    uninhabited_fields, colonize_min_fields, colonize_max_fields, max_fields_est,
+                    temperature, is_probed, last_spied_ts, last_scanned_ts, spy_count,
+                    blocked_until_ts, block_reason, is_discarded, is_active, updated_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(coords) DO UPDATE SET
+                    galaxy = excluded.galaxy,
+                    system = excluded.system,
+                    position = excluded.position,
+                    uninhabited_fields = excluded.uninhabited_fields,
+                    colonize_min_fields = excluded.colonize_min_fields,
+                    colonize_max_fields = excluded.colonize_max_fields,
+                    max_fields_est = excluded.max_fields_est,
+                    temperature = excluded.temperature,
+                    is_probed = excluded.is_probed,
+                    last_spied_ts = excluded.last_spied_ts,
+                    last_scanned_ts = excluded.last_scanned_ts,
+                    spy_count = excluded.spy_count,
+                    blocked_until_ts = excluded.blocked_until_ts,
+                    block_reason = excluded.block_reason,
+                    is_discarded = excluded.is_discarded,
+                    is_active = excluded.is_active,
+                    updated_ts = excluded.updated_ts
+                """,
+                col_params,
+            )
+        counts["colony_candidates_hot"] = len(col_params)
+
+    # 4. galaxy_sector_hot (per-(galaxy, system) materialized summary from galaxy_scans + scan_history + slots + spy_targets)
+    if has_tbl(conn, "galaxy_sector_hot"):
+        scan_meta: dict[tuple[int, int], list[Any]] = {}
+        # [last_ts, scan_cnt, occ, tgt, free, hist_deb_max]
+        if has_scans:
+            for r in cur.execute(
+                "SELECT galaxy, system, last_scanned_ts, occupied_count, target_count, free_count FROM galaxy_scans"
+            ).fetchall():
+                gal_i = _v012_safe_int(r[0], 0)
+                sys_i = _v012_safe_int(r[1], 0)
+                if not (1 <= gal_i <= 14 and 1 <= sys_i <= 400):
+                    continue
+                last_sc = _v012_safe_float(r[2], 0.0)
+                scan_meta[(gal_i, sys_i)] = [
+                    last_sc,
+                    1 if last_sc > 0.0 else 0,
+                    max(0, _v012_safe_int(r[3], 0)),
+                    max(0, _v012_safe_int(r[4], 0)),
+                    max(0, _v012_safe_int(r[5], 0)),
+                    0,
+                ]
+        if has_scan_hist:
+            for r in cur.execute(
+                """
+                SELECT galaxy, system, COUNT(*), MAX(ts), MAX(debris_count)
+                FROM galaxy_scan_history
+                GROUP BY galaxy, system
+                """
+            ).fetchall():
+                gal_i = _v012_safe_int(r[0], 0)
+                sys_i = _v012_safe_int(r[1], 0)
+                if not (1 <= gal_i <= 14 and 1 <= sys_i <= 400):
+                    continue
+                sc_cnt = max(0, _v012_safe_int(r[2], 0))
+                max_ts = _v012_safe_float(r[3], 0.0)
+                max_deb = max(0, _v012_safe_int(r[4], 0))
+                gsk = (gal_i, sys_i)
+                sm = scan_meta.get(gsk)
+                if sm is None:
+                    scan_meta[gsk] = [max_ts, sc_cnt, 0, 0, 0, max_deb]
+                else:
+                    if max_ts > sm[0]:
+                        sm[0] = max_ts
+                    if sc_cnt > sm[1]:
+                        sm[1] = sc_cnt
+                    if max_deb > sm[5]:
+                        sm[5] = max_deb
+
+        spy_rows_raw: list[tuple[Any, ...]] = []
+        if has_spy:
+            st_cmax = "colonize_max_fields" if "colonize_max_fields" in spy_cols_set else "NULL"
+            st_uf = "uninhabited_fields" if "uninhabited_fields" in spy_cols_set else "NULL"
+            st_own_col = "is_own_planet" if "is_own_planet" in spy_cols_set else "0"
+            st_m_col = "merged_into" if "merged_into" in spy_cols_set else "''"
+            spy_rows_raw = cur.execute(
+                f"""
+                SELECT coords, owner, status_color, is_inactive, is_spacia,
+                       has_debris, {st_uf}, {st_cmax}, {st_own_col}, {st_m_col}
+                FROM spy_targets
+                """
+            ).fetchall()
+            for r in spy_rows_raw:
+                if bool(r[8]):
+                    parsed_c = _v012_parse_gsp(r[0])
+                    if parsed_c is not None:
+                        own_coords.add(parsed_c[0])
+
+        owner_display_by_key: dict[str, str] = {}
+        sector_owner_coords: dict[tuple[int, int], dict[str, set[str]]] = {}
+        sector_coord_owner: dict[tuple[int, int], dict[str, str]] = {}
+        sector_debris: dict[tuple[int, int], set[str]] = {}
+        sector_inact: dict[tuple[int, int], set[str]] = {}
+        sector_spacia: dict[tuple[int, int], set[str]] = {}
+        sector_free: dict[tuple[int, int], set[str]] = {}
+        sector_prime: dict[tuple[int, int], set[str]] = {}
+        sector_occ: dict[tuple[int, int], set[str]] = {}
+
+        if has_slots:
+            s_cmax = "colonize_max_fields" if "colonize_max_fields" in slot_cols_set else "NULL"
+            for r in cur.execute(
+                f"""
+                SELECT coords, owner, status_color, is_inactive, is_spacia, has_debris, {s_cmax}
+                FROM galaxy_slots
+                """
+            ).fetchall():
+                parsed_c = _v012_parse_gsp(r[0])
+                if parsed_c is None:
+                    continue
+                nc, gal_i, sys_i, pos_i = parsed_c
+                if not (1 <= gal_i <= 14 and 1 <= sys_i <= 400):
+                    continue
+                scolor = _v012_clean_text(r[2] or "free").strip().lower() or "free"
+                is_sp = bool(r[4])
+                owner_s = _v012_clean_text(r[1] or "").strip()
+                gsk = (gal_i, sys_i)
+                if scolor != "free":
+                    sector_occ.setdefault(gsk, set()).add(nc)
+                if bool(r[5]):
+                    sector_debris.setdefault(gsk, set()).add(nc)
+                if nc in own_coords:
+                    continue
+                if is_sp or owner_s.lower() == "spacia":
+                    sector_spacia.setdefault(gsk, set()).add(nc)
+                elif scolor == "yellow" or (bool(r[3]) and scolor != "free"):
+                    sector_inact.setdefault(gsk, set()).add(nc)
+                if owner_s and scolor != "free" and not is_sp and owner_s.lower() != "spacia":
+                    okey = owner_s.lower()
+                    owner_display_by_key.setdefault(okey, owner_s)
+                    sector_owner_coords.setdefault(gsk, {}).setdefault(okey, set()).add(nc)
+                    sector_coord_owner.setdefault(gsk, {})[nc] = owner_s
+                if scolor == "free":
+                    sector_free.setdefault(gsk, set()).add(nc)
+                    cmax = _v012_safe_int(r[6], 0)
+                    if cmax >= 300 or (cmax == 0 and 7 <= pos_i <= 12):
+                        sector_prime.setdefault(gsk, set()).add(nc)
+
+        for r in spy_rows_raw:
+            if str(r[9] or "").strip():
+                continue
+            parsed_c = _v012_parse_gsp(r[0])
+            if parsed_c is None:
+                continue
+            nc, gal_i, sys_i, pos_i = parsed_c
+            if nc in own_coords or not (1 <= gal_i <= 14 and 1 <= sys_i <= 400):
+                continue
+            scolor = _v012_clean_text(r[2] or "yellow").strip().lower() or "yellow"
+            is_sp = bool(r[4])
+            owner_s = _v012_clean_text(r[1] or "").strip()
+            gsk = (gal_i, sys_i)
+            if scolor != "free":
+                sector_occ.setdefault(gsk, set()).add(nc)
+            if bool(r[5]):
+                sector_debris.setdefault(gsk, set()).add(nc)
+            if is_sp or owner_s.lower() == "spacia":
+                sector_spacia.setdefault(gsk, set()).add(nc)
+            elif scolor == "yellow" or (bool(r[3]) and scolor != "free"):
+                sector_inact.setdefault(gsk, set()).add(nc)
+            if owner_s and scolor != "free" and not is_sp and owner_s.lower() != "spacia":
+                okey = owner_s.lower()
+                owner_display_by_key[okey] = owner_s
+                sector_owner_coords.setdefault(gsk, {}).setdefault(okey, set()).add(nc)
+                sector_coord_owner.setdefault(gsk, {})[nc] = owner_s
+            if scolor == "free":
+                sector_free.setdefault(gsk, set()).add(nc)
+                uf = _v012_safe_int(r[6], 0)
+                cmax = _v012_safe_int(r[7], 0)
+                if uf >= 300 or cmax >= 300 or (uf == 0 and cmax == 0 and 7 <= pos_i <= 12):
+                    sector_prime.setdefault(gsk, set()).add(nc)
+
+        all_gsks: set[tuple[int, int]] = set()
+        all_gsks.update(scan_meta.keys())
+        all_gsks.update(sector_occ.keys())
+        all_gsks.update(sector_debris.keys())
+        all_gsks.update(sector_inact.keys())
+        all_gsks.update(sector_spacia.keys())
+        all_gsks.update(sector_free.keys())
+        all_gsks.update(sector_owner_coords.keys())
+
+        sec_params: list[tuple[Any, ...]] = []
+        for gsk in sorted(all_gsks):
+            gal_i, sys_i = gsk
+            sm = scan_meta.get(gsk)
+            last_ts = sm[0] if sm is not None else 0.0
+            scan_cnt = sm[1] if sm is not None else 0
+            hist_deb = sm[5] if sm is not None else 0
+            occ_cnt = max(sm[2] if sm is not None else 0, len(sector_occ.get(gsk, ())))
+            inact_cnt = len(sector_inact.get(gsk, ()))
+            spacia_set = sector_spacia.get(gsk, set())
+            spacia_cnt = len(spacia_set)
+            tgt_cnt = max(sm[3] if sm is not None else 0, inact_cnt + spacia_cnt)
+            deb_cnt = len(sector_debris.get(gsk, ()))
+            free_cnt = max(sm[4] if sm is not None else 0, len(sector_free.get(gsk, ())))
+            prime_cnt = len(sector_prime.get(gsk, ()))
+
+            omap = sector_owner_coords.get(gsk, {})
+            owners_list: list[str] = []
+            owner_counts: dict[str, int] = {}
+            for okey in sorted(omap.keys()):
+                pcnt = len(omap[okey])
+                if pcnt <= 0:
+                    continue
+                disp = owner_display_by_key.get(okey, okey)
+                owners_list.append(disp)
+                owner_counts[disp] = pcnt
+
+            co_raw = sector_coord_owner.get(gsk, {})
+            co_norm = {
+                nc: owner_display_by_key.get(ov.lower(), ov)
+                for nc, ov in sorted(co_raw.items())
+                if nc not in spacia_set
+            }
+            sec_params.append(
+                (
+                    gal_i,
+                    sys_i,
+                    round(last_ts, 3),
+                    scan_cnt,
+                    occ_cnt,
+                    tgt_cnt,
+                    inact_cnt,
+                    spacia_cnt,
+                    deb_cnt,
+                    free_cnt,
+                    prime_cnt,
+                    hist_deb,
+                    json.dumps(owners_list, separators=(",", ":"), ensure_ascii=False),
+                    json.dumps(owner_counts, separators=(",", ":"), ensure_ascii=False),
+                    json.dumps(co_norm, separators=(",", ":"), ensure_ascii=False),
+                    json.dumps(sorted(spacia_set), separators=(",", ":"), ensure_ascii=False),
+                    ts_r,
+                )
+            )
+        if sec_params:
+            cur.executemany(
+                """
+                INSERT INTO galaxy_sector_hot(
+                    galaxy, system, last_scanned_ts, scan_count,
+                    occupied_count, target_count, inactive_count, spacia_count,
+                    debris_count, free_count, prime_colony_free_count, hist_debris_max,
+                    owners_json, owner_planet_counts_json, coord_owners_json, spacia_coords_json,
+                    updated_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(galaxy, system) DO UPDATE SET
+                    last_scanned_ts = excluded.last_scanned_ts,
+                    scan_count = excluded.scan_count,
+                    occupied_count = excluded.occupied_count,
+                    target_count = excluded.target_count,
+                    inactive_count = excluded.inactive_count,
+                    spacia_count = excluded.spacia_count,
+                    debris_count = excluded.debris_count,
+                    free_count = excluded.free_count,
+                    prime_colony_free_count = excluded.prime_colony_free_count,
+                    hist_debris_max = excluded.hist_debris_max,
+                    owners_json = excluded.owners_json,
+                    owner_planet_counts_json = excluded.owner_planet_counts_json,
+                    coord_owners_json = excluded.coord_owners_json,
+                    spacia_coords_json = excluded.spacia_coords_json,
+                    updated_ts = excluded.updated_ts
+                """,
+                sec_params,
+            )
+        counts["galaxy_sector_hot"] = len(sec_params)
+
+    return counts
 
 
-DEFAULT_GAME_MIGRATION_RUNNER = MigrationRunner()
+DEFAULT_GAME_MIGRATION_RUNNER = MigrationRunner(
+    data_hooks={"backfill_v012_hot_tables": backfill_v012_hot_tables},
+)
 
 
 # ---------------------------------------------------------------------------
@@ -2501,7 +3377,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(_safe_json_dumps(payload, indent=2))
         else:
             if "databases" in payload:
-                print(f"Latest Game DB Schema: V{LATEST_SCHEMA_VERSION:03d} (version {LATEST_SCHEMA_VERSION})")
+                print(
+                    f"Latest Game DB Schema: V{LATEST_SCHEMA_VERSION:03d} (version {LATEST_SCHEMA_VERSION}) | "
+                    f"Tables: {len(HOT_TABLES)} hot / {len(HISTORY_TABLES)} history ({len(GAME_REQUIRED_TABLES)} total)"
+                )
                 for alias, d in payload["databases"].items():
                     state_lbl = "UP-TO-DATE" if d.get("up_to_date") else ("MISSING" if not d.get("exists") else f"PENDING ({d.get('pending_count', 0)})")
                     print(f"  [SQLite:{alias}] {d['db_path']} -> {d.get('version_tag')} / {d.get('target_version_tag')} [{state_lbl}]")
