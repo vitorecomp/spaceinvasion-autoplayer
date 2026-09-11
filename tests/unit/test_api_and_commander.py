@@ -6428,6 +6428,260 @@ class TestApiAndCommander(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_station_command_per_planet_slot_holds_and_commander_mapping(self) -> None:
+        """Verify POST /command station (dry-run, live, own-planet/raid/s9/allow_transport guards),
+        strictly per-planet _apply_fleet_slot_holds + Tier #3.5 STATION reservation, and commander.py STATION mapping."""
+        from spaceinvasion.api_server import ApiRequestError
+        from spaceinvasion.session.executor import ExecutionResult
+        from spaceinvasion.strategy import PlannedAction
+
+        # 1. commander.py _action_to_command_payload maps STATION with parsed ships dict + _hold_busy_fleet_slots holds STATION
+        st_action = PlannedAction(
+            priority="P2",
+            kind="STATION",
+            planet_id=101,
+            planet_coords="02:380:12",
+            target_id=102,
+            target_level=16,
+            target_name="Station -> 02:380:08 (ColonyA) [10x s11, 6x s4]",
+            reason="One-way deploy",
+            executable_now=True,
+        )
+        payload = commander._action_to_command_payload(st_action, dry_run=True)
+        self.assertEqual(payload["command"], "station")
+        self.assertEqual(payload["planet_id"], 101)
+        self.assertEqual(payload["dest_planet_id"], 102)
+        self.assertEqual(payload["target_coords"], "02:380:08")
+        self.assertEqual(payload["ships"], {"s11": 10, "s4": 6})
+        self.assertTrue(payload["dry_run"])
+
+        # _hold_busy_fleet_slots holds STATION when fleet slots are busy on that planet
+        p1_busy = PlanetState(
+            planet_id=101,
+            name="Home",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=25,
+            fields_used=60,
+            fields_max=230,
+            resources=Resources(50_000, 50_000, 30_000, 5_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(500, 200),
+            buildings={"b1": 14, "b2": 12, "b3": 12, "b4": 10, "b9": 4, "b10": 1},  # 2 slots
+            ships={"s11": 20, "s4": 15, "s10": 5, "s9": 10},
+        )
+        p2_free = PlanetState(
+            planet_id=102,
+            name="ColonyA",
+            coords="02:380:08",
+            planet_type="normal",
+            temperature=20,
+            fields_used=30,
+            fields_max=320,
+            resources=Resources(20_000, 20_000, 10_000, 5_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(300, 100),
+            buildings={"b1": 8, "b2": 7, "b3": 8, "b4": 6, "b10": 2},  # 3 slots free!
+            ships={"s11": 5, "s4": 10},
+        )
+        p3_raid = PlanetState(
+            planet_id=103,
+            name="RaidCol",
+            coords="02:380:09",
+            planet_type="raid",
+            temperature=15,
+            fields_used=5,
+            fields_max=100,
+            resources=Resources(1000, 1000, 1000, 1000),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(50, 10),
+            buildings={"b10": 2},
+            ships={},
+        )
+        st_two = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1_busy, p2_free, p3_raid),
+            active_planet_id=101,
+            active_queues=(
+                QueueJob(category="fleet", name="Transport → 02:380:08", remaining_seconds=120.0, detail="Outbound", origin_coords="02:380:12"),
+                QueueJob(category="fleet", name="Attack → 02:380:15", remaining_seconds=180.0, detail="Outbound", origin_coords="02:380:12"),
+            ),
+        )
+        held_cmd = commander._hold_busy_fleet_slots([st_action], {101: 120.0})
+        self.assertFalse(held_cmd[0].executable_now)
+
+        # 2. GameApiBridge POST /command {"command": "station"} guards + dry_run + live dispatch
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value = fake_client
+        fake_client.read_full_snapshot.return_value = st_two
+        fake_client.read_planets_overview.return_value = st_two
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            bridge = GameApiBridge(
+                debug_port=9222,
+                config_path=tp / "config.yaml",
+                log_dir=tp / "logs",
+                db_path=tp / "test.db",
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                bridge._last_state = st_two
+
+                # Reject foreign target coords (not an owned planet) with clean aborted payload
+                res_foreign = bridge.handle_command(
+                    {
+                        "command": "station",
+                        "planet_id": 101,
+                        "target_coords": "02:380:15",
+                        "ships": {"s11": 5},
+                        "dry_run": True,
+                    }
+                )
+                self.assertFalse(res_foreign["executed"])
+                self.assertIn("not one of your own", res_foreign["message"])
+
+                # Reject raid colony destination with clean aborted payload
+                res_raid = bridge.handle_command(
+                    {
+                        "command": "station",
+                        "planet_id": 101,
+                        "target_coords": "02:380:09",
+                        "ships": {"s11": 5},
+                        "dry_run": True,
+                    }
+                )
+                self.assertFalse(res_raid["executed"])
+                self.assertIn("not one of your own", res_raid["message"])
+
+                # Reject same origin == destination with clean aborted payload
+                res_same = bridge.handle_command(
+                    {
+                        "command": "station",
+                        "planet_id": 101,
+                        "target_coords": "02:380:12",
+                        "ships": {"s11": 5},
+                        "dry_run": True,
+                    }
+                )
+                self.assertFalse(res_same["executed"])
+                self.assertIn("same planet", res_same["message"].lower())
+
+                # Reject s9-only (Solar cells are stationary and stripped)
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command(
+                        {
+                            "command": "station",
+                            "planet_id": 101,
+                            "target_coords": "02:380:08",
+                            "ships": {"s9": 5},
+                            "dry_run": True,
+                        }
+                    )
+
+                # Live station blocked when allow_transport=False
+                with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                    res_blocked = bridge.handle_command(
+                        {
+                            "command": "station",
+                            "planet_id": 101,
+                            "target_coords": "02:380:08",
+                            "ships": {"s11": 5, "s4": 4},
+                            "dry_run": False,
+                        }
+                    )
+                self.assertFalse(res_blocked["executed"])
+                self.assertIn("allow_transport", res_blocked["message"])
+
+                # Enable allow_transport
+                upd = bridge.handle_command({"command": "update_config", "config": {"allow_transport": True}})
+                self.assertTrue(upd["ok"])
+
+                # Dry-run succeeds & strips s9 cleanly
+                res_dry = bridge.handle_command(
+                    {
+                        "command": "station",
+                        "planet_id": 101,
+                        "target_coords": "02:380:08",
+                        "ships": {"s11": 5, "s4": 4, "s9": 3},
+                        "dry_run": True,
+                    }
+                )
+                self.assertTrue(res_dry["ok"])
+                self.assertTrue(res_dry["dry_run"])
+                self.assertEqual(res_dry["action"]["kind"], "STATION")
+                self.assertIn("5x s11", res_dry["action"]["target_name"])
+                self.assertIn("4x s4", res_dry["action"]["target_name"])
+                self.assertNotIn("s9", res_dry["action"]["target_name"])
+
+                # Live station delegates to _live_executor when allow_transport=True
+                def _ok_st(_c, _s, act, **_kw):
+                    return ExecutionResult(
+                        action=act,
+                        executed=True,
+                        validated=True,
+                        dry_run=False,
+                        message="Dispatched Station to 02:380:08",
+                    )
+
+                with (
+                    patch("spaceinvasion.api_server.is_debug_port_open", return_value=True),
+                    patch.object(bridge._live_executor, "execute_action", side_effect=_ok_st),
+                ):
+                    res_live = bridge.handle_command(
+                        {
+                            "command": "station",
+                            "planet_id": 101,
+                            "dest_planet_id": 102,
+                            "ships_spec": "5x s11, 4x s4",
+                            "dry_run": False,
+                        }
+                    )
+                self.assertTrue(res_live["ok"])
+                self.assertTrue(res_live["executed"])
+
+                # 3. Strictly per-planet _apply_fleet_slot_holds:
+                # Planet 101 is 2/2 full -> Planet 101 ATTACK held, while Planet 102 (0/3 used) ATTACK & RECYCLE stay executable!
+                sample_iso = [
+                    PlannedAction(priority="P2", kind="ATTACK", planet_id=101, planet_coords="02:380:12", target_name="02:380:15", executable_now=True, reason="Hub raid"),
+                    PlannedAction(priority="P2", kind="RECYCLE", planet_id=102, planet_coords="02:380:08", target_name="Rubble -> 02:380:14", executable_now=True, reason="ColonyA recycle"),
+                    PlannedAction(priority="P2", kind="ATTACK", planet_id=102, planet_coords="02:380:08", target_name="02:380:16", executable_now=True, reason="ColonyA raid"),
+                ]
+                held_iso = bridge._apply_fleet_slot_holds(st_two, sample_iso)
+                self.assertFalse(held_iso[0].executable_now)  # Planet 101 full (2/2)
+                self.assertTrue(held_iso[1].executable_now)   # Planet 102 free (0/3)
+                self.assertTrue(held_iso[2].executable_now)   # Planet 102 free (0/3)
+
+                # Tier #3.5 STATION reservation on origin planet:
+                # Planet 101 with 1/2 used (1 free slot) & reserved_spy_slots=0 -> STATION gets the slot, ATTACK on 101 is held!
+                bridge.handle_command({"command": "update_config", "config": {"reserved_spy_slots": 0}})
+                st_one_free = GameState(
+                    universe_id=31,
+                    user_id=1,
+                    nickname="cmdr",
+                    timestamp=2000.0,
+                    planets=(p1_busy, p2_free),
+                    active_planet_id=101,
+                    active_queues=(
+                        QueueJob(category="fleet", name="Attack → 02:380:15", remaining_seconds=180.0, detail="Outbound", origin_coords="02:380:12"),
+                    ),
+                )
+                held_tier = bridge._apply_fleet_slot_holds(
+                    st_one_free,
+                    [
+                        st_action,
+                        PlannedAction(priority="P2", kind="ATTACK", planet_id=101, planet_coords="02:380:12", target_name="02:380:16", executable_now=True, reason="Hub raid"),
+                    ],
+                )
+                self.assertTrue(held_tier[0].executable_now)   # STATION takes the last free slot
+                self.assertFalse(held_tier[1].executable_now)  # ATTACK held behind STATION
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

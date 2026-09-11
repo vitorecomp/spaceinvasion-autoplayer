@@ -55,10 +55,12 @@ from spaceinvasion.combat.fleet import (
     _parse_coords_distance,
     extract_galaxy_system_coords,
     extract_message_folder_links,
+    format_station_ships_spec,
     normalize_coords,
     parse_galaxy_system_html,
     parse_inbox_messages_html,
     parse_spy_messages_html,
+    parse_station_ships_spec,
     plan_escape_flight,
     score_galaxy_scan_sectors,
     select_smart_galaxy_scan_batch,
@@ -88,6 +90,7 @@ from spaceinvasion.core.state import (
     PlanetState,
     Resources,
     count_allocated_normal_planets,
+    count_in_flight_fleets_for_planet,
     homeworld_planet_id,
     is_building_allowed_on_planet_type,
     is_in_flight_fleet_job,
@@ -1817,7 +1820,7 @@ class GameApiBridge:
         changed = False
         out: list[PlannedAction] = []
         for act in actions:
-            if act.kind in ("ATTACK", "SPY", "TRANSPORT", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE") and act.planet_id in busy_pids:
+            if act.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE") and act.planet_id in busy_pids:
                 cur_reason = str(act.reason or "")
                 new_reason = (
                     cur_reason
@@ -1852,7 +1855,9 @@ class GameApiBridge:
                         return 2
                     if a.kind == "COLONIZE":
                         return 3
-                    return 4
+                    if a.kind == "STATION":
+                        return 4
+                    return 5
                 return 0
 
             out.sort(
@@ -1875,10 +1880,16 @@ class GameApiBridge:
         if not actions or not getattr(state, "planets", ()):
             return actions
         eff_cfg = cfg or self.strategy_config
-        used_slots = sum(1 for q in (getattr(state, "active_queues", ()) or ()) if is_in_flight_fleet_job(q))
         res_spy_cfg = max(0, _safe_api_int(getattr(eff_cfg, "reserved_spy_slots", 1), 1))
         planets_by_id = {p.planet_id: p for p in state.planets}
         default_p = state.active_planet() or state.planets[0]
+        used_by_pid: dict[int, int] = {
+            p.planet_id: count_in_flight_fleets_for_planet(state, p) for p in state.planets
+        }
+
+        def _used_for(p_o: PlanetState) -> int:
+            return used_by_pid.get(p_o.planet_id, count_in_flight_fleets_for_planet(state, p_o))
+
         spy_pids = {
             a.planet_id
             for a in actions
@@ -1894,9 +1905,10 @@ class GameApiBridge:
             )
             return min(res_spy_cfg, max(0, max_s - 1)) if has_dem else 0
 
-        # Tier #2 reservations (TRANSPORT) and Tier #3 reservations (COLONIZE)
+        # Per-planet Tier #2 (TRANSPORT), Tier #3 (COLONIZE), and Tier #3.5 (STATION) reservations
         tr_count_by_pid: dict[int, int] = {}
         col_count_by_pid: dict[int, int] = {}
+        st_count_by_pid: dict[int, int] = {}
         for act in actions:
             if act.priority == "P3":
                 continue
@@ -1908,6 +1920,10 @@ class GameApiBridge:
                 p_o = planets_by_id.get(act.planet_id, default_p)
                 if _safe_api_int(p_o.ships.get("s8", 0), 0) > 0:
                     col_count_by_pid[p_o.planet_id] = col_count_by_pid.get(p_o.planet_id, 0) + 1
+            elif act.kind == "STATION" and getattr(eff_cfg, "allow_transport", False):
+                p_o = planets_by_id.get(act.planet_id, default_p)
+                if any(_safe_api_int(v, 0) > 0 for k, v in (p_o.ships or {}).items() if k != "s9"):
+                    st_count_by_pid[p_o.planet_id] = st_count_by_pid.get(p_o.planet_id, 0) + 1
 
         tr_res_by_pid: dict[int, int] = {}
         for pid_t, n_t in tr_count_by_pid.items():
@@ -1925,14 +1941,24 @@ class GameApiBridge:
                 max(0, max_s - _spy_res_for(p_o) - tr_res_by_pid.get(pid_c, 0)),
             )
 
+        st_res_by_pid: dict[int, int] = {}
+        for pid_st, n_st in st_count_by_pid.items():
+            p_o = planets_by_id.get(pid_st, default_p)
+            max_s = 1 + max(0, p_o.building_level(10))
+            st_res_by_pid[pid_st] = min(
+                n_st,
+                max(0, max_s - _spy_res_for(p_o) - tr_res_by_pid.get(pid_st, 0) - col_res_by_pid.get(pid_st, 0)),
+            )
+
         changed = False
         out: list[PlannedAction] = []
         for act in actions:
-            if act.kind not in ("SPY", "TRANSPORT", "COLONIZE", "ATTACK", "RECYCLE") or act.priority == "P3":
+            if act.kind not in ("SPY", "TRANSPORT", "COLONIZE", "STATION", "ATTACK", "RECYCLE") or act.priority == "P3":
                 out.append(act)
                 continue
             p_obj = planets_by_id.get(act.planet_id, default_p)
             max_slots = 1 + max(0, p_obj.building_level(10))
+            used_slots = _used_for(p_obj)
             if act.kind == "SPY":
                 if used_slots >= max_slots:
                     cur_r = str(act.reason or "")
@@ -1951,6 +1977,7 @@ class GameApiBridge:
             eff_res = _spy_res_for(p_obj)
             tr_res = tr_res_by_pid.get(p_obj.planet_id, 0)
             col_res = col_res_by_pid.get(p_obj.planet_id, 0)
+            st_res = st_res_by_pid.get(p_obj.planet_id, 0)
             if used_slots >= max_slots:
                 cur_r = str(act.reason or "")
                 new_r = (
@@ -1973,7 +2000,7 @@ class GameApiBridge:
                     changed = True
                     out.append(replace(act, executable_now=False, reason=new_r))
                     continue
-            elif act.kind in ("COLONIZE", "ATTACK", "RECYCLE") and tr_res > 0 and used_slots >= max_slots - eff_res - tr_res:
+            elif act.kind in ("COLONIZE", "STATION", "ATTACK", "RECYCLE") and tr_res > 0 and used_slots >= max_slots - eff_res - tr_res:
                 cur_r = str(act.reason or "")
                 new_r = (
                     cur_r
@@ -1984,12 +2011,23 @@ class GameApiBridge:
                     changed = True
                     out.append(replace(act, executable_now=False, reason=new_r))
                     continue
-            elif act.kind in ("ATTACK", "RECYCLE") and col_res > 0 and used_slots >= max_slots - eff_res - tr_res - col_res:
+            elif act.kind in ("STATION", "ATTACK", "RECYCLE") and col_res > 0 and used_slots >= max_slots - eff_res - tr_res - col_res:
                 cur_r = str(act.reason or "")
                 new_r = (
                     cur_r
                     if "reserved for colony" in cur_r.lower()
                     else f"{cur_r} [Hold: Fleet slot reserved for Colony ship ({used_slots}/{max_slots} in flight, {col_res} reserved)]"
+                )
+                if act.executable_now or new_r != cur_r:
+                    changed = True
+                    out.append(replace(act, executable_now=False, reason=new_r))
+                    continue
+            elif act.kind in ("ATTACK", "RECYCLE") and st_res > 0 and used_slots >= max_slots - eff_res - tr_res - col_res - st_res:
+                cur_r = str(act.reason or "")
+                new_r = (
+                    cur_r
+                    if "reserved for station" in cur_r.lower()
+                    else f"{cur_r} [Hold: Fleet slot reserved for Station deployment ({used_slots}/{max_slots} in flight, {st_res} reserved)]"
                 )
                 if act.executable_now or new_r != cur_r:
                     changed = True
@@ -2019,7 +2057,9 @@ class GameApiBridge:
                         return 2
                     if a.kind == "COLONIZE":
                         return 3
-                    return 4
+                    if a.kind == "STATION":
+                        return 4
+                    return 5
                 return 0
 
             out.sort(
@@ -5609,7 +5649,7 @@ class GameApiBridge:
             if res.executed and res.action.kind == "THROTTLE_BUILDING":
                 pid_i = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
                 self._throttle_timestamps[pid_i] = time.time()
-            if res.action.kind in ("ATTACK", "SPY", "TRANSPORT", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE"):
+            if res.action.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE"):
                 pid_f = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
                 if pid_f > 0:
                     if res.executed:
@@ -6126,6 +6166,7 @@ class GameApiBridge:
                 "THROTTLE_BUILDING",
                 "SPY",
                 "TRANSPORT",
+                "STATION",
                 "ATTACK",
                 "RECYCLE",
                 "COLONIZE",
@@ -6174,7 +6215,7 @@ class GameApiBridge:
 
             if norm_kind in ("BUILD", "DEMOLISH_BUILDING", "RESEARCH", "BUILD_SHIP", "THROTTLE_BUILDING") and tid is None:
                 raise ApiRequestError(f"'{norm_kind}' requires 'target_id'.")
-            if norm_kind in ("SPY", "TRANSPORT", "ATTACK", "RECYCLE", "COLONIZE") and not (tcoords.strip() or tname.strip()):
+            if norm_kind in ("SPY", "TRANSPORT", "STATION", "ATTACK", "RECYCLE", "COLONIZE") and not (tcoords.strip() or tname.strip()):
                 raise ApiRequestError(f"'{norm_kind}' requires 'target_coords'.")
 
             with self._lock:
@@ -7961,7 +8002,7 @@ class GameApiBridge:
                             return None
                         if planned.kind in ("COLONIZE", "ABANDON_COLONY") and not self._live_executor.allow_colonize:
                             return None
-                        if planned.kind == "TRANSPORT" and not self._live_executor.allow_transport:
+                        if planned.kind in ("TRANSPORT", "STATION") and not self._live_executor.allow_transport:
                             return None
                         return _get_client()
 
@@ -9298,6 +9339,143 @@ class GameApiBridge:
                         if not dry_run and not self._live_executor.allow_transport:
                             return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
                         return self._execute_and_summarize(_exec_client(planned), state, cmd, planned, dry_run)
+
+                    if cmd == "station":
+                        raw_target_coords = payload.get("target_coords")
+                        dest_pid = _parse_command_int(
+                            "dest_planet_id",
+                            payload.get("dest_planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
+                        norm_target = ""
+                        if isinstance(raw_target_coords, str) and raw_target_coords.strip():
+                            m_st = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", raw_target_coords.strip(), re.ASCII)
+                            if not m_st:
+                                raise ApiRequestError(
+                                    "'station' command 'target_coords' must be formatted as GG:SSS:PP."
+                                )
+                            norm_target = normalize_coords(m_st.group(1))
+                        if not norm_target and dest_pid is None:
+                            raise ApiRequestError(
+                                "'station' command requires 'target_coords' or 'dest_planet_id'."
+                            )
+                        raw_ships = payload.get("ships")
+                        clean_ships: dict[str, int] = {}
+                        if isinstance(raw_ships, Mapping):
+                            for raw_sk, raw_cnt in raw_ships.items():
+                                sk_norm = game_data.safe_key(raw_sk).strip().lower()
+                                if not re.fullmatch(r"s\d{1,3}", sk_norm, re.ASCII) or sk_norm == "s9":
+                                    continue
+                                cnt_val = _parse_command_int(
+                                    f"ships.{sk_norm}",
+                                    raw_cnt,
+                                    min_val=0,
+                                    max_val=game_data.MAX_JSON_SAFE_INT,
+                                ) or 0
+                                if cnt_val > 0:
+                                    clean_ships[sk_norm] = cnt_val
+                        elif isinstance(raw_ships, str) and raw_ships.strip():
+                            clean_ships = parse_station_ships_spec(raw_ships)
+                        elif isinstance(payload.get("ships_spec"), str) and payload.get("ships_spec", "").strip():
+                            clean_ships = parse_station_ships_spec(str(payload.get("ships_spec")))
+                        if not clean_ships:
+                            raise ApiRequestError(
+                                "'station' command requires a non-empty 'ships' map (e.g. {'s11': 10, 's4': 6}) or 'ships_spec'."
+                            )
+                        pid = _parse_command_int(
+                            "planet_id",
+                            payload.get("planet_id"),
+                            allow_none=True,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
+                        state = _resolve_fleet_command_state(pid, is_spy=True)
+                        dest_planet = (
+                            next((p for p in state.planets if p.planet_id == dest_pid), None)
+                            if dest_pid is not None
+                            else next((p for p in state.planets if normalize_coords(p.coords) == norm_target), None)
+                        )
+                        ship_spec = format_station_ships_spec(clean_ships)
+                        if dest_planet is None or normalize_planet_type(dest_planet) == "raid":
+                            planned_bad_st = PlannedAction(
+                                priority="P2",
+                                kind="STATION",
+                                planet_id=pid or (state.active_planet().planet_id if state.active_planet() else 0),
+                                planet_coords=(state.active_planet().coords if state.active_planet() else ""),
+                                target_id=dest_pid,
+                                target_level=sum(clean_ships.values()),
+                                target_name=f"Station -> {norm_target or dest_pid} [{ship_spec}]",
+                                reason="Own-planet station safety check",
+                                executable_now=False,
+                            )
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "dry_run": dry_run,
+                                        "message": (
+                                            f"Aborted: destination {norm_target or dest_pid} is not one of your own non-raid planets."
+                                        ),
+                                        "action": self._serialize_action(planned_bad_st, state),
+                                        "next_action": None,
+                                    }
+                                )
+                            )
+                        norm_dest = normalize_coords(dest_planet.coords)
+                        if pid is None:
+                            donor_p = next(
+                                (
+                                    p
+                                    for p in state.planets
+                                    if p.planet_id != dest_planet.planet_id
+                                    and normalize_planet_type(p) != "raid"
+                                    and any(_safe_api_int(p.ships.get(k, 0)) > 0 for k in clean_ships)
+                                ),
+                                None,
+                            )
+                            planet = donor_p or self._resolve_planet(state, None)
+                        else:
+                            planet = self._resolve_planet(state, pid)
+                        dest_label = (
+                            f"Station -> {norm_dest}"
+                            + (f" ({dest_planet.name})" if dest_planet.name else "")
+                            + f" [{ship_spec}]"
+                        )
+                        planned_st = PlannedAction(
+                            priority="P2",
+                            kind="STATION",
+                            planet_id=planet.planet_id,
+                            planet_coords=planet.coords,
+                            target_id=dest_planet.planet_id,
+                            target_level=sum(clean_ships.values()),
+                            target_name=dest_label,
+                            reason="API one-way fleet stationing command",
+                            executable_now=True,
+                        )
+                        if planet.planet_id == dest_planet.planet_id:
+                            planned_same_st = replace(
+                                planned_st,
+                                reason="Own-planet station safety check",
+                                executable_now=False,
+                            )
+                            return _sanitize_finite_json(
+                                _redact_api_payload(
+                                    {
+                                        "ok": True,
+                                        "command": cmd,
+                                        "executed": False,
+                                        "dry_run": dry_run,
+                                        "message": f"Aborted: origin and destination are the same planet ({norm_dest}).",
+                                        "action": self._serialize_action(planned_same_st, state),
+                                        "next_action": None,
+                                    }
+                                )
+                            )
+                        return self._execute_and_summarize(_exec_client(planned_st), state, cmd, planned_st, dry_run)
 
                     if cmd == "abandon_colony":
                         pid = _parse_command_int(

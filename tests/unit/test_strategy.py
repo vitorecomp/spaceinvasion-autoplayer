@@ -3256,6 +3256,278 @@ class TestStrategyPlanner(unittest.TestCase):
             f"Expected GA+NN to unlock remote colony 12453 in parallel; got: {[(a.kind, a.target_id, a.executable_now, a.reason) for a in ga_plan if a.planet_id == 12453]}",
         )
 
+    def test_per_planet_fleet_slots_centralized_shipyard_proactive_b10_station_and_parallel_harvest(self) -> None:
+        """Verify strictly per-planet 1+b10 slots, centralized initial b9 deferral, zero-prereq colony b10,
+        one-way STATION deployment (Tier #3.5), multi-planet parallel ATTACK/RECYCLE, and smart rec_qty sizing."""
+        from dataclasses import replace
+        from spaceinvasion.combat.fleet import parse_station_ships_spec
+        from spaceinvasion.planner.strategy import plan_interplanet_stationing
+
+        # 1. Centralized initial Weapons factory (b9) deferral + proactive zero-prereq Fleet base (b10) on young colonies
+        hub = PlanetState(
+            planet_id=301,
+            name="ShipyardHub",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=30,
+            fields_used=95,
+            fields_max=230,
+            resources=Resources(200_000, 150_000, 120_000, 30_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(1200, 500),
+            buildings={"b1": 18, "b2": 16, "b3": 16, "b4": 14, "b5": 18, "b7": 8, "b8": 8, "b9": 5, "b10": 3},
+            ships={"s11": 40, "s4": 24, "s1": 10, "s10": 5, "s9": 12},
+        )
+        young_staging = PlanetState(
+            planet_id=302,
+            name="StagingColony",
+            coords="02:380:08",
+            planet_type="normal",
+            temperature=25,
+            fields_used=35,
+            fields_max=320,
+            resources=Resources(40_000, 40_000, 30_000, 15_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(600, 200),
+            buildings={"b1": 8, "b2": 7, "b3": 8, "b4": 6, "b5": 9, "b7": 3, "b8": 1, "b9": 0, "b10": 0},
+            ships={},
+        )
+        st_b10 = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(hub, young_staging),
+            active_planet_id=301,
+            researches={"r1": 5, "r2": 6, "r3": 4, "r4": 4, "r5": 4},
+        )
+        for mode in ("priority", "ga_nn"):
+            cfg_m = StrategyConfig(
+                planner_mode=mode,
+                allow_multi_planet=True,
+                allow_transport=True,
+                ga_population_size=8,
+                ga_generations=2,
+                ga_horizon_steps=6,
+                ga_seed=11,
+            )
+            plan_m = plan_actions(st_b10, config=cfg_m, now_ts=2000.0)
+            # Young colony defers Weapons factory (b9) while empire already has hub shipyard
+            col_b9 = [a for a in plan_m if a.planet_id == 302 and a.kind in ("BUILD", "WAIT_RESOURCES") and a.target_id == 9]
+            self.assertEqual(col_b9, [], msg=f"{mode}: expected young colony b9 deferred, got {col_b9}")
+            # Young colony proactively schedules zero-prereq Fleet base (b10) L1 at P2 even with b9 == 0
+            col_b10 = [a for a in plan_m if a.planet_id == 302 and a.kind == "BUILD" and a.target_id == 10]
+            self.assertTrue(
+                col_b10 and col_b10[0].priority == "P2" and col_b10[0].target_level == 1 and col_b10[0].executable_now,
+                msg=f"{mode}: expected proactive P2 Fleet base L1 on staging colony, got {[a for a in plan_m if a.planet_id == 302]}",
+            )
+
+        # 2. One-way STATION deployment (plan_interplanet_stationing) + safety filters + Tier #3.5 in priority & ga_nn
+        col_ready = replace(young_staging, planet_id=302, name="ReadyBase", coords="02:380:08", buildings={**young_staging.buildings, "b10": 2})
+        col_nob10 = replace(young_staging, planet_id=303, name="NoFleetBase", coords="02:380:09", buildings={**young_staging.buildings, "b10": 0})
+        col_raid = replace(young_staging, planet_id=304, name="RaidBase", coords="02:380:10", planet_type="raid", buildings={"b10": 2})
+        col_under = PlanetState(
+            planet_id=305,
+            name="TinyRoll",
+            coords="02:380:11",
+            planet_type="normal",
+            temperature=10,
+            fields_used=0,
+            fields_max=180,
+            resources=Resources(500, 500, 500, 500),
+            storage=Resources(100_000, 100_000, 100_000, 100_000),
+            energy=EnergyBalance(0, 0),
+            buildings={},
+            ships={},
+        )
+        st_station = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(hub, col_ready, col_nob10, col_raid, col_under),
+            active_planet_id=301,
+            researches={"r1": 5, "r2": 6, "r3": 4, "r4": 4, "r5": 4},
+        )
+        cfg_st = StrategyConfig(allow_transport=True, allow_multi_planet=True, min_colony_fields=300)
+        station_acts = plan_interplanet_stationing(st_station, cfg_st)
+        self.assertEqual(len(station_acts), 1)
+        st_act = station_acts[0]
+        self.assertEqual(st_act.kind, "STATION")
+        self.assertEqual(st_act.priority, "P2")
+        self.assertEqual(st_act.planet_id, 301)
+        self.assertEqual(st_act.target_id, 302)
+        self.assertIn("02:380:08", st_act.target_name)
+        spec_ships = parse_station_ships_spec(st_act.target_name)
+        self.assertGreaterEqual(spec_ships.get("s11", 0), 2)
+        self.assertGreaterEqual(spec_ships.get("s4", 0), 3)
+        self.assertNotIn("s9", spec_ships)
+        # Hub keeps meaningful reserve (never drains all Recyclers or Fighters)
+        self.assertLess(spec_ships["s11"], hub.ships["s11"])
+        self.assertLess(spec_ships["s4"], hub.ships["s4"])
+
+        # Inbound STATION to 02:380:08 suppresses duplicate STATION dispatch
+        st_station_inflight = replace(
+            st_station,
+            active_queues=(
+                QueueJob(
+                    category="fleet",
+                    name="Station → 02:380:08",
+                    remaining_seconds=300.0,
+                    detail="Outbound",
+                    origin_coords="02:380:12",
+                ),
+            ),
+        )
+        self.assertEqual(plan_interplanet_stationing(st_station_inflight, cfg_st), [])
+
+        # Both priority and ga_nn emit STATION in plan_actions
+        for mode in ("priority", "ga_nn"):
+            pa = plan_actions(
+                st_station,
+                config=replace(cfg_st, planner_mode=mode, ga_population_size=8, ga_generations=2, ga_horizon_steps=6, ga_seed=12),
+                now_ts=2000.0,
+            )
+            self.assertTrue(
+                any(a.kind == "STATION" and a.target_id == 302 and a.executable_now for a in pa),
+                msg=f"{mode}: expected executable STATION to planet 302, got {[(a.kind, a.planet_id, a.target_id, a.executable_now) for a in pa if a.kind == 'STATION']}",
+            )
+
+        # 3. Strictly per-planet fleet slot isolation + per-planet BUILD_SHIP transit hold
+        hub_full_slots = replace(
+            hub,
+            buildings={**hub.buildings, "b10": 1},  # 2 slots total on hub
+            ship_offers=(
+                UnitOffer(
+                    unit_id=4,
+                    unit_type="ship",
+                    name="Small fighter",
+                    owned=24,
+                    cost=Resources(3000, 1000, 0, 0),
+                    can_build=True,
+                ),
+            ),
+        )
+        col_free_slots = PlanetState(
+            planet_id=302,
+            name="Colony2",
+            coords="02:390:08",
+            planet_type="normal",
+            temperature=25,
+            fields_used=45,
+            fields_max=320,
+            resources=Resources(50_000, 50_000, 30_000, 10_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(600, 200),
+            buildings={"b1": 10, "b2": 9, "b3": 10, "b4": 8, "b5": 10, "b7": 4, "b8": 2, "b9": 1, "b10": 2},  # 3 slots free!
+            ships={"s11": 8, "s4": 18, "s1": 6},
+            ship_offers=(
+                UnitOffer(
+                    unit_id=4,
+                    unit_type="ship",
+                    name="Small fighter",
+                    owned=18,
+                    cost=Resources(3000, 1000, 0, 0),
+                    can_build=True,
+                ),
+            ),
+        )
+        multi_targets = (
+            {
+                "coords": "02:380:14",
+                "owner": "DebrisA",
+                "planet_name": "RubbleNearHub",
+                "has_debris": True,
+                "debris_pig_iron": 25_000,
+                "debris_metal": 15_000,
+                "debris_total": 40_000,
+                "last_scanned_ts": 1995.0,
+            },
+            {
+                "coords": "02:390:10",
+                "owner": "DebrisB",
+                "planet_name": "RubbleNearCol2",
+                "has_debris": True,
+                "debris_pig_iron": 25_000,
+                "debris_metal": 15_000,
+                "debris_total": 40_000,
+                "last_scanned_ts": 1995.0,
+            },
+            {
+                "coords": "02:380:15",
+                "owner": "FarmHub",
+                "planet_name": "InactiveNearHub",
+                "is_inactive": True,
+                "status_color": "yellow",
+                "last_spied_ts": 1995.0,
+                "resources": {"pig_iron": 40_000, "metal": 30_000, "kryptonite": 20_000, "spice": 10_000},
+            },
+            {
+                "coords": "02:390:11",
+                "owner": "FarmCol2",
+                "planet_name": "InactiveNearCol2",
+                "is_inactive": True,
+                "status_color": "yellow",
+                "last_spied_ts": 1995.0,
+                "resources": {"pig_iron": 40_000, "metal": 30_000, "kryptonite": 20_000, "spice": 10_000},
+            },
+        )
+        # Hub has BOTH of its 2 slots occupied (origin_coords="02:380:12"); Colony2 has 0/3 used!
+        st_isolated = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(hub_full_slots, col_free_slots),
+            active_planet_id=301,
+            researches={"r1": 5, "r2": 6, "r3": 4, "r4": 5, "r5": 4, "r8": 4, "r9": 4, "r10": 4},
+            raid_targets=multi_targets,
+            active_queues=(
+                QueueJob(category="fleet", name="Attack → 02:380:02", remaining_seconds=180.0, detail="Outbound", origin_coords="02:380:12"),
+                QueueJob(category="fleet", name="Recycle → 02:380:03", remaining_seconds=210.0, detail="Outbound", origin_coords="02:380:12"),
+            ),
+        )
+        cfg_iso = StrategyConfig(
+            planner_mode="priority",
+            allow_multi_planet=True,
+            allow_raids=True,
+            allow_galaxy_scan=True,
+            allow_shipyard=True,
+            allow_transport=False,
+            reserved_spy_slots=0,
+            shipyard_targets={"small-fighter": 30},
+        )
+        acts_iso = plan_actions(st_isolated, config=cfg_iso, now_ts=2000.0)
+        # Colony2 (planet 302) must launch executable ATTACK and RECYCLE despite Hub being 2/2 full!
+        col2_harvest = [a for a in acts_iso if a.planet_id == 302 and a.kind in ("ATTACK", "RECYCLE") and a.executable_now]
+        self.assertTrue(any(a.kind == "ATTACK" for a in col2_harvest), f"Expected executable ATTACK from Colony2: {acts_iso}")
+        self.assertTrue(any(a.kind == "RECYCLE" for a in col2_harvest), f"Expected executable RECYCLE from Colony2: {acts_iso}")
+        # Hub's own BUILD_SHIP s4 is held (hub has in-flight fleet), while Colony2's BUILD_SHIP s4 is executable!
+        hub_ship_acts = [a for a in acts_iso if a.planet_id == 301 and a.kind == "BUILD_SHIP" and a.target_id == 4]
+        col2_ship_acts = [a for a in acts_iso if a.planet_id == 302 and a.kind == "BUILD_SHIP" and a.target_id == 4]
+        self.assertTrue(hub_ship_acts and not hub_ship_acts[0].executable_now)
+        self.assertTrue(col2_ship_acts and col2_ship_acts[0].executable_now)
+
+        # 4. Multi-planet parallel ATTACK & RECYCLE + smart multi-debris rec_qty sizing
+        st_parallel = replace(st_isolated, active_queues=())
+        acts_par = plan_actions(st_parallel, config=cfg_iso, now_ts=2000.0)
+        par_rec = [a for a in acts_par if a.kind == "RECYCLE" and a.executable_now]
+        par_atk = [a for a in acts_par if a.kind == "ATTACK" and a.executable_now]
+        # Both planets dispatch in parallel to their nearest targets!
+        self.assertEqual({a.planet_id for a in par_rec}, {301, 302})
+        self.assertEqual({a.planet_id for a in par_atk}, {301, 302})
+        # Smart Recycler sizing: Hub has 40 Recyclers, debris is 40,000 -> must NOT dump all 40 Recyclers onto 1 small field!
+        hub_rec = next(a for a in par_rec if a.planet_id == 301)
+        self.assertGreaterEqual(hub_rec.target_level, 2)
+        self.assertLess(hub_rec.target_level, 10, msg=f"Expected smart rec_qty sizing on multi-debris, got {hub_rec}")
+
+        # Single debris target preserves full available Recycler stack!
+        st_single_debris = replace(st_parallel, raid_targets=(multi_targets[0],))
+        acts_single = plan_actions(st_single_debris, config=cfg_iso, now_ts=2000.0)
+        single_rec = next(a for a in acts_single if a.kind == "RECYCLE" and a.executable_now)
+        self.assertEqual(single_rec.planet_id, 301)
+        self.assertEqual(single_rec.target_level, 40)
+
 
 if __name__ == "__main__":
     unittest.main()

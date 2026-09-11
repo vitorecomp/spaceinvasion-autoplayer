@@ -33,6 +33,7 @@ from spaceinvasion.combat.fleet import (
     normalize_coords,
     parse_galaxy_system_html,
     parse_send_fleet_mission_block,
+    parse_station_ships_spec,
     select_transport_ships,
 )
 from spaceinvasion.core.logging_utils import append_crash_debug_log, redact_sensitive
@@ -1964,6 +1965,8 @@ class ActionExecutor:
             )
         elif mission_kind == "TRANSPORT":
             want_tokens = ("transport", "transportier", "liefer")
+        elif mission_kind == "STATION":
+            want_tokens = ("station", "stationier", "deploy", "verleg")
         else:
             want_tokens = ("spy", "spio", "spionier", "espionage")
 
@@ -2814,6 +2817,8 @@ class ActionExecutor:
             verb = "colonization fleet"
         elif mission_kind == "TRANSPORT":
             verb = "inter-planet transport"
+        elif mission_kind == "STATION":
+            verb = "one-way fleet stationing"
         else:
             verb = "attack"
         return ExecutionResult(
@@ -3242,6 +3247,100 @@ class ActionExecutor:
             cargo_resources=safe_cargo,
         )
 
+    def _execute_station(
+        self,
+        client: GameBrowserClient,
+        state: GameState,
+        action: PlannedAction,
+        *,
+        active_planet_confirmed: bool = True,
+    ) -> ExecutionResult:
+        """Dispatch a one-way Station (ship deployment) strictly between two owned non-raid planets."""
+        origin = next((p for p in state.planets if p.planet_id == action.planet_id), None) or state.active_planet()
+        if origin is None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: origin planet_id={action.planet_id} not found in empire state.",
+            )
+        tname_s = _safe_str(action.target_name)
+        m_c = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", tname_s, re.ASCII)
+        norm_dest = normalize_coords(m_c.group(1)) if m_c else ""
+        dest = next(
+            (
+                p
+                for p in state.planets
+                if (action.target_id is not None and p.planet_id == action.target_id)
+                or (norm_dest and normalize_coords(p.coords) == norm_dest)
+            ),
+            None,
+        )
+        if dest is None:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: Station destination {norm_dest or tname_s!r} is not one of your own planets.",
+            )
+        if dest.planet_id == origin.planet_id:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: Station origin and destination are the same planet [{origin.coords}].",
+            )
+        if str(getattr(dest, "planet_type", "normal") or "normal").strip().lower() == "raid":
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: cannot Station ships to raid colony [{dest.coords}].",
+            )
+        req_ships = parse_station_ships_spec(tname_s) or parse_station_ships_spec(_safe_str(action.reason))
+        if not req_ships:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: no valid mobile ship counts specified for Station to [{dest.coords}].",
+            )
+        ships_to_send: dict[str, int] = {}
+        for skey, req_qty in req_ships.items():
+            if skey == "s9":
+                continue
+            avail = max(0, game_data.safe_int((origin.ships or {}).get(skey, 0), 0))
+            send_qty = min(max(0, int(req_qty)), avail)
+            if send_qty > 0:
+                ships_to_send[skey] = send_qty
+        if not ships_to_send:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: requested Station ships are not currently stationed on [{origin.coords}].",
+            )
+        if max(0, game_data.safe_int(origin.resources.spice, 0)) < 200:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message=f"Aborted: insufficient Spice fuel on [{origin.coords}] for Station flight.",
+            )
+        norm_act = replace(
+            action,
+            target_id=dest.planet_id,
+            target_name=f"Station -> {normalize_coords(dest.coords)} ({dest.name})",
+        )
+        return self._dispatch_fleet_mission(
+            client,
+            state,
+            norm_act,
+            ships_to_send=ships_to_send,
+            mission_kind="STATION",
+            active_planet_confirmed=active_planet_confirmed,
+        )
+
     def _execute_activate_transmitter(
         self,
         client: GameBrowserClient,
@@ -3466,6 +3565,7 @@ class ActionExecutor:
             "SCAN_GALAXY",
             "SPY",
             "TRANSPORT",
+            "STATION",
             "RECYCLE",
             "COLONIZE",
             "ATTACK",
@@ -3505,6 +3605,10 @@ class ActionExecutor:
                 c_dry = action.cost if isinstance(action.cost, Resources) else Resources()
                 c_tot = c_dry.pig_iron + c_dry.metal + c_dry.kryptonite + c_dry.spice
                 suffix = f" ({game_data.fmt_compact_int(c_tot, grouped=True)} res)"
+            elif action.kind == "STATION":
+                st_ships = parse_station_ships_spec(_safe_str(action.target_name)) or parse_station_ships_spec(_safe_str(action.reason))
+                st_tot = sum(st_ships.values())
+                suffix = f" ({game_data.fmt_compact_int(st_tot, grouped=True)} ships)" if st_tot > 0 else ""
             elif action.kind == "ABANDON_COLONY":
                 min_f_dry = max(50, game_data.safe_int(action.target_level, 300))
                 suffix = f" (< {game_data.fmt_compact_int(min_f_dry)} fields)"
@@ -3541,6 +3645,14 @@ class ActionExecutor:
                 dry_run=False,
                 action=action,
                 message="Guarded: live TRANSPORT requires allow_transport=true in config.",
+            )
+
+        if action.kind == "STATION" and not self.allow_transport:
+            return ExecutionResult(
+                executed=False,
+                dry_run=False,
+                action=action,
+                message="Guarded: live STATION requires allow_transport=true in config.",
             )
 
         if action.kind == "ABANDON_COLONY" and not self.allow_colonize:
@@ -3616,6 +3728,13 @@ class ActionExecutor:
             )
         elif action.kind == "TRANSPORT":
             res = self._execute_transport(
+                client,
+                state,
+                action,
+                active_planet_confirmed=active_planet_confirmed,
+            )
+        elif action.kind == "STATION":
+            res = self._execute_station(
                 client,
                 state,
                 action,

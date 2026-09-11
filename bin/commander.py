@@ -36,6 +36,7 @@ def _maybe_reexec_venv() -> None:
 
 _maybe_reexec_venv()
 
+from spaceinvasion.combat.fleet import parse_station_ships_spec  # noqa: E402
 from spaceinvasion.core import game_data # noqa: E402
 from spaceinvasion.runtime.commander_client import GameApiClient, GameApiError  # noqa: E402
 from spaceinvasion.core.config import StrategyConfig, load_strategy_config  # noqa: E402
@@ -383,6 +384,20 @@ def _action_to_command_payload(action: PlannedAction, *, dry_run: bool) -> dict:
         if action.target_id is not None and _safe_cmd_int(action.target_id, 0) > 0:
             payload_tr["dest_planet_id"] = _safe_cmd_int(action.target_id, 0)
         return payload_tr
+    if action.kind == "STATION":
+        t_name = _safe_cmd_str(action.target_name)
+        m = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", t_name, re.ASCII)
+        ships_map = parse_station_ships_spec(f"{t_name} {_safe_cmd_str(action.reason)}")
+        payload_st: dict[str, Any] = {
+            "command": "station",
+            "target_coords": m.group(1) if m else t_name,
+            "planet_id": pid,
+            "ships": ships_map,
+            "dry_run": dry_run,
+        }
+        if action.target_id is not None and _safe_cmd_int(action.target_id, 0) > 0:
+            payload_st["dest_planet_id"] = _safe_cmd_int(action.target_id, 0)
+        return payload_st
     if action.kind == "COLONIZE":
         t_name = _safe_cmd_str(action.target_name)
         m = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", t_name, re.ASCII)
@@ -442,7 +457,7 @@ def _hold_busy_fleet_slots(
     changed = False
     out: list[PlannedAction] = []
     for act in actions:
-        if act.kind in ("ATTACK", "SPY", "TRANSPORT", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE") and act.planet_id in busy_pids:
+        if act.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE") and act.planet_id in busy_pids:
             cur_reason = _safe_cmd_str(act.reason)
             new_reason = (
                 cur_reason
@@ -477,7 +492,9 @@ def _hold_busy_fleet_slots(
                     return 2
                 if a.kind == "COLONIZE":
                     return 3
-                return 4
+                if a.kind == "STATION":
+                    return 4
+                return 5
             return 0
 
         out.sort(
@@ -648,7 +665,7 @@ def run_commander_tick(
         if not res_dict.get("executed"):
             fail_msg_l = _safe_cmd_str(res_dict.get("message", "")).lower()
             if (
-                ready.kind in ("ATTACK", "SPY", "TRANSPORT", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE")
+                ready.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE")
                 and ("no ship input fields found on internalfleet" in fail_msg_l or "nofleet" in fail_msg_l)
             ):
                 pid_busy = _safe_cmd_int(ready.planet_id, 0)
@@ -662,7 +679,7 @@ def run_commander_tick(
                 state = game_state_from_dict(res_dict["state"])
                 actions = _compute_tick_actions(state, cur_mq)
                 continue
-            if ready.kind in ("ATTACK", "SPY", "TRANSPORT", "RECYCLE", "COLONIZE") or fail_msg_l.startswith("no-op:"):
+            if ready.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "COLONIZE") or fail_msg_l.startswith("no-op:"):
                 continue
             break
         after_live = True

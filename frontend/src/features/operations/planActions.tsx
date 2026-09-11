@@ -129,6 +129,7 @@ export const DASH_FLEET_KINDS = new Set([
   "DEFENSE",
   "SPY",
   "TRANSPORT",
+  "STATION",
   "ATTACK",
   "RECYCLE",
   "COLONIZE",
@@ -273,6 +274,17 @@ export function actionPayloadFor(
         kryptonite: Math.max(0, Math.round(finiteNum((c as any).kryptonite, 0))),
         spice: Math.max(0, Math.round(finiteNum((c as any).spice, 0))),
       },
+      dry_run: dryRun,
+    };
+  }
+  if (action.kind === "STATION") {
+    const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
+    return {
+      command: "station",
+      target_coords: m ? m[1] : action.target_name,
+      dest_planet_id: action.target_id ?? undefined,
+      planet_id: action.planet_id,
+      ships_spec: action.target_name || action.reason || "",
       dry_run: dryRun,
     };
   }

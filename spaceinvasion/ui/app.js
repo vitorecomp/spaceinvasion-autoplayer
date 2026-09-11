@@ -7190,6 +7190,7 @@
     if (k === "ATTACK") return "ATK";
     if (k === "SPY") return "SPY";
     if (k === "TRANSPORT") return "TRN";
+    if (k === "STATION") return "STN";
     if (k === "RECYCLE") return "REC";
     if (k === "COLONIZE") return "COL";
     if (k === "SCAN_GALAXY") return "SCN";
@@ -9789,6 +9790,7 @@
     if (k === "ATTACK") return "ATK";
     if (k === "SPY") return "SPY";
     if (k === "TRANSPORT") return "TRN";
+    if (k === "STATION") return "STN";
     if (k === "RECYCLE") return "REC";
     if (k === "COLONIZE") return "COL";
     if (k === "SCAN_GALAXY") return "SCN";
@@ -10501,6 +10503,7 @@
     "DEFENSE",
     "SPY",
     "TRANSPORT",
+    "STATION",
     "ATTACK",
     "RECYCLE",
     "COLONIZE",
@@ -10631,6 +10634,17 @@
           kryptonite: Math.max(0, Math.round(finiteNum(c.kryptonite, 0))),
           spice: Math.max(0, Math.round(finiteNum(c.spice, 0)))
         },
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "STATION") {
+      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
+      return {
+        command: "station",
+        target_coords: m ? m[1] : action.target_name,
+        dest_planet_id: action.target_id ?? void 0,
+        planet_id: action.planet_id,
+        ships_spec: action.target_name || action.reason || "",
         dry_run: dryRun
       };
     }

@@ -605,7 +605,38 @@ _MISSION_FORBIDDEN_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b(?:(?:Colonize|Colonisation|Colonization)\s*\(\s*forbidden\s*\)|Kolonisierung\s*\(\s*verboten\s*\))\s*:\s*([^<\r\n]+)",
         re.IGNORECASE,
     ),
+    "STATION": re.compile(
+        r"\b(?:(?:Station(?:ing)?|Deploy(?:ment)?)\s*\(\s*forbidden\s*\)|Stationier(?:en|ung)\s*\(\s*verboten\s*\))\s*:\s*([^<\r\n]+)",
+        re.IGNORECASE,
+    ),
 }
+
+
+_STATION_SHIP_TOKEN_RE = re.compile(r"\b(\d{1,9})\s*x\s*(s\d{1,3})\b", re.IGNORECASE | re.ASCII)
+
+
+def parse_station_ships_spec(text: str) -> dict[str, int]:
+    """Extract `{ship_key: qty}` pairs from a formatted `STATION` label (e.g. `[15x s11, 6x s4]`)."""
+    out: dict[str, int] = {}
+    for m in _STATION_SHIP_TOKEN_RE.finditer(str(text or "")):
+        qty = max(0, game_data.safe_int(m.group(1), 0))
+        skey = m.group(2).lower()
+        if qty > 0 and skey in SHIP_SLUG_BY_KEY and skey != "s9":
+            out[skey] = out.get(skey, 0) + qty
+    return out
+
+
+def format_station_ships_spec(ships: Mapping[str, int]) -> str:
+    """Format `{ship_key: qty}` into canonical `[Nx s11, Mx s4]` order."""
+    parts = [
+        f"{game_data.fmt_compact_int(int(qty))}x {skey}"
+        for skey, qty in sorted(
+            ships.items(),
+            key=lambda kv: (int(kv[0][1:]) if kv[0].startswith("s") and kv[0][1:].isdigit() else 999, kv[0]),
+        )
+        if int(qty) > 0 and skey in SHIP_SLUG_BY_KEY and skey != "s9"
+    ]
+    return ", ".join(parts)
 _BASH_RESET_TIMER_RE = re.compile(
     r"(?:Reset\s+in|Zur[üu]cksetzen\s+in)\s+(\d{1,3}):(\d{2}):(\d{2})",
     re.IGNORECASE,

@@ -53,7 +53,9 @@ from spaceinvasion.core.state import (
     Resources,
     UnitOffer,
     _parse_cost_from_text,
+    count_in_flight_fleets_for_planet,
     extract_in_flight_colonize_coords,
+    has_in_flight_fleet_from_planet,
     is_asteroid_planet,
     is_building_allowed_on_planet_type,
     is_in_flight_fleet_job,
@@ -7631,8 +7633,21 @@ def _materialize_planned_actions(
                         )
                     )
 
+    used_slots_by_pid_opt: dict[int, int] = {
+        p.planet_id: count_in_flight_fleets_for_planet(state, p) for p in state.planets
+    }
+
+    def _opt_used_slots_for(p_obj: PlanetState) -> int:
+        return used_slots_by_pid_opt.get(p_obj.planet_id, count_in_flight_fleets_for_planet(state, p_obj))
+
     used_fleet_slots_opt = sum(1 for q in (state.active_queues or ()) if is_in_flight_fleet_job(q))
     own_fleet_in_flight = used_fleet_slots_opt > 0
+    empire_has_shipyard_opt = any(
+        p.building_level(9) >= 1
+        for p in (state.planets or ())
+        if normalize_planet_type(p) != "raid"
+    )
+    req_spy_pid_opt_global = max(0, _safe_int(getattr(cfg, "spy_dispatch_planet_id", 0), 0))
     tut_obj = state.tutorial if (state.tutorial is not None and not state.tutorial.can_complete) else None
     tutorial_fight_task = _opt_tutorial_fight_task(tut_obj)
     tutorial_spy_task = _opt_tutorial_spy_task(tut_obj)
@@ -8743,13 +8758,14 @@ def _materialize_planned_actions(
                 pos_c = int(gr_info["position"])
                 zone_p = 0 if 7 <= pos_c <= 12 else (1 if 4 <= pos_c <= 6 else (2 if 13 <= pos_c <= 16 else 3))
                 max_spy_sl_c = 1 + max(0, probe_col_p.building_level(10))
+                used_spy_sl_c = _opt_used_slots_for(probe_col_p)
                 pg_c, ps_c, pp_c = _parse_gal_sys_pos(probe_col_p.coords)
                 tg_c, ts_c, tp_c = _parse_gal_sys_pos(norm_tc)
                 dist_p_c = abs(pg_c - tg_c) * 20000 + abs(ps_c - ts_c) * 95 + abs(pp_c - tp_c) * 5
                 can_ex_ps = bool(
                     (cfg.allow_galaxy_scan or getattr(cfg, "allow_colonize", False))
                     and probe_col_has_s10
-                    and used_fleet_slots_opt < max_spy_sl_c
+                    and used_spy_sl_c < max_spy_sl_c
                 )
                 ps_reason = (
                     f"Probe free slot {norm_tc} (pos {pos_c}, {gr_info['orbital_zone']}) "
@@ -8757,8 +8773,8 @@ def _materialize_planned_actions(
                 )
                 if probe_col_missing_designated:
                     ps_reason += " [Hold: No Spy probes (s10) stationed on designated spy colony]"
-                elif used_fleet_slots_opt >= max_spy_sl_c:
-                    ps_reason += f" [Hold: Fleet slots full ({used_fleet_slots_opt}/{max_spy_sl_c} in flight)]"
+                elif used_spy_sl_c >= max_spy_sl_c:
+                    ps_reason += f" [Hold: Fleet slots full ({used_spy_sl_c}/{max_spy_sl_c} in flight)]"
                 elif not (cfg.allow_galaxy_scan or getattr(cfg, "allow_colonize", False)):
                     ps_reason += " [Hold: allow_galaxy_scan/allow_colonize disabled in Config]"
                 opt_col_spy.append(
@@ -8868,6 +8884,11 @@ def _materialize_planned_actions(
                     )
                 )
                 if not tut_needs_b6_step:
+                    continue
+            if bid == 9 and planet.building_level(9) == 0 and empire_has_shipyard_opt and tut_obj is None:
+                pig_b9 = int(live_eff_b[planet.planet_id].get("b1", planet.building_level(1)))
+                kryp_b9 = int(live_eff_b[planet.planet_id].get("b3", planet.building_level(3)))
+                if min(pig_b9, kryp_b9) < 16 and not (req_spy_pid_opt_global > 0 and planet.planet_id == req_spy_pid_opt_global):
                     continue
             if bid == 5 and planet.planet_id in deferred_non_urgent_fusion_pids:
                 continue
@@ -9083,7 +9104,7 @@ def _materialize_planned_actions(
                 for m in _fast_unmet_prereqs("ships", slug, planet.buildings, state.researches)
             )
             hold_for_in_flight = (
-                own_fleet_in_flight
+                has_in_flight_fleet_from_planet(state, planet)
                 and sid not in tutorial_ship_ids
                 and sid in (1, 2, 3, 4, 5, 6, 7, 13, 14, 15, 16)
             )
@@ -9391,14 +9412,15 @@ def _materialize_planned_actions(
             spy_exec_p = designated_spy_opt if designated_spy_opt is not None else planet
             spy_has_s10 = _safe_int(spy_exec_p.ships.get("s10", 0), 0) > 0
             max_spy_sl_m = 1 + max(0, spy_exec_p.building_level(10))
+            used_spy_sl_m = _opt_used_slots_for(spy_exec_p)
             pol_spy = sc_spy == "yellow" or is_sp_spy or (bool(cfg.allow_pvp_in_az) and sc_spy == "light_red")
             tg_spy = "Spacia" if is_sp_spy else ("Inactive" if sc_spy == "yellow" else sc_spy.title())
-            can_exec_spy = bool(cfg.allow_galaxy_scan and spy_has_s10 and pol_spy and used_fleet_slots_opt < max_spy_sl_m)
+            can_exec_spy = bool(cfg.allow_galaxy_scan and spy_has_s10 and pol_spy and used_spy_sl_m < max_spy_sl_m)
             spy_rsn_m = _safe_action_str(step.reason) or f"Send Spy probe (s10) to scout {tg_spy} {norm_spy_coords}"
             if designated_spy_opt is not None and not spy_has_s10:
                 spy_rsn_m += " [Hold: No Spy probes (s10) stationed on designated spy colony]"
-            elif used_fleet_slots_opt >= max_spy_sl_m:
-                spy_rsn_m += f" [Hold: Fleet slots full ({used_fleet_slots_opt}/{max_spy_sl_m} in flight)]"
+            elif used_spy_sl_m >= max_spy_sl_m:
+                spy_rsn_m += f" [Hold: Fleet slots full ({used_spy_sl_m}/{max_spy_sl_m} in flight)]"
             plan.append(
                 _make_planned_action(
                     priority="P1",
@@ -9721,7 +9743,8 @@ def _materialize_planned_actions(
             tg_p, ts_p, tp_p = _parse_gal_sys_pos(nc_ps)
             dist_ps = abs(pg_a - tg_p) * 20000 + abs(ps_a - ts_p) * 95 + abs(pp_a - tp_p) * 5
             sc_ts_ps = _safe_float_any(raw_ps.get("last_scanned_ts"), 0.0)
-            can_ex_ps2 = bool(cfg.allow_galaxy_scan and probe_has_s10_auto and used_fleet_slots_opt < max_spy_sl_auto)
+            used_spy_sl_auto = _opt_used_slots_for(probe_auto_p)
+            can_ex_ps2 = bool(cfg.allow_galaxy_scan and probe_has_s10_auto and used_spy_sl_auto < max_spy_sl_auto)
             tg_lbl = "Spacia" if is_sp_ps else ("Inactive" if sc_ps == "yellow" else sc_ps.title())
             rsn_ps2 = (
                 f"Send Spy probe (s10) to scout {tg_lbl} {nc_ps}"
@@ -9729,8 +9752,8 @@ def _materialize_planned_actions(
             )
             if designated_spy_opt is not None and not probe_has_s10_auto:
                 rsn_ps2 += " [Hold: No Spy probes (s10) stationed on designated spy colony]"
-            elif used_fleet_slots_opt >= max_spy_sl_auto:
-                rsn_ps2 += f" [Hold: Fleet slots full ({used_fleet_slots_opt}/{max_spy_sl_auto} in flight)]"
+            elif used_spy_sl_auto >= max_spy_sl_auto:
+                rsn_ps2 += f" [Hold: Fleet slots full ({used_spy_sl_auto}/{max_spy_sl_auto} in flight)]"
             elif not cfg.allow_galaxy_scan:
                 rsn_ps2 += " [Hold: allow_galaxy_scan=false in Config]"
             extra_player_spies.append(
@@ -9754,91 +9777,10 @@ def _materialize_planned_actions(
             for _, ps_act in extra_player_spies[:2]:
                 plan.append(ps_act)
 
-    # Non-tutorial RECYCLE actions for known debris fields (tied with ATTACK at P2, ranked by res/flight_time)
-    if tutorial_recycle_task is None:
-        rec_p_opt = (
-            active
-            if _safe_int(active.ships.get("s11", 0), 0) > 0
-            else next((pl for pl in state.planets if _safe_int(pl.ships.get("s11", 0), 0) > 0), None)
-        )
-        if rec_p_opt is not None:
-            rec_qty_opt = max(1, _safe_int(rec_p_opt.ships.get("s11", 0), 1))
-            rec_cap_opt = fleet_cargo_capacity({"s11": rec_qty_opt})
-            existing_rec_coords = {
-                normalize_coords(m_r.group(1))
-                for a_r in plan
-                if a_r.kind == "RECYCLE" and (m_r := re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", a_r.target_name, re.ASCII))
-            }
-            inflight_rec_coords = {
-                normalize_coords(m_q.group(1))
-                for q_r in (state.active_queues or ())
-                if is_in_flight_fleet_job(q_r)
-                and (m_q := re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", _safe_action_str(getattr(q_r, "name", "")), re.ASCII))
-            }
-            opt_rec_candidates: list[tuple[tuple[int, float, int, float], "PlannedAction", tuple[float, int, float]]] = []
-            seen_rec_opt: set[str] = set(existing_rec_coords)
-            for raw_rec in state.raid_targets or ():
-                if not isinstance(raw_rec, Mapping) or not bool(raw_rec.get("has_debris", False)):
-                    continue
-                rc_raw = _safe_action_str(raw_rec.get("coords") or raw_rec.get("target_coords")).strip()
-                if not rc_raw:
-                    continue
-                nc_rec = normalize_coords(rc_raw)
-                if not nc_rec or nc_rec in seen_rec_opt or nc_rec in inflight_rec_coords:
-                    continue
-                seen_rec_opt.add(nc_rec)
-                ow_rec = _safe_action_str(raw_rec.get("owner"))
-                pn_rec = _safe_action_str(raw_rec.get("planet_name") or raw_rec.get("name"))
-                known_d_tot = extract_target_debris_resources(raw_rec)
-                is_est_d = known_d_tot <= 0
-                exp_rub_opt = (
-                    min(rec_cap_opt, known_d_tot)
-                    if known_d_tot > 0
-                    else min(rec_cap_opt, DEFAULT_UNKNOWN_DEBRIS_RESOURCES)
-                )
-                rec_fl_s = estimate_fleet_flight_seconds(
-                    rec_p_opt.coords,
-                    nc_rec,
-                    {"s11": rec_qty_opt},
-                    researches=state.researches,
-                    round_trip=True,
-                )
-                rec_rph = estimate_resource_per_hour(exp_rub_opt, rec_fl_s)
-                can_ex_rec_o = bool(cfg.allow_raids or cfg.allow_galaxy_scan)
-                rec_lbl_o = f"Rubble -> {nc_rec}" + (f" ({ow_rec or pn_rec})" if (ow_rec or pn_rec) else "")
-                est_tag_o = "est. " if is_est_d else ""
-                rec_rsn_o = (
-                    f"Harvest ~{game_data.fmt_compact_int(exp_rub_opt, grouped=True)} {est_tag_o}rubble at {nc_rec} "
-                    f"with {rec_qty_opt} Recycler(s) ({format_flight_duration(rec_fl_s)} RT · "
-                    f"{game_data.fmt_compact_int(round(rec_rph), grouped=True)} res/h)"
-                )
-                if not can_ex_rec_o:
-                    rec_rsn_o += " [Hold: allow_raids/allow_galaxy_scan disabled in Config]"
-                opt_rec_candidates.append(
-                    (
-                        (0 if can_ex_rec_o else 1, -rec_rph, -exp_rub_opt, rec_fl_s),
-                        _make_planned_action(
-                            priority="P2",
-                            kind="RECYCLE",
-                            planet_id=rec_p_opt.planet_id,
-                            planet_coords=_safe_action_str(rec_p_opt.coords),
-                            target_id=11,
-                            target_level=rec_qty_opt,
-                            target_name=rec_lbl_o,
-                            reason=rec_rsn_o,
-                            executable_now=can_ex_rec_o,
-                        ),
-                        (rec_rph, exp_rub_opt, rec_fl_s),
-                    )
-                )
-            if opt_rec_candidates:
-                opt_rec_candidates.sort(key=lambda item: item[0])
-                for _, rec_act_o, rec_met_o in opt_rec_candidates[:3]:
-                    harvest_metrics[("RECYCLE", rec_act_o.planet_id, rec_act_o.target_name)] = rec_met_o
-                    plan.append(rec_act_o)
-
-    # Tier #2: Inter-planet TRANSPORT between own planets (yields only to SPY; reserves slots against COLONIZE/ATTACK/RECYCLE)
-    from spaceinvasion.planner.strategy import plan_interplanet_transports
+    # Tier #2..#3.5 per-planet fleet slot reservation:
+    #   #1 SPY -> #2 TRANSPORT (between own planets) -> #3 parallel COLONIZE -> #3.5 one-way STATION
+    #   -> #4 ATTACK & RECYCLE (tied, ranked by res/flight_time across ALL ship-bearing planets).
+    from spaceinvasion.planner.strategy import plan_interplanet_stationing, plan_interplanet_transports
 
     res_spy_opt = max(0, _safe_int(getattr(cfg, "reserved_spy_slots", 1), 1))
     spy_pids_opt = {
@@ -9847,8 +9789,6 @@ def _materialize_planned_actions(
         if a_s.kind == "SPY" and (a_s.executable_now or cfg.allow_galaxy_scan or getattr(cfg, "allow_colonize", False))
     }
 
-    # Strict 4-tier fleet priority:
-    #   #1 SPY -> #2 TRANSPORT (between own planets) -> #3 parallel COLONIZE -> #4 ATTACK & RECYCLE (tied by res/flight_time).
     def _opt_spy_res_for(p_obj: PlanetState) -> int:
         has_dem = (
             res_spy_opt > 0
@@ -9858,13 +9798,13 @@ def _materialize_planned_actions(
         return min(res_spy_opt, max(0, (1 + max(0, p_obj.building_level(10))) - 1)) if has_dem else 0
 
     raw_transports_opt = plan_interplanet_transports(state, cfg, plan, now_ts=live_now_ts)
-    tr_dispatch_idx_opt = 0
+    tr_dispatch_by_pid_opt: dict[int, int] = {}
     tr_count_by_pid_opt: dict[int, int] = {}
     for act_t in raw_transports_opt:
         p_tr = planet_map.get(act_t.planet_id, active)
         max_sl_tr = 1 + max(0, p_tr.building_level(10))
         spy_res_tr = _opt_spy_res_for(p_tr)
-        slot_idx_tr = used_fleet_slots_opt + tr_dispatch_idx_opt
+        slot_idx_tr = _opt_used_slots_for(p_tr) + tr_dispatch_by_pid_opt.get(p_tr.planet_id, 0)
         rsn_tr = act_t.reason
         can_tr = bool(act_t.executable_now and getattr(cfg, "allow_transport", False))
         if can_tr and slot_idx_tr >= max_sl_tr:
@@ -9879,7 +9819,7 @@ def _materialize_planned_actions(
                     f"({slot_idx_tr}/{max_sl_tr} in flight, {spy_res_tr} reserved)]"
                 )
         if can_tr:
-            tr_dispatch_idx_opt += 1
+            tr_dispatch_by_pid_opt[p_tr.planet_id] = tr_dispatch_by_pid_opt.get(p_tr.planet_id, 0) + 1
         if getattr(cfg, "allow_transport", False):
             tr_count_by_pid_opt[p_tr.planet_id] = tr_count_by_pid_opt.get(p_tr.planet_id, 0) + 1
         plan.append(replace(act_t, executable_now=can_tr, reason=rsn_tr))
@@ -9890,7 +9830,7 @@ def _materialize_planned_actions(
             max_t = 1 + max(0, p_t.building_level(10))
             tr_res_by_pid_opt[pid_t] = min(n_t, max(0, max_t - _opt_spy_res_for(p_t)))
 
-    col_dispatch_idx_opt = 0
+    col_dispatch_by_pid_opt: dict[int, int] = {}
     col_count_by_pid_opt: dict[int, int] = {}
     for idx_pl, act_pl in enumerate(plan):
         if act_pl.kind != "COLONIZE" or act_pl.priority == "P3":
@@ -9899,7 +9839,7 @@ def _materialize_planned_actions(
         max_sl_pl = 1 + max(0, p_pl.building_level(10))
         spy_res_pl = _opt_spy_res_for(p_pl)
         tr_res_pl = tr_res_by_pid_opt.get(p_pl.planet_id, 0)
-        slot_idx_pl = used_fleet_slots_opt + col_dispatch_idx_opt
+        slot_idx_pl = _opt_used_slots_for(p_pl) + col_dispatch_by_pid_opt.get(p_pl.planet_id, 0)
         rsn_pl = act_pl.reason
         can_pl = bool(act_pl.executable_now)
         if can_pl and slot_idx_pl >= max_sl_pl:
@@ -9921,7 +9861,7 @@ def _materialize_planned_actions(
                     f"({slot_idx_pl}/{max_sl_pl} in flight, {tr_res_pl} reserved)]"
                 )
         if can_pl:
-            col_dispatch_idx_opt += 1
+            col_dispatch_by_pid_opt[p_pl.planet_id] = col_dispatch_by_pid_opt.get(p_pl.planet_id, 0) + 1
         if (
             getattr(cfg, "allow_colonize", False)
             and _safe_int((p_pl.ships or {}).get("s8", 0), 0) > 0
@@ -9942,6 +9882,215 @@ def _materialize_planned_actions(
             max(0, max_c - _opt_spy_res_for(p_c) - tr_res_by_pid_opt.get(pid_c, 0)),
         )
 
+    # Tier #3.5: One-way STATION deployment from shipyard hubs to b10>=1 colonies
+    raw_stations_opt = plan_interplanet_stationing(state, cfg, plan, now_ts=live_now_ts)
+    st_dispatch_by_pid_opt: dict[int, int] = {}
+    st_count_by_pid_opt: dict[int, int] = {}
+    for act_st in raw_stations_opt:
+        p_st = planet_map.get(act_st.planet_id, active)
+        max_sl_st = 1 + max(0, p_st.building_level(10))
+        spy_res_st = _opt_spy_res_for(p_st)
+        tr_res_st = tr_res_by_pid_opt.get(p_st.planet_id, 0)
+        col_res_st = col_res_by_pid_opt.get(p_st.planet_id, 0)
+        slot_idx_st = _opt_used_slots_for(p_st) + st_dispatch_by_pid_opt.get(p_st.planet_id, 0)
+        rsn_st = act_st.reason
+        can_st = bool(act_st.executable_now and getattr(cfg, "allow_transport", False))
+        if can_st and slot_idx_st >= max_sl_st:
+            can_st = False
+            if "in flight" not in rsn_st.lower():
+                rsn_st = f"{rsn_st} [Hold: Fleet slots full ({slot_idx_st}/{max_sl_st} in flight)]"
+        elif can_st and spy_res_st > 0 and slot_idx_st >= max_sl_st - spy_res_st:
+            can_st = False
+            if "reserved for spy" not in rsn_st.lower():
+                rsn_st = (
+                    f"{rsn_st} [Hold: Fleet slot reserved for Spy probes "
+                    f"({slot_idx_st}/{max_sl_st} in flight, {spy_res_st} reserved)]"
+                )
+        elif can_st and tr_res_st > 0 and slot_idx_st >= max_sl_st - spy_res_st - tr_res_st:
+            can_st = False
+            if "reserved for transport" not in rsn_st.lower():
+                rsn_st = (
+                    f"{rsn_st} [Hold: Fleet slot reserved for Transport "
+                    f"({slot_idx_st}/{max_sl_st} in flight, {tr_res_st} reserved)]"
+                )
+        elif can_st and col_res_st > 0 and slot_idx_st >= max_sl_st - spy_res_st - tr_res_st - col_res_st:
+            can_st = False
+            if "reserved for colony" not in rsn_st.lower():
+                rsn_st = (
+                    f"{rsn_st} [Hold: Fleet slot reserved for Colony ship "
+                    f"({slot_idx_st}/{max_sl_st} in flight, {col_res_st} reserved)]"
+                )
+        if can_st:
+            st_dispatch_by_pid_opt[p_st.planet_id] = st_dispatch_by_pid_opt.get(p_st.planet_id, 0) + 1
+        if getattr(cfg, "allow_transport", False):
+            st_count_by_pid_opt[p_st.planet_id] = st_count_by_pid_opt.get(p_st.planet_id, 0) + 1
+        plan.append(replace(act_st, executable_now=can_st, reason=rsn_st))
+    st_res_by_pid_opt: dict[int, int] = {}
+    for pid_st, n_st in st_count_by_pid_opt.items():
+        p_st_o = planet_map.get(pid_st)
+        if p_st_o is not None:
+            max_st_o = 1 + max(0, p_st_o.building_level(10))
+            st_res_by_pid_opt[pid_st] = min(
+                n_st,
+                max(
+                    0,
+                    max_st_o
+                    - _opt_spy_res_for(p_st_o)
+                    - tr_res_by_pid_opt.get(pid_st, 0)
+                    - col_res_by_pid_opt.get(pid_st, 0),
+                ),
+            )
+
+    def _opt_free_harvest_slots(p_obj: PlanetState) -> int:
+        max_sl = 1 + max(0, p_obj.building_level(10))
+        return max(
+            0,
+            max_sl
+            - _opt_used_slots_for(p_obj)
+            - _opt_spy_res_for(p_obj)
+            - tr_res_by_pid_opt.get(p_obj.planet_id, 0)
+            - col_res_by_pid_opt.get(p_obj.planet_id, 0)
+            - st_res_by_pid_opt.get(p_obj.planet_id, 0),
+        )
+
+    # Non-tutorial multi-planet RECYCLE actions for known debris fields (smart rec_qty sizing + per-planet slots)
+    if tutorial_recycle_task is None:
+        rec_planets_opt: list[PlanetState] = []
+        seen_rec_pids_opt: set[int] = set()
+        for pl_r in [active, *state.planets]:
+            if (
+                pl_r.planet_id in seen_rec_pids_opt
+                or normalize_planet_type(pl_r) == "raid"
+                or (pl_r.planet_id in undersized_pids_opt and pl_r.planet_id != active.planet_id)
+            ):
+                continue
+            if _safe_int(pl_r.ships.get("s11", 0), 0) > 0:
+                seen_rec_pids_opt.add(pl_r.planet_id)
+                rec_planets_opt.append(pl_r)
+        if rec_planets_opt:
+            miner_spec_o = _safe_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
+            per_rec_cap_o = max(1, fleet_cargo_capacity({"s11": 1}, miner_spec_level=miner_spec_o))
+            existing_rec_coords = {
+                normalize_coords(m_r.group(1))
+                for a_r in plan
+                if a_r.kind == "RECYCLE" and (m_r := re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", a_r.target_name, re.ASCII))
+            }
+            inflight_rec_coords = {
+                normalize_coords(m_q.group(1))
+                for q_r in (state.active_queues or ())
+                if is_in_flight_fleet_job(q_r)
+                and (m_q := re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", _safe_action_str(getattr(q_r, "name", "")), re.ASCII))
+            }
+            raw_debris_opt: list[tuple[str, str, str, int]] = []
+            seen_rec_opt: set[str] = set(existing_rec_coords)
+            for raw_rec in state.raid_targets or ():
+                if not isinstance(raw_rec, Mapping) or not bool(raw_rec.get("has_debris", False)):
+                    continue
+                rc_raw = _safe_action_str(raw_rec.get("coords") or raw_rec.get("target_coords")).strip()
+                if not rc_raw:
+                    continue
+                nc_rec = normalize_coords(rc_raw)
+                if not nc_rec or nc_rec in seen_rec_opt or nc_rec in inflight_rec_coords:
+                    continue
+                seen_rec_opt.add(nc_rec)
+                ow_rec = _safe_action_str(raw_rec.get("owner"))
+                pn_rec = _safe_action_str(raw_rec.get("planet_name") or raw_rec.get("name"))
+                raw_debris_opt.append((nc_rec, ow_rec, pn_rec, extract_target_debris_resources(raw_rec)))
+
+            debris_cnt_opt = len(raw_debris_opt)
+            soft_free_rec_opt: dict[int, int] = {p.planet_id: _opt_free_harvest_slots(p) for p in rec_planets_opt}
+            soft_s11_opt: dict[int, int] = {
+                p.planet_id: max(0, _safe_int(p.ships.get("s11", 0), 0)) for p in rec_planets_opt
+            }
+            opt_rec_candidates: list[tuple[tuple[int, float, int, float], "PlannedAction", tuple[float, int, float]]] = []
+            scored_debris_work: list[tuple[float, str, str, str, int, list[tuple[PlanetState, int, int, float, float]]]] = []
+            for nc_rec, ow_rec, pn_rec, known_d_tot in raw_debris_opt:
+                cands_d: list[tuple[PlanetState, int, int, float, float]] = []
+                best_rph_o = -1.0
+                for rp_o in rec_planets_opt:
+                    avail_s11_o = max(1, _safe_int(rp_o.ships.get("s11", 0), 1))
+                    if debris_cnt_opt <= 1:
+                        rec_qty_o = avail_s11_o
+                    elif known_d_tot > 0:
+                        rec_qty_o = max(1, min(avail_s11_o, math.ceil(known_d_tot / per_rec_cap_o)))
+                    else:
+                        rec_qty_o = max(
+                            1,
+                            min(avail_s11_o, max(2, math.ceil(DEFAULT_UNKNOWN_DEBRIS_RESOURCES / per_rec_cap_o))),
+                        )
+                    rec_cap_o = fleet_cargo_capacity({"s11": rec_qty_o}, miner_spec_level=miner_spec_o)
+                    exp_rub_o = (
+                        min(rec_cap_o, known_d_tot)
+                        if known_d_tot > 0
+                        else min(rec_cap_o, DEFAULT_UNKNOWN_DEBRIS_RESOURCES)
+                    )
+                    rec_fl_s = estimate_fleet_flight_seconds(
+                        rp_o.coords,
+                        nc_rec,
+                        {"s11": rec_qty_o},
+                        researches=state.researches,
+                        round_trip=True,
+                    )
+                    rec_rph = estimate_resource_per_hour(exp_rub_o, rec_fl_s)
+                    cands_d.append((rp_o, rec_qty_o, exp_rub_o, rec_fl_s, rec_rph))
+                    if rec_rph > best_rph_o:
+                        best_rph_o = rec_rph
+                if cands_d:
+                    scored_debris_work.append((-best_rph_o, nc_rec, ow_rec, pn_rec, known_d_tot, cands_d))
+            scored_debris_work.sort(key=lambda item: (item[0], item[1]))
+            can_ex_rec_o = bool(cfg.allow_raids or cfg.allow_galaxy_scan)
+            for _, nc_rec, ow_rec, pn_rec, known_d_tot, cands_d in scored_debris_work:
+                best_cd = min(
+                    cands_d,
+                    key=lambda c: (
+                        0 if (can_ex_rec_o and _opt_free_harvest_slots(c[0]) > 0) else 1,
+                        0 if soft_free_rec_opt.get(c[0].planet_id, 0) > 0 else 1,
+                        0 if soft_s11_opt.get(c[0].planet_id, 0) >= c[1] else 1,
+                        -c[4],
+                        -c[2],
+                        c[3],
+                        c[0].planet_id,
+                    ),
+                )
+                rp_pick, rec_qty_opt, exp_rub_opt, rec_fl_s, rec_rph = best_cd
+                if can_ex_rec_o and _opt_free_harvest_slots(rp_pick) > 0:
+                    if soft_free_rec_opt.get(rp_pick.planet_id, 0) > 0:
+                        soft_free_rec_opt[rp_pick.planet_id] -= 1
+                    soft_s11_opt[rp_pick.planet_id] = max(0, soft_s11_opt.get(rp_pick.planet_id, 0) - rec_qty_opt)
+                is_est_d = known_d_tot <= 0
+                rec_lbl_o = f"Rubble -> {nc_rec}" + (f" ({ow_rec or pn_rec})" if (ow_rec or pn_rec) else "")
+                est_tag_o = "est. " if is_est_d else ""
+                rec_rsn_o = (
+                    f"Harvest ~{game_data.fmt_compact_int(exp_rub_opt, grouped=True)} {est_tag_o}rubble at {nc_rec} "
+                    f"with {rec_qty_opt} Recycler(s) ({format_flight_duration(rec_fl_s)} RT · "
+                    f"{game_data.fmt_compact_int(round(rec_rph), grouped=True)} res/h)"
+                )
+                if not can_ex_rec_o:
+                    rec_rsn_o += " [Hold: allow_raids/allow_galaxy_scan disabled in Config]"
+                opt_rec_candidates.append(
+                    (
+                        (0 if can_ex_rec_o else 1, -rec_rph, -exp_rub_opt, rec_fl_s),
+                        _make_planned_action(
+                            priority="P2",
+                            kind="RECYCLE",
+                            planet_id=rp_pick.planet_id,
+                            planet_coords=_safe_action_str(rp_pick.coords),
+                            target_id=11,
+                            target_level=rec_qty_opt,
+                            target_name=rec_lbl_o,
+                            reason=rec_rsn_o,
+                            executable_now=can_ex_rec_o,
+                        ),
+                        (rec_rph, exp_rub_opt, rec_fl_s),
+                    )
+                )
+            if opt_rec_candidates:
+                opt_rec_candidates.sort(key=lambda item: item[0])
+                rec_cap_emit = min(10, max(3, 3 * len(rec_planets_opt)))
+                for _, rec_act_o, rec_met_o in opt_rec_candidates[:rec_cap_emit]:
+                    harvest_metrics[("RECYCLE", rec_act_o.planet_id, rec_act_o.target_name)] = rec_met_o
+                    plan.append(rec_act_o)
+
     for idx_pl, act_pl in enumerate(plan):
         if act_pl.kind not in ("ATTACK", "RECYCLE", "SPY") or act_pl.priority == "P3":
             continue
@@ -9949,10 +10098,11 @@ def _materialize_planned_actions(
             continue
         p_pl = planet_map.get(act_pl.planet_id, active)
         max_sl_pl = 1 + max(0, p_pl.building_level(10))
-        if used_fleet_slots_opt >= max_sl_pl:
+        used_sl_pl = _opt_used_slots_for(p_pl)
+        if used_sl_pl >= max_sl_pl:
             rsn_pl = act_pl.reason
             if "in flight" not in rsn_pl.lower() and "in transit" not in rsn_pl.lower():
-                rsn_pl = f"{rsn_pl} [Hold: Fleet slots full ({used_fleet_slots_opt}/{max_sl_pl} in flight)]"
+                rsn_pl = f"{rsn_pl} [Hold: Fleet slots full ({used_sl_pl}/{max_sl_pl} in flight)]"
             plan[idx_pl] = replace(act_pl, executable_now=False, reason=rsn_pl)
             continue
         if act_pl.kind == "SPY":
@@ -9960,32 +10110,178 @@ def _materialize_planned_actions(
         eff_res_pl = _opt_spy_res_for(p_pl)
         tr_res_o = tr_res_by_pid_opt.get(p_pl.planet_id, 0)
         col_res_o = col_res_by_pid_opt.get(p_pl.planet_id, 0)
-        if eff_res_pl > 0 and used_fleet_slots_opt >= max_sl_pl - eff_res_pl:
+        st_res_o = st_res_by_pid_opt.get(p_pl.planet_id, 0)
+        if eff_res_pl > 0 and used_sl_pl >= max_sl_pl - eff_res_pl:
             rsn_pl = act_pl.reason
             if "reserved for spy" not in rsn_pl.lower():
                 rsn_pl = (
                     f"{rsn_pl} [Hold: Fleet slot reserved for Spy probes "
-                    f"({used_fleet_slots_opt}/{max_sl_pl} in flight, {eff_res_pl} reserved)]"
+                    f"({used_sl_pl}/{max_sl_pl} in flight, {eff_res_pl} reserved)]"
                 )
             plan[idx_pl] = replace(act_pl, executable_now=False, reason=rsn_pl)
             continue
-        if tr_res_o > 0 and used_fleet_slots_opt >= max_sl_pl - eff_res_pl - tr_res_o:
+        if tr_res_o > 0 and used_sl_pl >= max_sl_pl - eff_res_pl - tr_res_o:
             rsn_pl = act_pl.reason
             if "reserved for transport" not in rsn_pl.lower():
                 rsn_pl = (
                     f"{rsn_pl} [Hold: Fleet slot reserved for Transport "
-                    f"({used_fleet_slots_opt}/{max_sl_pl} in flight, {tr_res_o} reserved)]"
+                    f"({used_sl_pl}/{max_sl_pl} in flight, {tr_res_o} reserved)]"
                 )
             plan[idx_pl] = replace(act_pl, executable_now=False, reason=rsn_pl)
             continue
-        if col_res_o > 0 and used_fleet_slots_opt >= max_sl_pl - eff_res_pl - tr_res_o - col_res_o:
+        if col_res_o > 0 and used_sl_pl >= max_sl_pl - eff_res_pl - tr_res_o - col_res_o:
             rsn_pl = act_pl.reason
             if "reserved for colony" not in rsn_pl.lower():
                 rsn_pl = (
                     f"{rsn_pl} [Hold: Fleet slot reserved for Colony ship "
-                    f"({used_fleet_slots_opt}/{max_sl_pl} in flight, {col_res_o} reserved)]"
+                    f"({used_sl_pl}/{max_sl_pl} in flight, {col_res_o} reserved)]"
                 )
             plan[idx_pl] = replace(act_pl, executable_now=False, reason=rsn_pl)
+            continue
+        if st_res_o > 0 and used_sl_pl >= max_sl_pl - eff_res_pl - tr_res_o - col_res_o - st_res_o:
+            rsn_pl = act_pl.reason
+            if "reserved for station" not in rsn_pl.lower():
+                rsn_pl = (
+                    f"{rsn_pl} [Hold: Fleet slot reserved for Station deployment "
+                    f"({used_sl_pl}/{max_sl_pl} in flight, {st_res_o} reserved)]"
+                )
+            plan[idx_pl] = replace(act_pl, executable_now=False, reason=rsn_pl)
+
+    # Proactive Fleet base (`b10`, zero in-game prerequisites) post-pass for saturated planets & staging colonies
+    if tut_obj is None:
+        planned_b10_pids = {
+            a_b.planet_id
+            for a_b in plan
+            if a_b.kind in ("BUILD", "WAIT_RESOURCES") and game_data.safe_optional_int(a_b.target_id, None) == 10
+        }
+        fb_planets_to_check = (
+            [p for p in state.planets if p.planet_id not in undersized_pids_opt]
+            if cfg.allow_multi_planet
+            else [active]
+        )
+        for p_fb in fb_planets_to_check:
+            if p_fb.planet_id in planned_b10_pids:
+                continue
+            ptype_fb = normalize_planet_type(p_fb)
+            if ptype_fb == "raid" or not is_building_allowed_on_planet_type(ptype_fb, 10):
+                continue
+            cur_q_fb = queued_cnt_by_p.get(p_fb.planet_id, 0)
+            p_f_used_fb = max(0, _safe_int(p_fb.fields_used, 0))
+            p_f_max_fb = max(0, _safe_int(p_fb.fields_max, 0))
+            if p_f_max_fb > 0 and (p_f_used_fb + cur_q_fb) >= p_f_max_fb:
+                continue
+            eff_fb_map = live_eff_b.get(p_fb.planet_id, {})
+            fb_lvl = int(eff_fb_map.get("b10", p_fb.building_level(10)))
+            wf_lvl = int(eff_fb_map.get("b9", p_fb.building_level(9)))
+            dev_lvl = int(eff_fb_map.get("b7", p_fb.building_level(7)))
+            pig_lvl = int(eff_fb_map.get("b1", p_fb.building_level(1)))
+            kryp_lvl = int(eff_fb_map.get("b3", p_fb.building_level(3)))
+            in_fl_fb = _opt_used_slots_for(p_fb)
+            mission_ships_fb = sum(
+                max(0, _safe_int(cnt, 0))
+                for sk, cnt in (getattr(p_fb, "ships", None) or {}).items()
+                if sk != "s9"
+            )
+            staging_ok_fb = bool(
+                empire_has_shipyard_opt
+                and min(pig_lvl, kryp_lvl) >= 5
+                and (cfg.allow_raids or cfg.allow_galaxy_scan or getattr(cfg, "allow_transport", False))
+            )
+            if not (wf_lvl >= 1 or mission_ships_fb >= 1 or in_fl_fb > 0 or staging_ok_fb):
+                continue
+            slots_sat_fb = in_fl_fb >= (1 + fb_lvl)
+            target_fb_o = 0
+            if slots_sat_fb:
+                target_fb_o = max(fb_lvl + 1, in_fl_fb + 1)
+            elif mission_ships_fb >= 1 or in_fl_fb > 0:
+                target_fb_o = min(
+                    15,
+                    max(
+                        4 if cfg.playstyle == "fleeter" else 2,
+                        dev_lvl // 2 + (3 if cfg.playstyle == "fleeter" else 1),
+                    ),
+                )
+            elif staging_ok_fb:
+                target_fb_o = min(
+                    15,
+                    max(
+                        3 if cfg.playstyle == "fleeter" else 2,
+                        dev_lvl // 2 + (2 if cfg.playstyle == "fleeter" else 1),
+                    ),
+                )
+            elif wf_lvl >= 1 and cfg.playstyle == "fleeter" and min(pig_lvl, kryp_lvl) >= 8:
+                target_fb_o = min(15, max(2, dev_lvl // 2 + 2))
+            if fb_lvl >= target_fb_o:
+                continue
+            tgt_fb_lvl = fb_lvl + 1
+            fb_prio_o = "P2" if (slots_sat_fb or fb_lvl < 3 or in_fl_fb >= max(1, fb_lvl)) else "P3"
+            if slots_sat_fb:
+                fb_rsn_o = (
+                    f"Expand Fleet base to L{tgt_fb_lvl} (+1 per-planet concurrent flight slot: "
+                    f"{1 + fb_lvl} -> {2 + fb_lvl} flights; {in_fl_fb}/{1 + fb_lvl} currently in transit)"
+                )
+            elif wf_lvl == 0 and mission_ships_fb == 0:
+                fb_rsn_o = (
+                    f"Build Fleet base L{tgt_fb_lvl} ({1 + fb_lvl} -> {2 + fb_lvl} independent per-planet flight slots "
+                    f"for stationed raids & recyclers — no Weapons factory required)"
+                )
+            else:
+                fb_rsn_o = f"Increase Fleet base to L{tgt_fb_lvl} ({1 + fb_lvl} -> {2 + fb_lvl} per-planet concurrent fleet flights)"
+            offer_fb = b_offers_by_p.get(p_fb.planet_id, {}).get(10)
+            offer_tgt_fb = game_data.safe_optional_int(offer_fb.target_level, None) if offer_fb is not None else None
+            avail_fb = avail_res_by_p.get(p_fb.planet_id, p_fb.resources)
+            max_q_fb = max_slots_by_p.get(p_fb.planet_id, 5)
+            q_has_slot_fb = cur_q_fb < max_q_fb
+            is_active_fb = p_fb.planet_id == active.planet_id
+            if offer_fb is not None and offer_tgt_fb == tgt_fb_lvl:
+                cost_fb = offer_fb.cost
+                stale_fb_ok = (
+                    not is_active_fb
+                    and cfg.allow_multi_planet
+                    and _is_stale_remote_resource_wait(offer_fb)
+                    and not cost_fb.is_zero()
+                )
+                can_ex_fb = bool(
+                    allow_build
+                    and q_has_slot_fb
+                    and (offer_fb.can_build or stale_fb_ok)
+                    and avail_fb.can_afford(cost_fb)
+                )
+                href_fb = (
+                    _safe_action_str(offer_fb.build_href) or None
+                    if (can_ex_fb and offer_fb.can_build)
+                    else None
+                )
+            else:
+                cost_fb = _resources_from_dict(game_data.building_cost(10, tgt_fb_lvl))
+                can_ex_fb = bool(
+                    not is_active_fb
+                    and cfg.allow_multi_planet
+                    and allow_build
+                    and q_has_slot_fb
+                    and not cost_fb.is_zero()
+                    and avail_fb.can_afford(cost_fb)
+                )
+                href_fb = None
+            if can_ex_fb:
+                avail_res_by_p[p_fb.planet_id] = _sub_resources(avail_fb, cost_fb)
+                queued_cnt_by_p[p_fb.planet_id] = cur_q_fb + 1
+            plan.append(
+                _make_planned_action(
+                    priority=fb_prio_o,
+                    kind="BUILD" if can_ex_fb else "WAIT_RESOURCES",
+                    planet_id=p_fb.planet_id,
+                    planet_coords=_safe_action_str(p_fb.coords),
+                    target_id=10,
+                    target_name="Fleet base",
+                    target_level=tgt_fb_lvl,
+                    cost=cost_fb,
+                    missing=avail_fb.missing(cost_fb),
+                    reason=fb_rsn_o if can_ex_fb else f"{fb_rsn_o} (waiting/queued)",
+                    executable_now=can_ex_fb,
+                    action_href=href_fb,
+                )
+            )
 
     # Unify P2 ATTACK and RECYCLE at identical priority ranked strictly by descending resource/flight_time
     harvest_indices = [
@@ -10036,6 +10332,8 @@ def _materialize_planned_actions(
             return (3, 0)
         if a.kind == "COLONIZE":
             return (4, 0)
+        if a.kind == "STATION":
+            return (4, 5)
         # ATTACK and RECYCLE share identical subrank (5, 0) so unified res/flight_time order is preserved
         return (5, 0)
 

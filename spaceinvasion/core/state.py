@@ -509,6 +509,7 @@ class QueueJob:
     finish_ts: Optional[float] = None
     queue_slot: int = 1
     detail: str = ""
+    origin_coords: str = ""
 
 
 @dataclass(frozen=True)
@@ -1740,6 +1741,55 @@ def is_in_flight_fleet_job(job: Any) -> bool:
     return True
 
 
+def _normalize_queue_coords(raw: str) -> str:
+    m = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", str(raw or ""), re.ASCII)
+    if not m:
+        return ""
+    return f"{int(m.group(1)):02d}:{int(m.group(2)):03d}:{int(m.group(3)):02d}"
+
+
+def count_in_flight_fleets_for_planet(state: Any, planet: Any) -> int:
+    """Count active in-flight fleet slots occupied on `planet` (strictly per-planet in SpaceInvasion).
+
+    Flights parsed from live `internalHome` `var faData` carry `"start"` (`origin_coords`) and
+    only count toward their launching planet's `Fleet base` (`b10`) slots. Legacy/synthetic
+    `QueueJob` records without `origin_coords` fall back conservatively to counting on any planet.
+    """
+    norm_p = _normalize_queue_coords(getattr(planet, "coords", "") if planet is not None else "")
+    count = 0
+    for q in getattr(state, "active_queues", ()) or ():
+        if not is_in_flight_fleet_job(q):
+            continue
+        q_orig = _normalize_queue_coords(getattr(q, "origin_coords", "") or "")
+        if q_orig and norm_p:
+            if q_orig == norm_p:
+                count += 1
+        else:
+            count += 1
+    return count
+
+
+def has_in_flight_fleet_from_planet(state: Any, planet: Any) -> bool:
+    """Return True when `planet` itself has an active in-flight/returning fleet."""
+    return count_in_flight_fleets_for_planet(state, planet) > 0
+
+
+def extract_in_flight_station_dest_coords(state: Any) -> set[str]:
+    """Return normalized destination coordinates of all currently outbound/in-flight `STATION` missions."""
+    out: set[str] = set()
+    for q in getattr(state, "active_queues", ()) or ():
+        if not is_in_flight_fleet_job(q):
+            continue
+        q_name = str(getattr(q, "name", "") or "")
+        q_low = q_name.lower()
+        if not (q_low.startswith("station") or "station →" in q_low or "station ->" in q_low):
+            continue
+        norm_c = _normalize_queue_coords(q_name)
+        if norm_c:
+            out.add(norm_c)
+    return out
+
+
 def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
     """Parse active own/returning fleet flights and exact countdowns (`t` seconds) from `var faData`."""
     m = _FADATA_BLOCK_RE.search(html or "")
@@ -1766,6 +1816,11 @@ def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
             raw_act = (m_act.group(1) if m_act else "FLEET").upper()
             mission_lbl = _FADATA_MISSION_LABELS.get(raw_act, raw_act.title())
             is_ret = is_ret_sec or bool(re.search(r'"return"\s*:\s*true\b', body, re.IGNORECASE))
+            m_start = re.search(r'"start"\s*:\s*"([^"]*)"(?:\s*\+\s*"([^"]*)")?', body)
+            start_str = ""
+            if m_start:
+                start_str = ((m_start.group(1) or "") + (m_start.group(2) or "")).strip()
+            origin_coords = _normalize_queue_coords(start_str)
             m_dest = re.search(r'"dest"\s*:\s*"([^"]*)"(?:\s*\+\s*"([^"]*)")?', body)
             dest_str = ""
             if m_dest:
@@ -1786,6 +1841,7 @@ def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
                     "raw_act": raw_act,
                     "mission_lbl": mission_lbl,
                     "is_ret": is_ret,
+                    "origin_coords": origin_coords,
                     "dest_str": dest_str,
                     "ships_detail": ships_detail,
                 }
@@ -1808,11 +1864,12 @@ def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
         dedup_entries = list(by_id.values()) + dedup_entries
 
     # 2. Pair each outbound leg (`is_ret=False`) with its scheduled future return event (`is_ret=True`, `t_ret > t_out`)
-    #    matching `(mission, dest, ships_summary)` 1-to-1 so `faData`'s 2-row outbound+return schedule counts once.
-    grouped_indices: dict[tuple[str, str, str], list[int]] = {}
+    #    matching `(mission, origin, dest, ships_summary)` 1-to-1 so `faData`'s 2-row outbound+return schedule counts once.
+    grouped_indices: dict[tuple[str, str, str, str], list[int]] = {}
     for idx, ent in enumerate(dedup_entries):
         sig = (
             str(ent["raw_act"]),
+            str(ent["origin_coords"]),
             " ".join(str(ent["dest_str"]).lower().split()),
             " ".join(str(ent["ships_detail"]).lower().split()),
         )
@@ -1849,6 +1906,7 @@ def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
             continue
         rem_s = float(ent["rem_s"])
         is_ret = bool(ent["is_ret"])
+        origin_coords = str(ent["origin_coords"])
         dest_str = str(ent["dest_str"])
         mission_lbl = str(ent["mission_lbl"])
         ships_detail = str(ent["ships_detail"])
@@ -1865,6 +1923,7 @@ def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
                 finish_ts=round(ref_now + rem_s, 3),
                 queue_slot=1,
                 detail=detail_full[:160],
+                origin_coords=origin_coords,
             )
         )
     jobs.sort(key=lambda j: (j.finish_ts if j.finish_ts is not None else float("inf")))
@@ -2243,6 +2302,7 @@ def game_state_from_dict(data: Mapping[str, Any]) -> GameState:
                 finish_ts=q_fin_ts if (q_fin_ts is not None and q_fin_ts > 0.0) else None,
                 queue_slot=q_slot,
                 detail=_safe_state_str(q.get("detail") or ""),
+                origin_coords=_normalize_queue_coords(_safe_state_str(q.get("origin_coords") or "")),
             )
         )
     queues = tuple(queues_list)

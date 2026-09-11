@@ -992,6 +992,127 @@ class TestStateParsers(unittest.TestCase):
         self.assertEqual(pid7, 12476)
         self.assertTrue(any(q.category == "fleet" for q in queues7))
 
+    def test_fadata_origin_coords_and_per_planet_fleet_slot_accounting(self) -> None:
+        from spaceinvasion.core.state import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            QueueJob,
+            Resources,
+            count_in_flight_fleets_for_planet,
+            extract_in_flight_station_dest_coords,
+            has_in_flight_fleet_from_planet,
+        )
+
+        # Live internalHome var faData includes both outbound ("[02:380:12] Main") and
+        # returning ("Main [02:380:12]") start strings, plus a 2-leg duplicate return row.
+        fadata_html = """
+        <html><body>
+        <script>
+        var faData = [
+          {"title": "Own fleets", "fleets": [
+            {"id": 101, "a": "TRANSPORT", "start": "[02:380:12] Home", "dest": "[02:380:08] ColonyA", "return": false, "t": 120},
+            {"id": 102, "a": "TRANSPORT", "start": "[02:380:12] Home", "dest": "[02:380:08] ColonyA", "return": true, "t": 360},
+            {"id": 103, "a": "STATION", "start": "[02:380:12] Home", "dest": "[02:380:09] ColonyB", "return": false, "t": 240}
+          ]},
+          {"title": "Returning fleets", "fleets": [
+            {"id": 104, "a": "RECYCLE", "start": "ColonyA [02:380:08]", "dest": "[02:380:14] Debris", "return": true, "t": 95}
+          ]}
+        ];
+        </script>
+        </body></html>
+        """
+        _, _, _, queues, _ = parse_home_metadata(fadata_html)
+        fleet_jobs = [q for q in queues if q.category == "fleet"]
+        # 2-leg Transport deduplicates to 1 active outbound leg + 1 Station + 1 Returning Recycle = 3 flights
+        self.assertEqual(len(fleet_jobs), 3)
+        by_name = {q.name: q for q in fleet_jobs}
+        tr_job = next(q for q in fleet_jobs if "Transport" in q.name)
+        st_job = next(q for q in fleet_jobs if "Station" in q.name)
+        rec_job = next(q for q in fleet_jobs if "Recycle" in q.name)
+        self.assertEqual(tr_job.origin_coords, "02:380:12")
+        self.assertEqual(tr_job.remaining_seconds, 120.0)
+        self.assertEqual(st_job.origin_coords, "02:380:12")
+        self.assertEqual(rec_job.origin_coords, "02:380:08")
+        self.assertTrue(by_name)
+
+        p_home = PlanetState(
+            planet_id=1,
+            name="Home",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=30,
+            fields_used=50,
+            fields_max=230,
+            resources=Resources(1000, 1000, 1000, 1000),
+            storage=Resources(100000, 100000, 100000, 100000),
+            energy=EnergyBalance(500, 200),
+        )
+        p_col_a = PlanetState(
+            planet_id=2,
+            name="ColonyA",
+            coords="02:380:08",
+            planet_type="normal",
+            temperature=20,
+            fields_used=20,
+            fields_max=320,
+            resources=Resources(1000, 1000, 1000, 1000),
+            storage=Resources(100000, 100000, 100000, 100000),
+            energy=EnergyBalance(200, 100),
+        )
+        p_col_b = PlanetState(
+            planet_id=3,
+            name="ColonyB",
+            coords="02:380:09",
+            planet_type="normal",
+            temperature=10,
+            fields_used=20,
+            fields_max=310,
+            resources=Resources(1000, 1000, 1000, 1000),
+            storage=Resources(100000, 100000, 100000, 100000),
+            energy=EnergyBalance(200, 100),
+        )
+        gs = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p_home, p_col_a, p_col_b),
+            active_planet_id=1,
+            active_queues=tuple(queues),
+        )
+
+        # Strictly per-planet slot attribution
+        self.assertEqual(count_in_flight_fleets_for_planet(gs, p_home), 2)
+        self.assertEqual(count_in_flight_fleets_for_planet(gs, p_col_a), 1)
+        self.assertEqual(count_in_flight_fleets_for_planet(gs, p_col_b), 0)
+        self.assertTrue(has_in_flight_fleet_from_planet(gs, p_home))
+        self.assertTrue(has_in_flight_fleet_from_planet(gs, p_col_a))
+        self.assertFalse(has_in_flight_fleet_from_planet(gs, p_col_b))
+
+        # Station destination extraction
+        self.assertEqual(extract_in_flight_station_dest_coords(gs), {"02:380:09"})
+
+        # Roundtrip through game_state_from_dict preserves origin_coords
+        from dataclasses import asdict
+        gs_rt = game_state_from_dict(asdict(gs))
+        self.assertEqual(count_in_flight_fleets_for_planet(gs_rt, p_home), 2)
+        self.assertEqual(count_in_flight_fleets_for_planet(gs_rt, p_col_a), 1)
+        self.assertEqual(count_in_flight_fleets_for_planet(gs_rt, p_col_b), 0)
+
+        # Legacy QueueJob without origin_coords falls back conservatively to counting on any planet
+        gs_legacy = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p_home, p_col_b),
+            active_planet_id=1,
+            active_queues=(QueueJob(category="fleet", name="Attack → 02:380:15", remaining_seconds=100.0, detail="Outbound"),),
+        )
+        self.assertEqual(count_in_flight_fleets_for_planet(gs_legacy, p_home), 1)
+        self.assertEqual(count_in_flight_fleets_for_planet(gs_legacy, p_col_b), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

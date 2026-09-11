@@ -228,6 +228,7 @@ export function geneShortTag(kind: unknown): string {
   if (k === "ATTACK") return "ATK";
   if (k === "SPY") return "SPY";
   if (k === "TRANSPORT") return "TRN";
+  if (k === "STATION") return "STN";
   if (k === "RECYCLE") return "REC";
   if (k === "COLONIZE") return "COL";
   if (k === "SCAN_GALAXY") return "SCN";
