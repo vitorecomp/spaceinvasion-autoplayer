@@ -22,8 +22,10 @@ cookies.json
 chromedriver*
 geckodriver*
 
-# Local strategy overrides (copy from config.example.yaml)
+# Local strategy overrides (copy from config.example.yaml) & notebook run outputs
 config.yaml
+notebooks/metadata/config_optimizer_result.json
+notebooks/metadata/full_planner_path.txt
 
 # Runtime SQLite databases, backups, logs & sidecar stores (never committed)
 state/

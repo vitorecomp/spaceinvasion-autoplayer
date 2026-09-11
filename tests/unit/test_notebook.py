@@ -1647,6 +1647,15 @@ FULL_PLANNER_METADATA_FILES = (
 FULL_PLANNER_DATA_SECTIONS = [
     "1.1", "1.6", "2.3", "3", "4", "5", "6", "6.1", "6.2", "6.3", "6.4", "7.2", "7.3", "8.1", "8.2", "9",
 ]
+# Section 11, the path to the saved configuration, follows the print cells. Its cells print their own data,
+# except 11.1, which only sets the meta parameters that 11.2 prints.
+FULL_PLANNER_PATH_SECTIONS = ["11.1", "11.2", "11.3", "11.4", "11.5", "11.6", "11.7", "11.8"]
+# The only file that full_planner.ipynb writes: the actions of the best path as text, in its METADATA_DIR.
+FULL_PLANNER_PATH_FILE = "full_planner_path.txt"
+# What Section 11 has in common with the optimizer cells of config_optimizer.ipynb, character for character.
+FULL_PLANNER_SHARED_WITH_OPTIMIZER = {
+    "WAREHOUSE_KEYS", "PRODUCTION_FLOW_KEYS", "building_level_flows", "warehouse_level_for",
+}
 # requirements.txt distributions whose import name differs from the distribution name.
 REQUIREMENT_IMPORT_NAMES = {"python-dotenv": "dotenv", "beautifulsoup4": "bs4"}
 
@@ -1878,8 +1887,337 @@ def _run_full_planner(
     return ns, stdout, new_names
 
 
+def _path_section_test_parameters() -> dict[str, object]:
+    """Section 11 settings of the test runs: a genetic algorithm small enough to keep the runs short."""
+    return {"PATH_GA_POPULATION_SIZE": 4, "PATH_GA_GENERATIONS": 1}
+
+
+def _save_configuration_for(workspace: Path, metadata_dir: Path, overrides: dict[str, object] | None = None) -> Path:
+    """Run config_optimizer.ipynb on `workspace`, so that `metadata_dir` holds the configuration that Section 11
+    of full_planner.ipynb reads for that workspace. Returns the saved file."""
+    cells = [
+        cell
+        for cell in json.loads(CONFIG_OPTIMIZER_PATH.read_text(encoding="utf-8"))["cells"]
+        if cell.get("cell_type") == "code"
+    ]
+    _run_config_optimizer(
+        cells, workspace, metadata_dir, overrides={"GA_POPULATION_SIZE": 60, "GA_GENERATIONS": 40, **(overrides or {})}
+    )
+    return metadata_dir / CONFIG_OPTIMIZER_RESULT_FILE
+
+
+def _catalog_planet_income(
+    levels: dict[str, int], temperature: int, mining: int, energy_tech: int, solar_cells: int, speed: float
+) -> tuple[float, float, float, float, float]:
+    """What a planet makes per hour, worked out from the catalog rows and the rules of the game alone.
+
+    Returns `(pig iron mined, pig iron left while the furnace runs, metal while the furnace runs, kryptonite,
+    spice)`. Nothing of the notebook is used: this is the yardstick for its production model.
+    """
+    pig = kryptonite = spice = metal = pig_used = spice_used = produced = used = 0.0
+    for key, level in levels.items():
+        building_id = int(key[1:])
+        if building_id > 6 or level <= 0:
+            continue
+        row = game_data.BUILDING_BY_ID[building_id]["levels"][level]
+        energy = float(row.get("energy") or 0.0)
+        if energy > 0.0:
+            produced += energy * (1.0 + 0.01 * energy_tech)
+        else:
+            used -= energy
+        if building_id <= 4:
+            if row.get("prod_by_temp"):
+                made = float(game_data.interpolate_temp_value(row["prod_by_temp"], temperature))
+            else:
+                made = float(row.get("prod", 0.0))
+            made *= speed * (1.0 if building_id == 2 else 1.0 + 0.02 * mining)
+            if building_id == 1:
+                pig += made
+            elif building_id == 2:
+                metal += made
+                pig_used += speed * float(row.get("pig_iron_used") or 0.0)
+            elif building_id == 3:
+                kryptonite += made
+            else:
+                spice += made
+        spice_used += float(row.get("spice_used") or 0.0)
+    if solar_cells:
+        table = game_data.SHIPS["solar-cells"]["solar_cell_energy_by_temp"]
+        per_cell = game_data.interpolate_temp_value(table, temperature)
+        produced += solar_cells * float(per_cell) * (1.0 + 0.01 * energy_tech)
+    power = min(1.0, produced / used) if used > 0.0 else 1.0
+    mined = pig * power
+    wanted = pig_used * power
+    smelting = min(1.0, mined / wanted) if wanted > 0.0 else 1.0
+    return mined, mined - wanted * smelting, metal * power * smelting, kryptonite * power, spice * power - spice_used
+
+
+def _path_rule_violations(
+    problem: dict,
+    attack_income: dict[str, float],
+    run: dict,
+    *,
+    slot_attack_income: dict[str, float] | None = None,
+    fleet_command_center_level: int | None = None,
+    spare_percent: dict[str, float] | None = None,
+    reward_weeks: int = 26,
+    weekly_discount: float = 0.90,
+    limit: int = 12,
+) -> list[str]:
+    """Replay a simulated path (either `horizon` or `reached`) and list every rule or reward mismatch."""
+    resources = ("pig_iron", "metal", "kryptonite", "spice")
+    warehouses = ("b11", "b12", "b13", "b14")
+    steps, planets = problem["steps"], problem["planets"]
+    speed = float(problem["speedup_factor"])
+    attack = [float(attack_income[resource]) for resource in resources]
+    slot_attack = [float((slot_attack_income or {}).get(resource, 0.0)) for resource in resources]
+    keep = [1.0 - float((spare_percent or {}).get(resource, 0.0)) / 100.0 for resource in resources]
+    fixed_cc = None if fleet_command_center_level is None else int(fleet_command_center_level)
+    start, end = run["start"], run["end"]
+    stop_hour = float(run["stopped_at_hours"])
+    horizon_hours = 168.0 * int(reward_weeks)
+    found: list[str] = []
+
+    def label(step: int) -> str:
+        details = steps[step]
+        where = planets[details["planet"]]["coords"] if details["planet"] >= 0 else "account"
+        return f"#{step} {details['kind']} {details['name']} {details['level_from']}->{details['level_to']} ({where})"
+
+    if run["status"] not in ("reached", "horizon"):
+        return [f"the path is {run['status']}"]
+    if run["status"] == "reached":
+        missing = [label(step) for step in range(len(steps)) if start[step] is None or end[step] is None]
+        if missing:
+            return [f"{len(missing)} steps never ran, for example {missing[0]}"]
+        if abs(max(end, default=0.0) - run["hours"]) > 1e-9 * max(1.0, run["hours"]):
+            found.append(f"hours is {run['hours']}, the last step ends at {max(end)}")
+    else:
+        late = [label(step) for step in run["order"] if start[step] is None or float(start[step]) >= stop_hour]
+        if late:
+            found.append(f"steps started at or after horizon {stop_hour}: {late[0]}")
+
+    levels = [dict(planet["levels"]) for planet in planets]
+    research = dict(problem["research_levels"])
+    solar = [int(planet["solar_cells"]) for planet in planets]
+    founded = [bool(planet["founded"]) for planet in planets]
+    fields = [sum(planet_levels.values()) for planet_levels in levels]
+    stock = [float(amount) for amount in problem["start_stock"]]
+    busy: dict[int, int] = {}
+    started = [False] * len(steps)
+    ended = [False] * len(steps)
+    before: dict[int, int] = {}
+    chains: dict[tuple, list[int]] = {}
+    for details in steps:
+        chains.setdefault(tuple(details["chain"]), []).append(details["id"])
+    for members in chains.values():
+        before.update(zip(members[1:], members))
+
+    def active_slots() -> int:
+        return sum(
+            1 + (levels[idx].get("b10", 0) if fixed_cc is None else fixed_cc)
+            for idx in range(len(planets))
+            if founded[idx]
+        )
+
+    def income(furnace_on: bool) -> list[float]:
+        slots = active_slots()
+        gross = [attack[pos] + slots * slot_attack[pos] for pos in range(4)]
+        for index, planet in enumerate(planets):
+            if founded[index]:
+                mined, left, metal, kryptonite, spice = _catalog_planet_income(
+                    levels[index], int(planet["temperature_c"]), research["r1"], research["r2"], solar[index], speed
+                )
+                gross[0] += left if furnace_on else mined
+                gross[1] += metal if furnace_on else 0.0
+                gross[2] += kryptonite
+                gross[3] += spice
+        return [keep[pos] * gross[pos] for pos in range(4)]
+
+    def steady_spice_eq_per_hour() -> float:
+        rates = (1.0 / 6.0, 1.0 / 2.5, 1.0 / 3.0, 1.0)
+        total = 0.0
+        for index, planet in enumerate(planets):
+            if founded[index]:
+                _, left, metal, kryptonite, spice = _catalog_planet_income(
+                    levels[index], int(planet["temperature_c"]), research["r1"], research["r2"], solar[index], speed
+                )
+                total += (
+                    keep[0] * left * rates[0]
+                    + keep[1] * metal * rates[1]
+                    + keep[2] * kryptonite * rates[2]
+                    + keep[3] * spice * rates[3]
+                )
+        return total
+
+    weekly_spice = [0.0] * int(reward_weeks)
+
+    def accrue_spice(t0: float, dt: float) -> None:
+        if dt <= 0.0 or t0 >= horizon_hours:
+            return
+        t1 = min(horizon_hours, t0 + dt)
+        rate = steady_spice_eq_per_hour()
+        w = int(t0 // 168.0)
+        cur = t0
+        while cur < t1 and w < int(reward_weeks):
+            nxt = min(t1, (w + 1) * 168.0)
+            if nxt > cur:
+                weekly_spice[w] += rate * (nxt - cur)
+            cur = nxt
+            w += 1
+
+    def duration(step: int) -> float:
+        details = steps[step]
+        if details["kind"] == "colonize":
+            return details["base_hours"]
+        if details["kind"] == "research":
+            return details["base_hours"] / max(1.0, (levels[problem["lab_planet"]].get("b8", 0) + 1) * speed)
+        here = levels[details["planet"]]
+        accelerator = 2 ** min(here.get("b17", 0), 40)
+        if details["kind"] == "ships":
+            return details["base_hours"] / max(1.0, max(1, here.get("b9", 0)) * accelerator * speed)
+        return details["base_hours"] / max(1.0, (here.get("b7", 0) + 1) * accelerator * speed)
+
+    def obstacle(step: int) -> str | None:
+        details = steps[step]
+        planet = details["planet"]
+        if step in before and not ended[before[step]]:
+            return "the level before it is not finished"
+        if planet >= 0 and details["kind"] != "colonize" and not founded[planet]:
+            return "its planet is not founded"
+        if details["queue"] >= 0 and details["queue"] in busy:
+            return f"its queue is busy with {label(busy[details['queue']])}"
+        for owner, key, level in details["requires"]:
+            have = research.get(key, 0) if owner < 0 else levels[owner].get(key, 0)
+            if have < level:
+                return f"it needs {key} {level} and there is {have}"
+        paying = levels[details["pay_planet"]]
+        for position, amount in enumerate(details["cost"]):
+            capacity = 100_000 * 2 ** paying.get(warehouses[position], 0)
+            if amount > capacity:
+                return f"its {resources[position]} cost {amount:.6g} exceeds the warehouse capacity {capacity:.6g}"
+        if details["kind"] == "build" and fields[planet] >= int(planets[planet]["fields_max"]):
+            return "its planet has no free field"
+        return None
+
+    def short_of(step: int, clock: float) -> dict[str, float]:
+        unseen = 16.0 * math.ulp(max(clock, 1.0))
+        on, off = income(True), income(False)
+        cost = steps[step]["cost"]
+        return {
+            resources[position]: cost[position] - stock[position]
+            for position in range(4)
+            if cost[position] - stock[position]
+            > 1e-9 * cost[position] + 1e-6 + unseen * max(on[position], off[position])
+        }
+
+    spans = sorted(run["smelting_spans"])
+    span = 0
+    starts_at: dict[float, list[int]] = {}
+    ends_at: dict[float, list[int]] = {}
+    for step in run["order"]:
+        starts_at.setdefault(float(start[step]), []).append(step)
+        if end[step] is not None and float(end[step]) <= stop_hour:
+            ends_at.setdefault(float(end[step]), []).append(step)
+    moments = sorted(
+        {
+            0.0,
+            stop_hour,
+            *starts_at,
+            *ends_at,
+            *(hour for pair in spans for hour in pair if hour <= stop_hour),
+        }
+    )
+    clock = 0.0
+    for moment in moments:
+        if moment > clock:
+            accrue_spice(clock, moment - clock)
+            while span < len(spans) and spans[span][1] <= clock:
+                span += 1
+            rates = income(span < len(spans) and spans[span][0] <= clock < spans[span][1])
+            for position in range(4):
+                stock[position] += rates[position] * (moment - clock)
+            clock = moment
+        to_start = list(starts_at.get(moment, []))
+        to_end = list(ends_at.get(moment, []))
+        moved = True
+        while moved and (to_start or to_end):
+            moved = False
+            for step in list(to_end):
+                if not started[step]:
+                    continue
+                to_end.remove(step)
+                moved = True
+                ended[step] = True
+                details = steps[step]
+                if details["queue"] >= 0:
+                    busy.pop(details["queue"], None)
+                planet = details["planet"]
+                if details["kind"] == "research":
+                    research[details["key"]] = details["level_to"]
+                elif details["kind"] == "colonize":
+                    founded[planet] = True
+                elif details["kind"] == "ships":
+                    if details["key"] == "s9":
+                        solar[planet] += details["level_to"]
+                else:
+                    if details["level_to"] > 0:
+                        levels[planet][details["key"]] = details["level_to"]
+                    else:
+                        levels[planet].pop(details["key"], None)
+                    if details["kind"] == "demolish":
+                        fields[planet] -= 1
+            for step in list(to_start):
+                if obstacle(step) is not None or short_of(step, clock):
+                    continue
+                to_start.remove(step)
+                moved = True
+                started[step] = True
+                details = steps[step]
+                expected = duration(step)
+                took = end[step] - start[step]
+                if abs(took - expected) > 1e-9 * max(1.0, expected, start[step]):
+                    found.append(f"{label(step)} took {took:.9g} h, the game gives {expected:.9g} h")
+                for position in range(4):
+                    stock[position] = max(0.0, stock[position] - details["cost"][position])
+                if details["queue"] >= 0:
+                    busy[details["queue"]] = step
+                if details["kind"] == "build":
+                    fields[details["planet"]] += 1
+        for step in to_start:
+            reason = obstacle(step) or f"the stock is short of {short_of(step, clock)}"
+            found.append(f"{label(step)} started at {moment:.9g} h although {reason}")
+            started[step] = True
+        for step in to_end:
+            found.append(f"{label(step)} ended at {moment:.9g} h before it started")
+        if len(found) >= limit:
+            return found[:limit]
+
+    if clock < horizon_hours:
+        accrue_spice(clock, horizon_hours - clock)
+    expected_disc = sum((weekly_discount**w) * weekly_spice[w] for w in range(int(reward_weeks)))
+    if abs(expected_disc - float(run["discounted_reward"])) > 1e-6 * max(1.0, expected_disc):
+        found.append(f"discounted_reward is {run['discounted_reward']}, replay gives {expected_disc}")
+    if levels != run["final_levels"]:
+        found.append("final_levels at stop_hour does not match replay")
+    if research != run["final_research"]:
+        found.append("final_research at stop_hour does not match replay")
+    if founded != run["final_founded"]:
+        found.append("final_founded at stop_hour does not match replay")
+    if active_slots() != int(run["final_fleet_slots"]):
+        found.append(f"final_fleet_slots is {run['final_fleet_slots']}, replay gives {active_slots()}")
+    if run["status"] == "reached":
+        for index, planet in enumerate(planets):
+            if levels[index] != {key: level for key, level in planet["target_levels"].items() if level > 0}:
+                found.append(f"{planet['coords']} does not end with the levels of the configuration")
+            if not founded[index]:
+                found.append(f"{planet['coords']} was never founded")
+        if research != problem["research_target"]:
+            found.append("the research levels at the end are not the planned ones")
+    return found[:limit]
+
+
 class TestFullPlannerNotebook(unittest.TestCase):
-    """`notebooks/full_planner.ipynb`: layout rules, static metadata, generated data and printouts."""
+    """`notebooks/full_planner.ipynb`: layout rules, static metadata, generated data, printouts and the path section."""
 
     _assert_cell_ast_safe = TestExperimentationNotebook._assert_cell_ast_safe
 
@@ -1892,6 +2230,8 @@ class TestFullPlannerNotebook(unittest.TestCase):
         # Section 10 holds the print cells: the last cells of the notebook.
         cls.print_idxs = [idx for idx, cell in enumerate(cls.code_cells) if cls._is_print_cell(cell)]
         cls.first_print_idx = cls.print_idxs[0]
+        # Section 11 holds the path search: the code cells after the last print cell.
+        cls.path_idxs = list(range(cls.print_idxs[-1] + 1, len(cls.code_cells)))
         cls.universe_research_cell_idx = next(
             idx
             for idx, pos in enumerate(cls.code_positions)
@@ -1914,7 +2254,35 @@ class TestFullPlannerNotebook(unittest.TestCase):
         )
         cls._attack_run_cache = None
         cls.attack_workspace_before_after = None
+        cls.attack_metadata_before_after = None
         cls._other_runs: dict[Path, tuple[dict, dict[int, str], dict[int, set[str]]]] = {}
+        cls._metadata_root = Path(tmp.name) / "saved_configurations"
+        cls._metadata_dirs: dict[Path, Path] = {}
+        cls.repo_metadata_before = cls._workspace_fingerprint(FULL_PLANNER_METADATA_DIR)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        # Section 11 reads a saved configuration; every test run takes it from its own copy of the folder.
+        if cls._workspace_fingerprint(FULL_PLANNER_METADATA_DIR) != cls.repo_metadata_before:
+            raise AssertionError("A test run changed notebooks/metadata/")
+
+    @classmethod
+    def _metadata_for(cls, workspace: Path) -> Path:
+        """A copy of notebooks/metadata/ that holds the configuration config_optimizer.ipynb saves for `workspace`.
+
+        The copy leaves out the two files that the notebooks write: the configuration is saved again for
+        `workspace`, and the path text has to come from the run of the test itself.
+        """
+        if workspace not in cls._metadata_dirs:
+            meta_dir = cls._metadata_root / workspace.name / "metadata"
+            shutil.copytree(
+                FULL_PLANNER_METADATA_DIR,
+                meta_dir,
+                ignore=shutil.ignore_patterns(CONFIG_OPTIMIZER_RESULT_FILE, FULL_PLANNER_PATH_FILE),
+            )
+            _save_configuration_for(workspace, meta_dir)
+            cls._metadata_dirs[workspace] = meta_dir
+        return cls._metadata_dirs[workspace]
 
     @staticmethod
     def _is_print_cell(cell: dict) -> bool:
@@ -1932,9 +2300,14 @@ class TestFullPlannerNotebook(unittest.TestCase):
     def _attack_run(cls) -> tuple[dict, dict[int, str], dict[int, set[str]]]:
         """The notebook executed once on the workspace with three attacks (cached for the whole class)."""
         if cls._attack_run_cache is None:
+            meta_dir = cls._metadata_for(cls.attack_workspace)
             before = cls._workspace_fingerprint(cls.attack_workspace)
-            run = _run_full_planner(cls.code_cells, cls.attack_workspace)
+            meta_before = cls._workspace_fingerprint(meta_dir)
+            run = _run_full_planner(
+                cls.code_cells, cls.attack_workspace, metadata_dir=meta_dir, overrides=_path_section_test_parameters()
+            )
             cls.attack_workspace_before_after = (before, cls._workspace_fingerprint(cls.attack_workspace))
+            cls.attack_metadata_before_after = (meta_before, cls._workspace_fingerprint(meta_dir))
             cls._attack_run_cache = run
         return cls._attack_run_cache
 
@@ -1942,7 +2315,12 @@ class TestFullPlannerNotebook(unittest.TestCase):
     def _cached_run(cls, workspace: Path) -> tuple[dict, dict[int, str], dict[int, set[str]]]:
         """The notebook executed once on another workspace of the class (cached like `_attack_run`)."""
         if workspace not in cls._other_runs:
-            cls._other_runs[workspace] = _run_full_planner(cls.code_cells, workspace)
+            cls._other_runs[workspace] = _run_full_planner(
+                cls.code_cells,
+                workspace,
+                metadata_dir=cls._metadata_for(workspace),
+                overrides=_path_section_test_parameters(),
+            )
         return cls._other_runs[workspace]
 
     def _section_cells(self) -> list[tuple[str, int, int]]:
@@ -2009,7 +2387,8 @@ class TestFullPlannerNotebook(unittest.TestCase):
                     ln.lstrip().startswith(("%", "!")),
                     f"Only the first code cell may hold shell or magic lines: {ln!r}",
                 )
-            self._assert_cell_ast_safe(src, f"full_planner code cell {idx}")
+            if idx != len(self.code_cells) - 1:  # the last cell saves the path as text (checked below)
+                self._assert_cell_ast_safe(src, f"full_planner code cell {idx}")
 
         # Section 0: the first code cell only installs packages.
         pip_lines = [
@@ -2080,12 +2459,54 @@ class TestFullPlannerNotebook(unittest.TestCase):
             self.assertIsInstance(print_body[0].value, ast.Call)
             self.assertEqual(print_body[0].value.func.id, "print_section_data")
 
-        # Section 10 is the last section: the notebook ends with its last print cell. The search for the best
-        # empire configuration has its own notebook, so no cell here sets its meta parameters.
-        self.assertEqual(print_positions[-1], len(self.cells) - 1)
-        self.assertEqual(self.print_idxs[-1], len(self.code_cells) - 1)
+        # The search for the best empire configuration has its own notebook, so no cell here sets its meta
+        # parameters.
         for cell in self.code_cells[1:]:
             self.assertNotRegex(_cell_source(cell), r"(?m)^(TARGET_SHIP_KEY|GA_RANDOM_SEED)\b")
+
+        # Section 11 is the last section: the path to the saved configuration, one described cell per step.
+        self.assertEqual(
+            [_last_heading_number(_cell_source(self.cells[self.code_positions[idx] - 1])) for idx in self.path_idxs],
+            FULL_PLANNER_PATH_SECTIONS,
+        )
+        self.assertEqual(self.code_positions[self.path_idxs[-1]], len(self.cells) - 1)
+        self.assertRegex(
+            _cell_source(self.cells[self.code_positions[self.path_idxs[0]] - 1]),
+            r"(?m)^## 11\. Best Discounted Weekly Path Toward the Saved Configuration$",
+        )
+        # Its first cell only sets the meta parameters: plain values, one per statement, and nothing else.
+        parameters = ast.parse(_cell_source(self.code_cells[self.path_idxs[0]])).body
+        self.assertGreater(len(parameters), 15)
+        for statement in parameters:
+            self.assertIsInstance(statement, ast.AnnAssign)
+            self.assertTrue(statement.target.id.startswith("PATH_"))
+            ast.literal_eval(statement.value)
+        # Every other path cell ends with its printout, titled with its own section.
+        for idx, section in zip(self.path_idxs[1:], FULL_PLANNER_PATH_SECTIONS[1:]):
+            last = ast.parse(_cell_source(self.code_cells[idx])).body[-1]
+            self.assertIsInstance(last, ast.Expr)
+            self.assertEqual(last.value.func.id, "print_section_data")
+            self.assertIn(f"Section {section} data: ", ast.unparse(last.value.args[0]))
+        # Section 11.8, the last cell, is the only one that writes: one write_text, into the notebook's METADATA_DIR.
+        save_tree = ast.parse(_cell_source(self.code_cells[-1]))
+        calls = [node for node in ast.walk(save_tree) if isinstance(node, ast.Call)]
+        self.assertNotIn("open", [node.func.id for node in calls if isinstance(node.func, ast.Name)])
+        writes = [
+            ast.unparse(node.func)
+            for node in calls
+            if isinstance(node.func, ast.Attribute) and node.func.attr in FORBIDDEN_WRITE_ATTRS | {"open"}
+        ]
+        self.assertEqual(writes, ["path.write_text"])
+        saved_to = next(
+            node
+            for node in save_tree.body
+            if isinstance(node, ast.AnnAssign) and node.target.id == "PATH_ACTIONS_PATH"
+        )
+        self.assertEqual(ast.unparse(saved_to.value), "METADATA_DIR / PATH_ACTIONS_FILE_NAME")
+        self.assertRegex(
+            _cell_source(self.code_cells[self.path_idxs[0]]),
+            rf'(?m)^PATH_ACTIONS_FILE_NAME: str = "{re.escape(FULL_PLANNER_PATH_FILE)}"$',
+        )
 
     def test_notebook_is_saved_without_outputs(self) -> None:
         # The outputs of a run print game data: planets, coordinates, resources, the research of other players.
@@ -2128,6 +2549,7 @@ class TestFullPlannerNotebook(unittest.TestCase):
                 str(FULL_PLANNER_PATH),
                 str(self.cold_workspace),
                 json.dumps(left_out),
+                str(self._metadata_for(self.cold_workspace)),
             ],
             capture_output=True,
             text=True,
@@ -2154,7 +2576,13 @@ class TestFullPlannerNotebook(unittest.TestCase):
         self.assertEqual(after, before, "Running the notebook must not create or change a file in its workspace")
         self.assertFalse(LEGACY_ATTACK_JSON_PATH.exists())
         self.assertEqual(ns["LIVE_DB_PATH"], self.attack_workspace.resolve() / "state" / "spaceinvasion.db")
-        self.assertEqual(ns["METADATA_DIR"], FULL_PLANNER_METADATA_DIR.resolve())
+        # The run read its static metadata and the saved configuration from a copy. It wrote one file there,
+        # the path as text, and changed nothing else.
+        self.assertEqual(ns["METADATA_DIR"], self._metadata_for(self.attack_workspace))
+        meta_before, meta_after = self.attack_metadata_before_after
+        self.assertEqual(sorted(set(meta_after) - set(meta_before)), [FULL_PLANNER_PATH_FILE])
+        self.assertEqual({name: meta_after[name] for name in meta_before}, meta_before)
+        self.assertEqual(self._workspace_fingerprint(FULL_PLANNER_METADATA_DIR), self.repo_metadata_before)
 
         scratch_globals = sorted(
             name
@@ -2357,8 +2785,10 @@ class TestFullPlannerNotebook(unittest.TestCase):
         default_ns, _, _ = self._attack_run()
         with tempfile.TemporaryDirectory(prefix="si_fp_meta_") as tmp:
             meta_dir = self._edited_metadata_dir(Path(tmp), edits)
-            ns, _, _ = _run_full_planner(self.code_cells, self.attack_workspace, metadata_dir=meta_dir)
-            cold_ns, _, _ = _run_full_planner(self.code_cells, self.cold_workspace, metadata_dir=meta_dir)
+            # The edits change the roster, so the saved configuration no longer applies: stop before Section 11.
+            last = self.path_idxs[0] - 1
+            ns, _, _ = _run_full_planner(self.code_cells, self.attack_workspace, metadata_dir=meta_dir, last_cell=last)
+            cold_ns, _, _ = _run_full_planner(self.code_cells, self.cold_workspace, metadata_dir=meta_dir, last_cell=last)
 
         buildings = ns["buildings_catalog_df"].set_index("key")
         self.assertEqual(buildings.loc["b1", "category"], "probe_category")
@@ -3037,7 +3467,12 @@ class TestFullPlannerNotebook(unittest.TestCase):
     def test_cold_start_on_an_empty_database(self) -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
-            cold_ns, cold_stdout, _ = _run_full_planner(self.code_cells, self.cold_workspace)
+            cold_ns, cold_stdout, _ = _run_full_planner(
+                self.code_cells,
+                self.cold_workspace,
+                metadata_dir=self._metadata_for(self.cold_workspace),
+                overrides=_path_section_test_parameters(),
+            )
         self.assertEqual(cold_ns["telemetry_source"], "cold_start")
         self.assertEqual(cold_ns["ATTACK_SIM_PARAMS"]["attempts"], 0)
         self.assertEqual(cold_ns["attack_success_rate"], 0.0)
@@ -3087,6 +3522,47 @@ class TestFullPlannerNotebook(unittest.TestCase):
         # Nothing is known about anybody's research on an empty account.
         self.assertEqual(int(cold_ns["universe_research_df"]["universe_max_level"].sum()), 0)
         self.assertEqual(set(cold_ns["universe_research_df"]["max_source"]), {"none"})
+
+        # Section 11 on an empty account: no planet, no stock, no loot. Nothing can be paid, and the section
+        # says so instead of failing.
+        self.assertEqual(cold_ns["PATH_TARGET_SUMMARY"]["planets_to_found"], 11)
+        self.assertEqual(set(cold_ns["ATTACK_INCOME_SUMMARY"]["income_per_hour"].values()), {0.0})
+        self.assertEqual(set(cold_ns["path_strategies_df"]["status"]), {"stuck"})
+        self.assertEqual(cold_ns["PATH_SEARCH_SUMMARY"]["why"], "no strategy can start any step")
+        self.assertFalse(cold_ns["PATH_SEARCH_SUMMARY"]["genetic_algorithm_ran"])
+        cold_summary = cold_ns["BEST_PATH_SUMMARY"]
+        self.assertEqual((cold_summary["status"], cold_summary["time"], cold_summary["discounted_reward"]), ("stuck", "never", 0.0))
+        self.assertEqual((cold_summary["steps_started"], cold_summary["waiting_for"]), (0, "Colony ship 1"))
+        self.assertEqual(cold_summary["colonies_founded"], 0)
+        self.assertFalse(cold_summary["ends_with_the_output_of_the_configuration"])
+        self.assertEqual(cold_ns["best_path_steps_df"].shape, (0, 17))
+        self.assertEqual(list(cold_ns["best_path_steps_df"].columns), list(ns["best_path_steps_df"].columns))
+        self.assertTrue((cold_ns["best_path_output_df"]["reached_after"] == "never").all())
+        self.assertIn(
+            f"the configuration is not reached, the path stops after 0 of {len(cold_ns['PATH_PROBLEM']['steps'])} steps",
+            cold_stdout[self.path_idxs[-2]],
+        )
+        self.assertGreater(cold_ns["PATH_LOWER_BOUND_HOURS"], 0.0)
+        cold_text = (self._metadata_for(self.cold_workspace) / FULL_PLANNER_PATH_FILE).read_text(encoding="utf-8")
+        cold_lines = cold_text.split("\n")
+        self.assertTrue(cold_lines[5].startswith("Attacks & spare: 0 -> 0 fleet slots"))
+        self.assertEqual(
+            cold_lines[7:9] + cold_lines[11:],
+            [
+                f"Result: NOT reached. The path stops after 0 of {len(cold_ns['PATH_PROBLEM']['steps'])} actions: "
+                "the empire can never pay for Colony ship 1",
+                "Colonies reached: 0/11 founded",
+                f"Actions: 0 within {cold_ns['PATH_REWARD_WEEKS']} weeks, in the order in which they start. "
+                "Times count from the moment this file was written.",
+                "Planets are named by their coordinates. "
+                'EMPTY:nn is an empty colony slot: "found the colony" comes first there.',
+                "",
+                "",
+            ],
+        )
+        self.assertTrue(cold_lines[9].startswith("Max building levels reached: "))
+        self.assertTrue(cold_lines[10].startswith("Research levels reached: "))
+        self.assertEqual(cold_ns["PATH_ACTIONS_SUMMARY"]["first_action"], None)
 
         # A missing database file is a cold start too.
         missing_db = self.cold_workspace / "state" / "missing.db"
@@ -3296,7 +3772,14 @@ class TestFullPlannerNotebook(unittest.TestCase):
         ns, stdout, new_names = self._attack_run()
         sections = self._section_cells()
         self.assertEqual([section for section, _, _ in sections], FULL_PLANNER_DATA_SECTIONS)
-        all_sections = sections
+        # Section 11 prints its own data: every cell after its meta parameters, which the next cell prints.
+        path_cells = dict(zip(FULL_PLANNER_PATH_SECTIONS, self.path_idxs))
+        self.assertEqual(stdout[path_cells["11.1"]], "", "The meta parameter cell must print nothing")
+        all_sections = sections + [
+            (section, path_cells["11.1"] if section == "11.2" else idx, idx)
+            for section, idx in path_cells.items()
+            if section != "11.1"
+        ]
 
         printed_text = "".join(stdout[print_idx] for _, _, print_idx in all_sections)
         self.assertNotIn("...", printed_text, "Printouts must never be truncated")
@@ -3313,18 +3796,23 @@ class TestFullPlannerNotebook(unittest.TestCase):
                 section,
                 f"Print cell {print_idx} is titled Section {title_section} but prints the data of Section {section}",
             )
-            self.assertRegex(
-                _cell_source(self.cells[self.code_positions[print_idx] - 1]),
-                rf"(?m)^### 10\.\d+ Section {re.escape(section)} Data\b",
-                f"The heading above print cell {print_idx} must name Section {section}",
-            )
+            if print_idx not in self.path_idxs:
+                self.assertRegex(
+                    _cell_source(self.cells[self.code_positions[print_idx] - 1]),
+                    rf"(?m)^### 10\.\d+ Section {re.escape(section)} Data\b",
+                    f"The heading above print cell {print_idx} must name Section {section}",
+                )
             section_out[section] = out
             for name, block_lines in blocks.items():
                 self.assertNotIn(name, printed_blocks, "Each object is printed exactly once")
                 printed_blocks[name] = block_lines
 
-            # Every data name the matching cell defined must appear in its printout.
-            section_names = sorted(name for name in new_names[data_idx] if _is_generated_data(name, ns[name]))
+            # Every data name the matching cell defined must appear in its printout. A path cell prints what
+            # it generated itself, and Section 11.2 also the meta parameters of Section 11.1.
+            defining = {data_idx, print_idx} if print_idx in self.path_idxs else {data_idx}
+            section_names = sorted(
+                name for idx in defining for name in new_names[idx] if _is_generated_data(name, ns[name])
+            )
             self.assertGreater(len(section_names), 0)
             for name in section_names:
                 self.assertRegex(
@@ -3449,6 +3937,616 @@ class TestFullPlannerNotebook(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # notebooks/config_optimizer.ipynb
 # ---------------------------------------------------------------------------
+    # ------------------------------------------------------------------ Section 11: the W-week discounted path
+
+    def _tiny_path(
+        self,
+        ns: dict,
+        levels: dict[str, int],
+        target_levels: dict[str, int],
+        *,
+        stock: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0),
+        fields_max: int = 300,
+        strategy: object | None = None,
+        demolition_time_factor: float = 1.0,
+        slot_attack_income: dict[str, float] | None = None,
+        fleet_command_center_level: int | None = None,
+        spare_percent: dict[str, float] | None = None,
+        reward_weeks: int = 26,
+        weekly_discount: float = 0.90,
+        horizon_hours: float | None = None,
+    ) -> tuple[dict, dict, object]:
+        """Simulate a path problem of one planet, built by hand: `(problem, run, simulator)`."""
+        planet = dataclasses.replace(
+            ns["empty_colony_slot"](1, fields_max, 0),
+            planet_id=4242,
+            coords="09:099:09",
+            name="Tiny",
+            buildings=dict(levels),
+            resources=Resources(*(int(amount) for amount in stock)),
+        )
+        context = ns["planet_param_context"](ns["GAME_PARAM_CONTEXT"], 1, planet, is_empty_slot=False)
+        target = {
+            "schema_version": 1,
+            "meta_parameters": {"MIN_FLEET_PER_PLANET": {}},
+            "planned_research_levels": {},
+            "planets": [
+                {
+                    "slot_index": 1,
+                    "coords": planet.coords,
+                    "planet_status": "colonized",
+                    "temperature_c": 0,
+                    "fields_max": fields_max,
+                    "is_central_planet": True,
+                    "pays_for_research": True,
+                    "buildings": [{"key": key, "target_level": level} for key, level in target_levels.items()],
+                    "production": {},
+                }
+            ],
+        }
+        problem = ns["build_path_problem"](
+            target, [planet], [context], [planet], {},
+            colony_founding_hours=0.0, demolition_time_factor=demolition_time_factor,
+        )
+        simulator = ns["EmpirePathSimulator"](
+            problem,
+            dict.fromkeys(ns["RESOURCE_KEYS"], 0.0),
+            slot_attack_income=slot_attack_income,
+            fleet_command_center_level=fleet_command_center_level,
+            spare_percent=spare_percent,
+            reward_weeks=reward_weeks,
+            weekly_discount=weekly_discount,
+        )
+        run = simulator.run(strategy or ns["PathStrategy"]("test", rule="cheapest"), horizon_hours=horizon_hours)
+        return problem, run, simulator
+
+    def test_path_section_reaches_the_saved_configuration_by_the_rules(self) -> None:
+        ns, stdout, _ = self._attack_run()
+        problem = ns["PATH_PROBLEM"]
+        steps = problem["steps"]
+        saved = json.loads((self._metadata_for(self.attack_workspace) / CONFIG_OPTIMIZER_RESULT_FILE).read_text())
+        weeks = int(ns["PATH_REWARD_WEEKS"])
+        discount = float(ns["PATH_WEEKLY_DISCOUNT"])
+        horizon_hours = 168.0 * weeks
+
+        # The problem: every level between the roster of today and the saved configuration, once.
+        self.assertEqual(ns["PATH_TARGET_PATH"], self._metadata_for(self.attack_workspace) / CONFIG_OPTIMIZER_RESULT_FILE)
+        self.assertTrue(ns["path_target_checks_df"]["same_planet"].all())
+        self.assertEqual(len(problem["planets"]), 11)
+        self.assertEqual([planet["founded"] for planet in problem["planets"]], [True] + [False] * 10)
+        expected_builds = expected_teardowns = 0
+        for entry, planet, state in zip(saved["planets"], problem["planets"], ns["empire_planet_states"]):
+            targets = {b["key"]: b["target_level"] for b in entry["buildings"] if b["target_level"] > 0}
+            self.assertEqual(planet["target_levels"], targets)
+            self.assertEqual(planet["levels"], {k: v for k, v in state.buildings.items() if v > 0})
+            for key in {*targets, *planet["levels"]}:
+                change = targets.get(key, 0) - planet["levels"].get(key, 0)
+                expected_builds += max(0, change)
+                expected_teardowns += max(0, -change)
+        kinds = ns["PATH_TARGET_SUMMARY"]["steps_by_kind"]
+        self.assertEqual((kinds["build"], kinds["demolish"]), (expected_builds, expected_teardowns))
+        self.assertGreater(expected_teardowns, 0, "The fixture must make the path tear levels down")
+        self.assertEqual(kinds["colonize"], 10)
+        self.assertEqual(sum(kinds.values()), len(steps))
+        for step in steps[:: max(1, len(steps) // 60)]:
+            if step["kind"] == "build":
+                cost = game_data.building_cost(int(step["key"][1:]), step["level_to"])
+                self.assertEqual(step["cost"], tuple(float(cost.get(r, 0)) for r in ns["RESOURCE_KEYS"]))
+                self.assertEqual(step["queue"], step["planet"])
+            elif step["kind"] == "demolish":
+                self.assertEqual(step["cost"], (0.0, 0.0, 0.0, 0.0))
+
+        # The production model ends where the configuration model says.
+        self.assertTrue(ns["path_final_output_df"]["matches_saved"].all())
+        self.assertEqual(len(ns["path_final_output_df"]), 11)
+
+        # Every simulated W-week path obeys the rules and weekly reward accounting.
+        fixed_income = ns["ATTACK_INCOME_SUMMARY"]["fixed_income_per_hour"]
+        slot_income = ns["ATTACK_INCOME_SUMMARY"]["income_per_slot_per_hour"]
+        cc_level = ns["PATH_FLEET_COMMAND_CENTER_LEVEL"]
+        spare_pct = ns["PATH_RESOURCE_SPARE_PERCENT"]
+        ceiling = ns["PATH_REWARD_UPPER_BOUND"]
+        self.assertGreater(ceiling, 0.0)
+        self.assertEqual(list(ns["PATH_RUNS"]), [strategy.name for strategy in ns["PATH_STRATEGIES"]])
+        self.assertEqual(len(ns["PATH_RUNS"]), 3)
+        for name, run in [*ns["PATH_RUNS"].items(), ("best", ns["BEST_PATH_RUN"])]:
+            self.assertEqual(
+                _path_rule_violations(
+                    problem,
+                    fixed_income,
+                    run,
+                    slot_attack_income=slot_income,
+                    fleet_command_center_level=cc_level,
+                    spare_percent=spare_pct,
+                    reward_weeks=weeks,
+                    weekly_discount=discount,
+                ),
+                [],
+                f"The path of {name!r} breaks a rule",
+            )
+            self.assertIn(run["status"], ("horizon", "reached"))
+            self.assertLessEqual(run["discounted_reward"], ceiling * (1.0 + 1e-12))
+            self.assertGreater(run["discounted_reward"], 0.0)
+            self.assertEqual(len(run["weekly_spice_eq"]), weeks)
+            for step in run["order"]:
+                self.assertLess(float(run["start"][step]), horizon_hours)
+
+        # Winning path beats or equals every named strategy on discounted weekly production.
+        best = ns["BEST_PATH_RUN"]
+        self.assertGreaterEqual(
+            best["discounted_reward"],
+            max(run["discounted_reward"] for run in ns["PATH_RUNS"].values()) * (1.0 - 1e-12),
+        )
+        # Discounted payback beats greedy cheapest-first on the multi-planet W-week problem.
+        self.assertGreater(
+            best["discounted_reward"],
+            ns["PATH_RUNS"]["cheapest step first"]["discounted_reward"],
+        )
+
+        # Weekly production table and factor levels table match the run.
+        summary = ns["BEST_PATH_SUMMARY"]
+        weekly_df = ns["best_path_weekly_df"]
+        self.assertEqual(len(weekly_df), weeks)
+        self.assertEqual(list(weekly_df["week"]), list(range(1, weeks + 1)))
+        np.testing.assert_allclose(
+            weekly_df["discount_weight"], [discount ** w for w in range(weeks)], rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            weekly_df["discounted_spice_eq"],
+            weekly_df["discount_weight"] * weekly_df["spice_eq"],
+            rtol=1e-12,
+        )
+        self.assertAlmostEqual(float(weekly_df["discounted_spice_eq"].sum()), best["discounted_reward"], places=5)
+        self.assertAlmostEqual(float(weekly_df["cumulative_discounted_spice_eq"].iloc[-1]), best["discounted_reward"], places=5)
+
+        levels_df = ns["best_path_levels_df"]
+        self.assertEqual(levels_df.iloc[0]["factor_kind"], "colonies")
+        self.assertEqual(int(levels_df.iloc[0]["reached_max_level"]), summary["colonies_founded"])
+        for row in levels_df[levels_df["factor_kind"] == "building"].itertuples(index=False):
+            expected_max = max((lv.get(row.key, 0) for lv in best["final_levels"]), default=0)
+            self.assertEqual(int(row.reached_max_level), expected_max)
+            self.assertEqual(summary["max_building_levels_reached"][row.name], f"{expected_max}/{int(row.target_max_level)}")
+        for row in levels_df[levels_df["factor_kind"] == "research"].itertuples(index=False):
+            expected_r = int(best["final_research"].get(row.key, 0))
+            self.assertEqual(int(row.reached_max_level), expected_r)
+            self.assertEqual(summary["research_levels_reached"][row.name], f"{expected_r}/{int(row.target_max_level)}")
+
+        # Steps table: only actions started within the W weeks, in causal start order.
+        path = ns["best_path_steps_df"]
+        self.assertEqual(len(path), len(best["order"]))
+        self.assertEqual(list(path["order"]), list(range(1, len(best["order"]) + 1)))
+        self.assertTrue(path["start_hours"].is_monotonic_increasing)
+        self.assertTrue((path["start_hours"] < horizon_hours).all())
+        np.testing.assert_allclose(path["end_hours"] - path["start_hours"], path["duration_hours"], rtol=0, atol=1e-9)
+        position = {step: place for place, step in enumerate(best["order"])}
+        self.assertEqual([steps[step]["name"] for step in best["order"]], list(path["name"]))
+        founding = {step["planet"]: position[step["id"]] for step in steps if step["kind"] == "colonize" and step["id"] in position}
+        chain_place: dict[tuple, int] = {}
+        for step_id in best["order"]:
+            step = steps[step_id]
+            if step["planet"] in founding and step["kind"] != "colonize":
+                self.assertGreater(position[step_id], founding[step["planet"]])
+            chain = tuple(step["chain"])
+            self.assertGreater(position[step_id], chain_place.get(chain, -1))
+            chain_place[chain] = position[step_id]
+        same_hour = sum(1 for a, b in zip(path["start_hours"], path["start_hours"][1:]) if a == b)
+        self.assertGreater(same_hour, 0, "The fixture must start several steps in the same hour")
+
+        # Initial timeline output matches catalog.
+        hours, output = ns["path_output_timeline"](ns["PATH_SIMULATOR"], best)
+        home, research_now = problem["planets"][0], problem["research_levels"]
+        raw_home = _catalog_planet_income(
+            home["levels"], home["temperature_c"], research_now["r1"], research_now["r2"], home["solar_cells"], 5.0
+        )[1:]
+        np.testing.assert_allclose(
+            output[0],
+            [k * val for k, val in zip(ns["PATH_SIMULATOR"].keep, raw_home)],
+            rtol=1e-12,
+        )
+
+        # Section 11.8 saved the W-week path as text with the 14-line header including slots, spare% & max factor levels.
+        meta_dir = self._metadata_for(self.attack_workspace)
+        self.assertEqual(ns["PATH_ACTIONS_PATH"], meta_dir / FULL_PLANNER_PATH_FILE)
+        text_lines = (meta_dir / FULL_PLANNER_PATH_FILE).read_text(encoding="utf-8").split("\n")
+        self.assertEqual(text_lines[-1], "", "The file ends with a line break")
+        header, actions = text_lines[:14], text_lines[14:-1]
+        self.assertRegex(header[1], r"^Written: \d{4}-\d\d-\d\d \d\d:\d\d:\d\d [+-]\d{4}$")
+        expected_buildings = ns["format_factor_levels"](summary["max_building_levels_reached"])
+        expected_research = ns["format_factor_levels"](summary["research_levels_reached"])
+        self.assertIn("Pig iron mine ", expected_buildings)
+        self.assertEqual(summary["status"], "horizon")
+        self.assertIn(f"Result: {weeks}-week horizon ended with ", header[7])
+        self.assertNotIn("None", header[7])
+        s0, s1 = summary["start_fleet_slots"], summary["final_fleet_slots"]
+        self.assertGreater(s1, s0, "Founding colonies and upgrading Fleet base (b10) grows fleet slots")
+        per_slot = summary["attacks_per_slot_per_hour"]
+        spare_txt = ", ".join(f"{res} {pct:.1f}%" for res, pct in summary["spare_percent"].items())
+        self.assertEqual(
+            [header[0], *header[2:7], *header[8:]],
+            [
+                f"Best {weeks}-week path toward the saved configuration (notebooks/full_planner.ipynb, Section 11)",
+                f"Configuration: {CONFIG_OPTIMIZER_RESULT_FILE}, saved {saved['generated_at']}",
+                f"Strategy: {summary['strategy']}",
+                f"Horizon: {weeks} weeks ({summary['horizon']}), weekly discount {discount:.2f}",
+                f"Attacks & spare: {s0} -> {s1} fleet slots ({s0 * per_slot:.2f} -> {s1 * per_slot:.2f} attacks/h); "
+                f"spare {spare_txt}",
+                f"Reward: {summary['discounted_reward']:,.1f} SpiceEq net discounted "
+                f"({summary['total_spice_eq_produced']:,.1f} net SpiceEq produced in {weeks} weeks; "
+                f"week 1: {summary['week_1_spice_eq']:,.1f}, week {weeks}: {summary['last_week_spice_eq']:,.1f})",
+                f"Colonies reached: {summary['colonies_founded']}/{summary['colonies_target']} founded",
+                f"Max building levels reached: {expected_buildings}",
+                f"Research levels reached: {expected_research}",
+                f"Actions: {len(actions)} within {weeks} weeks, in the order in which they start. "
+                "Times count from the moment this file was written.",
+                "Planets are named by their coordinates. "
+                'EMPTY:nn is an empty colony slot: "found the colony" comes first there.',
+                "",
+            ],
+        )
+        phrases = {
+            "build": "build {name} level {to}",
+            "demolish": "tear down {name} to level {to}",
+            "research": "research {name} level {to}",
+            "ships": "build {to} x {name}",
+            "colonize": "found the colony",
+        }
+        rows = path.to_dict("records")
+        self.assertEqual(len(actions), len(rows))
+        width = len(str(len(rows)))
+        for line, row in zip(actions, rows):
+            where = "" if row["planet"] == "account" else f" on {row['planet']}"
+            action = phrases[row["kind"]].format(name=row["name"], to=row["to_level"])
+            took = ns["fmt_path_time"](row["duration_hours"])
+            self.assertEqual(line, f"{row['order']:>{width}}. at {row['start']}{where}: {action} (takes {took})")
+        self.assertEqual(
+            ns["PATH_ACTIONS_SUMMARY"],
+            {
+                "file": FULL_PLANNER_PATH_FILE,
+                "folder": str(meta_dir),
+                "status": summary["status"],
+                "reward_weeks": weeks,
+                "discounted_reward": round(float(summary["discounted_reward"]), 1),
+                "actions": len(rows),
+                "lines": len(rows) + 14,
+                "first_action": actions[0],
+                "last_action": actions[-1],
+            },
+        )
+        self.assertIn(f"{len(rows)} actions ({weeks} weeks) saved in {FULL_PLANNER_PATH_FILE}", stdout[self.path_idxs[-1]])
+
+        # Whatever a strategy proposes, the simulator refuses a step on a planet that is not founded yet.
+        simulator = ns["PATH_SIMULATOR"]
+        simulator._load_start()
+        on_colony = next(step["id"] for step in steps if step["kind"] == "build" and step["planet"] == 1)
+        self.assertIn(("colony", 1), simulator.blockers(on_colony))
+        self.assertEqual(simulator.blockers(simulator.colonize_step[1]), [])
+        self.assertFalse(simulator._start_proposals([((1.0, 0.0, 0), on_colony)]))
+        self.assertEqual((simulator.reserved, simulator.started[on_colony]), (-1, False))
+
+    def test_path_simulator_on_problems_worked_out_by_hand(self) -> None:
+        ns, _, _ = self._attack_run()
+        speed = float(ns["GAME_PARAM_CONTEXT"]["speedup_factor"])
+        self.assertEqual(speed, 5.0)
+
+        def base_hours(building_id: int, level: int) -> float:
+            return float(game_data.BUILDING_BY_ID[building_id]["levels"][level]["base_time_s"]) / 3600.0
+
+        def cost_of(building_id: int, level: int) -> tuple[float, ...]:
+            cost = game_data.building_cost(building_id, level)
+            return tuple(float(cost.get(resource, 0)) for resource in ns["RESOURCE_KEYS"])
+
+        # Invalid discount / week parameters are rejected.
+        with self.assertRaisesRegex(ValueError, "reward_weeks"):
+            self._tiny_path(ns, {"b1": 1}, {"b1": 2}, reward_weeks=0)
+        with self.assertRaisesRegex(ValueError, "weekly_discount"):
+            self._tiny_path(ns, {"b1": 1}, {"b1": 2}, weekly_discount=0.0)
+        with self.assertRaisesRegex(ValueError, "weekly_discount"):
+            self._tiny_path(ns, {"b1": 1}, {"b1": 2}, weekly_discount=1.1)
+
+        # 1. A level that the stock pays for starts at once, finishes in week 1, and earns exact weekly discount.
+        levels = {"b1": 1, "b3": 1, "b5": 2, "b7": 2}
+        problem, run, _ = self._tiny_path(
+            ns, levels, {**levels, "b1": 2}, stock=cost_of(1, 2), reward_weeks=3, weekly_discount=0.80
+        )
+        dur = base_hours(1, 2) / (3 * speed)
+        self.assertEqual((run["status"], run["start"], run["smelting_spans"]), ("reached", [0.0], []))
+        self.assertAlmostEqual(run["hours"], dur, places=12)
+        before_out = _catalog_planet_income(levels, 0, 0, 0, 0, speed)
+        after_out = _catalog_planet_income({**levels, "b1": 2}, 0, 0, 0, 0, speed)
+        rate_before = before_out[1] / 6.0 + before_out[3] / 3.0
+        rate_after = after_out[1] / 6.0 + after_out[3] / 3.0
+        expected_w1 = rate_before * dur + rate_after * (168.0 - dur)
+        expected_w2 = rate_after * 168.0
+        expected_disc = expected_w1 + 0.80 * expected_w2 + (0.80 ** 2) * expected_w2
+        self.assertAlmostEqual(run["weekly_spice_eq"][0], expected_w1, places=9)
+        self.assertAlmostEqual(run["weekly_spice_eq"][1], expected_w2, places=9)
+        self.assertAlmostEqual(run["discounted_reward"], expected_disc, places=9)
+        self.assertEqual(
+            _path_rule_violations(
+                problem, dict.fromkeys(ns["RESOURCE_KEYS"], 0.0), run, reward_weeks=3, weekly_discount=0.80
+            ),
+            [],
+        )
+
+        # 2. Without stock the empire first earns the cost: the resource that takes longest sets the start.
+        problem, run, _ = self._tiny_path(ns, levels, {**levels, "b1": 2})
+        mined, _, _, kryptonite, _ = _catalog_planet_income(levels, 0, 0, 0, 0, speed)
+        wait = max(cost_of(1, 2)[0] / mined, cost_of(1, 2)[2] / kryptonite)
+        self.assertAlmostEqual(run["start"][0], wait, places=9)
+        self.assertAlmostEqual(run["hours"], wait + dur, places=9)
+        simulator = ns["EmpirePathSimulator"](
+            problem, {"pig_iron": mined, "metal": 0.0, "kryptonite": kryptonite, "spice": 0.0}
+        )
+        self.assertAlmostEqual(simulator.run(ns["PathStrategy"]("test", rule="cheapest"))["start"][0], wait / 2.0, places=9)
+
+        # 3. The furnace runs only until the Metal of the next step is there, then the Pig iron is kept.
+        levels = {"b1": 5, "b2": 5, "b5": 5}
+        problem, run, _ = self._tiny_path(ns, levels, {**levels, "b12": 1})
+        mined, left, metal, _, _ = _catalog_planet_income(levels, 0, 0, 0, 0, speed)
+        pig_iron_cost, metal_cost = cost_of(12, 1)[:2]
+        smelting = metal_cost / metal
+        wait = smelting + max(0.0, pig_iron_cost - left * smelting) / mined
+        self.assertAlmostEqual(run["start"][0], wait, places=9)
+        self.assertEqual(len(run["smelting_spans"]), 1)
+        np.testing.assert_allclose(run["smelting_spans"][0], (0.0, smelting), rtol=1e-12)
+        self.assertAlmostEqual(run["metal_smelted"], metal_cost, places=6)
+        self.assertEqual(_path_rule_violations(problem, dict.fromkeys(ns["RESOURCE_KEYS"], 0.0), run), [])
+
+        # 4. A cost above the warehouse capacity waits for the warehouse level.
+        levels = {"b1": 18, "b5": 20}
+        rich = (10**7, 10**7, 10**7, 10**7)
+        problem, run, simulator = self._tiny_path(ns, levels, {**levels, "b1": 19, "b11": 1}, stock=rich)
+        mine, warehouse = (next(s["id"] for s in problem["steps"] if s["key"] == key) for key in ("b1", "b11"))
+        simulator._load_start()
+        self.assertEqual(simulator.blockers(mine), [("storage", 0, 0, 1)])
+        self.assertEqual(run["start"][mine], run["end"][warehouse])
+        with self.assertRaisesRegex(ValueError, "costs more pig_iron than the Pig iron warehouse"):
+            self._tiny_path(ns, levels, {**levels, "b1": 19}, stock=rich)
+
+        # 5. A full planet tears a level down before it builds; tearing down takes the factor of the build time.
+        levels = {"b1": 2, "b3": 1, "b5": 2}
+        for strategy in (
+            ns["PathStrategy"]("test", rule="cheapest"),
+            ns["PathStrategy"]("test", rule="payback", values="scarcity"),
+        ):
+            problem, run, _ = self._tiny_path(
+                ns, levels, {"b1": 3, "b5": 2}, stock=rich, fields_max=5, strategy=strategy, demolition_time_factor=0.5
+            )
+            build, teardown = (next(s["id"] for s in problem["steps"] if s["kind"] == kind) for kind in ("build", "demolish"))
+            self.assertEqual(run["start"][teardown], 0.0)
+            self.assertAlmostEqual(run["end"][teardown], 0.5 * base_hours(3, 1) / speed, places=12)
+            self.assertEqual(run["start"][build], run["end"][teardown])
+            self.assertEqual(run["final_levels"], [{"b1": 3, "b5": 2}])
+            self.assertEqual(_path_rule_violations(problem, dict.fromkeys(ns["RESOURCE_KEYS"], 0.0), run), [])
+
+        # 6. Stuck path and missing prerequisite check.
+        problem, run, _ = self._tiny_path(ns, {}, {"b1": 1})
+        self.assertEqual((run["status"], run["hours"], run["steps_started"], run["discounted_reward"]), ("stuck", float("inf"), 0, 0.0))
+        with self.assertRaisesRegex(ValueError, "Weapons factory 1 on 09:099:09 needs Energy technology 1, but"):
+            self._tiny_path(ns, {}, {"b9": 1})
+
+        # 7. Lower bounds and horizon truncation (`status == "horizon"` when the step starts after the window).
+        levels = {"b1": 1, "b3": 1, "b5": 2}
+        problem, run, simulator = self._tiny_path(ns, levels, {**levels, "b7": 2, "b1": 3})
+        bounds = dict(simulator.lower_bounds())
+        queue = base_hours(7, 1) / speed + base_hours(7, 2) / (2 * speed) + (base_hours(1, 2) + base_hours(1, 3)) / (3 * speed)
+        self.assertAlmostEqual(bounds["building queue of 09:099:09"], queue, places=12)
+        need = [sum(step["cost"][position] for step in problem["steps"]) for position in range(4)]
+        top = _catalog_planet_income({**levels, "b1": 3}, 0, 0, 0, 0, speed)
+        self.assertAlmostEqual(bounds["supply of Kryptonite"], need[2] / top[3], places=9)
+        self.assertEqual(bounds["supply of Metal"], float("inf"))
+
+        _, clipped, _ = self._tiny_path(ns, {"b1": 1, "b3": 1, "b5": 2}, {"b1": 2, "b3": 1, "b5": 2}, horizon_hours=0.01)
+        self.assertEqual((clipped["status"], clipped["steps_started"], clipped["stopped_at_hours"]), ("horizon", 0, 0.01))
+
+        # 8. Spare percentage deducts from both mine income and raid loot, and scales net weekly reward.
+        for bad_spare in (
+            {"pig_iron": 10.0},
+            {"pig_iron": -1.0, "metal": 0.0, "kryptonite": 0.0, "spice": 0.0},
+            {"pig_iron": 100.0, "metal": 0.0, "kryptonite": 0.0, "spice": 0.0},
+        ):
+            with self.assertRaisesRegex(ValueError, "spare_percent"):
+                self._tiny_path(ns, {"b1": 1}, {"b1": 2}, spare_percent=bad_spare)
+        with self.assertRaisesRegex(ValueError, "fleet_command_center_level"):
+            self._tiny_path(ns, {"b1": 1}, {"b1": 2}, fleet_command_center_level=-1)
+
+        levels = {"b1": 1, "b3": 1, "b5": 2}
+        spare_50 = {"pig_iron": 50.0, "metal": 50.0, "kryptonite": 50.0, "spice": 50.0}
+        _, run_0, _ = self._tiny_path(ns, levels, {**levels, "b1": 2})
+        prob_50, run_50, _ = self._tiny_path(ns, levels, {**levels, "b1": 2}, spare_percent=spare_50)
+        # Keeping 50% of hourly income doubles the wait to afford b1 level 2.
+        self.assertAlmostEqual(run_50["start"][0], 2.0 * run_0["start"][0], places=9)
+        self.assertGreater(sum(run_50["spare_diverted"]), 0.0)
+        self.assertEqual(
+            _path_rule_violations(prob_50, dict.fromkeys(ns["RESOURCE_KEYS"], 0.0), run_50, spare_percent=spare_50),
+            [],
+        )
+
+        # 9. Dynamic Fleet base (`b10`) slots: completing b10 level 1 raises slots from 1 to 2 and doubles raid income.
+        levels_b10 = {"b7": 3, "b9": 2}
+        slot_loot = {"pig_iron": 10_000.0, "metal": 10_000.0, "kryptonite": 10_000.0, "spice": 10_000.0}
+        prob_b10, run_b10, _ = self._tiny_path(
+            ns, levels_b10, {**levels_b10, "b10": 1}, stock=cost_of(10, 1), slot_attack_income=slot_loot
+        )
+        self.assertEqual((run_b10["start_fleet_slots"], run_b10["final_fleet_slots"]), (1, 2))
+        self.assertEqual(
+            _path_rule_violations(
+                prob_b10, dict.fromkeys(ns["RESOURCE_KEYS"], 0.0), run_b10, slot_attack_income=slot_loot
+            ),
+            [],
+        )
+        # Fixed fleet_command_center_level=3 gives 1 + 3 = 4 slots.
+        _, run_cc, _ = self._tiny_path(
+            ns, levels_b10, {**levels_b10, "b10": 1}, stock=cost_of(10, 1),
+            slot_attack_income=slot_loot, fleet_command_center_level=3,
+        )
+        self.assertEqual((run_cc["start_fleet_slots"], run_cc["final_fleet_slots"]), (4, 4))
+
+    def test_median_attack_income(self) -> None:
+        ns, _, _ = self._attack_run()
+        table, summary = ns["median_attack_df"], ns["ATTACK_INCOME_SUMMARY"]
+        self.assertEqual(list(table["metric"]), [*ns["RESOURCE_KEYS"], "spice_eq", "net_spice_eq"])
+        self.assertEqual(list(table["median_per_attack"][:4]), [3000.0, 1250.0, 1500.0, 500.0])
+        # One-way flights 300s, 360s, 200s -> round-trip 600s, 720s, 400s -> median round-trip 600s (6 attacks/slot/h).
+        self.assertEqual(summary["median_round_trip_sec"], 600.0)
+        self.assertAlmostEqual(summary["attacks_per_slot_per_hour"], 6.0)
+        home_b10 = ns["live_planet_states"][0].buildings.get("b10", 0)
+        expected_slots = 1 + home_b10
+        self.assertEqual(summary["fleet_slots_now"], expected_slots)
+        self.assertEqual(summary["pace_set_by"], "Fleet base (b10) slots x median round-trip")
+        self.assertEqual(
+            {k: round(v, 9) for k, v in summary["income_per_slot_per_hour"].items()},
+            {"pig_iron": 18000.0, "metal": 7500.0, "kryptonite": 9000.0, "spice": 3000.0},
+        )
+        self.assertEqual(
+            {k: round(v, 9) for k, v in summary["income_per_hour"].items()},
+            {
+                "pig_iron": 18000.0 * expected_slots,
+                "metal": 7500.0 * expected_slots,
+                "kryptonite": 9000.0 * expected_slots,
+                "spice": 3000.0 * expected_slots,
+            },
+        )
+        self.assertEqual(ns["PATH_SIMULATOR"].slot_attack, tuple(summary["income_per_slot_per_hour"].values()))
+
+        # Explicit fleet_command_center_level=4 -> 5 slots; median still ignores a single extreme outlier.
+        attacks = ns["attacks_df"].copy()
+        attacks.loc[0, "pig_iron"] = 6_000_000.0
+        table_cc, summary_cc = ns["median_attack_income"](
+            attacks, ns["round_trip_times_arr"], ns["live_planet_states"], fleet_command_center_level=4
+        )
+        self.assertEqual(table_cc["median_per_attack"].iloc[0], 3000.0)
+        self.assertEqual(summary_cc["fleet_slots_now"], 5)
+        self.assertEqual(summary_cc["income_per_hour"]["pig_iron"], 5 * 18000.0)
+
+        # Explicit attacks_per_day=24.0 overrides slots; 0.0 or empty history gives zero income.
+        _, summary_fixed = ns["median_attack_income"](
+            attacks, ns["round_trip_times_arr"], ns["live_planet_states"], attacks_per_day=24.0
+        )
+        self.assertEqual((summary_fixed["attacks_per_day"], summary_fixed["pace_set_by"]), (24.0, "PATH_ATTACKS_PER_DAY"))
+        self.assertEqual(summary_fixed["income_per_hour"]["pig_iron"], 3000.0)
+        for frame, rt, planets_arg, pace in (
+            (ns["attacks_df"].iloc[:0], np.array([]), ns["live_planet_states"], None),
+            (ns["attacks_df"], ns["round_trip_times_arr"], ns["live_planet_states"], 0.0),
+            (ns["attacks_df"], ns["round_trip_times_arr"], [], None),
+        ):
+            _, empty_sum = ns["median_attack_income"](frame, rt, planets_arg, attacks_per_day=pace)
+            self.assertEqual(set(empty_sum["income_per_hour"].values()), {0.0})
+
+    def test_path_target_file_is_checked(self) -> None:
+        ns, _, _ = self._attack_run()
+        saved_path = self._metadata_for(self.attack_workspace) / CONFIG_OPTIMIZER_RESULT_FILE
+        saved = json.loads(saved_path.read_text(encoding="utf-8"))
+        planets, contexts = ns["empire_planet_states"], ns["PLANET_PARAM_CONTEXTS"]
+        with tempfile.TemporaryDirectory(prefix="si_fp_path_") as tmp:
+            with self.assertRaisesRegex(FileNotFoundError, r"run notebooks/config_optimizer\.ipynb first"):
+                ns["load_path_target"](Path(tmp) / "missing.json")
+            other = Path(tmp) / "other.json"
+            other.write_text(json.dumps({**saved, "schema_version": 2}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "schema_version 2"):
+                ns["load_path_target"](other)
+        self.assertEqual(ns["load_path_target"](saved_path), saved)
+        with self.assertRaisesRegex(ValueError, r"plans the roster slots \[1, 2, 3, 4, 5, 6, 7, 8, 9, 10\]"):
+            ns["check_path_target"]({**saved, "planets": saved["planets"][:-1]}, planets, contexts)
+        too_big = json.loads(json.dumps(saved))
+        too_big["planets"][0]["buildings"][0]["target_level"] += 400
+        with self.assertRaisesRegex(ValueError, r"levels on 02:380:12 \(slot 1\), which has \d+ fields"):
+            ns["check_path_target"](too_big, planets, contexts)
+        moved = json.loads(json.dumps(saved))
+        moved["planets"][3]["temperature_c"] = 55
+        checks = ns["check_path_target"](moved, planets, contexts)
+        self.assertEqual(list(checks["same_planet"]), [True, True, True, False] + [True] * 7)
+
+    def test_path_search_with_the_genetic_algorithm(self) -> None:
+        # Small reachable configuration that finishes well inside the 26-week horizon (exercises all 5 action kinds).
+        with tempfile.TemporaryDirectory(prefix="si_fp_path_") as tmp:
+            meta_dir = Path(tmp) / "metadata"
+            shutil.copytree(
+                FULL_PLANNER_METADATA_DIR,
+                meta_dir,
+                ignore=shutil.ignore_patterns(CONFIG_OPTIMIZER_RESULT_FILE, FULL_PLANNER_PATH_FILE),
+            )
+            _save_configuration_for(
+                self.attack_workspace,
+                meta_dir,
+                {
+                    "OPTIMIZED_BUILDING_MAX_LEVELS": dict.fromkeys(("b1", "b2", "b3", "b4", "b5", "b9", "b17"), 14),
+                    "RESEARCH_PERCENT_OF_UNIVERSE_MAX": 0.0,
+                },
+            )
+            ns, _, _ = _run_full_planner(
+                self.code_cells,
+                self.attack_workspace,
+                metadata_dir=meta_dir,
+                overrides={"PATH_GA_POPULATION_SIZE": 4, "PATH_GA_GENERATIONS": 2, "PATH_SEARCH_TOLERANCE": -1.0},
+            )
+            txt_lines = (meta_dir / FULL_PLANNER_PATH_FILE).read_text(encoding="utf-8").split("\n")
+        summary, history = ns["PATH_SEARCH_SUMMARY"], ns["path_ga_history_df"]
+        self.assertTrue(summary["genetic_algorithm_ran"])
+        self.assertEqual(list(history["generation"]), [0, 1, 2])
+        self.assertTrue(history["best_so_far_reward"].is_monotonic_increasing)
+        self.assertTrue((history["best_reward"] >= history["mean_reward"]).all())
+        self.assertEqual(int(history["simulations_so_far"].iloc[-1]), summary["simulations_of_the_genetic_algorithm"])
+        self.assertLessEqual(summary["simulations_of_the_genetic_algorithm"], 4 * 3)
+        self.assertEqual(summary["tuned_reward"], float(history["best_so_far_reward"].iloc[-1]))
+        self.assertEqual(list(summary["tuned_genes"]), list(ns["PATH_GENE_RANGES"]))
+        for name, gene in summary["tuned_genes"].items():
+            low, high = ns["PATH_GENE_RANGES"][name]
+            self.assertTrue(low <= gene <= high, f"gene {name} left its range")
+        scarcity = ns["PATH_RUNS"]["discounted payback at scarcity values"]["discounted_reward"]
+        self.assertGreaterEqual(summary["tuned_reward"], scarcity * (1.0 - 1e-12))
+        named = max(run["discounted_reward"] for run in ns["PATH_RUNS"].values())
+        self.assertGreaterEqual(ns["BEST_PATH_RUN"]["discounted_reward"], max(named, summary["tuned_reward"]) * (1.0 - 1e-12))
+        # On this small configuration every step finishes within the 26 weeks (`status == "reached"`), covering all 5 kinds.
+        self.assertEqual(ns["BEST_PATH_RUN"]["status"], "reached")
+        self.assertTrue(ns["BEST_PATH_SUMMARY"]["ends_with_the_output_of_the_configuration"])
+        self.assertEqual(set(ns["best_path_steps_df"]["kind"]), {"build", "demolish", "research", "ships", "colonize"})
+        self.assertIn("Result: configuration reached after ", txt_lines[7])
+        self.assertTrue(any(": tear down " in line for line in txt_lines[14:]))
+        self.assertTrue(any(": research " in line and " on " not in line for line in txt_lines[14:]))
+        self.assertTrue(any(" x " in line for line in txt_lines[14:]))
+        self.assertEqual(
+            _path_rule_violations(
+                ns["PATH_PROBLEM"],
+                ns["ATTACK_INCOME_SUMMARY"]["fixed_income_per_hour"],
+                ns["BEST_PATH_RUN"],
+                slot_attack_income=ns["ATTACK_INCOME_SUMMARY"]["income_per_slot_per_hour"],
+                fleet_command_center_level=ns["PATH_FLEET_COMMAND_CENTER_LEVEL"],
+                spare_percent=ns["PATH_RESOURCE_SPARE_PERCENT"],
+            ),
+            [],
+        )
+
+        # Same seed gives the exact same result; all 8 genes map onto strategy parameters.
+        settings = dict(
+            population_size=4, generations=2, tournament_size=3, crossover_rate=0.9, mutation_rate=0.3,
+            elite_count=2, random_seed=ns["PATH_GA_RANDOM_SEED"], revalue_every_steps=ns["PATH_REVALUE_EVERY_STEPS"],
+        )
+        start = (
+            ns["PATH_SCARCITY_FOCUS"], ns["PATH_CRITICAL_QUEUE_SHARE"], ns["PATH_PATIENCE"],
+            ns["PATH_SPEED_WEIGHT"], 0.0, 0.0, 0.0, 0.0,
+        )
+        genes, run, again = ns["tune_path_strategy"](ns["PATH_SIMULATOR"], start, **settings)
+        self.assertEqual(run["discounted_reward"], summary["tuned_reward"])
+        self.assertEqual(dict(zip(ns["PATH_GENE_RANGES"], genes)), summary["tuned_genes"])
+        pd.testing.assert_frame_equal(again, history)
+        strategy = ns["strategy_from_genes"]("x", (2.0, 0.5, 0.75, 1.25, 1.0, 0.0, -1.0, 2.0), 7)
+        self.assertEqual(
+            strategy.parameters(),
+            {
+                "rule": "payback", "values": "scarcity", "focus": 2.0, "critical_share": 0.5,
+                "patience": 0.75, "speed_weight": 1.25, "bias": (2.0, 1.0, 0.5, 4.0),
+            },
+        )
+        self.assertEqual(strategy.revalue_every, 7)
+        for off in ({"generations": 0}, {"population_size": 1}):
+            _, best_run, empty, why = ns["search_fastest_path"](
+                ns["PATH_SIMULATOR"], ns["PATH_STRATEGIES"], ns["PATH_RUNS"], ns["PATH_REWARD_UPPER_BOUND"],
+                tolerance=-1.0, start_genes=start, **{**settings, **off},
+            )
+            self.assertEqual((best_run["discounted_reward"], len(empty), why["genetic_algorithm_ran"]), (named, 0, False))
+            self.assertEqual(why["why"], "the genetic algorithm is switched off")
+
 
 CONFIG_OPTIMIZER_PATH = REPO_ROOT / "notebooks" / "config_optimizer.ipynb"
 # The one file that the notebook writes, into its METADATA_DIR.
@@ -3920,11 +5018,12 @@ class TestConfigOptimizerNotebook(unittest.TestCase):
                      "universe_research_sources", "universe_research_df", "UNIVERSE_RESEARCH_MAX_LEVELS",
                      "TECHNOLOGY_METADATA", "RESOURCE_METADATA", "PLANNER_SETTINGS", "METADATA_DIR", "LIVE_DB_PATH"):
             self.assertIn(name, shared)
-        # What moved here is no longer in full_planner: the optimizer has one home.
+        # What moved here is no longer in full_planner: the optimizer has one home. The path section of
+        # full_planner needs four of its statements; they are copies like the helpers (checked above).
         moved_cells = (self.parameters_idx, *self.optimizer_idxs, self.save_idx)
         optimizer_names = {name for name, (idx, _) in copies.items() if idx in moved_cells}
         self.assertGreater(len(optimizer_names), 80)
-        self.assertEqual(sorted(optimizer_names & set(originals)), [])
+        self.assertEqual(sorted(optimizer_names & set(originals)), sorted(FULL_PLANNER_SHARED_WITH_OPTIMIZER))
 
     def test_inputs_are_the_ones_that_full_planner_reads(self) -> None:
         full_planner_cells = [
