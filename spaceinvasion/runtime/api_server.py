@@ -72,6 +72,7 @@ from spaceinvasion.core.logging_utils import (
     _sub_sid_kv as _sub_log_sid_kv,
     append_api_log,
     append_crash_debug_log,
+    format_clean_error,
     is_secret_dict_key,
     redact_sensitive,
 )
@@ -10643,14 +10644,23 @@ def create_api_server(
             except AntiBotChallengeError as exc:
                 self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, _build_antibot_response(exc))
             except SpaceInvasionAuthError as exc:
-                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": _redact_api_payload(exc)})
+                self._send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"ok": False, "error": format_clean_error(_redact_api_payload(exc), max_chars=1024)},
+                )
             except OSError as exc:
                 if _is_client_disconnect_error(exc):
                     self.close_connection = True
                     return
-                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": _redact_api_payload(exc)})
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"ok": False, "error": format_clean_error(_redact_api_payload(exc), max_chars=1024)},
+                )
             except Exception as exc:
-                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": _redact_api_payload(exc)})
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"ok": False, "error": format_clean_error(_redact_api_payload(exc), max_chars=1024)},
+                )
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
@@ -10694,16 +10704,16 @@ def create_api_server(
                 body = _build_antibot_response(exc)
             except SpaceInvasionAuthError as exc:
                 status_code = HTTPStatus.SERVICE_UNAVAILABLE
-                body = {"ok": False, "error": _redact_api_payload(exc)}
+                body = {"ok": False, "error": format_clean_error(_redact_api_payload(exc), max_chars=1024)}
             except OSError as exc:
                 if _is_client_disconnect_error(exc):
                     self.close_connection = True
                     return
                 status_code = HTTPStatus.INTERNAL_SERVER_ERROR
-                body = {"ok": False, "error": _redact_api_payload(exc)}
+                body = {"ok": False, "error": format_clean_error(_redact_api_payload(exc), max_chars=1024)}
             except Exception as exc:
                 status_code = HTTPStatus.INTERNAL_SERVER_ERROR
-                body = {"ok": False, "error": _redact_api_payload(exc)}
+                body = {"ok": False, "error": format_clean_error(_redact_api_payload(exc), max_chars=1024)}
 
             log_dir = getattr(bridge, "log_dir", None)
             if isinstance(log_dir, (str, Path)):

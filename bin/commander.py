@@ -43,6 +43,7 @@ from spaceinvasion.core.config import StrategyConfig, load_strategy_config  # no
 from spaceinvasion.core.logging_utils import (  # noqa: E402
     append_tick_logs,
     format_action_summary,
+    format_clean_error,
     pick_next_action,
     redact_sensitive,
 )
@@ -1100,7 +1101,7 @@ def main(argv: list[str] | None = None) -> int:
                         pass
                     if not captcha_alert_logged:
                         print(
-                            f"[CMD][ALERT] CAPTCHA / anti-bot challenge detected ({redact_sensitive(exc_txt)}) — "
+                            f"[CMD][ALERT] CAPTCHA / anti-bot challenge detected ({format_clean_error(exc_txt)}) — "
                             "automation paused; waiting for operator to solve in Chrome (:9222) and click Resume..."
                         )
                         captcha_alert_logged = True
@@ -1108,7 +1109,7 @@ def main(argv: list[str] | None = None) -> int:
                         return 0
                     loop_sleep = min(5.0, eff_min_interval_s)
                 else:
-                    print(f"[CMD tick {tick_s}] API unavailable ({redact_sensitive(exc_txt)}); retrying shortly.")
+                    print(f"[CMD tick {tick_s}] API unavailable ({format_clean_error(exc_txt)}); retrying shortly.")
                     if not run_loop:
                         return 1
                     err_lower = exc_txt.lower()
@@ -1151,13 +1152,13 @@ def main(argv: list[str] | None = None) -> int:
                                     pass
                                 if not captcha_alert_logged:
                                     print(
-                                        f"[CMD][ALERT] CAPTCHA / anti-bot challenge detected ({redact_sensitive(rec_txt)}) — "
+                                        f"[CMD][ALERT] CAPTCHA / anti-bot challenge detected ({format_clean_error(rec_txt)}) — "
                                         "automation paused; waiting for operator to solve in Chrome (:9222) and click Resume..."
                                     )
                                     captcha_alert_logged = True
                                 loop_sleep = min(5.0, eff_min_interval_s)
                             else:
-                                print(f"[CMD tick {tick_s}] Session recovery pending: {redact_sensitive(rec_txt)}")
+                                print(f"[CMD tick {tick_s}] Session recovery pending: {format_clean_error(rec_txt)}")
                                 if any(gate in rec_txt.lower() for gate in ("2-factor", "2fa")):
                                     loop_sleep = 15.0
                                 else:
@@ -1168,7 +1169,7 @@ def main(argv: list[str] | None = None) -> int:
                 exc_txt = _safe_cmd_str(exc)
                 tick_s = game_data.fmt_compact_int(tick)
                 print(
-                    f"[CMD tick {tick_s}] Unexpected error ({type(exc).__name__}: {redact_sensitive(exc_txt)}); "
+                    f"[CMD tick {tick_s}] Unexpected error ({type(exc).__name__}: {format_clean_error(exc_txt)}); "
                     + ("retrying shortly." if run_loop else "aborting.")
                 )
                 try:

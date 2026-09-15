@@ -20,6 +20,7 @@ from selenium.common.exceptions import (
     ElementClickInterceptedException,
     NoSuchElementException,
     StaleElementReferenceException,
+    TimeoutException,
 )
 from selenium.webdriver.common.by import By
 
@@ -833,6 +834,7 @@ class GameBrowserClient:
         )
         deadline = time.monotonic() + wait_budget
         drv_lock = getattr(self, "_driver_lock", None)
+        renderer_recoveries = 0
 
         for _attempt in range(64):
             coordinated = self._supports_coordinated_recovery()
@@ -864,29 +866,49 @@ class GameBrowserClient:
             top_shell_html = ""
             missing_exc: Optional[NoSuchElementException] = None
             dom_epoch_seen = getattr(self, "_dom_healthy_epoch", 0)
+            renderer_timed_out = False
             with (drv_lock if drv_lock is not None else contextlib.nullcontext()):
-                self.driver.switch_to.default_content()
                 try:
-                    top_src = getattr(self.driver, "page_source", "")
-                    top_shell_html = top_src if isinstance(top_src, str) else ""
-                except Exception:
-                    top_shell_html = ""
-                try:
-                    f_planets = self.driver.find_element(By.ID, "F_planets")
-                    self.driver.find_element(By.ID, "F_Hauptframe")
-                    self.driver.find_element(By.ID, "F_Navi")
-                    self.driver.switch_to.frame(f_planets)
-                    in_planets_frame = True
-                    self.driver.find_element(By.ID, "json-container")
                     self.driver.switch_to.default_content()
-                    self._dom_healthy_epoch = getattr(self, "_dom_healthy_epoch", 0) + 1
-                except NoSuchElementException as exc:
-                    missing_exc = exc
-                    dom_epoch_seen = getattr(self, "_dom_healthy_epoch", 0)
                     try:
-                        frame_html = str(getattr(self.driver, "page_source", "") or "")
-                    except Exception:
-                        frame_html = ""
+                        top_src = getattr(self.driver, "page_source", "")
+                        top_shell_html = top_src if isinstance(top_src, str) else ""
+                    except Exception as src_exc:
+                        if self._is_renderer_timeout(src_exc):
+                            raise
+                        top_shell_html = ""
+                    try:
+                        f_planets = self.driver.find_element(By.ID, "F_planets")
+                        self.driver.find_element(By.ID, "F_Hauptframe")
+                        self.driver.find_element(By.ID, "F_Navi")
+                        self.driver.switch_to.frame(f_planets)
+                        in_planets_frame = True
+                        self.driver.find_element(By.ID, "json-container")
+                        self.driver.switch_to.default_content()
+                        self._dom_healthy_epoch = getattr(self, "_dom_healthy_epoch", 0) + 1
+                    except NoSuchElementException as exc:
+                        missing_exc = exc
+                        dom_epoch_seen = getattr(self, "_dom_healthy_epoch", 0)
+                        try:
+                            frame_html = str(getattr(self.driver, "page_source", "") or "")
+                        except Exception:
+                            frame_html = ""
+                except Exception as drv_exc:
+                    if self._is_renderer_timeout(drv_exc):
+                        if renderer_recoveries < 1:
+                            renderer_recoveries += 1
+                            self._recover_renderer_timeout()
+                            renderer_timed_out = True
+                        else:
+                            raise SpaceInvasionAuthError(
+                                "Renderer timed out while verifying game session."
+                            ) from drv_exc
+                    else:
+                        raise
+            if renderer_timed_out:
+                if time.monotonic() >= deadline:
+                    deadline = time.monotonic() + min(5.0, wait_budget)
+                continue
 
             if top_shell_html:
                 top_issue = detect_antibot_challenge(200, top_shell_html)
@@ -1110,6 +1132,95 @@ class GameBrowserClient:
             pass
         return token
 
+    @staticmethod
+    def _is_renderer_timeout(exc: BaseException) -> bool:
+        """Return True when `exc` is a ChromeDriver/Selenium renderer or script timeout."""
+        if isinstance(exc, TimeoutException):
+            return True
+        low = str(exc or "").lower()
+        return (
+            "timed out receiving message from renderer" in low
+            or "timeout: timed out" in low
+            or "script timeout" in low
+        )
+
+    def _recover_renderer_timeout(self) -> None:
+        """Abort stuck subresource/page loads (`window.stop()`) to unblock ChromeDriver's renderer queue."""
+        restore_timeout = _safe_positive_timeout(
+            getattr(self, "timeout", 20.0), 20.0, min_val=5.0, max_val=300.0
+        )
+        set_script = getattr(self.driver, "set_script_timeout", None)
+        if callable(set_script):
+            try:
+                set_script(3.0)
+            except Exception:
+                pass
+        try:
+            try:
+                self.driver.execute_script("try { window.stop(); } catch (e) {}")
+            except Exception:
+                pass
+            try:
+                self.driver.switch_to.default_content()
+                self.driver.execute_script("try { window.stop(); } catch (e) {}")
+            except Exception:
+                pass
+        finally:
+            if callable(set_script):
+                try:
+                    set_script(restore_timeout)
+                except Exception:
+                    pass
+        time.sleep(0.25)
+
+    def _try_read_landed_frame(
+        self,
+        frame_id: str,
+        expected_action: Optional[str],
+        *,
+        nav_token: Optional[str] = None,
+    ) -> Optional[str]:
+        """After `window.stop()`, return validated frame HTML if `expected_action` already landed."""
+        try:
+            self._switch_frame(frame_id)
+            probe = self.driver.execute_script(
+                "return {"
+                "ready: String(document.readyState || ''), "
+                "href: String(location.href || ''), "
+                "token: (typeof window.__siNavToken === 'string') ? window.__siNavToken : null"
+                "};"
+            )
+            if isinstance(probe, dict):
+                ready = str(probe.get("ready") or "")
+                href = str(probe.get("href") or "")
+                cur_token = probe.get("token")
+            else:
+                href = str(self.driver.execute_script("return String(location.href || '');") or "")
+                ready = str(self.driver.execute_script("return String(document.readyState || '');") or "")
+                cur_token = None
+            if ready not in ("interactive", "complete"):
+                return None
+            if nav_token is not None and cur_token == nav_token:
+                return None
+            if (
+                expected_action
+                and expected_action not in href
+                and not (expected_action == "internalSendFleet" and "fleeterr." in href.lower())
+            ):
+                return None
+            html = self.driver.page_source or ""
+            if len(html) < 64:
+                return None
+        except Exception:
+            return None
+        self._check_page_guards(html)
+        html_low = html.lower()
+        if "bitmeup-login" in html_low or "sip-tab-universe" in html_low:
+            raise SpaceInvasionAuthError(
+                "Browser redirected to BitMeUp portal/login while waiting for game frame."
+            )
+        return html
+
     def _wait_frame_ready(
         self,
         frame_id: str,
@@ -1121,42 +1232,67 @@ class GameBrowserClient:
             getattr(self, "timeout", 20.0), 20.0, min_val=0.05, max_val=300.0
         )
         deadline = time.monotonic() + wait_budget
+        recovered_timeout = False
         while True:
-            self._switch_frame(frame_id)
-            probe = None
             try:
-                probe = self.driver.execute_script(
-                    "return {"
-                    "ready: document.readyState, "
-                    "href: String(location.href || ''), "
-                    "token: (typeof window.__siNavToken === 'string') ? window.__siNavToken : null"
-                    "};"
-                )
-            except Exception:
+                self._switch_frame(frame_id)
                 probe = None
-            if isinstance(probe, dict):
-                ready = probe.get("ready")
-                href = str(probe.get("href") or "")
-                cur_token = probe.get("token")
-            else:
-                ready = self.driver.execute_script("return document.readyState;")
-                href = str(self.driver.execute_script("return location.href;") or "")
-                cur_token = None
-
-            if ready == "complete" and (nav_token is None or cur_token != nav_token):
-                html = self.driver.page_source or ""
-                self._check_page_guards(html)
-                html_low = html.lower()
-                if "bitmeup-login" in html_low or "sip-tab-universe" in html_low:
-                    raise SpaceInvasionAuthError(
-                        "Browser redirected to BitMeUp portal/login while waiting for game frame."
+                try:
+                    probe = self.driver.execute_script(
+                        "return {"
+                        "ready: document.readyState, "
+                        "href: String(location.href || ''), "
+                        "token: (typeof window.__siNavToken === 'string') ? window.__siNavToken : null"
+                        "};"
                     )
+                except Exception as probe_exc:
+                    if self._is_renderer_timeout(probe_exc):
+                        raise
+                    probe = None
+                if isinstance(probe, dict):
+                    ready = probe.get("ready")
+                    href = str(probe.get("href") or "")
+                    cur_token = probe.get("token")
+                else:
+                    ready = self.driver.execute_script("return document.readyState;")
+                    href = str(self.driver.execute_script("return location.href;") or "")
+                    cur_token = None
+
                 if (
-                    not expected_action
-                    or expected_action in href
-                    or (expected_action == "internalSendFleet" and "fleeterr." in href.lower())
-                ):
-                    return html
+                    ready == "complete" or (recovered_timeout and ready == "interactive")
+                ) and (nav_token is None or cur_token != nav_token):
+                    html = self.driver.page_source or ""
+                    self._check_page_guards(html)
+                    html_low = html.lower()
+                    if "bitmeup-login" in html_low or "sip-tab-universe" in html_low:
+                        raise SpaceInvasionAuthError(
+                            "Browser redirected to BitMeUp portal/login while waiting for game frame."
+                        )
+                    if (
+                        not expected_action
+                        or expected_action in href
+                        or (expected_action == "internalSendFleet" and "fleeterr." in href.lower())
+                    ):
+                        return html
+            except Exception as wait_exc:
+                if not self._is_renderer_timeout(wait_exc):
+                    raise
+                if not recovered_timeout:
+                    recovered_timeout = True
+                    self._recover_renderer_timeout()
+                    landed_html = self._try_read_landed_frame(
+                        frame_id,
+                        expected_action,
+                        nav_token=nav_token,
+                    )
+                    if landed_html is not None:
+                        return landed_html
+                    if time.monotonic() >= deadline:
+                        deadline = time.monotonic() + min(5.0, wait_budget)
+                    continue
+                raise SpaceInvasionAuthError(
+                    f"Renderer timed out waiting for frame {frame_id} ({expected_action or 'ready'})."
+                ) from wait_exc
 
             if time.monotonic() >= deadline:
                 break
@@ -1250,20 +1386,71 @@ class GameBrowserClient:
             base_href = "https://spaceinvasion.bitmeup.com/indexInternal.es"
         return urljoin(base_href, f"indexInternal.es?{query}")
 
+    def _open_frame_url_with_retry(
+        self,
+        target_url: str,
+        *,
+        expected_action: str,
+        frame_id: str = "F_Hauptframe",
+    ) -> str:
+        """Navigate `frame_id` to `target_url` via `location.href`, recovering once on renderer timeout."""
+        for attempt in range(2):
+            nav_token: Optional[str] = None
+            try:
+                nav_token = self._mark_frame_navigation(frame_id)
+                self._switch_frame(frame_id)
+                self.driver.execute_script("location.href = arguments[0];", target_url)
+                return self._wait_frame_ready(frame_id, expected_action=expected_action, nav_token=nav_token)
+            except Exception as nav_exc:
+                if not self._is_renderer_timeout(nav_exc):
+                    raise
+                if attempt >= 1:
+                    raise SpaceInvasionAuthError(
+                        f"Renderer timed out loading {expected_action}."
+                    ) from nav_exc
+                self._recover_renderer_timeout()
+                landed_html = self._try_read_landed_frame(
+                    frame_id,
+                    expected_action,
+                    nav_token=nav_token,
+                )
+                if landed_html is not None:
+                    return landed_html
+        raise SpaceInvasionAuthError(f"Renderer timed out loading {expected_action}.")
+
     def navigate_menu(self, action: str, *, priority: str = "normal") -> str:
         """Click a navigation link in `F_Navi` and wait for `F_Hauptframe` to load."""
         if action == "internalGalaxy":
             return self.open_galaxy(priority=priority)
-        self._pace(priority=priority)
-        nav_token = self._mark_frame_navigation("F_Hauptframe")
-        self._switch_frame("F_Navi")
-        link = self.driver.find_element(By.CSS_SELECTOR, f'a[href*="action={action}"]')
-        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link)
-        try:
-            link.click()
-        except ElementClickInterceptedException:
-            self.driver.execute_script("arguments[0].click();", link)
-        return self._wait_frame_ready("F_Hauptframe", expected_action=action, nav_token=nav_token)
+        for attempt in range(2):
+            self._pace(priority=priority)
+            nav_token: Optional[str] = None
+            try:
+                nav_token = self._mark_frame_navigation("F_Hauptframe")
+                self._switch_frame("F_Navi")
+                link = self.driver.find_element(By.CSS_SELECTOR, f'a[href*="action={action}"]')
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link)
+                try:
+                    link.click()
+                except ElementClickInterceptedException:
+                    self.driver.execute_script("arguments[0].click();", link)
+                return self._wait_frame_ready("F_Hauptframe", expected_action=action, nav_token=nav_token)
+            except Exception as nav_exc:
+                if not self._is_renderer_timeout(nav_exc):
+                    raise
+                if attempt >= 1:
+                    raise SpaceInvasionAuthError(
+                        f"Renderer timed out navigating to {action}."
+                    ) from nav_exc
+                self._recover_renderer_timeout()
+                landed_html = self._try_read_landed_frame(
+                    "F_Hauptframe",
+                    action,
+                    nav_token=nav_token,
+                )
+                if landed_html is not None:
+                    return landed_html
+        raise SpaceInvasionAuthError(f"Renderer timed out navigating to {action}.")
 
     def _submit_galaxy_coords_form(
         self,
@@ -1485,10 +1672,8 @@ class GameBrowserClient:
             if sys_arg is not None:
                 params.append(f"s={sys_arg}")
             target_url = self._build_internal_url("&".join(params))
-            nav_token = self._mark_frame_navigation("F_Hauptframe")
-            self.driver.execute_script("location.href = arguments[0];", target_url)
             try:
-                html = self._wait_frame_ready("F_Hauptframe", expected_action="internalGalaxy", nav_token=nav_token)
+                html = self._open_frame_url_with_retry(target_url, expected_action="internalGalaxy")
             except BaseException as exc:
                 if self.detach_on_close and getattr(self.driver, "__class__", object).__module__.startswith("selenium"):
                     append_crash_debug_log(
@@ -1826,14 +2011,7 @@ class GameBrowserClient:
             else:
                 q_str = f"action=internalMessages&{sid_query}"
             target_url = self._build_internal_url(q_str)
-            nav_token = self._mark_frame_navigation("F_Hauptframe")
-            self._switch_frame("F_Hauptframe")
-            self.driver.execute_script("location.href = arguments[0];", target_url)
-            return self._wait_frame_ready(
-                "F_Hauptframe",
-                expected_action="internalMessages",
-                nav_token=nav_token,
-            )
+            return self._open_frame_url_with_retry(target_url, expected_action="internalMessages")
 
         nav_token = self._mark_frame_navigation("F_Hauptframe")
         self._switch_frame("F_Navi")
@@ -1907,14 +2085,7 @@ class GameBrowserClient:
         sid_query = self._resolve_sid_query()
         if sid_query:
             target_url = self._build_internal_url(f"action=internalDetail&type=building&id={bid}&{sid_query}")
-            nav_token = self._mark_frame_navigation("F_Hauptframe")
-            self._switch_frame("F_Hauptframe")
-            self.driver.execute_script("location.href = arguments[0];", target_url)
-            return self._wait_frame_ready(
-                "F_Hauptframe",
-                expected_action="internalDetail",
-                nav_token=nav_token,
-            )
+            return self._open_frame_url_with_retry(target_url, expected_action="internalDetail")
         self.navigate_menu("internalBuildings", priority=priority)
         nav_token = self._mark_frame_navigation("F_Hauptframe")
         self._switch_frame("F_Hauptframe")

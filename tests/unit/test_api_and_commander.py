@@ -6682,6 +6682,104 @@ class TestApiAndCommander(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_format_clean_error_and_api_commander_strip_webdriver_stacktrace(self) -> None:
+        import io
+        import threading
+        from contextlib import redirect_stdout
+        import requests
+        from selenium.common.exceptions import TimeoutException
+        import bin.commander as commander_cli
+        from spaceinvasion.core.logging_utils import format_clean_error, strip_webdriver_stacktrace
+        from spaceinvasion.runtime.commander_client import GameApiError
+
+        noisy_msg = (
+            "timeout: Timed out receiving message from renderer: 20.000 "
+            "(url=https://spaceinvasion.bitmeup.com/indexGame.es?sid=SecretSid999)\n"
+            "  (Session info: chrome=158.0.8127.36)\n"
+            "Stacktrace:\n"
+            "#0 0x5635f98bdf7a <unknown>\n"
+            "#1 0x5635f90b1935 <unknown>\n"
+            "#24 0x7f7fbe121678 <unknown>\n"
+        )
+        exc = TimeoutException(noisy_msg)
+
+        stripped = strip_webdriver_stacktrace(str(exc))
+        self.assertIn("Timed out receiving message from renderer: 20.000", stripped)
+        self.assertNotIn("Stacktrace:", stripped)
+        self.assertNotIn("#0 0x", stripped)
+        self.assertNotIn("#24 0x", stripped)
+        self.assertNotIn("Session info:", stripped)
+        self.assertNotIn("\n", stripped)
+
+        cleaned = format_clean_error(exc)
+        self.assertIn("Timed out receiving message from renderer: 20.000", cleaned)
+        self.assertIn("sid=REDACTED", cleaned)
+        self.assertNotIn("SecretSid999", cleaned)
+        self.assertNotIn("Stacktrace:", cleaned)
+        self.assertNotIn("Session info:", cleaned)
+        self.assertNotIn("\n", cleaned)
+
+        # HTTP GET /state and POST /command return clean single-line error JSON without C++ stacktrace
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=td_path / "c.yaml",
+                db_path=None,
+                log_dir=None,
+                client_factory=lambda _: MagicMock(),
+                ensure_session_fn=lambda: None,
+            )
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                with patch.object(bridge, "get_state", side_effect=TimeoutException(noisy_msg)):
+                    r_get = requests.get(f"{base_url}/state?refresh=1", timeout=5)
+                self.assertEqual(r_get.status_code, 500)
+                err_get = r_get.json()["error"]
+                self.assertIn("Timed out receiving message from renderer: 20.000", err_get)
+                self.assertIn("sid=REDACTED", err_get)
+                self.assertNotIn("SecretSid999", err_get)
+                self.assertNotIn("Stacktrace:", err_get)
+                self.assertNotIn("#0 0x", err_get)
+                self.assertNotIn("Session info:", err_get)
+
+                with patch.object(bridge, "handle_command", side_effect=TimeoutException(noisy_msg)):
+                    r_post = requests.post(f"{base_url}/command", json={"command": "plan"}, timeout=5)
+                self.assertEqual(r_post.status_code, 500)
+                err_post = r_post.json()["error"]
+                self.assertIn("Timed out receiving message from renderer: 20.000", err_post)
+                self.assertIn("sid=REDACTED", err_post)
+                self.assertNotIn("SecretSid999", err_post)
+                self.assertNotIn("Stacktrace:", err_post)
+                self.assertNotIn("#24 0x", err_post)
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
+        # Commander loop logs a clean single-line API unavailable message with stacktrace stripped & sid redacted
+        fake_api = MagicMock()
+        fake_api.send_command.side_effect = GameApiError(str(exc))
+        buf = io.StringIO()
+        with (
+            patch.object(commander_cli, "GameApiClient", return_value=fake_api),
+            redirect_stdout(buf),
+        ):
+            rc = commander_cli.main(["--api-url", "http://127.0.0.1:8787"])
+        out = buf.getvalue()
+        self.assertEqual(rc, 1)
+        self.assertIn("API unavailable", out)
+        self.assertIn("Timed out receiving message from renderer: 20.000", out)
+        self.assertIn("sid=REDACTED", out)
+        self.assertNotIn("SecretSid999", out)
+        self.assertNotIn("Stacktrace:", out)
+        self.assertNotIn("#0 0x", out)
+        self.assertNotIn("Session info:", out)
+
 
 if __name__ == "__main__":
     unittest.main()

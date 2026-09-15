@@ -229,6 +229,42 @@ _HTML_INPUT_VALUE_RE = re.compile(
     r"""(?P<prefix>(?<![\w-])value\s*=\s*)(?:"(?P<dq>[^"]+)"|'(?P<sq>[^']+)'|(?P<uq>[^\s"'=<>`]+?)(?=(?:\s|/>|>|$)))""",
     re.IGNORECASE,
 )
+_WEBDRIVER_STACKTRACE_RE = re.compile(
+    r"(?:\r?\n|\s)+Stacktrace:\s*(?:\r?\n\s*#\d+\s+[^\r\n]*)*.*$",
+    re.DOTALL,
+)
+_WEBDRIVER_SESSION_INFO_RE = re.compile(
+    r"(?:\r?\n|\s)+\((?:Session|Driver|Build) info:[^\r\n)]*\)",
+    re.IGNORECASE,
+)
+
+
+def strip_webdriver_stacktrace(text: str) -> str:
+    """Strip noisy ChromeDriver/Selenium C++ stacktrace and session-info footers from error text."""
+    if not isinstance(text, str) or not text:
+        return ""
+    cleaned = _WEBDRIVER_STACKTRACE_RE.sub("", text)
+    cleaned = _WEBDRIVER_SESSION_INFO_RE.sub("", cleaned)
+    # Collapse multi-line WebDriver messages into a compact single line
+    cleaned = re.sub(r"\s*\r?\n\s*", " ", cleaned).strip()
+    return cleaned
+
+
+def format_clean_error(err: Any, *, max_chars: int = 512) -> str:
+    """Redact sensitive tokens, strip ChromeDriver C++ stacktraces, and format an error cleanly."""
+    redacted = redact_sensitive(err)
+    if isinstance(redacted, str):
+        text = redacted
+    elif redacted is None:
+        text = ""
+    else:
+        text = _safe_summary_text(redacted, f"<{type(err).__name__}>")
+    cleaned = strip_webdriver_stacktrace(text)
+    if not cleaned:
+        cleaned = f"<{type(err).__name__}>" if isinstance(err, BaseException) else ""
+    if max_chars > 0 and len(cleaned) > max_chars:
+        return cleaned[:max_chars].rstrip() + "...[truncated]"
+    return cleaned
 
 
 def _sub_html_input_value(match: re.Match[str]) -> str:

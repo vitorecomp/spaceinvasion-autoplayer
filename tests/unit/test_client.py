@@ -2597,6 +2597,177 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         self.assertEqual((actual_gal, actual_sys), (2, 387))
         self.assertEqual(cli.last_galaxy_coords, (2, 387))
 
+    def test_renderer_timeout_recovery_ensure_wait_navigate_and_open_url(self) -> None:
+        from selenium.common.exceptions import TimeoutException
+
+        raw_timeout_msg = (
+            "timeout: Timed out receiving message from renderer: 20.000\n"
+            "  (Session info: chrome=158.0.8127.36)\n"
+            "Stacktrace:\n"
+            "#0 0x5635f98bdf7a <unknown>\n"
+            "#24 0x7f7fbe121678 <unknown>"
+        )
+
+        # 1. _recover_renderer_timeout bounds script timeout to 3.0s, calls window.stop(), and restores timeout
+        drv_rec = MagicMock()
+        script_timeouts: list[float] = []
+        drv_rec.set_script_timeout.side_effect = lambda v: script_timeouts.append(float(v))
+        cli_rec = GameBrowserClient(drv_rec, min_nav_delay=(0.0, 0.0), timeout=25.0)
+        with patch("spaceinvasion.session.client.time.sleep"):
+            cli_rec._recover_renderer_timeout()
+        self.assertEqual(script_timeouts, [3.0, 25.0])
+        stop_calls = [
+            call.args[0] for call in drv_rec.execute_script.call_args_list if call.args and "window.stop()" in str(call.args[0])
+        ]
+        self.assertGreaterEqual(len(stop_calls), 2)
+
+        # 2. ensure_in_game recovers once from TimeoutException and raises clean SpaceInvasionAuthError on repeat
+        drv_ens = _FakeDriver()
+        drv_ens.frames["F_planets"].elements_by_id["json-container"] = _FakeElement(
+            tag="script",
+            text=_sample_planets_json(),
+        )
+        cli_ens = GameBrowserClient(drv_ens, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        orig_find = drv_ens.find_element
+        fail_left = [1]
+
+        def _flaky_find(by, val):
+            if fail_left[0] > 0 and val == "F_planets":
+                fail_left[0] -= 1
+                raise TimeoutException(raw_timeout_msg)
+            return orig_find(by, val)
+
+        drv_ens.find_element = _flaky_find  # type: ignore[method-assign]
+        with patch.object(cli_ens, "_recover_renderer_timeout") as mock_rec:
+            cli_ens.ensure_in_game()
+        self.assertEqual(mock_rec.call_count, 1)
+
+        fail_left[0] = 5
+        with patch.object(cli_ens, "_recover_renderer_timeout") as mock_rec2:
+            with self.assertRaises(SpaceInvasionAuthError) as ctx_ens:
+                cli_ens.ensure_in_game()
+        self.assertEqual(mock_rec2.call_count, 1)
+        self.assertIn("Renderer timed out", str(ctx_ens.exception))
+        self.assertNotIn("Stacktrace:", str(ctx_ens.exception))
+
+        # 3. _wait_frame_ready recovers once from TimeoutException and accepts interactive landed frame
+        drv_wait = MagicMock()
+        valid_html = "<html><body><div class='buildings-panel'>" + ("x" * 100) + "</div></body></html>"
+        drv_wait.page_source = valid_html
+        wait_probes = [
+            TimeoutException(raw_timeout_msg),
+            {
+                "ready": "interactive",
+                "href": "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalBuildings&sid=tok",
+                "token": None,
+            },
+        ]
+        def _wait_exec(script, *args):
+            if "document.readyState" in script:
+                val = wait_probes.pop(0)
+                if isinstance(val, BaseException):
+                    raise val
+                return val
+            return None
+
+        drv_wait.execute_script.side_effect = _wait_exec
+        cli_wait = GameBrowserClient(drv_wait, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        with patch.object(cli_wait, "_switch_frame"), patch.object(cli_wait, "_recover_renderer_timeout") as mock_wrec:
+            got_html = cli_wait._wait_frame_ready("F_Hauptframe", expected_action="internalBuildings", nav_token="tok-old")
+        self.assertEqual(got_html, valid_html)
+        self.assertEqual(mock_wrec.call_count, 1)
+
+        # Repeated TimeoutException inside _wait_frame_ready raises clean SpaceInvasionAuthError
+        drv_wait2 = MagicMock()
+        drv_wait2.execute_script.side_effect = TimeoutException(raw_timeout_msg)
+        cli_wait2 = GameBrowserClient(drv_wait2, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        with patch.object(cli_wait2, "_switch_frame"), patch.object(cli_wait2, "_recover_renderer_timeout") as mock_wrec2:
+            with self.assertRaises(SpaceInvasionAuthError) as ctx_w:
+                cli_wait2._wait_frame_ready("F_Hauptframe", expected_action="internalBuildings", nav_token="tok-old")
+        self.assertEqual(mock_wrec2.call_count, 1)
+        self.assertIn("Renderer timed out waiting for frame F_Hauptframe", str(ctx_w.exception))
+        self.assertNotIn("Stacktrace:", str(ctx_w.exception))
+
+        # 4. navigate_menu: (a) already-landed after click timeout returns without double-click
+        drv_nav1 = MagicMock()
+        drv_nav1.page_source = valid_html
+        click_count_1 = [0]
+        link1 = MagicMock()
+
+        def _click_timeout_once():
+            click_count_1[0] += 1
+            raise TimeoutException(raw_timeout_msg)
+
+        link1.click.side_effect = _click_timeout_once
+        drv_nav1.find_element.return_value = link1
+        drv_nav1.execute_script.side_effect = lambda script, *args: (
+            {
+                "ready": "interactive",
+                "href": "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalBuildings",
+                "token": None,
+            }
+            if "document.readyState" in script
+            else None
+        )
+        cli_nav1 = GameBrowserClient(drv_nav1, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        with patch.object(cli_nav1, "_switch_frame"), patch.object(cli_nav1, "_recover_renderer_timeout") as mock_nrec1:
+            html_nav1 = cli_nav1.navigate_menu("internalBuildings")
+        self.assertEqual(html_nav1, valid_html)
+        self.assertEqual(click_count_1[0], 1)
+        self.assertEqual(mock_nrec1.call_count, 1)
+
+        # (b) stale frame (same nav_token) causes navigate_menu to retry click once and succeed
+        drv_nav2 = MagicMock()
+        drv_nav2.page_source = valid_html
+        click_count_2 = [0]
+        last_token = [""]
+        link2 = MagicMock()
+
+        def _click_fail_first():
+            click_count_2[0] += 1
+            if click_count_2[0] == 1:
+                raise TimeoutException(raw_timeout_msg)
+
+        link2.click.side_effect = _click_fail_first
+        drv_nav2.find_element.return_value = link2
+
+        def _nav2_exec(script, *args):
+            if "__siNavToken = arguments[0]" in script:
+                last_token[0] = str(args[0])
+                return None
+            if "document.readyState" in script:
+                # Attempt 1 recovery sees stale token -> returns None; Attempt 2 sees cleared token -> succeeds
+                return {
+                    "ready": "complete",
+                    "href": "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalBuildings",
+                    "token": last_token[0] if click_count_2[0] == 1 else None,
+                }
+            return None
+
+        drv_nav2.execute_script.side_effect = _nav2_exec
+        cli_nav2 = GameBrowserClient(drv_nav2, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        with patch.object(cli_nav2, "_switch_frame"), patch.object(cli_nav2, "_recover_renderer_timeout") as mock_nrec2:
+            html_nav2 = cli_nav2.navigate_menu("internalBuildings")
+        self.assertEqual(html_nav2, valid_html)
+        self.assertEqual(click_count_2[0], 2)
+        self.assertEqual(mock_nrec2.call_count, 1)
+
+        # (c) _open_frame_url_with_retry raises clean SpaceInvasionAuthError after 2 consecutive timeouts
+        drv_url = MagicMock()
+        drv_url.execute_script.side_effect = lambda script, *args: (
+            (_ for _ in ()).throw(TimeoutException(raw_timeout_msg)) if "location.href =" in script else None
+        )
+        cli_url = GameBrowserClient(drv_url, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        with patch.object(cli_url, "_switch_frame"), patch.object(cli_url, "_recover_renderer_timeout") as mock_urec:
+            with self.assertRaises(SpaceInvasionAuthError) as ctx_u:
+                cli_url._open_frame_url_with_retry(
+                    "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalMessages&sid=abc",
+                    expected_action="internalMessages",
+                )
+        self.assertEqual(mock_urec.call_count, 1)
+        self.assertIn("Renderer timed out loading internalMessages", str(ctx_u.exception))
+        self.assertNotIn("Stacktrace:", str(ctx_u.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
