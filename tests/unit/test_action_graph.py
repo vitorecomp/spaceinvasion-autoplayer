@@ -8,6 +8,8 @@ import unittest
 
 from spaceinvasion.action_graph import (
     build_action_graph,
+    build_ai_planner_graph,
+    build_fleet_planner_graph,
     merge_strategy_config_overrides,
 )
 from spaceinvasion.config import StrategyConfig
@@ -21,6 +23,7 @@ from spaceinvasion.state import (
     FleetAlert,
     GameState,
     PlanetState,
+    QueueJob,
     ResearchOffer,
     Resources,
     UnitOffer,
@@ -808,6 +811,393 @@ class TestActionGraphEngine(unittest.TestCase):
         self.assertIn("queue_order", edge_map[("act_0", "act_1")]["types"])
         self.assertIn("level_chain", edge_map[("act_1", "act_2")]["types"])
         self.assertIn("prerequisite", edge_map[("act_1", "act_3")]["types"])
+
+    def _assert_generic_strict_dag(self, graph: dict) -> None:
+        dumped = json.dumps(graph, allow_nan=False)
+        self.assertNotIn("NaN", dumped)
+        self.assertNotIn("Infinity", dumped)
+
+        nodes = graph["nodes"]
+        edges = graph["edges"]
+        by_id = {n["id"]: n for n in nodes}
+        self.assertEqual(len(by_id), len(nodes))
+        seen_pairs: set[tuple[str, str]] = set()
+        for idx, n in enumerate(nodes):
+            self.assertEqual(n["order_index"], idx)
+            self.assertGreaterEqual(n["topological_layer"], 0)
+        for edge in edges:
+            src = edge["source"]
+            dst = edge["target"]
+            self.assertIn(src, by_id)
+            self.assertIn(dst, by_id)
+            self.assertNotIn((src, dst), seen_pairs)
+            seen_pairs.add((src, dst))
+            self.assertLess(
+                by_id[src]["topological_layer"],
+                by_id[dst]["topological_layer"],
+                f"Layer violation on {edge}",
+            )
+            self.assertTrue(edge["label"].strip())
+            self.assertIn(edge["primary_type"], edge["types"])
+
+    def test_build_ai_planner_graph_windowing_filters_and_causal_edges(self) -> None:
+        p1 = _mk_planet(
+            101,
+            "Homeworld",
+            "01:042:07",
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            buildings={"b1": 5, "b2": 3, "b5": 6, "b7": 1, "b8": 0, "b9": 0},
+        )
+        p2 = _mk_planet(
+            202,
+            "ColonyTwo",
+            "01:042:08",
+            resources=Resources(500, 500, 500, 500),
+            buildings={"b1": 2, "b5": 3},
+        )
+        st = GameState(1, 1, "cmdr", 1000.0, (p1, p2), active_planet_id=101, researches={"r1": 1, "r2": 0})
+
+        # Empty / None plan_result
+        empty_g = build_ai_planner_graph(st, None)
+        self._assert_generic_strict_dag(empty_g)
+        self.assertEqual(empty_g["planner_mode"], "ai_planner")
+        self.assertEqual(empty_g["nodes"], [])
+        self.assertEqual(empty_g["edges"], [])
+
+        plan_result = {
+            "steps": [
+                # Step 1 already completed on p1 (b1 is already L5!)
+                {
+                    "seq": 1,
+                    "start_sec": 0.0,
+                    "duration_sec": 300.0,
+                    "finish_sec": 300.0,
+                    "week": 1,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "01:042:07",
+                    "planet_name": "Homeworld",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 5,
+                    "cost": {"pig_iron": 1000, "metal": 400, "kryptonite": 0, "spice": 0},
+                },
+                # Step 2: b5 L7 (energy producer on p1)
+                {
+                    "seq": 2,
+                    "start_sec": 300.0,
+                    "duration_sec": 600.0,
+                    "finish_sec": 900.0,
+                    "week": 1,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "01:042:07",
+                    "planet_name": "Homeworld",
+                    "entity_key": "b5",
+                    "entity_name": "Fusion plant",
+                    "target_level": 7,
+                    "cost": {"pig_iron": 2000, "metal": 800, "kryptonite": 0, "spice": 0},
+                },
+                # Step 3: b1 L6 (pig iron mine on p1, consumes energy -> energy_support from b5)
+                {
+                    "seq": 3,
+                    "start_sec": 900.0,
+                    "duration_sec": 900.0,
+                    "finish_sec": 1800.0,
+                    "week": 1,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "01:042:07",
+                    "planet_name": "Homeworld",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 6,
+                    "cost": {"pig_iron": 3000, "metal": 1200, "kryptonite": 0, "spice": 0},
+                },
+                # Step 4: b1 L7 (level_chain from b1 L6)
+                {
+                    "seq": 4,
+                    "start_sec": 1800.0,
+                    "duration_sec": 1200.0,
+                    "finish_sec": 3000.0,
+                    "week": 1,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "01:042:07",
+                    "planet_name": "Homeworld",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 7,
+                    "cost": {"pig_iron": 4500, "metal": 1800, "kryptonite": 0, "spice": 0},
+                },
+                # Step 5: b2 L4 (Blast furnace -> resource_feed 2:1 Pig iron from b1)
+                {
+                    "seq": 5,
+                    "start_sec": 3000.0,
+                    "duration_sec": 1500.0,
+                    "finish_sec": 4500.0,
+                    "week": 1,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "01:042:07",
+                    "planet_name": "Homeworld",
+                    "entity_key": "b2",
+                    "entity_name": "Blast furnace",
+                    "target_level": 4,
+                    "cost": {"pig_iron": 4000, "metal": 2000, "kryptonite": 0, "spice": 0},
+                },
+                # Step 6: b7 L2 -> Step 7: b8 L1 (prerequisite b7 L2 -> b8 L1) -> Step 8: r2 L1 (prerequisite b8 L1 -> r2 L1)
+                {
+                    "seq": 6,
+                    "start_sec": 4500.0,
+                    "duration_sec": 1800.0,
+                    "finish_sec": 6300.0,
+                    "week": 1,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "01:042:07",
+                    "planet_name": "Homeworld",
+                    "entity_key": "b7",
+                    "entity_name": "Development center",
+                    "target_level": 2,
+                    "cost": {"pig_iron": 2500, "metal": 2500, "kryptonite": 1000, "spice": 0},
+                },
+                {
+                    "seq": 7,
+                    "start_sec": 6300.0,
+                    "duration_sec": 2400.0,
+                    "finish_sec": 8700.0,
+                    "week": 1,
+                    "kind": "BUILD",
+                    "planet_id": 101,
+                    "planet_coords": "01:042:07",
+                    "planet_name": "Homeworld",
+                    "entity_key": "b8",
+                    "entity_name": "Research lab",
+                    "target_level": 1,
+                    "cost": {"pig_iron": 2000, "metal": 4000, "kryptonite": 2000, "spice": 0},
+                },
+                {
+                    "seq": 8,
+                    "start_sec": 8700.0,
+                    "duration_sec": 3600.0,
+                    "finish_sec": 12300.0,
+                    "week": 2,
+                    "kind": "RESEARCH",
+                    "planet_id": 0,
+                    "planet_coords": "",
+                    "planet_name": "Empire",
+                    "entity_key": "r2",
+                    "entity_name": "Energy technology",
+                    "target_level": 1,
+                    "cost": {"pig_iron": 0, "metal": 800, "kryptonite": 1600, "spice": 800},
+                },
+                # Step 9: ColonyTwo b1 L3 in week 2
+                {
+                    "seq": 9,
+                    "start_sec": 610000.0,
+                    "duration_sec": 1200.0,
+                    "finish_sec": 611200.0,
+                    "week": 2,
+                    "kind": "BUILD",
+                    "planet_id": 202,
+                    "planet_coords": "01:042:08",
+                    "planet_name": "ColonyTwo",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 3,
+                    "cost": {"pig_iron": 900, "metal": 400, "kryptonite": 0, "spice": 0},
+                },
+            ]
+        }
+
+        # Default window skips completed Step 1
+        g = build_ai_planner_graph(st, plan_result, window_size=40)
+        self._assert_generic_strict_dag(g)
+        self.assertEqual(g["planner_mode"], "ai_planner")
+        self.assertEqual(g["summary"]["total_plan_steps"], 9)
+        self.assertEqual(g["summary"]["completed_steps"], 1)
+        self.assertEqual(g["summary"]["remaining_steps"], 8)
+        self.assertEqual([n["step_seq"] for n in g["nodes"]], [2, 3, 4, 5, 6, 7, 8, 9])
+
+        by_seq = {n["step_seq"]: n for n in g["nodes"]}
+        self.assertEqual(by_seq[2]["status"], "ready")
+        self.assertEqual(by_seq[9]["status"], "waiting_resources")
+        self.assertIn("m", by_seq[2]["duration_text"])
+
+        edge_map = {(e["source"], e["target"]): e for e in g["edges"]}
+        # b5 L7 -> b1 L6 (energy_support + queue_order)
+        self.assertIn("energy_support", edge_map[("ai_2", "ai_3")]["types"])
+        self.assertIn("queue_order", edge_map[("ai_2", "ai_3")]["types"])
+        # b1 L6 -> b1 L7 (level_chain)
+        self.assertIn("level_chain", edge_map[("ai_3", "ai_4")]["types"])
+        # b1 L7 -> b2 L4 (resource_feed 2:1 Pig iron)
+        self.assertIn("resource_feed", edge_map[("ai_4", "ai_5")]["types"])
+        # b7 L2 -> b8 L1 -> r2 L1 (prerequisite)
+        self.assertIn("prerequisite", edge_map[("ai_6", "ai_7")]["types"])
+        self.assertIn("prerequisite", edge_map[("ai_7", "ai_8")]["types"])
+
+        # Window size slicing
+        g_win = build_ai_planner_graph(st, plan_result, window_size=3)
+        self._assert_generic_strict_dag(g_win)
+        self.assertEqual(len(g_win["nodes"]), 3)
+        self.assertEqual([n["step_seq"] for n in g_win["nodes"]], [2, 3, 4])
+
+        # Week filter (week 2 only)
+        g_w2 = build_ai_planner_graph(st, plan_result, week_filter=2)
+        self._assert_generic_strict_dag(g_w2)
+        self.assertEqual([n["step_seq"] for n in g_w2["nodes"]], [8, 9])
+        self.assertEqual(g_w2["summary"]["week_filter"], 2)
+
+        # Week 1 filter retains completed step 1 for historical inspection
+        g_w1 = build_ai_planner_graph(st, plan_result, week_filter=1)
+        self._assert_generic_strict_dag(g_w1)
+        self.assertEqual(g_w1["nodes"][0]["step_seq"], 1)
+        self.assertEqual(g_w1["nodes"][0]["status"], "completed")
+
+        # Planet filter by coords & global
+        g_p2 = build_ai_planner_graph(st, plan_result, planet_filter="01:042:08")
+        self._assert_generic_strict_dag(g_p2)
+        self.assertEqual([n["step_seq"] for n in g_p2["nodes"]], [8, 9])
+
+        g_glob = build_ai_planner_graph(st, plan_result, planet_filter="global")
+        self._assert_generic_strict_dag(g_glob)
+        self.assertEqual([n["step_seq"] for n in g_glob["nodes"]], [8])
+
+    def test_build_fleet_planner_graph_slot_budgets_inflight_and_all_fleet_kinds(self) -> None:
+        p1 = _mk_planet(
+            101,
+            "HubWorld",
+            "01:042:07",
+            buildings={"b1": 10, "b9": 6, "b10": 1},  # max_slots = 1 + 1 = 2
+            ships={"s1": 10, "s2": 5, "s4": 25, "s9": 15, "s10": 4, "s11": 3},
+        )
+        p2 = _mk_planet(
+            202,
+            "StagingColony",
+            "01:042:08",
+            buildings={"b1": 8, "b10": 0},  # max_slots = 1 + 0 = 1 (will be full!)
+            ships={"s4": 10},
+        )
+        active_queues = (
+            QueueJob(
+                category="fleet",
+                name="Attack [01:042:10]",
+                remaining_text="12m 0s",
+                remaining_seconds=720.0,
+                detail="Outbound raid",
+                origin_coords="01:042:07",
+            ),
+            QueueJob(
+                category="fleet",
+                name="Recycle [01:042:11]",
+                remaining_text="5m 0s",
+                remaining_seconds=300.0,
+                detail="Debris harvest",
+                origin_coords="01:042:08",
+            ),
+            # Shipyard build on fleet category must NOT count as in-flight fleet slot
+            QueueJob(
+                category="fleet",
+                name="Small fighter (x5)",
+                remaining_text="2m 0s",
+                remaining_seconds=120.0,
+                detail="Shipyard queue",
+                origin_coords="01:042:07",
+            ),
+        )
+        st = GameState(
+            1,
+            1,
+            "cmdr",
+            2000.0,
+            (p1, p2),
+            active_planet_id=101,
+            active_queues=active_queues,
+        )
+        planned = [
+            # Non-fleet BUILD/RESEARCH must be excluded from Tab 4 Fleet graph
+            PlannedAction("P2", "BUILD", 101, "01:042:07", "Pig iron mine", "Excluded", target_id=1, target_level=11, executable_now=True),
+            PlannedAction("P2", "RESEARCH", 101, "01:042:07", "Mining technology", "Excluded", target_id=1, target_level=4, executable_now=True),
+            # Fleet & shipyard actions
+            PlannedAction("P0", "ALERT_HOSTILE", 101, "01:042:07", "Incoming attack", "Hostile detected", executable_now=False),
+            PlannedAction("P0", "ESCAPE_FLIGHT", 101, "01:042:07", "Escape flight", "Save fleet", executable_now=True),
+            PlannedAction("P1", "BUILD_SHIP", 101, "01:042:07", "Spy probe", "Replace probes", target_id=10, target_level=2, executable_now=True),
+            PlannedAction("P1", "BUILD_SHIP", 101, "01:042:07", "Recycler", "Add recycler", target_id=11, target_level=1, executable_now=True),
+            PlannedAction("P1", "BUILD_SHIP", 101, "01:042:07", "Colony ship", "New colony", target_id=8, target_level=1, executable_now=False),
+            PlannedAction("P1", "SCAN_GALAXY", 101, "01:042:07", "Galaxy [01:042]", "Scan local system", executable_now=True),
+            PlannedAction("P1", "SPY", 101, "01:042:07", "01:042:12 (Inactive)", "Scout target", target_id=10, target_level=1, executable_now=True),
+            PlannedAction("P1", "COLONIZE", 101, "01:042:07", "01:042:09", "Colonize slot", target_id=8, target_level=1, executable_now=False),
+            PlannedAction("P2", "TRANSPORT", 101, "01:042:07", "Transport to [01:042:08]", "Feed upgrade", executable_now=True),
+            PlannedAction("P2", "STATION", 101, "01:042:07", "Station at [01:042:08]", "Deploy raiders", executable_now=True),
+            PlannedAction("P2", "ATTACK", 202, "01:042:08", "01:042:12 (Inactive)", "Raid target", executable_now=False),
+            PlannedAction("P2", "RECYCLE", 101, "01:042:07", "01:042:12 Debris", "Harvest debris", executable_now=True),
+            PlannedAction("P2", "ACTIVATE_TRANSMITTER", 0, "", "Interdimensional Transmitter", "Free spin", executable_now=True),
+        ]
+        telemetry = {"median_loot_spice_eq": 18500.0, "median_round_trip_seconds": 1800.0, "sample_count": 14}
+        spare = {"spare_percent": {"pig_iron": 10.0, "metal": 10.0}, "can_spend": True}
+
+        fg = build_fleet_planner_graph(
+            st,
+            planned,
+            StrategyConfig(),
+            attack_telemetry=telemetry,
+            spare_budget=spare,
+        )
+        self._assert_generic_strict_dag(fg)
+        self.assertEqual(fg["planner_mode"], "fleet_planner")
+        self.assertEqual(fg["attack_telemetry"]["median_loot_spice_eq"], 18500.0)
+        self.assertTrue(fg["spare_budget"]["can_spend"])
+
+        # Slot budgets: HubWorld (b10=1 -> 1/2), StagingColony (b10=0 -> 1/1 full)
+        sb_by_pid = {b["planet_id"]: b for b in fg["slot_budgets"]}
+        self.assertEqual(sb_by_pid[101]["b10_level"], 1)
+        self.assertEqual(sb_by_pid[101]["used_slots"], 1)
+        self.assertEqual(sb_by_pid[101]["max_slots"], 2)
+        self.assertEqual(sb_by_pid[101]["available_slots"], 1)
+        self.assertEqual(sb_by_pid[101]["solar_cells"], 15)
+        self.assertEqual(sb_by_pid[202]["b10_level"], 0)
+        self.assertEqual(sb_by_pid[202]["used_slots"], 1)
+        self.assertEqual(sb_by_pid[202]["max_slots"], 1)
+        self.assertEqual(sb_by_pid[202]["available_slots"], 0)
+
+        self.assertEqual(fg["summary"]["total_slots_used"], 2)
+        self.assertEqual(fg["summary"]["total_slots_max"], 3)
+        self.assertEqual(fg["summary"]["in_flight_count"], 2)
+
+        kinds = {n["kind"] for n in fg["nodes"]}
+        self.assertNotIn("BUILD", kinds)
+        self.assertNotIn("RESEARCH", kinds)
+        for expected_kind in (
+            "IN_FLIGHT",
+            "ALERT_HOSTILE",
+            "ESCAPE_FLIGHT",
+            "ATTACK",
+            "RECYCLE",
+            "SPY",
+            "SCAN_GALAXY",
+            "TRANSPORT",
+            "STATION",
+            "COLONIZE",
+            "BUILD_SHIP",
+            "ACTIVATE_TRANSMITTER",
+        ):
+            self.assertIn(expected_kind, kinds)
+
+        # Full-slot edge on StagingColony: in-flight Recycle (inflight_1) -> planned ATTACK on p2
+        p2_inflight = next(n for n in fg["nodes"] if n["in_flight"] and n["planet_id"] == 202)
+        p2_attack = next(n for n in fg["nodes"] if n["kind"] == "ATTACK" and n["planet_id"] == 202)
+        station_node = next(n for n in fg["nodes"] if n["kind"] == "STATION")
+        edge_map = {(e["source"], e["target"]): e for e in fg["edges"]}
+        self.assertIn("queue_order", edge_map[(p2_inflight["id"], p2_attack["id"])]["types"])
+        # Cross-planet STATION -> ATTACK at destination planet 01:042:08
+        self.assertIn("prerequisite", edge_map[(station_node["id"], p2_attack["id"])]["types"])
+
+        # Empty/None state safety
+        fg_none = build_fleet_planner_graph(None, [], StrategyConfig())
+        self._assert_generic_strict_dag(fg_none)
+        self.assertEqual(fg_none["nodes"], [])
+        self.assertEqual(fg_none["slot_budgets"], [])
 
 
 if __name__ == "__main__":

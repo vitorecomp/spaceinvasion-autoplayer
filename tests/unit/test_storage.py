@@ -1277,6 +1277,204 @@ class TestGameDatabase(unittest.TestCase):
             finally:
                 db2.close()
 
+    def test_v013_config_optimizer_ai_planner_reserved_floors_and_field_conflicts(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="si_v13_store_") as td:
+            db = GameDatabase(Path(td) / "v13_store.db", attack_history_path="")
+            try:
+                # 1. Reserved building floor can be updated before any optimizer run without faking active result
+                self.assertIsNone(db.get_active_config_optimizer())
+                self.assertEqual(db.get_reserved_building_floors(), {})
+
+                floors1 = db.update_reserved_building_floor(
+                    "12476",
+                    "6",
+                    8,
+                    reason="Keep Thermosolar plant L8",
+                )
+                self.assertEqual(floors1, {"12476": {"b6": 8}})
+                self.assertEqual(db.get_reserved_building_floors(), {"12476": {"b6": 8}})
+                self.assertIsNone(db.get_active_config_optimizer())
+
+                # 2. Record Config Optimizer run (preserves existing reserved floors, sanitizes NaN & sid)
+                cfg_res1 = {
+                    "schema_version": 1,
+                    "meta_parameters": {"target_ship_key": "s16", "bad_nan": float("nan")},
+                    "summary": {
+                        "ships_per_month": 42.5,
+                        "limiting_factor": "kryptonite",
+                        "note": "sid=SECRET_OPT_TOKEN_1234",
+                    },
+                    "planets": [{"planet_id": 12476, "coords": "02:380:12"}],
+                }
+                rid1 = db.record_config_optimizer_run(
+                    cfg_res1,
+                    params={"target_ship_key": "s16", "ga_population_size": 100},
+                    trigger_source="manual",
+                    elapsed_ms=125.4,
+                    set_active=True,
+                )
+                self.assertGreater(rid1, 0)
+
+                active_cfg = db.get_active_config_optimizer()
+                self.assertIsNotNone(active_cfg)
+                assert active_cfg is not None
+                self.assertEqual(active_cfg["run_id"], rid1)
+                self.assertEqual(active_cfg["reserved_floors"], {"12476": {"b6": 8}})
+                self.assertEqual(active_cfg["result"]["summary"]["ships_per_month"], 42.5)
+                dumped_cfg = json.dumps(active_cfg, allow_nan=False)
+                self.assertNotIn("SECRET_OPT_TOKEN_1234", dumped_cfg)
+
+                # Second run with set_active=False appends history without replacing active
+                rid2 = db.record_config_optimizer_run(
+                    {
+                        "summary": {"ships_per_month": 55.0, "limiting_factor": "spice"},
+                        "meta_parameters": {"target_ship_key": "s15"},
+                    },
+                    reserved_floors={"12476": {"b6": 8, "b11": 12}},
+                    trigger_source="preview",
+                    elapsed_ms=80.0,
+                    set_active=False,
+                )
+                self.assertGreater(rid2, rid1)
+                self.assertEqual(db.get_active_config_optimizer()["run_id"], rid1)  # type: ignore[index]
+
+                cfg_runs = db.list_config_optimizer_runs(limit=10)
+                self.assertEqual([r["id"] for r in cfg_runs], [rid2, rid1])
+                self.assertEqual(cfg_runs[0]["target_ship_key"], "s15")
+                self.assertEqual(cfg_runs[0]["ships_per_month"], 55.0)
+                self.assertEqual(cfg_runs[0]["limiting_factor"], "spice")
+                self.assertEqual(cfg_runs[0]["reserved_floors"], {"12476": {"b6": 8, "b11": 12}})
+
+                # Updating & clearing reserved floors preserves active result/run_id
+                floors2 = db.update_reserved_building_floor("02:380:15", "b14", 9)
+                self.assertEqual(floors2, {"12476": {"b6": 8}, "02:380:15": {"b14": 9}})
+                floors3 = db.update_reserved_building_floor("12476", "b6", 0)
+                self.assertEqual(floors3, {"02:380:15": {"b14": 9}})
+                self.assertEqual(db.get_active_config_optimizer()["run_id"], rid1)  # type: ignore[index]
+
+                # 3. Record AI-Planner runs (active + history + config_run_id linkage + finite JSON)
+                self.assertIsNone(db.get_active_ai_planner())
+                ai_res1 = {
+                    "meta_parameters": {"reward_weeks": 26, "weekly_discount": 0.9},
+                    "summary": {
+                        "discounted_reward_spice_eq": 123456.75,
+                        "total_net_spice_eq": 456789.5,
+                        "inf_guard": float("inf"),
+                    },
+                    "steps": [
+                        {"seq": 1, "kind": "BUILD", "planet_id": 12476, "entity_key": "b1", "target_level": 13},
+                        {"seq": 2, "kind": "RESEARCH", "planet_id": 0, "entity_key": "r1", "target_level": 5},
+                    ],
+                }
+                ai_id1 = db.record_ai_planner_run(
+                    ai_res1,
+                    config_run_id=rid1,
+                    trigger_source="auto_replan",
+                    elapsed_ms=340.2,
+                    set_active=True,
+                )
+                self.assertGreater(ai_id1, 0)
+
+                ai_id2 = db.record_ai_planner_run(
+                    {
+                        "meta_parameters": {"reward_weeks": 12, "weekly_discount": 0.85},
+                        "summary": {"discounted_reward_spice_eq": 50000.0, "total_net_spice_eq": 90000.0},
+                        "steps": [{"seq": 1, "kind": "BUILD", "planet_id": 12476, "entity_key": "b2", "target_level": 12}],
+                    },
+                    config_run_id=rid2,
+                    trigger_source="preview",
+                    elapsed_ms=95.0,
+                    set_active=False,
+                )
+                self.assertGreater(ai_id2, ai_id1)
+
+                active_ai = db.get_active_ai_planner()
+                self.assertIsNotNone(active_ai)
+                assert active_ai is not None
+                self.assertEqual(active_ai["run_id"], ai_id1)
+                self.assertEqual(active_ai["config_run_id"], rid1)
+                self.assertEqual(active_ai["summary"]["discounted_reward_spice_eq"], 123456.75)
+                self.assertEqual(len(active_ai["result"]["steps"]), 2)
+                json.dumps(active_ai, allow_nan=False)
+
+                ai_runs = db.list_ai_planner_runs(limit=10)
+                self.assertEqual([r["id"] for r in ai_runs], [ai_id2, ai_id1])
+                self.assertEqual(ai_runs[0]["reward_weeks"], 12)
+                self.assertEqual(ai_runs[0]["actions_count"], 1)
+                self.assertEqual(ai_runs[1]["config_run_id"], rid1)
+                self.assertEqual(ai_runs[1]["actions_count"], 2)
+
+                # 4. Field conflict prompts (upsert, candidates fallback, resolve, append-only events, idempotency)
+                fc1 = db.upsert_field_conflict_prompt(
+                    {
+                        "conflict_key": "12476:b1:25",
+                        "planet_id": 12476,
+                        "planet_coords": "2:380:12",
+                        "planet_name": "Homeworld",
+                        "blocked_building_key": "b1",
+                        "blocked_building_name": "Pig iron mine",
+                        "blocked_target_level": 25,
+                        "fields_used": 230,
+                        "fields_max": 230,
+                        "candidates": [
+                            {"building_key": "b6", "name": "Thermosolar plant", "level": 6},
+                            {"building_key": "b11", "name": "Pig iron warehouse", "level": 10},
+                        ],
+                    }
+                )
+                self.assertEqual(fc1["conflict_key"], "12476:b1:25")
+                self.assertEqual(fc1["planet_coords"], "02:380:12")
+                self.assertEqual(fc1["candidate_building_key"], "b6")
+                self.assertEqual(fc1["candidate_level"], 6)
+                self.assertEqual(fc1["status"], "pending")
+                self.assertIsNone(fc1["resolved_ts"])
+                self.assertEqual(len(db.list_field_conflict_prompts(status="pending")), 1)
+                self.assertEqual(len(db.list_field_conflict_prompts(status="resolved")), 0)
+
+                # Resolve with keep_reserve -> persists decision & resolved_ts & appends event
+                resolved = db.resolve_field_conflict_prompt(
+                    "12476:b1:25",
+                    "keep_reserve",
+                    detail={"reserved_level": 6, "triggered_replan": True},
+                )
+                self.assertIsNotNone(resolved)
+                assert resolved is not None
+                self.assertEqual(resolved["status"], "resolved")
+                self.assertEqual(resolved["decision"], "keep_reserve")
+                self.assertIsNotNone(resolved["resolved_ts"])
+                self.assertTrue(resolved["detail"]["triggered_replan"])
+                self.assertEqual(len(db.list_field_conflict_prompts(status="pending")), 0)
+                self.assertEqual(len(db.list_field_conflict_prompts(status="resolved")), 1)
+                self.assertEqual(len(db.list_field_conflict_prompts(status=None)), 1)
+
+                # Subsequent upsert on an already-resolved conflict_key must NOT reopen it to pending
+                fc1_again = db.upsert_field_conflict_prompt(
+                    {
+                        "conflict_key": "12476:b1:25",
+                        "planet_id": 12476,
+                        "planet_coords": "02:380:12",
+                        "blocked_building_key": "b1",
+                        "blocked_target_level": 25,
+                        "candidate_building_key": "b6",
+                        "candidate_level": 6,
+                    }
+                )
+                self.assertEqual(fc1_again["status"], "resolved")
+                self.assertEqual(fc1_again["decision"], "keep_reserve")
+
+                # Missing conflict_key returns None
+                self.assertIsNone(db.resolve_field_conflict_prompt("nonexistent:key", "demolish"))
+
+                summ = db.summary()
+                self.assertEqual(summ["counts"]["config_optimizer_active"], 1)
+                self.assertEqual(summ["counts"]["config_optimizer_runs"], 2)
+                self.assertEqual(summ["counts"]["ai_planner_active"], 1)
+                self.assertEqual(summ["counts"]["ai_planner_runs"], 2)
+                self.assertEqual(summ["counts"]["field_conflict_prompts"], 1)
+                self.assertGreaterEqual(summ["counts"]["field_conflict_events"], 2)
+            finally:
+                db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

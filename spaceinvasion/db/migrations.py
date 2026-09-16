@@ -31,7 +31,7 @@ DEFAULT_RANK_HISTORY_JSON_PATH = Path("state") / "rank_history.json"
 DEFAULT_SNAPSHOT_JSON_PATH = Path("state") / "snapshot.json"
 DEFAULT_CONFIG_YAML_PATH = Path("config.yaml")
 
-LATEST_SCHEMA_VERSION: int = 12
+LATEST_SCHEMA_VERSION: int = 13
 SCHEMA_VERSION: str = str(LATEST_SCHEMA_VERSION)
 ATTACK_HISTORY_SCHEMA_VERSION: int = 2
 
@@ -878,6 +878,98 @@ CREATE INDEX IF NOT EXISTS idx_colony_candidates_hot_sys
 """,
         data_hook_name="backfill_v012_hot_tables",
     ),
+    Migration(
+        version=13,
+        name="v013_config_optimizer_ai_planner_and_field_conflicts",
+        description="Add hot active tables (config_optimizer_active, ai_planner_active, field_conflict_prompts) and append-only history tables (config_optimizer_runs, ai_planner_runs, field_conflict_events) for the 4-tab Action Graph planner.",
+        sql="""
+CREATE TABLE IF NOT EXISTS config_optimizer_active (
+    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+    run_id INTEGER,
+    updated_ts REAL NOT NULL,
+    params_json TEXT NOT NULL,
+    reserved_floors_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_planner_active (
+    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+    run_id INTEGER,
+    config_run_id INTEGER,
+    updated_ts REAL NOT NULL,
+    params_json TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    result_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS field_conflict_prompts (
+    conflict_key TEXT PRIMARY KEY,
+    planet_id INTEGER NOT NULL,
+    planet_coords TEXT NOT NULL,
+    blocked_building_key TEXT NOT NULL,
+    blocked_target_level INTEGER NOT NULL,
+    candidate_building_key TEXT NOT NULL,
+    candidate_level INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    decision TEXT NOT NULL DEFAULT '',
+    created_ts REAL NOT NULL,
+    resolved_ts REAL,
+    detail_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_field_conflict_prompts_status_ts
+    ON field_conflict_prompts(status, created_ts);
+CREATE INDEX IF NOT EXISTS idx_field_conflict_prompts_planet
+    ON field_conflict_prompts(planet_id, status);
+
+CREATE TABLE IF NOT EXISTS config_optimizer_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_ts REAL NOT NULL,
+    trigger_source TEXT NOT NULL,
+    elapsed_ms REAL NOT NULL DEFAULT 0,
+    target_ship_key TEXT NOT NULL DEFAULT 's16',
+    ships_per_month REAL NOT NULL DEFAULT 0,
+    limiting_factor TEXT NOT NULL DEFAULT '',
+    params_json TEXT NOT NULL,
+    reserved_floors_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_config_optimizer_runs_ts
+    ON config_optimizer_runs(created_ts);
+
+CREATE TABLE IF NOT EXISTS ai_planner_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_ts REAL NOT NULL,
+    config_run_id INTEGER,
+    trigger_source TEXT NOT NULL,
+    elapsed_ms REAL NOT NULL DEFAULT 0,
+    reward_weeks INTEGER NOT NULL DEFAULT 26,
+    weekly_discount REAL NOT NULL DEFAULT 0.9,
+    discounted_reward_spice_eq REAL NOT NULL DEFAULT 0,
+    total_net_spice_eq REAL NOT NULL DEFAULT 0,
+    actions_count INTEGER NOT NULL DEFAULT 0,
+    params_json TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    result_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_planner_runs_ts
+    ON ai_planner_runs(created_ts);
+CREATE INDEX IF NOT EXISTS idx_ai_planner_runs_cfg
+    ON ai_planner_runs(config_run_id, created_ts);
+
+CREATE TABLE IF NOT EXISTS field_conflict_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_ts REAL NOT NULL,
+    conflict_key TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    decision TEXT NOT NULL DEFAULT '',
+    detail_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_field_conflict_events_key_ts
+    ON field_conflict_events(conflict_key, created_ts);
+CREATE INDEX IF NOT EXISTS idx_field_conflict_events_ts
+    ON field_conflict_events(created_ts);
+""",
+    ),
 )
 
 # Canonical table tier division:
@@ -898,6 +990,9 @@ HOT_TABLES: tuple[str, ...] = (
     "ui_notifications",
     "universe_research_max",
     "manual_queue",
+    "config_optimizer_active",
+    "ai_planner_active",
+    "field_conflict_prompts",
     "schema_migrations",
 )
 
@@ -918,6 +1013,9 @@ HISTORY_TABLES: tuple[str, ...] = (
     "manual_queue_events",
     "universe_research_max_history",
     "colony_attempts",
+    "config_optimizer_runs",
+    "ai_planner_runs",
+    "field_conflict_events",
     "schema_migration_events",
 )
 
@@ -957,6 +1055,12 @@ GAME_REQUIRED_TABLES: tuple[str, ...] = (
     "manual_queue",
     "manual_queue_events",
     "colony_attempts",
+    "config_optimizer_active",
+    "config_optimizer_runs",
+    "ai_planner_active",
+    "ai_planner_runs",
+    "field_conflict_prompts",
+    "field_conflict_events",
     "schema_migrations",
     "schema_migration_events",
 )

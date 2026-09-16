@@ -545,7 +545,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
     def test_v009_universe_research_max_monotonic_ledger_and_append_only_history(self) -> None:
         from spaceinvasion.combat.fleet import SpyReport
 
-        self.assertEqual(LATEST_SCHEMA_VERSION, 12)
+        self.assertEqual(LATEST_SCHEMA_VERSION, 13)
         with tempfile.TemporaryDirectory(prefix="si_mig_v9_") as tmp:
             db_path = Path(tmp) / "v9.db"
             db_v8 = GameDatabase(db_path, attack_history_path="", target_schema_version=8)
@@ -627,7 +627,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 self.assertEqual(mig11["version"], 11)
                 self.assertFalse(mig11["up_to_date"])
                 mig12 = db.run_migrations(target_version=LATEST_SCHEMA_VERSION, backup=False)
-                self.assertEqual(mig12["version"], 12)
+                self.assertEqual(mig12["version"], LATEST_SCHEMA_VERSION)
                 self.assertTrue(mig12["up_to_date"])
                 chk = db.verify_schema(full_integrity=True)
                 self.assertTrue(chk["ok"], chk)
@@ -663,12 +663,12 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
         hot_set = set(HOT_TABLES)
         hist_set = set(HISTORY_TABLES)
         req_set = set(GAME_REQUIRED_TABLES)
-        self.assertEqual(len(hot_set), 15)
-        self.assertEqual(len(hist_set), 17)
-        self.assertEqual(len(req_set), 32)
+        self.assertEqual(len(hot_set), 18)
+        self.assertEqual(len(hist_set), 20)
+        self.assertEqual(len(req_set), 38)
         self.assertEqual(hot_set & hist_set, set())
         self.assertEqual(hot_set | hist_set, req_set)
-        self.assertEqual(len(TABLE_TIER_BY_NAME), 32)
+        self.assertEqual(len(TABLE_TIER_BY_NAME), 38)
         for tbl in hot_set:
             self.assertEqual(TABLE_TIER_BY_NAME[tbl], "hot")
         for tbl in hist_set:
@@ -764,14 +764,17 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                     limit=50,
                 )
 
-                # Upgrade V011 -> V012 with backup & backfill
+                # Upgrade V011 -> V012 with backup & backfill, then advance to LATEST_SCHEMA_VERSION (V013)
                 mig12 = db.run_migrations(target_version=12, backup=True)
                 self.assertEqual(mig12["version"], 12)
-                self.assertTrue(mig12["up_to_date"])
+                self.assertFalse(mig12["up_to_date"])
+                mig_head = db.run_migrations(target_version=LATEST_SCHEMA_VERSION, backup=False)
+                self.assertEqual(mig_head["version"], LATEST_SCHEMA_VERSION)
+                self.assertTrue(mig_head["up_to_date"])
                 chk = db.verify_schema(full_integrity=True)
                 self.assertTrue(chk["ok"], chk)
-                self.assertEqual(chk["table_tiers"]["hot_count"], 15)
-                self.assertEqual(chk["table_tiers"]["history_count"], 17)
+                self.assertEqual(chk["table_tiers"]["hot_count"], 18)
+                self.assertEqual(chk["table_tiers"]["history_count"], 20)
 
                 summ = db.summary()
                 self.assertEqual(summ["counts"]["latest_state_hot"], 1)
@@ -827,6 +830,79 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 )
             finally:
                 db.close()
+
+    def test_v013_staged_upgrade_from_v012_checksum_tiers_and_cli_verify(self) -> None:
+        v13_hot = {"config_optimizer_active", "ai_planner_active", "field_conflict_prompts"}
+        v13_hist = {"config_optimizer_runs", "ai_planner_runs", "field_conflict_events"}
+        self.assertTrue(v13_hot.issubset(set(HOT_TABLES)))
+        self.assertTrue(v13_hist.issubset(set(HISTORY_TABLES)))
+        self.assertTrue((v13_hot | v13_hist).issubset(set(GAME_REQUIRED_TABLES)))
+
+        with tempfile.TemporaryDirectory(prefix="si_mig_v13_") as tmp:
+            db_path = Path(tmp) / "v12_to_v13.db"
+            # Seed a DB pinned at V012
+            db_v12 = GameDatabase(db_path, attack_history_path="", target_schema_version=12)
+            try:
+                sv12 = db_v12.get_migration_status(include_events=False)
+                self.assertEqual(sv12["version"], 12)
+                self.assertEqual(sv12["version_tag"], "V012")
+                self.assertFalse(sv12["up_to_date"])
+                self.assertEqual(sv12["pending_count"], 1)
+                self.assertEqual(sv12["pending_migrations"][0]["version"], 13)
+
+                # All V013 GameDatabase methods degrade safely when DB is pinned at V012
+                self.assertEqual(db_v12.record_config_optimizer_run({"summary": {}}), 0)
+                self.assertIsNone(db_v12.get_active_config_optimizer())
+                self.assertEqual(db_v12.list_config_optimizer_runs(), [])
+                self.assertEqual(db_v12.get_reserved_building_floors(), {})
+                self.assertEqual(db_v12.update_reserved_building_floor("101", "b6", 4), {})
+                self.assertEqual(db_v12.record_ai_planner_run({"summary": {}}), 0)
+                self.assertIsNone(db_v12.get_active_ai_planner())
+                self.assertEqual(db_v12.list_ai_planner_runs(), [])
+                self.assertEqual(db_v12.list_field_conflict_prompts(), [])
+                self.assertIsNone(db_v12.resolve_field_conflict_prompt("101:b1:15", "demolish"))
+            finally:
+                db_v12.close()
+
+            # Upgrade V012 -> V013 via CLI entrypoint with online backup + full integrity verify
+            buf_mig = io.StringIO()
+            with contextlib.redirect_stdout(buf_mig):
+                rc_m = migrations_cli_main(["--db", str(db_path), "--json", "migrate", "--backup"])
+            self.assertEqual(rc_m, 0)
+            mig_res = json.loads(buf_mig.getvalue())
+            self.assertEqual(mig_res["from_version"], 12)
+            self.assertEqual(mig_res["version"], 13)
+            self.assertEqual(mig_res["version_tag"], "V013")
+            self.assertTrue(mig_res["up_to_date"])
+            self.assertIsNotNone(mig_res["backup_path"])
+            self.assertTrue(Path(mig_res["backup_path"]).exists())
+
+            buf_ver = io.StringIO()
+            with contextlib.redirect_stdout(buf_ver):
+                rc_v = migrations_cli_main(["--db", str(db_path), "--json", "verify", "--full-integrity"])
+            self.assertEqual(rc_v, 0)
+            ver_res = json.loads(buf_ver.getvalue())
+            self.assertTrue(ver_res["ok"], ver_res)
+            self.assertTrue(ver_res["sqlite_integrity_ok"])
+            self.assertEqual(ver_res["missing_tables"], [])
+            self.assertEqual(ver_res["checksum_drift"], [])
+            self.assertEqual(ver_res["table_tiers"]["hot_count"], 18)
+            self.assertEqual(ver_res["table_tiers"]["history_count"], 20)
+
+            # Verify V013 checksum & table usability on reopened GameDatabase
+            db_v13 = GameDatabase(db_path, attack_history_path="")
+            try:
+                v13_spec = next(m for m in GAME_DB_MIGRATIONS if m.version == 13)
+                applied_v13 = next(
+                    m for m in db_v13.get_migration_status(include_events=False)["applied_migrations"] if m["version"] == 13
+                )
+                self.assertEqual(applied_v13["checksum"], v13_spec.checksum)
+                summ = db_v13.summary()
+                for tbl in v13_hot | v13_hist:
+                    self.assertIn(tbl, summ["counts"])
+                    self.assertEqual(summ["counts"][tbl], 0)
+            finally:
+                db_v13.close()
 
 
 if __name__ == "__main__":

@@ -7787,6 +7787,12 @@ class GameDatabase:
             "manual_queue",
             "manual_queue_events",
             "colony_attempts",
+            "config_optimizer_active",
+            "config_optimizer_runs",
+            "ai_planner_active",
+            "ai_planner_runs",
+            "field_conflict_prompts",
+            "field_conflict_events",
             "schema_migrations",
             "schema_migration_events",
         )
@@ -8590,3 +8596,763 @@ class GameDatabase:
                 "by_coords": by_coords,
             }
         )
+
+    # ------------------------------------------------------------------
+    # V013: Config Optimizer, AI-Planner, and Field-Conflict Persistence
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_building_key(raw: Any) -> str:
+        txt = _sanitize_text(raw).strip().lower()
+        if not txt:
+            return ""
+        if txt.isascii() and txt.isdigit():
+            return f"b{int(txt)}"
+        if txt.startswith("b") and txt[1:].isascii() and txt[1:].isdigit():
+            return f"b{int(txt[1:])}"
+        return txt[:32]
+
+    @classmethod
+    def _normalize_reserved_floors(cls, raw: Any) -> dict[str, dict[str, int]]:
+        if not isinstance(raw, Mapping):
+            return {}
+        out: dict[str, dict[str, int]] = {}
+        for p_key_raw, b_map in raw.items():
+            p_key = _sanitize_text(p_key_raw).strip()[:64]
+            if not p_key or not isinstance(b_map, Mapping):
+                continue
+            clean_b: dict[str, int] = {}
+            for b_key_raw, lvl_raw in b_map.items():
+                b_key = cls._normalize_building_key(b_key_raw)
+                lvl = max(0, _safe_int(lvl_raw, 0))
+                if b_key and lvl > 0:
+                    clean_b[b_key] = game_data.cap_json_int(lvl)
+            if clean_b:
+                out[p_key] = clean_b
+        return out
+
+    def _read_reserved_floors_locked(self) -> dict[str, dict[str, int]]:
+        if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "config_optimizer_active"):
+            return {}
+        row = self._conn.execute(
+            "SELECT reserved_floors_json FROM config_optimizer_active WHERE singleton_id = 1 LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return {}
+        return self._normalize_reserved_floors(_safe_json_dict(row["reserved_floors_json"]))
+
+    def record_config_optimizer_run(
+        self,
+        result: Mapping[str, Any],
+        *,
+        params: Optional[Mapping[str, Any]] = None,
+        reserved_floors: Optional[Mapping[str, Any]] = None,
+        trigger_source: str = "manual",
+        elapsed_ms: float = 0.0,
+        set_active: bool = True,
+    ) -> int:
+        """Append a Config Optimizer run to history and optionally promote it to `config_optimizer_active`."""
+        clean_result = _safe_json_dict(result)
+        meta_obj = (
+            clean_result.get("meta_parameters")
+            if isinstance(clean_result.get("meta_parameters"), Mapping)
+            else {}
+        )
+        summary_obj = (
+            clean_result.get("summary")
+            if isinstance(clean_result.get("summary"), Mapping)
+            else {}
+        )
+        clean_params = _safe_json_dict(params) if params is not None else _safe_json_dict(meta_obj)
+        clean_trigger = _sanitize_text(trigger_source or "manual").strip()[:64] or "manual"
+        eff_elapsed = max(
+            0.0,
+            _safe_float(
+                elapsed_ms if (elapsed_ms is not None and _safe_float(elapsed_ms, 0.0) > 0.0) else clean_result.get("elapsed_ms", 0.0),
+                0.0,
+            ),
+        )
+        target_ship_key = (
+            _sanitize_text(
+                clean_params.get("target_ship_key")
+                or meta_obj.get("target_ship_key")
+                or summary_obj.get("target_ship_key")
+                or "s16"
+            ).strip()[:32]
+            or "s16"
+        )
+        ships_per_month = _safe_float(
+            summary_obj.get(
+                "ships_per_month",
+                summary_obj.get(
+                    "target_ships_per_month",
+                    summary_obj.get(
+                        "best_ships_per_month",
+                        clean_result.get("ships_per_month", 0.0),
+                    ),
+                ),
+            ),
+            0.0,
+        )
+        limiting_factor = _sanitize_text(
+            summary_obj.get("limiting_factor", clean_result.get("limiting_factor", ""))
+        ).strip()[:128]
+        now_ts = round(time.time(), 3)
+
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "config_optimizer_runs"):
+                return 0
+            if reserved_floors is not None:
+                eff_floors = self._normalize_reserved_floors(reserved_floors)
+            else:
+                existing_floors = self._read_reserved_floors_locked()
+                param_floors = self._normalize_reserved_floors(
+                    clean_params.get("reserved_floors_by_planet")
+                    if isinstance(clean_params.get("reserved_floors_by_planet"), Mapping)
+                    else {}
+                )
+                eff_floors = {pk: dict(bmap) for pk, bmap in existing_floors.items()}
+                for pk, bmap in param_floors.items():
+                    merged_b = eff_floors.setdefault(pk, {})
+                    for bk, lvl in bmap.items():
+                        merged_b[bk] = max(lvl, merged_b.get(bk, 0))
+
+            params_json = _json_dumps(clean_params)
+            floors_json = _json_dumps(eff_floors)
+            result_json = _json_dumps(clean_result)
+
+            cur = self._conn.execute(
+                """
+                INSERT INTO config_optimizer_runs(
+                    created_ts, trigger_source, elapsed_ms, target_ship_key,
+                    ships_per_month, limiting_factor, params_json,
+                    reserved_floors_json, result_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now_ts,
+                    clean_trigger,
+                    round(eff_elapsed, 3),
+                    target_ship_key,
+                    ships_per_month,
+                    limiting_factor,
+                    params_json,
+                    floors_json,
+                    result_json,
+                ),
+            )
+            run_id = int(cur.lastrowid or 0)
+            if set_active and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "config_optimizer_active"):
+                self._conn.execute(
+                    """
+                    INSERT INTO config_optimizer_active(
+                        singleton_id, run_id, updated_ts, params_json,
+                        reserved_floors_json, result_json
+                    ) VALUES (1, ?, ?, ?, ?, ?)
+                    ON CONFLICT(singleton_id) DO UPDATE SET
+                        run_id = excluded.run_id,
+                        updated_ts = excluded.updated_ts,
+                        params_json = excluded.params_json,
+                        reserved_floors_json = excluded.reserved_floors_json,
+                        result_json = excluded.result_json
+                    """,
+                    (run_id, now_ts, params_json, floors_json, result_json),
+                )
+            self._conn.commit()
+        return run_id
+
+    def get_active_config_optimizer(self) -> Optional[dict[str, Any]]:
+        """Read the active Config Optimizer snapshot from `config_optimizer_active`."""
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "config_optimizer_active"):
+                return None
+            row = self._conn.execute(
+                """
+                SELECT singleton_id, run_id, updated_ts, params_json,
+                       reserved_floors_json, result_json
+                FROM config_optimizer_active
+                WHERE singleton_id = 1
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        run_id = _safe_optional_int(row["run_id"])
+        result_dict = _safe_json_dict(row["result_json"])
+        if run_id is None and not result_dict:
+            return None
+        return _sanitize_obj(
+            {
+                "run_id": game_data.cap_json_int(run_id) if run_id is not None else None,
+                "updated_ts": _safe_float(row["updated_ts"], 0.0),
+                "params": _safe_json_dict(row["params_json"]),
+                "reserved_floors": self._normalize_reserved_floors(
+                    _safe_json_dict(row["reserved_floors_json"])
+                ),
+                "result": result_dict,
+            }
+        )
+
+    def list_config_optimizer_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        """List append-only Config Optimizer history runs ordered newest first."""
+        lim = max(1, min(500, _sql_int(limit, 20)))
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "config_optimizer_runs"):
+                return []
+            rows = self._conn.execute(
+                """
+                SELECT id, created_ts, trigger_source, elapsed_ms, target_ship_key,
+                       ships_per_month, limiting_factor, params_json, reserved_floors_json
+                FROM config_optimizer_runs
+                ORDER BY created_ts DESC, id DESC
+                LIMIT ?
+                """,
+                (lim,),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            out.append(
+                _sanitize_obj(
+                    {
+                        "id": game_data.cap_json_int(_safe_int(r["id"], 0)),
+                        "created_ts": _safe_float(r["created_ts"], 0.0),
+                        "trigger_source": _sanitize_text(r["trigger_source"] or ""),
+                        "elapsed_ms": _safe_float(r["elapsed_ms"], 0.0),
+                        "target_ship_key": _sanitize_text(r["target_ship_key"] or "s16"),
+                        "ships_per_month": _safe_float(r["ships_per_month"], 0.0),
+                        "limiting_factor": _sanitize_text(r["limiting_factor"] or ""),
+                        "params": _safe_json_dict(r["params_json"]),
+                        "reserved_floors": self._normalize_reserved_floors(
+                            _safe_json_dict(r["reserved_floors_json"])
+                        ),
+                    }
+                )
+            )
+        return out
+
+    def get_reserved_building_floors(self) -> dict[str, dict[str, int]]:
+        """Return per-planet reserved minimum building level floors persisted on `config_optimizer_active`."""
+        with self._lock:
+            floors = self._read_reserved_floors_locked()
+        return _sanitize_obj(floors)
+
+    def update_reserved_building_floor(
+        self,
+        planet_key: str,
+        building_key: str,
+        min_level: int,
+        *,
+        reason: str = "",
+    ) -> dict[str, dict[str, int]]:
+        """Upsert a per-planet building level floor into `config_optimizer_active.reserved_floors_json`."""
+        _ = _sanitize_text(reason).strip()
+        pk = _sanitize_text(planet_key).strip()[:64]
+        bk = self._normalize_building_key(building_key)
+        lvl = max(0, _safe_int(min_level, 0))
+        now_ts = round(time.time(), 3)
+
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "config_optimizer_active"):
+                return {}
+            row = self._conn.execute(
+                """
+                SELECT run_id, params_json, reserved_floors_json, result_json
+                FROM config_optimizer_active
+                WHERE singleton_id = 1
+                LIMIT 1
+                """
+            ).fetchone()
+            floors = (
+                self._normalize_reserved_floors(_safe_json_dict(row["reserved_floors_json"]))
+                if row is not None
+                else {}
+            )
+            if pk and bk:
+                if lvl > 0:
+                    floors.setdefault(pk, {})[bk] = game_data.cap_json_int(lvl)
+                else:
+                    if pk in floors:
+                        floors[pk].pop(bk, None)
+                        if not floors[pk]:
+                            floors.pop(pk, None)
+            floors_json = _json_dumps(floors)
+            run_id = _sql_optional_int(row["run_id"]) if row is not None else None
+            params_json = str(row["params_json"]) if row is not None else "{}"
+            result_json = str(row["result_json"]) if row is not None else "{}"
+            self._conn.execute(
+                """
+                INSERT INTO config_optimizer_active(
+                    singleton_id, run_id, updated_ts, params_json,
+                    reserved_floors_json, result_json
+                ) VALUES (1, ?, ?, ?, ?, ?)
+                ON CONFLICT(singleton_id) DO UPDATE SET
+                    updated_ts = excluded.updated_ts,
+                    reserved_floors_json = excluded.reserved_floors_json
+                """,
+                (run_id, now_ts, params_json, floors_json, result_json),
+            )
+            self._conn.commit()
+        return _sanitize_obj(floors)
+
+    def record_ai_planner_run(
+        self,
+        result: Mapping[str, Any],
+        *,
+        config_run_id: Optional[int] = None,
+        params: Optional[Mapping[str, Any]] = None,
+        trigger_source: str = "manual",
+        elapsed_ms: float = 0.0,
+        set_active: bool = True,
+    ) -> int:
+        """Append an AI-Planner path search run to history and optionally promote it to `ai_planner_active`."""
+        clean_result = _safe_json_dict(result)
+        meta_obj = (
+            clean_result.get("meta_parameters")
+            if isinstance(clean_result.get("meta_parameters"), Mapping)
+            else {}
+        )
+        summary_obj = (
+            _safe_json_dict(clean_result.get("summary"))
+            if isinstance(clean_result.get("summary"), Mapping)
+            else {}
+        )
+        clean_params = _safe_json_dict(params) if params is not None else _safe_json_dict(meta_obj)
+        clean_trigger = _sanitize_text(trigger_source or "manual").strip()[:64] or "manual"
+        eff_elapsed = max(
+            0.0,
+            _safe_float(
+                elapsed_ms if (elapsed_ms is not None and _safe_float(elapsed_ms, 0.0) > 0.0) else clean_result.get("elapsed_ms", 0.0),
+                0.0,
+            ),
+        )
+        reward_weeks = max(
+            1,
+            _sql_int(
+                clean_params.get(
+                    "reward_weeks",
+                    meta_obj.get("reward_weeks", summary_obj.get("reward_weeks", 26)),
+                ),
+                26,
+            ),
+        )
+        weekly_discount = _safe_float(
+            clean_params.get(
+                "weekly_discount",
+                meta_obj.get("weekly_discount", summary_obj.get("weekly_discount", 0.9)),
+            ),
+            0.9,
+        )
+        discounted_reward = _safe_float(
+            summary_obj.get(
+                "discounted_reward_spice_eq",
+                summary_obj.get(
+                    "discounted_reward",
+                    summary_obj.get(
+                        "net_discounted_reward",
+                        clean_result.get("discounted_reward_spice_eq", 0.0),
+                    ),
+                ),
+            ),
+            0.0,
+        )
+        total_net = _safe_float(
+            summary_obj.get(
+                "total_net_spice_eq",
+                summary_obj.get(
+                    "total_net_production_spice_eq",
+                    summary_obj.get(
+                        "total_net",
+                        clean_result.get("total_net_spice_eq", 0.0),
+                    ),
+                ),
+            ),
+            0.0,
+        )
+        raw_steps = clean_result.get("steps")
+        if isinstance(raw_steps, list):
+            actions_count = len(raw_steps)
+        else:
+            actions_count = max(
+                0,
+                _sql_int(
+                    summary_obj.get("actions_count", summary_obj.get("total_steps", 0)),
+                    0,
+                ),
+            )
+        cfg_rid = _sql_optional_int(config_run_id)
+        now_ts = round(time.time(), 3)
+
+        params_json = _json_dumps(clean_params)
+        summary_json = _json_dumps(summary_obj)
+        result_json = _json_dumps(clean_result)
+
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "ai_planner_runs"):
+                return 0
+            cur = self._conn.execute(
+                """
+                INSERT INTO ai_planner_runs(
+                    created_ts, config_run_id, trigger_source, elapsed_ms,
+                    reward_weeks, weekly_discount, discounted_reward_spice_eq,
+                    total_net_spice_eq, actions_count,
+                    params_json, summary_json, result_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now_ts,
+                    cfg_rid,
+                    clean_trigger,
+                    round(eff_elapsed, 3),
+                    reward_weeks,
+                    weekly_discount,
+                    discounted_reward,
+                    total_net,
+                    actions_count,
+                    params_json,
+                    summary_json,
+                    result_json,
+                ),
+            )
+            run_id = int(cur.lastrowid or 0)
+            if set_active and DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "ai_planner_active"):
+                self._conn.execute(
+                    """
+                    INSERT INTO ai_planner_active(
+                        singleton_id, run_id, config_run_id, updated_ts,
+                        params_json, summary_json, result_json
+                    ) VALUES (1, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(singleton_id) DO UPDATE SET
+                        run_id = excluded.run_id,
+                        config_run_id = excluded.config_run_id,
+                        updated_ts = excluded.updated_ts,
+                        params_json = excluded.params_json,
+                        summary_json = excluded.summary_json,
+                        result_json = excluded.result_json
+                    """,
+                    (run_id, cfg_rid, now_ts, params_json, summary_json, result_json),
+                )
+            self._conn.commit()
+        return run_id
+
+    def get_active_ai_planner(self) -> Optional[dict[str, Any]]:
+        """Read the active AI-Planner snapshot from `ai_planner_active`."""
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "ai_planner_active"):
+                return None
+            row = self._conn.execute(
+                """
+                SELECT singleton_id, run_id, config_run_id, updated_ts,
+                       params_json, summary_json, result_json
+                FROM ai_planner_active
+                WHERE singleton_id = 1
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        run_id = _safe_optional_int(row["run_id"])
+        cfg_rid = _safe_optional_int(row["config_run_id"])
+        return _sanitize_obj(
+            {
+                "run_id": game_data.cap_json_int(run_id) if run_id is not None else None,
+                "config_run_id": game_data.cap_json_int(cfg_rid) if cfg_rid is not None else None,
+                "updated_ts": _safe_float(row["updated_ts"], 0.0),
+                "params": _safe_json_dict(row["params_json"]),
+                "summary": _safe_json_dict(row["summary_json"]),
+                "result": _safe_json_dict(row["result_json"]),
+            }
+        )
+
+    def list_ai_planner_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        """List append-only AI-Planner history runs ordered newest first."""
+        lim = max(1, min(500, _sql_int(limit, 20)))
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "ai_planner_runs"):
+                return []
+            rows = self._conn.execute(
+                """
+                SELECT id, created_ts, config_run_id, trigger_source, elapsed_ms,
+                       reward_weeks, weekly_discount, discounted_reward_spice_eq,
+                       total_net_spice_eq, actions_count, params_json, summary_json
+                FROM ai_planner_runs
+                ORDER BY created_ts DESC, id DESC
+                LIMIT ?
+                """,
+                (lim,),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            cfg_rid = _safe_optional_int(r["config_run_id"])
+            out.append(
+                _sanitize_obj(
+                    {
+                        "id": game_data.cap_json_int(_safe_int(r["id"], 0)),
+                        "created_ts": _safe_float(r["created_ts"], 0.0),
+                        "config_run_id": game_data.cap_json_int(cfg_rid) if cfg_rid is not None else None,
+                        "trigger_source": _sanitize_text(r["trigger_source"] or ""),
+                        "elapsed_ms": _safe_float(r["elapsed_ms"], 0.0),
+                        "reward_weeks": game_data.cap_json_int(_safe_int(r["reward_weeks"], 26)),
+                        "weekly_discount": _safe_float(r["weekly_discount"], 0.9),
+                        "discounted_reward_spice_eq": _safe_float(r["discounted_reward_spice_eq"], 0.0),
+                        "total_net_spice_eq": _safe_float(r["total_net_spice_eq"], 0.0),
+                        "actions_count": game_data.cap_json_int(_safe_int(r["actions_count"], 0)),
+                        "params": _safe_json_dict(r["params_json"]),
+                        "summary": _safe_json_dict(r["summary_json"]),
+                    }
+                )
+            )
+        return out
+
+    @staticmethod
+    def _row_to_field_conflict_dict(r: sqlite3.Row) -> dict[str, Any]:
+        resolved_ts_raw = r["resolved_ts"]
+        return _sanitize_obj(
+            {
+                "conflict_key": _sanitize_text(r["conflict_key"] or ""),
+                "planet_id": game_data.cap_json_int(_safe_int(r["planet_id"], 0)),
+                "planet_coords": _sanitize_text(r["planet_coords"] or ""),
+                "blocked_building_key": _sanitize_text(r["blocked_building_key"] or ""),
+                "blocked_target_level": game_data.cap_json_int(_safe_int(r["blocked_target_level"], 0)),
+                "candidate_building_key": _sanitize_text(r["candidate_building_key"] or ""),
+                "candidate_level": game_data.cap_json_int(_safe_int(r["candidate_level"], 0)),
+                "status": _sanitize_text(r["status"] or "pending"),
+                "decision": _sanitize_text(r["decision"] or ""),
+                "created_ts": _safe_float(r["created_ts"], 0.0),
+                "resolved_ts": _safe_optional_float(resolved_ts_raw),
+                "detail": _safe_json_dict(r["detail_json"]),
+            }
+        )
+
+    def upsert_field_conflict_prompt(self, conflict: Mapping[str, Any]) -> dict[str, Any]:
+        """Insert or update a max-field blocker prompt in `field_conflict_prompts` with append-only event audit."""
+        src = dict(conflict) if isinstance(conflict, Mapping) else {}
+        planet_id = max(0, _sql_int(src.get("planet_id"), 0))
+        raw_coords = _raw_text(src.get("planet_coords") or src.get("coords"), "").strip()
+        planet_coords = normalize_coords(raw_coords) if raw_coords else _sanitize_text(raw_coords)[:24]
+        blocked_bkey = self._normalize_building_key(
+            src.get("blocked_building_key") or src.get("building_key") or ""
+        )
+        blocked_tlvl = max(
+            0,
+            _sql_int(src.get("blocked_target_level", src.get("target_level", 0)), 0),
+        )
+
+        cand_bkey = self._normalize_building_key(src.get("candidate_building_key") or "")
+        cand_lvl = max(0, _sql_int(src.get("candidate_level", 0), 0))
+        raw_candidates = src.get("candidates")
+        if (not cand_bkey or cand_lvl <= 0) and isinstance(raw_candidates, Sequence) and not isinstance(raw_candidates, (str, bytes)):
+            for c_item in raw_candidates:
+                if isinstance(c_item, Mapping):
+                    ck = self._normalize_building_key(
+                        c_item.get("building_key") or c_item.get("key") or c_item.get("building_id") or ""
+                    )
+                    cl = max(0, _sql_int(c_item.get("level", c_item.get("current_level", 0)), 0))
+                    if ck:
+                        cand_bkey = cand_bkey or ck
+                        if cand_lvl <= 0:
+                            cand_lvl = cl
+                        break
+
+        conflict_key = _sanitize_text(src.get("conflict_key") or "").strip()[:128]
+        if not conflict_key:
+            loc = str(planet_id) if planet_id > 0 else (planet_coords or "0")
+            conflict_key = f"{loc}:{blocked_bkey or 'b0'}:{blocked_tlvl}"
+
+        status_in = _sanitize_text(src.get("status") or "pending").strip().lower()[:32] or "pending"
+        decision_in = _sanitize_text(src.get("decision") or "").strip().lower()[:64]
+        now_ts = round(_safe_float(src.get("created_ts"), time.time()) if src.get("created_ts") is not None else time.time(), 3)
+        resolved_ts_in = _safe_optional_float(src.get("resolved_ts"))
+
+        detail_dict: dict[str, Any] = {}
+        if isinstance(src.get("detail"), Mapping):
+            detail_dict.update(_safe_json_dict(src["detail"]))
+        for extra_k in (
+            "planet_name",
+            "blocked_building_name",
+            "candidate_building_name",
+            "fields_used",
+            "fields_max",
+            "candidates",
+            "reason",
+        ):
+            if extra_k in src and extra_k not in detail_dict:
+                detail_dict[extra_k] = src[extra_k]
+        detail_clean = _safe_json_dict(detail_dict)
+        detail_json = _json_dumps(detail_clean)
+
+        fallback_out = _sanitize_obj(
+            {
+                "conflict_key": conflict_key,
+                "planet_id": game_data.cap_json_int(planet_id),
+                "planet_coords": planet_coords,
+                "blocked_building_key": blocked_bkey,
+                "blocked_target_level": game_data.cap_json_int(blocked_tlvl),
+                "candidate_building_key": cand_bkey,
+                "candidate_level": game_data.cap_json_int(cand_lvl),
+                "status": status_in,
+                "decision": decision_in,
+                "created_ts": now_ts,
+                "resolved_ts": resolved_ts_in,
+                "detail": detail_clean,
+            }
+        )
+
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "field_conflict_prompts"):
+                return fallback_out
+            existing = self._conn.execute(
+                "SELECT * FROM field_conflict_prompts WHERE conflict_key = ? LIMIT 1",
+                (conflict_key,),
+            ).fetchone()
+            self._conn.execute(
+                """
+                INSERT INTO field_conflict_prompts(
+                    conflict_key, planet_id, planet_coords,
+                    blocked_building_key, blocked_target_level,
+                    candidate_building_key, candidate_level,
+                    status, decision, created_ts, resolved_ts, detail_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(conflict_key) DO UPDATE SET
+                    planet_id = excluded.planet_id,
+                    planet_coords = CASE WHEN excluded.planet_coords != '' THEN excluded.planet_coords ELSE field_conflict_prompts.planet_coords END,
+                    blocked_building_key = excluded.blocked_building_key,
+                    blocked_target_level = excluded.blocked_target_level,
+                    candidate_building_key = CASE WHEN excluded.candidate_building_key != '' THEN excluded.candidate_building_key ELSE field_conflict_prompts.candidate_building_key END,
+                    candidate_level = CASE WHEN excluded.candidate_level > 0 THEN excluded.candidate_level ELSE field_conflict_prompts.candidate_level END,
+                    status = CASE
+                        WHEN field_conflict_prompts.status = 'resolved' THEN field_conflict_prompts.status
+                        ELSE excluded.status
+                    END,
+                    decision = CASE
+                        WHEN field_conflict_prompts.status = 'resolved' THEN field_conflict_prompts.decision
+                        ELSE excluded.decision
+                    END,
+                    resolved_ts = COALESCE(field_conflict_prompts.resolved_ts, excluded.resolved_ts),
+                    detail_json = excluded.detail_json
+                """,
+                (
+                    conflict_key,
+                    planet_id,
+                    planet_coords,
+                    blocked_bkey,
+                    blocked_tlvl,
+                    cand_bkey,
+                    cand_lvl,
+                    status_in,
+                    decision_in,
+                    now_ts,
+                    resolved_ts_in,
+                    detail_json,
+                ),
+            )
+            if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "field_conflict_events"):
+                if existing is None:
+                    self._conn.execute(
+                        """
+                        INSERT INTO field_conflict_events(
+                            created_ts, conflict_key, event_type, decision, detail_json
+                        ) VALUES (?, ?, 'created', ?, ?)
+                        """,
+                        (now_ts, conflict_key, decision_in, detail_json),
+                    )
+                elif str(existing["status"] or "") != "resolved" and (
+                    str(existing["detail_json"] or "") != detail_json
+                    or str(existing["candidate_building_key"] or "") != cand_bkey
+                    or int(existing["candidate_level"] or 0) != cand_lvl
+                ):
+                    self._conn.execute(
+                        """
+                        INSERT INTO field_conflict_events(
+                            created_ts, conflict_key, event_type, decision, detail_json
+                        ) VALUES (?, ?, 'updated', ?, ?)
+                        """,
+                        (now_ts, conflict_key, decision_in, detail_json),
+                    )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT * FROM field_conflict_prompts WHERE conflict_key = ? LIMIT 1",
+                (conflict_key,),
+            ).fetchone()
+        return self._row_to_field_conflict_dict(row) if row is not None else fallback_out
+
+    def resolve_field_conflict_prompt(
+        self,
+        conflict_key: str,
+        decision: str,
+        *,
+        detail: Optional[Mapping[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Mark a field conflict prompt resolved with operator `decision` (`demolish` | `keep_reserve`) and append audit event."""
+        ck = _sanitize_text(conflict_key).strip()[:128]
+        if not ck:
+            return None
+        dec = _sanitize_text(decision).strip().lower()[:64]
+        now_ts = round(time.time(), 3)
+        extra_detail = _safe_json_dict(detail) if isinstance(detail, Mapping) else {}
+
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "field_conflict_prompts"):
+                return None
+            existing = self._conn.execute(
+                "SELECT * FROM field_conflict_prompts WHERE conflict_key = ? LIMIT 1",
+                (ck,),
+            ).fetchone()
+            if existing is None:
+                return None
+            merged_detail = _safe_json_dict(existing["detail_json"])
+            if extra_detail:
+                merged_detail.update(extra_detail)
+            detail_json = _json_dumps(merged_detail)
+            self._conn.execute(
+                """
+                UPDATE field_conflict_prompts
+                SET status = 'resolved',
+                    decision = ?,
+                    resolved_ts = ?,
+                    detail_json = ?
+                WHERE conflict_key = ?
+                """,
+                (dec, now_ts, detail_json, ck),
+            )
+            if DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "field_conflict_events"):
+                self._conn.execute(
+                    """
+                    INSERT INTO field_conflict_events(
+                        created_ts, conflict_key, event_type, decision, detail_json
+                    ) VALUES (?, ?, 'resolved', ?, ?)
+                    """,
+                    (now_ts, ck, dec, _json_dumps(extra_detail or merged_detail)),
+                )
+            self._conn.commit()
+            updated = self._conn.execute(
+                "SELECT * FROM field_conflict_prompts WHERE conflict_key = ? LIMIT 1",
+                (ck,),
+            ).fetchone()
+        return self._row_to_field_conflict_dict(updated) if updated is not None else None
+
+    def list_field_conflict_prompts(
+        self,
+        status: Optional[str] = "pending",
+    ) -> list[dict[str, Any]]:
+        """List field conflict prompts filtered by `status` (`pending`, `resolved`, or `None`/`all` for all)."""
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "field_conflict_prompts"):
+                return []
+            clean_status = _sanitize_text(status).strip().lower() if status is not None else ""
+            if not clean_status or clean_status in ("all", "*"):
+                rows = self._conn.execute(
+                    """
+                    SELECT * FROM field_conflict_prompts
+                    ORDER BY created_ts DESC, conflict_key ASC
+                    """
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT * FROM field_conflict_prompts
+                    WHERE status = ?
+                    ORDER BY created_ts DESC, conflict_key ASC
+                    """,
+                    (clean_status,),
+                ).fetchall()
+        return [self._row_to_field_conflict_dict(r) for r in rows]

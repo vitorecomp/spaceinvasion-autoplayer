@@ -14,8 +14,14 @@ from spaceinvasion.core.config import (
     normalize_planner_mode,
     strategy_config_from_dict,
 )
+from spaceinvasion.combat.fleet import normalize_coords
 from spaceinvasion.combat.ranking import attach_action_etas
-from spaceinvasion.core.state import GameState, PlanetState, normalize_planet_type
+from spaceinvasion.core.state import (
+    GameState,
+    PlanetState,
+    is_in_flight_fleet_job,
+    normalize_planet_type,
+)
 from spaceinvasion.planner.strategy import PlannedAction
 
 _SHIP_SLUG_BY_ID: dict[int, str] = {
@@ -1349,3 +1355,1438 @@ def build_action_graph(
         "ga_summary": ga_summary_clean,
     }
     return game_data.sanitize_json_tree(payload, nonfinite_float=0.0) if sanitize else payload
+
+
+# ---------------------------------------------------------------------------
+# Tab 3 (AI-Planner) & Tab 4 (Fleet / Attack Planner) DAG Builders
+# ---------------------------------------------------------------------------
+
+_COORDS_FULL_RE = re.compile(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", re.ASCII)
+
+_FLEET_PLANNER_KINDS: frozenset[str] = frozenset(
+    {
+        "ALERT_HOSTILE",
+        "ESCAPE_FLIGHT",
+        "ATTACK",
+        "RECYCLE",
+        "SPY",
+        "SCAN_GALAXY",
+        "TRANSPORT",
+        "STATION",
+        "COLONIZE",
+        "ABANDON_COLONY",
+        "BUILD_SHIP",
+        "ACTIVATE_TRANSMITTER",
+    }
+)
+
+_FLEET_DISPATCH_KINDS: frozenset[str] = frozenset(
+    {
+        "ESCAPE_FLIGHT",
+        "ATTACK",
+        "RECYCLE",
+        "SPY",
+        "TRANSPORT",
+        "STATION",
+        "COLONIZE",
+    }
+)
+
+
+def _extract_first_coords(text: str) -> str:
+    if not text:
+        return ""
+    m = _COORDS_FULL_RE.search(text)
+    if not m:
+        return ""
+    return normalize_coords(f"{int(m.group(1))}:{int(m.group(2))}:{int(m.group(3))}")
+
+
+def _kahn_longest_layers(
+    n_count: int,
+    edge_acc: Mapping[tuple[int, int], Mapping[str, str]],
+    node_ids: Sequence[str],
+) -> tuple[list[int], list[dict[str, Any]], dict[int, list[int]], dict[int, list[int]], dict[str, int]]:
+    incoming: dict[int, list[int]] = {i: [] for i in range(n_count)}
+    outgoing: dict[int, list[int]] = {i: [] for i in range(n_count)}
+    edges_out: list[dict[str, Any]] = []
+    by_edge_type: dict[str, int] = {}
+
+    for u_idx, v_idx in sorted(edge_acc.keys()):
+        type_map = edge_acc[(u_idx, v_idx)]
+        sorted_types = sorted(type_map.keys(), key=lambda t: _EDGE_RANK.get(t, 99))
+        primary_type = sorted_types[0]
+        label = type_map[primary_type]
+        incoming[v_idx].append(u_idx)
+        outgoing[u_idx].append(v_idx)
+        by_edge_type[primary_type] = by_edge_type.get(primary_type, 0) + 1
+        src_id = node_ids[u_idx]
+        dst_id = node_ids[v_idx]
+        edges_out.append(
+            {
+                "id": f"edge_{src_id}_{dst_id}",
+                "source": src_id,
+                "target": dst_id,
+                "primary_type": primary_type,
+                "types": sorted_types,
+                "label": label,
+            }
+        )
+
+    layers: list[int] = [0] * n_count
+    in_deg_work: list[int] = [len(incoming[i]) for i in range(n_count)]
+    ready_q: list[int] = [i for i in range(n_count) if in_deg_work[i] == 0]
+    q_head = 0
+    while q_head < len(ready_q):
+        u_node = ready_q[q_head]
+        q_head += 1
+        base_layer = layers[u_node]
+        for v_node in outgoing[u_node]:
+            if base_layer + 1 > layers[v_node]:
+                layers[v_node] = base_layer + 1
+            in_deg_work[v_node] -= 1
+            if in_deg_work[v_node] == 0:
+                ready_q.append(v_node)
+
+    return layers, edges_out, incoming, outgoing, by_edge_type
+
+
+def _parse_week_filter(raw: Any) -> Optional[int]:
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw >= 1 else None
+    s = _clean_str(raw).strip().lower()
+    if not s or s in ("all", "next", "window", "*"):
+        return None
+    if s.startswith("w") and s[1:].isascii() and s[1:].isdigit():
+        val = int(s[1:])
+        return val if val >= 1 else None
+    parsed = _clean_optional_int(s)
+    return parsed if (parsed is not None and parsed >= 1) else None
+
+
+def _dominant_cost_resource(cost_d: Mapping[str, int], missing_d: Mapping[str, int]) -> Optional[str]:
+    best_rk: Optional[str] = None
+    best_val = 0
+    for rk in _RESOURCE_KEYS:
+        mv = max(0, _clean_int(missing_d.get(rk, 0), 0))
+        if mv > best_val:
+            best_val = mv
+            best_rk = rk
+    if best_rk is not None:
+        return best_rk
+    for rk in _RESOURCE_KEYS:
+        cv = max(0, _clean_int(cost_d.get(rk, 0), 0))
+        if cv > best_val:
+            best_val = cv
+            best_rk = rk
+    return best_rk
+
+
+def build_ai_planner_graph(
+    state: Optional[GameState],
+    plan_result: Optional[Mapping[str, Any]],
+    *,
+    window_size: int = 40,
+    week_filter: Optional[int] = None,
+    planet_filter: Optional[int | str] = None,
+) -> dict[str, Any]:
+    """Construct a windowed, guaranteed-acyclic multi-lane Kahn DAG for Tab 3 (AI-Planner)."""
+    eff_window = max(1, min(250, _clean_int(window_size, 40)))
+    clean_week = _parse_week_filter(week_filter)
+
+    raw_pfilter = _clean_str(planet_filter).strip() if planet_filter is not None else ""
+    pfilter_global_only = raw_pfilter.lower() in ("global", "research", "0")
+    pfilter_pid = _clean_optional_int(planet_filter) if not pfilter_global_only else None
+    if pfilter_pid is not None and pfilter_pid <= 0:
+        pfilter_pid = None
+    pfilter_coords = normalize_coords(raw_pfilter) if (raw_pfilter and ":" in raw_pfilter) else ""
+    pfilter_name_low = (
+        raw_pfilter.lower()
+        if (raw_pfilter and not pfilter_global_only and pfilter_pid is None and not pfilter_coords)
+        else ""
+    )
+
+    planets_by_id: dict[int, PlanetState] = {}
+    planets_by_coords: dict[str, PlanetState] = {}
+    planets_by_name: dict[str, PlanetState] = {}
+    ordered_planets: list[PlanetState] = []
+    if state is not None:
+        for p in getattr(state, "planets", ()) or ():
+            pid = _clean_int(getattr(p, "planet_id", 0), 0)
+            p_coords = normalize_coords(_clean_str(getattr(p, "coords", "")))
+            p_name = _clean_str(getattr(p, "name", ""))
+            planets_by_id[pid] = p
+            if p_coords:
+                planets_by_coords[p_coords] = p
+            if p_name:
+                planets_by_name[p_name.lower()] = p
+            ordered_planets.append(p)
+
+    researches_map: dict[str, int] = {}
+    if state is not None and isinstance(getattr(state, "researches", None), Mapping):
+        for rk, rv in state.researches.items():
+            researches_map[_clean_str(rk)] = max(0, _clean_int(rv, 0))
+
+    raw_steps_seq: list[Mapping[str, Any]] = []
+    if isinstance(plan_result, Mapping):
+        cand_steps = plan_result.get("steps")
+        if isinstance(cand_steps, Sequence) and not isinstance(cand_steps, (str, bytes)):
+            raw_steps_seq = [s for s in cand_steps if isinstance(s, Mapping)]
+
+    # Normalize & classify every plan step (including completed status against live state)
+    all_steps: list[dict[str, Any]] = []
+    available_weeks_set: set[int] = set()
+    completed_total = 0
+
+    for raw_pos, step in enumerate(raw_steps_seq):
+        seq_num = _clean_int(step.get("seq"), raw_pos + 1)
+        kind = _clean_str(step.get("kind"), "BUILD").strip().upper() or "BUILD"
+        if kind not in ("BUILD", "RESEARCH", "COLONIZE_PREVIEW"):
+            kind = "BUILD"
+
+        raw_start = step.get("start_sec")
+        if raw_start is None and step.get("start_hours") is not None:
+            raw_start = _clean_float(step.get("start_hours"), 0.0) * 3600.0
+        start_sec = max(0.0, _clean_float(raw_start, 0.0))
+
+        raw_dur = step.get("duration_sec")
+        if raw_dur is None and step.get("duration_hours") is not None:
+            raw_dur = _clean_float(step.get("duration_hours"), 0.0) * 3600.0
+        dur_sec = max(0.0, _clean_float(raw_dur, 0.0))
+
+        raw_fin = step.get("finish_sec")
+        if raw_fin is None and step.get("finish_hours") is not None:
+            raw_fin = _clean_float(step.get("finish_hours"), 0.0) * 3600.0
+        finish_sec = max(start_sec + dur_sec, _clean_float(raw_fin, start_sec + dur_sec))
+
+        week_raw = _clean_optional_int(step.get("week"))
+        week_num = week_raw if (week_raw is not None and week_raw >= 1) else (int(start_sec // (7.0 * 86400.0)) + 1)
+        available_weeks_set.add(week_num)
+
+        s_pid = _clean_int(step.get("planet_id"), 0)
+        s_coords_raw = _clean_str(step.get("planet_coords") or step.get("coords"))
+        s_coords = normalize_coords(s_coords_raw) if s_coords_raw else ""
+        s_pname = _clean_str(step.get("planet_name"))
+        s_slot = _clean_optional_int(step.get("planet_slot", step.get("slot")))
+
+        p_obj: Optional[PlanetState] = None
+        if s_pid > 0:
+            p_obj = planets_by_id.get(s_pid)
+        if p_obj is None and s_coords:
+            p_obj = planets_by_coords.get(s_coords)
+        if p_obj is None and s_pname:
+            p_obj = planets_by_name.get(s_pname.lower())
+        if p_obj is not None:
+            if s_pid <= 0:
+                s_pid = _clean_int(p_obj.planet_id, 0)
+            if not s_coords:
+                s_coords = normalize_coords(_clean_str(p_obj.coords))
+            if not s_pname:
+                s_pname = _clean_str(p_obj.name)
+
+        entity_key = _clean_str(step.get("entity_key") or step.get("target_id") or "").strip().lower()
+        entity_name = _clean_str(step.get("entity_name") or step.get("target_name") or "").strip()
+        target_level = _clean_optional_int(step.get("target_level"))
+
+        bid: Optional[int] = None
+        rkey: Optional[str] = None
+        if kind == "BUILD":
+            bid = _resolve_building_id(entity_key, entity_name)
+            if bid is not None:
+                if not entity_key:
+                    entity_key = f"b{bid}"
+                if not entity_name:
+                    b_info = game_data.BUILDING_BY_ID.get(bid)
+                    entity_name = _clean_str(b_info.get("name") if b_info else f"Building {bid}")
+        elif kind == "RESEARCH":
+            rkey = _resolve_research_key(entity_key, entity_name)
+            if rkey is not None:
+                if not entity_key:
+                    entity_key = rkey
+                if not entity_name:
+                    r_info = game_data.RESEARCH_BY_ID.get(rkey)
+                    entity_name = _clean_str(r_info.get("name") if r_info else rkey.upper())
+        else:
+            if not entity_name:
+                entity_name = f"Colony Preview ({s_pname or s_coords or f'Slot {s_slot or 0}'})"
+
+        is_completed = False
+        if kind == "BUILD" and p_obj is not None and bid is not None and target_level is not None and target_level > 0:
+            is_completed = p_obj.building_level(bid) >= target_level
+        elif kind == "RESEARCH" and rkey is not None and target_level is not None and target_level > 0:
+            is_completed = researches_map.get(rkey, 0) >= target_level
+
+        if is_completed:
+            completed_total += 1
+
+        cost_d = _res_to_dict(step.get("cost"))
+        missing_d = {rk: 0 for rk in _RESOURCE_KEYS}
+        if not is_completed and p_obj is not None:
+            p_res = _res_to_dict(getattr(p_obj, "resources", None))
+            for rk in _RESOURCE_KEYS:
+                missing_d[rk] = max(0, cost_d[rk] - p_res[rk])
+        elif not is_completed and kind == "RESEARCH" and state is not None and ordered_planets:
+            # Check active planet or best planet with Research lab for display deficit
+            lab_p = planets_by_id.get(_clean_int(getattr(state, "active_planet_id", 0), 0)) or ordered_planets[0]
+            p_res = _res_to_dict(getattr(lab_p, "resources", None))
+            for rk in _RESOURCE_KEYS:
+                missing_d[rk] = max(0, cost_d[rk] - p_res[rk])
+
+        if kind == "RESEARCH":
+            lane_id = "lane:global"
+        elif s_pid > 0:
+            lane_id = f"lane:planet:{s_pid}"
+        elif s_coords:
+            lane_id = f"lane:coords:{s_coords}"
+        elif s_slot is not None and s_slot > 0:
+            lane_id = f"lane:slot:{s_slot}"
+        else:
+            lane_id = "lane:global"
+
+        all_steps.append(
+            {
+                "seq": seq_num,
+                "kind": kind,
+                "week": week_num,
+                "start_sec": start_sec,
+                "duration_sec": dur_sec,
+                "finish_sec": finish_sec,
+                "planet_id": s_pid,
+                "planet_coords": s_coords,
+                "planet_name": s_pname or (f"Slot {s_slot}" if s_slot else ("Empire" if kind == "RESEARCH" else f"Colony {s_pid}")),
+                "planet_slot": s_slot,
+                "planet_obj": p_obj,
+                "entity_key": entity_key,
+                "entity_name": entity_name or kind,
+                "target_level": target_level,
+                "bid": bid,
+                "rkey": rkey,
+                "cost": cost_d,
+                "missing": missing_d,
+                "completed": is_completed,
+                "lane_id": lane_id,
+            }
+        )
+
+    total_plan_steps = len(all_steps)
+    remaining_total = total_plan_steps - completed_total
+
+    def _matches_planet_filter(st: Mapping[str, Any]) -> bool:
+        if not raw_pfilter:
+            return True
+        if pfilter_global_only:
+            return st["lane_id"] == "lane:global"
+        if st["kind"] == "RESEARCH":
+            return True
+        if pfilter_pid is not None and st["planet_id"] == pfilter_pid:
+            return True
+        if pfilter_coords and st["planet_coords"] == pfilter_coords:
+            return True
+        if pfilter_name_low and st["planet_name"].lower() == pfilter_name_low:
+            return True
+        return False
+
+    filtered_steps: list[dict[str, Any]] = []
+    for st in all_steps:
+        if clean_week is not None:
+            if st["week"] != clean_week:
+                continue
+        else:
+            if st["completed"]:
+                continue
+        if not _matches_planet_filter(st):
+            continue
+        filtered_steps.append(st)
+
+    windowed_steps = filtered_steps[:eff_window]
+    n_count = len(windowed_steps)
+
+    # Track earliest uncompleted step per queue slot to classify "ready" vs "queued"
+    seen_uncompleted_slot: set[str] = set()
+    nodes_meta: list[dict[str, Any]] = []
+    lane_counts: dict[str, int] = {"lane:global": 0}
+    for p in ordered_planets:
+        pid = _clean_int(p.planet_id, 0)
+        if not raw_pfilter or (
+            not pfilter_global_only
+            and (
+                (pfilter_pid is not None and pid == pfilter_pid)
+                or (pfilter_coords and normalize_coords(_clean_str(p.coords)) == pfilter_coords)
+                or (pfilter_name_low and _clean_str(p.name).lower() == pfilter_name_low)
+            )
+        ):
+            lane_counts[f"lane:planet:{pid}"] = 0
+
+    used_node_ids: set[str] = set()
+    for idx, st in enumerate(windowed_steps):
+        cand_id = f"ai_{st['seq']}"
+        if cand_id in used_node_ids:
+            cand_id = f"ai_{st['seq']}_{idx}"
+        used_node_ids.add(cand_id)
+
+        kind = st["kind"]
+        bid = st["bid"]
+        rkey = st["rkey"]
+        tlvl = st["target_level"]
+        lane_id = st["lane_id"]
+        lane_counts[lane_id] = lane_counts.get(lane_id, 0) + 1
+
+        if kind == "RESEARCH":
+            slot_key = "global:research"
+        elif kind == "BUILD":
+            slot_key = f"{lane_id}:build"
+        else:
+            slot_key = f"{lane_id}:colonize"
+
+        is_first_in_slot = False
+        if not st["completed"] and slot_key not in seen_uncompleted_slot:
+            is_first_in_slot = True
+            seen_uncompleted_slot.add(slot_key)
+
+        has_missing = any(v > 0 for v in st["missing"].values())
+        if st["completed"]:
+            status = "completed"
+            exec_now = False
+            prio = "P3"
+        elif kind == "COLONIZE_PREVIEW":
+            status = "blocked_gate"
+            exec_now = False
+            prio = "P2"
+        elif is_first_in_slot and not has_missing:
+            status = "ready"
+            exec_now = True
+            prio = "P1"
+        elif is_first_in_slot and has_missing:
+            status = "waiting_resources"
+            exec_now = False
+            prio = "P1"
+        else:
+            status = "queued"
+            exec_now = False
+            prio = "P2"
+
+        unit_reqs: list[dict[str, Any]] = []
+        if kind == "BUILD" and bid is not None:
+            u_info = game_data.BUILDING_BY_ID.get(bid)
+            if u_info:
+                unit_reqs = list(u_info.get("requirements", ()))
+        elif kind == "RESEARCH" and rkey is not None:
+            u_info = game_data.RESEARCH_BY_ID.get(rkey)
+            if u_info:
+                unit_reqs = list(u_info.get("requirements", ()))
+
+        category = _classify_node_category(kind if kind != "COLONIZE_PREVIEW" else "COLONIZE", bid, None)
+        wait_eta = "Done" if st["completed"] else _format_eta_short(st["start_sec"])
+        dur_txt = _format_eta_short(st["duration_sec"]) if st["duration_sec"] > 0.5 else "Instant"
+        tot_eta = "Done" if st["completed"] else _format_eta_short(st["finish_sec"])
+        bneck = _dominant_cost_resource(st["cost"], st["missing"]) if has_missing else None
+        reason_txt = (
+            f"Week {st['week']} · Step #{st['seq']} · Start {wait_eta} · Build {dur_txt}"
+            if not st["completed"]
+            else f"Week {st['week']} · Step #{st['seq']} · Completed in live state"
+        )
+
+        nodes_meta.append(
+            {
+                "idx": idx,
+                "id": cand_id,
+                "step_seq": st["seq"],
+                "week": st["week"],
+                "order_index": idx,
+                "lane_id": lane_id,
+                "slot_key": slot_key,
+                "priority": prio,
+                "kind": kind,
+                "category": category,
+                "status": status,
+                "planet_id": st["planet_id"],
+                "planet_coords": st["planet_coords"],
+                "planet_name": st["planet_name"],
+                "planet_obj": st["planet_obj"],
+                "target_id": bid if bid is not None else (int(rkey[1:]) if (rkey and rkey[1:].isdigit()) else None),
+                "target_name": st["entity_name"],
+                "target_level": tlvl,
+                "entity_key": st["entity_key"],
+                "reason": reason_txt,
+                "executable_now": exec_now,
+                "completed": st["completed"],
+                "cost": st["cost"],
+                "missing": st["missing"],
+                "wait_seconds": st["start_sec"],
+                "wait_eta": wait_eta,
+                "duration_seconds": st["duration_sec"],
+                "duration_text": dur_txt,
+                "total_seconds": st["finish_sec"],
+                "total_eta": tot_eta,
+                "eta_bottleneck": bneck,
+                "bid": bid,
+                "rkey": rkey,
+                "unit_reqs": unit_reqs,
+            }
+        )
+
+    # Edge construction (strictly forward index u_idx < v_idx -> guaranteed DAG)
+    edge_acc: dict[tuple[int, int], dict[str, str]] = {}
+    adj: dict[int, list[int]] = {i: [] for i in range(n_count)}
+
+    def _add_ai_edge(u_idx: int, v_idx: int, etype: str, label: str) -> None:
+        if u_idx == v_idx or not (0 <= u_idx < n_count) or not (0 <= v_idx < n_count) or u_idx > v_idx:
+            return
+        pair = (u_idx, v_idx)
+        if pair not in edge_acc:
+            if _has_path(adj, v_idx, u_idx):
+                return
+            edge_acc[pair] = {}
+            adj[u_idx].append(v_idx)
+        if etype not in edge_acc[pair]:
+            edge_acc[pair][etype] = label
+
+    for v_pos in range(1, n_count):
+        v = nodes_meta[v_pos]
+        v_kind = v["kind"]
+        v_lane = v["lane_id"]
+        v_bid = v["bid"]
+        v_rkey = v["rkey"]
+        v_tlvl = v["target_level"]
+        v_pobj = v["planet_obj"]
+
+        # 1) Level chains (closest earlier upgrade of exact same building on same lane or same research)
+        if v_kind == "BUILD" and v_bid is not None:
+            for u_pos in range(v_pos - 1, -1, -1):
+                u = nodes_meta[u_pos]
+                if u["kind"] == "BUILD" and u["lane_id"] == v_lane and u["bid"] == v_bid:
+                    u_tlvl = u["target_level"]
+                    if u_tlvl is None or v_tlvl is None or v_tlvl > u_tlvl:
+                        lbl = (
+                            f"{v['target_name']} L{u_tlvl} -> L{v_tlvl}"
+                            if (u_tlvl is not None and v_tlvl is not None)
+                            else f"Sequential {v['target_name']} upgrade"
+                        )
+                        _add_ai_edge(u_pos, v_pos, "level_chain", lbl)
+                    break
+        elif v_kind == "RESEARCH" and v_rkey is not None:
+            for u_pos in range(v_pos - 1, -1, -1):
+                u = nodes_meta[u_pos]
+                if u["kind"] == "RESEARCH" and u["rkey"] == v_rkey:
+                    u_tlvl = u["target_level"]
+                    if u_tlvl is None or v_tlvl is None or v_tlvl > u_tlvl:
+                        lbl = (
+                            f"{v['target_name']} L{u_tlvl} -> L{v_tlvl}"
+                            if (u_tlvl is not None and v_tlvl is not None)
+                            else f"Sequential {v['target_name']} research"
+                        )
+                        _add_ai_edge(u_pos, v_pos, "level_chain", lbl)
+                    break
+
+        # 2) Wiki game_data tech-tree prerequisites
+        for req in v["unit_reqs"]:
+            req_cat = str(req.get("category", ""))
+            req_slug = str(req.get("slug", ""))
+            req_lvl = _clean_int(req.get("level", 1), 1)
+            if req_cat == "buildings":
+                req_info = game_data.BUILDINGS.get(req_slug)
+                req_bid = int(req_info["id"]) if req_info and req_info.get("id") is not None else None
+                if req_bid is None:
+                    continue
+                cur_b_lvl = v_pobj.building_level(req_bid) if v_pobj is not None else 0
+                for u_pos in range(v_pos - 1, -1, -1):
+                    u = nodes_meta[u_pos]
+                    if u["kind"] == "BUILD" and u["bid"] == req_bid and (
+                        v_kind == "RESEARCH" or u["lane_id"] == v_lane
+                    ):
+                        u_lvl = u["target_level"]
+                        if cur_b_lvl < req_lvl or (u_lvl is not None and u_lvl <= req_lvl):
+                            _add_ai_edge(
+                                u_pos,
+                                v_pos,
+                                "prerequisite",
+                                f"{u['target_name']} L{u_lvl or req_lvl} unlocks {v['target_name']}",
+                            )
+                            break
+            elif req_cat == "research":
+                req_info = game_data.RESEARCHES.get(req_slug)
+                req_rkey = str(req_info["id"]) if req_info and req_info.get("id") else None
+                if req_rkey is None:
+                    continue
+                cur_r_lvl = researches_map.get(req_rkey, 0)
+                for u_pos in range(v_pos - 1, -1, -1):
+                    u = nodes_meta[u_pos]
+                    if u["kind"] == "RESEARCH" and u["rkey"] == req_rkey:
+                        u_lvl = u["target_level"]
+                        if cur_r_lvl < req_lvl or (u_lvl is not None and u_lvl <= req_lvl):
+                            _add_ai_edge(
+                                u_pos,
+                                v_pos,
+                                "prerequisite",
+                                f"{u['target_name']} L{u_lvl or req_lvl} unlocks {v['target_name']}",
+                            )
+                            break
+
+        # 3) Energy support: most recent power producer (b5/b6 on same lane or r2 globally) -> energy-consuming BUILD
+        if v_kind == "BUILD" and v_bid is not None:
+            eff_tlvl = v_tlvl if (v_tlvl is not None and v_tlvl > 0) else 1
+            v_energy_delta = game_data.building_energy_delta(v_bid, eff_tlvl)
+            if v_energy_delta < 0:
+                for u_pos in range(v_pos - 1, -1, -1):
+                    u = nodes_meta[u_pos]
+                    is_pwr = (
+                        (u["kind"] == "BUILD" and u["lane_id"] == v_lane and u["bid"] in (5, 6))
+                        or (u["kind"] == "RESEARCH" and u["rkey"] == "r2")
+                    )
+                    if is_pwr:
+                        lvl_s = f" L{v_tlvl}" if v_tlvl is not None else ""
+                        _add_ai_edge(
+                            u_pos,
+                            v_pos,
+                            "energy_support",
+                            f"Supplies energy for {v['target_name']}{lvl_s}",
+                        )
+                        break
+
+        # 4) Resource feed: 2:1 Pig iron (b1 -> b2) and dominant cost resource mine / r1 Mining tech (never Metal!)
+        if v_kind == "BUILD" and v_bid == 2:
+            for u_pos in range(v_pos - 1, -1, -1):
+                u = nodes_meta[u_pos]
+                if u["kind"] == "BUILD" and u["lane_id"] == v_lane and u["bid"] == 1:
+                    _add_ai_edge(
+                        u_pos,
+                        v_pos,
+                        "resource_feed",
+                        "Supplies 2:1 Pig iron feedstock for Blast furnace",
+                    )
+                    break
+        dom_res = _dominant_cost_resource(v["cost"], v["missing"])
+        if dom_res is not None:
+            for u_pos in range(v_pos - 1, -1, -1):
+                u = nodes_meta[u_pos]
+                if u["kind"] == "BUILD" and u["lane_id"] == v_lane and u["bid"] in _MINE_RESOURCE_BY_BID:
+                    if _MINE_RESOURCE_BY_BID[u["bid"]] == dom_res and not (u["bid"] == v_bid):
+                        _add_ai_edge(
+                            u_pos,
+                            v_pos,
+                            "resource_feed",
+                            f"Boosts {_RESOURCE_LABELS[dom_res]} output for {v['target_name']}",
+                        )
+                        break
+                elif u["kind"] == "RESEARCH" and u["rkey"] == "r1" and dom_res in ("pig_iron", "kryptonite", "spice"):
+                    _add_ai_edge(
+                        u_pos,
+                        v_pos,
+                        "resource_feed",
+                        f"Mining technology (+2%/lvl) boosts {_RESOURCE_LABELS[dom_res]} for {v['target_name']}",
+                    )
+                    break
+
+    # 5) Queue serialization per exclusive slot (global research + per-planet build queue)
+    last_by_slot: dict[str, int] = {}
+    for m in nodes_meta:
+        skey = m["slot_key"]
+        cur_idx = m["idx"]
+        prev_idx = last_by_slot.get(skey)
+        if prev_idx is not None and prev_idx < cur_idx:
+            if skey == "global:research":
+                q_lbl = "Single global research lab slot"
+            else:
+                q_lbl = f"Colony build queue ({m['planet_coords'] or m['planet_name']})"
+            _add_ai_edge(prev_idx, cur_idx, "queue_order", q_lbl)
+        last_by_slot[skey] = cur_idx
+
+    node_ids = [m["id"] for m in nodes_meta]
+    layers, edges_out, incoming, outgoing, by_edge_type = _kahn_longest_layers(
+        n_count, edge_acc, node_ids
+    )
+
+    # Assemble lanes
+    lanes_out: list[dict[str, Any]] = []
+    if ordered_planets or nodes_meta:
+        lanes_out.append(
+            {
+                "id": "lane:global",
+                "scope": "global",
+                "label": "Empire & Global Research",
+                "planet_id": 0,
+                "coords": "",
+                "planet_type": "global",
+                "energy": 0,
+                "fields_used": 0,
+                "fields_max": 0,
+                "node_count": lane_counts.get("lane:global", 0),
+            }
+        )
+        emitted_lane_ids: set[str] = {"lane:global"}
+        for p in ordered_planets:
+            pid = _clean_int(p.planet_id, 0)
+            lid = f"lane:planet:{pid}"
+            if lid not in lane_counts:
+                continue
+            pcoords = _clean_str(p.coords)
+            pname = _clean_str(p.name) or f"Colony {pid}"
+            lanes_out.append(
+                {
+                    "id": lid,
+                    "scope": "planet",
+                    "label": f"{pname} [{pcoords}]" if pcoords else pname,
+                    "planet_id": pid,
+                    "coords": pcoords,
+                    "planet_type": normalize_planet_type(p),
+                    "energy": _clean_int(getattr(getattr(p, "energy", None), "net", 0), 0),
+                    "fields_used": _clean_int(p.fields_used, 0),
+                    "fields_max": _clean_int(p.fields_max, 0),
+                    "node_count": lane_counts.get(lid, 0),
+                }
+            )
+            emitted_lane_ids.add(lid)
+        for m in nodes_meta:
+            lid = m["lane_id"]
+            if lid not in emitted_lane_ids:
+                pcoords = m["planet_coords"]
+                pname = m["planet_name"]
+                lanes_out.append(
+                    {
+                        "id": lid,
+                        "scope": "planet",
+                        "label": f"{pname} [{pcoords}]" if pcoords else pname,
+                        "planet_id": m["planet_id"],
+                        "coords": pcoords,
+                        "planet_type": "preview" if m["kind"] == "COLONIZE_PREVIEW" else "normal",
+                        "energy": 0,
+                        "fields_used": 0,
+                        "fields_max": 0,
+                        "node_count": lane_counts.get(lid, 0),
+                    }
+                )
+                emitted_lane_ids.add(lid)
+
+    # Assemble nodes & summary
+    nodes_out: list[dict[str, Any]] = []
+    by_priority: dict[str, int] = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+    ready_count = 0
+    waiting_count = 0
+    blocked_count = 0
+    queued_count = 0
+    completed_in_window = 0
+    max_finish_s = 0.0
+    min_start_s: Optional[float] = None
+    exec_counter = 0
+
+    for m in nodes_meta:
+        idx = m["idx"]
+        st = m["status"]
+        if st == "ready":
+            ready_count += 1
+        elif st == "waiting_resources":
+            waiting_count += 1
+        elif st == "blocked_gate":
+            blocked_count += 1
+        elif st == "completed":
+            completed_in_window += 1
+        else:
+            queued_count += 1
+
+        by_priority[m["priority"]] = by_priority.get(m["priority"], 0) + 1
+        if m["total_seconds"] > max_finish_s:
+            max_finish_s = float(m["total_seconds"])
+        if min_start_s is None or m["wait_seconds"] < min_start_s:
+            min_start_s = float(m["wait_seconds"])
+
+        exec_rank: Optional[int] = None
+        if m["executable_now"]:
+            exec_rank = exec_counter
+            exec_counter += 1
+
+        nodes_out.append(
+            {
+                "id": m["id"],
+                "step_seq": m["step_seq"],
+                "week": m["week"],
+                "order_index": m["order_index"],
+                "exec_rank": exec_rank,
+                "topological_layer": layers[idx],
+                "lane_id": m["lane_id"],
+                "priority": m["priority"],
+                "kind": m["kind"],
+                "category": m["category"],
+                "status": st,
+                "planet_id": m["planet_id"],
+                "planet_coords": m["planet_coords"],
+                "planet_name": m["planet_name"],
+                "target_id": m["target_id"],
+                "target_name": m["target_name"],
+                "target_level": m["target_level"],
+                "entity_key": m["entity_key"],
+                "reason": m["reason"],
+                "executable_now": m["executable_now"],
+                "completed": m["completed"],
+                "cost": m["cost"],
+                "missing": m["missing"],
+                "wait_seconds": m["wait_seconds"],
+                "wait_eta": m["wait_eta"],
+                "duration_seconds": m["duration_seconds"],
+                "duration_text": m["duration_text"],
+                "total_seconds": m["total_seconds"],
+                "total_eta": m["total_eta"],
+                "eta_bottleneck": m["eta_bottleneck"],
+                "in_degree": len(incoming[idx]),
+                "out_degree": len(outgoing[idx]),
+            }
+        )
+
+    window_span_s = max(0.0, max_finish_s - (min_start_s or 0.0)) if n_count > 0 else 0.0
+    payload = {
+        "planner_mode": "ai_planner",
+        "lanes": lanes_out,
+        "nodes": nodes_out,
+        "edges": edges_out,
+        "summary": {
+            "total_nodes": n_count,
+            "total_edges": len(edges_out),
+            "total_plan_steps": total_plan_steps,
+            "completed_steps": completed_total,
+            "remaining_steps": remaining_total,
+            "filtered_steps": len(filtered_steps),
+            "window_size": eff_window,
+            "week_filter": clean_week,
+            "planet_filter": raw_pfilter or None,
+            "available_weeks": sorted(available_weeks_set),
+            "ready_count": ready_count,
+            "waiting_count": waiting_count,
+            "blocked_count": blocked_count,
+            "queued_count": queued_count,
+            "completed_in_window": completed_in_window,
+            "lane_count": len(lanes_out),
+            "active_lane_count": sum(1 for ln in lanes_out if ln["node_count"] > 0),
+            "max_layer": max(layers, default=0),
+            "critical_path_seconds": _clean_float(max_finish_s, 0.0),
+            "critical_path_eta": _format_eta_short(max_finish_s),
+            "window_span_seconds": _clean_float(window_span_s, 0.0),
+            "window_span_eta": _format_eta_short(window_span_s),
+            "by_priority": by_priority,
+            "by_edge_type": by_edge_type,
+        },
+    }
+    return game_data.sanitize_json_tree(payload, nonfinite_float=0.0)
+
+
+def _classify_inflight_mission(name: str, detail: str) -> tuple[str, str]:
+    txt = f"{name} {detail}".lower()
+    if any(tok in txt for tok in ("escape", "flucht", "save")):
+        return "ESCAPE_FLIGHT", "survival"
+    if any(tok in txt for tok in ("attack", "angriff", "raid")):
+        return "ATTACK", "combat"
+    if any(tok in txt for tok in ("recycl", "trümmer", "truemmer")):
+        return "RECYCLE", "recon"
+    if any(tok in txt for tok in ("spy", "spio", "probe")):
+        return "SPY", "recon"
+    if any(tok in txt for tok in ("coloniz", "koloni", "siedel")):
+        return "COLONIZE", "recon"
+    if any(tok in txt for tok in ("station", "deploy")):
+        return "STATION", "recon"
+    if any(tok in txt for tok in ("transport", "liefer")):
+        return "TRANSPORT", "recon"
+    return "IN_FLIGHT", "recon"
+
+
+def build_fleet_planner_graph(
+    state: Optional[GameState],
+    planned_actions: Sequence[PlannedAction],
+    config: StrategyConfig,
+    *,
+    attack_telemetry: Optional[Mapping[str, Any]] = None,
+    spare_budget: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Construct a guaranteed-acyclic multi-lane Fleet & Attack Planner DAG with per-planet `1 + b10` slot budgets."""
+    _ = config if isinstance(config, StrategyConfig) else StrategyConfig()
+
+    planets_by_id: dict[int, PlanetState] = {}
+    planets_by_coords: dict[str, PlanetState] = {}
+    ordered_planets: list[PlanetState] = []
+    if state is not None:
+        for p in getattr(state, "planets", ()) or ():
+            pid = _clean_int(getattr(p, "planet_id", 0), 0)
+            p_coords = normalize_coords(_clean_str(getattr(p, "coords", "")))
+            planets_by_id[pid] = p
+            if p_coords:
+                planets_by_coords[p_coords] = p
+            ordered_planets.append(p)
+
+    fallback_pid: int = 0
+    if state is not None:
+        act_pid = _clean_int(getattr(state, "active_planet_id", 0), 0)
+        if act_pid in planets_by_id:
+            fallback_pid = act_pid
+        elif ordered_planets:
+            fallback_pid = _clean_int(ordered_planets[0].planet_id, 0)
+
+    # 1. Assign in-flight fleet QueueJobs to launching planets
+    inflight_by_pid: dict[int, list[Any]] = {pid: [] for pid in planets_by_id}
+    inflight_unassigned: list[Any] = []
+    if state is not None:
+        for q in getattr(state, "active_queues", ()) or ():
+            if not is_in_flight_fleet_job(q):
+                continue
+            q_orig = normalize_coords(_clean_str(getattr(q, "origin_coords", "")))
+            matched_p = planets_by_coords.get(q_orig) if q_orig else None
+            if matched_p is not None:
+                inflight_by_pid[_clean_int(matched_p.planet_id, 0)].append(q)
+            elif fallback_pid > 0:
+                inflight_by_pid.setdefault(fallback_pid, []).append(q)
+            else:
+                inflight_unassigned.append(q)
+
+    # Sort each planet's in-flight jobs by remaining_seconds ascending (earliest return first)
+    def _rem_key(job: Any) -> float:
+        rs = _clean_optional_float(getattr(job, "remaining_seconds", None))
+        return rs if rs is not None else 1e12
+
+    for pid in inflight_by_pid:
+        inflight_by_pid[pid].sort(key=_rem_key)
+    inflight_unassigned.sort(key=_rem_key)
+
+    # 2. Filter planned_actions to fleet/attack/shipyard/transmitter kinds and enrich ETAs if needed
+    fleet_actions: list[PlannedAction] = [
+        a
+        for a in (planned_actions or ())
+        if _clean_str(getattr(a, "kind", "")).strip().upper() in _FLEET_PLANNER_KINDS
+    ]
+    if state is not None and fleet_actions:
+        needs_eta = any(
+            any(v > 0 for v in _res_to_dict(getattr(a, "missing", None)).values())
+            and getattr(a, "wait_seconds", 0.0) == 0.0
+            and getattr(a, "wait_eta", "Ready") == "Ready"
+            for a in fleet_actions
+        )
+        if needs_eta:
+            fleet_actions = attach_action_etas(state, fleet_actions)
+
+    # Build per-planet slot_budgets (`1 + b10`)
+    planned_fleet_by_pid: dict[int, int] = {}
+    planned_shipyard_by_pid: dict[int, int] = {}
+    for act in fleet_actions:
+        k = _clean_str(getattr(act, "kind", "")).strip().upper()
+        pid = _clean_int(getattr(act, "planet_id", 0), 0)
+        if k in _FLEET_DISPATCH_KINDS:
+            planned_fleet_by_pid[pid] = planned_fleet_by_pid.get(pid, 0) + 1
+        elif k == "BUILD_SHIP":
+            planned_shipyard_by_pid[pid] = planned_shipyard_by_pid.get(pid, 0) + 1
+
+    slot_budgets_out: list[dict[str, Any]] = []
+    slot_budget_by_pid: dict[int, dict[str, Any]] = {}
+    total_slots_used = 0
+    total_slots_max = 0
+    for p in ordered_planets:
+        pid = _clean_int(p.planet_id, 0)
+        b10_lvl = max(0, p.building_level(10))
+        max_slots = 1 + b10_lvl
+        used_slots = len(inflight_by_pid.get(pid, ()))
+        avail_slots = max(0, max_slots - used_slots)
+        total_slots_used += used_slots
+        total_slots_max += max_slots
+        ships_clean = {
+            _clean_str(sk): max(0, _clean_int(sv, 0))
+            for sk, sv in (getattr(p, "ships", None) or {}).items()
+            if _clean_int(sv, 0) > 0
+        }
+        solar_cells = ships_clean.get("s9", 0)
+        total_docked = sum(v for k, v in ships_clean.items() if k != "s9")
+        entry = {
+            "planet_id": pid,
+            "planet_name": _clean_str(p.name) or f"Colony {pid}",
+            "coords": normalize_coords(_clean_str(p.coords)) or _clean_str(p.coords),
+            "planet_type": normalize_planet_type(p),
+            "b10_level": b10_lvl,
+            "used_slots": used_slots,
+            "max_slots": max_slots,
+            "available_slots": avail_slots,
+            "in_flight_count": used_slots,
+            "planned_fleet_count": planned_fleet_by_pid.get(pid, 0),
+            "planned_shipyard_count": planned_shipyard_by_pid.get(pid, 0),
+            "docked_ships": ships_clean,
+            "total_docked_ships": total_docked,
+            "solar_cells": solar_cells,
+        }
+        slot_budgets_out.append(entry)
+        slot_budget_by_pid[pid] = entry
+
+    # 3. Assemble nodes_meta: in-flight nodes first, then planned fleet/shipyard nodes
+    nodes_meta: list[dict[str, Any]] = []
+    lane_counts: dict[str, int] = {"lane:global": 0}
+    for p in ordered_planets:
+        lane_counts[f"lane:planet:{_clean_int(p.planet_id, 0)}"] = 0
+
+    inflight_indices_by_pid: dict[int, list[int]] = {}
+    inflight_seq = 0
+    for pid in [p.planet_id for p in ordered_planets] + [0]:
+        jobs = inflight_by_pid.get(pid, []) if pid > 0 else inflight_unassigned
+        p_obj = planets_by_id.get(pid)
+        p_coords = normalize_coords(_clean_str(p_obj.coords)) if p_obj is not None else ""
+        p_name = _clean_str(p_obj.name) if p_obj is not None else "Empire"
+        lid = f"lane:planet:{pid}" if pid > 0 else "lane:global"
+        for q in jobs:
+            idx = len(nodes_meta)
+            q_name = _clean_str(getattr(q, "name", "")) or "Active Fleet"
+            q_detail = _clean_str(getattr(q, "detail", ""))
+            mission_kind, cat = _classify_inflight_mission(q_name, q_detail)
+            rem_s = max(0.0, _clean_float(getattr(q, "remaining_seconds", 0.0), 0.0))
+            rem_txt = _clean_str(getattr(q, "remaining_text", "")) or _format_eta_short(rem_s)
+            lane_counts[lid] = lane_counts.get(lid, 0) + 1
+            inflight_indices_by_pid.setdefault(pid, []).append(idx)
+            nodes_meta.append(
+                {
+                    "idx": idx,
+                    "id": f"inflight_{inflight_seq}",
+                    "order_index": idx,
+                    "exec_rank": None,
+                    "lane_id": lid,
+                    "priority": "P0" if mission_kind == "ESCAPE_FLIGHT" else "P1",
+                    "kind": "IN_FLIGHT",
+                    "mission_kind": mission_kind,
+                    "category": cat,
+                    "status": "in_flight",
+                    "in_flight": True,
+                    "planet_id": pid,
+                    "planet_coords": p_coords,
+                    "planet_name": p_name,
+                    "target_id": None,
+                    "target_name": q_name,
+                    "target_level": None,
+                    "reason": q_detail or f"In-flight {mission_kind.lower().replace('_', ' ')} occupying Fleet base slot",
+                    "executable_now": False,
+                    "cost": {rk: 0 for rk in _RESOURCE_KEYS},
+                    "missing": {rk: 0 for rk in _RESOURCE_KEYS},
+                    "wait_seconds": 0.0,
+                    "wait_eta": "In Flight",
+                    "duration_seconds": rem_s,
+                    "duration_text": rem_txt,
+                    "total_seconds": rem_s,
+                    "total_eta": rem_txt,
+                    "eta_bottleneck": None,
+                    "sid": None,
+                    "slot_key": None,
+                    "sys_key": _extract_system_key(q_name) or _extract_system_key(q_detail),
+                    "target_coords": _extract_first_coords(q_name) or _extract_first_coords(q_detail),
+                }
+            )
+            inflight_seq += 1
+
+    exec_counter = 0
+    for f_pos, act in enumerate(fleet_actions):
+        idx = len(nodes_meta)
+        kind = _clean_str(getattr(act, "kind", "")).strip().upper() or "ATTACK"
+        prio = _clean_str(getattr(act, "priority", "P2")).strip().upper()
+        if prio not in ("P0", "P1", "P2", "P3"):
+            prio = "P2"
+        pid = _clean_int(getattr(act, "planet_id", 0), 0)
+        p_obj = planets_by_id.get(pid)
+        p_coords = _clean_str(getattr(act, "planet_coords", "")) or (
+            _clean_str(p_obj.coords) if p_obj is not None else ""
+        )
+        p_name = _clean_str(p_obj.name) if p_obj is not None else (
+            f"Colony {pid}" if pid > 0 else "Empire"
+        )
+        raw_tid = getattr(act, "target_id", None)
+        t_id = _clean_optional_int(raw_tid)
+        t_name = _clean_str(getattr(act, "target_name", ""))
+        t_lvl = _clean_optional_int(getattr(act, "target_level", None))
+        reason = _clean_str(getattr(act, "reason", ""))
+        exec_now = bool(getattr(act, "executable_now", False))
+        exec_rank: Optional[int] = None
+        if exec_now:
+            exec_rank = exec_counter
+            exec_counter += 1
+
+        cost_d = _res_to_dict(getattr(act, "cost", None))
+        missing_d = _res_to_dict(getattr(act, "missing", None))
+        sid, _ship_slug = (
+            _resolve_ship_id_and_slug(raw_tid, t_name)
+            if kind in ("BUILD_SHIP", "SPY", "RECYCLE", "COLONIZE")
+            else (None, None)
+        )
+        lane_id = "lane:global" if (kind == "ACTIVATE_TRANSMITTER" or pid <= 0) else f"lane:planet:{pid}"
+        lane_counts[lane_id] = lane_counts.get(lane_id, 0) + 1
+
+        category = _classify_node_category(kind, None, sid)
+        if kind == "ACTIVATE_TRANSMITTER":
+            category = "recon"
+        status = _classify_node_status(kind, exec_now, missing_d, reason)
+
+        wait_s = _clean_optional_float(getattr(act, "wait_seconds", 0.0))
+        dur_s = _clean_float(getattr(act, "duration_seconds", 0.0), 0.0)
+        tot_s = _clean_optional_float(getattr(act, "total_seconds", 0.0))
+        wait_eta = _clean_str(getattr(act, "wait_eta", "Ready"), "Ready")
+        dur_txt = _clean_str(getattr(act, "duration_text", "Instant"), "Instant")
+        tot_eta = _clean_str(getattr(act, "total_eta", "Ready"), "Ready")
+        bottleneck_raw = getattr(act, "eta_bottleneck", None)
+        bottleneck = _clean_str(bottleneck_raw) if bottleneck_raw else None
+
+        nodes_meta.append(
+            {
+                "idx": idx,
+                "id": f"fleet_{f_pos}",
+                "order_index": idx,
+                "exec_rank": exec_rank,
+                "lane_id": lane_id,
+                "priority": prio,
+                "kind": kind,
+                "mission_kind": kind,
+                "category": category,
+                "status": status,
+                "in_flight": False,
+                "planet_id": pid,
+                "planet_coords": p_coords,
+                "planet_name": p_name,
+                "target_id": t_id,
+                "target_name": t_name,
+                "target_level": t_lvl,
+                "reason": reason,
+                "executable_now": exec_now,
+                "cost": cost_d,
+                "missing": missing_d,
+                "wait_seconds": wait_s,
+                "wait_eta": wait_eta,
+                "duration_seconds": dur_s,
+                "duration_text": dur_txt,
+                "total_seconds": tot_s,
+                "total_eta": tot_eta,
+                "eta_bottleneck": bottleneck,
+                "sid": sid,
+                "slot_key": _slot_key_for_action(kind, pid),
+                "sys_key": _extract_system_key(t_name) or _extract_system_key(reason),
+                "target_coords": _extract_first_coords(t_name) or _extract_first_coords(reason),
+            }
+        )
+
+    # 4. Build guaranteed-acyclic Fleet Planner DAG edges
+    n_count = len(nodes_meta)
+    edge_acc: dict[tuple[int, int], dict[str, str]] = {}
+    adj: dict[int, list[int]] = {i: [] for i in range(n_count)}
+
+    def _add_fl_edge(
+        u_idx: int,
+        v_idx: int,
+        etype: str,
+        label: str,
+        *,
+        allow_reverse_index: bool = False,
+    ) -> None:
+        if u_idx == v_idx or not (0 <= u_idx < n_count) or not (0 <= v_idx < n_count):
+            return
+        if not allow_reverse_index and u_idx > v_idx:
+            return
+        pair = (u_idx, v_idx)
+        if pair not in edge_acc:
+            if _has_path(adj, v_idx, u_idx):
+                return
+            edge_acc[pair] = {}
+            adj[u_idx].append(v_idx)
+        if etype not in edge_acc[pair]:
+            edge_acc[pair][etype] = label
+
+    # (a) P0 hostile alert -> escape flight, and P0 escape -> first non-P0 planned action per planet
+    p0_escape_by_planet: dict[int, int] = {}
+    for u in nodes_meta:
+        if u["kind"] == "ALERT_HOSTILE":
+            for v in nodes_meta:
+                if v["kind"] == "ESCAPE_FLIGHT" and not v["in_flight"] and u["planet_id"] in (0, v["planet_id"]):
+                    _add_fl_edge(
+                        u["idx"],
+                        v["idx"],
+                        "priority_gate",
+                        f"Hostile alert triggers escape flight on {v['planet_coords'] or v['planet_name']}",
+                        allow_reverse_index=True,
+                    )
+        if u["priority"] == "P0" and u["kind"] == "ESCAPE_FLIGHT" and not u["in_flight"]:
+            p0_escape_by_planet.setdefault(u["planet_id"], u["idx"])
+
+    gated_p0: set[int] = set()
+    for v in nodes_meta:
+        if v["in_flight"] or v["priority"] == "P0":
+            continue
+        v_pid = v["planet_id"]
+        if v_pid in gated_p0:
+            continue
+        gate_u = p0_escape_by_planet.get(v_pid)
+        if gate_u is not None and gate_u < v["idx"]:
+            _add_fl_edge(
+                gate_u,
+                v["idx"],
+                "priority_gate",
+                f"P0 escape flight precedes {v['target_name'] or v['kind']}",
+            )
+            gated_p0.add(v_pid)
+
+    # (b) Full fleet slot dependency: earliest-returning in-flight job -> first planned dispatch when slots are full
+    for pid, sb in slot_budget_by_pid.items():
+        if sb["used_slots"] >= sb["max_slots"] and inflight_indices_by_pid.get(pid):
+            earliest_inf = inflight_indices_by_pid[pid][0]
+            first_dispatch = next(
+                (
+                    v
+                    for v in nodes_meta
+                    if not v["in_flight"]
+                    and v["planet_id"] == pid
+                    and v["kind"] in _FLEET_DISPATCH_KINDS
+                    and v["kind"] != "ESCAPE_FLIGHT"
+                ),
+                None,
+            )
+            if first_dispatch is not None:
+                _add_fl_edge(
+                    earliest_inf,
+                    first_dispatch["idx"],
+                    "queue_order",
+                    f"Awaits free Fleet base (b10 L{sb['b10_level']}) slot on {sb['coords'] or sb['planet_name']}",
+                )
+
+    # (c) Pairwise fleet/shipyard prerequisites
+    for v_pos in range(n_count):
+        v = nodes_meta[v_pos]
+        if v["in_flight"]:
+            continue
+        v_kind = v["kind"]
+        v_pid = v["planet_id"]
+        for u_pos in range(v_pos):
+            u = nodes_meta[u_pos]
+            if u["in_flight"]:
+                continue
+            u_kind = u["kind"]
+            u_pid = u["planet_id"]
+            u_sid = u["sid"]
+
+            if u_kind == "BUILD_SHIP" and u_pid in (0, v_pid):
+                if u_sid == 10 and v_kind == "SPY":
+                    _add_fl_edge(u_pos, v_pos, "prerequisite", "Builds Spy probe (s10) for espionage")
+                elif u_sid == 11 and v_kind == "RECYCLE":
+                    _add_fl_edge(u_pos, v_pos, "prerequisite", "Builds Recycler (s11) for debris harvesting")
+                elif u_sid == 8 and v_kind == "COLONIZE":
+                    _add_fl_edge(u_pos, v_pos, "prerequisite", "Builds Colony ship (s8) for colonization")
+                elif u_sid in (1, 2) and v_kind in ("TRANSPORT", "STATION"):
+                    _add_fl_edge(u_pos, v_pos, "prerequisite", f"Builds {u['target_name']} for logistics")
+                elif u_sid not in (None, 8, 9, 10, 11) and v_kind in ("ATTACK", "ESCAPE_FLIGHT") and u_pid == v_pid:
+                    _add_fl_edge(u_pos, v_pos, "prerequisite", f"Supplies {u['target_name']} for {v_kind.lower()}")
+
+            if u_kind == "SCAN_GALAXY" and v_kind in ("SPY", "ATTACK", "RECYCLE", "COLONIZE"):
+                if (u["sys_key"] and v["sys_key"] and u["sys_key"] == v["sys_key"]) or (
+                    (not u["sys_key"] or not v["sys_key"]) and u_pid == v_pid
+                ):
+                    _add_fl_edge(u_pos, v_pos, "prerequisite", f"Galaxy scan scouts system for {v['target_name'] or v_kind}")
+
+            if u_kind == "SPY" and v_kind in ("ATTACK", "COLONIZE"):
+                same_target = bool(u["target_coords"] and v["target_coords"] and u["target_coords"] == v["target_coords"])
+                same_sys = bool(u["sys_key"] and v["sys_key"] and u["sys_key"] == v["sys_key"] and v_kind == "COLONIZE")
+                if same_target or same_sys:
+                    _add_fl_edge(u_pos, v_pos, "prerequisite", f"Spy intel precedes {v['target_name'] or v_kind}")
+
+            if u_kind == "STATION" and v_kind in ("ATTACK", "RECYCLE"):
+                dest_c = u["target_coords"]
+                v_c = normalize_coords(v["planet_coords"]) if v["planet_coords"] else ""
+                if dest_c and v_c and dest_c == v_c:
+                    _add_fl_edge(u_pos, v_pos, "prerequisite", f"Stations ships at {dest_c} for {v_kind.lower()}")
+
+    # (d) Slot queue serialization & intra-lane executable_now dispatch order
+    last_by_slot: dict[str, int] = {}
+    last_ready_by_lane: dict[str, tuple[int, int]] = {}
+    for m in nodes_meta:
+        if m["in_flight"]:
+            continue
+        cur_idx = m["idx"]
+        skey = m["slot_key"]
+        if skey:
+            prev_idx = last_by_slot.get(skey)
+            if prev_idx is not None and prev_idx < cur_idx:
+                q_lbl = (
+                    f"Weapons factory queue ({m['planet_coords'] or m['planet_name']})"
+                    if skey.endswith(":shipyard")
+                    else f"Colony fleet dispatch order ({m['planet_coords'] or m['planet_name']})"
+                )
+                _add_fl_edge(prev_idx, cur_idx, "queue_order", q_lbl)
+            last_by_slot[skey] = cur_idx
+        if m["executable_now"] and m["exec_rank"] is not None:
+            lid = m["lane_id"]
+            cur_rank = int(m["exec_rank"])
+            prev_ready = last_ready_by_lane.get(lid)
+            if prev_ready is not None and prev_ready[0] < cur_idx:
+                _add_fl_edge(
+                    prev_ready[0],
+                    cur_idx,
+                    "execution_order",
+                    f"Dispatch sequence #{prev_ready[1] + 1} -> #{cur_rank + 1}",
+                )
+            last_ready_by_lane[lid] = (cur_idx, cur_rank)
+
+    node_ids = [m["id"] for m in nodes_meta]
+    layers, edges_out, incoming, outgoing, by_edge_type = _kahn_longest_layers(
+        n_count, edge_acc, node_ids
+    )
+
+    # Assemble lanes with fleet_slots_used / fleet_slots_max
+    lanes_out: list[dict[str, Any]] = []
+    if ordered_planets or nodes_meta:
+        lanes_out.append(
+            {
+                "id": "lane:global",
+                "scope": "global",
+                "label": "Empire Tactical & Transmitter",
+                "planet_id": 0,
+                "coords": "",
+                "planet_type": "global",
+                "energy": 0,
+                "fields_used": 0,
+                "fields_max": 0,
+                "b10_level": 0,
+                "fleet_slots_used": total_slots_used,
+                "fleet_slots_max": total_slots_max,
+                "node_count": lane_counts.get("lane:global", 0),
+            }
+        )
+        emitted_lane_ids: set[str] = {"lane:global"}
+        for p in ordered_planets:
+            pid = _clean_int(p.planet_id, 0)
+            lid = f"lane:planet:{pid}"
+            sb = slot_budget_by_pid.get(pid, {})
+            pcoords = _clean_str(p.coords)
+            pname = _clean_str(p.name) or f"Colony {pid}"
+            lanes_out.append(
+                {
+                    "id": lid,
+                    "scope": "planet",
+                    "label": f"{pname} [{pcoords}]" if pcoords else pname,
+                    "planet_id": pid,
+                    "coords": pcoords,
+                    "planet_type": normalize_planet_type(p),
+                    "energy": _clean_int(getattr(getattr(p, "energy", None), "net", 0), 0),
+                    "fields_used": _clean_int(p.fields_used, 0),
+                    "fields_max": _clean_int(p.fields_max, 0),
+                    "b10_level": sb.get("b10_level", 0),
+                    "fleet_slots_used": sb.get("used_slots", 0),
+                    "fleet_slots_max": sb.get("max_slots", 1),
+                    "node_count": lane_counts.get(lid, 0),
+                }
+            )
+            emitted_lane_ids.add(lid)
+        for m in nodes_meta:
+            lid = m["lane_id"]
+            if lid not in emitted_lane_ids:
+                pcoords = m["planet_coords"]
+                pname = m["planet_name"]
+                lanes_out.append(
+                    {
+                        "id": lid,
+                        "scope": "planet",
+                        "label": f"{pname} [{pcoords}]" if pcoords else pname,
+                        "planet_id": m["planet_id"],
+                        "coords": pcoords,
+                        "planet_type": "normal",
+                        "energy": 0,
+                        "fields_used": 0,
+                        "fields_max": 0,
+                        "b10_level": 0,
+                        "fleet_slots_used": 0,
+                        "fleet_slots_max": 1,
+                        "node_count": lane_counts.get(lid, 0),
+                    }
+                )
+                emitted_lane_ids.add(lid)
+
+    # Assemble nodes & summary
+    nodes_out: list[dict[str, Any]] = []
+    by_priority: dict[str, int] = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+    by_kind: dict[str, int] = {}
+    ready_count = 0
+    waiting_count = 0
+    blocked_count = 0
+    queued_count = 0
+    in_flight_count = 0
+    max_total_s = 0.0
+
+    for m in nodes_meta:
+        idx = m["idx"]
+        st = m["status"]
+        if st == "in_flight":
+            in_flight_count += 1
+        elif st == "ready":
+            ready_count += 1
+        elif st == "waiting_resources":
+            waiting_count += 1
+        elif st == "blocked_gate":
+            blocked_count += 1
+        else:
+            queued_count += 1
+
+        by_priority[m["priority"]] = by_priority.get(m["priority"], 0) + 1
+        by_kind[m["kind"]] = by_kind.get(m["kind"], 0) + 1
+        tot_s = m["total_seconds"]
+        if isinstance(tot_s, (int, float)) and math.isfinite(tot_s) and tot_s > max_total_s:
+            max_total_s = float(tot_s)
+
+        nodes_out.append(
+            {
+                "id": m["id"],
+                "order_index": m["order_index"],
+                "exec_rank": m["exec_rank"],
+                "topological_layer": layers[idx],
+                "lane_id": m["lane_id"],
+                "priority": m["priority"],
+                "kind": m["kind"],
+                "mission_kind": m["mission_kind"],
+                "category": m["category"],
+                "status": st,
+                "in_flight": m["in_flight"],
+                "planet_id": m["planet_id"],
+                "planet_coords": m["planet_coords"],
+                "planet_name": m["planet_name"],
+                "target_id": m["target_id"],
+                "target_name": m["target_name"],
+                "target_level": m["target_level"],
+                "reason": m["reason"],
+                "executable_now": m["executable_now"],
+                "cost": m["cost"],
+                "missing": m["missing"],
+                "wait_seconds": m["wait_seconds"],
+                "wait_eta": m["wait_eta"],
+                "duration_seconds": m["duration_seconds"],
+                "duration_text": m["duration_text"],
+                "total_seconds": m["total_seconds"],
+                "total_eta": m["total_eta"],
+                "eta_bottleneck": m["eta_bottleneck"],
+                "in_degree": len(incoming[idx]),
+                "out_degree": len(outgoing[idx]),
+            }
+        )
+
+    clean_telemetry = dict(attack_telemetry) if isinstance(attack_telemetry, Mapping) else {}
+    clean_spare = dict(spare_budget) if isinstance(spare_budget, Mapping) else {}
+
+    payload = {
+        "planner_mode": "fleet_planner",
+        "lanes": lanes_out,
+        "nodes": nodes_out,
+        "edges": edges_out,
+        "summary": {
+            "total_nodes": n_count,
+            "total_edges": len(edges_out),
+            "in_flight_count": in_flight_count,
+            "ready_count": ready_count,
+            "waiting_count": waiting_count,
+            "blocked_count": blocked_count,
+            "queued_count": queued_count,
+            "lane_count": len(lanes_out),
+            "active_lane_count": sum(1 for ln in lanes_out if ln["node_count"] > 0),
+            "max_layer": max(layers, default=0),
+            "critical_path_seconds": _clean_float(max_total_s, 0.0),
+            "critical_path_eta": _format_eta_short(max_total_s),
+            "total_slots_used": total_slots_used,
+            "total_slots_max": total_slots_max,
+            "total_slots_available": max(0, total_slots_max - total_slots_used),
+            "planned_fleet_actions": sum(1 for a in fleet_actions if _clean_str(getattr(a, "kind", "")).upper() != "BUILD_SHIP"),
+            "planned_shipyard_actions": sum(1 for a in fleet_actions if _clean_str(getattr(a, "kind", "")).upper() == "BUILD_SHIP"),
+            "by_priority": by_priority,
+            "by_kind": by_kind,
+            "by_edge_type": by_edge_type,
+        },
+        "slot_budgets": slot_budgets_out,
+        "attack_telemetry": clean_telemetry,
+        "spare_budget": clean_spare,
+    }
+    return game_data.sanitize_json_tree(payload, nonfinite_float=0.0)
