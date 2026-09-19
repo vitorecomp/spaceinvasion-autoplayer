@@ -21,6 +21,7 @@ import {
   safeFiniteNumber,
 } from "../api/httpClient";
 import {
+  ActionGraphTabKey,
   DashboardPayload,
   FeedbackKind,
   FeedbackState,
@@ -28,9 +29,16 @@ import {
   PAGE_TITLES,
   PageKey,
   PlanetData,
+  PlannerJobsStatusPayload,
 } from "../types/api";
 
 const SESSION_STATE_KEY = "si_console_ui_state";
+const VALID_AG_TABS: readonly ActionGraphTabKey[] = [
+  "heuristics",
+  "config-optimizer",
+  "ai-planner",
+  "fleet-planner",
+];
 
 export interface UiPrefs {
   modeOverride: "auto" | "live" | "dry-run" | string;
@@ -42,6 +50,7 @@ export interface UiPrefs {
   opsPlanetScope: string;
   opsQueueLayout: "table" | "parallel";
   activeLogSource: "commander" | "game_api" | "sqlite" | string;
+  agActiveTab: ActionGraphTabKey;
   agEdgeFilter: "all" | "deps";
   agParamTab: "core" | "scope";
   sectorFilter: string;
@@ -66,6 +75,7 @@ const DEFAULT_UI_PREFS: UiPrefs = {
   opsPlanetScope: "all",
   opsQueueLayout: "table",
   activeLogSource: "commander",
+  agActiveTab: "heuristics",
   agEdgeFilter: "all",
   agParamTab: "core",
   sectorFilter: "all",
@@ -104,6 +114,8 @@ export interface LegacyWindowState {
   inFlightDashboardCount: number;
   dashboardSeq: number;
   actionGraphData: Record<string, any> | null;
+  plannerJobsStatus: PlannerJobsStatusPayload | null;
+  agActiveTab: ActionGraphTabKey;
   agSimDirty: boolean;
   agSimRunning: number;
   agSimSeq: number;
@@ -154,6 +166,8 @@ function createInitialLegacyWindowState(): LegacyWindowState {
     inFlightDashboardCount: 0,
     dashboardSeq: 0,
     actionGraphData: null,
+    plannerJobsStatus: null,
+    agActiveTab: "heuristics",
     agSimDirty: false,
     agSimRunning: 0,
     agSimSeq: 0,
@@ -218,10 +232,12 @@ export function selectActivePlanet(
 
 export function buildClientFallbackActionGraph(dash: DashboardPayload | null | undefined): Record<string, any> {
   const cfg = dash?.config || {};
-  const mode =
-    String(cfg.planner_mode || dash?.planner_mode || "priority").toLowerCase() === "ga_nn"
-      ? "ga_nn"
-      : "priority";
+  const rawMode = String(
+    dash?.effective_planner_mode || cfg.planner_mode || dash?.planner_mode || "priority"
+  )
+    .trim()
+    .toLowerCase();
+  const mode = rawMode === "ai_planner" ? "ai_planner" : "priority";
   const planList = Array.isArray(dash?.plan) ? dash!.plan! : [];
   const planets = Array.isArray(dash?.state?.planets) ? dash!.state!.planets! : [];
   const planetById = new Map<number, PlanetData>();
@@ -445,6 +461,9 @@ export interface ConsoleContextValue {
   refreshRecyclersView: (categoryOverride?: string) => Promise<void>;
   actionGraphData: Record<string, any> | null;
   setActionGraphData: (data: Record<string, any> | null) => void;
+  plannerJobsStatus: PlannerJobsStatusPayload | null;
+  setPlannerJobsStatus: (status: PlannerJobsStatusPayload | null) => void;
+  refreshPlannerJobsStatus: () => Promise<PlannerJobsStatusPayload | null>;
   agSimDirty: boolean;
   setAgSimDirty: (dirty: boolean) => void;
   agSimRunning: number;
@@ -498,6 +517,9 @@ function readInitialPersistedState(): {
         if (saved.combatSubTab) prefs.combatSubTab = String(saved.combatSubTab);
         if (saved.queueFilter) prefs.queueFilter = String(saved.queueFilter);
         if (saved.activeLogSource) prefs.activeLogSource = String(saved.activeLogSource);
+        if (VALID_AG_TABS.includes(saved.agActiveTab)) {
+          prefs.agActiveTab = saved.agActiveTab;
+        }
         if (saved.agEdgeFilter === "all" || saved.agEdgeFilter === "deps") {
           prefs.agEdgeFilter = saved.agEdgeFilter;
         }
@@ -555,6 +577,8 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   const [atkData, setAtkDataState] = useState<Record<string, any> | null>(null);
   const [recData, setRecDataState] = useState<Record<string, any> | null>(null);
   const [actionGraphData, setActionGraphDataState] = useState<Record<string, any> | null>(null);
+  const [plannerJobsStatus, setPlannerJobsStatusState] =
+    useState<PlannerJobsStatusPayload | null>(null);
 
   const [agSimDirty, setAgSimDirtyState] = useState<boolean>(false);
   const [agSimRunning, setAgSimRunning] = useState<number>(0);
@@ -606,6 +630,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   sharedLegacyState.combatSubTab = uiPrefs.combatSubTab;
   sharedLegacyState.queueFilter = uiPrefs.queueFilter;
   sharedLegacyState.activeLogSource = uiPrefs.activeLogSource;
+  sharedLegacyState.agActiveTab = uiPrefs.agActiveTab;
   sharedLegacyState.agEdgeFilter = uiPrefs.agEdgeFilter;
   sharedLegacyState.agParamTab = uiPrefs.agParamTab;
   sharedLegacyState.sectorFilter = uiPrefs.sectorFilter;
@@ -624,6 +649,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   sharedLegacyState.atkData = atkData;
   sharedLegacyState.recData = recData;
   sharedLegacyState.actionGraphData = actionGraphData;
+  sharedLegacyState.plannerJobsStatus = plannerJobsStatus;
   sharedLegacyState.agSimDirty = agSimDirty;
   sharedLegacyState.agSimRunning = agSimRunning;
   sharedLegacyState.gaCalcCount = gaCalcCount;
@@ -645,6 +671,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
             combatSubTab: nextPrefs.combatSubTab,
             queueFilter: nextPrefs.queueFilter,
             activeLogSource: nextPrefs.activeLogSource,
+            agActiveTab: nextPrefs.agActiveTab,
             agEdgeFilter: nextPrefs.agEdgeFilter,
             agParamTab: nextPrefs.agParamTab,
           })
@@ -819,6 +846,26 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
     sharedLegacyState.actionGraphData = data;
     setActionGraphDataState(data);
   }, []);
+
+  const setPlannerJobsStatus = useCallback((status: PlannerJobsStatusPayload | null) => {
+    sharedLegacyState.plannerJobsStatus = status;
+    setPlannerJobsStatusState(status);
+  }, []);
+
+  const refreshPlannerJobsStatus = useCallback(async (): Promise<PlannerJobsStatusPayload | null> => {
+    try {
+      const res = await rawApiCommand<PlannerJobsStatusPayload>({
+        command: "planner_jobs_status",
+      });
+      if (res && typeof res === "object") {
+        setPlannerJobsStatus(res);
+        return res;
+      }
+    } catch {
+      // Tolerate older servers or offline fallback
+    }
+    return null;
+  }, [setPlannerJobsStatus]);
 
   const setLastOptimizerSummary = useCallback((summary: Record<string, any> | null) => {
     sharedLegacyState.lastOptimizerSummary = summary;
@@ -1091,6 +1138,15 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         if (nextDash.optimizer_summary) {
           setLastOptimizerSummary(nextDash.optimizer_summary);
         }
+        const incomingJobsStatus =
+          nextDash.planner_jobs_status && typeof nextDash.planner_jobs_status === "object"
+            ? nextDash.planner_jobs_status
+            : nextDash.planner_status && typeof nextDash.planner_status === "object"
+              ? nextDash.planner_status
+              : null;
+        if (incomingJobsStatus) {
+          setPlannerJobsStatus(incomingJobsStatus);
+        }
 
         const modeVal = nextDash.bot_control?.mode_override || "auto";
         setUiPrefs((prev) =>
@@ -1177,6 +1233,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       setBuildingsEtaData,
       setCombatData,
       setLastOptimizerSummary,
+      setPlannerJobsStatus,
       showFeedback,
       syncNotificationsPayload,
     ]
@@ -1616,6 +1673,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       refreshRecyclersView,
       actionGraphData,
       setActionGraphData,
+      plannerJobsStatus,
+      setPlannerJobsStatus,
+      refreshPlannerJobsStatus,
       agSimDirty,
       setAgSimDirty,
       agSimRunning,
@@ -1676,6 +1736,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       notifications,
       nowEpochSec,
       openNotificationCenter,
+      plannerJobsStatus,
       recData,
       reconnectAttempts,
       refreshAttacksView,
@@ -1684,6 +1745,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       refreshCombatForSelectedPlanet,
       refreshEspionageView,
       refreshNotificationCenter,
+      refreshPlannerJobsStatus,
       refreshRecyclersView,
       refreshSectorsView,
       sectorsData,
@@ -1698,6 +1760,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       setConfigDirty,
       setEspData,
       setLastOptimizerSummary,
+      setPlannerJobsStatus,
       setRecData,
       setSectorsData,
       setSelectedPlanetId,

@@ -103,7 +103,7 @@ export interface PlannedActionData {
 }
 
 export interface StrategyConfigData {
-  planner_mode?: "priority" | "ga_nn" | string;
+  planner_mode?: "priority" | "ai_planner" | "ga_nn" | string;
   playstyle?: "fleeter" | "hybrid" | "miner" | string;
   merchant_mode?: boolean;
   auto_throttle_blast_furnace?: boolean;
@@ -140,6 +140,7 @@ export interface StrategyConfigData {
   galaxy_scan_attack_weight?: number;
   reserved_spy_slots?: number;
   spy_dispatch_planet_id?: number;
+  ai_resource_spare_pct?: number;
   ga_population_size?: number;
   ga_generations?: number;
   ga_horizon_steps?: number;
@@ -147,6 +148,181 @@ export interface StrategyConfigData {
   ga_nn_weight?: number;
   ga_seed?: number | null;
   shipyard_targets?: Record<string, number>;
+  [key: string]: any;
+}
+
+export type ActionGraphTabKey =
+  | "heuristics"
+  | "config-optimizer"
+  | "ai-planner"
+  | "fleet-planner";
+
+export interface PlannerJobState {
+  job_id?: string | null;
+  kind?: string;
+  status?: "idle" | "running" | "completed" | "error" | string;
+  phase?: string;
+  progress_pct?: number;
+  elapsed_ms?: number;
+  started_ts?: number | null;
+  finished_ts?: number | null;
+  error?: string | null;
+  trigger_source?: string;
+  [key: string]: any;
+}
+
+export interface FieldConflictCandidate {
+  building_key: string;
+  building_id?: number;
+  name?: string;
+  level?: number;
+  energy_delta?: number;
+  safe_to_demolish?: boolean;
+  [key: string]: any;
+}
+
+export interface FieldConflictItem {
+  conflict_key: string;
+  planet_id: number;
+  planet_coords?: string;
+  planet_name?: string;
+  blocked_building_key?: string;
+  blocked_building_name?: string;
+  blocked_target_level?: number;
+  candidate_building_key?: string;
+  candidate_level?: number;
+  candidates?: FieldConflictCandidate[];
+  status?: "pending" | "resolved" | string;
+  decision?: string;
+  created_ts?: number;
+  resolved_ts?: number | null;
+  detail?: Record<string, any>;
+  [key: string]: any;
+}
+
+export interface PlannerJobsStatusPayload {
+  ok?: boolean;
+  config_optimizer_job?: PlannerJobState | null;
+  ai_planner_job?: PlannerJobState | null;
+  colonies_owned?: number;
+  max_planets?: number;
+  live_ai_unlocked?: boolean;
+  active_planner_mode?: string;
+  effective_planner_mode?: string;
+  fallback_reason?: string | null;
+  pending_field_conflicts?: FieldConflictItem[];
+  [key: string]: any;
+}
+
+export interface ConfigOptimizerPlanetRecord {
+  slot?: number;
+  slot_index?: number;
+  planet_id?: number;
+  coords?: string;
+  name?: string;
+  planet_status?: string;
+  is_placeholder?: boolean;
+  is_central_planet?: boolean;
+  pays_for_research?: boolean;
+  temperature?: number;
+  temperature_c?: number;
+  fields_max?: number;
+  fields_used?: number;
+  fields_used_target?: number;
+  fields_free?: number;
+  built_floors?: Record<string, number>;
+  reserved_floors?: Record<string, number>;
+  production?: Record<string, any>;
+  warehouses?: Array<Record<string, any>> | Record<string, any>;
+  buildings?: Array<Record<string, any>> | Record<string, any>;
+  [key: string]: any;
+}
+
+export interface ConfigOptimizerResultData {
+  schema_version?: number;
+  generated_at?: string;
+  elapsed_ms?: number;
+  meta_parameters?: Record<string, any>;
+  inputs?: Record<string, any>;
+  planned_research_levels?: Record<string, number> | Array<Record<string, any>>;
+  summary?: Record<string, any>;
+  search?: Record<string, any>;
+  limits?: Array<Record<string, any>>;
+  planets?: ConfigOptimizerPlanetRecord[];
+  [key: string]: any;
+}
+
+export interface ConfigOptimizerGetPayload {
+  ok?: boolean;
+  active?: {
+    run_id?: number;
+    updated_ts?: number;
+    params?: Record<string, any>;
+    reserved_floors?: Record<string, Record<string, number>>;
+    result?: ConfigOptimizerResultData;
+    [key: string]: any;
+  } | null;
+  job?: PlannerJobState | null;
+  runs?: Array<Record<string, any>>;
+  reserved_floors?: Record<string, Record<string, number>>;
+  default_params?: Record<string, any>;
+  colonies_owned?: number;
+  max_planets?: number;
+  [key: string]: any;
+}
+
+export interface AiPlannerStepItem {
+  seq?: number;
+  order?: number;
+  start_sec?: number;
+  duration_sec?: number;
+  finish_sec?: number;
+  start?: string;
+  duration_text?: string;
+  week?: number;
+  kind?: string;
+  planet_id?: number;
+  planet_coords?: string;
+  planet_name?: string;
+  entity_key?: string;
+  entity_name?: string;
+  target_level?: number;
+  cost?: ResourceBundle;
+  status?: string;
+  [key: string]: any;
+}
+
+export interface AiPlannerGetPayload {
+  ok?: boolean;
+  has_plan?: boolean;
+  active_summary?: Record<string, any> | null;
+  meta_parameters?: Record<string, any> | null;
+  weekly_breakdown?: Array<Record<string, any>>;
+  attack_telemetry?: Record<string, any> | null;
+  graph?: Record<string, any> | null;
+  steps_page?: {
+    items?: AiPlannerStepItem[];
+    total?: number;
+    page?: number;
+    page_size?: number;
+  };
+  job?: PlannerJobState | null;
+  runs?: Array<Record<string, any>>;
+  colonies_owned?: number;
+  max_planets?: number;
+  live_ai_unlocked?: boolean;
+  pending_field_conflicts?: FieldConflictItem[];
+  default_params?: Record<string, any>;
+  [key: string]: any;
+}
+
+export interface FleetPlannerGetPayload {
+  ok?: boolean;
+  graph?: Record<string, any> | null;
+  slot_budgets?: Array<Record<string, any>> | Record<string, any>;
+  attack_telemetry?: Record<string, any> | null;
+  spare_budget?: Record<string, any> | null;
+  config?: StrategyConfigData;
   [key: string]: any;
 }
 
@@ -381,6 +557,15 @@ export interface DashboardPayload {
   css_version?: string | null;
   server_boot_id?: string | null;
   planner_mode?: string;
+  effective_planner_mode?: string;
+  fallback_reason?: string | null;
+  colonies_owned?: number;
+  max_planets?: number;
+  live_ai_unlocked?: boolean;
+  pending_field_conflicts?: FieldConflictItem[];
+  planner_jobs_status?: PlannerJobsStatusPayload | null;
+  planner_status?: PlannerJobsStatusPayload | null;
+  ai_planner_summary?: Record<string, any> | null;
   health?: {
     ok?: boolean;
     in_game?: boolean;

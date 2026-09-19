@@ -83,9 +83,12 @@ export const AppSidebar: React.FC = () => {
     : "-- OPS/HR";
 
   const cfgMode = String(
-    dashboard?.config?.planner_mode || dashboard?.planner_mode || "priority"
+    dashboard?.effective_planner_mode ||
+      dashboard?.config?.planner_mode ||
+      dashboard?.planner_mode ||
+      "priority"
   ).toLowerCase();
-  const isGaNn = cfgMode === "ga_nn";
+  const isAiPlanner = cfgMode === "ai_planner" || cfgMode === "ga_nn";
 
   const counts = dashboard?.db_summary?.counts || {};
   const secCnt = Math.max(
@@ -153,9 +156,12 @@ export const AppSidebar: React.FC = () => {
       );
       return;
     }
-    const useGa =
+    const useAi =
+      String(
+        dashboard?.effective_planner_mode || dashboard?.config?.planner_mode || ""
+      ).toLowerCase() === "ai_planner" ||
       String(dashboard?.config?.planner_mode || "").toLowerCase() === "ga_nn";
-    if (useGa) beginGaCalc();
+    if (useAi) beginGaCalc();
     try {
       showFeedback("Syncing live snapshot from Chrome...", "ok");
       const ok = await loadDashboard({ refresh: true, preserveConfig: true, force: true });
@@ -172,7 +178,7 @@ export const AppSidebar: React.FC = () => {
         }
       }
     } finally {
-      if (useGa) endGaCalc();
+      if (useAi) endGaCalc();
     }
   };
 
@@ -226,9 +232,12 @@ export const AppSidebar: React.FC = () => {
   };
 
   const onTickNow = async () => {
-    const useGa =
+    const useAi =
+      String(
+        dashboard?.effective_planner_mode || dashboard?.config?.planner_mode || ""
+      ).toLowerCase() === "ai_planner" ||
       String(dashboard?.config?.planner_mode || "").toLowerCase() === "ga_nn";
-    if (useGa) beginGaCalc();
+    if (useAi) beginGaCalc();
     try {
       const dryRun = modeVal === "dry-run";
       showFeedback(`Running 1 ${dryRun ? "dry-run" : "live"} tick...`, "ok");
@@ -238,7 +247,7 @@ export const AppSidebar: React.FC = () => {
     } catch (err: any) {
       showFeedback(`Tick failed: ${err.message}`, feedbackKindForError(err));
     } finally {
-      if (useGa) endGaCalc();
+      if (useAi) endGaCalc();
     }
   };
 
@@ -252,7 +261,7 @@ export const AppSidebar: React.FC = () => {
     { page: "attacks", code: "ATK", title: "Attack Results", badgeId: "nav-atk-badge", badgeText: String(atkCnt) },
     { page: "recyclers", code: "REC", title: "Recyclers & Inbox", badgeId: "nav-rec-badge", badgeText: String(recCnt) },
     { page: "operations", code: "OPS", title: "Operations Queue", badgeId: "nav-queue-count", badgeText: String(planCount) },
-    { page: "action-graph", code: "DAG", title: "Action Graph", badgeId: "nav-graph-badge", badgeText: isGaNn ? "GA" : "PRI", badgeExtraCls: isGaNn ? " is-ga" : "" },
+    { page: "action-graph", code: "DAG", title: "Action Graph", badgeId: "nav-graph-badge", badgeText: isAiPlanner ? "AI" : "PRI", badgeExtraCls: isAiPlanner ? " is-ga" : "" },
     { page: "ranking", code: "RNK", title: "Ranking Evolution", badgeId: "nav-rank-badge", badgeText: rankBadgeTxt },
     { page: "config", code: "CFG", title: "Strategy Config" },
     { page: "logs", code: "LOG", title: "Live Logs" },

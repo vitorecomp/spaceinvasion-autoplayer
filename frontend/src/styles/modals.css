@@ -262,6 +262,9 @@
   .ag-main-window,
   .ag-control-panel,
   .ag-panel-body,
+  .ag-tab-split,
+  .ag-co-content,
+  .ag-ai-subpane,
   .dash-lower-grid,
   .ops-parallel-grid,
   .split-workspace,
@@ -308,6 +311,7 @@
   }
 
   .page-view.ag-view,
+  .ag-tab-split,
   .dash-upper-grid,
   .dash-lower-grid,
   .ops-parallel-grid,

@@ -340,10 +340,18 @@ export const DashboardView: React.FC = () => {
   }, [allPlanActions, scopedDashPlanet]);
 
   const cfgMode = String(
-    dashboard?.config?.planner_mode || dashboard?.planner_mode || "priority"
+    dashboard?.effective_planner_mode ||
+      dashboard?.config?.planner_mode ||
+      dashboard?.planner_mode ||
+      "priority"
   ).toLowerCase();
-  const isGaNn = cfgMode === "ga_nn";
-  const modeLabel = isGaNn ? "MODE: GA+NN" : "MODE: PRIORITY";
+  const isAiPlanner = cfgMode === "ai_planner";
+  const isLegacyGa = cfgMode === "ga_nn";
+  const modeLabel = isAiPlanner
+    ? "MODE: AI-PLANNER"
+    : isLegacyGa
+      ? "MODE: AI-PLANNER"
+      : "MODE: PRIORITY";
 
   const colonyCountTag = dashboard
     ? `${String(planets.length).padStart(2, "0")}-${String(gs?.universe_id || 31)}`
@@ -715,7 +723,7 @@ export const DashboardView: React.FC = () => {
       <div className="dash-queues-toolbar" aria-label="Planned queues overview and navigation">
         <div className="window-title-group">
           <span
-            className={`module-meta tabular mode-badge${isGaNn ? " is-ga" : ""}`}
+            className={`module-meta tabular mode-badge${isAiPlanner ? " is-ga" : ""}`}
             id="dash-planner-mode-badge"
           >
             {modeLabel}
