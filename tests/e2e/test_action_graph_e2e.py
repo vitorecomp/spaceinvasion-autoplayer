@@ -1,4 +1,4 @@
-"""End-to-End tests for the Operational Action Graph UI, mode switching, isolated simulation, and Apply."""
+"""End-to-End tests for the 4-Tab Action Graph UI, mode switching, isolated simulation, and Apply."""
 
 from __future__ import annotations
 
@@ -27,7 +27,17 @@ def _make_two_colony_server(*, hostile: bool = False) -> FakeSpaceInvasionServer
             "resources": [18000, 12000, 9000, 6000],
             "storage": [100000, 100000, 100000, 100000],
             "energy": {"produced": 320, "used": 140},
-            "buildings": {"b1": 4, "b2": 3, "b3": 4, "b4": 3, "b5": 6, "b7": 3, "b8": 2, "b9": 2},
+            "buildings": {
+                "b1": 4,
+                "b2": 3,
+                "b3": 4,
+                "b4": 3,
+                "b5": 6,
+                "b7": 3,
+                "b8": 2,
+                "b9": 2,
+                "b10": 4,
+            },
             "ships": {"s1": 6, "s4": 10, "s10": 4},
             "defense": {},
             "economy_rates": {},
@@ -43,7 +53,7 @@ def _make_two_colony_server(*, hostile: bool = False) -> FakeSpaceInvasionServer
             "resources": [14000, 9000, 7000, 5000],
             "storage": [100000, 100000, 100000, 100000],
             "energy": {"produced": 260, "used": 95},
-            "buildings": {"b1": 3, "b2": 2, "b3": 3, "b4": 4, "b5": 5, "b7": 2},
+            "buildings": {"b1": 3, "b2": 2, "b3": 3, "b4": 4, "b5": 5, "b7": 2, "b10": 2},
             "ships": {},
             "defense": {},
             "economy_rates": {},
@@ -64,15 +74,9 @@ def _make_two_colony_server(*, hostile: bool = False) -> FakeSpaceInvasionServer
 
 
 class TestActionGraphEndToEnd(unittest.TestCase):
-    def test_ag_e2e_01_render_action_graph_tab_and_switch_priority_and_ga_nn_modes(self) -> None:
+    def test_ag_e2e_01_render_action_graph_tab_and_switch_priority_and_ai_planner_modes(self) -> None:
         srv = _make_two_colony_server(hostile=False)
-        cfg = StrategyConfig(
-            planner_mode="priority",
-            ga_population_size=6,
-            ga_generations=2,
-            ga_horizon_steps=4,
-            ga_seed=17,
-        )
+        cfg = StrategyConfig(planner_mode="priority")
         with E2ETestHarness(server=srv, config=cfg) as h:
             dash = h.get_dashboard(refresh=1)
             self.assertIn("action_graph", dash)
@@ -91,18 +95,19 @@ class TestActionGraphEndToEnd(unittest.TestCase):
                 jumpBtn.click();
 
                 const agView = document.getElementById("view-action-graph");
+                const subTabs = Array.from(document.querySelectorAll('#ag-workspace-tablist [data-ag-tab]')).map((el) => el.getAttribute("data-ag-tab"));
                 const prioNodes = document.querySelectorAll(".ag-node-card").length;
                 const prioEdges = document.querySelectorAll(".ag-edge-path").length;
                 const svgMounted = Boolean(document.getElementById("ag-edges-svg"));
                 const mainWinGenPrio = document.getElementById("ag-main-window").textContent.toLowerCase().includes("generation");
 
-                // Switch to GA + Neural (ga_nn) mode via header radio button
-                document.getElementById("ag-mode-ga_nn").click();
-                const gaOk = await __waitUntil(() => state.agSimRunning === 0 && state.actionGraphData?.mode === "ga_nn", 6000);
-                if (!gaOk) throw new Error("Failed switching Action Graph to ga_nn");
-                const gaNodes = document.querySelectorAll(".ag-node-card").length;
-                const gaEngineText = document.getElementById("ag-kpi-engine").textContent;
-                const mainWinGenGa = document.getElementById("ag-main-window").textContent.toLowerCase().includes("generation");
+                // Switch to AI-Planner (ai_planner) mode preview via Tab 1 header radio button
+                document.getElementById("ag-mode-ai_planner").click();
+                const aiOk = await __waitUntil(() => state.agSimRunning === 0 && state.actionGraphData?.mode === "ai_planner", 6000);
+                if (!aiOk) throw new Error("Failed switching Action Graph to ai_planner");
+                const aiNodes = document.querySelectorAll(".ag-node-card").length;
+                const aiEngineText = document.getElementById("ag-kpi-engine").textContent;
+                const mainWinGenAi = document.getElementById("ag-main-window").textContent.toLowerCase().includes("generation");
 
                 // Switch back to Heuristic (priority) mode
                 document.getElementById("ag-mode-priority").click();
@@ -112,27 +117,32 @@ class TestActionGraphEndToEnd(unittest.TestCase):
 
                 return {
                   hidden: agView.hidden,
+                  subTabs,
                   prioNodes,
                   prioEdges,
                   svgMounted,
-                  gaNodes,
-                  gaEngineText,
+                  aiNodes,
+                  aiEngineText,
                   prioEngineText,
                   mainWinGenPrio,
-                  mainWinGenGa,
+                  mainWinGenAi,
                 };
                 """,
             )
             sc = ui_res["scenario"]
             self.assertFalse(sc["hidden"])
+            self.assertEqual(
+                sc["subTabs"],
+                ["heuristics", "config-optimizer", "ai-planner", "fleet-planner"],
+            )
             self.assertGreater(sc["prioNodes"], 0)
             self.assertGreaterEqual(sc["prioEdges"], 0)
             self.assertTrue(sc["svgMounted"])
-            self.assertGreater(sc["gaNodes"], 0)
-            self.assertIn("GA+NN", sc["gaEngineText"])
-            self.assertIn("PRIORITY", sc["prioEngineText"])
+            self.assertGreater(sc["aiNodes"], 0)
+            self.assertIn("AI-PLANNER", sc["aiEngineText"])
+            self.assertIn("HEURISTIC", sc["prioEngineText"])
             self.assertFalse(sc["mainWinGenPrio"])
-            self.assertFalse(sc["mainWinGenGa"])
+            self.assertFalse(sc["mainWinGenAi"])
 
     def test_ag_e2e_02_isolated_right_panel_parameter_simulation_zero_active_config_mutation(self) -> None:
         srv = _make_two_colony_server(hostile=False)
@@ -141,9 +151,6 @@ class TestActionGraphEndToEnd(unittest.TestCase):
             playstyle="fleeter",
             allow_multi_planet=True,
             allow_raids=False,
-            ga_population_size=12,
-            ga_generations=3,
-            ga_horizon_steps=5,
         )
         with E2ETestHarness(server=srv, config=cfg) as h:
             h.get_dashboard(refresh=1)
@@ -158,13 +165,10 @@ class TestActionGraphEndToEnd(unittest.TestCase):
                 document.querySelector('[data-page="action-graph"]').click();
 
                 // Edit right-side controls across both subtabs & simulate preview
-                document.getElementById("ag-cfg-planner_mode").value = "ga_nn";
+                document.getElementById("ag-cfg-planner_mode").value = "ai_planner";
                 document.getElementById("ag-cfg-playstyle").value = "miner";
-                document.getElementById("ag-cfg-ga_population_size").value = "6";
-                document.getElementById("ag-cfg-ga_generations").value = "2";
-                document.getElementById("ag-cfg-ga_horizon_steps").value = "4";
-                document.getElementById("ag-cfg-ga_seed").value = "77";
                 document.getElementById("ag-cfg-storage_warn_ratio").value = "0.75";
+                document.getElementById("ag-cfg-combat_safety_margin").value = "1.8";
                 document.getElementById("ag-ptab-btn-scope").click();
                 const multiChk = document.getElementById("ag-cfg-allow_multi_planet");
                 multiChk.checked = false;
@@ -172,7 +176,7 @@ class TestActionGraphEndToEnd(unittest.TestCase):
 
                 document.getElementById("btn-ag-simulate").click();
                 const simOk = await __waitUntil(
-                  () => state.agSimRunning === 0 && state.actionGraphData?.mode === "ga_nn" && state.actionGraphData?.simulated === true,
+                  () => state.agSimRunning === 0 && state.actionGraphData?.mode === "ai_planner" && state.actionGraphData?.simulated === true,
                   6000
                 );
                 if (!simOk) throw new Error("Simulation preview did not complete");
@@ -195,7 +199,7 @@ class TestActionGraphEndToEnd(unittest.TestCase):
             sc = ui_res["scenario"]
             self.assertEqual(sc["statusPill"], "SIMULATION PREVIEW · UNSAVED")
             self.assertEqual(sc["dirtyBadge"], "MODIFIED (PREVIEW)")
-            self.assertEqual(sc["simMode"], "ga_nn")
+            self.assertEqual(sc["simMode"], "ai_planner")
             self.assertEqual(sc["simPlaystyle"], "miner")
             self.assertFalse(sc["simMultiChecked"])
             self.assertIn("planner_mode", sc["changedKeys"])
@@ -221,20 +225,17 @@ class TestActionGraphEndToEnd(unittest.TestCase):
                 await __waitUntil(() => state.dashboard !== null, 5000);
                 document.querySelector('[data-page="action-graph"]').click();
 
-                document.getElementById("ag-cfg-planner_mode").value = "ga_nn";
+                document.getElementById("ag-cfg-planner_mode").value = "ai_planner";
                 document.getElementById("ag-cfg-playstyle").value = "hybrid";
-                document.getElementById("ag-cfg-ga_population_size").value = "6";
-                document.getElementById("ag-cfg-ga_generations").value = "2";
-                document.getElementById("ag-cfg-ga_horizon_steps").value = "4";
-                document.getElementById("ag-cfg-ga_seed").value = "88";
                 document.getElementById("ag-cfg-combat_safety_margin").value = "1.8";
+                document.getElementById("ag-cfg-min_colony_fields").value = "315";
                 document.getElementById("ag-ptab-btn-scope").click();
                 document.getElementById("ag-cfg-allow_raids").checked = true;
                 document.getElementById("ag-cfg-allow_fleetsave").checked = true;
 
                 document.getElementById("btn-ag-apply").click();
                 const appliedOk = await __waitUntil(
-                  () => state.configSaving === 0 && !state.agSimDirty && state.dashboard?.config?.planner_mode === "ga_nn" && state.dashboard?.config?.ga_seed === 88,
+                  () => state.configSaving === 0 && !state.agSimDirty && state.dashboard?.config?.planner_mode === "ai_planner" && state.dashboard?.config?.min_colony_fields === 315,
                   6000
                 );
                 if (!appliedOk) throw new Error("Explicit Apply failed to persist StrategyConfig");
@@ -252,25 +253,22 @@ class TestActionGraphEndToEnd(unittest.TestCase):
             self.assertEqual(sc["statusPill"], "LIVE ACTIVE CONFIG")
             self.assertEqual(sc["dirtyBadge"], "ACTIVE SYNCED")
             self.assertIn("Applied parameters to active StrategyConfig", sc["banner"])
-            self.assertEqual(sc["dashBadge"], "MODE: GA+NN")
-            self.assertEqual(sc["cfgViewMode"], "ga_nn")
+            self.assertEqual(sc["dashBadge"], "MODE: AI-PLANNER")
+            self.assertEqual(sc["cfgViewMode"], "ai_planner")
 
             # Restart bridge and prove config.yaml persisted cleanly on disk
             h.restart_bridge()
             reloaded_disk = load_strategy_config(h.config_path)
-            self.assertEqual(reloaded_disk.planner_mode, "ga_nn")
+            self.assertEqual(reloaded_disk.planner_mode, "ai_planner")
             self.assertEqual(reloaded_disk.playstyle, "hybrid")
-            self.assertEqual(reloaded_disk.ga_population_size, 6)
-            self.assertEqual(reloaded_disk.ga_generations, 2)
-            self.assertEqual(reloaded_disk.ga_horizon_steps, 4)
-            self.assertEqual(reloaded_disk.ga_seed, 88)
+            self.assertEqual(reloaded_disk.min_colony_fields, 315)
             self.assertAlmostEqual(reloaded_disk.combat_safety_margin, 1.8, places=3)
             self.assertTrue(reloaded_disk.allow_raids)
             self.assertTrue(reloaded_disk.allow_fleetsave)
 
             post_restart_cfg = h.api.send_command({"command": "config"})["config"]
-            self.assertEqual(post_restart_cfg["planner_mode"], "ga_nn")
-            self.assertEqual(post_restart_cfg["ga_seed"], 88)
+            self.assertEqual(post_restart_cfg["planner_mode"], "ai_planner")
+            self.assertEqual(post_restart_cfg["min_colony_fields"], 315)
 
     def test_ag_e2e_04_hostile_p0_multi_planet_invalid_input_and_english_only_verification(self) -> None:
         srv = _make_two_colony_server(hostile=True)
@@ -303,8 +301,8 @@ class TestActionGraphEndToEnd(unittest.TestCase):
                 await __waitUntil(() => state.dashboard !== null, 5000);
                 document.querySelector('[data-page="action-graph"]').click();
 
-                // Trigger invalid ga_seed="invalid_seed" simulation from UI
-                document.getElementById("ag-cfg-ga_seed").value = "invalid_seed";
+                // Trigger out-of-range simulation input from Tab 1 UI
+                document.getElementById("ag-cfg-combat_safety_margin").value = "0.2";
                 document.getElementById("btn-ag-simulate").click();
                 const errOk = await __waitUntil(
                   () => document.getElementById("feedback-banner").textContent.includes("Simulation preview error"),
@@ -327,6 +325,107 @@ class TestActionGraphEndToEnd(unittest.TestCase):
             for forbidden in ("grafo", "parâmetros", "simular", "aplicar", "configuração"):
                 self.assertNotIn(forbidden, dumped.lower())
                 self.assertNotIn(forbidden, sc["viewText"].lower())
+
+    def test_ag_e2e_05_4tab_workspace_config_optimizer_ai_planner_gate_and_fleet_sync(self) -> None:
+        srv = _make_two_colony_server(hostile=False)
+        cfg = StrategyConfig(planner_mode="priority", raid_min_loot_spice_eq=1500)
+        with E2ETestHarness(server=srv, config=cfg) as h:
+            h.get_dashboard(refresh=1)
+
+            ui_res = run_ui_in_node(
+                h.base_url,
+                r"""
+                await __waitUntil(() => state.dashboard !== null, 5000);
+                document.querySelector('[data-page="action-graph"]').click();
+
+                // 1) Tab 2: Config Optimization (run with small GA params for fast E2E execution)
+                document.getElementById("ag-tab-btn-config-optimizer").click();
+                document.getElementById("co-ptab-buildings").click();
+                const coPop = document.getElementById("co-param-ga_population_size");
+                coPop.value = "6";
+                coPop.dispatchEvent(new Event("change", { bubbles: true }));
+                const coGen = document.getElementById("co-param-ga_generations");
+                coGen.value = "2";
+                coGen.dispatchEvent(new Event("change", { bubbles: true }));
+                document.getElementById("btn-co-run").click();
+                const coDone = await __waitUntil(
+                  () => !document.getElementById("co-kpi-ships").textContent.startsWith("—"),
+                  20000
+                );
+                if (!coDone) throw new Error("Config Optimizer run did not populate co-kpi-ships");
+                const coShips = document.getElementById("co-kpi-ships").textContent;
+                const coPlanetRows = document.querySelectorAll("#co-planets-tbody tr").length;
+
+                // 2) Tab 3: AI-Planner (Colony Gate locked at 2/11 + real windowed DAG + Path table)
+                document.getElementById("ag-tab-btn-ai-planner").click();
+                const aiWeeks = document.getElementById("ai-param-reward_weeks");
+                aiWeeks.value = "2";
+                aiWeeks.dispatchEvent(new Event("change", { bubbles: true }));
+                document.getElementById("ai-ptab-weights").click();
+                const aiPop = document.getElementById("ai-param-ga_population_size");
+                aiPop.value = "4";
+                aiPop.dispatchEvent(new Event("change", { bubbles: true }));
+                const aiGen = document.getElementById("ai-param-ga_generations");
+                aiGen.value = "1";
+                aiGen.dispatchEvent(new Event("change", { bubbles: true }));
+                document.getElementById("btn-ai-run").click();
+                const aiDone = await __waitUntil(
+                  () => document.getElementById("ai-kpi-reward").textContent !== "—",
+                  20000
+                );
+                if (!aiDone) throw new Error("AI-Planner run did not populate ai-kpi-reward");
+                const aiReward = document.getElementById("ai-kpi-reward").textContent;
+                const gateText = document.getElementById("ag-ai-colony-gate").textContent;
+                const activateDisabled = document.getElementById("btn-ai-activate").disabled;
+                const aiDagNodes = document.querySelectorAll("#ag-ai-canvas-scroll .ag-node-card").length;
+
+                // 3) Tab 4: Fleet / Attack Planner (slot table + bidirectional Config sync)
+                document.getElementById("ag-tab-btn-fleet-planner").click();
+                const fltLoaded = await __waitUntil(
+                  () => document.querySelectorAll("#flt-slots-table tbody tr").length === 2,
+                  8000
+                );
+                if (!fltLoaded) throw new Error("Fleet Planner slots table did not load 2 colonies");
+                const fltSlotsText = document.getElementById("flt-kpi-slots").textContent;
+                document.getElementById("flt-cfg-raid_min_loot_spice_eq").value = "3300";
+                document.getElementById("flt-cfg-raid_min_loot_spice_eq").dispatchEvent("change");
+                document.querySelector('[data-flt-ptab="shipyard"]').click();
+                document.getElementById("flt-shipyard-starcruiser").value = "19";
+                document.getElementById("flt-shipyard-starcruiser").dispatchEvent("change");
+                document.getElementById("btn-flt-apply").click();
+                const fltApplied = await __waitUntil(
+                  () => state.configSaving === 0 && Number(state.dashboard?.config?.raid_min_loot_spice_eq) === 3300,
+                  8000
+                );
+                if (!fltApplied) throw new Error("Fleet Planner Apply failed to update Config");
+
+                return {
+                  coShips,
+                  coPlanetRows,
+                  aiReward,
+                  gateText,
+                  activateDisabled,
+                  aiDagNodes,
+                  fltSlotsText,
+                  syncedCfgLoot: document.getElementById("cfg-raid_min_loot_spice_eq")?.value,
+                };
+                """,
+            )
+            sc = ui_res["scenario"]
+            self.assertNotIn("NaN", sc["coShips"])
+            self.assertGreaterEqual(sc["coPlanetRows"], 2)
+            self.assertNotEqual(sc["aiReward"], "—")
+            self.assertIn("2 / 11 colonies founded", sc["gateText"])
+            self.assertTrue(sc["activateDisabled"])
+            self.assertGreater(sc["aiDagNodes"], 0)
+            self.assertIn("/ 8", sc["fltSlotsText"])
+            self.assertEqual(sc["syncedCfgLoot"], "3300")
+
+            # Restart bridge and confirm Tab 4 Apply persisted to disk config.yaml
+            h.restart_bridge()
+            reloaded = load_strategy_config(h.config_path)
+            self.assertEqual(int(reloaded.raid_min_loot_spice_eq), 3300)
+            self.assertEqual(int(reloaded.shipyard_targets.get("starcruiser", 0)), 19)
 
 
 if __name__ == "__main__":

@@ -14637,6 +14637,7 @@
                   className: `tab-btn${paramSubTab === "horizon" ? " active" : ""}`,
                   role: "tab",
                   "aria-selected": paramSubTab === "horizon",
+                  id: "ai-ptab-horizon",
                   onClick: () => setParamSubTab("horizon"),
                   children: "Horizon & Spare %"
                 }
@@ -14648,6 +14649,7 @@
                   className: `tab-btn${paramSubTab === "weights" ? " active" : ""}`,
                   role: "tab",
                   "aria-selected": paramSubTab === "weights",
+                  id: "ai-ptab-weights",
                   onClick: () => setParamSubTab("weights"),
                   children: "Weights & GA"
                 }
