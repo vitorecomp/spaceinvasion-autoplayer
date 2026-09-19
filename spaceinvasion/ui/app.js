@@ -13391,6 +13391,37 @@
       }
     );
   };
+  const ActionGraphParamRow = ({
+    doc,
+    htmlFor,
+    layout = "inline",
+    titleOverride,
+    children
+  }) => {
+    const titleText = titleOverride || doc.title;
+    if (layout === "stack") {
+      return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-item is-stack", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-item-head", children: /* @__PURE__ */ jsxRuntimeExports.jsx("label", { className: "ag-param-item-label", htmlFor, children: titleText }) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-item-meta", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("code", { className: "ag-param-item-key tabular", children: doc.paramKey }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-param-item-bounds tabular", children: doc.boundsLabel })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-item-control is-full", children }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-item-desc", children: doc.description })
+      ] });
+    }
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `ag-param-item${layout === "toggle" ? " is-toggle" : " is-inline"}`, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-item-top", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("label", { className: "ag-param-item-label", htmlFor, children: titleText }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: `ag-param-item-control${layout === "toggle" ? " is-toggle" : " is-compact"}`, children })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-item-meta", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("code", { className: "ag-param-item-key tabular", children: doc.paramKey }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-param-item-bounds tabular", children: doc.boundsLabel })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-item-desc", children: doc.description })
+    ] });
+  };
   function useDragScroll(scrollRef, dragThresholdPx = 4) {
     const [isDragging, setIsDragging] = reactExports.useState(false);
     const activeRef = reactExports.useRef(false);
@@ -13989,6 +14020,895 @@
       )
     ] });
   };
+  const CONFIG_GROUPS = [
+    {
+      id: "doctrine",
+      headingId: "cfg-grp-doctrine",
+      title: "Planner Engine & Empire Doctrine",
+      subtitle: "Core planning engine selection, playstyle doctrine weighting, multi-planet scheduling scope, and colony expansion field thresholds.",
+      items: [
+        {
+          key: "planner_mode",
+          id: "cfg-planner_mode",
+          title: "Planner Mode",
+          boundsLabel: "default: priority · priority | ai_planner",
+          description: "Selects between the deterministic rule-based P0–P3 heuristic pipeline (priority) and the full-horizon sequential rollout optimizer (ai_planner, auto-unlocks for live bot execution at 11/11 colonies). Saved immediately to SQLite so both Game API and Commander ticks share the active planner.",
+          control: "select",
+          defaultValue: "priority",
+          options: [
+            { value: "priority", label: "priority — Rule-Based Heuristic" },
+            { value: "ai_planner", label: "ai_planner — AI-Planner (Full Horizon)" }
+          ]
+        },
+        {
+          key: "playstyle",
+          id: "cfg-playstyle",
+          title: "Playstyle Doctrine",
+          boundsLabel: "default: fleeter · fleeter | hybrid | miner",
+          description: "Weights P2 research ordering and shipyard hull quotas toward offensive warships and combat/drive technologies (fleeter), compound mine ROI payback (miner), or a balanced empire progression (hybrid). Applies whenever research or shipyard automation is enabled.",
+          control: "select",
+          defaultValue: "fleeter",
+          options: [
+            { value: "fleeter", label: "fleeter — Combat & Techs" },
+            { value: "hybrid", label: "hybrid — Balanced" },
+            { value: "miner", label: "miner — Economy ROI" }
+          ]
+        },
+        {
+          key: "allow_multi_planet",
+          id: "cfg-allow_multi_planet",
+          title: "Multi-Planet Empire Planning",
+          boundsLabel: "default: true · boolean",
+          description: "Evaluates construction queues, energy balance, warehouse caps, and fleet dispatch across every owned colony and Asteroid instead of restricting planning to the currently active planet. Respects SpaceInvasion Classic slot rules for normal planets, solar-only Asteroids (1 build slot), and isolated [RK] raid colonies.",
+          control: "checkbox",
+          defaultValue: true
+        },
+        {
+          key: "max_planets",
+          id: "cfg-max_planets",
+          title: "Max Empire Planets Cap",
+          boundsLabel: "default: 11 · 1–50 planets",
+          description: "Caps total normal planets (owned colonies plus outbound COLONIZE flights) before halting autonomous Colony ship (s8) dispatches; SpaceInvasion Classic permits 1 homeworld plus up to 10 normal colonies (11 total, excluding Asteroids and [RK] raid colonies). Accepts integers from 1 to 50.",
+          control: "number",
+          defaultValue: 11,
+          min: 1,
+          max: 50,
+          step: 1
+        },
+        {
+          key: "min_colony_fields",
+          id: "cfg-min_colony_fields",
+          title: "Minimum Colony Fields Target",
+          boundsLabel: "default: 300 · 50–600 fields",
+          description: "Minimum buildable planet size required by the colony grader and P2 COLONIZE selector, favoring Prime Mid-Orbit positions 7–12 capable of rolling 300+ fields so late-game mines and Fusion plants never stall on slot exhaustion. Accepts integers from 50 to 600 fields.",
+          control: "number",
+          defaultValue: 300,
+          min: 50,
+          max: 600,
+          step: 10
+        },
+        {
+          key: "min_free_fields_warning",
+          id: "cfg-min_free_fields_warning",
+          title: "Low Free Fields Advisory Threshold",
+          boundsLabel: "default: 20 · 1–1000 fields",
+          description: "Raises a P3 non-executable colony space advisory (executable_now=False) and steers power upgrades toward compact Fusion plant levels once remaining buildable slots (fields_max - fields_used) drop at or below this buffer. Accepts integers from 1 to 1000 fields.",
+          control: "number",
+          defaultValue: 20,
+          min: 1,
+          max: 1e3,
+          step: 1
+        }
+      ]
+    },
+    {
+      id: "economy",
+      headingId: "cfg-grp-economy",
+      title: "Economy, Power & Storage Automation",
+      subtitle: "Blast furnace (b2) 2:1 Pig iron throttling, planetary power generation policy, warehouse overflow guards, research/shipyard queues, and free IDT spins.",
+      items: [
+        {
+          key: "auto_throttle_blast_furnace",
+          id: "cfg-auto_throttle_blast_furnace",
+          title: "Auto-Throttle Blast Furnace (b2)",
+          boundsLabel: "default: true · boolean",
+          description: "Automatically throttles Blast furnace (b2) to 0% via P1 THROTTLE_BUILDING when 2:1 Pig iron smelting starves frontier Pig iron upgrades or when Metal storage is 98%+ full while Pig iron storage has headroom, then restores 100% when Metal is needed. In SpaceInvasion Classic, b2 consumes 2 Pig iron per 1 Metal and is not boosted by Mining technology (r1).",
+          control: "checkbox",
+          defaultValue: true
+        },
+        {
+          key: "blast_pig_iron_max_share",
+          id: "cfg-blast_pig_iron_max_share",
+          title: "Max Blast Furnace Pig Iron Share",
+          boundsLabel: "default: 0.70 · 0.10–1.00",
+          description: "Maximum share of gross Pig iron mine (b1) hourly output that Blast furnace (b2) may consume through its 2:1 smelting ratio before the planner holds further b2 levels or pauses smelting to preserve positive net Pig iron income. Accepts float ratios from 0.10 to 1.00.",
+          control: "number",
+          defaultValue: 0.7,
+          min: 0.1,
+          max: 1,
+          step: 0.05
+        },
+        {
+          key: "merchant_mode",
+          id: "cfg-merchant_mode",
+          title: "Merchant Exchange Mode (Skip b2)",
+          boundsLabel: "default: false · boolean",
+          description: "Evaluates mine payback ROI using NPC Merchant trade ratios (6 : 2.5 : 3 : 1 Pig iron / Metal / Kryptonite / Spice) instead of standard player ratios (4 : 2 : 2 : 1) and skips Blast furnace (b2) construction when Metal is sourced via trader swaps. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: false
+        },
+        {
+          key: "forbid_planetary_solar",
+          id: "cfg-forbid_planetary_solar",
+          title: "Forbid Solar Power on Normal Planets",
+          boundsLabel: "default: false · boolean",
+          description: "Forbids Thermosolar plant (b6) and combat-destructible orbital Solar cells (s9) on normal planets—relying exclusively on Fusion plant (b5) scaled by Energy technology (r2) and scheduling P1 step-down DEMOLISH_BUILDING of existing b6 levels when spare energy covers the loss. Asteroids remain exempt because SpaceInvasion Classic restricts Asteroids to solar power only.",
+          control: "checkbox",
+          defaultValue: false
+        },
+        {
+          key: "hot_planet_solar_temp_threshold",
+          id: "cfg-hot_planet_solar_temp_threshold",
+          title: "Hot Planet Solar Temperature Threshold (°C)",
+          boundsLabel: "default: 40 · -273 to 1000 °C",
+          description: "Minimum colony temperature in °C required before emergency power recovery considers orbital Solar cells (s9) on tight-field normal planets when forbid_planetary_solar is disabled; hot inner-orbit slots boost solar yield whereas cold outer slots boost Spice mine (b4) output. Accepts integers from -273 to 1000 °C.",
+          control: "number",
+          defaultValue: 40,
+          min: -273,
+          max: 1e3,
+          step: 5
+        },
+        {
+          key: "storage_warn_ratio",
+          id: "cfg-storage_warn_ratio",
+          title: "Warehouse Overflow Warning Ratio",
+          boundsLabel: "default: 0.85 · 0.10–0.99",
+          description: "Schedules P1 warehouse upgrades (b11–b14: Pig iron, Metal, Kryptonite, or Spice warehouse) as soon as stored stock divided by warehouse capacity reaches this threshold, preventing SpaceInvasion mines from halting extraction at 100% cap. Accepts float ratios from 0.10 to 0.99.",
+          control: "number",
+          defaultValue: 0.85,
+          min: 0.1,
+          max: 0.99,
+          step: 0.05
+        },
+        {
+          key: "allow_research",
+          id: "cfg-allow_research",
+          title: "Autonomous Research Queue",
+          boundsLabel: "default: true · boolean",
+          description: "Queues P2 account-wide RESEARCH upgrades (r1–r15) from the colony with the highest Research lab (b8) level whenever the global research slot is idle; research duration scales with (b8 + 1) * speedup and is unaffected by Microsystem (b17). Boolean toggle.",
+          control: "checkbox",
+          defaultValue: true
+        },
+        {
+          key: "allow_shipyard",
+          id: "cfg-allow_shipyard",
+          title: "Autonomous Shipyard Construction",
+          boundsLabel: "default: true · boolean",
+          description: "Enables P2 BUILD_SHIP orders at Weapons factory (b9) to maintain configured shipyard_targets quotas (Spy probe s10, Transports, Recycler s11, Colony ship s8, and combat hulls), where per-unit build time divides by b9 * 2^b17 * speedup. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: true
+        },
+        {
+          key: "allow_transmitter",
+          id: "cfg-allow_transmitter",
+          title: "Daily Free Interdimensional Transmitter Spin",
+          boundsLabel: "default: false · boolean",
+          description: "Schedules P2 ACTIVATE_TRANSMITTER once per Europe/Berlin server day to claim the free daily Interdimensional Transmitter spin, strictly guarded by _freeSpins >= 1 and idtSrc == 1 so zero paid Urplasma is ever spent. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: false
+        }
+      ]
+    },
+    {
+      id: "galaxy",
+      headingId: "cfg-grp-galaxy",
+      title: "Galaxy Scanner & Sweep Pacing",
+      subtitle: "Spiral solar-system recon, the smart 2-phase scanner (exploratory 1–400 coverage, then a weighted refresh by proximity and attack history), multi-page 2D Galaxy si.navigate sweeps, delay and jitter between clicks, and free-slot colonization.",
+      items: [
+        {
+          key: "allow_galaxy_scan",
+          id: "cfg-allow_galaxy_scan",
+          title: "Autonomous Galaxy Scanner & Background Sweep",
+          boundsLabel: "default: false · boolean",
+          description: "Enables P2 outward spiral SCAN_GALAXY system recon (1800s per-system cooldown) and background randomized 2D Galaxy sweeps that index yellow inactive farms, Spacia NPC planets, orbital rubble fields, and free colony slots in SQLite. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: false
+        },
+        {
+          key: "galaxy_sweep_pages",
+          id: "cfg-galaxy_sweep_pages",
+          title: "Galaxy Sweep Pages per Cycle",
+          boundsLabel: "default: 100 · 1–400 pages",
+          description: "Number of solar system pages (gal:sun) visited per randomized 2D Galaxy sweep cycle (and default page count for the Sweep 100 Pages action button) to keep sector intelligence fresh across neighboring systems. Accepts integers from 1 to 400 pages.",
+          control: "number",
+          defaultValue: 100,
+          min: 1,
+          max: 400,
+          step: 10
+        },
+        {
+          key: "galaxy_sweep_interval_seconds",
+          id: "cfg-galaxy_sweep_interval_seconds",
+          title: "Max Background Galaxy Sweep Interval (s)",
+          boundsLabel: "default: 270 · 30–86400 s",
+          description: "Maximum interval in seconds between automatic background multi-page Galaxy sweep runs when allow_galaxy_scan is enabled, jittered so sector recon refreshes regularly without starving build or fleet ticks. Accepts integers from 30 to 86400 seconds.",
+          control: "number",
+          defaultValue: 270,
+          min: 30,
+          max: 86400,
+          step: 15
+        },
+        {
+          key: "galaxy_scan_click_delay_seconds",
+          id: "cfg-galaxy_scan_click_delay_seconds",
+          title: "Time Between Galaxy Scan Clicks (s)",
+          boundsLabel: "default: 1.5 · 0.2–60.0 s",
+          description: "Base delay in seconds waited between consecutive step_galaxy_system / si.navigate page clicks during multi-page Galaxy sweeps to stay safely under SpaceInvasion's 30-page-view rate-limit cooldown. Accepts floats from 0.2 to 60.0 seconds.",
+          control: "number",
+          defaultValue: 1.5,
+          min: 0.2,
+          max: 60,
+          step: 0.1
+        },
+        {
+          key: "galaxy_scan_click_jitter_seconds",
+          id: "cfg-galaxy_scan_click_jitter_seconds",
+          title: "Random Jitter Between Galaxy Scan Pages (s)",
+          boundsLabel: "default: 0.6 · 0.0–30.0 s",
+          description: "Uniform random +/-jitter offset in seconds added around galaxy_scan_click_delay_seconds on each Galaxy sweep page step (floored at 0.2s total wait) so page navigation cadence stays organic rather than fixed-interval. Accepts floats from 0.0 to 30.0 seconds.",
+          control: "number",
+          defaultValue: 0.6,
+          min: 0,
+          max: 30,
+          step: 0.1
+        },
+        {
+          key: "galaxy_scan_explore_first",
+          id: "cfg-galaxy_scan_explore_first",
+          title: "Smart Scan Phase 1: Explore Unscanned Systems First",
+          boundsLabel: "default: true · boolean",
+          description: "Phase 1 (exploratory): Galaxy sweeps and SCAN_GALAXY visit every never-scanned solar system (1–400) in each galaxy where you own a non-raid colony before they revisit any system. Systems are ordered outward from your nearest colony so si.navigate steps stay contiguous. Once coverage reaches 100% (explored_systems == total_systems), or right away when this is off, sweeps switch to Phase 2: a weighted refresh that ranks sectors by proximity, attack history, and staleness. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: true
+        },
+        {
+          key: "galaxy_scan_refresh_pct",
+          id: "cfg-galaxy_scan_refresh_pct",
+          title: "Smart Scan Refresh vs Discovery Split (%)",
+          boundsLabel: "default: 0% · 0–100%",
+          description: "Percentage of each galaxy sweep batch allocated to refreshing already-scanned sectors (by proximity, raid affinity, debris/targets, and staleness), while the remaining (100 − refresh)% discovers never-scanned systems. Set 0% for pure discovery first, 100% for refresh-only, or an intermediate split (for example 30% refresh / 70% discovery) to keep nearby farm sectors fresh while expanding universe coverage. Unused quota spills automatically to the other pool. Accepts integers from 0 to 100.",
+          control: "number",
+          defaultValue: 0,
+          min: 0,
+          max: 100,
+          step: 5
+        },
+        {
+          key: "galaxy_scan_all_galaxies",
+          id: "cfg-galaxy_scan_all_galaxies",
+          title: "Smart Scan Scope: Discover Across All 14 Galaxies (G1–G14)",
+          boundsLabel: "default: false · boolean",
+          description: "When enabled, smart galaxy sweeps and the Sectors Scan Queue expand beyond galaxies where you already own a colony to discover and refresh all 14 galaxies (G1–G14) outward from your colonies (nearest neighbor galaxies first). When disabled, sweeps stay inside owned galaxies unless a mixed Refresh/Discovery split (1–99%) has already finished 100% of owned galaxies. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: false
+        },
+        {
+          key: "galaxy_scan_near_weight",
+          id: "cfg-galaxy_scan_near_weight",
+          title: "Smart Scan Phase 2: Near-Sector Proximity Weight",
+          boundsLabel: "default: 2.0 · 0.0–20.0",
+          description: "Phase 2 (targeted_refresh) multiplier on the proximity score of each (galaxy, system) sector. Proximity uses the circular system distance to your closest non-raid colony, min(|s − own_s|, 400 − |s − own_s|), with a penalty for other galaxies. Higher values refresh nearby sectors (cheap raids, short Spy probe flights) more often; 0.0 ignores distance. Accepts floats from 0.0 to 20.0.",
+          control: "number",
+          defaultValue: 2,
+          min: 0,
+          max: 20,
+          step: 0.5
+        },
+        {
+          key: "galaxy_scan_attack_weight",
+          id: "cfg-galaxy_scan_attack_weight",
+          title: "Smart Scan Phase 2: Frequent-Attack Player & Sector Weight",
+          boundsLabel: "default: 3.0 · 0.0–20.0",
+          description: "Phase 2 (targeted_refresh) multiplier on attack-history affinity, read from SQLite raid_history. It combines direct raids and loot in a GG:SSS sector with per-owner frequency: every sector where a player you attack often owns a planet gets boosted. Debris, yellow inactive, Spacia, and 300+ free-slot value add a secondary score, and the total is multiplied by how stale the scan is. Higher values keep frequent farm targets fresh; 0.0 ignores attack history. Accepts floats from 0.0 to 20.0.",
+          control: "number",
+          defaultValue: 3,
+          min: 0,
+          max: 20,
+          step: 0.5
+        },
+        {
+          key: "allow_colonize",
+          id: "cfg-allow_colonize",
+          title: "Autonomous Free-Slot Colonization",
+          boundsLabel: "default: false · boolean",
+          description: "Probes non-discarded free slots (Prime Mid-Orbit 7–12 first) until qualified 300+-field candidates cover max_planets minus allocated colonies, then launches stationed Colony ships (s8) on verified 300+-field candidates when 1 + b10 fleet slots permit. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: false
+        }
+      ]
+    },
+    {
+      id: "combat",
+      headingId: "cfg-grp-combat",
+      title: "Espionage, Raiding & Fleet Safety",
+      subtitle: "Reserved spy probe flight seats, spy origin colony selection, zero-rapidfire 1:1 combat simulator gates, 3/24h Bash tracking, and P0 SAVE Escape flights.",
+      items: [
+        {
+          key: "allow_raids",
+          id: "cfg-allow_raids",
+          title: "Autonomous Espionage & Inactive/Spacia Raids",
+          boundsLabel: "default: false · boolean",
+          description: "Enables P1 SPY scouting (s10 on inhabited planets and Spacia, refreshing intel older than 4h) and P2 ATTACK/RECYCLE harvest waves against yellow inactives, Spacia NPC planets, and rubble fields ranked by total resources per round-trip flight time (res/h), bounded by 1 + b10 concurrent fleet slots. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: false
+        },
+        {
+          key: "allow_transport",
+          id: "cfg-allow_transport",
+          title: "Autonomous Inter-Planet Resource Transport",
+          boundsLabel: "default: false · boolean",
+          description: "Dispatches P1 TRANSPORT flights (s3/s2/s1) strictly between your own planets to supply P1/P2 resource shortfalls and bootstrap young colonies from surplus planets (respecting Spice fuel reserves and 85% recipient storage caps). Runs at Fleet Priority #2: after SPY (#1) and ahead of COLONIZE (#3) and ATTACK/RECYCLE (#4). Boolean toggle.",
+          control: "checkbox",
+          defaultValue: false
+        },
+        {
+          key: "reserved_spy_slots",
+          id: "cfg-reserved_spy_slots",
+          title: "Reserved Spy Fleet Slots",
+          boundsLabel: "default: 1 · 0–10 slots",
+          description: "Number of Fleet base (1 + b10) concurrent flight seats held exclusively for SPY probe missions (#1) whenever ready spy targets and stationed s10 probes exist, enforcing the 4-tier fleet priority SPY (#1) → TRANSPORT (#2) → COLONIZE (#3) → ATTACK & RECYCLE (#4, ranked by resource/flight_time). Accepts integers from 0 to 10.",
+          control: "number",
+          defaultValue: 1,
+          min: 0,
+          max: 10,
+          step: 1
+        },
+        {
+          key: "spy_dispatch_planet_id",
+          id: "cfg-spy_dispatch_planet_id",
+          title: "Designated Spy Dispatch Colony",
+          boundsLabel: "default: 0 (Auto) · colony planet_id",
+          description: "Locks all SPY probe launches to a specific owned non-raid colony planet_id (holding SPY and prioritizing s10 construction there if its probe stock hits zero), or set 0 to automatically select the active or closest colony carrying stationed Spy probes (s10). Accepts 0 (Auto) or an owned colony ID.",
+          control: "planet-select",
+          defaultValue: 0
+        },
+        {
+          key: "allow_pvp_in_az",
+          id: "cfg-allow_pvp_in_az",
+          title: "Allow Active-Player PvP Raids Inside Attack Zone",
+          boundsLabel: "default: false · boolean",
+          description: "Permits P2 SPY and ATTACK missions against active (light_red) players within your SpaceInvasion Attack Zone (AZ) tier, strictly enforcing the 3 attacks per 24 hours Bash rule per target planet and 6-hour cooldowns on newbie, vacation, or out-of-attackzone targets. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: false
+        },
+        {
+          key: "combat_safety_margin",
+          id: "cfg-combat_safety_margin",
+          title: "1:1 Combat Simulator Safety Margin",
+          boundsLabel: "default: 1.4 · 1.0–1000.0x",
+          description: "Minimum attacker-to-defender effective power ratio required in SpaceInvasion Classic's zero-rapidfire 1:1 combat simulator (incorporating Weapons r11, Shield r12, and Defense r13 tech multipliers) before authorizing any ATTACK wave. Accepts floats from 1.0 to 1000.0.",
+          control: "number",
+          defaultValue: 1.4,
+          min: 1,
+          max: 1e3,
+          step: 0.1
+        },
+        {
+          key: "raid_min_loot_spice_eq",
+          id: "cfg-raid_min_loot_spice_eq",
+          title: "Minimum Raid Plunder Threshold (Spice Eq)",
+          boundsLabel: "default: 1500 · >= 0 SpEq",
+          description: "Minimum expected 50% raid plunder converted into Spice-equivalent units (4 : 2 : 2 : 1 standard value) required before committing cargo hulls, Spice flight fuel, and a 1 + b10 fleet slot to an ATTACK mission. Accepts floats of 0 or higher.",
+          control: "number",
+          defaultValue: 1500,
+          min: 0,
+          step: 100
+        },
+        {
+          key: "allow_fleetsave",
+          id: "cfg-allow_fleetsave",
+          title: "P0 Automatic Hostile Escape Flight (SAVE)",
+          boundsLabel: "default: false · boolean",
+          description: "Launches an immediate P0 ESCAPE_FLIGHT (SAVE mission) whenever an incoming hostile fleet targets a colony, evacuating stationed ships and packing cargo in Spice → Kryptonite → Metal → Pig iron priority order; SpaceInvasion Classic Escape flights are invisible to Asteroid Galaxy scanners. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: false
+        },
+        {
+          key: "fleet_save_fuel_reserve_spice",
+          id: "cfg-fleet_save_fuel_reserve_spice",
+          title: "Escape Flight Spice Fuel Reserve",
+          boundsLabel: "default: 500 · >= 0 Spice",
+          description: "Quantity of planetary Spice held back on the origin colony before loading ESCAPE_FLIGHT cargo holds so stationed fleets always retain sufficient propellant to launch the SAVE flight and follow-up missions. Accepts integers of 0 or higher.",
+          control: "number",
+          defaultValue: 500,
+          min: 0,
+          step: 50
+        }
+      ]
+    },
+    {
+      id: "runtime",
+      headingId: "cfg-grp-runtime",
+      title: "Runtime Pacing & GA + Neural Network Optimizer",
+      subtitle: "Autonomous Commander tick cadence, rolling hourly DOM mutation budget, and evolutionary ga_nn sequence search hyperparameters.",
+      items: [
+        {
+          key: "action_batch_interval_seconds",
+          id: "cfg-action_batch_interval_seconds",
+          title: "Minimum Batch & Snapshot Refresh Interval (s)",
+          boundsLabel: "default: 120 · 5–86400 s",
+          description: "Minimum pause in seconds between autonomous Commander execution batches and full Chrome DOM snapshot refreshes when no active building or fleet timer completes sooner, pacing navigation under SpaceInvasion page-view limits. Accepts integers from 5 to 86400 seconds.",
+          control: "number",
+          defaultValue: 120,
+          min: 5,
+          max: 86400,
+          step: 5
+        },
+        {
+          key: "max_actions_per_hour",
+          id: "cfg-max_actions_per_hour",
+          title: "Max Live Actions per Rolling Hour",
+          boundsLabel: "default: 60 · 1–100000 ops/hr",
+          description: "Rolling 60-minute action cap limiting total live browser mutations (BUILD, RESEARCH, BUILD_SHIP, THROTTLE_BUILDING, and fleet dispatches) executed by GameApiBridge to prevent runaway click loops. Accepts integers from 1 to 100000 actions/hour.",
+          control: "number",
+          defaultValue: 60,
+          min: 1,
+          max: 1e5,
+          step: 1
+        },
+        {
+          key: "ga_population_size",
+          id: "cfg-ga_population_size",
+          title: "GA Population Size",
+          boundsLabel: "default: 24 · 4–200 genomes",
+          description: "Number of candidate action-sequence chromosomes maintained per evolutionary generation when planner_mode is ga_nn; larger populations explore broader mine, Fusion power, and tech build orders at higher CPU cost. Accepts integers from 4 to 200.",
+          control: "number",
+          defaultValue: 24,
+          min: 4,
+          max: 200,
+          step: 1
+        },
+        {
+          key: "ga_generations",
+          id: "cfg-ga_generations",
+          title: "GA Evolution Generations",
+          boundsLabel: "default: 12 · 1–200 cycles",
+          description: "Number of tournament-selection, crossover, and mutation cycles executed per ga_nn planning pass to converge on lower-wait, higher-SpiceEq multi-step build sequences. Accepts integers from 1 to 200.",
+          control: "number",
+          defaultValue: 12,
+          min: 1,
+          max: 200,
+          step: 1
+        },
+        {
+          key: "ga_horizon_steps",
+          id: "cfg-ga_horizon_steps",
+          title: "GA Rollout Horizon Steps",
+          boundsLabel: "default: 6 · 1–24 steps",
+          description: "Number of sequential actions simulated per chromosome through SpaceInvasion resource accumulation, Blast furnace 2:1 smelting, and Development center / Microsystem build-time formulas during ga_nn rollout scoring. Accepts integers from 1 to 24 steps.",
+          control: "number",
+          defaultValue: 6,
+          min: 1,
+          max: 24,
+          step: 1
+        },
+        {
+          key: "ga_mutation_rate",
+          id: "cfg-ga_mutation_rate",
+          title: "GA Genome Mutation Rate",
+          boundsLabel: "default: 0.25 · 0.00–1.00",
+          description: "Per-gene mutation probability applied during ga_nn offspring reproduction to diversify build-order search and escape local optima such as warehouse or power bottlenecks. Accepts floats from 0.00 to 1.00.",
+          control: "number",
+          defaultValue: 0.25,
+          min: 0,
+          max: 1,
+          step: 0.05
+        },
+        {
+          key: "ga_nn_weight",
+          id: "cfg-ga_nn_weight",
+          title: "46D Neural Value Blending Weight",
+          boundsLabel: "default: 0.35 · 0.00–1.00",
+          description: "Weight blending the 46-dimensional MLP value-network terminal state evaluation with deterministic Spice-equivalent production fitness during ga_nn scoring (0.0 pure rollout math, 1.0 full neural guidance). Accepts floats from 0.00 to 1.00.",
+          control: "number",
+          defaultValue: 0.35,
+          min: 0,
+          max: 1,
+          step: 0.05
+        },
+        {
+          key: "ga_seed",
+          id: "cfg-ga_seed",
+          title: "GA Deterministic PRNG Seed",
+          boundsLabel: "default: Auto · 32-bit int or blank",
+          description: "Optional integer seed pinning ga_nn random initialization, crossover, and mutation for deterministic, repeatable rollout plans; leave blank for fresh stochastic search on each pass. Accepts signed 32-bit integers or blank.",
+          control: "text-seed",
+          defaultValue: "",
+          placeholder: "Auto"
+        }
+      ]
+    }
+  ];
+  const CONFIG_ITEM_BY_KEY = Object.fromEntries(
+    CONFIG_GROUPS.flatMap((g) => g.items.map((item) => [item.key, item]))
+  );
+  const CONFIG_BOOL_KEYS = CONFIG_GROUPS.flatMap(
+    (g) => g.items.filter((i) => i.control === "checkbox").map((i) => i.key)
+  );
+  const CONFIG_NUMBER_DEFAULTS = Object.fromEntries(
+    CONFIG_GROUPS.flatMap(
+      (g) => g.items.filter((i) => i.control === "number").map((i) => [i.key, Number(i.defaultValue)])
+    )
+  );
+  const EXTRA_STRATEGY_PARAM_DOCS = {
+    ai_resource_spare_pct: {
+      title: "AI Spare Resource Budget (%)",
+      paramKey: "ai_resource_spare_pct",
+      boundsLabel: "default: 10% · 0–90%",
+      description: "Soft-reserve percentage of rolling hourly empire income set aside for autonomous shipyard hull production while AI-Planner guides buildings and research. Urgent 0-count replacements for Spy probes (s10) and transports (s1/s2) remain exempt so scouting and hauling never stall. Accepts floats from 0 to 90%."
+    }
+  };
+  function getStrategyParamDoc(key) {
+    const fromConfig = CONFIG_ITEM_BY_KEY[key];
+    if (fromConfig) {
+      return {
+        title: fromConfig.title,
+        paramKey: fromConfig.key,
+        boundsLabel: fromConfig.boundsLabel,
+        description: fromConfig.description
+      };
+    }
+    const extra = EXTRA_STRATEGY_PARAM_DOCS[key];
+    if (extra) return extra;
+    return {
+      title: key,
+      paramKey: key,
+      boundsLabel: "config parameter",
+      description: `Configures the ${key} strategy setting persisted to StrategyConfig in SQLite.`
+    };
+  }
+  const CONFIG_OPTIMIZER_GROUP_SUBTITLES = {
+    objective: "Target hull objective, monthly window, research level scaling, and warehouse reserve rules governing steady-state planetary specialization.",
+    minFleet: "Mandatory per-planet docked utility hulls. Any missing ships add their Weapons factory (b9) prerequisites, hull cost, and warehouse capacity floor to every normal colony.",
+    previewScope: "Preview full-empire optimization before all colony slots are founded by padding missing slots with generic 300-field placeholder planets.",
+    optimizedCaps: "Upper level ceilings for the 7 buildings freely optimized by the GA and coordinate-ascent polish on each planet. Existing built levels and reserved floors always remain hard minimums.",
+    miscLevels: "Fixed minimum building levels applied to every normal planet (slot 1 also applies Research lab b8 >= 12 by default). Warehouses b11–b14 act strictly as minimum floors raised automatically when production or build costs demand more capacity.",
+    gaSearch: "Evolutionary search breadth and deterministic PRNG seed used to combine per-planet Pareto catalogues before dual coordinate-ascent polishing."
+  };
+  const CONFIG_OPTIMIZER_PARAM_DOCS = {
+    target_ship_key: {
+      title: "Target Ship (Maximize / Month)",
+      paramKey: "target_ship_key",
+      boundsLabel: "default: s16 · hull key",
+      description: "Ship hull whose sustained steady-state monthly production the optimizer maximizes across the pooled empire. Empire output is limited by the tightest bottleneck among each required resource (Pig iron, Metal, Kryptonite, Spice) and combined Weapons factory (b9) + Microsystem (b17) shipyard throughput."
+    },
+    production_month_days: {
+      title: "Production Month Length (Days)",
+      paramKey: "production_month_days",
+      boundsLabel: "default: 30 · 1–365 days",
+      description: "Number of 24-hour days converted into the monthly ship production objective (hours_per_month = 24 * days). Scales both resource-limited and shipyard-limited ships/month proportionally for reporting and comparison. Accepts numbers from 1 to 365 days."
+    },
+    research_percent_of_universe_max: {
+      title: "Planned Research (% of Universe Max)",
+      paramKey: "research_percent_of_universe_max",
+      boundsLabel: "default: 100% · 0–200%",
+      description: "Scales target research levels (r1–r15) as a percentage of SQLite universe_research_max (never dropping below your own current levels or ship/building prerequisites). Directly sets Mining tech (r1, +2%/lvl on b1/b3/b4) and Energy tech (r2, +1%/lvl on b5) used in steady-state output, plus research warehouse sizing on the Research lab planet. Accepts 0 to 200%."
+    },
+    warehouse_hours_of_production: {
+      title: "Warehouse Hours of Net Production",
+      paramKey: "warehouse_hours_of_production",
+      boundsLabel: "default: 24 · 0–720 h",
+      description: "Minimum hours of net positive hourly output that each planet's warehouses (b11–b14) must hold, and that the central planet must hold for whole-empire net production (converged iteratively via search_in_rounds). Each warehouse is still raised further if needed to store the single most expensive planned upgrade, ship, or research cost. Accepts 0 to 720 hours."
+    },
+    central_planet_slot: {
+      title: "Central Hub Planet Slot",
+      paramKey: "central_planet_slot",
+      boundsLabel: "default: 1 · 1–50 slot",
+      description: "1-based normal planet roster slot designated as the central hub (typically slot 1, your homeworld). Receives the central minimum warehouse floor and whole-empire production reserve requirement; mine and shipyard specializations remain emergent across planets based on temperature, free fields, and built floors. Accepts integers from 1 to 50."
+    },
+    central_planet_min_warehouse_level: {
+      title: "Central Planet Minimum Warehouse Level",
+      paramKey: "central_planet_min_warehouse_level",
+      boundsLabel: "default: 15 · 0–50 lvl",
+      description: "Hard minimum level enforced on all four warehouses (b11–b14) of the designated central_planet_slot, ensuring a safe logistics buffer even before late-game upgrade costs dominate warehouse sizing. Accepts integers from 0 to 50."
+    },
+    pad_generic_colonies: {
+      title: "Pad Missing Colony Slots with 300-Field Previews",
+      paramKey: "pad_generic_colonies",
+      boundsLabel: "default: false · boolean",
+      description: "When enabled and your empire has fewer than max_planets normal colonies, appends generic 300-field (0°C) placeholder planets up to max_planets for full-empire steady-state preview runs. Does not alter live game state or bypass the all-colonies live AI-Planner execution gate."
+    },
+    ga_population_size: {
+      title: "GA Population Size",
+      paramKey: "ga_population_size",
+      boundsLabel: "default: 200 · 4–1000 genomes",
+      description: "Number of candidate empire configurations (one Pareto catalogue design per planet) evolved per generation during the GA assignment stage before coordinate-ascent polish. Higher values improve global role allocation on heterogeneous rosters at modest CPU cost. Accepts integers from 4 to 1000."
+    },
+    ga_generations: {
+      title: "GA Evolution Generations",
+      paramKey: "ga_generations",
+      boundsLabel: "default: 150 · 1–1000 cycles",
+      description: "Number of tournament selection, uniform crossover, and catalogue-index mutation cycles executed to assign planetary specializations before dual polishing (direct + balanced-score coordinate ascent). Accepts integers from 1 to 1000."
+    },
+    ga_random_seed: {
+      title: "GA Deterministic PRNG Seed",
+      paramKey: "ga_random_seed",
+      boundsLabel: "default: 20261117 · integer",
+      description: "Integer seed initializing NumPy's random generator for reproducible GA search. Keeping the seed and inputs identical yields identical results; changing the seed (or other parameters) can swap specializations across symmetric or twin planets with equal monthly output."
+    }
+  };
+  const CONFIG_OPTIMIZER_MIN_FLEET_DOCS = {
+    s2: {
+      title: "Large Transport (s2)",
+      paramKey: "min_fleet_per_planet.s2",
+      boundsLabel: "default: 10 · 0–10000 ships",
+      description: "Minimum Large transports (s2) stationed per normal colony for inter-planet hauling and Escape flight cargo evacuation. Counts missing hull cost toward fleet investment and enforces b9 prerequisites on each planet."
+    },
+    s10: {
+      title: "Spy Probe (s10)",
+      paramKey: "min_fleet_per_planet.s10",
+      boundsLabel: "default: 10 · 0–10000 ships",
+      description: "Minimum Spy probes (s10) kept on every colony for local espionage scouting. Enforces required Weapons factory (b9) and Spy tech (r7) prerequisites and counts missing probes in fleet investment."
+    },
+    s11: {
+      title: "Recycler (s11)",
+      paramKey: "min_fleet_per_planet.s11",
+      boundsLabel: "default: 10 · 0–10000 ships",
+      description: "Minimum Recyclers (s11) stationed per colony to harvest nearby orbital rubble fields. Enforces b9 prerequisites and includes missing hulls in warehouse capacity and fleet cost calculations."
+    }
+  };
+  const CONFIG_OPTIMIZER_OPT_MAX_DOCS = {
+    b1: {
+      title: "Pig iron mine (b1)",
+      paramKey: "optimized_building_max_levels.b1",
+      boundsLabel: "default: 100 · 1–100 lvl",
+      description: "Upper level cap for Pig iron mine (b1), boosted by Mining tech (r1, +2%/lvl). Feeds both raw Pig iron needs and the 2:1 smelting feedstock required by Blast furnace (b2) on Metal-specialized worlds."
+    },
+    b2: {
+      title: "Blast furnace (b2)",
+      paramKey: "optimized_building_max_levels.b2",
+      boundsLabel: "default: 100 · 1–100 lvl",
+      description: "Upper level cap for Blast furnace (b2). Converts 2 Pig iron into 1 Metal per unit produced and is NOT boosted by Mining tech (r1); lowering this cap trades peak Metal output for dramatically shorter late-game build times."
+    },
+    b3: {
+      title: "Kryptonite mine (b3)",
+      paramKey: "optimized_building_max_levels.b3",
+      boundsLabel: "default: 100 · 1–100 lvl",
+      description: "Upper level cap for Kryptonite mine (b3), boosted by Mining tech (r1). High-level b3 is energy-intensive and typically concentrated on 1–2 dedicated Kryptonite colonies once warehouse field costs bind."
+    },
+    b4: {
+      title: "Spice mine (b4)",
+      paramKey: "optimized_building_max_levels.b4",
+      boundsLabel: "default: 100 · 1–100 lvl",
+      description: "Upper level cap for Spice mine (b4), boosted by Mining tech (r1) and colder planetary temperatures. Optimizer naturally places heavy b4 levels on your coldest colonies to supply Fusion plants (b5) and ship costs."
+    },
+    b5: {
+      title: "Fusion plant (b5)",
+      paramKey: "optimized_building_max_levels.b5",
+      boundsLabel: "default: 100 · 1–100 lvl",
+      description: "Upper level cap for Fusion plant (b5). Primary compact planetary power source scaled by Energy tech (r2, +1%/lvl) while consuming Spice; keeps power ratio at 100% without wasting fields on Thermosolar."
+    },
+    b9: {
+      title: "Weapons factory (b9)",
+      paramKey: "optimized_building_max_levels.b9",
+      boundsLabel: "default: 100 · 1–100 lvl",
+      description: "Upper level cap for Weapons factory (b9). Scales linear shipyard build speed (b9 * 2^b17 * speedup) and unlocks target hull construction on whichever planet(s) specialize as shipyards."
+    },
+    b17: {
+      title: "Microsystem accelerator (b17)",
+      paramKey: "optimized_building_max_levels.b17",
+      boundsLabel: "default: 100 · 1–100 lvl",
+      description: "Upper level cap for Microsystem accelerator (b17). Halves building and shipyard construction time per level (2^b17 divisor; does not affect research). Catalog top level is L55; cap here bounds shipyard and build-speed investment."
+    }
+  };
+  const MISC_BUILDING_DETAIL = {
+    b6: {
+      defaultVal: 0,
+      desc: "Fixed minimum Thermosolar plant (b6) level per normal planet. Keep at 0 when relying on Fusion plant (b5) so valuable planetary fields are preserved for mines and warehouses."
+    },
+    b7: {
+      defaultVal: 12,
+      desc: "Fixed minimum Development center (b7) level per planet. Accelerates construction linearly as (b7 + 1) * 2^b17 * speedup and satisfies b17 Microsystem accelerator prerequisites (requires b7 L10)."
+    },
+    b8: {
+      defaultVal: 0,
+      desc: "Fixed minimum Research lab (b8) level across all colonies (slot 1 also receives L12 by default via misc_building_levels_by_slot). The planet with the highest b8 automatically sizes its warehouses to pay for the costliest planned research."
+    },
+    b10: {
+      defaultVal: 5,
+      desc: "Fixed minimum Fleet base (b10) level per planet. Each planet gets 1 + b10 concurrent fleet slots (raids, espionage, transport, recycling), directly scaling fleet throughput and AI-Planner attack slots."
+    },
+    b11: {
+      defaultVal: 0,
+      desc: "Minimum floor for Pig iron warehouse (b11) on every planet. Leave at 0 to let the optimizer size b11 automatically from warehouse_hours_of_production, largest planned upgrade cost, and central_planet_min_warehouse_level."
+    },
+    b12: {
+      defaultVal: 0,
+      desc: "Minimum floor for Metal warehouse (b12) on every planet. Automatically raised above this floor whenever hourly output, upgrade costs, or central hub reserves require larger Metal storage (100k * 2^L)."
+    },
+    b13: {
+      defaultVal: 0,
+      desc: "Minimum floor for Kryptonite warehouse (b13) on every planet. Automatically raised above this floor whenever Kryptonite production, upgrade/research costs, or central hub reserves demand higher capacity."
+    },
+    b14: {
+      defaultVal: 0,
+      desc: "Minimum floor for Spice warehouse (b14) on every planet. Automatically raised above this floor whenever Spice output, upgrade/research costs, or central hub reserves require higher storage."
+    },
+    b15: {
+      defaultVal: 0,
+      desc: "Fixed minimum Particle cannon (b15) planetary defense level per colony. Consumes planetary fields without adding resource output; leave at 0 unless you intentionally reserve defense slots."
+    },
+    b16: {
+      defaultVal: 0,
+      desc: "Fixed minimum Particle shield (b16) planetary defense level per colony. Reserves planetary fields for dome protection; leave at 0 for pure economic optimization."
+    },
+    b18: {
+      defaultVal: 0,
+      desc: "Fixed minimum Teleporter (b18) level per colony. Unlocks instantaneous fleet teleportation (requires Teleportation r14); set > 0 only on empires reserving fields for teleporter hubs."
+    },
+    b19: {
+      defaultVal: 0,
+      desc: "Fixed minimum Galaxy scanner (b19) level. In SpaceInvasion Classic, Galaxy scanners belong on Asteroids; keep at 0 on normal planets."
+    },
+    b20: {
+      defaultVal: 0,
+      desc: "Fixed minimum Tunnel system (b20) level per colony to shelter a slice of planetary resources from hostile raids. Keep at 0 when prioritizing maximum productive fields."
+    },
+    b21: {
+      defaultVal: 0,
+      desc: "Fixed minimum Quantum Array (b21) level per colony. Leave at 0 unless reserving fields for late-game Quantum Array requirements."
+    }
+  };
+  function getConfigOptimizerMiscDoc(bk) {
+    const name = BUILDING_NAMES[bk] || bk;
+    const info = MISC_BUILDING_DETAIL[bk];
+    return {
+      title: `${name} (${bk})`,
+      paramKey: `misc_building_levels.${bk}`,
+      boundsLabel: `default: ${(info == null ? void 0 : info.defaultVal) ?? 0} · 0–100 lvl`,
+      description: (info == null ? void 0 : info.desc) || `Minimum fixed level enforced for ${name} (${bk}) on every normal colony (existing built levels and reserved floors remain hard minimums).`
+    };
+  }
+  const AI_PLANNER_GROUP_SUBTITLES = {
+    horizon: "Discounted weekly production horizon (NPV) that scores sequential upgrade trajectories from your live empire toward the active Config Optimization target.",
+    sparePct: "Percentage of total hourly income (colony production plus simulated raid loot) held back for shipyard builds and hostile raid losses; weekly reward scores net kept production (1 − spare%).",
+    telemetry: "Live SQLite raid loot & round-trip medians drive simulated hourly attack income (sum(1 + b10) slots × 3600 / median_RT). Leave overrides blank to auto-derive from live planets and raid history.",
+    weights: "Baseline PathStrategy scoring hyperparameters seeded into the rollout simulator alongside the 8-gene evolutionary path optimizer.",
+    gaSearch: "Outer real-coded 8-gene GA tuning (focus, critical_share, patience, speed_weight, and 4 log2 resource value multipliers) to maximize discounted W-week SpiceEq production."
+  };
+  const AI_PLANNER_PARAM_DOCS = {
+    reward_weeks: {
+      title: "Reward Horizon (Weeks, W)",
+      paramKey: "reward_weeks",
+      boundsLabel: "default: 26 · 1–104 weeks",
+      description: "Length of the planning horizon in weeks (168 hours per week) over which weekly net SpiceEq production is integrated and exported as sequential build/research actions. Shorter horizons prioritize fast-payback mines; longer horizons justify heavier b7/b17 accelerators and deep research. Accepts integers from 1 to 104 weeks."
+    },
+    weekly_discount: {
+      title: "Weekly Discount Factor (γ)",
+      paramKey: "weekly_discount",
+      boundsLabel: "default: 0.90 · 0.05–1.00",
+      description: "Exponential time-preference multiplier applied to week w output as γ^(w−1) in discounted_reward. Lower values (e.g. 0.75–0.85) strongly favor immediate early-week income growth; 1.00 weights every week in the W-week window equally. Accepts floats from 0.05 to 1.00."
+    },
+    fleet_command_center_level: {
+      title: "Fleet Base (b10) Level Override",
+      paramKey: "fleet_command_center_level",
+      boundsLabel: "default: Auto (blank) · 0–50 lvl",
+      description: "Optional fixed Fleet base (b10) level assumed per planet when computing simulated raid flight slots (1 + b10 per colony). Leave blank (Auto) to dynamically track each planet's live and upgraded b10 level throughout the rollout so b10 upgrades earn slot-loot NPV."
+    },
+    attacks_per_day: {
+      title: "Simulated Attacks / Day Override",
+      paramKey: "attacks_per_day",
+      boundsLabel: "default: Auto (blank) · >= 0/day",
+      description: "Optional flat empire-wide daily raid count replacing slot-derived raid throughput (sum(1 + b10) × 86400 / median_round_trip_sec). Leave blank (Auto) to calculate raid cadence automatically from SQLite median round-trip time and active fleet slots."
+    },
+    pad_generic_colonies: {
+      title: "Pad Missing Colony Slots in Preview",
+      paramKey: "pad_generic_colonies",
+      boundsLabel: "default: false · boolean",
+      description: "Includes generic 300-field preview planets up to max_planets when simulating a path before all colonies are founded. Only affects preview simulation; live AI-Planner bot execution still remains locked until all colonies are founded."
+    },
+    scarcity_focus: {
+      title: "Resource Scarcity Focus",
+      paramKey: "scarcity_focus",
+      boundsLabel: "default: 1.0 · 0.0–10.0",
+      description: "Exponent amplifying shadow prices on bottleneck resources relative to remaining in-horizon upgrade demand (horizon_missing_resources). Higher values steer builds aggressively toward whichever resource currently starves upcoming upgrades; 0.0 uses flat Merchant exchange rates (6 : 2.5 : 3 : 1)."
+    },
+    critical_queue_share: {
+      title: "Critical Queue Priority Share",
+      paramKey: "critical_queue_share",
+      boundsLabel: "default: 0.90 · 0.00–1.00",
+      description: "Weighting bias allocating scarce empire income toward the highest-priority / bottleneck planet or global research queue before funding lower-impact parallel queues. Higher values concentrate resources to launch top-NPV steps sooner; lower values spread spending more evenly across colonies."
+    },
+    patience: {
+      title: "Upgrade Saving Patience",
+      paramKey: "patience",
+      boundsLabel: "default: 0.25 · 0.00–5.00",
+      description: "Controls willingness to hold resources and wait for a higher-ROI upgrade rather than immediately spending on a cheaper, ready lower-value step. Higher values allow longer resource accumulation windows for major mine, b17, or research jumps; 0.0 spends greedily as soon as affordable."
+    },
+    speed_weight: {
+      title: "Build/Research Accelerator Speed Weight",
+      paramKey: "speed_weight",
+      boundsLabel: "default: 1.5 · 0.0–10.0",
+      description: "Multiplier scaling the urgency of time-saving accelerators — Development center (b7), Microsystem accelerator (b17), and Research lab (b8) — across the remaining discounted horizon window. Raise to build accelerators earlier; lower to prioritize direct mine output first."
+    },
+    ga_population_size: {
+      title: "GA Strategy Population Size",
+      paramKey: "ga_population_size",
+      boundsLabel: "default: 10 · 4–200 genomes",
+      description: "Number of 8-gene PathStrategy parameter vectors simulated over the full W-week rollout per generation. Larger populations explore wider combinations of scarcity weights and patience at linearly higher compute time. Accepts integers from 4 to 200."
+    },
+    ga_generations: {
+      title: "GA Evolution Generations",
+      paramKey: "ga_generations",
+      boundsLabel: "default: 6 · 1–100 cycles",
+      description: "Number of evolutionary generations run to optimize the 8 PathStrategy genes maximizing net discounted SpiceEq reward (tie-broken by faster target completion). Accepts integers from 1 to 100."
+    },
+    ga_random_seed: {
+      title: "GA Deterministic PRNG Seed",
+      paramKey: "ga_random_seed",
+      boundsLabel: "default: 20261117 · integer",
+      description: "Integer PRNG seed controlling 8-gene population initialization, crossover, and Gaussian mutation so repeated AI-Planner runs on the same snapshot produce identical schedules."
+    }
+  };
+  const AI_PLANNER_SPARE_DOCS = {
+    pig_iron: {
+      title: "Pig Iron Spare %",
+      paramKey: "resource_spare_percent.pig_iron",
+      boundsLabel: "default: 10% · 0–100%",
+      description: "Share of gross Pig iron hourly income (mines + raid loot) withheld from building/research spending to fund ship hulls and raid loss margins. Deducted before scoring weekly discounted reward."
+    },
+    metal: {
+      title: "Metal Spare %",
+      paramKey: "resource_spare_percent.metal",
+      boundsLabel: "default: 10% · 0–100%",
+      description: "Share of gross Metal hourly income (Blast furnaces + raid loot) reserved for shipyard construction and combat replacements instead of building upgrades."
+    },
+    kryptonite: {
+      title: "Kryptonite Spare %",
+      paramKey: "resource_spare_percent.kryptonite",
+      boundsLabel: "default: 10% · 0–100%",
+      description: "Share of gross Kryptonite hourly income reserved for probes, warships, and shields rather than building/research expansion."
+    },
+    spice: {
+      title: "Spice Spare %",
+      paramKey: "resource_spare_percent.spice",
+      boundsLabel: "default: 10% · 0–100%",
+      description: "Share of gross Spice hourly income held back for flight propellant, combat ships, and Escape fuel buffers instead of economic upgrades."
+    }
+  };
+  const FLEET_PLANNER_GROUP_SUBTITLES = {
+    combat: "Zero-rapidfire 1:1 combat simulator gates, inactive/Spacia/PvP raid authorization, P0 Escape flight protection, and rolling spare-income shipyard budget (synced with Config).",
+    logistics: "Free-slot 300+-field colonization caps, inter-planet resource transport, and daily free Interdimensional Transmitter automation (synced with Config).",
+    scanner: "Smart 2-phase Galaxy scanner (contiguous arrow-first exploration when distance < 5, then proximity + attack-history weighted refresh), click cadence, and reserved spy slots (synced with Config).",
+    shipyard: "Per-hull empire shipyard quotas constructed at Weapons factory (b9) whenever allow_shipyard is enabled and soft spare-income budget permits (synced with Config)."
+  };
+  const SHIP_HULL_ROLE_DESC = {
+    "small-transport": "Fast early-game cargo hull (s1) for small inactive raids, rapid colony bootstrapping, and urgent 0-count logistics replacements.",
+    "large-transport": "High-capacity cargo hull (s2) favored for bulk raid plunder hauling, inter-planet resource transport, and P0 Escape flight resource evacuation.",
+    transmitter: "High-speed specialized courier/cargo hull (s3) used for rapid long-range inter-planet resource transfers once unlocked.",
+    "small-fighter": "Inexpensive early combat fodder/raider (s4) in SpaceInvasion's zero-rapidfire 1:1 targeting model; absorbs defender fire cheaply during raids.",
+    warship: "Light mid-tier combat vessel (s5) providing faster intercept speed and stronger firepower than Small fighters for early active/inactive raids.",
+    starcruiser: "Versatile mid-game cruiser (s6) balancing speed, shield durability, and attack power for clean 1:1 raid sweeps.",
+    phoenix: "Heavy assault hull (s7) offering strong weapon power and survivability against fortified inactive and Spacia defenses.",
+    "colony-ship": "Required hull (s8) for P1/P2 COLONIZE flights onto verified 300+-field empty slots; planner scales builds up to remaining open colony slots.",
+    "solar-cells": "Orbital energy unit (s9, destructible in combat). Reserved for Asteroids when forbid_planetary_solar is enabled; keep at 0 on normal planets.",
+    "spy-probe": "Ultra-fast recon hull (s10) for P1 SPY scouting (#1 fleet priority) to refresh inactive, Spacia, and AZ target intelligence every 4 hours.",
+    recycler: "Debris harvesting hull (s11) dispatched on P2 RECYCLE waves (tied with ATTACK by res/h) to recover orbital Pig iron, Metal, Kryptonite, and Spice rubble.",
+    battleship: "Heavy capital warship (s13) delivering high single-target firepower and cargo capacity for major raid targets and fleet engagements.",
+    "stealth-bomber": "First-strike anti-defense bomber (s14) ideal for cracking heavily turtled planets with minimal losses in 1:1 combat simulation.",
+    destroyer: "Top-tier capital destroyer (s15) with heavy shields and attack strength against high-defense targets and opposing capital fleets.",
+    "imperial-starbase": "End-game flagship capital hull (s16) with massive shields, weapons, and cargo; typically the long-term target maximized by Config Optimization."
+  };
+  function getShipyardHullDoc(slug) {
+    const meta = SHIP_OPTIONS.find((s) => s.slug === slug);
+    const keyTag = meta ? `${meta.name} (${meta.key})` : slug;
+    return {
+      title: keyTag,
+      paramKey: `shipyard_targets.${slug}`,
+      boundsLabel: "default: 0 · 0–9,999,999 hulls",
+      description: SHIP_HULL_ROLE_DESC[slug] || `Target stationed hull count for ${keyTag} maintained automatically by Weapons factory (b9) when allow_shipyard is active.`
+    };
+  }
   function draftFromAiParams(raw) {
     if (!raw || typeof raw !== "object") {
       return {
@@ -14844,275 +15764,356 @@
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-body", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", hidden: paramSubTab !== "horizon", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-reward_weeks", children: "Reward Weeks (W)" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "input",
-                      {
-                        type: "number",
-                        id: "ai-param-reward_weeks",
-                        min: 1,
-                        max: 104,
-                        step: 1,
-                        value: draft.reward_weeks,
-                        onChange: (e) => {
-                          setDraftDirty(true);
-                          setDraft((prev) => ({ ...prev, reward_weeks: e.target.value }));
-                        }
-                      }
-                    )
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Reward Horizon & Discounting" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: AI_PLANNER_GROUP_SUBTITLES.horizon })
                   ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-weekly_discount", children: "Weekly Discount (γ)" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
                     /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "input",
+                      ActionGraphParamRow,
                       {
-                        type: "number",
-                        id: "ai-param-weekly_discount",
-                        min: 0.05,
-                        max: 1,
-                        step: 0.05,
-                        value: draft.weekly_discount,
-                        onChange: (e) => {
-                          setDraftDirty(true);
-                          setDraft((prev) => ({ ...prev, weekly_discount: e.target.value }));
-                        }
+                        doc: AI_PLANNER_PARAM_DOCS.reward_weeks,
+                        htmlFor: "ai-param-reward_weeks",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "ai-param-reward_weeks",
+                            min: 1,
+                            max: 104,
+                            step: 1,
+                            value: draft.reward_weeks,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, reward_weeks: e.target.value }));
+                            }
+                          }
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: AI_PLANNER_PARAM_DOCS.weekly_discount,
+                        htmlFor: "ai-param-weekly_discount",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "ai-param-weekly_discount",
+                            min: 0.05,
+                            max: 1,
+                            step: 0.05,
+                            value: draft.weekly_discount,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, weekly_discount: e.target.value }));
+                            }
+                          }
+                        )
                       }
                     )
                   ] })
                 ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Per-Resource Spare % (Fleet & Raids)" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: [
-                    ["pig_iron", "Pig Iron Spare %"],
-                    ["metal", "Metal Spare %"],
-                    ["kryptonite", "Kryptonite Spare %"],
-                    ["spice", "Spice Spare %"]
-                  ].map(([rk, label]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `ai-param-spare-${rk}`, children: label }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "input",
-                      {
-                        type: "number",
-                        id: `ai-param-spare-${rk}`,
-                        min: 0,
-                        max: 100,
-                        step: 1,
-                        value: draft.resource_spare_percent[rk],
-                        onChange: (e) => {
-                          setDraftDirty(true);
-                          setDraft((prev) => ({
-                            ...prev,
-                            resource_spare_percent: {
-                              ...prev.resource_spare_percent,
-                              [rk]: e.target.value
-                            }
-                          }));
-                        }
-                      }
-                    )
-                  ] }, rk)) })
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Attack Telemetry & Optional Overrides" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-telemetry-box tabular", id: "ai-sqlite-telemetry-box", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: `Median Loot: ${medianLoot !== null ? `${fmtInt(Math.round(medianLoot))} SpEq` : "Fallback defaults"}` }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: `Median RT: ${formatDurationSecondsCompact(medianRtSec)} · Samples: ${fmtInt(Math.round(safeFiniteNumber(telemetry.sample_count, 0) ?? 0))}` })
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Per-Resource Spare % (Fleet & Raids)" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: AI_PLANNER_GROUP_SUBTITLES.sparePct })
                   ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-fleet_command_center_level", children: "b10 Override (Blank=Auto)" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-list", children: ["pig_iron", "metal", "kryptonite", "spice"].map((rk) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    ActionGraphParamRow,
+                    {
+                      doc: AI_PLANNER_SPARE_DOCS[rk],
+                      htmlFor: `ai-param-spare-${rk}`,
+                      layout: "inline",
+                      children: /* @__PURE__ */ jsxRuntimeExports.jsx(
                         "input",
                         {
                           type: "number",
-                          id: "ai-param-fleet_command_center_level",
+                          id: `ai-param-spare-${rk}`,
                           min: 0,
-                          max: 50,
+                          max: 100,
                           step: 1,
-                          placeholder: "Auto",
-                          value: draft.fleet_command_center_level,
+                          value: draft.resource_spare_percent[rk],
                           onChange: (e) => {
                             setDraftDirty(true);
                             setDraft((prev) => ({
                               ...prev,
-                              fleet_command_center_level: e.target.value
+                              resource_spare_percent: {
+                                ...prev.resource_spare_percent,
+                                [rk]: e.target.value
+                              }
                             }));
                           }
                         }
                       )
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-attacks_per_day", children: "Attacks/Day (Blank=Auto)" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "input",
-                        {
-                          type: "number",
-                          id: "ai-param-attacks_per_day",
-                          min: 0,
-                          step: 1,
-                          placeholder: "Auto",
-                          value: draft.attacks_per_day,
-                          onChange: (e) => {
-                            setDraftDirty(true);
-                            setDraft((prev) => ({ ...prev, attacks_per_day: e.target.value }));
-                          }
-                        }
-                      )
-                    ] })
-                  ] })
+                    },
+                    rk
+                  )) })
                 ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-toggles-stack", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "input",
-                    {
-                      type: "checkbox",
-                      id: "ai-param-pad_generic_colonies",
-                      checked: draft.pad_generic_colonies,
-                      onChange: (e) => {
-                        const checked = e.target.checked;
-                        setDraftDirty(true);
-                        setDraft((prev) => ({ ...prev, pad_generic_colonies: checked }));
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Attack Telemetry & Optional Overrides" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: AI_PLANNER_GROUP_SUBTITLES.telemetry })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-telemetry-box tabular", id: "ai-sqlite-telemetry-box", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: `Median Loot: ${medianLoot !== null ? `${fmtInt(Math.round(medianLoot))} SpEq` : "Fallback defaults"}` }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: `Median RT: ${formatDurationSecondsCompact(medianRtSec)} · Samples: ${fmtInt(Math.round(safeFiniteNumber(telemetry.sample_count, 0) ?? 0))}` })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: AI_PLANNER_PARAM_DOCS.fleet_command_center_level,
+                        htmlFor: "ai-param-fleet_command_center_level",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "ai-param-fleet_command_center_level",
+                            min: 0,
+                            max: 50,
+                            step: 1,
+                            placeholder: "Auto",
+                            value: draft.fleet_command_center_level,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({
+                                ...prev,
+                                fleet_command_center_level: e.target.value
+                              }));
+                            }
+                          }
+                        )
                       }
-                    }
-                  ),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `Pad < ${gate.maxPlanets}/${gate.maxPlanets} missing slots in preview (${gate.coloniesOwned}/${gate.maxPlanets} owned)` })
-                ] }) })
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: AI_PLANNER_PARAM_DOCS.attacks_per_day,
+                        htmlFor: "ai-param-attacks_per_day",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "ai-param-attacks_per_day",
+                            min: 0,
+                            step: 1,
+                            placeholder: "Auto",
+                            value: draft.attacks_per_day,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, attacks_per_day: e.target.value }));
+                            }
+                          }
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: AI_PLANNER_PARAM_DOCS.pad_generic_colonies,
+                        htmlFor: "ai-param-pad_generic_colonies",
+                        layout: "toggle",
+                        titleOverride: `Pad < ${gate.maxPlanets}/${gate.maxPlanets} Missing Slots in Preview (${gate.coloniesOwned}/${gate.maxPlanets} Owned)`,
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "checkbox",
+                            className: "config-checkbox",
+                            id: "ai-param-pad_generic_colonies",
+                            checked: draft.pad_generic_colonies,
+                            onChange: (e) => {
+                              const checked = e.target.checked;
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, pad_generic_colonies: checked }));
+                            }
+                          }
+                        )
+                      }
+                    )
+                  ] })
+                ] })
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", hidden: paramSubTab !== "weights", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Path Strategy Weights" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-scarcity_focus", children: "Scarcity Focus" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "input",
-                        {
-                          type: "number",
-                          id: "ai-param-scarcity_focus",
-                          min: 0,
-                          max: 10,
-                          step: 0.1,
-                          value: draft.scarcity_focus,
-                          onChange: (e) => {
-                            setDraftDirty(true);
-                            setDraft((prev) => ({ ...prev, scarcity_focus: e.target.value }));
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Path Strategy Weights" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: AI_PLANNER_GROUP_SUBTITLES.weights })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: AI_PLANNER_PARAM_DOCS.scarcity_focus,
+                        htmlFor: "ai-param-scarcity_focus",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "ai-param-scarcity_focus",
+                            min: 0,
+                            max: 10,
+                            step: 0.1,
+                            value: draft.scarcity_focus,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, scarcity_focus: e.target.value }));
+                            }
                           }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-critical_queue_share", children: "Critical Queue Share" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "input",
-                        {
-                          type: "number",
-                          id: "ai-param-critical_queue_share",
-                          min: 0,
-                          max: 1,
-                          step: 0.05,
-                          value: draft.critical_queue_share,
-                          onChange: (e) => {
-                            setDraftDirty(true);
-                            setDraft((prev) => ({ ...prev, critical_queue_share: e.target.value }));
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: AI_PLANNER_PARAM_DOCS.critical_queue_share,
+                        htmlFor: "ai-param-critical_queue_share",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "ai-param-critical_queue_share",
+                            min: 0,
+                            max: 1,
+                            step: 0.05,
+                            value: draft.critical_queue_share,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, critical_queue_share: e.target.value }));
+                            }
                           }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-patience", children: "Patience" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "input",
-                        {
-                          type: "number",
-                          id: "ai-param-patience",
-                          min: 0,
-                          max: 5,
-                          step: 0.05,
-                          value: draft.patience,
-                          onChange: (e) => {
-                            setDraftDirty(true);
-                            setDraft((prev) => ({ ...prev, patience: e.target.value }));
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: AI_PLANNER_PARAM_DOCS.patience,
+                        htmlFor: "ai-param-patience",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "ai-param-patience",
+                            min: 0,
+                            max: 5,
+                            step: 0.05,
+                            value: draft.patience,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, patience: e.target.value }));
+                            }
                           }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-speed_weight", children: "Speed Weight" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "input",
-                        {
-                          type: "number",
-                          id: "ai-param-speed_weight",
-                          min: 0,
-                          max: 10,
-                          step: 0.1,
-                          value: draft.speed_weight,
-                          onChange: (e) => {
-                            setDraftDirty(true);
-                            setDraft((prev) => ({ ...prev, speed_weight: e.target.value }));
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: AI_PLANNER_PARAM_DOCS.speed_weight,
+                        htmlFor: "ai-param-speed_weight",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "ai-param-speed_weight",
+                            min: 0,
+                            max: 10,
+                            step: 0.1,
+                            value: draft.speed_weight,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, speed_weight: e.target.value }));
+                            }
                           }
-                        }
-                      )
-                    ] })
+                        )
+                      }
+                    )
                   ] })
                 ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "GA Path Search" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-ga_population_size", children: "GA Population" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "input",
-                        {
-                          type: "number",
-                          id: "ai-param-ga_population_size",
-                          min: 4,
-                          max: 200,
-                          step: 2,
-                          value: draft.ga_population_size,
-                          onChange: (e) => {
-                            setDraftDirty(true);
-                            setDraft((prev) => ({ ...prev, ga_population_size: e.target.value }));
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "GA Path Search" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: AI_PLANNER_GROUP_SUBTITLES.gaSearch })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: AI_PLANNER_PARAM_DOCS.ga_population_size,
+                        htmlFor: "ai-param-ga_population_size",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "ai-param-ga_population_size",
+                            min: 4,
+                            max: 200,
+                            step: 2,
+                            value: draft.ga_population_size,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, ga_population_size: e.target.value }));
+                            }
                           }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-ga_generations", children: "GA Generations" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "input",
-                        {
-                          type: "number",
-                          id: "ai-param-ga_generations",
-                          min: 1,
-                          max: 100,
-                          step: 1,
-                          value: draft.ga_generations,
-                          onChange: (e) => {
-                            setDraftDirty(true);
-                            setDraft((prev) => ({ ...prev, ga_generations: e.target.value }));
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: AI_PLANNER_PARAM_DOCS.ga_generations,
+                        htmlFor: "ai-param-ga_generations",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "ai-param-ga_generations",
+                            min: 1,
+                            max: 100,
+                            step: 1,
+                            value: draft.ga_generations,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, ga_generations: e.target.value }));
+                            }
                           }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-ga_random_seed", children: "GA Seed" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "input",
-                        {
-                          type: "number",
-                          id: "ai-param-ga_random_seed",
-                          step: 1,
-                          value: draft.ga_random_seed,
-                          onChange: (e) => {
-                            setDraftDirty(true);
-                            setDraft((prev) => ({ ...prev, ga_random_seed: e.target.value }));
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: AI_PLANNER_PARAM_DOCS.ga_random_seed,
+                        htmlFor: "ai-param-ga_random_seed",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "ai-param-ga_random_seed",
+                            step: 1,
+                            value: draft.ga_random_seed,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, ga_random_seed: e.target.value }));
+                            }
                           }
-                        }
-                      )
-                    ] })
+                        )
+                      }
+                    )
                   ] })
                 ] })
               ] })
@@ -16080,280 +17081,370 @@
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-body", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", hidden: paramSubTab !== "core", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-target_ship_key", children: "Target Ship (Maximize / Month)" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "select",
-                    {
-                      id: "co-param-target_ship_key",
-                      value: draft.target_ship_key,
-                      onChange: (e) => {
-                        setDraftDirty(true);
-                        setDraft((prev) => ({ ...prev, target_ship_key: e.target.value }));
-                      },
-                      children: SHIP_OPTIONS.map((s) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: s.key, children: `${s.key} — ${s.name}` }, s.key))
-                    }
-                  )
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-production_month_days", children: "Month Days" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "input",
-                      {
-                        type: "number",
-                        id: "co-param-production_month_days",
-                        min: 1,
-                        max: 365,
-                        step: 1,
-                        value: draft.production_month_days,
-                        onChange: (e) => {
-                          setDraftDirty(true);
-                          setDraft((prev) => ({ ...prev, production_month_days: e.target.value }));
-                        }
-                      }
-                    )
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Objective & Empire Constraints" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: CONFIG_OPTIMIZER_GROUP_SUBTITLES.objective })
                   ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-research_percent_of_universe_max", children: "Research % Uni Max" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
                     /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "input",
+                      ActionGraphParamRow,
                       {
-                        type: "number",
-                        id: "co-param-research_percent_of_universe_max",
-                        min: 0,
-                        max: 200,
-                        step: 5,
-                        value: draft.research_percent_of_universe_max,
-                        onChange: (e) => {
-                          setDraftDirty(true);
-                          setDraft((prev) => ({
-                            ...prev,
-                            research_percent_of_universe_max: e.target.value
-                          }));
-                        }
+                        doc: CONFIG_OPTIMIZER_PARAM_DOCS.target_ship_key,
+                        htmlFor: "co-param-target_ship_key",
+                        layout: "stack",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "select",
+                          {
+                            id: "co-param-target_ship_key",
+                            value: draft.target_ship_key,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, target_ship_key: e.target.value }));
+                            },
+                            children: SHIP_OPTIONS.map((s) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: s.key, children: `${s.key} — ${s.name}` }, s.key))
+                          }
+                        )
                       }
-                    )
-                  ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-warehouse_hours_of_production", children: "Warehouse Hours" }),
+                    ),
                     /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "input",
+                      ActionGraphParamRow,
                       {
-                        type: "number",
-                        id: "co-param-warehouse_hours_of_production",
-                        min: 0,
-                        max: 720,
-                        step: 1,
-                        value: draft.warehouse_hours_of_production,
-                        onChange: (e) => {
-                          setDraftDirty(true);
-                          setDraft((prev) => ({
-                            ...prev,
-                            warehouse_hours_of_production: e.target.value
-                          }));
-                        }
+                        doc: CONFIG_OPTIMIZER_PARAM_DOCS.production_month_days,
+                        htmlFor: "co-param-production_month_days",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "co-param-production_month_days",
+                            min: 1,
+                            max: 365,
+                            step: 1,
+                            value: draft.production_month_days,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, production_month_days: e.target.value }));
+                            }
+                          }
+                        )
                       }
-                    )
-                  ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-central_planet_slot", children: "Central Planet Slot" }),
+                    ),
                     /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "input",
+                      ActionGraphParamRow,
                       {
-                        type: "number",
-                        id: "co-param-central_planet_slot",
-                        min: 1,
-                        max: 50,
-                        step: 1,
-                        value: draft.central_planet_slot,
-                        onChange: (e) => {
-                          setDraftDirty(true);
-                          setDraft((prev) => ({ ...prev, central_planet_slot: e.target.value }));
-                        }
+                        doc: CONFIG_OPTIMIZER_PARAM_DOCS.research_percent_of_universe_max,
+                        htmlFor: "co-param-research_percent_of_universe_max",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "co-param-research_percent_of_universe_max",
+                            min: 0,
+                            max: 200,
+                            step: 5,
+                            value: draft.research_percent_of_universe_max,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({
+                                ...prev,
+                                research_percent_of_universe_max: e.target.value
+                              }));
+                            }
+                          }
+                        )
                       }
-                    )
-                  ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-central_planet_min_warehouse_level", children: "Central Min WH Lvl" }),
+                    ),
                     /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "input",
+                      ActionGraphParamRow,
                       {
-                        type: "number",
-                        id: "co-param-central_planet_min_warehouse_level",
-                        min: 0,
-                        max: 50,
-                        step: 1,
-                        value: draft.central_planet_min_warehouse_level,
-                        onChange: (e) => {
-                          setDraftDirty(true);
-                          setDraft((prev) => ({
-                            ...prev,
-                            central_planet_min_warehouse_level: e.target.value
-                          }));
-                        }
+                        doc: CONFIG_OPTIMIZER_PARAM_DOCS.warehouse_hours_of_production,
+                        htmlFor: "co-param-warehouse_hours_of_production",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "co-param-warehouse_hours_of_production",
+                            min: 0,
+                            max: 720,
+                            step: 1,
+                            value: draft.warehouse_hours_of_production,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({
+                                ...prev,
+                                warehouse_hours_of_production: e.target.value
+                              }));
+                            }
+                          }
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: CONFIG_OPTIMIZER_PARAM_DOCS.central_planet_slot,
+                        htmlFor: "co-param-central_planet_slot",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "co-param-central_planet_slot",
+                            min: 1,
+                            max: 50,
+                            step: 1,
+                            value: draft.central_planet_slot,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, central_planet_slot: e.target.value }));
+                            }
+                          }
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: CONFIG_OPTIMIZER_PARAM_DOCS.central_planet_min_warehouse_level,
+                        htmlFor: "co-param-central_planet_min_warehouse_level",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "co-param-central_planet_min_warehouse_level",
+                            min: 0,
+                            max: 50,
+                            step: 1,
+                            value: draft.central_planet_min_warehouse_level,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({
+                                ...prev,
+                                central_planet_min_warehouse_level: e.target.value
+                              }));
+                            }
+                          }
+                        )
                       }
                     )
                   ] })
                 ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Min Fleet per Planet" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: [
-                    ["s2", "s2 Large Transport"],
-                    ["s10", "s10 Spy Probe"],
-                    ["s11", "s11 Recycler"]
-                  ].map(([sk, label]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `co-param-min_fleet-${sk}`, children: label }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "input",
-                      {
-                        type: "number",
-                        id: `co-param-min_fleet-${sk}`,
-                        min: 0,
-                        max: 1e4,
-                        step: 1,
-                        value: draft.min_fleet_per_planet[sk] ?? "10",
-                        onChange: (e) => {
-                          setDraftDirty(true);
-                          setDraft((prev) => ({
-                            ...prev,
-                            min_fleet_per_planet: {
-                              ...prev.min_fleet_per_planet,
-                              [sk]: e.target.value
-                            }
-                          }));
-                        }
-                      }
-                    )
-                  ] }, sk)) })
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-toggles-stack", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "input",
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Min Fleet per Planet" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: CONFIG_OPTIMIZER_GROUP_SUBTITLES.minFleet })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-list", children: ["s2", "s10", "s11"].map((sk) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    ActionGraphParamRow,
                     {
-                      type: "checkbox",
-                      id: "co-param-pad_generic_colonies",
-                      checked: draft.pad_generic_colonies,
-                      onChange: (e) => {
-                        const checked = e.target.checked;
-                        setDraftDirty(true);
-                        setDraft((prev) => ({ ...prev, pad_generic_colonies: checked }));
-                      }
+                      doc: CONFIG_OPTIMIZER_MIN_FLEET_DOCS[sk],
+                      htmlFor: `co-param-min_fleet-${sk}`,
+                      layout: "inline",
+                      children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: `co-param-min_fleet-${sk}`,
+                          min: 0,
+                          max: 1e4,
+                          step: 1,
+                          value: draft.min_fleet_per_planet[sk] ?? "10",
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({
+                              ...prev,
+                              min_fleet_per_planet: {
+                                ...prev.min_fleet_per_planet,
+                                [sk]: e.target.value
+                              }
+                            }));
+                          }
+                        }
+                      )
+                    },
+                    sk
+                  )) })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Colony Slot Preview" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: CONFIG_OPTIMIZER_GROUP_SUBTITLES.previewScope })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-list", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    ActionGraphParamRow,
+                    {
+                      doc: CONFIG_OPTIMIZER_PARAM_DOCS.pad_generic_colonies,
+                      htmlFor: "co-param-pad_generic_colonies",
+                      layout: "toggle",
+                      titleOverride: `Pad < ${gate.maxPlanets}/${gate.maxPlanets} Missing Slots (${gate.coloniesOwned}/${gate.maxPlanets} Owned)`,
+                      children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "checkbox",
+                          className: "config-checkbox",
+                          id: "co-param-pad_generic_colonies",
+                          checked: draft.pad_generic_colonies,
+                          onChange: (e) => {
+                            const checked = e.target.checked;
+                            setDraftDirty(true);
+                            setDraft((prev) => ({ ...prev, pad_generic_colonies: checked }));
+                          }
+                        }
+                      )
                     }
-                  ),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `Pad < ${gate.maxPlanets}/${gate.maxPlanets} missing slots with 300-field generic previews (${gate.coloniesOwned}/${gate.maxPlanets} owned)` })
-                ] }) })
+                  ) })
+                ] })
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", hidden: paramSubTab !== "buildings", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Optimized Building Max Caps" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: OPTIMIZED_BUILDING_KEYS.map((bk) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `co-param-opt_max-${bk}`, children: `${bk} ${BUILDING_SHORT_NAMES[bk] || bk}` }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "input",
-                      {
-                        type: "number",
-                        id: `co-param-opt_max-${bk}`,
-                        min: 1,
-                        max: 100,
-                        step: 1,
-                        value: draft.optimized_building_max_levels[bk] ?? "100",
-                        onChange: (e) => {
-                          setDraftDirty(true);
-                          setDraft((prev) => ({
-                            ...prev,
-                            optimized_building_max_levels: {
-                              ...prev.optimized_building_max_levels,
-                              [bk]: e.target.value
-                            }
-                          }));
-                        }
-                      }
-                    )
-                  ] }, bk)) })
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Fixed / Minimum Misc Levels" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: MISC_BUILDING_KEYS.map((bk) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `co-param-misc-${bk}`, children: `${bk} ${BUILDING_SHORT_NAMES[bk] || bk}` }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "input",
-                      {
-                        type: "number",
-                        id: `co-param-misc-${bk}`,
-                        min: 0,
-                        max: 100,
-                        step: 1,
-                        value: draft.misc_building_levels[bk] ?? "0",
-                        onChange: (e) => {
-                          setDraftDirty(true);
-                          setDraft((prev) => ({
-                            ...prev,
-                            misc_building_levels: {
-                              ...prev.misc_building_levels,
-                              [bk]: e.target.value
-                            }
-                          }));
-                        }
-                      }
-                    )
-                  ] }, bk)) })
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "GA Search Settings" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-ga_population_size", children: "GA Population" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Optimized Building Max Caps" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: CONFIG_OPTIMIZER_GROUP_SUBTITLES.optimizedCaps })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-list", children: OPTIMIZED_BUILDING_KEYS.map((bk) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    ActionGraphParamRow,
+                    {
+                      doc: CONFIG_OPTIMIZER_OPT_MAX_DOCS[bk],
+                      htmlFor: `co-param-opt_max-${bk}`,
+                      layout: "inline",
+                      children: /* @__PURE__ */ jsxRuntimeExports.jsx(
                         "input",
                         {
                           type: "number",
-                          id: "co-param-ga_population_size",
-                          min: 4,
-                          max: 1e3,
-                          step: 10,
-                          value: draft.ga_population_size,
-                          onChange: (e) => {
-                            setDraftDirty(true);
-                            setDraft((prev) => ({ ...prev, ga_population_size: e.target.value }));
-                          }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-ga_generations", children: "GA Generations" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "input",
-                        {
-                          type: "number",
-                          id: "co-param-ga_generations",
+                          id: `co-param-opt_max-${bk}`,
                           min: 1,
-                          max: 1e3,
-                          step: 10,
-                          value: draft.ga_generations,
+                          max: 100,
+                          step: 1,
+                          value: draft.optimized_building_max_levels[bk] ?? "100",
                           onChange: (e) => {
                             setDraftDirty(true);
-                            setDraft((prev) => ({ ...prev, ga_generations: e.target.value }));
+                            setDraft((prev) => ({
+                              ...prev,
+                              optimized_building_max_levels: {
+                                ...prev.optimized_building_max_levels,
+                                [bk]: e.target.value
+                              }
+                            }));
                           }
                         }
                       )
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-ga_random_seed", children: "GA Seed" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    },
+                    bk
+                  )) })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Fixed / Minimum Misc Levels" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: CONFIG_OPTIMIZER_GROUP_SUBTITLES.miscLevels })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-list", children: MISC_BUILDING_KEYS.map((bk) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    ActionGraphParamRow,
+                    {
+                      doc: getConfigOptimizerMiscDoc(bk),
+                      htmlFor: `co-param-misc-${bk}`,
+                      layout: "inline",
+                      children: /* @__PURE__ */ jsxRuntimeExports.jsx(
                         "input",
                         {
                           type: "number",
-                          id: "co-param-ga_random_seed",
+                          id: `co-param-misc-${bk}`,
+                          min: 0,
+                          max: 100,
                           step: 1,
-                          value: draft.ga_random_seed,
+                          value: draft.misc_building_levels[bk] ?? "0",
                           onChange: (e) => {
                             setDraftDirty(true);
-                            setDraft((prev) => ({ ...prev, ga_random_seed: e.target.value }));
+                            setDraft((prev) => ({
+                              ...prev,
+                              misc_building_levels: {
+                                ...prev.misc_building_levels,
+                                [bk]: e.target.value
+                              }
+                            }));
                           }
                         }
                       )
-                    ] })
+                    },
+                    bk
+                  )) })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "GA Search Settings" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: CONFIG_OPTIMIZER_GROUP_SUBTITLES.gaSearch })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: CONFIG_OPTIMIZER_PARAM_DOCS.ga_population_size,
+                        htmlFor: "co-param-ga_population_size",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "co-param-ga_population_size",
+                            min: 4,
+                            max: 1e3,
+                            step: 10,
+                            value: draft.ga_population_size,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, ga_population_size: e.target.value }));
+                            }
+                          }
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: CONFIG_OPTIMIZER_PARAM_DOCS.ga_generations,
+                        htmlFor: "co-param-ga_generations",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "co-param-ga_generations",
+                            min: 1,
+                            max: 1e3,
+                            step: 10,
+                            value: draft.ga_generations,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, ga_generations: e.target.value }));
+                            }
+                          }
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: CONFIG_OPTIMIZER_PARAM_DOCS.ga_random_seed,
+                        htmlFor: "co-param-ga_random_seed",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "co-param-ga_random_seed",
+                            step: 1,
+                            value: draft.ga_random_seed,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({ ...prev, ga_random_seed: e.target.value }));
+                            }
+                          }
+                        )
+                      }
+                    )
                   ] })
                 ] })
               ] })
@@ -17201,390 +18292,437 @@
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-body", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-pane", hidden: paramGroupTab !== "combat", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-group-title", children: "Combat, Raids & Escape Flights" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-toggles-stack", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_raids", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-allow_raids",
-                    type: "checkbox",
-                    checked: Boolean(draft.booleans.allow_raids),
-                    onChange: (e) => handleBoolChange("allow_raids", e.target.checked)
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow automated raids" })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_pvp_in_az", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-allow_pvp_in_az",
-                    type: "checkbox",
-                    checked: Boolean(draft.booleans.allow_pvp_in_az),
-                    onChange: (e) => handleBoolChange("allow_pvp_in_az", e.target.checked)
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow PvP targets in AZ" })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_fleetsave", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-allow_fleetsave",
-                    type: "checkbox",
-                    checked: Boolean(draft.booleans.allow_fleetsave),
-                    onChange: (e) => handleBoolChange("allow_fleetsave", e.target.checked)
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow escape fleetsave" })
-              ] })
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Combat, Raids & Escape Flights" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: FLEET_PLANNER_GROUP_SUBTITLES.combat })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-combat_safety_margin", children: "Combat Safety Margin" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-combat_safety_margin",
-                    type: "number",
-                    min: 1,
-                    max: 10,
-                    step: 0.05,
-                    value: draft.numbers.combat_safety_margin,
-                    onChange: (e) => handleNumChange("combat_safety_margin", e.target.value)
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-raid_min_loot_spice_eq", children: "Min Raid Loot (SpiceEq)" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-raid_min_loot_spice_eq",
-                    type: "number",
-                    min: 0,
-                    max: 1e7,
-                    step: 100,
-                    value: draft.numbers.raid_min_loot_spice_eq,
-                    onChange: (e) => handleNumChange("raid_min_loot_spice_eq", e.target.value)
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-fleet_save_fuel_reserve_spice", children: "Fleetsave Spice Reserve" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-fleet_save_fuel_reserve_spice",
-                    type: "number",
-                    min: 0,
-                    max: 1e7,
-                    step: 50,
-                    value: draft.numbers.fleet_save_fuel_reserve_spice,
-                    onChange: (e) => handleNumChange("fleet_save_fuel_reserve_spice", e.target.value)
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-ai_resource_spare_pct", children: "AI Spare Resource Budget (%)" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-ai_resource_spare_pct",
-                    type: "number",
-                    min: 0,
-                    max: 90,
-                    step: 1,
-                    value: draft.numbers.ai_resource_spare_pct,
-                    onChange: (e) => handleNumChange("ai_resource_spare_pct", e.target.value)
-                  }
-                )
-              ] })
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
+              ["allow_raids", "allow_pvp_in_az", "allow_fleetsave"].map((bKey) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc(bKey),
+                  htmlFor: `flt-cfg-${bKey}`,
+                  layout: "toggle",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: `flt-cfg-${bKey}`,
+                      type: "checkbox",
+                      className: "config-checkbox",
+                      checked: Boolean(draft.booleans[bKey]),
+                      onChange: (e) => handleBoolChange(bKey, e.target.checked)
+                    }
+                  )
+                },
+                bKey
+              )),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("combat_safety_margin"),
+                  htmlFor: "flt-cfg-combat_safety_margin",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-combat_safety_margin",
+                      type: "number",
+                      min: 1,
+                      max: 10,
+                      step: 0.05,
+                      value: draft.numbers.combat_safety_margin,
+                      onChange: (e) => handleNumChange("combat_safety_margin", e.target.value)
+                    }
+                  )
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("raid_min_loot_spice_eq"),
+                  htmlFor: "flt-cfg-raid_min_loot_spice_eq",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-raid_min_loot_spice_eq",
+                      type: "number",
+                      min: 0,
+                      max: 1e7,
+                      step: 100,
+                      value: draft.numbers.raid_min_loot_spice_eq,
+                      onChange: (e) => handleNumChange("raid_min_loot_spice_eq", e.target.value)
+                    }
+                  )
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("fleet_save_fuel_reserve_spice"),
+                  htmlFor: "flt-cfg-fleet_save_fuel_reserve_spice",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-fleet_save_fuel_reserve_spice",
+                      type: "number",
+                      min: 0,
+                      max: 1e7,
+                      step: 50,
+                      value: draft.numbers.fleet_save_fuel_reserve_spice,
+                      onChange: (e) => handleNumChange("fleet_save_fuel_reserve_spice", e.target.value)
+                    }
+                  )
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("ai_resource_spare_pct"),
+                  htmlFor: "flt-cfg-ai_resource_spare_pct",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-ai_resource_spare_pct",
+                      type: "number",
+                      min: 0,
+                      max: 90,
+                      step: 1,
+                      value: draft.numbers.ai_resource_spare_pct,
+                      onChange: (e) => handleNumChange("ai_resource_spare_pct", e.target.value)
+                    }
+                  )
+                }
+              )
             ] })
           ] }) }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-pane", hidden: paramGroupTab !== "logistics", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-group-title", children: "Colonization & Inter-Planet Transport" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-toggles-stack", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_colonize", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-allow_colonize",
-                    type: "checkbox",
-                    checked: Boolean(draft.booleans.allow_colonize),
-                    onChange: (e) => handleBoolChange("allow_colonize", e.target.checked)
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow auto-colonization" })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_transport", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-allow_transport",
-                    type: "checkbox",
-                    checked: Boolean(draft.booleans.allow_transport),
-                    onChange: (e) => handleBoolChange("allow_transport", e.target.checked)
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow inter-planet transport" })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_transmitter", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-allow_transmitter",
-                    type: "checkbox",
-                    checked: Boolean(draft.booleans.allow_transmitter),
-                    onChange: (e) => handleBoolChange("allow_transmitter", e.target.checked)
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow transmitter flights" })
-              ] })
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Colonization & Inter-Planet Transport" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: FLEET_PLANNER_GROUP_SUBTITLES.logistics })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-min_colony_fields", children: "Min Colony Fields (300+)" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
+              ["allow_colonize", "allow_transport", "allow_transmitter"].map(
+                (bKey) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  ActionGraphParamRow,
                   {
-                    id: "flt-cfg-min_colony_fields",
-                    type: "number",
-                    min: 50,
-                    max: 500,
-                    step: 5,
-                    value: draft.numbers.min_colony_fields,
-                    onChange: (e) => handleNumChange("min_colony_fields", e.target.value)
-                  }
+                    doc: getStrategyParamDoc(bKey),
+                    htmlFor: `flt-cfg-${bKey}`,
+                    layout: "toggle",
+                    children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        id: `flt-cfg-${bKey}`,
+                        type: "checkbox",
+                        className: "config-checkbox",
+                        checked: Boolean(draft.booleans[bKey]),
+                        onChange: (e) => handleBoolChange(bKey, e.target.checked)
+                      }
+                    )
+                  },
+                  bKey
                 )
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-max_planets", children: "Max Planets Cap" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-max_planets",
-                    type: "number",
-                    min: 1,
-                    max: 20,
-                    step: 1,
-                    value: draft.numbers.max_planets,
-                    onChange: (e) => handleNumChange("max_planets", e.target.value)
-                  }
-                )
-              ] })
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("min_colony_fields"),
+                  htmlFor: "flt-cfg-min_colony_fields",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-min_colony_fields",
+                      type: "number",
+                      min: 50,
+                      max: 500,
+                      step: 5,
+                      value: draft.numbers.min_colony_fields,
+                      onChange: (e) => handleNumChange("min_colony_fields", e.target.value)
+                    }
+                  )
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("max_planets"),
+                  htmlFor: "flt-cfg-max_planets",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-max_planets",
+                      type: "number",
+                      min: 1,
+                      max: 20,
+                      step: 1,
+                      value: draft.numbers.max_planets,
+                      onChange: (e) => handleNumChange("max_planets", e.target.value)
+                    }
+                  )
+                }
+              )
             ] })
           ] }) }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-pane", hidden: paramGroupTab !== "scanner", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-group-title", children: "Smart Galaxy Scanner & Spy Slots" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-toggles-stack", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_galaxy_scan", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-allow_galaxy_scan",
-                    type: "checkbox",
-                    checked: Boolean(draft.booleans.allow_galaxy_scan),
-                    onChange: (e) => handleBoolChange("allow_galaxy_scan", e.target.checked)
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow smart galaxy scanner" })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-galaxy_scan_explore_first", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-galaxy_scan_explore_first",
-                    type: "checkbox",
-                    checked: Boolean(draft.booleans.galaxy_scan_explore_first),
-                    onChange: (e) => handleBoolChange("galaxy_scan_explore_first", e.target.checked)
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Explore unscanned systems first" })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-galaxy_scan_all_galaxies", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-galaxy_scan_all_galaxies",
-                    type: "checkbox",
-                    checked: Boolean(draft.booleans.galaxy_scan_all_galaxies),
-                    onChange: (e) => handleBoolChange("galaxy_scan_all_galaxies", e.target.checked)
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Sweep all galaxies" })
-              ] })
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Smart Galaxy Scanner & Spy Slots" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: FLEET_PLANNER_GROUP_SUBTITLES.scanner })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_sweep_interval_seconds", children: "Sweep Interval (sec)" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-galaxy_sweep_interval_seconds",
-                    type: "number",
-                    min: 10,
-                    max: 86400,
-                    step: 10,
-                    value: draft.numbers.galaxy_sweep_interval_seconds,
-                    onChange: (e) => handleNumChange("galaxy_sweep_interval_seconds", e.target.value)
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_sweep_pages", children: "Systems / Sweep" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-galaxy_sweep_pages",
-                    type: "number",
-                    min: 1,
-                    max: 400,
-                    step: 5,
-                    value: draft.numbers.galaxy_sweep_pages,
-                    onChange: (e) => handleNumChange("galaxy_sweep_pages", e.target.value)
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_scan_click_delay_seconds", children: "Click Delay (sec)" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-galaxy_scan_click_delay_seconds",
-                    type: "number",
-                    min: 0.1,
-                    max: 30,
-                    step: 0.1,
-                    value: draft.numbers.galaxy_scan_click_delay_seconds,
-                    onChange: (e) => handleNumChange("galaxy_scan_click_delay_seconds", e.target.value)
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_scan_click_jitter_seconds", children: "Click Jitter (sec)" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-galaxy_scan_click_jitter_seconds",
-                    type: "number",
-                    min: 0,
-                    max: 20,
-                    step: 0.1,
-                    value: draft.numbers.galaxy_scan_click_jitter_seconds,
-                    onChange: (e) => handleNumChange("galaxy_scan_click_jitter_seconds", e.target.value)
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_scan_refresh_pct", children: "Refresh Split (%)" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-galaxy_scan_refresh_pct",
-                    type: "number",
-                    min: 0,
-                    max: 100,
-                    step: 1,
-                    value: draft.numbers.galaxy_scan_refresh_pct,
-                    onChange: (e) => handleNumChange("galaxy_scan_refresh_pct", e.target.value)
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-reserved_spy_slots", children: "Reserved Spy Fleet Slots" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-reserved_spy_slots",
-                    type: "number",
-                    min: 0,
-                    max: 20,
-                    step: 1,
-                    value: draft.numbers.reserved_spy_slots,
-                    onChange: (e) => handleNumChange("reserved_spy_slots", e.target.value)
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_scan_near_weight", children: "Near Proximity Weight" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-galaxy_scan_near_weight",
-                    type: "number",
-                    min: 0,
-                    max: 10,
-                    step: 0.05,
-                    value: draft.numbers.galaxy_scan_near_weight,
-                    onChange: (e) => handleNumChange("galaxy_scan_near_weight", e.target.value)
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_scan_attack_weight", children: "Raid History Weight" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-galaxy_scan_attack_weight",
-                    type: "number",
-                    min: 0,
-                    max: 10,
-                    step: 0.05,
-                    value: draft.numbers.galaxy_scan_attack_weight,
-                    onChange: (e) => handleNumChange("galaxy_scan_attack_weight", e.target.value)
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-spy_dispatch_planet_id", children: "Spy Dispatch Planet ID" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: "flt-cfg-spy_dispatch_planet_id",
-                    type: "number",
-                    min: 0,
-                    step: 1,
-                    value: draft.numbers.spy_dispatch_planet_id,
-                    onChange: (e) => handleNumChange("spy_dispatch_planet_id", e.target.value)
-                  }
-                )
-              ] })
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
+              [
+                "allow_galaxy_scan",
+                "galaxy_scan_explore_first",
+                "galaxy_scan_all_galaxies"
+              ].map((bKey) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc(bKey),
+                  htmlFor: `flt-cfg-${bKey}`,
+                  layout: "toggle",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: `flt-cfg-${bKey}`,
+                      type: "checkbox",
+                      className: "config-checkbox",
+                      checked: Boolean(draft.booleans[bKey]),
+                      onChange: (e) => handleBoolChange(bKey, e.target.checked)
+                    }
+                  )
+                },
+                bKey
+              )),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("galaxy_sweep_interval_seconds"),
+                  htmlFor: "flt-cfg-galaxy_sweep_interval_seconds",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-galaxy_sweep_interval_seconds",
+                      type: "number",
+                      min: 10,
+                      max: 86400,
+                      step: 10,
+                      value: draft.numbers.galaxy_sweep_interval_seconds,
+                      onChange: (e) => handleNumChange("galaxy_sweep_interval_seconds", e.target.value)
+                    }
+                  )
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("galaxy_sweep_pages"),
+                  htmlFor: "flt-cfg-galaxy_sweep_pages",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-galaxy_sweep_pages",
+                      type: "number",
+                      min: 1,
+                      max: 400,
+                      step: 5,
+                      value: draft.numbers.galaxy_sweep_pages,
+                      onChange: (e) => handleNumChange("galaxy_sweep_pages", e.target.value)
+                    }
+                  )
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("galaxy_scan_click_delay_seconds"),
+                  htmlFor: "flt-cfg-galaxy_scan_click_delay_seconds",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-galaxy_scan_click_delay_seconds",
+                      type: "number",
+                      min: 0.1,
+                      max: 30,
+                      step: 0.1,
+                      value: draft.numbers.galaxy_scan_click_delay_seconds,
+                      onChange: (e) => handleNumChange("galaxy_scan_click_delay_seconds", e.target.value)
+                    }
+                  )
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("galaxy_scan_click_jitter_seconds"),
+                  htmlFor: "flt-cfg-galaxy_scan_click_jitter_seconds",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-galaxy_scan_click_jitter_seconds",
+                      type: "number",
+                      min: 0,
+                      max: 20,
+                      step: 0.1,
+                      value: draft.numbers.galaxy_scan_click_jitter_seconds,
+                      onChange: (e) => handleNumChange("galaxy_scan_click_jitter_seconds", e.target.value)
+                    }
+                  )
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("galaxy_scan_refresh_pct"),
+                  htmlFor: "flt-cfg-galaxy_scan_refresh_pct",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-galaxy_scan_refresh_pct",
+                      type: "number",
+                      min: 0,
+                      max: 100,
+                      step: 1,
+                      value: draft.numbers.galaxy_scan_refresh_pct,
+                      onChange: (e) => handleNumChange("galaxy_scan_refresh_pct", e.target.value)
+                    }
+                  )
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("reserved_spy_slots"),
+                  htmlFor: "flt-cfg-reserved_spy_slots",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-reserved_spy_slots",
+                      type: "number",
+                      min: 0,
+                      max: 20,
+                      step: 1,
+                      value: draft.numbers.reserved_spy_slots,
+                      onChange: (e) => handleNumChange("reserved_spy_slots", e.target.value)
+                    }
+                  )
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("galaxy_scan_near_weight"),
+                  htmlFor: "flt-cfg-galaxy_scan_near_weight",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-galaxy_scan_near_weight",
+                      type: "number",
+                      min: 0,
+                      max: 10,
+                      step: 0.05,
+                      value: draft.numbers.galaxy_scan_near_weight,
+                      onChange: (e) => handleNumChange("galaxy_scan_near_weight", e.target.value)
+                    }
+                  )
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("galaxy_scan_attack_weight"),
+                  htmlFor: "flt-cfg-galaxy_scan_attack_weight",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-galaxy_scan_attack_weight",
+                      type: "number",
+                      min: 0,
+                      max: 10,
+                      step: 0.05,
+                      value: draft.numbers.galaxy_scan_attack_weight,
+                      onChange: (e) => handleNumChange("galaxy_scan_attack_weight", e.target.value)
+                    }
+                  )
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getStrategyParamDoc("spy_dispatch_planet_id"),
+                  htmlFor: "flt-cfg-spy_dispatch_planet_id",
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-spy_dispatch_planet_id",
+                      type: "number",
+                      min: 0,
+                      step: 1,
+                      value: draft.numbers.spy_dispatch_planet_id,
+                      onChange: (e) => handleNumChange("spy_dispatch_planet_id", e.target.value)
+                    }
+                  )
+                }
+              )
             ] })
           ] }) }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-pane", hidden: paramGroupTab !== "shipyard", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-group-title", children: "Shipyard Targets per Hull" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-toggles-stack", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_shipyard", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Shipyard Targets per Hull" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: FLEET_PLANNER_GROUP_SUBTITLES.shipyard })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "input",
+                ActionGraphParamRow,
                 {
-                  id: "flt-cfg-allow_shipyard",
-                  type: "checkbox",
-                  checked: Boolean(draft.booleans.allow_shipyard),
-                  onChange: (e) => handleBoolChange("allow_shipyard", e.target.checked)
+                  doc: getStrategyParamDoc("allow_shipyard"),
+                  htmlFor: "flt-cfg-allow_shipyard",
+                  layout: "toggle",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: "flt-cfg-allow_shipyard",
+                      type: "checkbox",
+                      className: "config-checkbox",
+                      checked: Boolean(draft.booleans.allow_shipyard),
+                      onChange: (e) => handleBoolChange("allow_shipyard", e.target.checked)
+                    }
+                  )
                 }
               ),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow shipyard production" })
-            ] }) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: Object.keys(draft.shipyard_targets).map((slug) => {
-              const shipMeta = SHIP_OPTIONS.find((s) => s.slug === slug);
-              return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `flt-shipyard-${slug}`, children: shipMeta ? shipMeta.name : slug }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "input",
-                  {
-                    id: `flt-shipyard-${slug}`,
-                    type: "number",
-                    min: 0,
-                    max: 9999999,
-                    step: 1,
-                    value: draft.shipyard_targets[slug] ?? "0",
-                    onChange: (e) => handleShipyardTargetChange(slug, e.target.value)
-                  }
-                )
-              ] }, `flt-ship-${slug}`);
-            }) })
+              Object.keys(draft.shipyard_targets).map((slug) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                ActionGraphParamRow,
+                {
+                  doc: getShipyardHullDoc(slug),
+                  htmlFor: `flt-shipyard-${slug}`,
+                  layout: "inline",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      id: `flt-shipyard-${slug}`,
+                      type: "number",
+                      min: 0,
+                      max: 9999999,
+                      step: 1,
+                      value: draft.shipyard_targets[slug] ?? "0",
+                      onChange: (e) => handleShipyardTargetChange(slug, e.target.value)
+                    }
+                  )
+                },
+                `flt-ship-${slug}`
+              ))
+            ] })
           ] }) })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-footer", children: [
@@ -18225,45 +19363,63 @@
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-body", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", id: "ag-param-pane-core", hidden: paramTab !== "core", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ag-cfg-planner_mode", children: "Active Planner Mode" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                    "select",
-                    {
-                      id: "ag-cfg-planner_mode",
-                      value: draftModeNorm,
-                      onChange: (e) => {
-                        const v = normalizeUiPlannerMode(e.target.value);
-                        syncDraftValuesFromDom(v);
-                        void runAgSimulation({ explicit: false, modeOverride: v });
-                      },
-                      children: [
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "priority", children: "priority — Rule-Based Heuristic" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "ai_planner", children: "ai_planner — AI-Planner (W-Week NPV)" })
-                      ]
-                    }
-                  )
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ag-cfg-playstyle", children: "Playstyle Doctrine" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                    "select",
-                    {
-                      id: "ag-cfg-playstyle",
-                      value: curPlaystyle,
-                      onChange: (e) => {
-                        const v = e.target.value;
-                        setDraftValues((prev) => ({ ...prev, playstyle: v }));
-                        setTimeout(() => runAgSimulation({ explicit: false }), 0);
-                      },
-                      children: [
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "fleeter", children: "fleeter — Combat & Techs" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "hybrid", children: "hybrid — Balanced" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "miner", children: "miner — Economy ROI" }),
-                        !knownPlaystyles.includes(curPlaystyle) && curPlaystyle ? /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: curPlaystyle, children: curPlaystyle }) : null
-                      ]
-                    }
-                  )
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Planner Mode & Doctrine" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: "Choose the active planner engine and strategic doctrine used to preview and execute action sequences." })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: getStrategyParamDoc("planner_mode"),
+                        htmlFor: "ag-cfg-planner_mode",
+                        layout: "stack",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                          "select",
+                          {
+                            id: "ag-cfg-planner_mode",
+                            value: draftModeNorm,
+                            onChange: (e) => {
+                              const v = normalizeUiPlannerMode(e.target.value);
+                              syncDraftValuesFromDom(v);
+                              void runAgSimulation({ explicit: false, modeOverride: v });
+                            },
+                            children: [
+                              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "priority", children: "priority — Rule-Based Heuristic" }),
+                              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "ai_planner", children: "ai_planner — AI-Planner (W-Week NPV)" })
+                            ]
+                          }
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: getStrategyParamDoc("playstyle"),
+                        htmlFor: "ag-cfg-playstyle",
+                        layout: "stack",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                          "select",
+                          {
+                            id: "ag-cfg-playstyle",
+                            value: curPlaystyle,
+                            onChange: (e) => {
+                              const v = e.target.value;
+                              setDraftValues((prev) => ({ ...prev, playstyle: v }));
+                              setTimeout(() => runAgSimulation({ explicit: false }), 0);
+                            },
+                            children: [
+                              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "fleeter", children: "fleeter — Combat & Techs" }),
+                              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "hybrid", children: "hybrid — Balanced" }),
+                              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "miner", children: "miner — Economy ROI" }),
+                              !knownPlaystyles.includes(curPlaystyle) && curPlaystyle ? /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: curPlaystyle, children: curPlaystyle }) : null
+                            ]
+                          }
+                        )
+                      }
+                    )
+                  ] })
                 ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-ai-handoff-card", id: "ag-ai-handoff-card", children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-ai-handoff-head", children: [
@@ -18301,93 +19457,112 @@
                   ] }) : null
                 ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", id: "ag-heuristic-params-group", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Economy & Safety Thresholds" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: [
-                    ["storage_warn_ratio", "Storage Warn Ratio", 0.1, 0.99, 0.05],
-                    ["blast_pig_iron_max_share", "Max b2 Pig Share", 0.1, 1, 0.05],
-                    ["combat_safety_margin", "Combat Margin (≥1.0)", 1, 1e3, 0.1],
-                    ["raid_min_loot_spice_eq", "Min Raid Loot (SpEq)", 0, void 0, 100],
-                    ["hot_planet_solar_temp_threshold", "Solar Temp (°C)", -273, 1e3, 5],
-                    ["min_free_fields_warning", "Min Free Fields", 1, 1e3, 1],
-                    ["min_colony_fields", "Min Colony Fields", 50, 600, 10],
-                    ["max_planets", "Max Planets Cap", 1, 50, 1]
-                  ].map(([key, label, minV, maxV, stepV]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `ag-cfg-${key}`, children: label }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "input",
-                      {
-                        type: "number",
-                        id: `ag-cfg-${key}`,
-                        min: minV,
-                        max: maxV,
-                        step: stepV,
-                        value: String(draftValues[key] ?? AG_NUM_DEFAULTS[key]),
-                        onChange: (e) => {
-                          setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
-                          scheduleDebouncedSim();
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Economy & Safety Thresholds" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: "Resource warehouse thresholds, Blast furnace throttling, combat margins, and colony field constraints." })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-list", children: [
+                    ["storage_warn_ratio", 0.1, 0.99, 0.05],
+                    ["blast_pig_iron_max_share", 0.1, 1, 0.05],
+                    ["combat_safety_margin", 1, 1e3, 0.1],
+                    ["raid_min_loot_spice_eq", 0, void 0, 100],
+                    ["hot_planet_solar_temp_threshold", -273, 1e3, 5],
+                    ["min_free_fields_warning", 1, 1e3, 1],
+                    ["min_colony_fields", 50, 600, 10],
+                    ["max_planets", 1, 50, 1]
+                  ].map(([key, minV, maxV, stepV]) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    ActionGraphParamRow,
+                    {
+                      doc: getStrategyParamDoc(key),
+                      htmlFor: `ag-cfg-${key}`,
+                      layout: "inline",
+                      children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: `ag-cfg-${key}`,
+                          min: minV,
+                          max: maxV,
+                          step: stepV,
+                          value: String(draftValues[key] ?? AG_NUM_DEFAULTS[key]),
+                          onChange: (e) => {
+                            setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
+                            scheduleDebouncedSim();
+                          }
                         }
-                      }
-                    )
-                  ] }, key)) })
+                      )
+                    },
+                    key
+                  )) })
                 ] })
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", id: "ag-param-pane-scope", hidden: paramTab !== "scope", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: [
-                  ["fleet_save_fuel_reserve_spice", "Escape Fuel Reserve", 0, void 0, 50],
-                  ["action_batch_interval_seconds", "Batch & Refresh Interval (s)", 5, 86400, 5],
-                  ["galaxy_scan_click_delay_seconds", "Galaxy Scan Click Delay (s)", 0.2, 60, 0.1],
-                  ["galaxy_scan_click_jitter_seconds", "Galaxy Scan Jitter (s)", 0, 30, 0.1],
-                  ["max_actions_per_hour", "Max Actions / Hour", 1, 1e5, 1],
-                  ["reserved_spy_slots", "Reserved Spy Slots", 0, 10, 1]
-                ].map(([key, label, minV, maxV, stepV]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `ag-cfg-${key}`, children: label }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "input",
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Pacing, Reserves & Limits" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: "Batch refresh cadence, galaxy scanner humanization delays, hourly action rate limit, and spy/escape reserves." })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-list", children: [
+                    ["fleet_save_fuel_reserve_spice", 0, void 0, 50],
+                    ["action_batch_interval_seconds", 5, 86400, 5],
+                    ["galaxy_scan_click_delay_seconds", 0.2, 60, 0.1],
+                    ["galaxy_scan_click_jitter_seconds", 0, 30, 0.1],
+                    ["max_actions_per_hour", 1, 1e5, 1],
+                    ["reserved_spy_slots", 0, 10, 1]
+                  ].map(([key, minV, maxV, stepV]) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    ActionGraphParamRow,
                     {
-                      type: "number",
-                      id: `ag-cfg-${key}`,
-                      min: minV,
-                      max: maxV,
-                      step: stepV,
-                      value: String(draftValues[key] ?? AG_NUM_DEFAULTS[key]),
-                      onChange: (e) => {
-                        setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
-                        scheduleDebouncedSim();
-                      }
-                    }
-                  )
-                ] }, key)) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-toggles-stack", children: [
-                  ["auto_throttle_blast_furnace", "Auto-pause Blast furnace (0%)"],
-                  ["merchant_mode", "Merchant Mode (Skip b2)"],
-                  ["allow_research", "Auto Research"],
-                  ["allow_shipyard", "Auto Shipyard"],
-                  ["allow_multi_planet", "Multi-Planet Planning"],
-                  ["allow_fleetsave", "P0 Auto Escape Flight"],
-                  ["allow_galaxy_scan", "Galaxy Scanner"],
-                  ["allow_raids", "Auto Raids (Inactive/Spacia)"],
-                  ["allow_pvp_in_az", "Allow PvP inside AZ"],
-                  ["allow_colonize", "Auto Colonize"],
-                  ["allow_transport", "Auto Inter-Planet Transport"],
-                  ["allow_transmitter", "Daily Free Transmitter"],
-                  ["forbid_planetary_solar", "Forbid Solar on Planets (Asteroid Only)"]
-                ].map(([bKey, label]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "input",
+                      doc: getStrategyParamDoc(key),
+                      htmlFor: `ag-cfg-${key}`,
+                      layout: "inline",
+                      children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: `ag-cfg-${key}`,
+                          min: minV,
+                          max: maxV,
+                          step: stepV,
+                          value: String(draftValues[key] ?? AG_NUM_DEFAULTS[key]),
+                          onChange: (e) => {
+                            setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
+                            scheduleDebouncedSim();
+                          }
+                        }
+                      )
+                    },
+                    key
+                  )) })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Automation Capabilities" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: "Master switches controlling which autonomous build, research, scanning, combat, and logistics systems may run." })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-list", children: AG_BOOL_FIELDS.map((bKey) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    ActionGraphParamRow,
                     {
-                      type: "checkbox",
-                      id: `ag-cfg-${bKey}`,
-                      checked: Boolean(draftValues[bKey]),
-                      onChange: (e) => {
-                        const checked = e.target.checked;
-                        setDraftValues((prev) => ({ ...prev, [bKey]: checked }));
-                        setTimeout(() => runAgSimulation({ explicit: false }), 0);
-                      }
-                    }
-                  ),
-                  " ",
-                  label
-                ] }, bKey)) })
+                      doc: getStrategyParamDoc(bKey),
+                      htmlFor: `ag-cfg-${bKey}`,
+                      layout: "toggle",
+                      children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "checkbox",
+                          className: "config-checkbox",
+                          id: `ag-cfg-${bKey}`,
+                          checked: Boolean(draftValues[bKey]),
+                          onChange: (e) => {
+                            const checked = e.target.checked;
+                            setDraftValues((prev) => ({ ...prev, [bKey]: checked }));
+                            setTimeout(() => runAgSimulation({ explicit: false }), 0);
+                          }
+                        }
+                      )
+                    },
+                    bKey
+                  )) })
+                ] })
               ] })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-footer", children: [
@@ -24483,523 +25658,6 @@
       }
     );
   };
-  const CONFIG_GROUPS = [
-    {
-      id: "doctrine",
-      headingId: "cfg-grp-doctrine",
-      title: "Planner Engine & Empire Doctrine",
-      subtitle: "Core planning engine selection, playstyle doctrine weighting, multi-planet scheduling scope, and colony expansion field thresholds.",
-      items: [
-        {
-          key: "planner_mode",
-          id: "cfg-planner_mode",
-          title: "Planner Mode",
-          boundsLabel: "default: priority · priority | ai_planner",
-          description: "Selects between the deterministic rule-based P0–P3 heuristic pipeline (priority) and the full-horizon sequential rollout optimizer (ai_planner, auto-unlocks for live bot execution at 11/11 colonies). Saved immediately to SQLite so both Game API and Commander ticks share the active planner.",
-          control: "select",
-          defaultValue: "priority",
-          options: [
-            { value: "priority", label: "priority — Rule-Based Heuristic" },
-            { value: "ai_planner", label: "ai_planner — AI-Planner (Full Horizon)" }
-          ]
-        },
-        {
-          key: "playstyle",
-          id: "cfg-playstyle",
-          title: "Playstyle Doctrine",
-          boundsLabel: "default: fleeter · fleeter | hybrid | miner",
-          description: "Weights P2 research ordering and shipyard hull quotas toward offensive warships and combat/drive technologies (fleeter), compound mine ROI payback (miner), or a balanced empire progression (hybrid). Applies whenever research or shipyard automation is enabled.",
-          control: "select",
-          defaultValue: "fleeter",
-          options: [
-            { value: "fleeter", label: "fleeter — Combat & Techs" },
-            { value: "hybrid", label: "hybrid — Balanced" },
-            { value: "miner", label: "miner — Economy ROI" }
-          ]
-        },
-        {
-          key: "allow_multi_planet",
-          id: "cfg-allow_multi_planet",
-          title: "Multi-Planet Empire Planning",
-          boundsLabel: "default: true · boolean",
-          description: "Evaluates construction queues, energy balance, warehouse caps, and fleet dispatch across every owned colony and Asteroid instead of restricting planning to the currently active planet. Respects SpaceInvasion Classic slot rules for normal planets, solar-only Asteroids (1 build slot), and isolated [RK] raid colonies.",
-          control: "checkbox",
-          defaultValue: true
-        },
-        {
-          key: "max_planets",
-          id: "cfg-max_planets",
-          title: "Max Empire Planets Cap",
-          boundsLabel: "default: 11 · 1–50 planets",
-          description: "Caps total normal planets (owned colonies plus outbound COLONIZE flights) before halting autonomous Colony ship (s8) dispatches; SpaceInvasion Classic permits 1 homeworld plus up to 10 normal colonies (11 total, excluding Asteroids and [RK] raid colonies). Accepts integers from 1 to 50.",
-          control: "number",
-          defaultValue: 11,
-          min: 1,
-          max: 50,
-          step: 1
-        },
-        {
-          key: "min_colony_fields",
-          id: "cfg-min_colony_fields",
-          title: "Minimum Colony Fields Target",
-          boundsLabel: "default: 300 · 50–600 fields",
-          description: "Minimum buildable planet size required by the colony grader and P2 COLONIZE selector, favoring Prime Mid-Orbit positions 7–12 capable of rolling 300+ fields so late-game mines and Fusion plants never stall on slot exhaustion. Accepts integers from 50 to 600 fields.",
-          control: "number",
-          defaultValue: 300,
-          min: 50,
-          max: 600,
-          step: 10
-        },
-        {
-          key: "min_free_fields_warning",
-          id: "cfg-min_free_fields_warning",
-          title: "Low Free Fields Advisory Threshold",
-          boundsLabel: "default: 20 · 1–1000 fields",
-          description: "Raises a P3 non-executable colony space advisory (executable_now=False) and steers power upgrades toward compact Fusion plant levels once remaining buildable slots (fields_max - fields_used) drop at or below this buffer. Accepts integers from 1 to 1000 fields.",
-          control: "number",
-          defaultValue: 20,
-          min: 1,
-          max: 1e3,
-          step: 1
-        }
-      ]
-    },
-    {
-      id: "economy",
-      headingId: "cfg-grp-economy",
-      title: "Economy, Power & Storage Automation",
-      subtitle: "Blast furnace (b2) 2:1 Pig iron throttling, planetary power generation policy, warehouse overflow guards, research/shipyard queues, and free IDT spins.",
-      items: [
-        {
-          key: "auto_throttle_blast_furnace",
-          id: "cfg-auto_throttle_blast_furnace",
-          title: "Auto-Throttle Blast Furnace (b2)",
-          boundsLabel: "default: true · boolean",
-          description: "Automatically throttles Blast furnace (b2) to 0% via P1 THROTTLE_BUILDING when 2:1 Pig iron smelting starves frontier Pig iron upgrades or when Metal storage is 98%+ full while Pig iron storage has headroom, then restores 100% when Metal is needed. In SpaceInvasion Classic, b2 consumes 2 Pig iron per 1 Metal and is not boosted by Mining technology (r1).",
-          control: "checkbox",
-          defaultValue: true
-        },
-        {
-          key: "blast_pig_iron_max_share",
-          id: "cfg-blast_pig_iron_max_share",
-          title: "Max Blast Furnace Pig Iron Share",
-          boundsLabel: "default: 0.70 · 0.10–1.00",
-          description: "Maximum share of gross Pig iron mine (b1) hourly output that Blast furnace (b2) may consume through its 2:1 smelting ratio before the planner holds further b2 levels or pauses smelting to preserve positive net Pig iron income. Accepts float ratios from 0.10 to 1.00.",
-          control: "number",
-          defaultValue: 0.7,
-          min: 0.1,
-          max: 1,
-          step: 0.05
-        },
-        {
-          key: "merchant_mode",
-          id: "cfg-merchant_mode",
-          title: "Merchant Exchange Mode (Skip b2)",
-          boundsLabel: "default: false · boolean",
-          description: "Evaluates mine payback ROI using NPC Merchant trade ratios (6 : 2.5 : 3 : 1 Pig iron / Metal / Kryptonite / Spice) instead of standard player ratios (4 : 2 : 2 : 1) and skips Blast furnace (b2) construction when Metal is sourced via trader swaps. Boolean toggle.",
-          control: "checkbox",
-          defaultValue: false
-        },
-        {
-          key: "forbid_planetary_solar",
-          id: "cfg-forbid_planetary_solar",
-          title: "Forbid Solar Power on Normal Planets",
-          boundsLabel: "default: false · boolean",
-          description: "Forbids Thermosolar plant (b6) and combat-destructible orbital Solar cells (s9) on normal planets—relying exclusively on Fusion plant (b5) scaled by Energy technology (r2) and scheduling P1 step-down DEMOLISH_BUILDING of existing b6 levels when spare energy covers the loss. Asteroids remain exempt because SpaceInvasion Classic restricts Asteroids to solar power only.",
-          control: "checkbox",
-          defaultValue: false
-        },
-        {
-          key: "hot_planet_solar_temp_threshold",
-          id: "cfg-hot_planet_solar_temp_threshold",
-          title: "Hot Planet Solar Temperature Threshold (°C)",
-          boundsLabel: "default: 40 · -273 to 1000 °C",
-          description: "Minimum colony temperature in °C required before emergency power recovery considers orbital Solar cells (s9) on tight-field normal planets when forbid_planetary_solar is disabled; hot inner-orbit slots boost solar yield whereas cold outer slots boost Spice mine (b4) output. Accepts integers from -273 to 1000 °C.",
-          control: "number",
-          defaultValue: 40,
-          min: -273,
-          max: 1e3,
-          step: 5
-        },
-        {
-          key: "storage_warn_ratio",
-          id: "cfg-storage_warn_ratio",
-          title: "Warehouse Overflow Warning Ratio",
-          boundsLabel: "default: 0.85 · 0.10–0.99",
-          description: "Schedules P1 warehouse upgrades (b11–b14: Pig iron, Metal, Kryptonite, or Spice warehouse) as soon as stored stock divided by warehouse capacity reaches this threshold, preventing SpaceInvasion mines from halting extraction at 100% cap. Accepts float ratios from 0.10 to 0.99.",
-          control: "number",
-          defaultValue: 0.85,
-          min: 0.1,
-          max: 0.99,
-          step: 0.05
-        },
-        {
-          key: "allow_research",
-          id: "cfg-allow_research",
-          title: "Autonomous Research Queue",
-          boundsLabel: "default: true · boolean",
-          description: "Queues P2 account-wide RESEARCH upgrades (r1–r15) from the colony with the highest Research lab (b8) level whenever the global research slot is idle; research duration scales with (b8 + 1) * speedup and is unaffected by Microsystem (b17). Boolean toggle.",
-          control: "checkbox",
-          defaultValue: true
-        },
-        {
-          key: "allow_shipyard",
-          id: "cfg-allow_shipyard",
-          title: "Autonomous Shipyard Construction",
-          boundsLabel: "default: true · boolean",
-          description: "Enables P2 BUILD_SHIP orders at Weapons factory (b9) to maintain configured shipyard_targets quotas (Spy probe s10, Transports, Recycler s11, Colony ship s8, and combat hulls), where per-unit build time divides by b9 * 2^b17 * speedup. Boolean toggle.",
-          control: "checkbox",
-          defaultValue: true
-        },
-        {
-          key: "allow_transmitter",
-          id: "cfg-allow_transmitter",
-          title: "Daily Free Interdimensional Transmitter Spin",
-          boundsLabel: "default: false · boolean",
-          description: "Schedules P2 ACTIVATE_TRANSMITTER once per Europe/Berlin server day to claim the free daily Interdimensional Transmitter spin, strictly guarded by _freeSpins >= 1 and idtSrc == 1 so zero paid Urplasma is ever spent. Boolean toggle.",
-          control: "checkbox",
-          defaultValue: false
-        }
-      ]
-    },
-    {
-      id: "galaxy",
-      headingId: "cfg-grp-galaxy",
-      title: "Galaxy Scanner & Sweep Pacing",
-      subtitle: "Spiral solar-system recon, the smart 2-phase scanner (exploratory 1–400 coverage, then a weighted refresh by proximity and attack history), multi-page 2D Galaxy si.navigate sweeps, delay and jitter between clicks, and free-slot colonization.",
-      items: [
-        {
-          key: "allow_galaxy_scan",
-          id: "cfg-allow_galaxy_scan",
-          title: "Autonomous Galaxy Scanner & Background Sweep",
-          boundsLabel: "default: false · boolean",
-          description: "Enables P2 outward spiral SCAN_GALAXY system recon (1800s per-system cooldown) and background randomized 2D Galaxy sweeps that index yellow inactive farms, Spacia NPC planets, orbital rubble fields, and free colony slots in SQLite. Boolean toggle.",
-          control: "checkbox",
-          defaultValue: false
-        },
-        {
-          key: "galaxy_sweep_pages",
-          id: "cfg-galaxy_sweep_pages",
-          title: "Galaxy Sweep Pages per Cycle",
-          boundsLabel: "default: 100 · 1–400 pages",
-          description: "Number of solar system pages (gal:sun) visited per randomized 2D Galaxy sweep cycle (and default page count for the Sweep 100 Pages action button) to keep sector intelligence fresh across neighboring systems. Accepts integers from 1 to 400 pages.",
-          control: "number",
-          defaultValue: 100,
-          min: 1,
-          max: 400,
-          step: 10
-        },
-        {
-          key: "galaxy_sweep_interval_seconds",
-          id: "cfg-galaxy_sweep_interval_seconds",
-          title: "Max Background Galaxy Sweep Interval (s)",
-          boundsLabel: "default: 270 · 30–86400 s",
-          description: "Maximum interval in seconds between automatic background multi-page Galaxy sweep runs when allow_galaxy_scan is enabled, jittered so sector recon refreshes regularly without starving build or fleet ticks. Accepts integers from 30 to 86400 seconds.",
-          control: "number",
-          defaultValue: 270,
-          min: 30,
-          max: 86400,
-          step: 15
-        },
-        {
-          key: "galaxy_scan_click_delay_seconds",
-          id: "cfg-galaxy_scan_click_delay_seconds",
-          title: "Time Between Galaxy Scan Clicks (s)",
-          boundsLabel: "default: 1.5 · 0.2–60.0 s",
-          description: "Base delay in seconds waited between consecutive step_galaxy_system / si.navigate page clicks during multi-page Galaxy sweeps to stay safely under SpaceInvasion's 30-page-view rate-limit cooldown. Accepts floats from 0.2 to 60.0 seconds.",
-          control: "number",
-          defaultValue: 1.5,
-          min: 0.2,
-          max: 60,
-          step: 0.1
-        },
-        {
-          key: "galaxy_scan_click_jitter_seconds",
-          id: "cfg-galaxy_scan_click_jitter_seconds",
-          title: "Random Jitter Between Galaxy Scan Pages (s)",
-          boundsLabel: "default: 0.6 · 0.0–30.0 s",
-          description: "Uniform random +/-jitter offset in seconds added around galaxy_scan_click_delay_seconds on each Galaxy sweep page step (floored at 0.2s total wait) so page navigation cadence stays organic rather than fixed-interval. Accepts floats from 0.0 to 30.0 seconds.",
-          control: "number",
-          defaultValue: 0.6,
-          min: 0,
-          max: 30,
-          step: 0.1
-        },
-        {
-          key: "galaxy_scan_explore_first",
-          id: "cfg-galaxy_scan_explore_first",
-          title: "Smart Scan Phase 1: Explore Unscanned Systems First",
-          boundsLabel: "default: true · boolean",
-          description: "Phase 1 (exploratory): Galaxy sweeps and SCAN_GALAXY visit every never-scanned solar system (1–400) in each galaxy where you own a non-raid colony before they revisit any system. Systems are ordered outward from your nearest colony so si.navigate steps stay contiguous. Once coverage reaches 100% (explored_systems == total_systems), or right away when this is off, sweeps switch to Phase 2: a weighted refresh that ranks sectors by proximity, attack history, and staleness. Boolean toggle.",
-          control: "checkbox",
-          defaultValue: true
-        },
-        {
-          key: "galaxy_scan_refresh_pct",
-          id: "cfg-galaxy_scan_refresh_pct",
-          title: "Smart Scan Refresh vs Discovery Split (%)",
-          boundsLabel: "default: 0% · 0–100%",
-          description: "Percentage of each galaxy sweep batch allocated to refreshing already-scanned sectors (by proximity, raid affinity, debris/targets, and staleness), while the remaining (100 − refresh)% discovers never-scanned systems. Set 0% for pure discovery first, 100% for refresh-only, or an intermediate split (for example 30% refresh / 70% discovery) to keep nearby farm sectors fresh while expanding universe coverage. Unused quota spills automatically to the other pool. Accepts integers from 0 to 100.",
-          control: "number",
-          defaultValue: 0,
-          min: 0,
-          max: 100,
-          step: 5
-        },
-        {
-          key: "galaxy_scan_all_galaxies",
-          id: "cfg-galaxy_scan_all_galaxies",
-          title: "Smart Scan Scope: Discover Across All 14 Galaxies (G1–G14)",
-          boundsLabel: "default: false · boolean",
-          description: "When enabled, smart galaxy sweeps and the Sectors Scan Queue expand beyond galaxies where you already own a colony to discover and refresh all 14 galaxies (G1–G14) outward from your colonies (nearest neighbor galaxies first). When disabled, sweeps stay inside owned galaxies unless a mixed Refresh/Discovery split (1–99%) has already finished 100% of owned galaxies. Boolean toggle.",
-          control: "checkbox",
-          defaultValue: false
-        },
-        {
-          key: "galaxy_scan_near_weight",
-          id: "cfg-galaxy_scan_near_weight",
-          title: "Smart Scan Phase 2: Near-Sector Proximity Weight",
-          boundsLabel: "default: 2.0 · 0.0–20.0",
-          description: "Phase 2 (targeted_refresh) multiplier on the proximity score of each (galaxy, system) sector. Proximity uses the circular system distance to your closest non-raid colony, min(|s − own_s|, 400 − |s − own_s|), with a penalty for other galaxies. Higher values refresh nearby sectors (cheap raids, short Spy probe flights) more often; 0.0 ignores distance. Accepts floats from 0.0 to 20.0.",
-          control: "number",
-          defaultValue: 2,
-          min: 0,
-          max: 20,
-          step: 0.5
-        },
-        {
-          key: "galaxy_scan_attack_weight",
-          id: "cfg-galaxy_scan_attack_weight",
-          title: "Smart Scan Phase 2: Frequent-Attack Player & Sector Weight",
-          boundsLabel: "default: 3.0 · 0.0–20.0",
-          description: "Phase 2 (targeted_refresh) multiplier on attack-history affinity, read from SQLite raid_history. It combines direct raids and loot in a GG:SSS sector with per-owner frequency: every sector where a player you attack often owns a planet gets boosted. Debris, yellow inactive, Spacia, and 300+ free-slot value add a secondary score, and the total is multiplied by how stale the scan is. Higher values keep frequent farm targets fresh; 0.0 ignores attack history. Accepts floats from 0.0 to 20.0.",
-          control: "number",
-          defaultValue: 3,
-          min: 0,
-          max: 20,
-          step: 0.5
-        },
-        {
-          key: "allow_colonize",
-          id: "cfg-allow_colonize",
-          title: "Autonomous Free-Slot Colonization",
-          boundsLabel: "default: false · boolean",
-          description: "Probes non-discarded free slots (Prime Mid-Orbit 7–12 first) until qualified 300+-field candidates cover max_planets minus allocated colonies, then launches stationed Colony ships (s8) on verified 300+-field candidates when 1 + b10 fleet slots permit. Boolean toggle.",
-          control: "checkbox",
-          defaultValue: false
-        }
-      ]
-    },
-    {
-      id: "combat",
-      headingId: "cfg-grp-combat",
-      title: "Espionage, Raiding & Fleet Safety",
-      subtitle: "Reserved spy probe flight seats, spy origin colony selection, zero-rapidfire 1:1 combat simulator gates, 3/24h Bash tracking, and P0 SAVE Escape flights.",
-      items: [
-        {
-          key: "allow_raids",
-          id: "cfg-allow_raids",
-          title: "Autonomous Espionage & Inactive/Spacia Raids",
-          boundsLabel: "default: false · boolean",
-          description: "Enables P1 SPY scouting (s10 on inhabited planets and Spacia, refreshing intel older than 4h) and P2 ATTACK/RECYCLE harvest waves against yellow inactives, Spacia NPC planets, and rubble fields ranked by total resources per round-trip flight time (res/h), bounded by 1 + b10 concurrent fleet slots. Boolean toggle.",
-          control: "checkbox",
-          defaultValue: false
-        },
-        {
-          key: "allow_transport",
-          id: "cfg-allow_transport",
-          title: "Autonomous Inter-Planet Resource Transport",
-          boundsLabel: "default: false · boolean",
-          description: "Dispatches P1 TRANSPORT flights (s3/s2/s1) strictly between your own planets to supply P1/P2 resource shortfalls and bootstrap young colonies from surplus planets (respecting Spice fuel reserves and 85% recipient storage caps). Runs at Fleet Priority #2: after SPY (#1) and ahead of COLONIZE (#3) and ATTACK/RECYCLE (#4). Boolean toggle.",
-          control: "checkbox",
-          defaultValue: false
-        },
-        {
-          key: "reserved_spy_slots",
-          id: "cfg-reserved_spy_slots",
-          title: "Reserved Spy Fleet Slots",
-          boundsLabel: "default: 1 · 0–10 slots",
-          description: "Number of Fleet base (1 + b10) concurrent flight seats held exclusively for SPY probe missions (#1) whenever ready spy targets and stationed s10 probes exist, enforcing the 4-tier fleet priority SPY (#1) → TRANSPORT (#2) → COLONIZE (#3) → ATTACK & RECYCLE (#4, ranked by resource/flight_time). Accepts integers from 0 to 10.",
-          control: "number",
-          defaultValue: 1,
-          min: 0,
-          max: 10,
-          step: 1
-        },
-        {
-          key: "spy_dispatch_planet_id",
-          id: "cfg-spy_dispatch_planet_id",
-          title: "Designated Spy Dispatch Colony",
-          boundsLabel: "default: 0 (Auto) · colony planet_id",
-          description: "Locks all SPY probe launches to a specific owned non-raid colony planet_id (holding SPY and prioritizing s10 construction there if its probe stock hits zero), or set 0 to automatically select the active or closest colony carrying stationed Spy probes (s10). Accepts 0 (Auto) or an owned colony ID.",
-          control: "planet-select",
-          defaultValue: 0
-        },
-        {
-          key: "allow_pvp_in_az",
-          id: "cfg-allow_pvp_in_az",
-          title: "Allow Active-Player PvP Raids Inside Attack Zone",
-          boundsLabel: "default: false · boolean",
-          description: "Permits P2 SPY and ATTACK missions against active (light_red) players within your SpaceInvasion Attack Zone (AZ) tier, strictly enforcing the 3 attacks per 24 hours Bash rule per target planet and 6-hour cooldowns on newbie, vacation, or out-of-attackzone targets. Boolean toggle.",
-          control: "checkbox",
-          defaultValue: false
-        },
-        {
-          key: "combat_safety_margin",
-          id: "cfg-combat_safety_margin",
-          title: "1:1 Combat Simulator Safety Margin",
-          boundsLabel: "default: 1.4 · 1.0–1000.0x",
-          description: "Minimum attacker-to-defender effective power ratio required in SpaceInvasion Classic's zero-rapidfire 1:1 combat simulator (incorporating Weapons r11, Shield r12, and Defense r13 tech multipliers) before authorizing any ATTACK wave. Accepts floats from 1.0 to 1000.0.",
-          control: "number",
-          defaultValue: 1.4,
-          min: 1,
-          max: 1e3,
-          step: 0.1
-        },
-        {
-          key: "raid_min_loot_spice_eq",
-          id: "cfg-raid_min_loot_spice_eq",
-          title: "Minimum Raid Plunder Threshold (Spice Eq)",
-          boundsLabel: "default: 1500 · >= 0 SpEq",
-          description: "Minimum expected 50% raid plunder converted into Spice-equivalent units (4 : 2 : 2 : 1 standard value) required before committing cargo hulls, Spice flight fuel, and a 1 + b10 fleet slot to an ATTACK mission. Accepts floats of 0 or higher.",
-          control: "number",
-          defaultValue: 1500,
-          min: 0,
-          step: 100
-        },
-        {
-          key: "allow_fleetsave",
-          id: "cfg-allow_fleetsave",
-          title: "P0 Automatic Hostile Escape Flight (SAVE)",
-          boundsLabel: "default: false · boolean",
-          description: "Launches an immediate P0 ESCAPE_FLIGHT (SAVE mission) whenever an incoming hostile fleet targets a colony, evacuating stationed ships and packing cargo in Spice → Kryptonite → Metal → Pig iron priority order; SpaceInvasion Classic Escape flights are invisible to Asteroid Galaxy scanners. Boolean toggle.",
-          control: "checkbox",
-          defaultValue: false
-        },
-        {
-          key: "fleet_save_fuel_reserve_spice",
-          id: "cfg-fleet_save_fuel_reserve_spice",
-          title: "Escape Flight Spice Fuel Reserve",
-          boundsLabel: "default: 500 · >= 0 Spice",
-          description: "Quantity of planetary Spice held back on the origin colony before loading ESCAPE_FLIGHT cargo holds so stationed fleets always retain sufficient propellant to launch the SAVE flight and follow-up missions. Accepts integers of 0 or higher.",
-          control: "number",
-          defaultValue: 500,
-          min: 0,
-          step: 50
-        }
-      ]
-    },
-    {
-      id: "runtime",
-      headingId: "cfg-grp-runtime",
-      title: "Runtime Pacing & GA + Neural Network Optimizer",
-      subtitle: "Autonomous Commander tick cadence, rolling hourly DOM mutation budget, and evolutionary ga_nn sequence search hyperparameters.",
-      items: [
-        {
-          key: "action_batch_interval_seconds",
-          id: "cfg-action_batch_interval_seconds",
-          title: "Minimum Batch & Snapshot Refresh Interval (s)",
-          boundsLabel: "default: 120 · 5–86400 s",
-          description: "Minimum pause in seconds between autonomous Commander execution batches and full Chrome DOM snapshot refreshes when no active building or fleet timer completes sooner, pacing navigation under SpaceInvasion page-view limits. Accepts integers from 5 to 86400 seconds.",
-          control: "number",
-          defaultValue: 120,
-          min: 5,
-          max: 86400,
-          step: 5
-        },
-        {
-          key: "max_actions_per_hour",
-          id: "cfg-max_actions_per_hour",
-          title: "Max Live Actions per Rolling Hour",
-          boundsLabel: "default: 60 · 1–100000 ops/hr",
-          description: "Rolling 60-minute action cap limiting total live browser mutations (BUILD, RESEARCH, BUILD_SHIP, THROTTLE_BUILDING, and fleet dispatches) executed by GameApiBridge to prevent runaway click loops. Accepts integers from 1 to 100000 actions/hour.",
-          control: "number",
-          defaultValue: 60,
-          min: 1,
-          max: 1e5,
-          step: 1
-        },
-        {
-          key: "ga_population_size",
-          id: "cfg-ga_population_size",
-          title: "GA Population Size",
-          boundsLabel: "default: 24 · 4–200 genomes",
-          description: "Number of candidate action-sequence chromosomes maintained per evolutionary generation when planner_mode is ga_nn; larger populations explore broader mine, Fusion power, and tech build orders at higher CPU cost. Accepts integers from 4 to 200.",
-          control: "number",
-          defaultValue: 24,
-          min: 4,
-          max: 200,
-          step: 1
-        },
-        {
-          key: "ga_generations",
-          id: "cfg-ga_generations",
-          title: "GA Evolution Generations",
-          boundsLabel: "default: 12 · 1–200 cycles",
-          description: "Number of tournament-selection, crossover, and mutation cycles executed per ga_nn planning pass to converge on lower-wait, higher-SpiceEq multi-step build sequences. Accepts integers from 1 to 200.",
-          control: "number",
-          defaultValue: 12,
-          min: 1,
-          max: 200,
-          step: 1
-        },
-        {
-          key: "ga_horizon_steps",
-          id: "cfg-ga_horizon_steps",
-          title: "GA Rollout Horizon Steps",
-          boundsLabel: "default: 6 · 1–24 steps",
-          description: "Number of sequential actions simulated per chromosome through SpaceInvasion resource accumulation, Blast furnace 2:1 smelting, and Development center / Microsystem build-time formulas during ga_nn rollout scoring. Accepts integers from 1 to 24 steps.",
-          control: "number",
-          defaultValue: 6,
-          min: 1,
-          max: 24,
-          step: 1
-        },
-        {
-          key: "ga_mutation_rate",
-          id: "cfg-ga_mutation_rate",
-          title: "GA Genome Mutation Rate",
-          boundsLabel: "default: 0.25 · 0.00–1.00",
-          description: "Per-gene mutation probability applied during ga_nn offspring reproduction to diversify build-order search and escape local optima such as warehouse or power bottlenecks. Accepts floats from 0.00 to 1.00.",
-          control: "number",
-          defaultValue: 0.25,
-          min: 0,
-          max: 1,
-          step: 0.05
-        },
-        {
-          key: "ga_nn_weight",
-          id: "cfg-ga_nn_weight",
-          title: "46D Neural Value Blending Weight",
-          boundsLabel: "default: 0.35 · 0.00–1.00",
-          description: "Weight blending the 46-dimensional MLP value-network terminal state evaluation with deterministic Spice-equivalent production fitness during ga_nn scoring (0.0 pure rollout math, 1.0 full neural guidance). Accepts floats from 0.00 to 1.00.",
-          control: "number",
-          defaultValue: 0.35,
-          min: 0,
-          max: 1,
-          step: 0.05
-        },
-        {
-          key: "ga_seed",
-          id: "cfg-ga_seed",
-          title: "GA Deterministic PRNG Seed",
-          boundsLabel: "default: Auto · 32-bit int or blank",
-          description: "Optional integer seed pinning ga_nn random initialization, crossover, and mutation for deterministic, repeatable rollout plans; leave blank for fresh stochastic search on each pass. Accepts signed 32-bit integers or blank.",
-          control: "text-seed",
-          defaultValue: "",
-          placeholder: "Auto"
-        }
-      ]
-    }
-  ];
-  const CONFIG_BOOL_KEYS = CONFIG_GROUPS.flatMap(
-    (g) => g.items.filter((i) => i.control === "checkbox").map((i) => i.key)
-  );
-  const CONFIG_NUMBER_DEFAULTS = Object.fromEntries(
-    CONFIG_GROUPS.flatMap(
-      (g) => g.items.filter((i) => i.control === "number").map((i) => [i.key, Number(i.defaultValue)])
-    )
-  );
   const useClientSyncEffect = typeof window !== "undefined" ? reactExports.useLayoutEffect : reactExports.useEffect;
   function fmtShortUpdated(tsSec) {
     const ts = safeFiniteNumber(tsSec, null);

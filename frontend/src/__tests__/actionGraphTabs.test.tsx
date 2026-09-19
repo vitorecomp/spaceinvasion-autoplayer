@@ -593,4 +593,72 @@ describe("ActionGraph 4-Tab Workspace", () => {
     expect(document.getElementById("gann-calc-hud")?.hidden).toBe(false);
     expect(document.getElementById("gann-status-pill")?.textContent).toBe("PREVIEW ONLY");
   });
+
+  it("renders Config-screen-style parameter keys, bounds, and detailed descriptions across all 4 Action Graph settings panels", async () => {
+    render(
+      <Harness initialDashboard={mockDashboardState}>
+        <ActionGraphView />
+      </Harness>
+    );
+
+    const assertPanelHasDetailedDocs = (panelId: string, minExpectedItems: number) => {
+      const panel = document.getElementById(panelId);
+      expect(panel).not.toBeNull();
+      const items = Array.from(panel!.querySelectorAll(".ag-param-item"));
+      expect(items.length).toBeGreaterThanOrEqual(minExpectedItems);
+
+      for (const item of items) {
+        const label = item.querySelector("label.ag-param-item-label");
+        const keyBadge = item.querySelector("code.ag-param-item-key");
+        const bounds = item.querySelector(".ag-param-item-bounds");
+        const desc = item.querySelector("p.ag-param-item-desc");
+
+        expect(label?.textContent?.trim().length).toBeGreaterThan(2);
+        const forId = label?.getAttribute("for");
+        expect(forId).toBeTruthy();
+        expect(document.getElementById(forId!)).not.toBeNull();
+        expect(keyBadge?.textContent?.trim().length).toBeGreaterThan(1);
+        expect(bounds?.textContent?.trim().length).toBeGreaterThan(2);
+        expect(desc?.textContent?.trim().length).toBeGreaterThan(35);
+      }
+
+      // Never reuse ConfigView's .config-item class inside Action Graph
+      expect(panel!.querySelectorAll(".config-item").length).toBe(0);
+    };
+
+    // Tab 1: Heuristics (29 parameters across Mode & Thresholds + Automation & Limits)
+    assertPanelHasDetailedDocs("ag-control-panel", 29);
+    expect(document.getElementById("ag-control-panel")?.textContent).toContain("planner_mode");
+    expect(document.getElementById("ag-control-panel")?.textContent).toContain("auto_throttle_blast_furnace");
+
+    // Tab 2: Config Optimization (34 parameters across Objective & Fleet + Buildings & GA)
+    fireEvent.click(document.getElementById("ag-tab-btn-config-optimizer")!);
+    await waitFor(() => {
+      expect(document.getElementById("ag-co-control-panel")).not.toBeNull();
+    });
+    assertPanelHasDetailedDocs("ag-co-control-panel", 34);
+    expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("central_planet_slot");
+    expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("optimized_building_max_levels.b2");
+    expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("mine and shipyard specializations remain emergent");
+
+    // Tab 3: AI-Planner (16 parameters across Horizon & Spare % + Weights & GA)
+    fireEvent.click(document.getElementById("ag-tab-btn-ai-planner")!);
+    await waitFor(() => {
+      expect(document.getElementById("ag-ai-control-panel")).not.toBeNull();
+    });
+    assertPanelHasDetailedDocs("ag-ai-control-panel", 16);
+    expect(document.getElementById("ag-ai-control-panel")?.textContent).toContain("weekly_discount");
+    expect(document.getElementById("ag-ai-control-panel")?.textContent).toContain("resource_spare_percent.spice");
+    expect(document.getElementById("ag-ai-control-panel")?.textContent).toContain("scarcity_focus");
+
+    // Tab 4: Fleet / Attack Planner (37+ parameters across Combat, Logistics, Scanner, Shipyard)
+    fireEvent.click(document.getElementById("ag-tab-btn-fleet-planner")!);
+    await waitFor(() => {
+      expect(document.getElementById("ag-flt-control-panel")).not.toBeNull();
+    });
+    assertPanelHasDetailedDocs("ag-flt-control-panel", 37);
+    expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("combat_safety_margin");
+    expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("ai_resource_spare_pct");
+    expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("shipyard_targets.starcruiser");
+  });
 });

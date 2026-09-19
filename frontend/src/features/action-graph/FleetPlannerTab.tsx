@@ -11,7 +11,13 @@ import type {
   StrategyConfigData,
 } from "../../types/api";
 import { fmtCompact, fmtInt } from "../../utils/formatters";
+import { ActionGraphParamRow } from "./ActionGraphParamRow";
 import { DagCanvas } from "./DagCanvas";
+import {
+  FLEET_PLANNER_GROUP_SUBTITLES,
+  getShipyardHullDoc,
+  getStrategyParamDoc,
+} from "./paramDocs";
 import {
   SHIP_OPTIONS,
   formatDurationSecondsCompact,
@@ -920,40 +926,33 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
         <div className="ag-panel-body">
           <div className="ag-param-pane" hidden={paramGroupTab !== "combat"}>
             <div className="ag-param-group">
-              <div className="ag-group-title">Combat, Raids &amp; Escape Flights</div>
-              <div className="ag-toggles-stack">
-                <label className="toggle-chip" htmlFor="flt-cfg-allow_raids">
-                  <input
-                    id="flt-cfg-allow_raids"
-                    type="checkbox"
-                    checked={Boolean(draft.booleans.allow_raids)}
-                    onChange={(e) => handleBoolChange("allow_raids", e.target.checked)}
-                  />
-                  <span>Allow automated raids</span>
-                </label>
-                <label className="toggle-chip" htmlFor="flt-cfg-allow_pvp_in_az">
-                  <input
-                    id="flt-cfg-allow_pvp_in_az"
-                    type="checkbox"
-                    checked={Boolean(draft.booleans.allow_pvp_in_az)}
-                    onChange={(e) => handleBoolChange("allow_pvp_in_az", e.target.checked)}
-                  />
-                  <span>Allow PvP targets in AZ</span>
-                </label>
-                <label className="toggle-chip" htmlFor="flt-cfg-allow_fleetsave">
-                  <input
-                    id="flt-cfg-allow_fleetsave"
-                    type="checkbox"
-                    checked={Boolean(draft.booleans.allow_fleetsave)}
-                    onChange={(e) => handleBoolChange("allow_fleetsave", e.target.checked)}
-                  />
-                  <span>Allow escape fleetsave</span>
-                </label>
+              <div className="ag-param-group-head">
+                <h3>Combat, Raids &amp; Escape Flights</h3>
+                <p className="ag-param-group-sub">{FLEET_PLANNER_GROUP_SUBTITLES.combat}</p>
               </div>
+              <div className="ag-param-list">
+                {(["allow_raids", "allow_pvp_in_az", "allow_fleetsave"] as const).map((bKey) => (
+                  <ActionGraphParamRow
+                    key={bKey}
+                    doc={getStrategyParamDoc(bKey)}
+                    htmlFor={`flt-cfg-${bKey}`}
+                    layout="toggle"
+                  >
+                    <input
+                      id={`flt-cfg-${bKey}`}
+                      type="checkbox"
+                      className="config-checkbox"
+                      checked={Boolean(draft.booleans[bKey])}
+                      onChange={(e) => handleBoolChange(bKey, e.target.checked)}
+                    />
+                  </ActionGraphParamRow>
+                ))}
 
-              <div className="ag-param-grid">
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-combat_safety_margin">Combat Safety Margin</label>
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("combat_safety_margin")}
+                  htmlFor="flt-cfg-combat_safety_margin"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-combat_safety_margin"
                     type="number"
@@ -963,9 +962,13 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                     value={draft.numbers.combat_safety_margin}
                     onChange={(e) => handleNumChange("combat_safety_margin", e.target.value)}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-raid_min_loot_spice_eq">Min Raid Loot (SpiceEq)</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("raid_min_loot_spice_eq")}
+                  htmlFor="flt-cfg-raid_min_loot_spice_eq"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-raid_min_loot_spice_eq"
                     type="number"
@@ -975,11 +978,13 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                     value={draft.numbers.raid_min_loot_spice_eq}
                     onChange={(e) => handleNumChange("raid_min_loot_spice_eq", e.target.value)}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-fleet_save_fuel_reserve_spice">
-                    Fleetsave Spice Reserve
-                  </label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("fleet_save_fuel_reserve_spice")}
+                  htmlFor="flt-cfg-fleet_save_fuel_reserve_spice"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-fleet_save_fuel_reserve_spice"
                     type="number"
@@ -991,9 +996,13 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                       handleNumChange("fleet_save_fuel_reserve_spice", e.target.value)
                     }
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-ai_resource_spare_pct">AI Spare Resource Budget (%)</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("ai_resource_spare_pct")}
+                  htmlFor="flt-cfg-ai_resource_spare_pct"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-ai_resource_spare_pct"
                     type="number"
@@ -1003,47 +1012,42 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                     value={draft.numbers.ai_resource_spare_pct}
                     onChange={(e) => handleNumChange("ai_resource_spare_pct", e.target.value)}
                   />
-                </div>
+                </ActionGraphParamRow>
               </div>
             </div>
           </div>
 
           <div className="ag-param-pane" hidden={paramGroupTab !== "logistics"}>
             <div className="ag-param-group">
-              <div className="ag-group-title">Colonization &amp; Inter-Planet Transport</div>
-              <div className="ag-toggles-stack">
-                <label className="toggle-chip" htmlFor="flt-cfg-allow_colonize">
-                  <input
-                    id="flt-cfg-allow_colonize"
-                    type="checkbox"
-                    checked={Boolean(draft.booleans.allow_colonize)}
-                    onChange={(e) => handleBoolChange("allow_colonize", e.target.checked)}
-                  />
-                  <span>Allow auto-colonization</span>
-                </label>
-                <label className="toggle-chip" htmlFor="flt-cfg-allow_transport">
-                  <input
-                    id="flt-cfg-allow_transport"
-                    type="checkbox"
-                    checked={Boolean(draft.booleans.allow_transport)}
-                    onChange={(e) => handleBoolChange("allow_transport", e.target.checked)}
-                  />
-                  <span>Allow inter-planet transport</span>
-                </label>
-                <label className="toggle-chip" htmlFor="flt-cfg-allow_transmitter">
-                  <input
-                    id="flt-cfg-allow_transmitter"
-                    type="checkbox"
-                    checked={Boolean(draft.booleans.allow_transmitter)}
-                    onChange={(e) => handleBoolChange("allow_transmitter", e.target.checked)}
-                  />
-                  <span>Allow transmitter flights</span>
-                </label>
+              <div className="ag-param-group-head">
+                <h3>Colonization &amp; Inter-Planet Transport</h3>
+                <p className="ag-param-group-sub">{FLEET_PLANNER_GROUP_SUBTITLES.logistics}</p>
               </div>
+              <div className="ag-param-list">
+                {(["allow_colonize", "allow_transport", "allow_transmitter"] as const).map(
+                  (bKey) => (
+                    <ActionGraphParamRow
+                      key={bKey}
+                      doc={getStrategyParamDoc(bKey)}
+                      htmlFor={`flt-cfg-${bKey}`}
+                      layout="toggle"
+                    >
+                      <input
+                        id={`flt-cfg-${bKey}`}
+                        type="checkbox"
+                        className="config-checkbox"
+                        checked={Boolean(draft.booleans[bKey])}
+                        onChange={(e) => handleBoolChange(bKey, e.target.checked)}
+                      />
+                    </ActionGraphParamRow>
+                  )
+                )}
 
-              <div className="ag-param-grid">
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-min_colony_fields">Min Colony Fields (300+)</label>
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("min_colony_fields")}
+                  htmlFor="flt-cfg-min_colony_fields"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-min_colony_fields"
                     type="number"
@@ -1053,9 +1057,13 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                     value={draft.numbers.min_colony_fields}
                     onChange={(e) => handleNumChange("min_colony_fields", e.target.value)}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-max_planets">Max Planets Cap</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("max_planets")}
+                  htmlFor="flt-cfg-max_planets"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-max_planets"
                     type="number"
@@ -1065,53 +1073,46 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                     value={draft.numbers.max_planets}
                     onChange={(e) => handleNumChange("max_planets", e.target.value)}
                   />
-                </div>
+                </ActionGraphParamRow>
               </div>
             </div>
           </div>
 
           <div className="ag-param-pane" hidden={paramGroupTab !== "scanner"}>
             <div className="ag-param-group">
-              <div className="ag-group-title">Smart Galaxy Scanner &amp; Spy Slots</div>
-              <div className="ag-toggles-stack">
-                <label className="toggle-chip" htmlFor="flt-cfg-allow_galaxy_scan">
-                  <input
-                    id="flt-cfg-allow_galaxy_scan"
-                    type="checkbox"
-                    checked={Boolean(draft.booleans.allow_galaxy_scan)}
-                    onChange={(e) => handleBoolChange("allow_galaxy_scan", e.target.checked)}
-                  />
-                  <span>Allow smart galaxy scanner</span>
-                </label>
-                <label className="toggle-chip" htmlFor="flt-cfg-galaxy_scan_explore_first">
-                  <input
-                    id="flt-cfg-galaxy_scan_explore_first"
-                    type="checkbox"
-                    checked={Boolean(draft.booleans.galaxy_scan_explore_first)}
-                    onChange={(e) =>
-                      handleBoolChange("galaxy_scan_explore_first", e.target.checked)
-                    }
-                  />
-                  <span>Explore unscanned systems first</span>
-                </label>
-                <label className="toggle-chip" htmlFor="flt-cfg-galaxy_scan_all_galaxies">
-                  <input
-                    id="flt-cfg-galaxy_scan_all_galaxies"
-                    type="checkbox"
-                    checked={Boolean(draft.booleans.galaxy_scan_all_galaxies)}
-                    onChange={(e) =>
-                      handleBoolChange("galaxy_scan_all_galaxies", e.target.checked)
-                    }
-                  />
-                  <span>Sweep all galaxies</span>
-                </label>
+              <div className="ag-param-group-head">
+                <h3>Smart Galaxy Scanner &amp; Spy Slots</h3>
+                <p className="ag-param-group-sub">{FLEET_PLANNER_GROUP_SUBTITLES.scanner}</p>
               </div>
+              <div className="ag-param-list">
+                {(
+                  [
+                    "allow_galaxy_scan",
+                    "galaxy_scan_explore_first",
+                    "galaxy_scan_all_galaxies",
+                  ] as const
+                ).map((bKey) => (
+                  <ActionGraphParamRow
+                    key={bKey}
+                    doc={getStrategyParamDoc(bKey)}
+                    htmlFor={`flt-cfg-${bKey}`}
+                    layout="toggle"
+                  >
+                    <input
+                      id={`flt-cfg-${bKey}`}
+                      type="checkbox"
+                      className="config-checkbox"
+                      checked={Boolean(draft.booleans[bKey])}
+                      onChange={(e) => handleBoolChange(bKey, e.target.checked)}
+                    />
+                  </ActionGraphParamRow>
+                ))}
 
-              <div className="ag-param-grid">
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-galaxy_sweep_interval_seconds">
-                    Sweep Interval (sec)
-                  </label>
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("galaxy_sweep_interval_seconds")}
+                  htmlFor="flt-cfg-galaxy_sweep_interval_seconds"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-galaxy_sweep_interval_seconds"
                     type="number"
@@ -1123,9 +1124,13 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                       handleNumChange("galaxy_sweep_interval_seconds", e.target.value)
                     }
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-galaxy_sweep_pages">Systems / Sweep</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("galaxy_sweep_pages")}
+                  htmlFor="flt-cfg-galaxy_sweep_pages"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-galaxy_sweep_pages"
                     type="number"
@@ -1135,9 +1140,13 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                     value={draft.numbers.galaxy_sweep_pages}
                     onChange={(e) => handleNumChange("galaxy_sweep_pages", e.target.value)}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-galaxy_scan_click_delay_seconds">Click Delay (sec)</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("galaxy_scan_click_delay_seconds")}
+                  htmlFor="flt-cfg-galaxy_scan_click_delay_seconds"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-galaxy_scan_click_delay_seconds"
                     type="number"
@@ -1149,11 +1158,13 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                       handleNumChange("galaxy_scan_click_delay_seconds", e.target.value)
                     }
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-galaxy_scan_click_jitter_seconds">
-                    Click Jitter (sec)
-                  </label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("galaxy_scan_click_jitter_seconds")}
+                  htmlFor="flt-cfg-galaxy_scan_click_jitter_seconds"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-galaxy_scan_click_jitter_seconds"
                     type="number"
@@ -1165,9 +1176,13 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                       handleNumChange("galaxy_scan_click_jitter_seconds", e.target.value)
                     }
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-galaxy_scan_refresh_pct">Refresh Split (%)</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("galaxy_scan_refresh_pct")}
+                  htmlFor="flt-cfg-galaxy_scan_refresh_pct"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-galaxy_scan_refresh_pct"
                     type="number"
@@ -1177,9 +1192,13 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                     value={draft.numbers.galaxy_scan_refresh_pct}
                     onChange={(e) => handleNumChange("galaxy_scan_refresh_pct", e.target.value)}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-reserved_spy_slots">Reserved Spy Fleet Slots</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("reserved_spy_slots")}
+                  htmlFor="flt-cfg-reserved_spy_slots"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-reserved_spy_slots"
                     type="number"
@@ -1189,9 +1208,13 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                     value={draft.numbers.reserved_spy_slots}
                     onChange={(e) => handleNumChange("reserved_spy_slots", e.target.value)}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-galaxy_scan_near_weight">Near Proximity Weight</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("galaxy_scan_near_weight")}
+                  htmlFor="flt-cfg-galaxy_scan_near_weight"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-galaxy_scan_near_weight"
                     type="number"
@@ -1201,9 +1224,13 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                     value={draft.numbers.galaxy_scan_near_weight}
                     onChange={(e) => handleNumChange("galaxy_scan_near_weight", e.target.value)}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-galaxy_scan_attack_weight">Raid History Weight</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("galaxy_scan_attack_weight")}
+                  htmlFor="flt-cfg-galaxy_scan_attack_weight"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-galaxy_scan_attack_weight"
                     type="number"
@@ -1213,9 +1240,13 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                     value={draft.numbers.galaxy_scan_attack_weight}
                     onChange={(e) => handleNumChange("galaxy_scan_attack_weight", e.target.value)}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="flt-cfg-spy_dispatch_planet_id">Spy Dispatch Planet ID</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("spy_dispatch_planet_id")}
+                  htmlFor="flt-cfg-spy_dispatch_planet_id"
+                  layout="inline"
+                >
                   <input
                     id="flt-cfg-spy_dispatch_planet_id"
                     type="number"
@@ -1224,46 +1255,50 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                     value={draft.numbers.spy_dispatch_planet_id}
                     onChange={(e) => handleNumChange("spy_dispatch_planet_id", e.target.value)}
                   />
-                </div>
+                </ActionGraphParamRow>
               </div>
             </div>
           </div>
 
           <div className="ag-param-pane" hidden={paramGroupTab !== "shipyard"}>
             <div className="ag-param-group">
-              <div className="ag-group-title">Shipyard Targets per Hull</div>
-              <div className="ag-toggles-stack">
-                <label className="toggle-chip" htmlFor="flt-cfg-allow_shipyard">
+              <div className="ag-param-group-head">
+                <h3>Shipyard Targets per Hull</h3>
+                <p className="ag-param-group-sub">{FLEET_PLANNER_GROUP_SUBTITLES.shipyard}</p>
+              </div>
+              <div className="ag-param-list">
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("allow_shipyard")}
+                  htmlFor="flt-cfg-allow_shipyard"
+                  layout="toggle"
+                >
                   <input
                     id="flt-cfg-allow_shipyard"
                     type="checkbox"
+                    className="config-checkbox"
                     checked={Boolean(draft.booleans.allow_shipyard)}
                     onChange={(e) => handleBoolChange("allow_shipyard", e.target.checked)}
                   />
-                  <span>Allow shipyard production</span>
-                </label>
-              </div>
+                </ActionGraphParamRow>
 
-              <div className="ag-param-grid">
-                {Object.keys(draft.shipyard_targets).map((slug) => {
-                  const shipMeta = SHIP_OPTIONS.find((s) => s.slug === slug);
-                  return (
-                    <div className="control-field" key={`flt-ship-${slug}`}>
-                      <label htmlFor={`flt-shipyard-${slug}`}>
-                        {shipMeta ? shipMeta.name : slug}
-                      </label>
-                      <input
-                        id={`flt-shipyard-${slug}`}
-                        type="number"
-                        min={0}
-                        max={9999999}
-                        step={1}
-                        value={draft.shipyard_targets[slug] ?? "0"}
-                        onChange={(e) => handleShipyardTargetChange(slug, e.target.value)}
-                      />
-                    </div>
-                  );
-                })}
+                {Object.keys(draft.shipyard_targets).map((slug) => (
+                  <ActionGraphParamRow
+                    key={`flt-ship-${slug}`}
+                    doc={getShipyardHullDoc(slug)}
+                    htmlFor={`flt-shipyard-${slug}`}
+                    layout="inline"
+                  >
+                    <input
+                      id={`flt-shipyard-${slug}`}
+                      type="number"
+                      min={0}
+                      max={9999999}
+                      step={1}
+                      value={draft.shipyard_targets[slug] ?? "0"}
+                      onChange={(e) => handleShipyardTargetChange(slug, e.target.value)}
+                    />
+                  </ActionGraphParamRow>
+                ))}
               </div>
             </div>
           </div>

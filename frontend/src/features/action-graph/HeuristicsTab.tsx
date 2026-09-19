@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
 import { buildClientFallbackActionGraph, useConsole } from "../../context/ConsoleContext";
 import { ActionGraphTabKey, StrategyConfigData } from "../../types/api";
+import { ActionGraphParamRow } from "./ActionGraphParamRow";
 import { DagCanvas } from "./DagCanvas";
+import { getStrategyParamDoc } from "./paramDocs";
 import { computeColonyGateInfo, normalizeUiPlannerMode, sanitizeMainWindowText } from "./plannerHelpers";
 
 const useClientSyncEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
@@ -692,40 +694,56 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
 
         <div className="ag-panel-body">
           <div className="ag-param-pane" id="ag-param-pane-core" hidden={paramTab !== "core"}>
-            <div className="control-field">
-              <label htmlFor="ag-cfg-planner_mode">Active Planner Mode</label>
-              <select
-                id="ag-cfg-planner_mode"
-                value={draftModeNorm}
-                onChange={(e) => {
-                  const v = normalizeUiPlannerMode(e.target.value);
-                  syncDraftValuesFromDom(v);
-                  void runAgSimulation({ explicit: false, modeOverride: v });
-                }}
-              >
-                <option value="priority">priority — Rule-Based Heuristic</option>
-                <option value="ai_planner">ai_planner — AI-Planner (W-Week NPV)</option>
-              </select>
-            </div>
+            <div className="ag-param-group">
+              <div className="ag-param-group-head">
+                <h3>Planner Mode &amp; Doctrine</h3>
+                <p className="ag-param-group-sub">
+                  Choose the active planner engine and strategic doctrine used to preview and execute action sequences.
+                </p>
+              </div>
+              <div className="ag-param-list">
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("planner_mode")}
+                  htmlFor="ag-cfg-planner_mode"
+                  layout="stack"
+                >
+                  <select
+                    id="ag-cfg-planner_mode"
+                    value={draftModeNorm}
+                    onChange={(e) => {
+                      const v = normalizeUiPlannerMode(e.target.value);
+                      syncDraftValuesFromDom(v);
+                      void runAgSimulation({ explicit: false, modeOverride: v });
+                    }}
+                  >
+                    <option value="priority">priority — Rule-Based Heuristic</option>
+                    <option value="ai_planner">ai_planner — AI-Planner (W-Week NPV)</option>
+                  </select>
+                </ActionGraphParamRow>
 
-            <div className="control-field">
-              <label htmlFor="ag-cfg-playstyle">Playstyle Doctrine</label>
-              <select
-                id="ag-cfg-playstyle"
-                value={curPlaystyle}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setDraftValues((prev) => ({ ...prev, playstyle: v }));
-                  setTimeout(() => runAgSimulation({ explicit: false }), 0);
-                }}
-              >
-                <option value="fleeter">fleeter — Combat &amp; Techs</option>
-                <option value="hybrid">hybrid — Balanced</option>
-                <option value="miner">miner — Economy ROI</option>
-                {!knownPlaystyles.includes(curPlaystyle) && curPlaystyle ? (
-                  <option value={curPlaystyle}>{curPlaystyle}</option>
-                ) : null}
-              </select>
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("playstyle")}
+                  htmlFor="ag-cfg-playstyle"
+                  layout="stack"
+                >
+                  <select
+                    id="ag-cfg-playstyle"
+                    value={curPlaystyle}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setDraftValues((prev) => ({ ...prev, playstyle: v }));
+                      setTimeout(() => runAgSimulation({ explicit: false }), 0);
+                    }}
+                  >
+                    <option value="fleeter">fleeter — Combat &amp; Techs</option>
+                    <option value="hybrid">hybrid — Balanced</option>
+                    <option value="miner">miner — Economy ROI</option>
+                    {!knownPlaystyles.includes(curPlaystyle) && curPlaystyle ? (
+                      <option value={curPlaystyle}>{curPlaystyle}</option>
+                    ) : null}
+                  </select>
+                </ActionGraphParamRow>
+              </div>
             </div>
 
             <div className="ag-ai-handoff-card" id="ag-ai-handoff-card">
@@ -767,22 +785,31 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
             </div>
 
             <div className="ag-param-group" id="ag-heuristic-params-group">
-              <h3>Economy &amp; Safety Thresholds</h3>
-              <div className="ag-param-grid">
+              <div className="ag-param-group-head">
+                <h3>Economy &amp; Safety Thresholds</h3>
+                <p className="ag-param-group-sub">
+                  Resource warehouse thresholds, Blast furnace throttling, combat margins, and colony field constraints.
+                </p>
+              </div>
+              <div className="ag-param-list">
                 {(
                   [
-                    ["storage_warn_ratio", "Storage Warn Ratio", 0.1, 0.99, 0.05],
-                    ["blast_pig_iron_max_share", "Max b2 Pig Share", 0.1, 1.0, 0.05],
-                    ["combat_safety_margin", "Combat Margin (≥1.0)", 1.0, 1000.0, 0.1],
-                    ["raid_min_loot_spice_eq", "Min Raid Loot (SpEq)", 0, undefined, 100],
-                    ["hot_planet_solar_temp_threshold", "Solar Temp (°C)", -273, 1000, 5],
-                    ["min_free_fields_warning", "Min Free Fields", 1, 1000, 1],
-                    ["min_colony_fields", "Min Colony Fields", 50, 600, 10],
-                    ["max_planets", "Max Planets Cap", 1, 50, 1],
+                    ["storage_warn_ratio", 0.1, 0.99, 0.05],
+                    ["blast_pig_iron_max_share", 0.1, 1.0, 0.05],
+                    ["combat_safety_margin", 1.0, 1000.0, 0.1],
+                    ["raid_min_loot_spice_eq", 0, undefined, 100],
+                    ["hot_planet_solar_temp_threshold", -273, 1000, 5],
+                    ["min_free_fields_warning", 1, 1000, 1],
+                    ["min_colony_fields", 50, 600, 10],
+                    ["max_planets", 1, 50, 1],
                   ] as const
-                ).map(([key, label, minV, maxV, stepV]) => (
-                  <div key={key} className="control-field">
-                    <label htmlFor={`ag-cfg-${key}`}>{label}</label>
+                ).map(([key, minV, maxV, stepV]) => (
+                  <ActionGraphParamRow
+                    key={key}
+                    doc={getStrategyParamDoc(key)}
+                    htmlFor={`ag-cfg-${key}`}
+                    layout="inline"
+                  >
                     <input
                       type="number"
                       id={`ag-cfg-${key}`}
@@ -795,74 +822,83 @@ export const HeuristicsTab: React.FC<HeuristicsTabProps> = ({ hidden = false, on
                         scheduleDebouncedSim();
                       }}
                     />
-                  </div>
+                  </ActionGraphParamRow>
                 ))}
               </div>
             </div>
           </div>
 
           <div className="ag-param-pane" id="ag-param-pane-scope" hidden={paramTab !== "scope"}>
-            <div className="ag-param-grid">
-              {(
-                [
-                  ["fleet_save_fuel_reserve_spice", "Escape Fuel Reserve", 0, undefined, 50],
-                  ["action_batch_interval_seconds", "Batch & Refresh Interval (s)", 5, 86400, 5],
-                  ["galaxy_scan_click_delay_seconds", "Galaxy Scan Click Delay (s)", 0.2, 60, 0.1],
-                  ["galaxy_scan_click_jitter_seconds", "Galaxy Scan Jitter (s)", 0, 30, 0.1],
-                  ["max_actions_per_hour", "Max Actions / Hour", 1, 100000, 1],
-                  ["reserved_spy_slots", "Reserved Spy Slots", 0, 10, 1],
-                ] as const
-              ).map(([key, label, minV, maxV, stepV]) => (
-                <div key={key} className="control-field">
-                  <label htmlFor={`ag-cfg-${key}`}>{label}</label>
-                  <input
-                    type="number"
-                    id={`ag-cfg-${key}`}
-                    min={minV}
-                    max={maxV}
-                    step={stepV}
-                    value={String(draftValues[key] ?? AG_NUM_DEFAULTS[key])}
-                    onChange={(e) => {
-                      setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
-                      scheduleDebouncedSim();
-                    }}
-                  />
-                </div>
-              ))}
+            <div className="ag-param-group">
+              <div className="ag-param-group-head">
+                <h3>Pacing, Reserves &amp; Limits</h3>
+                <p className="ag-param-group-sub">
+                  Batch refresh cadence, galaxy scanner humanization delays, hourly action rate limit, and spy/escape reserves.
+                </p>
+              </div>
+              <div className="ag-param-list">
+                {(
+                  [
+                    ["fleet_save_fuel_reserve_spice", 0, undefined, 50],
+                    ["action_batch_interval_seconds", 5, 86400, 5],
+                    ["galaxy_scan_click_delay_seconds", 0.2, 60, 0.1],
+                    ["galaxy_scan_click_jitter_seconds", 0, 30, 0.1],
+                    ["max_actions_per_hour", 1, 100000, 1],
+                    ["reserved_spy_slots", 0, 10, 1],
+                  ] as const
+                ).map(([key, minV, maxV, stepV]) => (
+                  <ActionGraphParamRow
+                    key={key}
+                    doc={getStrategyParamDoc(key)}
+                    htmlFor={`ag-cfg-${key}`}
+                    layout="inline"
+                  >
+                    <input
+                      type="number"
+                      id={`ag-cfg-${key}`}
+                      min={minV}
+                      max={maxV}
+                      step={stepV}
+                      value={String(draftValues[key] ?? AG_NUM_DEFAULTS[key])}
+                      onChange={(e) => {
+                        setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
+                        scheduleDebouncedSim();
+                      }}
+                    />
+                  </ActionGraphParamRow>
+                ))}
+              </div>
             </div>
 
-            <div className="ag-toggles-stack">
-              {(
-                [
-                  ["auto_throttle_blast_furnace", "Auto-pause Blast furnace (0%)"],
-                  ["merchant_mode", "Merchant Mode (Skip b2)"],
-                  ["allow_research", "Auto Research"],
-                  ["allow_shipyard", "Auto Shipyard"],
-                  ["allow_multi_planet", "Multi-Planet Planning"],
-                  ["allow_fleetsave", "P0 Auto Escape Flight"],
-                  ["allow_galaxy_scan", "Galaxy Scanner"],
-                  ["allow_raids", "Auto Raids (Inactive/Spacia)"],
-                  ["allow_pvp_in_az", "Allow PvP inside AZ"],
-                  ["allow_colonize", "Auto Colonize"],
-                  ["allow_transport", "Auto Inter-Planet Transport"],
-                  ["allow_transmitter", "Daily Free Transmitter"],
-                  ["forbid_planetary_solar", "Forbid Solar on Planets (Asteroid Only)"],
-                ] as const
-              ).map(([bKey, label]) => (
-                <label key={bKey} className="toggle-chip">
-                  <input
-                    type="checkbox"
-                    id={`ag-cfg-${bKey}`}
-                    checked={Boolean(draftValues[bKey])}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      setDraftValues((prev) => ({ ...prev, [bKey]: checked }));
-                      setTimeout(() => runAgSimulation({ explicit: false }), 0);
-                    }}
-                  />{" "}
-                  {label}
-                </label>
-              ))}
+            <div className="ag-param-group">
+              <div className="ag-param-group-head">
+                <h3>Automation Capabilities</h3>
+                <p className="ag-param-group-sub">
+                  Master switches controlling which autonomous build, research, scanning, combat, and logistics systems may run.
+                </p>
+              </div>
+              <div className="ag-param-list">
+                {AG_BOOL_FIELDS.map((bKey) => (
+                  <ActionGraphParamRow
+                    key={bKey}
+                    doc={getStrategyParamDoc(bKey)}
+                    htmlFor={`ag-cfg-${bKey}`}
+                    layout="toggle"
+                  >
+                    <input
+                      type="checkbox"
+                      className="config-checkbox"
+                      id={`ag-cfg-${bKey}`}
+                      checked={Boolean(draftValues[bKey])}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setDraftValues((prev) => ({ ...prev, [bKey]: checked }));
+                        setTimeout(() => runAgSimulation({ explicit: false }), 0);
+                      }}
+                    />
+                  </ActionGraphParamRow>
+                ))}
+              </div>
             </div>
           </div>
         </div>

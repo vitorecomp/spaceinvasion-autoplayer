@@ -11,6 +11,14 @@ import type {
   PlannerJobState,
 } from "../../types/api";
 import { fmtCompact, fmtInt, fmtShortDateTime } from "../../utils/formatters";
+import { ActionGraphParamRow } from "./ActionGraphParamRow";
+import {
+  CONFIG_OPTIMIZER_GROUP_SUBTITLES,
+  CONFIG_OPTIMIZER_MIN_FLEET_DOCS,
+  CONFIG_OPTIMIZER_OPT_MAX_DOCS,
+  CONFIG_OPTIMIZER_PARAM_DOCS,
+  getConfigOptimizerMiscDoc,
+} from "./paramDocs";
 import {
   BUILDING_NAMES,
   BUILDING_SHORT_NAMES,
@@ -1098,125 +1106,152 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
 
         <div className="ag-panel-body">
           <div className="ag-param-pane" hidden={paramSubTab !== "core"}>
-            <div className="control-field">
-              <label htmlFor="co-param-target_ship_key">Target Ship (Maximize / Month)</label>
-              <select
-                id="co-param-target_ship_key"
-                value={draft.target_ship_key}
-                onChange={(e) => {
-                  setDraftDirty(true);
-                  setDraft((prev) => ({ ...prev, target_ship_key: e.target.value }));
-                }}
-              >
-                {SHIP_OPTIONS.map((s) => (
-                  <option key={s.key} value={s.key}>
-                    {`${s.key} — ${s.name}`}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <div className="ag-param-group">
+              <div className="ag-param-group-head">
+                <h3>Objective &amp; Empire Constraints</h3>
+                <p className="ag-param-group-sub">{CONFIG_OPTIMIZER_GROUP_SUBTITLES.objective}</p>
+              </div>
+              <div className="ag-param-list">
+                <ActionGraphParamRow
+                  doc={CONFIG_OPTIMIZER_PARAM_DOCS.target_ship_key}
+                  htmlFor="co-param-target_ship_key"
+                  layout="stack"
+                >
+                  <select
+                    id="co-param-target_ship_key"
+                    value={draft.target_ship_key}
+                    onChange={(e) => {
+                      setDraftDirty(true);
+                      setDraft((prev) => ({ ...prev, target_ship_key: e.target.value }));
+                    }}
+                  >
+                    {SHIP_OPTIONS.map((s) => (
+                      <option key={s.key} value={s.key}>
+                        {`${s.key} — ${s.name}`}
+                      </option>
+                    ))}
+                  </select>
+                </ActionGraphParamRow>
 
-            <div className="ag-param-grid">
-              <div className="control-field">
-                <label htmlFor="co-param-production_month_days">Month Days</label>
-                <input
-                  type="number"
-                  id="co-param-production_month_days"
-                  min={1}
-                  max={365}
-                  step={1}
-                  value={draft.production_month_days}
-                  onChange={(e) => {
-                    setDraftDirty(true);
-                    setDraft((prev) => ({ ...prev, production_month_days: e.target.value }));
-                  }}
-                />
-              </div>
-              <div className="control-field">
-                <label htmlFor="co-param-research_percent_of_universe_max">Research % Uni Max</label>
-                <input
-                  type="number"
-                  id="co-param-research_percent_of_universe_max"
-                  min={0}
-                  max={200}
-                  step={5}
-                  value={draft.research_percent_of_universe_max}
-                  onChange={(e) => {
-                    setDraftDirty(true);
-                    setDraft((prev) => ({
-                      ...prev,
-                      research_percent_of_universe_max: e.target.value,
-                    }));
-                  }}
-                />
-              </div>
-              <div className="control-field">
-                <label htmlFor="co-param-warehouse_hours_of_production">Warehouse Hours</label>
-                <input
-                  type="number"
-                  id="co-param-warehouse_hours_of_production"
-                  min={0}
-                  max={720}
-                  step={1}
-                  value={draft.warehouse_hours_of_production}
-                  onChange={(e) => {
-                    setDraftDirty(true);
-                    setDraft((prev) => ({
-                      ...prev,
-                      warehouse_hours_of_production: e.target.value,
-                    }));
-                  }}
-                />
-              </div>
-              <div className="control-field">
-                <label htmlFor="co-param-central_planet_slot">Central Planet Slot</label>
-                <input
-                  type="number"
-                  id="co-param-central_planet_slot"
-                  min={1}
-                  max={50}
-                  step={1}
-                  value={draft.central_planet_slot}
-                  onChange={(e) => {
-                    setDraftDirty(true);
-                    setDraft((prev) => ({ ...prev, central_planet_slot: e.target.value }));
-                  }}
-                />
-              </div>
-              <div className="control-field">
-                <label htmlFor="co-param-central_planet_min_warehouse_level">
-                  Central Min WH Lvl
-                </label>
-                <input
-                  type="number"
-                  id="co-param-central_planet_min_warehouse_level"
-                  min={0}
-                  max={50}
-                  step={1}
-                  value={draft.central_planet_min_warehouse_level}
-                  onChange={(e) => {
-                    setDraftDirty(true);
-                    setDraft((prev) => ({
-                      ...prev,
-                      central_planet_min_warehouse_level: e.target.value,
-                    }));
-                  }}
-                />
+                <ActionGraphParamRow
+                  doc={CONFIG_OPTIMIZER_PARAM_DOCS.production_month_days}
+                  htmlFor="co-param-production_month_days"
+                  layout="inline"
+                >
+                  <input
+                    type="number"
+                    id="co-param-production_month_days"
+                    min={1}
+                    max={365}
+                    step={1}
+                    value={draft.production_month_days}
+                    onChange={(e) => {
+                      setDraftDirty(true);
+                      setDraft((prev) => ({ ...prev, production_month_days: e.target.value }));
+                    }}
+                  />
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={CONFIG_OPTIMIZER_PARAM_DOCS.research_percent_of_universe_max}
+                  htmlFor="co-param-research_percent_of_universe_max"
+                  layout="inline"
+                >
+                  <input
+                    type="number"
+                    id="co-param-research_percent_of_universe_max"
+                    min={0}
+                    max={200}
+                    step={5}
+                    value={draft.research_percent_of_universe_max}
+                    onChange={(e) => {
+                      setDraftDirty(true);
+                      setDraft((prev) => ({
+                        ...prev,
+                        research_percent_of_universe_max: e.target.value,
+                      }));
+                    }}
+                  />
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={CONFIG_OPTIMIZER_PARAM_DOCS.warehouse_hours_of_production}
+                  htmlFor="co-param-warehouse_hours_of_production"
+                  layout="inline"
+                >
+                  <input
+                    type="number"
+                    id="co-param-warehouse_hours_of_production"
+                    min={0}
+                    max={720}
+                    step={1}
+                    value={draft.warehouse_hours_of_production}
+                    onChange={(e) => {
+                      setDraftDirty(true);
+                      setDraft((prev) => ({
+                        ...prev,
+                        warehouse_hours_of_production: e.target.value,
+                      }));
+                    }}
+                  />
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={CONFIG_OPTIMIZER_PARAM_DOCS.central_planet_slot}
+                  htmlFor="co-param-central_planet_slot"
+                  layout="inline"
+                >
+                  <input
+                    type="number"
+                    id="co-param-central_planet_slot"
+                    min={1}
+                    max={50}
+                    step={1}
+                    value={draft.central_planet_slot}
+                    onChange={(e) => {
+                      setDraftDirty(true);
+                      setDraft((prev) => ({ ...prev, central_planet_slot: e.target.value }));
+                    }}
+                  />
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={CONFIG_OPTIMIZER_PARAM_DOCS.central_planet_min_warehouse_level}
+                  htmlFor="co-param-central_planet_min_warehouse_level"
+                  layout="inline"
+                >
+                  <input
+                    type="number"
+                    id="co-param-central_planet_min_warehouse_level"
+                    min={0}
+                    max={50}
+                    step={1}
+                    value={draft.central_planet_min_warehouse_level}
+                    onChange={(e) => {
+                      setDraftDirty(true);
+                      setDraft((prev) => ({
+                        ...prev,
+                        central_planet_min_warehouse_level: e.target.value,
+                      }));
+                    }}
+                  />
+                </ActionGraphParamRow>
               </div>
             </div>
 
             <div className="ag-param-group">
-              <h3>Min Fleet per Planet</h3>
-              <div className="ag-param-grid">
-                {(
-                  [
-                    ["s2", "s2 Large Transport"],
-                    ["s10", "s10 Spy Probe"],
-                    ["s11", "s11 Recycler"],
-                  ] as const
-                ).map(([sk, label]) => (
-                  <div key={sk} className="control-field">
-                    <label htmlFor={`co-param-min_fleet-${sk}`}>{label}</label>
+              <div className="ag-param-group-head">
+                <h3>Min Fleet per Planet</h3>
+                <p className="ag-param-group-sub">{CONFIG_OPTIMIZER_GROUP_SUBTITLES.minFleet}</p>
+              </div>
+              <div className="ag-param-list">
+                {(["s2", "s10", "s11"] as const).map((sk) => (
+                  <ActionGraphParamRow
+                    key={sk}
+                    doc={CONFIG_OPTIMIZER_MIN_FLEET_DOCS[sk]}
+                    htmlFor={`co-param-min_fleet-${sk}`}
+                    layout="inline"
+                  >
                     <input
                       type="number"
                       id={`co-param-min_fleet-${sk}`}
@@ -1235,39 +1270,57 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                         }));
                       }}
                     />
-                  </div>
+                  </ActionGraphParamRow>
                 ))}
               </div>
             </div>
 
-            <div className="ag-toggles-stack">
-              <label className="toggle-chip">
-                <input
-                  type="checkbox"
-                  id="co-param-pad_generic_colonies"
-                  checked={draft.pad_generic_colonies}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    setDraftDirty(true);
-                    setDraft((prev) => ({ ...prev, pad_generic_colonies: checked }));
-                  }}
-                />
-                <span>
-                  {`Pad < ${gate.maxPlanets}/${gate.maxPlanets} missing slots with 300-field generic previews (${gate.coloniesOwned}/${gate.maxPlanets} owned)`}
-                </span>
-              </label>
+            <div className="ag-param-group">
+              <div className="ag-param-group-head">
+                <h3>Colony Slot Preview</h3>
+                <p className="ag-param-group-sub">
+                  {CONFIG_OPTIMIZER_GROUP_SUBTITLES.previewScope}
+                </p>
+              </div>
+              <div className="ag-param-list">
+                <ActionGraphParamRow
+                  doc={CONFIG_OPTIMIZER_PARAM_DOCS.pad_generic_colonies}
+                  htmlFor="co-param-pad_generic_colonies"
+                  layout="toggle"
+                  titleOverride={`Pad < ${gate.maxPlanets}/${gate.maxPlanets} Missing Slots (${gate.coloniesOwned}/${gate.maxPlanets} Owned)`}
+                >
+                  <input
+                    type="checkbox"
+                    className="config-checkbox"
+                    id="co-param-pad_generic_colonies"
+                    checked={draft.pad_generic_colonies}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setDraftDirty(true);
+                      setDraft((prev) => ({ ...prev, pad_generic_colonies: checked }));
+                    }}
+                  />
+                </ActionGraphParamRow>
+              </div>
             </div>
           </div>
 
           <div className="ag-param-pane" hidden={paramSubTab !== "buildings"}>
             <div className="ag-param-group">
-              <h3>Optimized Building Max Caps</h3>
-              <div className="ag-param-grid">
+              <div className="ag-param-group-head">
+                <h3>Optimized Building Max Caps</h3>
+                <p className="ag-param-group-sub">
+                  {CONFIG_OPTIMIZER_GROUP_SUBTITLES.optimizedCaps}
+                </p>
+              </div>
+              <div className="ag-param-list">
                 {OPTIMIZED_BUILDING_KEYS.map((bk) => (
-                  <div key={bk} className="control-field">
-                    <label htmlFor={`co-param-opt_max-${bk}`}>
-                      {`${bk} ${BUILDING_SHORT_NAMES[bk] || bk}`}
-                    </label>
+                  <ActionGraphParamRow
+                    key={bk}
+                    doc={CONFIG_OPTIMIZER_OPT_MAX_DOCS[bk]}
+                    htmlFor={`co-param-opt_max-${bk}`}
+                    layout="inline"
+                  >
                     <input
                       type="number"
                       id={`co-param-opt_max-${bk}`}
@@ -1286,19 +1339,24 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                         }));
                       }}
                     />
-                  </div>
+                  </ActionGraphParamRow>
                 ))}
               </div>
             </div>
 
             <div className="ag-param-group">
-              <h3>Fixed / Minimum Misc Levels</h3>
-              <div className="ag-param-grid">
+              <div className="ag-param-group-head">
+                <h3>Fixed / Minimum Misc Levels</h3>
+                <p className="ag-param-group-sub">{CONFIG_OPTIMIZER_GROUP_SUBTITLES.miscLevels}</p>
+              </div>
+              <div className="ag-param-list">
                 {MISC_BUILDING_KEYS.map((bk) => (
-                  <div key={bk} className="control-field">
-                    <label htmlFor={`co-param-misc-${bk}`}>
-                      {`${bk} ${BUILDING_SHORT_NAMES[bk] || bk}`}
-                    </label>
+                  <ActionGraphParamRow
+                    key={bk}
+                    doc={getConfigOptimizerMiscDoc(bk)}
+                    htmlFor={`co-param-misc-${bk}`}
+                    layout="inline"
+                  >
                     <input
                       type="number"
                       id={`co-param-misc-${bk}`}
@@ -1317,16 +1375,22 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                         }));
                       }}
                     />
-                  </div>
+                  </ActionGraphParamRow>
                 ))}
               </div>
             </div>
 
             <div className="ag-param-group">
-              <h3>GA Search Settings</h3>
-              <div className="ag-param-grid">
-                <div className="control-field">
-                  <label htmlFor="co-param-ga_population_size">GA Population</label>
+              <div className="ag-param-group-head">
+                <h3>GA Search Settings</h3>
+                <p className="ag-param-group-sub">{CONFIG_OPTIMIZER_GROUP_SUBTITLES.gaSearch}</p>
+              </div>
+              <div className="ag-param-list">
+                <ActionGraphParamRow
+                  doc={CONFIG_OPTIMIZER_PARAM_DOCS.ga_population_size}
+                  htmlFor="co-param-ga_population_size"
+                  layout="inline"
+                >
                   <input
                     type="number"
                     id="co-param-ga_population_size"
@@ -1339,9 +1403,13 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                       setDraft((prev) => ({ ...prev, ga_population_size: e.target.value }));
                     }}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="co-param-ga_generations">GA Generations</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={CONFIG_OPTIMIZER_PARAM_DOCS.ga_generations}
+                  htmlFor="co-param-ga_generations"
+                  layout="inline"
+                >
                   <input
                     type="number"
                     id="co-param-ga_generations"
@@ -1354,9 +1422,13 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                       setDraft((prev) => ({ ...prev, ga_generations: e.target.value }));
                     }}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="co-param-ga_random_seed">GA Seed</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={CONFIG_OPTIMIZER_PARAM_DOCS.ga_random_seed}
+                  htmlFor="co-param-ga_random_seed"
+                  layout="inline"
+                >
                   <input
                     type="number"
                     id="co-param-ga_random_seed"
@@ -1367,7 +1439,7 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                       setDraft((prev) => ({ ...prev, ga_random_seed: e.target.value }));
                     }}
                   />
-                </div>
+                </ActionGraphParamRow>
               </div>
             </div>
           </div>

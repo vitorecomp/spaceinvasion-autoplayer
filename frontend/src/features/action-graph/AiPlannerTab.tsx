@@ -11,7 +11,13 @@ import type {
   PlannerJobState,
 } from "../../types/api";
 import { fmtCompact, fmtInt } from "../../utils/formatters";
+import { ActionGraphParamRow } from "./ActionGraphParamRow";
 import { DagCanvas } from "./DagCanvas";
+import {
+  AI_PLANNER_GROUP_SUBTITLES,
+  AI_PLANNER_PARAM_DOCS,
+  AI_PLANNER_SPARE_DOCS,
+} from "./paramDocs";
 import {
   AiPlannerDraft,
   DEFAULT_AI_PLANNER_DRAFT,
@@ -998,52 +1004,65 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
 
         <div className="ag-panel-body">
           <div className="ag-param-pane" hidden={paramSubTab !== "horizon"}>
-            <div className="ag-param-grid">
-              <div className="control-field">
-                <label htmlFor="ai-param-reward_weeks">Reward Weeks (W)</label>
-                <input
-                  type="number"
-                  id="ai-param-reward_weeks"
-                  min={1}
-                  max={104}
-                  step={1}
-                  value={draft.reward_weeks}
-                  onChange={(e) => {
-                    setDraftDirty(true);
-                    setDraft((prev) => ({ ...prev, reward_weeks: e.target.value }));
-                  }}
-                />
+            <div className="ag-param-group">
+              <div className="ag-param-group-head">
+                <h3>Reward Horizon &amp; Discounting</h3>
+                <p className="ag-param-group-sub">{AI_PLANNER_GROUP_SUBTITLES.horizon}</p>
               </div>
-              <div className="control-field">
-                <label htmlFor="ai-param-weekly_discount">Weekly Discount (γ)</label>
-                <input
-                  type="number"
-                  id="ai-param-weekly_discount"
-                  min={0.05}
-                  max={1.0}
-                  step={0.05}
-                  value={draft.weekly_discount}
-                  onChange={(e) => {
-                    setDraftDirty(true);
-                    setDraft((prev) => ({ ...prev, weekly_discount: e.target.value }));
-                  }}
-                />
+              <div className="ag-param-list">
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.reward_weeks}
+                  htmlFor="ai-param-reward_weeks"
+                  layout="inline"
+                >
+                  <input
+                    type="number"
+                    id="ai-param-reward_weeks"
+                    min={1}
+                    max={104}
+                    step={1}
+                    value={draft.reward_weeks}
+                    onChange={(e) => {
+                      setDraftDirty(true);
+                      setDraft((prev) => ({ ...prev, reward_weeks: e.target.value }));
+                    }}
+                  />
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.weekly_discount}
+                  htmlFor="ai-param-weekly_discount"
+                  layout="inline"
+                >
+                  <input
+                    type="number"
+                    id="ai-param-weekly_discount"
+                    min={0.05}
+                    max={1.0}
+                    step={0.05}
+                    value={draft.weekly_discount}
+                    onChange={(e) => {
+                      setDraftDirty(true);
+                      setDraft((prev) => ({ ...prev, weekly_discount: e.target.value }));
+                    }}
+                  />
+                </ActionGraphParamRow>
               </div>
             </div>
 
             <div className="ag-param-group">
-              <h3>Per-Resource Spare % (Fleet &amp; Raids)</h3>
-              <div className="ag-param-grid">
-                {(
-                  [
-                    ["pig_iron", "Pig Iron Spare %"],
-                    ["metal", "Metal Spare %"],
-                    ["kryptonite", "Kryptonite Spare %"],
-                    ["spice", "Spice Spare %"],
-                  ] as const
-                ).map(([rk, label]) => (
-                  <div key={rk} className="control-field">
-                    <label htmlFor={`ai-param-spare-${rk}`}>{label}</label>
+              <div className="ag-param-group-head">
+                <h3>Per-Resource Spare % (Fleet &amp; Raids)</h3>
+                <p className="ag-param-group-sub">{AI_PLANNER_GROUP_SUBTITLES.sparePct}</p>
+              </div>
+              <div className="ag-param-list">
+                {(["pig_iron", "metal", "kryptonite", "spice"] as const).map((rk) => (
+                  <ActionGraphParamRow
+                    key={rk}
+                    doc={AI_PLANNER_SPARE_DOCS[rk]}
+                    htmlFor={`ai-param-spare-${rk}`}
+                    layout="inline"
+                  >
                     <input
                       type="number"
                       id={`ai-param-spare-${rk}`}
@@ -1062,13 +1081,16 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                         }));
                       }}
                     />
-                  </div>
+                  </ActionGraphParamRow>
                 ))}
               </div>
             </div>
 
             <div className="ag-param-group">
-              <h3>Attack Telemetry &amp; Optional Overrides</h3>
+              <div className="ag-param-group-head">
+                <h3>Attack Telemetry &amp; Optional Overrides</h3>
+                <p className="ag-param-group-sub">{AI_PLANNER_GROUP_SUBTITLES.telemetry}</p>
+              </div>
               <div className="ag-telemetry-box tabular" id="ai-sqlite-telemetry-box">
                 <div>
                   {`Median Loot: ${medianLoot !== null ? `${fmtInt(Math.round(medianLoot))} SpEq` : "Fallback defaults"}`}
@@ -1077,11 +1099,12 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                   {`Median RT: ${formatDurationSecondsCompact(medianRtSec)} · Samples: ${fmtInt(Math.round(safeFiniteNumber(telemetry.sample_count, 0) ?? 0))}`}
                 </div>
               </div>
-              <div className="ag-param-grid">
-                <div className="control-field">
-                  <label htmlFor="ai-param-fleet_command_center_level">
-                    b10 Override (Blank=Auto)
-                  </label>
+              <div className="ag-param-list">
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.fleet_command_center_level}
+                  htmlFor="ai-param-fleet_command_center_level"
+                  layout="inline"
+                >
                   <input
                     type="number"
                     id="ai-param-fleet_command_center_level"
@@ -1098,9 +1121,13 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                       }));
                     }}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="ai-param-attacks_per_day">Attacks/Day (Blank=Auto)</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.attacks_per_day}
+                  htmlFor="ai-param-attacks_per_day"
+                  layout="inline"
+                >
                   <input
                     type="number"
                     id="ai-param-attacks_per_day"
@@ -1113,35 +1140,42 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                       setDraft((prev) => ({ ...prev, attacks_per_day: e.target.value }));
                     }}
                   />
-                </div>
-              </div>
-            </div>
+                </ActionGraphParamRow>
 
-            <div className="ag-toggles-stack">
-              <label className="toggle-chip">
-                <input
-                  type="checkbox"
-                  id="ai-param-pad_generic_colonies"
-                  checked={draft.pad_generic_colonies}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    setDraftDirty(true);
-                    setDraft((prev) => ({ ...prev, pad_generic_colonies: checked }));
-                  }}
-                />
-                <span>
-                  {`Pad < ${gate.maxPlanets}/${gate.maxPlanets} missing slots in preview (${gate.coloniesOwned}/${gate.maxPlanets} owned)`}
-                </span>
-              </label>
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.pad_generic_colonies}
+                  htmlFor="ai-param-pad_generic_colonies"
+                  layout="toggle"
+                  titleOverride={`Pad < ${gate.maxPlanets}/${gate.maxPlanets} Missing Slots in Preview (${gate.coloniesOwned}/${gate.maxPlanets} Owned)`}
+                >
+                  <input
+                    type="checkbox"
+                    className="config-checkbox"
+                    id="ai-param-pad_generic_colonies"
+                    checked={draft.pad_generic_colonies}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setDraftDirty(true);
+                      setDraft((prev) => ({ ...prev, pad_generic_colonies: checked }));
+                    }}
+                  />
+                </ActionGraphParamRow>
+              </div>
             </div>
           </div>
 
           <div className="ag-param-pane" hidden={paramSubTab !== "weights"}>
             <div className="ag-param-group">
-              <h3>Path Strategy Weights</h3>
-              <div className="ag-param-grid">
-                <div className="control-field">
-                  <label htmlFor="ai-param-scarcity_focus">Scarcity Focus</label>
+              <div className="ag-param-group-head">
+                <h3>Path Strategy Weights</h3>
+                <p className="ag-param-group-sub">{AI_PLANNER_GROUP_SUBTITLES.weights}</p>
+              </div>
+              <div className="ag-param-list">
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.scarcity_focus}
+                  htmlFor="ai-param-scarcity_focus"
+                  layout="inline"
+                >
                   <input
                     type="number"
                     id="ai-param-scarcity_focus"
@@ -1154,9 +1188,13 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                       setDraft((prev) => ({ ...prev, scarcity_focus: e.target.value }));
                     }}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="ai-param-critical_queue_share">Critical Queue Share</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.critical_queue_share}
+                  htmlFor="ai-param-critical_queue_share"
+                  layout="inline"
+                >
                   <input
                     type="number"
                     id="ai-param-critical_queue_share"
@@ -1169,9 +1207,13 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                       setDraft((prev) => ({ ...prev, critical_queue_share: e.target.value }));
                     }}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="ai-param-patience">Patience</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.patience}
+                  htmlFor="ai-param-patience"
+                  layout="inline"
+                >
                   <input
                     type="number"
                     id="ai-param-patience"
@@ -1184,9 +1226,13 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                       setDraft((prev) => ({ ...prev, patience: e.target.value }));
                     }}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="ai-param-speed_weight">Speed Weight</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.speed_weight}
+                  htmlFor="ai-param-speed_weight"
+                  layout="inline"
+                >
                   <input
                     type="number"
                     id="ai-param-speed_weight"
@@ -1199,15 +1245,21 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                       setDraft((prev) => ({ ...prev, speed_weight: e.target.value }));
                     }}
                   />
-                </div>
+                </ActionGraphParamRow>
               </div>
             </div>
 
             <div className="ag-param-group">
-              <h3>GA Path Search</h3>
-              <div className="ag-param-grid">
-                <div className="control-field">
-                  <label htmlFor="ai-param-ga_population_size">GA Population</label>
+              <div className="ag-param-group-head">
+                <h3>GA Path Search</h3>
+                <p className="ag-param-group-sub">{AI_PLANNER_GROUP_SUBTITLES.gaSearch}</p>
+              </div>
+              <div className="ag-param-list">
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.ga_population_size}
+                  htmlFor="ai-param-ga_population_size"
+                  layout="inline"
+                >
                   <input
                     type="number"
                     id="ai-param-ga_population_size"
@@ -1220,9 +1272,13 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                       setDraft((prev) => ({ ...prev, ga_population_size: e.target.value }));
                     }}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="ai-param-ga_generations">GA Generations</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.ga_generations}
+                  htmlFor="ai-param-ga_generations"
+                  layout="inline"
+                >
                   <input
                     type="number"
                     id="ai-param-ga_generations"
@@ -1235,9 +1291,13 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                       setDraft((prev) => ({ ...prev, ga_generations: e.target.value }));
                     }}
                   />
-                </div>
-                <div className="control-field">
-                  <label htmlFor="ai-param-ga_random_seed">GA Seed</label>
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.ga_random_seed}
+                  htmlFor="ai-param-ga_random_seed"
+                  layout="inline"
+                >
                   <input
                     type="number"
                     id="ai-param-ga_random_seed"
@@ -1248,7 +1308,7 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                       setDraft((prev) => ({ ...prev, ga_random_seed: e.target.value }));
                     }}
                   />
-                </div>
+                </ActionGraphParamRow>
               </div>
             </div>
           </div>

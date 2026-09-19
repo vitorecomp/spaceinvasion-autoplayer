@@ -586,6 +586,10 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
   },
 ];
 
+export const CONFIG_ITEM_BY_KEY: Record<string, ConfigItemSpec> = Object.fromEntries(
+  CONFIG_GROUPS.flatMap((g) => g.items.map((item) => [item.key, item]))
+);
+
 export const CONFIG_BOOL_KEYS: string[] = CONFIG_GROUPS.flatMap((g) =>
   g.items.filter((i) => i.control === "checkbox").map((i) => i.key)
 );
