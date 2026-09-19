@@ -40,14 +40,14 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
         key: "planner_mode",
         id: "cfg-planner_mode",
         title: "Planner Mode",
-        boundsLabel: "default: priority · priority | ga_nn",
+        boundsLabel: "default: priority · priority | ai_planner",
         description:
-          "Selects between the deterministic rule-based P0–P3 heuristic pipeline (priority) and evolutionary chromosome search blended with the 46-feature value network (ga_nn). Saved immediately to SQLite so both Game API and Commander ticks share the active planner.",
+          "Selects between the deterministic rule-based P0–P3 heuristic pipeline (priority) and the full-horizon sequential rollout optimizer (ai_planner, auto-unlocks for live bot execution at 11/11 colonies). Saved immediately to SQLite so both Game API and Commander ticks share the active planner.",
         control: "select",
         defaultValue: "priority",
         options: [
           { value: "priority", label: "priority — Rule-Based Heuristic" },
-          { value: "ga_nn", label: "ga_nn — GA + Neural Network" },
+          { value: "ai_planner", label: "ai_planner — AI-Planner (Full Horizon)" },
         ],
       },
       {

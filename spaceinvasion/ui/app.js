@@ -7425,6 +7425,12 @@
   };
   const useClientSyncEffect$2 = typeof window !== "undefined" ? reactExports.useLayoutEffect : reactExports.useEffect;
   const SESSION_STATE_KEY = "si_console_ui_state";
+  const VALID_AG_TABS$1 = [
+    "heuristics",
+    "config-optimizer",
+    "ai-planner",
+    "fleet-planner"
+  ];
   const DEFAULT_UI_PREFS = {
     modeOverride: "auto",
     bldCategory: "all",
@@ -7435,6 +7441,7 @@
     opsPlanetScope: "all",
     opsQueueLayout: "table",
     activeLogSource: "commander",
+    agActiveTab: "heuristics",
     agEdgeFilter: "all",
     agParamTab: "core",
     sectorFilter: "all",
@@ -7472,6 +7479,8 @@
       inFlightDashboardCount: 0,
       dashboardSeq: 0,
       actionGraphData: null,
+      plannerJobsStatus: null,
+      agActiveTab: "heuristics",
       agSimDirty: false,
       agSimRunning: 0,
       agSimSeq: 0,
@@ -7530,7 +7539,10 @@
   function buildClientFallbackActionGraph(dash) {
     var _a;
     const cfg = (dash == null ? void 0 : dash.config) || {};
-    const mode = String(cfg.planner_mode || (dash == null ? void 0 : dash.planner_mode) || "priority").toLowerCase() === "ga_nn" ? "ga_nn" : "priority";
+    const rawMode = String(
+      (dash == null ? void 0 : dash.effective_planner_mode) || cfg.planner_mode || (dash == null ? void 0 : dash.planner_mode) || "priority"
+    ).trim().toLowerCase();
+    const mode = rawMode === "ai_planner" ? "ai_planner" : "priority";
     const planList = Array.isArray(dash == null ? void 0 : dash.plan) ? dash.plan : [];
     const planets = Array.isArray((_a = dash == null ? void 0 : dash.state) == null ? void 0 : _a.planets) ? dash.state.planets : [];
     const planetById = /* @__PURE__ */ new Map();
@@ -7688,6 +7700,9 @@
           if (saved.combatSubTab) prefs.combatSubTab = String(saved.combatSubTab);
           if (saved.queueFilter) prefs.queueFilter = String(saved.queueFilter);
           if (saved.activeLogSource) prefs.activeLogSource = String(saved.activeLogSource);
+          if (VALID_AG_TABS$1.includes(saved.agActiveTab)) {
+            prefs.agActiveTab = saved.agActiveTab;
+          }
           if (saved.agEdgeFilter === "all" || saved.agEdgeFilter === "deps") {
             prefs.agEdgeFilter = saved.agEdgeFilter;
           }
@@ -7735,6 +7750,7 @@
     const [atkData, setAtkDataState] = reactExports.useState(null);
     const [recData, setRecDataState] = reactExports.useState(null);
     const [actionGraphData, setActionGraphDataState] = reactExports.useState(null);
+    const [plannerJobsStatus, setPlannerJobsStatusState] = reactExports.useState(null);
     const [agSimDirty, setAgSimDirtyState] = reactExports.useState(false);
     const [agSimRunning, setAgSimRunning] = reactExports.useState(0);
     const [configDirty, setConfigDirtyState] = reactExports.useState(false);
@@ -7777,6 +7793,7 @@
     sharedLegacyState.combatSubTab = uiPrefs.combatSubTab;
     sharedLegacyState.queueFilter = uiPrefs.queueFilter;
     sharedLegacyState.activeLogSource = uiPrefs.activeLogSource;
+    sharedLegacyState.agActiveTab = uiPrefs.agActiveTab;
     sharedLegacyState.agEdgeFilter = uiPrefs.agEdgeFilter;
     sharedLegacyState.agParamTab = uiPrefs.agParamTab;
     sharedLegacyState.sectorFilter = uiPrefs.sectorFilter;
@@ -7795,6 +7812,7 @@
     sharedLegacyState.atkData = atkData;
     sharedLegacyState.recData = recData;
     sharedLegacyState.actionGraphData = actionGraphData;
+    sharedLegacyState.plannerJobsStatus = plannerJobsStatus;
     sharedLegacyState.agSimDirty = agSimDirty;
     sharedLegacyState.agSimRunning = agSimRunning;
     sharedLegacyState.gaCalcCount = gaCalcCount;
@@ -7815,6 +7833,7 @@
               combatSubTab: nextPrefs.combatSubTab,
               queueFilter: nextPrefs.queueFilter,
               activeLogSource: nextPrefs.activeLogSource,
+              agActiveTab: nextPrefs.agActiveTab,
               agEdgeFilter: nextPrefs.agEdgeFilter,
               agParamTab: nextPrefs.agParamTab
             })
@@ -7969,6 +7988,23 @@
       sharedLegacyState.actionGraphData = data;
       setActionGraphDataState(data);
     }, []);
+    const setPlannerJobsStatus = reactExports.useCallback((status) => {
+      sharedLegacyState.plannerJobsStatus = status;
+      setPlannerJobsStatusState(status);
+    }, []);
+    const refreshPlannerJobsStatus = reactExports.useCallback(async () => {
+      try {
+        const res = await apiCommand({
+          command: "planner_jobs_status"
+        });
+        if (res && typeof res === "object") {
+          setPlannerJobsStatus(res);
+          return res;
+        }
+      } catch {
+      }
+      return null;
+    }, [setPlannerJobsStatus]);
     const setLastOptimizerSummary = reactExports.useCallback((summary) => {
       sharedLegacyState.lastOptimizerSummary = summary;
       setLastOptimizerSummaryState(summary);
@@ -8200,6 +8236,10 @@
           if (nextDash.optimizer_summary) {
             setLastOptimizerSummary(nextDash.optimizer_summary);
           }
+          const incomingJobsStatus = nextDash.planner_jobs_status && typeof nextDash.planner_jobs_status === "object" ? nextDash.planner_jobs_status : nextDash.planner_status && typeof nextDash.planner_status === "object" ? nextDash.planner_status : null;
+          if (incomingJobsStatus) {
+            setPlannerJobsStatus(incomingJobsStatus);
+          }
           const modeVal = ((_b = nextDash.bot_control) == null ? void 0 : _b.mode_override) || "auto";
           setUiPrefs(
             (prev) => prev.modeOverride === modeVal ? prev : { ...prev, modeOverride: modeVal }
@@ -8270,6 +8310,7 @@
         setBuildingsEtaData,
         setCombatData,
         setLastOptimizerSummary,
+        setPlannerJobsStatus,
         showFeedback,
         syncNotificationsPayload
       ]
@@ -8675,6 +8716,9 @@
         refreshRecyclersView,
         actionGraphData,
         setActionGraphData,
+        plannerJobsStatus,
+        setPlannerJobsStatus,
+        refreshPlannerJobsStatus,
         agSimDirty,
         setAgSimDirty,
         agSimRunning,
@@ -8735,6 +8779,7 @@
         notifications,
         nowEpochSec,
         openNotificationCenter,
+        plannerJobsStatus,
         recData,
         reconnectAttempts,
         refreshAttacksView,
@@ -8743,6 +8788,7 @@
         refreshCombatForSelectedPlanet,
         refreshEspionageView,
         refreshNotificationCenter,
+        refreshPlannerJobsStatus,
         refreshRecyclersView,
         refreshSectorsView,
         sectorsData,
@@ -8757,6 +8803,7 @@
         setConfigDirty,
         setEspData,
         setLastOptimizerSummary,
+        setPlannerJobsStatus,
         setRecData,
         setSectorsData,
         setSelectedPlanetId,
@@ -8996,9 +9043,9 @@
     );
     const budgetText = dashboard ? batchIv !== null && batchIv > 0 ? `BATCH ${Math.round(batchIv)}s` : `${health.remaining_hourly_actions ?? "—"} OPS/HR` : "-- OPS/HR";
     const cfgMode = String(
-      ((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
+      (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
     ).toLowerCase();
-    const isGaNn = cfgMode === "ga_nn";
+    const isAiPlanner = cfgMode === "ai_planner" || cfgMode === "ga_nn";
     const counts = ((_c = dashboard == null ? void 0 : dashboard.db_summary) == null ? void 0 : _c.counts) || {};
     const secCnt = Math.max(
       0,
@@ -9044,7 +9091,7 @@
     const srvRank = safeFiniteNumber(rnkCur.server_rank, null);
     const rankBadgeTxt = rnkCur.server_rank != null ? srvRank !== null ? `#${srvRank}` : "#—" : ((_k = rnkCur.attack_zone) == null ? void 0 : _k.label) || "#—";
     const onSync = async () => {
-      var _a2, _b2, _c2, _d2;
+      var _a2, _b2, _c2, _d2, _e2;
       if ((_a2 = dashboard == null ? void 0 : dashboard.bot_control) == null ? void 0 : _a2.captcha_blocked) {
         showFeedback(
           "Page refresh is frozen while CAPTCHA is active — solve it in Chrome (:9222) and click 'Solved in Chrome — Resume Bot'.",
@@ -9052,14 +9099,16 @@
         );
         return;
       }
-      const useGa = String(((_b2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b2.planner_mode) || "").toLowerCase() === "ga_nn";
-      if (useGa) beginGaCalc();
+      const useAi = String(
+        (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_b2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b2.planner_mode) || ""
+      ).toLowerCase() === "ai_planner" || String(((_c2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c2.planner_mode) || "").toLowerCase() === "ga_nn";
+      if (useAi) beginGaCalc();
       try {
         showFeedback("Syncing live snapshot from Chrome...", "ok");
         const ok = await loadDashboard({ refresh: true, preserveConfig: true, force: true });
         if (ok) {
-          const latestDash = ((_c2 = globalThis.state) == null ? void 0 : _c2.dashboard) || dashboard;
-          if ((_d2 = latestDash == null ? void 0 : latestDash.health) == null ? void 0 : _d2.rate_limited) {
+          const latestDash = ((_d2 = globalThis.state) == null ? void 0 : _d2.dashboard) || dashboard;
+          if ((_e2 = latestDash == null ? void 0 : latestDash.health) == null ? void 0 : _e2.rate_limited) {
             const rem = Math.ceil(safeFiniteNumber(latestDash.health.retry_after, 0) ?? 0);
             showFeedback(
               `Synced cached state — SpaceInvasion rate-limit cooldown active (${rem > 0 ? `${rem}s` : "wait"}).`,
@@ -9070,7 +9119,7 @@
           }
         }
       } finally {
-        if (useGa) endGaCalc();
+        if (useAi) endGaCalc();
       }
     };
     const onEnsureSession = async () => {
@@ -9122,9 +9171,11 @@
       }
     };
     const onTickNow = async () => {
-      var _a2;
-      const useGa = String(((_a2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a2.planner_mode) || "").toLowerCase() === "ga_nn";
-      if (useGa) beginGaCalc();
+      var _a2, _b2;
+      const useAi = String(
+        (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_a2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a2.planner_mode) || ""
+      ).toLowerCase() === "ai_planner" || String(((_b2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b2.planner_mode) || "").toLowerCase() === "ga_nn";
+      if (useAi) beginGaCalc();
       try {
         const dryRun = modeVal === "dry-run";
         showFeedback(`Running 1 ${dryRun ? "dry-run" : "live"} tick...`, "ok");
@@ -9134,7 +9185,7 @@
       } catch (err) {
         showFeedback(`Tick failed: ${err.message}`, feedbackKindForError(err));
       } finally {
-        if (useGa) endGaCalc();
+        if (useAi) endGaCalc();
       }
     };
     const navItems = [
@@ -9147,7 +9198,7 @@
       { page: "attacks", code: "ATK", title: "Attack Results", badgeId: "nav-atk-badge", badgeText: String(atkCnt) },
       { page: "recyclers", code: "REC", title: "Recyclers & Inbox", badgeId: "nav-rec-badge", badgeText: String(recCnt) },
       { page: "operations", code: "OPS", title: "Operations Queue", badgeId: "nav-queue-count", badgeText: String(planCount) },
-      { page: "action-graph", code: "DAG", title: "Action Graph", badgeId: "nav-graph-badge", badgeText: isGaNn ? "GA" : "PRI", badgeExtraCls: isGaNn ? " is-ga" : "" },
+      { page: "action-graph", code: "DAG", title: "Action Graph", badgeId: "nav-graph-badge", badgeText: isAiPlanner ? "AI" : "PRI", badgeExtraCls: isAiPlanner ? " is-ga" : "" },
       { page: "ranking", code: "RNK", title: "Ranking Evolution", badgeId: "nav-rank-badge", badgeText: rankBadgeTxt },
       { page: "config", code: "CFG", title: "Strategy Config" },
       { page: "logs", code: "LOG", title: "Live Logs" }
@@ -9739,6 +9790,291 @@
       }
     ) });
   }
+  const BUILDING_NAMES = {
+    b1: "Pig iron mine",
+    b2: "Blast furnace",
+    b3: "Kryptonite mine",
+    b4: "Spice mine",
+    b5: "Fusion plant",
+    b6: "Thermosolar plant",
+    b7: "Development center",
+    b8: "Research lab",
+    b9: "Weapons factory",
+    b10: "Fleet base",
+    b11: "Pig iron warehouse",
+    b12: "Metal warehouse",
+    b13: "Kryptonite warehouse",
+    b14: "Spice warehouse",
+    b15: "Particle cannon",
+    b16: "Particle shield",
+    b17: "Microsystem accelerator",
+    b18: "Teleporter",
+    b19: "Galaxy scanner",
+    b20: "Tunnel system",
+    b21: "Quantum Array"
+  };
+  const BUILDING_SHORT_NAMES = {
+    b1: "Pig",
+    b2: "Blast",
+    b3: "Kryp",
+    b4: "Spice",
+    b5: "Fus",
+    b6: "Solar",
+    b7: "Dev",
+    b8: "Lab",
+    b9: "Wep",
+    b10: "FBase",
+    b11: "WhPig",
+    b12: "WhMet",
+    b13: "WhKry",
+    b14: "WhSpi",
+    b15: "PCan",
+    b16: "PShd",
+    b17: "Micro",
+    b18: "Tele",
+    b19: "Scan",
+    b20: "Tun",
+    b21: "QArr"
+  };
+  const KEY_PLANET_BUILDINGS = [
+    "b1",
+    "b2",
+    "b3",
+    "b4",
+    "b5",
+    "b7",
+    "b8",
+    "b9",
+    "b10",
+    "b17",
+    "b11",
+    "b12",
+    "b13",
+    "b14"
+  ];
+  const MISC_BUILDING_KEYS = [
+    "b6",
+    "b7",
+    "b8",
+    "b10",
+    "b11",
+    "b12",
+    "b13",
+    "b14",
+    "b15",
+    "b16",
+    "b18",
+    "b19",
+    "b20",
+    "b21"
+  ];
+  const OPTIMIZED_BUILDING_KEYS = [
+    "b1",
+    "b2",
+    "b3",
+    "b4",
+    "b5",
+    "b9",
+    "b17"
+  ];
+  const SHIP_OPTIONS = [
+    { key: "s1", slug: "small-transport", name: "Small transport" },
+    { key: "s2", slug: "large-transport", name: "Large transport" },
+    { key: "s3", slug: "transmitter", name: "Transmitter" },
+    { key: "s4", slug: "small-fighter", name: "Small fighter" },
+    { key: "s5", slug: "warship", name: "Warship" },
+    { key: "s6", slug: "starcruiser", name: "Starcruiser" },
+    { key: "s7", slug: "phoenix", name: "Phoenix" },
+    { key: "s8", slug: "colony-ship", name: "Colony ship" },
+    { key: "s9", slug: "solar-cells", name: "Solar cells" },
+    { key: "s10", slug: "spy-probe", name: "Spy probe" },
+    { key: "s11", slug: "recycler", name: "Recycler" },
+    { key: "s13", slug: "battleship", name: "Battleship" },
+    { key: "s14", slug: "stealth-bomber", name: "Stealth bomber" },
+    { key: "s15", slug: "destroyer", name: "Destroyer" },
+    { key: "s16", slug: "imperial-starbase", name: "Imperial starbase" }
+  ];
+  const RESEARCH_KEYS = [
+    "r1",
+    "r2",
+    "r3",
+    "r4",
+    "r5",
+    "r6",
+    "r7",
+    "r8",
+    "r9",
+    "r10",
+    "r11",
+    "r12",
+    "r13",
+    "r14",
+    "r15"
+  ];
+  const RESEARCH_NAMES = {
+    r1: "Mining technology",
+    r2: "Energy technology",
+    r3: "Engine research",
+    r4: "Rocket engine",
+    r5: "Diffusion engine",
+    r6: "Warp engine",
+    r7: "Spy technology",
+    r8: "Weapons technology",
+    r9: "Shield technology",
+    r10: "Defense systems",
+    r11: "Targeting systems",
+    r12: "Particle analyzer",
+    r13: "Graviton technology",
+    r14: "Teleportation",
+    r15: "Black hole research"
+  };
+  const DEFAULT_CONFIG_OPTIMIZER_DRAFT = {
+    target_ship_key: "s16",
+    production_month_days: "30",
+    research_percent_of_universe_max: "100",
+    warehouse_hours_of_production: "24",
+    central_planet_slot: "1",
+    central_planet_min_warehouse_level: "15",
+    min_fleet_per_planet: {
+      s2: "10",
+      s10: "10",
+      s11: "10"
+    },
+    misc_building_levels: {
+      b6: "0",
+      b7: "12",
+      b8: "0",
+      b10: "5",
+      b11: "0",
+      b12: "0",
+      b13: "0",
+      b14: "0",
+      b15: "0",
+      b16: "0",
+      b18: "0",
+      b19: "0",
+      b20: "0",
+      b21: "0"
+    },
+    optimized_building_max_levels: {
+      b1: "100",
+      b2: "100",
+      b3: "100",
+      b4: "100",
+      b5: "100",
+      b9: "100",
+      b17: "100"
+    },
+    pad_generic_colonies: false,
+    ga_population_size: "200",
+    ga_generations: "150",
+    ga_random_seed: "20261117"
+  };
+  const DEFAULT_AI_PLANNER_DRAFT = {
+    reward_weeks: "26",
+    weekly_discount: "0.9",
+    resource_spare_percent: {
+      pig_iron: "10",
+      metal: "10",
+      kryptonite: "10",
+      spice: "10"
+    },
+    fleet_command_center_level: "",
+    attacks_per_day: "",
+    pad_generic_colonies: false,
+    scarcity_focus: "1.0",
+    critical_queue_share: "0.9",
+    patience: "0.25",
+    speed_weight: "1.5",
+    ga_population_size: "10",
+    ga_generations: "6",
+    ga_random_seed: "20261117"
+  };
+  function sanitizeMainWindowText(rawText) {
+    return String(rawText ?? "").replace(/generations?/gi, "cycles");
+  }
+  function normalizeUiPlannerMode(mode) {
+    const low = String(mode ?? "priority").trim().toLowerCase();
+    if (low === "ai_planner") return "ai_planner";
+    return "priority";
+  }
+  function computeColonyGateInfo(dashboard, jobsStatus, tabOverride) {
+    var _a, _b;
+    const normalPlanets = Array.isArray((_a = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a.planets) ? dashboard.state.planets.filter(
+      (p) => String((p == null ? void 0 : p.planet_type) || "normal").toLowerCase() === "normal"
+    ).length : 0;
+    const liveStatus = jobsStatus || (dashboard == null ? void 0 : dashboard.planner_jobs_status) || (dashboard == null ? void 0 : dashboard.planner_status);
+    const maxPlanets = Math.max(
+      1,
+      Math.round(
+        safeFiniteNumber(
+          (liveStatus == null ? void 0 : liveStatus.max_planets) ?? (dashboard == null ? void 0 : dashboard.max_planets) ?? ((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.max_planets) ?? (tabOverride == null ? void 0 : tabOverride.max_planets),
+          11
+        ) ?? 11
+      )
+    );
+    const coloniesOwned = Math.max(
+      0,
+      Math.round(
+        safeFiniteNumber(
+          (dashboard == null ? void 0 : dashboard.colonies_owned) ?? (liveStatus == null ? void 0 : liveStatus.colonies_owned) ?? (tabOverride == null ? void 0 : tabOverride.colonies_owned),
+          normalPlanets
+        ) ?? normalPlanets
+      )
+    );
+    const unlockedFlag = (dashboard == null ? void 0 : dashboard.live_ai_unlocked) ?? (liveStatus == null ? void 0 : liveStatus.live_ai_unlocked) ?? (tabOverride == null ? void 0 : tabOverride.live_ai_unlocked);
+    const liveAiUnlocked = typeof unlockedFlag === "boolean" ? unlockedFlag : coloniesOwned >= maxPlanets;
+    return { coloniesOwned, maxPlanets, liveAiUnlocked };
+  }
+  function formatDurationSecondsCompact(secRaw) {
+    const sec = safeFiniteNumber(secRaw, null);
+    if (sec === null) return "—";
+    const s = Math.max(0, Math.round(sec));
+    if (s <= 0) return "Ready";
+    const d = Math.floor(s / 86400);
+    const h = Math.floor(s % 86400 / 3600);
+    const m = Math.floor(s % 3600 / 60);
+    const rem = s % 60;
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${rem}s`;
+    return `${rem}s`;
+  }
+  function formatJobBadgeText(job) {
+    if (!job || typeof job !== "object") return "IDLE";
+    const st = String(job.status || "idle").toLowerCase();
+    if (st === "running") {
+      const pct = Math.max(0, Math.min(100, Math.round(safeFiniteNumber(job.progress_pct, 0) ?? 0)));
+      return pct > 0 ? `RUNNING ${pct}%` : "RUNNING";
+    }
+    if (st === "completed") return "COMPLETED";
+    if (st === "error") return "ERROR";
+    return "IDLE";
+  }
+  function downloadTextFile(filename, content, mimeType = "text/plain") {
+    if (typeof document === "undefined") return false;
+    try {
+      const blob = new Blob([content], { type: mimeType });
+      const url = typeof URL !== "undefined" && typeof URL.createObjectURL === "function" ? URL.createObjectURL(blob) : `data:${mimeType};charset=utf-8,${encodeURIComponent(content)}`;
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function" && url.startsWith("blob:")) {
+        setTimeout(() => URL.revokeObjectURL(url), 100);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function shipNameForKey(key) {
+    const found = SHIP_OPTIONS.find((s) => s.key === key || s.slug === key);
+    return found ? found.name : key;
+  }
   function clampPct(val) {
     const n = safeFiniteNumber(val, 0) ?? 0;
     return Math.max(0, Math.min(100, n));
@@ -9783,23 +10119,23 @@
     const k = String(kind || "").trim().toUpperCase();
     if (!k) return "";
     if (k === "BUILD") return "BLD";
-    if (k === "DEMOLISH_BUILDING") return "DEM";
+    if (k === "DEMOLISH_BUILDING" || k === "DEMOLISH") return "DEM";
     if (k === "WAIT_RESOURCES") return "WAIT";
     if (k === "RESEARCH") return "RES";
-    if (k === "BUILD_SHIP") return "SHP";
-    if (k === "ATTACK") return "ATK";
+    if (k === "BUILD_SHIP" || k === "SHIPS") return "SHP";
+    if (k === "ATTACK" || k === "RAID") return "ATK";
     if (k === "SPY") return "SPY";
     if (k === "TRANSPORT") return "TRN";
     if (k === "STATION") return "STN";
     if (k === "RECYCLE") return "REC";
     if (k === "COLONIZE") return "COL";
-    if (k === "SCAN_GALAXY") return "SCN";
+    if (k === "SCAN_GALAXY" || k === "GALAXY_SCAN") return "SCN";
     if (k === "THROTTLE_BUILDING") return "B2%";
     if (k === "CLAIM_TUTORIAL") return "TUT";
     return k.slice(0, 4);
   }
   const GaNnScannerHud = () => {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f;
     const {
       dashboard,
       setDashboard,
@@ -9809,20 +10145,35 @@
       bumpDashboardSeq,
       lastOptimizerSummary,
       setLastOptimizerSummary,
+      plannerJobsStatus,
+      refreshPlannerJobsStatus,
       apiCommand: apiCommand2,
       loadDashboard,
       showFeedback
     } = useConsole();
     const cfgMode = String(
-      ((_a = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
+      (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_a = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
     ).toLowerCase();
-    const isGaNn = cfgMode === "ga_nn";
+    const isAiMode = cfgMode === "ai_planner";
+    const isLegacyGa = cfgMode === "ga_nn";
+    const jobsPayload = plannerJobsStatus || (dashboard == null ? void 0 : dashboard.planner_jobs_status) || (dashboard == null ? void 0 : dashboard.planner_status) || null;
+    const coJob = (jobsPayload == null ? void 0 : jobsPayload.config_optimizer_job) || null;
+    const aiJob = (jobsPayload == null ? void 0 : jobsPayload.ai_planner_job) || null;
+    const coRunning = String((coJob == null ? void 0 : coJob.status) || "").toLowerCase() === "running";
+    const aiRunning = String((aiJob == null ? void 0 : aiJob.status) || "").toLowerCase() === "running";
+    const runningJob = aiRunning ? aiJob : coRunning ? coJob : null;
+    const anyJobRunning = Boolean(runningJob);
+    const isActiveHud = isAiMode || isLegacyGa || anyJobRunning;
+    const isCalculating = Boolean(gaCalculating || anyJobRunning);
+    const gate = computeColonyGateInfo(dashboard, jobsPayload);
+    const aiSum = (dashboard == null ? void 0 : dashboard.ai_planner_summary) && typeof dashboard.ai_planner_summary === "object" ? dashboard.ai_planner_summary : null;
     const incomingSum = (dashboard == null ? void 0 : dashboard.optimizer_summary) || (dashboard == null ? void 0 : dashboard.ga_nn_telemetry) || (dashboard == null ? void 0 : dashboard.optimizer_metrics) || null;
     const hasIncoming = Boolean(
       incomingSum && typeof incomingSum === "object" && Object.keys(incomingSum).length > 0
     );
-    const rawSum = isGaNn ? (hasIncoming ? incomingSum : lastOptimizerSummary) || {} : {};
-    const hasSummary = Boolean(rawSum && Object.keys(rawSum).length > 0);
+    const rawSum = isActiveHud ? (hasIncoming ? incomingSum : isLegacyGa ? lastOptimizerSummary : null) || {} : {};
+    const hasLegacySum = Boolean(rawSum && Object.keys(rawSum).length > 0);
+    const hasAiSummary = Boolean(aiSum && Object.keys(aiSum).length > 0);
     const cfgPop = Math.max(
       4,
       Math.round(safeFiniteNumber((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.ga_population_size, 24) ?? 24)
@@ -9835,82 +10186,130 @@
       1,
       Math.round(safeFiniteNumber((_d = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _d.ga_horizon_steps, 6) ?? 6)
     );
-    const statusPillText = !isGaNn ? "STANDBY" : gaCalculating ? "CALCULATING" : hasSummary ? "OPTIMIZED" : "ACTIVE";
-    const popSize = Math.max(1, Math.round(safeFiniteNumber(rawSum.population_size, cfgPop) ?? cfgPop));
-    const nnBackend = String(rawSum.nn_backend || "mlp").toUpperCase();
-    const elapsedMs = safeFiniteNumber(rawSum.elapsed_ms, null);
+    const statusPillText = !isActiveHud ? "STANDBY" : isCalculating ? "CALCULATING" : isAiMode && !gate.liveAiUnlocked ? "PREVIEW ONLY" : hasAiSummary || hasLegacySum ? "OPTIMIZED" : "ACTIVE";
+    const popSize = Math.max(
+      1,
+      Math.round(safeFiniteNumber(rawSum.population_size ?? (aiSum == null ? void 0 : aiSum.ga_population_size), cfgPop) ?? cfgPop)
+    );
+    const nnBackend = String(
+      rawSum.nn_backend || (isAiMode ? `${gate.coloniesOwned}/${gate.maxPlanets} COL` : "MLP")
+    ).toUpperCase();
+    const elapsedMs = safeFiniteNumber(
+      (runningJob == null ? void 0 : runningJob.elapsed_ms) ?? rawSum.elapsed_ms ?? (aiSum == null ? void 0 : aiSum.elapsed_ms),
+      null
+    );
     const safeElapsed = elapsedMs !== null ? Math.max(0, Math.round(elapsedMs)) : null;
-    const metaLineText = !isGaNn ? "POP -- · NN --" : safeElapsed !== null ? `POP ${popSize} · ${nnBackend} · ${safeElapsed}ms` : `POP ${popSize} · ${nnBackend}`;
+    const metaLineText = !isActiveHud ? "HEURISTIC STANDBY" : runningJob ? `${aiRunning ? "AI-PLANNER" : "CONFIG OPT"} ${Math.round(safeFiniteNumber(runningJob.progress_pct, 0) ?? 0)}%${safeElapsed !== null ? ` · ${safeElapsed}ms` : ""}` : isAiMode ? `COL ${gate.coloniesOwned}/${gate.maxPlanets} · W${Math.round(safeFiniteNumber(aiSum == null ? void 0 : aiSum.reward_weeks, 26) ?? 26)}${safeElapsed !== null ? ` · ${safeElapsed}ms` : ""}` : safeElapsed !== null ? `POP ${popSize} · ${nnBackend} · ${safeElapsed}ms` : `POP ${popSize} · ${nnBackend}`;
     const histLen = Array.isArray(rawSum.generation_history) ? rawSum.generation_history.length : null;
     const genDone = Math.max(
       0,
       Math.round(safeFiniteNumber(rawSum.generation ?? rawSum.generations ?? histLen, 0) ?? 0)
     );
     const genTarget = Math.max(genDone, cfgGens);
-    const genPct = isGaNn ? clampPct(genTarget > 0 ? genDone / genTarget * 100 : 0) : 0;
+    const jobPct = clampPct((runningJob == null ? void 0 : runningJob.progress_pct) ?? 0);
+    const aiStepsCompleted = Math.max(
+      0,
+      Math.round(safeFiniteNumber((aiSum == null ? void 0 : aiSum.steps_completed) ?? (aiSum == null ? void 0 : aiSum.steps_started), 0) ?? 0)
+    );
+    const rawAiStepsTotal = safeFiniteNumber(aiSum == null ? void 0 : aiSum.steps, null);
+    const aiStepsTotal = Math.max(
+      0,
+      Math.round(rawAiStepsTotal ?? 0)
+    );
+    const genPct = !isActiveHud ? 0 : runningJob ? jobPct : isAiMode && aiStepsTotal > 0 ? clampPct(aiStepsCompleted / aiStepsTotal * 100) : clampPct(genTarget > 0 ? genDone / genTarget * 100 : 0);
     const seedVal = safeFiniteNumber(rawSum.seed ?? ((_e = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _e.ga_seed), null);
     const seedTxt = seedVal !== null ? `Seed ${Math.round(seedVal)}` : "Auto seed";
-    const genSubText = !isGaNn ? "Waiting for optimizer pass" : gaCalculating ? "Evolving action sequences..." : `Horizon ${horizonSteps} steps · ${seedTxt}`;
+    const genSubText = !isActiveHud ? "Waiting for optimizer pass" : runningJob ? String(runningJob.phase || "Running background optimizer...") : isAiMode ? `Colonies ${gate.coloniesOwned}/${gate.maxPlanets} · ${gate.liveAiUnlocked ? "Live Unlocked" : "Unlock at 11/11"}` : gaCalculating ? "Evolving action sequences..." : `Horizon ${horizonSteps} steps · ${seedTxt}`;
+    const totalNetOutput = safeFiniteNumber(
+      (aiSum == null ? void 0 : aiSum.total_net_spice_eq) ?? (aiSum == null ? void 0 : aiSum.total_spice_eq),
+      null
+    );
+    const hourlyLoot = safeFiniteNumber(
+      ((_f = aiSum == null ? void 0 : aiSum.attack_telemetry) == null ? void 0 : _f.hourly_loot_spice_eq) ?? (aiSum == null ? void 0 : aiSum.hourly_loot_spice_eq),
+      null
+    );
     const nnEvals = Math.max(
       0,
       Math.round(safeFiniteNumber(rawSum.nn_evaluations ?? rawSum.neural_evals, 0) ?? 0)
     );
     const lossRaw = safeFiniteNumber(rawSum.nn_final_loss, null);
     const loss = lossRaw !== null ? Math.max(0, lossRaw) : null;
-    const nnPct = !isGaNn ? 0 : gaCalculating ? 72 : nnEvals > 0 ? clampPct(Math.max(14, Math.log10(nnEvals + 1) * 38)) : 0;
-    const nnSubText = !isGaNn ? "MSE Loss --" : loss !== null ? `MSE Loss ${loss.toFixed(4)} · ${nnBackend}` : `Backend ${nnBackend} · Horizon ${horizonSteps}`;
-    const baseFit = safeFiniteNumber(rawSum.baseline_fitness ?? rawSum.initial_best_fitness, null);
-    const bestFit = safeFiniteNumber(
-      rawSum.best_fitness ?? rawSum.fitness_score ?? rawSum.final_best_fitness,
+    const nnPct = !isActiveHud ? 0 : isCalculating ? 72 : isAiMode && !hasLegacySum ? totalNetOutput !== null && totalNetOutput > 0 ? 78 : 0 : nnEvals > 0 ? clampPct(Math.max(14, Math.log10(nnEvals + 1) * 38)) : 0;
+    const nnSubText = !isActiveHud ? "Output --" : isAiMode && !hasLegacySum ? hourlyLoot !== null ? `Attack Loot ${fmtCompactLocal(hourlyLoot)}/h` : "Horizon Net Production" : loss !== null ? `MSE Loss ${loss.toFixed(4)} · ${nnBackend}` : `Backend ${nnBackend} · Horizon ${horizonSteps}`;
+    const baseFit = safeFiniteNumber(
+      rawSum.baseline_fitness ?? rawSum.initial_best_fitness ?? (aiSum == null ? void 0 : aiSum.baseline_discounted_reward),
       null
     );
-    const impText = isGaNn ? fmtImprovementPct(rawSum.improvement_pct, baseFit, bestFit) : "--%";
-    const rawImp = safeFiniteNumber(rawSum.improvement_pct, null);
-    const fitPct = !isGaNn ? 0 : impText.startsWith(">") ? 100 : clampPct(
+    const bestFit = safeFiniteNumber(
+      rawSum.best_fitness ?? rawSum.fitness_score ?? rawSum.final_best_fitness ?? (aiSum == null ? void 0 : aiSum.discounted_reward_spice_eq),
+      null
+    );
+    const impText = isActiveHud ? fmtImprovementPct(rawSum.improvement_pct ?? (aiSum == null ? void 0 : aiSum.improvement_pct), baseFit, bestFit) : "--%";
+    const rawImp = safeFiniteNumber(rawSum.improvement_pct ?? (aiSum == null ? void 0 : aiSum.improvement_pct), null);
+    const fitPct = !isActiveHud ? 0 : impText.startsWith(">") ? 100 : clampPct(
       rawImp !== null ? Math.max(0, Math.min(100, rawImp + 15)) : bestFit !== null && bestFit > 0 ? 35 : 0
     );
-    const fitSubText = isGaNn ? `Base ${fmtCompactLocal(baseFit)} · Best ${fmtCompactLocal(bestFit)}` : "Base -- · Best --";
+    const fitSubText = isActiveHud ? `Base ${fmtCompactLocal(baseFit)} · Best ${fmtCompactLocal(bestFit)}` : "Base -- · Best --";
     const chrom = Array.isArray(rawSum.best_chromosome) ? rawSum.best_chromosome : [];
     const planLen = Array.isArray(dashboard == null ? void 0 : dashboard.plan) ? dashboard.plan.length : 0;
     const gLen = Math.max(
       0,
       Math.round(
-        safeFiniteNumber(rawSum.genome_length ?? rawSum.actions_count, chrom.length || planLen) ?? 0
+        safeFiniteNumber(
+          rawSum.genome_length ?? rawSum.actions_count ?? rawAiStepsTotal,
+          chrom.length || planLen
+        ) ?? 0
       )
     );
-    const genomePct = !isGaNn ? 0 : clampPct(horizonSteps > 0 ? Math.min(gLen, horizonSteps) / horizonSteps * 100 : 0);
+    const genomePct = !isActiveHud ? 0 : clampPct(
+      isAiMode && aiStepsTotal > 0 ? Math.min(gLen, aiStepsTotal) / aiStepsTotal * 100 : horizonSteps > 0 ? Math.min(gLen, horizonSteps) / horizonSteps * 100 : 0
+    );
     const seqPreview = (chrom.length > 0 ? chrom : (dashboard == null ? void 0 : dashboard.plan) || []).slice(0, 4).map((g) => geneShortTag(typeof g === "string" ? g : g == null ? void 0 : g.kind)).filter(Boolean).join(" → ");
-    const genomeSubText = !isGaNn ? "Sequence standby" : seqPreview || (gLen > 0 ? `Top ${gLen} sequence steps` : "Sequence standby");
+    const genomeSubText = !isActiveHud ? "Sequence standby" : seqPreview || (gLen > 0 ? `Top ${gLen} sequence steps` : "Sequence standby");
     const onRecalc = async () => {
       var _a2;
       beginGaCalc();
       try {
-        showFeedback("Running GA + Neural Network sequence optimizer...", "ok");
-        const res = await apiCommand2({ command: "plan", planner_mode: "ga_nn", refresh: false });
-        bumpDashboardSeq();
-        if (res.optimizer_summary) {
-          setLastOptimizerSummary(res.optimizer_summary);
-        }
-        const curDash = ((_a2 = globalThis.state) == null ? void 0 : _a2.dashboard) || dashboard;
-        if (curDash) {
-          const updated = {
-            ...curDash,
-            plan: Array.isArray(res.actions) ? res.actions : curDash.plan,
-            optimizer_summary: res.optimizer_summary ?? curDash.optimizer_summary
-          };
-          if (globalThis.state) {
-            globalThis.state.dashboard = updated;
-          }
-          setDashboard(updated);
+        if (isAiMode) {
+          showFeedback("Triggering AI-Planner recalculation...", "ok");
+          await apiCommand2({ command: "ai_planner_run", trigger_source: "hud_recalc" });
+          await Promise.all([
+            refreshPlannerJobsStatus(),
+            loadDashboard({ refresh: false, preserveConfig: true, force: true })
+          ]);
+          showFeedback("AI-Planner job triggered.", "ok");
         } else {
-          await loadDashboard({ refresh: false, preserveConfig: true, force: true });
+          showFeedback("Running planner recalculation...", "ok");
+          const res = await apiCommand2({
+            command: "plan",
+            planner_mode: isLegacyGa ? "ga_nn" : "priority",
+            refresh: false
+          });
+          bumpDashboardSeq();
+          if (res.optimizer_summary) {
+            setLastOptimizerSummary(res.optimizer_summary);
+          }
+          const curDash = ((_a2 = globalThis.state) == null ? void 0 : _a2.dashboard) || dashboard;
+          if (curDash) {
+            const updated = {
+              ...curDash,
+              plan: Array.isArray(res.actions) ? res.actions : curDash.plan,
+              optimizer_summary: res.optimizer_summary ?? curDash.optimizer_summary
+            };
+            if (globalThis.state) {
+              globalThis.state.dashboard = updated;
+            }
+            setDashboard(updated);
+          } else {
+            await loadDashboard({ refresh: false, preserveConfig: true, force: true });
+          }
+          showFeedback(
+            `Evaluation complete (${(res.actions || []).length} planned actions).`,
+            "ok"
+          );
         }
-        showFeedback(
-          `GA+NN evaluation complete (${(res.actions || []).length} planned actions).`,
-          "ok"
-        );
       } catch (err) {
-        showFeedback(`GA+NN calculation failed: ${err.message}`, feedbackKindForError(err));
+        showFeedback(`Recalculation failed: ${err.message}`, feedbackKindForError(err));
       } finally {
         endGaCalc();
       }
@@ -9918,15 +10317,15 @@
     return /* @__PURE__ */ jsxRuntimeExports.jsxs(
       "article",
       {
-        className: `hud-window gann-hud${isGaNn ? " is-active" : ""}${isGaNn && gaCalculating ? " is-calculating" : ""}`,
+        className: `hud-window gann-hud${isActiveHud ? " is-active" : ""}${isCalculating ? " is-calculating" : ""}`,
         id: "gann-calc-hud",
-        "aria-label": "Genetic algorithm and neural network search telemetry",
-        hidden: !isGaNn,
+        "aria-label": "AI-Planner and background optimizer telemetry",
+        hidden: !isActiveHud,
         children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "GNN" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "GA + Neural Search Scanner" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: isAiMode || anyJobRunning ? "AIP" : "GNN" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: anyJobRunning ? "Optimizer Background Engine" : isAiMode ? "AI-Planner & Colony Telemetry" : "Planner Search Scanner" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-state-pill tabular", id: "gann-status-pill", role: "status", children: statusPillText })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
@@ -10101,8 +10500,8 @@
                     }
                   ),
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "gann-metric-titles", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: "Generation Progress" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-gen-val", children: isGaNn ? `${genDone} / ${genTarget}` : "0 / --" })
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: anyJobRunning ? "Background Job" : isAiMode ? "Horizon Progress" : "Cycle Progress" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-gen-val", children: !isActiveHud ? "0 / --" : runningJob ? `${Math.round(jobPct)}%` : isAiMode && aiStepsTotal > 0 ? `${aiStepsCompleted} / ${aiStepsTotal}` : `${genDone} / ${genTarget}` })
                   ] })
                 ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "meter-track", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -10127,8 +10526,8 @@
                     }
                   ),
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "gann-metric-titles", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: "Neural Eval Pass" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-nn-val", children: isGaNn ? `${fmtIntLocal(nnEvals)} evals` : "0 evals" })
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: isAiMode && !hasLegacySum ? "Horizon Output" : "Search Eval Pass" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-nn-val", children: !isActiveHud ? "0 evals" : isAiMode && !hasLegacySum ? totalNetOutput !== null ? `${fmtCompactLocal(totalNetOutput)} SpEq` : "— SpEq" : `${fmtIntLocal(nnEvals)} evals` })
                   ] })
                 ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "meter-track", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -10153,7 +10552,7 @@
                     }
                   ),
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "gann-metric-titles", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: "Fitness Improvement" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: "Reward Gain" }),
                     /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-fit-val", children: impText })
                   ] })
                 ] }),
@@ -10179,8 +10578,8 @@
                     }
                   ),
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "gann-metric-titles", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: "Genome Search" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-genome-val", children: isGaNn ? `${gLen} genes` : "0 genes" })
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: isAiMode ? "Horizon Sequence" : "Action Sequence" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-genome-val", children: !isActiveHud ? "0 steps" : hasLegacySum && chrom.length > 0 ? `${gLen} genes` : `${gLen} steps` })
                   ] })
                 ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "meter-track", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -11257,10 +11656,11 @@
       return { buildingActions: bld, fleetActions: flt, researchActions: res };
     }, [allPlanActions, scopedDashPlanet]);
     const cfgMode = String(
-      ((_c = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
+      (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_c = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
     ).toLowerCase();
-    const isGaNn = cfgMode === "ga_nn";
-    const modeLabel = isGaNn ? "MODE: GA+NN" : "MODE: PRIORITY";
+    const isAiPlanner = cfgMode === "ai_planner";
+    const isLegacyGa = cfgMode === "ga_nn";
+    const modeLabel = isAiPlanner ? "MODE: AI-PLANNER" : isLegacyGa ? "MODE: AI-PLANNER" : "MODE: PRIORITY";
     const colonyCountTag = dashboard ? `${String(planets.length).padStart(2, "0")}-${String((gs == null ? void 0 : gs.universe_id) || 31)}` : "01-31";
     const matrixAccountLine = dashboard ? `CMD // ${(gs == null ? void 0 : gs.nickname) || "OPERATOR"} · :${((_d = dashboard.health) == null ? void 0 : _d.debug_port) || 9222}` : "CMD // STANDBY";
     const handleClaimTutorial = reactExports.useCallback(async () => {
@@ -11571,7 +11971,7 @@
               /* @__PURE__ */ jsxRuntimeExports.jsx(
                 "span",
                 {
-                  className: `module-meta tabular mode-badge${isGaNn ? " is-ga" : ""}`,
+                  className: `module-meta tabular mode-badge${isAiPlanner ? " is-ga" : ""}`,
                   id: "dash-planner-mode-badge",
                   children: modeLabel
                 }
@@ -12304,10 +12704,10 @@
     }, [filterMatchedActions, planets, scopedPlanet]);
     const actionSort = useTableSort(filteredActions, PLAN_ACTION_SORT_COLUMNS);
     const cfgMode = String(
-      ((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
+      (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
     ).toLowerCase();
-    const isGaNn = cfgMode === "ga_nn";
-    const modeLabel = isGaNn ? "MODE: GA+NN" : "MODE: PRIORITY";
+    const isAiPlanner = cfgMode === "ai_planner" || cfgMode === "ga_nn";
+    const modeLabel = isAiPlanner ? "MODE: AI-PLANNER" : "MODE: PRIORITY";
     const handleDispatch = reactExports.useCallback(
       async (action, dryRun) => {
         const payload = actionPayloadFor(action, dryRun);
@@ -12393,7 +12793,7 @@
               /* @__PURE__ */ jsxRuntimeExports.jsx(
                 "span",
                 {
-                  className: `module-meta tabular mode-badge${isGaNn ? " is-ga" : ""}`,
+                  className: `module-meta tabular mode-badge${isAiPlanner ? " is-ga" : ""}`,
                   id: "ops-planner-mode-badge",
                   children: modeLabel
                 }
@@ -12705,6 +13105,105 @@
       }
     );
   };
+  const TablePagination = ({
+    idPrefix,
+    totalItems,
+    page,
+    pageSize,
+    pageSizeOptions = [25, 50, 100, 200],
+    itemLabel = "items",
+    onPageChange,
+    onPageSizeChange
+  }) => {
+    const safeSize = Math.max(1, Math.round(pageSize));
+    const totalPages = Math.max(1, Math.ceil(totalItems / safeSize));
+    const safePage = Math.max(1, Math.min(totalPages, Math.round(page)));
+    const startIdx = totalItems === 0 ? 0 : (safePage - 1) * safeSize + 1;
+    const endIdx = totalItems === 0 ? 0 : Math.min(totalItems, safePage * safeSize);
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "div",
+      {
+        className: "table-pagination-bar tabular",
+        id: `${idPrefix}-pagination`,
+        role: "navigation",
+        "aria-label": `${itemLabel} pagination`,
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "table-page-summary", id: `${idPrefix}-page-summary`, children: totalItems === 0 ? `0 ${itemLabel}` : `Showing ${startIdx}–${endIdx} of ${totalItems} ${itemLabel}` }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "table-page-controls", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "table-page-size-label", htmlFor: `${idPrefix}-page-size`, children: [
+              "Rows",
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "select",
+                {
+                  id: `${idPrefix}-page-size`,
+                  className: "table-page-size-select",
+                  value: String(safeSize),
+                  onChange: (e) => {
+                    const parsed = Number(e.target.value);
+                    if (Number.isFinite(parsed) && parsed >= 1) {
+                      onPageSizeChange(Math.round(parsed));
+                    }
+                  },
+                  children: pageSizeOptions.map((opt) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: String(opt), children: opt }, opt))
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "table-page-buttons", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `${idPrefix}-page-first`,
+                  "aria-label": "First page",
+                  disabled: safePage <= 1,
+                  onClick: () => onPageChange(1),
+                  children: "« First"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `${idPrefix}-page-prev`,
+                  "aria-label": "Previous page",
+                  disabled: safePage <= 1,
+                  onClick: () => onPageChange(Math.max(1, safePage - 1)),
+                  children: "‹ Prev"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "table-page-indicator", id: `${idPrefix}-page-indicator`, children: `Page ${safePage} / ${totalPages}` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `${idPrefix}-page-next`,
+                  "aria-label": "Next page",
+                  disabled: safePage >= totalPages,
+                  onClick: () => onPageChange(Math.min(totalPages, safePage + 1)),
+                  children: "Next ›"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `${idPrefix}-page-last`,
+                  "aria-label": "Last page",
+                  disabled: safePage >= totalPages,
+                  onClick: () => onPageChange(totalPages),
+                  children: "Last »"
+                }
+              )
+            ] })
+          ] })
+        ]
+      }
+    );
+  };
   function useDragScroll(scrollRef, dragThresholdPx = 4) {
     const [isDragging, setIsDragging] = reactExports.useState(false);
     const activeRef = reactExports.useRef(false);
@@ -12812,6 +13311,4131 @@
       onMouseLeave: endDrag
     };
   }
+  const AG_SEMANTIC_EDGE_TYPES = /* @__PURE__ */ new Set([
+    "priority_gate",
+    "prerequisite",
+    "level_chain",
+    "energy_support",
+    "throttle_control",
+    "storage_cap",
+    "resource_feed",
+    "loot_feed"
+  ]);
+  function edgeVisualSpec(edge, markerPrefix) {
+    const pType = String((edge == null ? void 0 : edge.primary_type) || "execution_order");
+    if (pType === "priority_gate") {
+      return { cls: "is-gate", marker: `${markerPrefix}-arrow-gate` };
+    }
+    if (pType === "prerequisite" || pType === "level_chain") {
+      return { cls: "is-prereq", marker: `${markerPrefix}-arrow-prereq` };
+    }
+    if (pType === "energy_support" || pType === "throttle_control" || pType === "storage_cap" || pType === "resource_feed" || pType === "loot_feed") {
+      return { cls: "is-resource", marker: `${markerPrefix}-arrow-resource` };
+    }
+    if (pType === "queue_order") {
+      return { cls: "is-queue", marker: `${markerPrefix}-arrow-queue` };
+    }
+    return { cls: "is-seq", marker: `${markerPrefix}-arrow-seq` };
+  }
+  function edgeMatchesFilter(edge, filterMode) {
+    if (filterMode !== "deps") return true;
+    const types = Array.isArray(edge == null ? void 0 : edge.types) ? edge.types : [edge == null ? void 0 : edge.primary_type];
+    return types.some((t) => AG_SEMANTIC_EDGE_TYPES.has(String(t || "")));
+  }
+  function formatDagNodeTargetLabel(node) {
+    const base = String((node == null ? void 0 : node.target_name) || (node == null ? void 0 : node.entity_name) || (node == null ? void 0 : node.name) || (node == null ? void 0 : node.kind) || "Action");
+    const lvl = safeFiniteNumber(node == null ? void 0 : node.target_level, null);
+    const kind = String((node == null ? void 0 : node.kind) || "").toUpperCase();
+    if (lvl === null) return base;
+    if (kind === "THROTTLE_BUILDING") {
+      return `${base} → ${Math.round(lvl)}%`;
+    }
+    if (kind === "BUILD_SHIP" || kind === "SHIPS") {
+      if (/\(x\d+\)$/i.test(base)) return base;
+      return `${base} (x${Math.max(1, Math.round(lvl))})`;
+    }
+    if (kind === "BUILD" || kind === "WAIT_RESOURCES" || kind === "RESEARCH") {
+      return `${base} L${Math.round(lvl)}`;
+    }
+    if (kind === "DEMOLISH_BUILDING" || kind === "DEMOLISH") {
+      return `Demolish ${base} → L${Math.round(lvl)}`;
+    }
+    return base;
+  }
+  function formatNodeStatusShort(status) {
+    const norm = status.toLowerCase();
+    if (norm === "ready" || norm === "active" || norm === "in_flight") return "READY";
+    if (norm === "completed" || norm === "done") return "DONE";
+    if (norm === "waiting_resources") return "WAIT";
+    if (norm === "blocked_gate" || norm === "conflict") return "HOLD";
+    return "QUEUE";
+  }
+  function nodeStatusCssClass(status) {
+    const norm = status.toLowerCase();
+    if (norm === "ready" || norm === "active" || norm === "in_flight" || norm === "completed" || norm === "done") {
+      return "is-ready";
+    }
+    if (norm === "waiting_resources") return "is-waiting";
+    if (norm === "blocked_gate" || norm === "conflict") return "is-blocked";
+    return "is-queued";
+  }
+  const DagCanvas = ({
+    graph,
+    idPrefix = "ag",
+    markerPrefix,
+    edgeFilter: controlledEdgeFilter,
+    onEdgeFilterChange,
+    showLegendBar = true,
+    legendExtraControls,
+    emptyMessage = "No planned actions for the current empire snapshot and simulation parameters."
+  }) => {
+    const scrollRef = reactExports.useRef(null);
+    const {
+      isDragging,
+      consumeSuppressClick,
+      onMouseDown,
+      onMouseMove,
+      onMouseUp,
+      onMouseLeave
+    } = useDragScroll(scrollRef, 4);
+    const [localEdgeFilter, setLocalEdgeFilter] = reactExports.useState("all");
+    const [selectedNodeId, setSelectedNodeId] = reactExports.useState(null);
+    const edgeFilter = controlledEdgeFilter ?? localEdgeFilter;
+    const setEdgeFilter = (next) => {
+      if (onEdgeFilterChange) {
+        onEdgeFilterChange(next);
+      } else {
+        setLocalEdgeFilter(next);
+      }
+    };
+    const mPrefix = markerPrefix || idPrefix;
+    const nodes = Array.isArray(graph == null ? void 0 : graph.nodes) ? graph.nodes : [];
+    const allEdges = Array.isArray(graph == null ? void 0 : graph.edges) ? graph.edges : [];
+    const visibleEdges = allEdges.filter((e) => edgeMatchesFilter(e, edgeFilter));
+    const activeSelectedId = selectedNodeId && nodes.some((n) => n.id === selectedNodeId) ? selectedNodeId : null;
+    const LANE_HEADER_W = 168;
+    const PAD_X = 20;
+    const PAD_Y = 14;
+    const CARD_W = 228;
+    const CARD_H = 92;
+    const COL_GAP = 68;
+    const STACK_GAP = 14;
+    const LANE_PAD_Y = 16;
+    const rawLanes = Array.isArray(graph == null ? void 0 : graph.lanes) ? graph.lanes : [];
+    const activeLanes = [];
+    const laneIdxById = /* @__PURE__ */ new Map();
+    rawLanes.forEach((ln) => {
+      const lid = String((ln == null ? void 0 : ln.id) || "");
+      if (!lid) return;
+      if (nodes.some((n) => n.lane_id === lid)) {
+        laneIdxById.set(lid, activeLanes.length);
+        activeLanes.push(ln);
+      }
+    });
+    nodes.forEach((n) => {
+      const lid = String(n.lane_id || "lane:global");
+      if (!laneIdxById.has(lid)) {
+        laneIdxById.set(lid, activeLanes.length);
+        activeLanes.push({
+          id: lid,
+          scope: lid === "lane:global" ? "global" : "planet",
+          label: lid === "lane:global" ? "Empire & Global Research" : n.planet_coords ? `${n.planet_name || "Colony"} [${n.planet_coords}]` : String(n.planet_name || lid),
+          planet_id: safeFiniteNumber(n.planet_id, 0) ?? 0,
+          coords: String(n.planet_coords || ""),
+          energy: 0,
+          node_count: 1
+        });
+      }
+    });
+    const cellStacks = /* @__PURE__ */ new Map();
+    const maxStackByLane = new Array(activeLanes.length).fill(1);
+    let maxCol = 0;
+    const nodePlacement = /* @__PURE__ */ new Map();
+    nodes.forEach((n, idx) => {
+      const lIdx = laneIdxById.get(String(n.lane_id || "lane:global")) ?? 0;
+      const colIdx = Math.max(
+        0,
+        Math.round(safeFiniteNumber(n.topological_layer, idx) ?? idx)
+      );
+      if (colIdx > maxCol) maxCol = colIdx;
+      const cellKey = `${lIdx}:${colIdx}`;
+      const stackIdx = cellStacks.get(cellKey) || 0;
+      cellStacks.set(cellKey, stackIdx + 1);
+      if (stackIdx + 1 > (maxStackByLane[lIdx] || 1)) {
+        maxStackByLane[lIdx] = stackIdx + 1;
+      }
+      nodePlacement.set(String(n.id), { laneIdx: lIdx, colIdx, stackIdx });
+    });
+    const laneTops = [];
+    const laneHeights = [];
+    let cursorY = PAD_Y;
+    for (let i = 0; i < activeLanes.length; i += 1) {
+      const stacks = maxStackByLane[i] || 1;
+      const h = stacks * CARD_H + Math.max(0, stacks - 1) * STACK_GAP + LANE_PAD_Y * 2;
+      laneTops.push(cursorY);
+      laneHeights.push(h);
+      cursorY += h;
+    }
+    const totalWidth = Math.max(
+      680,
+      LANE_HEADER_W + PAD_X * 2 + (maxCol + 1) * CARD_W + maxCol * COL_GAP + 24
+    );
+    const totalHeight = Math.max(240, cursorY + PAD_Y);
+    const coordsById = /* @__PURE__ */ new Map();
+    nodes.forEach((node) => {
+      const nid = String(node.id);
+      const plc = nodePlacement.get(nid) || { laneIdx: 0, colIdx: 0, stackIdx: 0 };
+      const x = LANE_HEADER_W + PAD_X + plc.colIdx * (CARD_W + COL_GAP);
+      const y = (laneTops[plc.laneIdx] || PAD_Y) + LANE_PAD_Y + plc.stackIdx * (CARD_H + STACK_GAP);
+      coordsById.set(nid, { x, y, colIdx: plc.colIdx, laneIdx: plc.laneIdx });
+    });
+    const upstreamIds = /* @__PURE__ */ new Set();
+    const downstreamIds = /* @__PURE__ */ new Set();
+    if (activeSelectedId) {
+      allEdges.forEach((e) => {
+        if (e.target === activeSelectedId) upstreamIds.add(e.source);
+        if (e.source === activeSelectedId) downstreamIds.add(e.target);
+      });
+    }
+    const selectedObj = activeSelectedId ? nodes.find((n) => n.id === activeSelectedId) || null : null;
+    const nodesById = new Map(nodes.map((n) => [String(n.id), n]));
+    const incomingSel = selectedObj ? allEdges.filter((e) => e.target === selectedObj.id) : [];
+    const outgoingSel = selectedObj ? allEdges.filter((e) => e.source === selectedObj.id) : [];
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+      showLegendBar ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-legend-bar", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-legend-items", "aria-label": "Graph edge legend", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-legend-item", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-swatch is-seq", "aria-hidden": "true" }),
+            "Sequence Flow"
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-legend-item", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-swatch is-prereq", "aria-hidden": "true" }),
+            "Prerequisite Unlock"
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-legend-item", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-swatch is-resource", "aria-hidden": "true" }),
+            "Resource / Power / B2%"
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-legend-item", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-swatch is-queue", "aria-hidden": "true" }),
+            "Queue / Slot Order"
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
+          legendExtraControls,
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-chips", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: `chip-btn${edgeFilter === "all" ? " active" : ""}`,
+                "data-ag-edge-filter": "all",
+                onClick: () => setEdgeFilter("all"),
+                children: "All Links"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: `chip-btn${edgeFilter === "deps" ? " active" : ""}`,
+                "data-ag-edge-filter": "deps",
+                onClick: () => setEdgeFilter("deps"),
+                children: "Dependencies Only"
+              }
+            )
+          ] })
+        ] })
+      ] }) : null,
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "div",
+        {
+          ref: scrollRef,
+          className: `ag-canvas-scroll${isDragging ? " is-dragging" : ""}`,
+          id: `${idPrefix}-canvas-scroll`,
+          onMouseDown,
+          onMouseMove,
+          onMouseUp,
+          onMouseLeave,
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "div",
+              {
+                className: "ag-canvas-stage",
+                id: `${idPrefix}-canvas-stage`,
+                hidden: nodes.length === 0,
+                style: nodes.length > 0 ? { width: `${totalWidth}px`, height: `${totalHeight}px` } : void 0,
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "div",
+                    {
+                      className: "ag-lanes-layer",
+                      id: `${idPrefix}-lanes-layer`,
+                      "aria-hidden": "true",
+                      style: nodes.length > 0 ? { width: `${totalWidth}px`, height: `${totalHeight}px` } : void 0,
+                      children: activeLanes.map((ln, idx) => {
+                        const laneNodeCnt = nodes.filter((n) => n.lane_id === ln.id).length;
+                        const eNet = Math.round(safeFiniteNumber(ln.energy, 0) ?? 0);
+                        const slotsUsed = safeFiniteNumber(ln.fleet_slots_used ?? ln.slots_used, null);
+                        const slotsMax = safeFiniteNumber(ln.fleet_slots_max ?? ln.slots_max, null);
+                        const metaText = slotsUsed !== null && slotsMax !== null ? `${laneNodeCnt} ${laneNodeCnt === 1 ? "op" : "ops"} · Slots ${Math.round(slotsUsed)}/${Math.round(slotsMax)}` : ln.scope === "global" ? `${laneNodeCnt} global ${laneNodeCnt === 1 ? "task" : "tasks"}` : `${laneNodeCnt} ${laneNodeCnt === 1 ? "task" : "tasks"} · Energy ${eNet > 0 ? `+${eNet}` : String(eNet)}`;
+                        return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "div",
+                          {
+                            className: idx % 2 === 1 ? "ag-lane-band is-alt" : "ag-lane-band",
+                            "data-lane-id": String(ln.id || ""),
+                            style: {
+                              top: `${laneTops[idx]}px`,
+                              width: `${totalWidth}px`,
+                              height: `${laneHeights[idx]}px`
+                            },
+                            children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-lane-header", children: [
+                              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-lane-title", children: sanitizeMainWindowText(ln.label || ln.id || "Lane") }),
+                              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-lane-meta tabular", children: metaText })
+                            ] })
+                          },
+                          String(ln.id || idx)
+                        );
+                      })
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "div",
+                    {
+                      className: "ag-edges-layer",
+                      id: `${idPrefix}-edges-layer`,
+                      "aria-hidden": "true",
+                      style: nodes.length > 0 ? { width: `${totalWidth}px`, height: `${totalHeight}px` } : void 0,
+                      children: nodes.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                        "svg",
+                        {
+                          id: `${idPrefix}-edges-svg`,
+                          viewBox: `0 0 ${totalWidth} ${totalHeight}`,
+                          width: totalWidth,
+                          height: totalHeight,
+                          children: [
+                            /* @__PURE__ */ jsxRuntimeExports.jsx("defs", { children: [
+                              [`${mPrefix}-arrow-seq`, "#32e8ff"],
+                              [`${mPrefix}-arrow-prereq`, "#16ec98"],
+                              [`${mPrefix}-arrow-resource`, "#efb03b"],
+                              [`${mPrefix}-arrow-queue`, "#9eb3b8"],
+                              [`${mPrefix}-arrow-gate`, "#ff6873"]
+                            ].map(([mId, color]) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                              "marker",
+                              {
+                                id: mId,
+                                viewBox: "0 0 10 10",
+                                refX: "9",
+                                refY: "5",
+                                markerWidth: "6",
+                                markerHeight: "6",
+                                orient: "auto-start-reverse",
+                                children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M 0 1.5 L 9 5 L 0 8.5 z", fill: color })
+                              },
+                              mId
+                            )) }),
+                            visibleEdges.map((edge, idx) => {
+                              const p1 = coordsById.get(String(edge.source));
+                              const p2 = coordsById.get(String(edge.target));
+                              if (!p1 || !p2) return null;
+                              const x1 = p1.x + CARD_W;
+                              const y1 = p1.y + CARD_H / 2;
+                              const x2 = p2.x;
+                              const y2 = p2.y + CARD_H / 2;
+                              const dx = Math.max(36, Math.abs(x2 - x1) * 0.45);
+                              const sameRowLongSpan = Math.abs(y2 - y1) < 6 && p2.colIdx - p1.colIdx > 1;
+                              const arcLift = sameRowLongSpan ? -30 : 0;
+                              const dStr = `M ${x1.toFixed(1)} ${y1.toFixed(1)} C ${(x1 + dx).toFixed(1)} ${(y1 + arcLift).toFixed(1)}, ${(x2 - dx).toFixed(1)} ${(y2 + arcLift).toFixed(1)}, ${x2.toFixed(1)} ${y2.toFixed(1)}`;
+                              const spec = edgeVisualSpec(edge, mPrefix);
+                              const connected = Boolean(
+                                activeSelectedId && (edge.source === activeSelectedId || edge.target === activeSelectedId)
+                              );
+                              const dimmed = Boolean(activeSelectedId && !connected);
+                              return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                                "path",
+                                {
+                                  className: `ag-edge-path ${spec.cls}${connected ? " is-highlighted" : ""}${dimmed ? " is-dimmed" : ""}`,
+                                  d: dStr,
+                                  markerEnd: `url(#${spec.marker})`,
+                                  "data-edge-id": String(edge.id || ""),
+                                  "data-source": String(edge.source || ""),
+                                  "data-target": String(edge.target || ""),
+                                  "data-edge-type": String(edge.primary_type || "")
+                                },
+                                String(edge.id || idx)
+                              );
+                            })
+                          ]
+                        }
+                      ) : null
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "div",
+                    {
+                      className: "ag-nodes-layer",
+                      id: `${idPrefix}-nodes-layer`,
+                      role: "list",
+                      "aria-label": "Planned action graph nodes",
+                      style: nodes.length > 0 ? { width: `${totalWidth}px`, height: `${totalHeight}px` } : void 0,
+                      children: nodes.map((node, idx) => {
+                        const nid = String(node.id);
+                        const pos = coordsById.get(nid) || { x: 0, y: 0 };
+                        const status = String(node.status || "queued");
+                        const statusCls = nodeStatusCssClass(status);
+                        const prio = String(node.priority || (node.week != null ? `W${node.week}` : "P2")).toUpperCase();
+                        const prioCls = prio === "P0" ? "is-p0" : prio === "P1" ? "is-p1" : prio === "P2" || prio.startsWith("W") ? "is-p2" : "is-p3";
+                        const isSel = Boolean(activeSelectedId && nid === activeSelectedId);
+                        const isUp = Boolean(activeSelectedId && upstreamIds.has(nid));
+                        const isDown = Boolean(activeSelectedId && downstreamIds.has(nid));
+                        const isDim = Boolean(activeSelectedId && !isSel && !isUp && !isDown);
+                        const ord = Math.max(
+                          1,
+                          Math.round(safeFiniteNumber(node.seq ?? (node.order_index != null ? Number(node.order_index) + 1 : idx + 1), idx + 1) ?? idx + 1)
+                        );
+                        const weekNum = safeFiniteNumber(node.week, null);
+                        const stepTag = weekNum !== null && node.seq != null ? `#${ord} · W${Math.round(weekNum)}` : `#${ord}`;
+                        return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                          "button",
+                          {
+                            type: "button",
+                            className: `ag-node-card ${statusCls}${isSel ? " is-selected" : ""}${!isSel && isUp ? " is-upstream" : ""}${!isSel && isDown ? " is-downstream" : ""}${isDim ? " is-dimmed" : ""}`,
+                            role: "listitem",
+                            "data-node-id": nid,
+                            "data-node-kind": String(node.kind || ""),
+                            "data-node-priority": prio,
+                            "data-node-status": status,
+                            "aria-pressed": isSel ? "true" : "false",
+                            style: { left: `${pos.x}px`, top: `${pos.y}px` },
+                            title: sanitizeMainWindowText(String(node.reason || "").replace(/>/g, "to")),
+                            onClick: () => {
+                              if (consumeSuppressClick()) return;
+                              setSelectedNodeId((prev) => prev === nid ? null : nid);
+                            },
+                            children: [
+                              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-node-head", children: [
+                                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-node-badges", children: [
+                                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-step-tag tabular", children: stepTag }),
+                                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `ag-prio-tag tabular ${prioCls}`, children: prio })
+                                ] }),
+                                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `ag-state-tag tabular ${statusCls}`, children: formatNodeStatusShort(status) })
+                              ] }),
+                              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-node-title", children: sanitizeMainWindowText(formatDagNodeTargetLabel(node)) }),
+                              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-node-foot", children: [
+                                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-node-coords", children: node.planet_coords ? `[${node.planet_coords}]` : "[GLOBAL]" }),
+                                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-node-eta", children: sanitizeMainWindowText(`ETA ${node.total_eta || node.duration_text || "Ready"}`) })
+                              ] })
+                            ]
+                          },
+                          nid
+                        );
+                      })
+                    }
+                  )
+                ]
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-empty-state", id: `${idPrefix}-empty-state`, hidden: nodes.length > 0, children: sanitizeMainWindowText(emptyMessage) })
+          ]
+        }
+      ),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "div",
+        {
+          className: "ag-inspector-bar",
+          id: `${idPrefix}-node-inspector`,
+          "aria-label": "Selected action node details",
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-insp-main", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", id: `${idPrefix}-insp-step`, children: selectedObj ? `#${Math.max(1, Math.round(safeFiniteNumber(selectedObj.seq ?? (selectedObj.order_index != null ? Number(selectedObj.order_index) + 1 : 1), 1) ?? 1))}` : "#—" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-insp-copy", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { id: `${idPrefix}-insp-title`, children: selectedObj ? sanitizeMainWindowText(
+                  `${selectedObj.priority || (selectedObj.week != null ? `W${selectedObj.week}` : "P2")} · ${formatDagNodeTargetLabel(selectedObj)} ${selectedObj.planet_coords ? `[${selectedObj.planet_coords}]` : "[GLOBAL]"}`
+                ) : "Select a node in the graph to inspect dependencies and ETAs" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-insp-sub tabular", id: `${idPrefix}-insp-meta`, children: selectedObj ? `Wait: ${String(selectedObj.wait_eta || "Ready")} · Duration: ${String(selectedObj.duration_text || "Instant")} · Total: ${String(selectedObj.total_eta || selectedObj.duration_text || "Ready")} — ${sanitizeMainWindowText(selectedObj.reason || "Planned empire operation.")}` : "Click any node card above to highlight upstream prerequisites and downstream dependents." })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-insp-deps tabular", id: `${idPrefix}-insp-deps`, children: selectedObj ? incomingSel.length === 0 && outgoingSel.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-dep-pill", children: "Independent root action (0 links)" }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+              incomingSel.slice(0, 4).map((edge, idx) => {
+                const src = nodesById.get(String(edge.source));
+                const srcNum = src ? Math.round(
+                  safeFiniteNumber(
+                    src.seq ?? (src.order_index != null ? Number(src.order_index) + 1 : 1),
+                    1
+                  ) ?? 1
+                ) : "?";
+                return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "span",
+                  {
+                    className: "ag-dep-pill is-up",
+                    title: sanitizeMainWindowText(String(edge.label || "").replace(/>/g, "to")),
+                    children: sanitizeMainWindowText(
+                      `← #${srcNum} ${src ? src.target_name || src.entity_name || src.kind : edge.source} (${edge.primary_type})`
+                    )
+                  },
+                  `in-${idx}`
+                );
+              }),
+              outgoingSel.slice(0, 4).map((edge, idx) => {
+                const dst = nodesById.get(String(edge.target));
+                const dstNum = dst ? Math.round(
+                  safeFiniteNumber(
+                    dst.seq ?? (dst.order_index != null ? Number(dst.order_index) + 1 : 1),
+                    1
+                  ) ?? 1
+                ) : "?";
+                return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "span",
+                  {
+                    className: "ag-dep-pill is-down",
+                    title: sanitizeMainWindowText(String(edge.label || "").replace(/>/g, "to")),
+                    children: sanitizeMainWindowText(
+                      `→ #${dstNum} ${dst ? dst.target_name || dst.entity_name || dst.kind : edge.target} (${edge.primary_type})`
+                    )
+                  },
+                  `out-${idx}`
+                );
+              })
+            ] }) : null })
+          ]
+        }
+      )
+    ] });
+  };
+  function draftFromAiParams(raw) {
+    if (!raw || typeof raw !== "object") {
+      return {
+        ...DEFAULT_AI_PLANNER_DRAFT,
+        resource_spare_percent: { ...DEFAULT_AI_PLANNER_DRAFT.resource_spare_percent }
+      };
+    }
+    const get = (snake, upper, def) => raw[snake] !== void 0 ? raw[snake] : raw[upper] !== void 0 ? raw[upper] : def;
+    const rawSpare = get("resource_spare_percent", "PATH_RESOURCE_SPARE_PERCENT", {}) || {};
+    const spare = {
+      pig_iron: String(safeFiniteNumber(rawSpare.pig_iron, 10) ?? 10),
+      metal: String(safeFiniteNumber(rawSpare.metal, 10) ?? 10),
+      kryptonite: String(safeFiniteNumber(rawSpare.kryptonite, 10) ?? 10),
+      spice: String(safeFiniteNumber(rawSpare.spice, 10) ?? 10)
+    };
+    const b10Raw = get("fleet_command_center_level", "PATH_FLEET_COMMAND_CENTER_LEVEL", null);
+    const apdRaw = get("attacks_per_day", "PATH_ATTACKS_PER_DAY", null);
+    return {
+      reward_weeks: String(
+        Math.max(1, Math.round(safeFiniteNumber(get("reward_weeks", "PATH_REWARD_WEEKS", 26), 26) ?? 26))
+      ),
+      weekly_discount: String(
+        safeFiniteNumber(get("weekly_discount", "PATH_WEEKLY_DISCOUNT", 0.9), 0.9) ?? 0.9
+      ),
+      resource_spare_percent: spare,
+      fleet_command_center_level: b10Raw !== null && b10Raw !== void 0 && String(b10Raw).trim() !== "" ? String(Math.round(safeFiniteNumber(b10Raw, 0) ?? 0)) : "",
+      attacks_per_day: apdRaw !== null && apdRaw !== void 0 && String(apdRaw).trim() !== "" ? String(safeFiniteNumber(apdRaw, 0) ?? 0) : "",
+      pad_generic_colonies: Boolean(get("pad_generic_colonies", "PAD_GENERIC_COLONIES", false)),
+      scarcity_focus: String(safeFiniteNumber(get("scarcity_focus", "SCARCITY_FOCUS", 1), 1) ?? 1),
+      critical_queue_share: String(
+        safeFiniteNumber(get("critical_queue_share", "CRITICAL_QUEUE_SHARE", 0.9), 0.9) ?? 0.9
+      ),
+      patience: String(safeFiniteNumber(get("patience", "PATIENCE", 0.25), 0.25) ?? 0.25),
+      speed_weight: String(safeFiniteNumber(get("speed_weight", "SPEED_WEIGHT", 1.5), 1.5) ?? 1.5),
+      ga_population_size: String(
+        Math.max(4, Math.round(safeFiniteNumber(get("ga_population_size", "GA_POPULATION_SIZE", 10), 10) ?? 10))
+      ),
+      ga_generations: String(
+        Math.max(1, Math.round(safeFiniteNumber(get("ga_generations", "GA_GENERATIONS", 6), 6) ?? 6))
+      ),
+      ga_random_seed: String(
+        Math.round(safeFiniteNumber(get("ga_random_seed", "GA_RANDOM_SEED", 20261117), 20261117) ?? 20261117)
+      )
+    };
+  }
+  function buildAiParamsPayload(draft) {
+    const num = (v, fb) => safeFiniteNumber(v, fb) ?? fb;
+    const intNum = (v, fb, min = 0) => Math.max(min, Math.round(num(v, fb)));
+    const b10Trim = draft.fleet_command_center_level.trim();
+    const apdTrim = draft.attacks_per_day.trim();
+    return {
+      reward_weeks: Math.max(1, Math.min(104, intNum(draft.reward_weeks, 26, 1))),
+      weekly_discount: Math.max(0.05, Math.min(1, num(draft.weekly_discount, 0.9))),
+      resource_spare_percent: {
+        pig_iron: Math.max(0, Math.min(100, num(draft.resource_spare_percent.pig_iron, 10))),
+        metal: Math.max(0, Math.min(100, num(draft.resource_spare_percent.metal, 10))),
+        kryptonite: Math.max(0, Math.min(100, num(draft.resource_spare_percent.kryptonite, 10))),
+        spice: Math.max(0, Math.min(100, num(draft.resource_spare_percent.spice, 10)))
+      },
+      fleet_command_center_level: b10Trim === "" ? null : intNum(b10Trim, 0, 0),
+      attacks_per_day: apdTrim === "" ? null : Math.max(0, num(apdTrim, 0)),
+      pad_generic_colonies: Boolean(draft.pad_generic_colonies),
+      scarcity_focus: Math.max(0, num(draft.scarcity_focus, 1)),
+      critical_queue_share: Math.max(0, Math.min(1, num(draft.critical_queue_share, 0.9))),
+      patience: Math.max(0, num(draft.patience, 0.25)),
+      speed_weight: Math.max(0, num(draft.speed_weight, 1.5)),
+      ga_population_size: intNum(draft.ga_population_size, 10, 4),
+      ga_generations: intNum(draft.ga_generations, 6, 1),
+      ga_random_seed: Math.round(num(draft.ga_random_seed, 20261117))
+    };
+  }
+  const AiPlannerTab = ({ hidden = false }) => {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+    const {
+      dashboard,
+      setDashboard,
+      activePage,
+      apiOnline,
+      plannerJobsStatus,
+      setPlannerJobsStatus,
+      apiCommand: apiCommand2,
+      loadDashboard,
+      showFeedback
+    } = useConsole();
+    const [aiData, setAiData] = reactExports.useState(null);
+    const [draft, setDraft] = reactExports.useState(
+      () => draftFromAiParams(DEFAULT_AI_PLANNER_DRAFT)
+    );
+    const [draftDirty, setDraftDirty] = reactExports.useState(false);
+    const [paramSubTab, setParamSubTab] = reactExports.useState("horizon");
+    const [subView, setSubView] = reactExports.useState("dag");
+    const [windowSize, setWindowSize] = reactExports.useState(40);
+    const [weekFilter, setWeekFilter] = reactExports.useState("all");
+    const [planetFilter, setPlanetFilter] = reactExports.useState("all");
+    const [stepsSearch, setStepsSearch] = reactExports.useState("");
+    const [stepsPage, setStepsPage] = reactExports.useState(1);
+    const [stepsPageSize, setStepsPageSize] = reactExports.useState(25);
+    const [isSubmitting, setIsSubmitting] = reactExports.useState(false);
+    const [resolvingConflictKey, setResolvingConflictKey] = reactExports.useState(null);
+    const [selectedCandidateByConflict, setSelectedCandidateByConflict] = reactExports.useState({});
+    const fetchAiState = reactExports.useCallback(
+      async ({
+        silent = false,
+        pageOverride,
+        pageSizeOverride,
+        searchOverride,
+        weekOverride,
+        planetOverride,
+        windowOverride
+      } = {}) => {
+        try {
+          const wk = weekOverride ?? weekFilter;
+          const pl = planetOverride ?? planetFilter;
+          const payload = {
+            command: "ai_planner_get",
+            window_size: windowOverride ?? windowSize,
+            page: pageOverride ?? stepsPage,
+            page_size: pageSizeOverride ?? stepsPageSize,
+            search: (searchOverride ?? stepsSearch).trim()
+          };
+          if (wk !== "all") payload.week = Number(wk);
+          if (pl !== "all") payload.planet_id = Number(pl) || pl;
+          const res = await apiCommand2(payload);
+          if (res && typeof res === "object") {
+            setAiData(res);
+            if (!draftDirty) {
+              const rawParams = res.meta_parameters || res.default_params || null;
+              if (rawParams) setDraft(draftFromAiParams(rawParams));
+            }
+            if (res.job && plannerJobsStatus) {
+              setPlannerJobsStatus({
+                ...plannerJobsStatus,
+                ai_planner_job: res.job,
+                pending_field_conflicts: res.pending_field_conflicts ?? plannerJobsStatus.pending_field_conflicts
+              });
+            }
+          }
+        } catch (err) {
+          if (!silent) {
+            showFeedback(`AI-Planner load failed: ${err.message}`, feedbackKindForError(err));
+          }
+        }
+      },
+      [
+        apiCommand2,
+        draftDirty,
+        planetFilter,
+        plannerJobsStatus,
+        setPlannerJobsStatus,
+        showFeedback,
+        stepsPage,
+        stepsPageSize,
+        stepsSearch,
+        weekFilter,
+        windowSize
+      ]
+    );
+    reactExports.useEffect(() => {
+      if (!hidden && activePage === "action-graph" && !aiData) {
+        void fetchAiState({ silent: true });
+      }
+    }, [activePage, aiData, apiOnline, fetchAiState, hidden]);
+    const activeJob = (aiData == null ? void 0 : aiData.job) || (plannerJobsStatus == null ? void 0 : plannerJobsStatus.ai_planner_job) || null;
+    const isJobRunning = String((activeJob == null ? void 0 : activeJob.status) || "").toLowerCase() === "running";
+    reactExports.useEffect(() => {
+      if (!isJobRunning || !apiOnline || hidden) return;
+      const timer = setInterval(() => {
+        void fetchAiState({ silent: true });
+      }, 1500);
+      return () => clearInterval(timer);
+    }, [apiOnline, fetchAiState, hidden, isJobRunning]);
+    const gate = computeColonyGateInfo(dashboard, plannerJobsStatus, aiData);
+    const activeMode = normalizeUiPlannerMode(
+      ((_a = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode)
+    );
+    const isLiveAiActive = activeMode === "ai_planner" && gate.liveAiUnlocked;
+    const conflicts = reactExports.useMemo(() => {
+      const raw = (aiData == null ? void 0 : aiData.pending_field_conflicts) ?? (plannerJobsStatus == null ? void 0 : plannerJobsStatus.pending_field_conflicts) ?? (dashboard == null ? void 0 : dashboard.pending_field_conflicts) ?? [];
+      return Array.isArray(raw) ? raw.filter((c) => c && String(c.status || "pending").toLowerCase() === "pending") : [];
+    }, [aiData == null ? void 0 : aiData.pending_field_conflicts, dashboard == null ? void 0 : dashboard.pending_field_conflicts, plannerJobsStatus == null ? void 0 : plannerJobsStatus.pending_field_conflicts]);
+    const rawSteps = reactExports.useMemo(() => {
+      var _a2;
+      const items = (_a2 = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _a2.items;
+      return Array.isArray(items) ? items : [];
+    }, [(_b = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _b.items]);
+    const stepSortCols = reactExports.useMemo(
+      () => ({
+        seq: (s) => safeFiniteNumber(s.seq ?? s.order, 0),
+        week: (s) => safeFiniteNumber(s.week, 0),
+        planet: (s) => String(s.planet_coords || s.planet_name || "account"),
+        action: (s) => `${s.kind || ""} ${s.entity_name || s.entity_key || ""}`,
+        duration: { accessor: (s) => safeFiniteNumber(s.duration_sec, 0), defaultDirection: "desc" },
+        status: (s) => String(s.status || "queued")
+      }),
+      []
+    );
+    const stepSort = useTableSort(rawSteps, stepSortCols);
+    const weeklyRows = reactExports.useMemo(
+      () => Array.isArray(aiData == null ? void 0 : aiData.weekly_breakdown) ? aiData.weekly_breakdown : [],
+      [aiData]
+    );
+    const weekSortCols = reactExports.useMemo(
+      () => ({
+        week: (w) => safeFiniteNumber(w.week, 0),
+        weight: { accessor: (w) => safeFiniteNumber(w.discount_weight, 0), defaultDirection: "desc" },
+        spiceEq: { accessor: (w) => safeFiniteNumber(w.spice_eq, 0), defaultDirection: "desc" },
+        discounted: {
+          accessor: (w) => safeFiniteNumber(w.discounted_spice_eq, 0),
+          defaultDirection: "desc"
+        },
+        cumulative: {
+          accessor: (w) => safeFiniteNumber(w.cumulative_discounted_spice_eq ?? w.cumulative, 0),
+          defaultDirection: "desc"
+        }
+      }),
+      []
+    );
+    const weekSort = useTableSort(weeklyRows, weekSortCols);
+    const onRunAiPlanner = async () => {
+      var _a2;
+      setIsSubmitting(true);
+      try {
+        const payload = buildAiParamsPayload(draft);
+        showFeedback("Running AI-Planner W-week NPV sequence search...", "ok");
+        const res = await apiCommand2({
+          command: "ai_planner_run",
+          params: payload
+        });
+        setDraftDirty(false);
+        await fetchAiState({ silent: true });
+        const st = String(((_a2 = res.job) == null ? void 0 : _a2.status) || "completed").toLowerCase();
+        showFeedback(
+          st === "running" ? "AI-Planner search running in background..." : "AI-Planner W-week path computed.",
+          "ok"
+        );
+      } catch (err) {
+        showFeedback(`AI-Planner run failed: ${err.message}`, feedbackKindForError(err));
+      } finally {
+        setIsSubmitting(false);
+      }
+    };
+    const onActivateAiMode = async () => {
+      var _a2, _b2;
+      if (!gate.liveAiUnlocked) return;
+      try {
+        const res = await apiCommand2({
+          command: "update_config",
+          config: { planner_mode: "ai_planner" },
+          include_action_graph: true
+        });
+        if (res.config && typeof res.config === "object") {
+          (_a2 = globalThis.renderConfigForm) == null ? void 0 : _a2.call(globalThis, res.config);
+          const curDash = ((_b2 = globalThis.state) == null ? void 0 : _b2.dashboard) || dashboard;
+          if (curDash) {
+            const nextDash = {
+              ...curDash,
+              config: res.config,
+              planner_mode: "ai_planner"
+            };
+            if (globalThis.state) globalThis.state.dashboard = nextDash;
+            setDashboard(nextDash);
+          }
+        }
+        await loadDashboard({ refresh: false, preserveConfig: false, force: true });
+        showFeedback("Live AI-Planner mode activated (config.yaml saved).", "ok");
+      } catch (err) {
+        showFeedback(`Activation failed: ${err.message}`, feedbackKindForError(err));
+      }
+    };
+    const onResolveConflict = async (conflict, decision) => {
+      var _a2, _b2, _c2;
+      const chosenBldKey = selectedCandidateByConflict[conflict.conflict_key] || conflict.candidate_building_key || ((_b2 = (_a2 = conflict.candidates) == null ? void 0 : _a2[0]) == null ? void 0 : _b2.building_key) || "";
+      setResolvingConflictKey(conflict.conflict_key);
+      try {
+        const res = await apiCommand2({
+          command: "resolve_field_conflict",
+          conflict_key: conflict.conflict_key,
+          decision,
+          building_key: chosenBldKey || void 0
+        });
+        showFeedback(
+          decision === "demolish" ? `Queued DEMOLISH_BUILDING (${chosenBldKey}) on [${conflict.planet_coords || conflict.planet_id}] to free field.` : `Reserved ${chosenBldKey} floor on [${conflict.planet_coords || conflict.planet_id}] and triggered Config Optimizer -> AI-Planner rerun.`,
+          "ok"
+        );
+        await fetchAiState({ silent: true });
+        await loadDashboard({ refresh: false, preserveConfig: true, force: true });
+        if (((_c2 = res.job) == null ? void 0 : _c2.status) === "running") {
+          setPlannerJobsStatus({
+            ...plannerJobsStatus || {},
+            ai_planner_job: res.job
+          });
+        }
+      } catch (err) {
+        showFeedback(`Conflict resolution failed: ${err.message}`, feedbackKindForError(err));
+      } finally {
+        setResolvingConflictKey(null);
+      }
+    };
+    const onExportTxt = async () => {
+      try {
+        const res = await apiCommand2({ command: "ai_planner_export" });
+        const filename = String(res.filename || "full_planner_path.txt");
+        const content = String(res.content || "");
+        downloadTextFile(filename, content, "text/plain");
+        showFeedback(`Exported ${filename}.`, "ok");
+      } catch (err) {
+        showFeedback(`Export .txt failed: ${err.message}`, feedbackKindForError(err));
+      }
+    };
+    const summary = (aiData == null ? void 0 : aiData.active_summary) || {};
+    const telemetry = (aiData == null ? void 0 : aiData.live_attack_telemetry) || (aiData == null ? void 0 : aiData.attack_telemetry) || {};
+    const planets = Array.isArray((_c = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _c.planets) ? dashboard.state.planets : [];
+    const rewardWeeks = Math.max(
+      1,
+      Math.round(safeFiniteNumber(summary.reward_weeks ?? draft.reward_weeks, 26) ?? 26)
+    );
+    const discReward = safeFiniteNumber(
+      summary.discounted_reward_spice_eq ?? summary.discounted_reward,
+      null
+    );
+    const totalNetOutput = safeFiniteNumber(
+      summary.total_net_spice_eq ?? summary.total_spice_eq,
+      null
+    );
+    const stepsCompleted = Math.max(
+      0,
+      Math.round(safeFiniteNumber(summary.steps_completed ?? summary.steps_started, 0) ?? 0)
+    );
+    const stepsTotal = Math.max(
+      0,
+      Math.round(safeFiniteNumber(summary.steps ?? ((_d = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _d.total), 0) ?? 0)
+    );
+    const startSlots = Math.round(
+      safeFiniteNumber(summary.start_fleet_slots ?? telemetry.current_fleet_slots, 0) ?? 0
+    );
+    const endSlots = Math.round(
+      safeFiniteNumber(summary.final_fleet_slots ?? startSlots, startSlots) ?? startSlots
+    );
+    const lootPerHr = safeFiniteNumber(
+      telemetry.hourly_loot_spice_eq ?? ((_e = telemetry.hourly_loot) == null ? void 0 : _e.spice_eq),
+      null
+    );
+    const medianLoot = safeFiniteNumber(
+      telemetry.median_loot_spice_eq ?? ((_f = telemetry.median_loot) == null ? void 0 : _f.spice_eq),
+      null
+    );
+    const medianRtSec = safeFiniteNumber(telemetry.median_round_trip_seconds, null);
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-tab-split", id: "ag-pane-ai-planner", hidden, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window ag-main-window", id: "ag-ai-main-window", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "AIP" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "AI-Planner — W-Week NPV Sequential Action Path" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "span",
+              {
+                className: `ag-status-pill tabular ${isLiveAiActive ? "is-live" : isJobRunning ? "is-sim" : ""}`,
+                id: "ai-job-status-pill",
+                role: "status",
+                children: isJobRunning ? formatJobBadgeText(activeJob) : isLiveAiActive ? "LIVE AI-PLANNER ACTIVE" : (aiData == null ? void 0 : aiData.has_plan) ? "PREVIEW READY" : "NO PATH"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "tablist", "aria-label": "AI-Planner subviews", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  role: "tab",
+                  "aria-selected": subView === "dag",
+                  className: `tab-btn${subView === "dag" ? " active" : ""}`,
+                  id: "ai-subtab-dag",
+                  onClick: () => setSubView("dag"),
+                  children: "Windowed DAG"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  role: "tab",
+                  "aria-selected": subView === "steps",
+                  className: `tab-btn${subView === "steps" ? " active" : ""}`,
+                  id: "ai-subtab-steps",
+                  onClick: () => setSubView("steps"),
+                  children: `Path (${((_g = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _g.total) ?? rawSteps.length})`
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  role: "tab",
+                  "aria-selected": subView === "weekly",
+                  className: `tab-btn${subView === "weekly" ? " active" : ""}`,
+                  id: "ai-subtab-weekly",
+                  onClick: () => setSubView("weekly"),
+                  children: `Weekly (${weeklyRows.length})`
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-secondary btn-sm",
+                id: "btn-ai-export",
+                onClick: onExportTxt,
+                children: "Export .txt"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-secondary btn-sm",
+                id: "btn-ai-refresh",
+                onClick: () => fetchAiState({ silent: false }),
+                children: "Refresh"
+              }
+            )
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(
+          "div",
+          {
+            className: `ag-gate-banner ${gate.liveAiUnlocked ? "is-unlocked" : "is-locked"}`,
+            id: "ag-ai-colony-gate",
+            role: "status",
+            children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: `${gate.coloniesOwned}/${gate.maxPlanets}` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-gate-copy", children: gate.liveAiUnlocked ? `${gate.coloniesOwned} / ${gate.maxPlanets} colonies founded — Live Bot Execution Unlocked${isLiveAiActive ? " · Currently Active" : " · Click Activate Live AI-Planner to switch"}` : `${gate.coloniesOwned} / ${gate.maxPlanets} colonies founded — Preview Simulation Active · Live Bot Execution Unlocks at ${gate.maxPlanets}/${gate.maxPlanets}` })
+            ]
+          }
+        ),
+        conflicts.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-conflict-stack", id: "ag-ai-field-conflicts", role: "region", "aria-label": "Pending planet field conflicts", children: conflicts.map((c, idx) => {
+          var _a2;
+          const candList = Array.isArray(c.candidates) && c.candidates.length > 0 ? c.candidates : c.candidate_building_key ? [
+            {
+              building_key: c.candidate_building_key,
+              level: c.candidate_level ?? 0
+            }
+          ] : [];
+          const selKey = selectedCandidateByConflict[c.conflict_key] || ((_a2 = candList[0]) == null ? void 0 : _a2.building_key) || "";
+          const busy = resolvingConflictKey === c.conflict_key;
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "div",
+            {
+              className: "ag-conflict-card",
+              "data-conflict-key": c.conflict_key,
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-conflict-info", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "FIELD CONFLICT" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-conflict-copy", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: `${c.planet_name || "Colony"} [${c.planet_coords || c.planet_id}] full — ${c.blocked_building_name || c.blocked_building_key} → L${c.blocked_target_level ?? "?"} needs 1 free field` }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: "Auto-demolition is disabled. Choose whether to demolish an existing building or keep & reserve its floor in Config Optimizer." })
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-conflict-actions", children: [
+                  candList.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "select",
+                    {
+                      className: "ag-conflict-select",
+                      "aria-label": "Candidate building for field conflict",
+                      value: selKey,
+                      onChange: (e) => setSelectedCandidateByConflict((prev) => ({
+                        ...prev,
+                        [c.conflict_key]: e.target.value
+                      })),
+                      children: candList.map((cand) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: cand.building_key, children: `${cand.name || cand.building_key} (L${cand.level ?? "?"})` }, cand.building_key))
+                    }
+                  ) : null,
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn btn-warning btn-sm",
+                      id: `btn-conflict-demolish-${idx}`,
+                      "data-conflict-action": "demolish",
+                      disabled: busy,
+                      onClick: () => onResolveConflict(c, "demolish"),
+                      children: "Demolish Building"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn btn-primary btn-sm",
+                      id: `btn-conflict-reserve-${idx}`,
+                      "data-conflict-action": "keep_reserve",
+                      disabled: busy,
+                      onClick: () => onResolveConflict(c, "keep_reserve"),
+                      children: "Keep & Reserve Fields (Rerun Pipeline)"
+                    }
+                  )
+                ] })
+              ]
+            },
+            c.conflict_key
+          );
+        }) }) : null,
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-strip", "aria-label": "AI-Planner KPI summary", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Net Discounted SpiceEq" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ai-kpi-reward", children: discReward !== null ? fmtCompact(discReward) : "—" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", children: `γ=${draft.weekly_discount} · ${rewardWeeks}w NPV` })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: `Total ${rewardWeeks}-Week Net Output` }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ai-kpi-output", children: totalNetOutput !== null ? fmtCompact(totalNetOutput) : "—" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", children: summary.status ? `Status: ${String(summary.status).toUpperCase()}` : "SpiceEq" })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Progress (Completed / Horizon)" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ai-kpi-progress", children: `${stepsCompleted} / ${stepsTotal}` }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", children: summary.time ? `Reached in ${summary.time}` : `Horizon ${rewardWeeks}w` })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Fleet Slots & Median Loot/h" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ai-kpi-telemetry", children: `${startSlots} → ${endSlots} slots` }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", children: lootPerHr !== null ? `${fmtCompact(lootPerHr)} SpEq/h · RT ${formatDurationSecondsCompact(medianRtSec)}` : "SQLite attack history" })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-ai-subpane", id: "ai-view-dag", hidden: subView !== "dag", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-ai-window-bar", id: "ag-ai-window-controls", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "group", "aria-label": "DAG window slice", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: `tab-btn${windowSize === 40 ? " active" : ""}`,
+                  id: "ai-win-40",
+                  onClick: () => {
+                    setWindowSize(40);
+                    void fetchAiState({ windowOverride: 40 });
+                  },
+                  children: "Next 40 Steps"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: `tab-btn${windowSize > 40 ? " active" : ""}`,
+                  id: "ai-win-200",
+                  onClick: () => {
+                    setWindowSize(200);
+                    void fetchAiState({ windowOverride: 200 });
+                  },
+                  children: "Extended (200)"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "ag-inline-filter tabular", htmlFor: "ai-filter-week", children: [
+              "Week",
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "select",
+                {
+                  id: "ai-filter-week",
+                  value: weekFilter,
+                  onChange: (e) => {
+                    const nextWk = e.target.value;
+                    setWeekFilter(nextWk);
+                    setStepsPage(1);
+                    void fetchAiState({ weekOverride: nextWk, pageOverride: 1 });
+                  },
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "all", children: `All (W1–W${rewardWeeks})` }),
+                    Array.from({ length: rewardWeeks }, (_, i) => i + 1).map((w) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: String(w), children: `W${w}` }, w))
+                  ]
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "ag-inline-filter tabular", htmlFor: "ai-filter-planet", children: [
+              "Planet",
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "select",
+                {
+                  id: "ai-filter-planet",
+                  value: planetFilter,
+                  onChange: (e) => {
+                    const nextPl = e.target.value;
+                    setPlanetFilter(nextPl);
+                    setStepsPage(1);
+                    void fetchAiState({ planetOverride: nextPl, pageOverride: 1 });
+                  },
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "all", children: "All Planets" }),
+                    planets.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: String(p.planet_id), children: `${p.name || "Colony"} [${p.coords || p.planet_id}]` }, p.planet_id))
+                  ]
+                }
+              )
+            ] })
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            DagCanvas,
+            {
+              graph: (aiData == null ? void 0 : aiData.graph) || null,
+              idPrefix: "ag-ai",
+              markerPrefix: "ag-ai",
+              emptyMessage: "No AI-Planner path generated yet. Run Config Optimization or click Run AI-Planner."
+            }
+          )
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-ai-subpane", id: "ai-view-steps", hidden: subView !== "steps", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-ai-window-bar", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inline-actions", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "input",
+              {
+                type: "search",
+                id: "ag-ai-steps-search",
+                className: "table-search-input",
+                placeholder: "Search steps (planet, building, research)...",
+                value: stepsSearch,
+                onChange: (e) => {
+                  const nextQ = e.target.value;
+                  setStepsSearch(nextQ);
+                  setStepsPage(1);
+                  void fetchAiState({ searchOverride: nextQ, pageOverride: 1, silent: true });
+                }
+              }
+            ) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", children: `${((_h = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _h.total) ?? stepSort.sortedRows.length} total actions` })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "ag-ai-steps-table", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "#",
+                  sortKey: "seq",
+                  activeKey: stepSort.sortKey,
+                  direction: stepSort.sortDirection,
+                  onSort: stepSort.requestSort
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Week",
+                  sortKey: "week",
+                  activeKey: stepSort.sortKey,
+                  direction: stepSort.sortDirection,
+                  onSort: stepSort.requestSort
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Planet",
+                  sortKey: "planet",
+                  activeKey: stepSort.sortKey,
+                  direction: stepSort.sortDirection,
+                  onSort: stepSort.requestSort
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Action",
+                  sortKey: "action",
+                  activeKey: stepSort.sortKey,
+                  direction: stepSort.sortDirection,
+                  onSort: stepSort.requestSort
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Start" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Duration",
+                  sortKey: "duration",
+                  activeKey: stepSort.sortKey,
+                  direction: stepSort.sortDirection,
+                  onSort: stepSort.requestSort,
+                  align: "right"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Status",
+                  sortKey: "status",
+                  activeKey: stepSort.sortKey,
+                  direction: stepSort.sortDirection,
+                  onSort: stepSort.requestSort
+                }
+              )
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "ag-ai-steps-tbody", children: stepSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 7, className: "empty-cell", children: "No AI-Planner steps matching current filter." }) }) : stepSort.sortedRows.map((s, idx) => {
+              const seqNum = Math.round(safeFiniteNumber(s.seq ?? s.order, idx + 1) ?? idx + 1);
+              const wkNum = Math.round(safeFiniteNumber(s.week, 1) ?? 1);
+              const stStr = String(s.status || "queued").toUpperCase();
+              return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `#${seqNum}` }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `W${wkNum}` }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: s.planet_coords ? `${s.planet_name || "Colony"} [${s.planet_coords}]` : "Account" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-title", children: `${s.kind || "BUILD"} · ${s.entity_name || s.entity_key || "Step"}${s.target_level != null ? ` → L${s.target_level}` : ""}` }) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: s.start || formatDurationSecondsCompact(s.start_sec) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: s.duration_text || formatDurationSecondsCompact(s.duration_sec) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `eta-pill tabular${stStr === "COMPLETED" ? "" : " is-wait"}`, children: stStr }) })
+              ] }, `${seqNum}-${s.entity_key || idx}`);
+            }) })
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            TablePagination,
+            {
+              idPrefix: "ag-ai-steps",
+              totalItems: Math.max(
+                stepSort.sortedRows.length,
+                Math.round(safeFiniteNumber((_i = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _i.total, 0) ?? 0)
+              ),
+              page: stepsPage,
+              pageSize: stepsPageSize,
+              itemLabel: "steps",
+              onPageChange: (nextP) => {
+                setStepsPage(nextP);
+                void fetchAiState({ pageOverride: nextP });
+              },
+              onPageSizeChange: (nextSz) => {
+                setStepsPageSize(nextSz);
+                setStepsPage(1);
+                void fetchAiState({ pageOverride: 1, pageSizeOverride: nextSz });
+              }
+            }
+          )
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-ai-subpane", id: "ai-view-weekly", hidden: subView !== "weekly", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "ag-ai-weekly-table", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Week",
+                sortKey: "week",
+                activeKey: weekSort.sortKey,
+                direction: weekSort.sortDirection,
+                onSort: weekSort.requestSort
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Discount γ^(w-1)",
+                sortKey: "weight",
+                activeKey: weekSort.sortKey,
+                direction: weekSort.sortDirection,
+                onSort: weekSort.requestSort,
+                align: "right"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Pig Iron" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Metal" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Kryptonite" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Spice" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Weekly SpiceEq",
+                sortKey: "spiceEq",
+                activeKey: weekSort.sortKey,
+                direction: weekSort.sortDirection,
+                onSort: weekSort.requestSort,
+                align: "right"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Discounted",
+                sortKey: "discounted",
+                activeKey: weekSort.sortKey,
+                direction: weekSort.sortDirection,
+                onSort: weekSort.requestSort,
+                align: "right"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Cumulative",
+                sortKey: "cumulative",
+                activeKey: weekSort.sortKey,
+                direction: weekSort.sortDirection,
+                onSort: weekSort.requestSort,
+                align: "right"
+              }
+            )
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "ag-ai-weekly-tbody", children: weekSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 9, className: "empty-cell", children: "No weekly production breakdown available yet." }) }) : weekSort.sortedRows.map((w) => /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `W${w.week}` }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: Number(safeFiniteNumber(w.discount_weight, 1) ?? 1).toFixed(4) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtCompact(w.pig_iron) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtCompact(w.metal) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtCompact(w.kryptonite) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtCompact(w.spice) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtCompact(w.spice_eq) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtCompact(w.discounted_spice_eq) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtCompact(w.cumulative_discounted_spice_eq ?? w.cumulative) })
+          ] }, String(w.week))) })
+        ] }) }) })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "aside",
+        {
+          className: "hud-window ag-control-panel",
+          id: "ag-ai-control-panel",
+          "aria-label": "AI-Planner parameters",
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "PTH" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "AI-Planner Parameters" })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "span",
+                {
+                  className: `ag-dirty-badge tabular ${draftDirty ? "is-dirty" : "is-synced"}`,
+                  id: "ai-dirty-badge",
+                  children: draftDirty ? "MODIFIED" : "SYNCED"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-tabs", role: "tablist", "aria-label": "AI-Planner parameter tabs", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: `tab-btn${paramSubTab === "horizon" ? " active" : ""}`,
+                  role: "tab",
+                  "aria-selected": paramSubTab === "horizon",
+                  onClick: () => setParamSubTab("horizon"),
+                  children: "Horizon & Spare %"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: `tab-btn${paramSubTab === "weights" ? " active" : ""}`,
+                  role: "tab",
+                  "aria-selected": paramSubTab === "weights",
+                  onClick: () => setParamSubTab("weights"),
+                  children: "Weights & GA"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-body", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", hidden: paramSubTab !== "horizon", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-reward_weeks", children: "Reward Weeks (W)" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "number",
+                        id: "ai-param-reward_weeks",
+                        min: 1,
+                        max: 104,
+                        step: 1,
+                        value: draft.reward_weeks,
+                        onChange: (e) => {
+                          setDraftDirty(true);
+                          setDraft((prev) => ({ ...prev, reward_weeks: e.target.value }));
+                        }
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-weekly_discount", children: "Weekly Discount (γ)" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "number",
+                        id: "ai-param-weekly_discount",
+                        min: 0.05,
+                        max: 1,
+                        step: 0.05,
+                        value: draft.weekly_discount,
+                        onChange: (e) => {
+                          setDraftDirty(true);
+                          setDraft((prev) => ({ ...prev, weekly_discount: e.target.value }));
+                        }
+                      }
+                    )
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Per-Resource Spare % (Fleet & Raids)" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: [
+                    ["pig_iron", "Pig Iron Spare %"],
+                    ["metal", "Metal Spare %"],
+                    ["kryptonite", "Kryptonite Spare %"],
+                    ["spice", "Spice Spare %"]
+                  ].map(([rk, label]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `ai-param-spare-${rk}`, children: label }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "number",
+                        id: `ai-param-spare-${rk}`,
+                        min: 0,
+                        max: 100,
+                        step: 1,
+                        value: draft.resource_spare_percent[rk],
+                        onChange: (e) => {
+                          setDraftDirty(true);
+                          setDraft((prev) => ({
+                            ...prev,
+                            resource_spare_percent: {
+                              ...prev.resource_spare_percent,
+                              [rk]: e.target.value
+                            }
+                          }));
+                        }
+                      }
+                    )
+                  ] }, rk)) })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Attack Telemetry & Optional Overrides" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-telemetry-box tabular", id: "ai-sqlite-telemetry-box", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: `Median Loot: ${medianLoot !== null ? `${fmtInt(Math.round(medianLoot))} SpEq` : "Fallback defaults"}` }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: `Median RT: ${formatDurationSecondsCompact(medianRtSec)} · Samples: ${fmtInt(Math.round(safeFiniteNumber(telemetry.sample_count, 0) ?? 0))}` })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-fleet_command_center_level", children: "b10 Override (Blank=Auto)" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: "ai-param-fleet_command_center_level",
+                          min: 0,
+                          max: 50,
+                          step: 1,
+                          placeholder: "Auto",
+                          value: draft.fleet_command_center_level,
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({
+                              ...prev,
+                              fleet_command_center_level: e.target.value
+                            }));
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-attacks_per_day", children: "Attacks/Day (Blank=Auto)" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: "ai-param-attacks_per_day",
+                          min: 0,
+                          step: 1,
+                          placeholder: "Auto",
+                          value: draft.attacks_per_day,
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({ ...prev, attacks_per_day: e.target.value }));
+                          }
+                        }
+                      )
+                    ] })
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-toggles-stack", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      type: "checkbox",
+                      id: "ai-param-pad_generic_colonies",
+                      checked: draft.pad_generic_colonies,
+                      onChange: (e) => {
+                        const checked = e.target.checked;
+                        setDraftDirty(true);
+                        setDraft((prev) => ({ ...prev, pad_generic_colonies: checked }));
+                      }
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `Pad < ${gate.maxPlanets}/${gate.maxPlanets} missing slots in preview (${gate.coloniesOwned}/${gate.maxPlanets} owned)` })
+                ] }) })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", hidden: paramSubTab !== "weights", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Path Strategy Weights" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-scarcity_focus", children: "Scarcity Focus" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: "ai-param-scarcity_focus",
+                          min: 0,
+                          max: 10,
+                          step: 0.1,
+                          value: draft.scarcity_focus,
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({ ...prev, scarcity_focus: e.target.value }));
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-critical_queue_share", children: "Critical Queue Share" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: "ai-param-critical_queue_share",
+                          min: 0,
+                          max: 1,
+                          step: 0.05,
+                          value: draft.critical_queue_share,
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({ ...prev, critical_queue_share: e.target.value }));
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-patience", children: "Patience" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: "ai-param-patience",
+                          min: 0,
+                          max: 5,
+                          step: 0.05,
+                          value: draft.patience,
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({ ...prev, patience: e.target.value }));
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-speed_weight", children: "Speed Weight" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: "ai-param-speed_weight",
+                          min: 0,
+                          max: 10,
+                          step: 0.1,
+                          value: draft.speed_weight,
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({ ...prev, speed_weight: e.target.value }));
+                          }
+                        }
+                      )
+                    ] })
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "GA Path Search" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-ga_population_size", children: "GA Population" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: "ai-param-ga_population_size",
+                          min: 4,
+                          max: 200,
+                          step: 2,
+                          value: draft.ga_population_size,
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({ ...prev, ga_population_size: e.target.value }));
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-ga_generations", children: "GA Generations" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: "ai-param-ga_generations",
+                          min: 1,
+                          max: 100,
+                          step: 1,
+                          value: draft.ga_generations,
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({ ...prev, ga_generations: e.target.value }));
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ai-param-ga_random_seed", children: "GA Seed" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: "ai-param-ga_random_seed",
+                          step: 1,
+                          value: draft.ga_random_seed,
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({ ...prev, ga_random_seed: e.target.value }));
+                          }
+                        }
+                      )
+                    ] })
+                  ] })
+                ] })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-footer", children: [
+              isJobRunning ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-job-progress", id: "ai-job-progress", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-job-progress-meta tabular", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: String((activeJob == null ? void 0 : activeJob.phase) || "Running AI-Planner...") }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `${Math.max(0, Math.min(100, Math.round(safeFiniteNumber(activeJob == null ? void 0 : activeJob.progress_pct, 0) ?? 0)))}%` })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "meter-track", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "div",
+                  {
+                    className: "meter-fill gann-bar-cyan",
+                    style: {
+                      transform: `scaleX(${Math.max(0, Math.min(100, safeFiniteNumber(activeJob == null ? void 0 : activeJob.progress_pct, 0) ?? 0)) / 100})`
+                    }
+                  }
+                ) })
+              ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-sim-note", id: "ai-activate-gate-note", children: gate.liveAiUnlocked ? `Colony gate satisfied (${gate.coloniesOwned}/${gate.maxPlanets}). Ready for live bot execution.` : `Live execution locked until ${gate.maxPlanets}/${gate.maxPlanets} colonies are founded (${gate.coloniesOwned}/${gate.maxPlanets} owned).` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-footer-actions", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn-secondary btn-sm",
+                    id: "btn-ai-run",
+                    disabled: isSubmitting || isJobRunning,
+                    onClick: onRunAiPlanner,
+                    children: isJobRunning ? "Running AI-Planner..." : "Run AI-Planner"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn-secondary btn-sm",
+                    id: "btn-ai-export-footer",
+                    onClick: onExportTxt,
+                    children: "Export .txt"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn-primary btn-sm btn-span",
+                    id: "btn-ai-activate",
+                    disabled: !gate.liveAiUnlocked,
+                    title: gate.liveAiUnlocked ? "Activate Live AI-Planner execution" : `Unlocks at ${gate.maxPlanets}/${gate.maxPlanets} founded colonies`,
+                    onClick: onActivateAiMode,
+                    children: isLiveAiActive ? "Live AI-Planner Mode Active" : gate.liveAiUnlocked ? "Activate Live AI-Planner Mode" : `Activate Live AI-Planner (${gate.coloniesOwned}/${gate.maxPlanets} Locked)`
+                  }
+                )
+              ] })
+            ] })
+          ]
+        }
+      )
+    ] });
+  };
+  function draftFromParams(raw) {
+    if (!raw || typeof raw !== "object") {
+      return {
+        ...DEFAULT_CONFIG_OPTIMIZER_DRAFT,
+        min_fleet_per_planet: { ...DEFAULT_CONFIG_OPTIMIZER_DRAFT.min_fleet_per_planet },
+        misc_building_levels: { ...DEFAULT_CONFIG_OPTIMIZER_DRAFT.misc_building_levels },
+        optimized_building_max_levels: {
+          ...DEFAULT_CONFIG_OPTIMIZER_DRAFT.optimized_building_max_levels
+        }
+      };
+    }
+    const get = (snake, upper, def) => raw[snake] !== void 0 ? raw[snake] : raw[upper] !== void 0 ? raw[upper] : def;
+    const rawFleet = get("min_fleet_per_planet", "MIN_FLEET_PER_PLANET", {}) || {};
+    const minFleet = {};
+    for (const sk of ["s2", "s10", "s11"]) {
+      minFleet[sk] = String(
+        Math.max(0, Math.round(safeFiniteNumber(rawFleet[sk], Number(DEFAULT_CONFIG_OPTIMIZER_DRAFT.min_fleet_per_planet[sk])) ?? 10))
+      );
+    }
+    const rawMisc = get("misc_building_levels", "MISC_BUILDING_LEVELS", {}) || {};
+    const miscLevels = {};
+    for (const bk of MISC_BUILDING_KEYS) {
+      miscLevels[bk] = String(
+        Math.max(
+          0,
+          Math.round(
+            safeFiniteNumber(rawMisc[bk], Number(DEFAULT_CONFIG_OPTIMIZER_DRAFT.misc_building_levels[bk])) ?? 0
+          )
+        )
+      );
+    }
+    const rawOptMax = get("optimized_building_max_levels", "OPTIMIZED_BUILDING_MAX_LEVELS", {}) || {};
+    const optMax = {};
+    for (const bk of OPTIMIZED_BUILDING_KEYS) {
+      optMax[bk] = String(
+        Math.max(
+          1,
+          Math.round(
+            safeFiniteNumber(
+              rawOptMax[bk],
+              Number(DEFAULT_CONFIG_OPTIMIZER_DRAFT.optimized_building_max_levels[bk])
+            ) ?? 100
+          )
+        )
+      );
+    }
+    return {
+      target_ship_key: String(get("target_ship_key", "TARGET_SHIP_KEY", "s16") || "s16"),
+      production_month_days: String(
+        safeFiniteNumber(get("production_month_days", "PRODUCTION_MONTH_DAYS", 30), 30) ?? 30
+      ),
+      research_percent_of_universe_max: String(
+        safeFiniteNumber(
+          get("research_percent_of_universe_max", "RESEARCH_PERCENT_OF_UNIVERSE_MAX", 100),
+          100
+        ) ?? 100
+      ),
+      warehouse_hours_of_production: String(
+        safeFiniteNumber(
+          get("warehouse_hours_of_production", "WAREHOUSE_HOURS_OF_PRODUCTION", 24),
+          24
+        ) ?? 24
+      ),
+      central_planet_slot: String(
+        Math.max(
+          1,
+          Math.round(safeFiniteNumber(get("central_planet_slot", "CENTRAL_PLANET_SLOT", 1), 1) ?? 1)
+        )
+      ),
+      central_planet_min_warehouse_level: String(
+        Math.max(
+          0,
+          Math.round(
+            safeFiniteNumber(
+              get("central_planet_min_warehouse_level", "CENTRAL_PLANET_MIN_WAREHOUSE_LEVEL", 15),
+              15
+            ) ?? 15
+          )
+        )
+      ),
+      min_fleet_per_planet: minFleet,
+      misc_building_levels: miscLevels,
+      optimized_building_max_levels: optMax,
+      pad_generic_colonies: Boolean(get("pad_generic_colonies", "PAD_GENERIC_COLONIES", false)),
+      ga_population_size: String(
+        Math.max(
+          4,
+          Math.round(
+            safeFiniteNumber(get("ga_population_size", "GA_POPULATION_SIZE", 200), 200) ?? 200
+          )
+        )
+      ),
+      ga_generations: String(
+        Math.max(
+          1,
+          Math.round(safeFiniteNumber(get("ga_generations", "GA_GENERATIONS", 150), 150) ?? 150)
+        )
+      ),
+      ga_random_seed: String(
+        Math.round(
+          safeFiniteNumber(get("ga_random_seed", "GA_RANDOM_SEED", 20261117), 20261117) ?? 20261117
+        )
+      )
+    };
+  }
+  function buildParamsPayload(draft) {
+    const num = (v, fb) => safeFiniteNumber(v, fb) ?? fb;
+    const intNum = (v, fb, min = 0) => Math.max(min, Math.round(num(v, fb)));
+    const minFleet = {};
+    for (const sk of ["s2", "s10", "s11"]) {
+      minFleet[sk] = intNum(draft.min_fleet_per_planet[sk] ?? "10", 10, 0);
+    }
+    const miscLevels = {};
+    for (const bk of MISC_BUILDING_KEYS) {
+      miscLevels[bk] = intNum(
+        draft.misc_building_levels[bk] ?? DEFAULT_CONFIG_OPTIMIZER_DRAFT.misc_building_levels[bk],
+        0,
+        0
+      );
+    }
+    const optMax = {};
+    for (const bk of OPTIMIZED_BUILDING_KEYS) {
+      optMax[bk] = intNum(draft.optimized_building_max_levels[bk] ?? "100", 100, 1);
+    }
+    return {
+      target_ship_key: draft.target_ship_key || "s16",
+      production_month_days: Math.max(1, num(draft.production_month_days, 30)),
+      research_percent_of_universe_max: Math.max(
+        0,
+        Math.min(200, num(draft.research_percent_of_universe_max, 100))
+      ),
+      warehouse_hours_of_production: Math.max(0, num(draft.warehouse_hours_of_production, 24)),
+      central_planet_slot: intNum(draft.central_planet_slot, 1, 1),
+      central_planet_min_warehouse_level: intNum(draft.central_planet_min_warehouse_level, 15, 0),
+      min_fleet_per_planet: minFleet,
+      misc_building_levels: miscLevels,
+      optimized_building_max_levels: optMax,
+      pad_generic_colonies: Boolean(draft.pad_generic_colonies),
+      ga_population_size: intNum(draft.ga_population_size, 200, 4),
+      ga_generations: intNum(draft.ga_generations, 150, 1),
+      ga_random_seed: Math.round(num(draft.ga_random_seed, 20261117))
+    };
+  }
+  function normalizePlanetRows(result, reservedFloorsMap) {
+    const rawPlanets = Array.isArray(result == null ? void 0 : result.planets) ? result.planets : [];
+    return rawPlanets.map((p, idx) => {
+      const slot = Math.max(1, Math.round(safeFiniteNumber(p.slot ?? p.slot_index, idx + 1) ?? idx + 1));
+      const pid = Math.round(safeFiniteNumber(p.planet_id, 0) ?? 0);
+      const coords = String(p.coords || `Slot ${slot}`);
+      const isPlaceholder = Boolean(
+        p.is_placeholder ?? String(p.planet_status || "").toLowerCase() === "generic"
+      );
+      const isCentral = Boolean(p.is_central_planet);
+      const temp = safeFiniteNumber(p.temperature ?? p.temperature_c, null);
+      const fieldsMax = Math.max(0, Math.round(safeFiniteNumber(p.fields_max, 300) ?? 300));
+      const fieldsUsedTarget = Math.max(
+        0,
+        Math.round(safeFiniteNumber(p.fields_used_target ?? p.fields_used, 0) ?? 0)
+      );
+      const builtLevels = {};
+      const targetLevels = {};
+      const buildingsDetail = [];
+      const rawBuilt = p.built_floors && typeof p.built_floors === "object" ? p.built_floors : {};
+      const rawRes = (p.reserved_floors && typeof p.reserved_floors === "object" ? p.reserved_floors : null) || reservedFloorsMap[String(pid)] || reservedFloorsMap[coords] || {};
+      const reservedFloors = {};
+      for (const [bk, rv] of Object.entries(rawRes)) {
+        const n = Math.round(safeFiniteNumber(rv, 0) ?? 0);
+        if (n > 0) reservedFloors[bk] = n;
+      }
+      let maxLastSec = null;
+      let maxLastTxt = "";
+      let builtSum = 0;
+      if (Array.isArray(p.buildings)) {
+        for (const b of p.buildings) {
+          const bk = String(b.key || b.building_key || "");
+          if (!bk) continue;
+          const built = Math.max(
+            0,
+            Math.round(safeFiniteNumber(b.built_level ?? b.current_level ?? rawBuilt[bk], 0) ?? 0)
+          );
+          const target = Math.max(
+            built,
+            Math.round(safeFiniteNumber(b.target_level ?? b.level ?? built, built) ?? built)
+          );
+          const toBuild = Math.max(0, Math.round(safeFiniteNumber(b.levels_to_build, target - built) ?? target - built));
+          const resLvl = reservedFloors[bk] || 0;
+          builtLevels[bk] = built;
+          targetLevels[bk] = target;
+          builtSum += built;
+          const ltSec = safeFiniteNumber(b.last_level_seconds ?? b.last_level_time_s, null);
+          const ltText = String(
+            b.last_level_time || b.last_level_build_time || (ltSec !== null ? formatDurationSecondsCompact(ltSec) : "—")
+          );
+          if (toBuild > 0 && ltSec !== null && (maxLastSec === null || ltSec > maxLastSec)) {
+            maxLastSec = ltSec;
+            maxLastTxt = ltText;
+          } else if (toBuild > 0 && !maxLastTxt && ltText && ltText !== "—") {
+            maxLastTxt = ltText;
+          }
+          buildingsDetail.push({
+            key: bk,
+            name: String(b.name || BUILDING_NAMES[bk] || bk),
+            built,
+            target,
+            toBuild,
+            reserved: resLvl,
+            lastTimeText: ltText
+          });
+        }
+      } else if (p.buildings && typeof p.buildings === "object") {
+        for (const bk of Object.keys(BUILDING_NAMES)) {
+          const entry = p.buildings[bk];
+          const built = Math.max(
+            0,
+            Math.round(
+              safeFiniteNumber(
+                typeof entry === "object" && entry ? entry.built_level ?? entry.current_level : rawBuilt[bk],
+                0
+              ) ?? 0
+            )
+          );
+          const target = Math.max(
+            built,
+            Math.round(
+              safeFiniteNumber(
+                typeof entry === "object" && entry ? entry.target_level ?? entry.level : entry,
+                built
+              ) ?? built
+            )
+          );
+          const resLvl = reservedFloors[bk] || 0;
+          builtLevels[bk] = built;
+          targetLevels[bk] = target;
+          builtSum += built;
+          buildingsDetail.push({
+            key: bk,
+            name: BUILDING_NAMES[bk] || bk,
+            built,
+            target,
+            toBuild: Math.max(0, target - built),
+            reserved: resLvl,
+            lastTimeText: typeof entry === "object" && (entry == null ? void 0 : entry.last_level_time) ? String(entry.last_level_time) : "—"
+          });
+        }
+      }
+      let whDriver = "—";
+      if (Array.isArray(p.warehouses) && p.warehouses.length > 0) {
+        const topWh = [...p.warehouses].sort(
+          (a, b) => (safeFiniteNumber(b.level ?? b.target_level, 0) ?? 0) - (safeFiniteNumber(a.level ?? a.target_level, 0) ?? 0)
+        )[0];
+        if (topWh) {
+          const whKey = String(topWh.key || topWh.building_key || topWh.resource || "");
+          const whLvl = Math.round(safeFiniteNumber(topWh.level ?? topWh.target_level, 0) ?? 0);
+          const whSetBy = String(topWh.set_by || topWh.driver || "");
+          whDriver = whSetBy ? `${whKey} L${whLvl} (${whSetBy})` : `${whKey} L${whLvl}`;
+        }
+      } else if (p.warehouses && typeof p.warehouses === "object") {
+        const wObj = p.warehouses;
+        if (wObj.driver) whDriver = String(wObj.driver);
+      }
+      const prod = p.production && typeof p.production === "object" ? p.production : {};
+      const monthlyShips = safeFiniteNumber(
+        prod.monthly_ships ?? prod.ships_per_month ?? prod.target_ships_per_month,
+        null
+      );
+      const monthlySpiceEq = safeFiniteNumber(
+        prod.monthly_spice_eq ?? prod.spice_eq_per_month ?? prod.spice_eq_per_hr,
+        null
+      );
+      return {
+        slot,
+        planetId: pid,
+        name: String(p.name || (isPlaceholder ? `Preview Slot ${slot}` : coords)),
+        coords,
+        isPlaceholder,
+        isCentral,
+        temperature: temp !== null ? Math.round(temp) : null,
+        fieldsUsedCurrent: builtSum > 0 ? builtSum : null,
+        fieldsUsedTarget,
+        fieldsMax,
+        warehouseDriver: whDriver,
+        lastLevelTimeSec: maxLastSec,
+        lastLevelTimeText: maxLastTxt || "—",
+        monthlyShips,
+        monthlySpiceEq,
+        builtLevels,
+        targetLevels,
+        reservedFloors,
+        buildingsDetail
+      };
+    });
+  }
+  const ConfigOptimizerTab = ({ hidden = false }) => {
+    var _a, _b, _c;
+    const {
+      dashboard,
+      activePage,
+      apiOnline,
+      plannerJobsStatus,
+      setPlannerJobsStatus,
+      apiCommand: apiCommand2,
+      showFeedback
+    } = useConsole();
+    const [optData, setOptData] = reactExports.useState(null);
+    const [draft, setDraft] = reactExports.useState(
+      () => draftFromParams(DEFAULT_CONFIG_OPTIMIZER_DRAFT)
+    );
+    const [draftDirty, setDraftDirty] = reactExports.useState(false);
+    const [paramSubTab, setParamSubTab] = reactExports.useState("core");
+    const [subView, setSubView] = reactExports.useState("planets");
+    const [selectedSlot, setSelectedSlot] = reactExports.useState(null);
+    const [planetPage, setPlanetPage] = reactExports.useState(1);
+    const [planetPageSize, setPlanetPageSize] = reactExports.useState(25);
+    const [researchPage, setResearchPage] = reactExports.useState(1);
+    const [researchPageSize, setResearchPageSize] = reactExports.useState(25);
+    const [isSubmitting, setIsSubmitting] = reactExports.useState(false);
+    const fetchOptimizerState = reactExports.useCallback(
+      async ({ silent = false } = {}) => {
+        var _a2, _b2, _c2;
+        try {
+          const res = await apiCommand2({
+            command: "config_optimizer_get"
+          });
+          if (res && typeof res === "object") {
+            setOptData(res);
+            if (!draftDirty) {
+              const rawParams = ((_a2 = res.active) == null ? void 0 : _a2.params) || ((_c2 = (_b2 = res.active) == null ? void 0 : _b2.result) == null ? void 0 : _c2.meta_parameters) || res.default_params || null;
+              if (rawParams) {
+                setDraft(draftFromParams(rawParams));
+              }
+            }
+            if (res.job && plannerJobsStatus) {
+              setPlannerJobsStatus({
+                ...plannerJobsStatus,
+                config_optimizer_job: res.job
+              });
+            }
+          }
+        } catch (err) {
+          if (!silent) {
+            showFeedback(`Config Optimizer load failed: ${err.message}`, feedbackKindForError(err));
+          }
+        }
+      },
+      [apiCommand2, draftDirty, plannerJobsStatus, setPlannerJobsStatus, showFeedback]
+    );
+    reactExports.useEffect(() => {
+      if (!hidden && activePage === "action-graph" && !optData) {
+        void fetchOptimizerState({ silent: true });
+      }
+    }, [activePage, apiOnline, fetchOptimizerState, hidden, optData]);
+    const activeJob = (optData == null ? void 0 : optData.job) || (plannerJobsStatus == null ? void 0 : plannerJobsStatus.config_optimizer_job) || null;
+    const isJobRunning = String((activeJob == null ? void 0 : activeJob.status) || "").toLowerCase() === "running";
+    reactExports.useEffect(() => {
+      if (!isJobRunning || !apiOnline || hidden) return;
+      const timer = setInterval(() => {
+        void fetchOptimizerState({ silent: true });
+      }, 1500);
+      return () => clearInterval(timer);
+    }, [apiOnline, fetchOptimizerState, hidden, isJobRunning]);
+    const activeResult = reactExports.useMemo(() => {
+      if (!(optData == null ? void 0 : optData.active)) return null;
+      if (optData.active.result && typeof optData.active.result === "object") {
+        return optData.active.result;
+      }
+      if ("planets" in optData.active || "summary" in optData.active) {
+        return optData.active;
+      }
+      return null;
+    }, [optData == null ? void 0 : optData.active]);
+    const reservedFloorsMap = reactExports.useMemo(() => {
+      var _a2;
+      return (optData == null ? void 0 : optData.reserved_floors) || ((_a2 = optData == null ? void 0 : optData.active) == null ? void 0 : _a2.reserved_floors) || {};
+    }, [optData]);
+    const planetRows = reactExports.useMemo(
+      () => normalizePlanetRows(activeResult, reservedFloorsMap),
+      [activeResult, reservedFloorsMap]
+    );
+    const planetSortCols = reactExports.useMemo(
+      () => ({
+        planet: (r) => r.slot,
+        temp: { accessor: (r) => r.temperature, defaultDirection: "desc" },
+        fields: { accessor: (r) => r.fieldsUsedTarget, defaultDirection: "desc" },
+        time: { accessor: (r) => r.lastLevelTimeSec, defaultDirection: "desc" },
+        output: {
+          accessor: (r) => r.monthlyShips ?? r.monthlySpiceEq,
+          defaultDirection: "desc"
+        }
+      }),
+      []
+    );
+    const planetSort = useTableSort(planetRows, planetSortCols);
+    const pagedPlanets = reactExports.useMemo(() => {
+      const start = (planetPage - 1) * planetPageSize;
+      return planetSort.sortedRows.slice(start, start + planetPageSize);
+    }, [planetPage, planetPageSize, planetSort.sortedRows]);
+    const researchRows = reactExports.useMemo(() => {
+      var _a2, _b2, _c2;
+      const ownMap = ((_a2 = activeResult == null ? void 0 : activeResult.inputs) == null ? void 0 : _a2.own_research_levels) || ((_b2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _b2.researches) || {};
+      const uniMap = ((_c2 = activeResult == null ? void 0 : activeResult.inputs) == null ? void 0 : _c2.universe_research_max_levels) || Object.fromEntries(
+        ((dashboard == null ? void 0 : dashboard.universe_research_max) || []).map((r) => [
+          String(r.key || r.research_key || `r${r.research_id}`),
+          r.universe_max_level
+        ])
+      );
+      const plannedRaw = activeResult == null ? void 0 : activeResult.planned_research_levels;
+      const plannedMap = {};
+      if (Array.isArray(plannedRaw)) {
+        for (const item of plannedRaw) {
+          const k = String((item == null ? void 0 : item.key) || (item == null ? void 0 : item.research_key) || "");
+          if (k) plannedMap[k] = Math.round(safeFiniteNumber(item.target_level ?? item.level, 0) ?? 0);
+        }
+      } else if (plannedRaw && typeof plannedRaw === "object") {
+        for (const [k, v] of Object.entries(plannedRaw)) {
+          plannedMap[k] = Math.round(safeFiniteNumber(v, 0) ?? 0);
+        }
+      }
+      return RESEARCH_KEYS.map((rk) => {
+        const cur = Math.max(0, Math.round(safeFiniteNumber(ownMap[rk], 0) ?? 0));
+        const uni = Math.max(0, Math.round(safeFiniteNumber(uniMap[rk], cur) ?? cur));
+        const pln = Math.max(cur, Math.round(safeFiniteNumber(plannedMap[rk], cur) ?? cur));
+        return {
+          key: rk,
+          name: RESEARCH_NAMES[rk] || rk,
+          current: cur,
+          universeMax: uni,
+          planned: pln,
+          gap: Math.max(0, pln - cur)
+        };
+      });
+    }, [activeResult, (_a = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a.researches, dashboard == null ? void 0 : dashboard.universe_research_max]);
+    const researchSortCols = reactExports.useMemo(
+      () => ({
+        name: (r) => r.name,
+        current: { accessor: (r) => r.current, defaultDirection: "desc" },
+        uniMax: { accessor: (r) => r.universeMax, defaultDirection: "desc" },
+        planned: { accessor: (r) => r.planned, defaultDirection: "desc" },
+        gap: { accessor: (r) => r.gap, defaultDirection: "desc" }
+      }),
+      []
+    );
+    const researchSort = useTableSort(researchRows, researchSortCols);
+    const pagedResearch = reactExports.useMemo(() => {
+      const start = (researchPage - 1) * researchPageSize;
+      return researchSort.sortedRows.slice(start, start + researchPageSize);
+    }, [researchPage, researchPageSize, researchSort.sortedRows]);
+    const selectedPlanetDetail = reactExports.useMemo(
+      () => planetRows.find((p) => p.slot === selectedSlot) || (planetRows.length > 0 ? planetRows[0] : null),
+      [planetRows, selectedSlot]
+    );
+    const onRunOptimizer = async () => {
+      var _a2;
+      setIsSubmitting(true);
+      try {
+        const payload = buildParamsPayload(draft);
+        showFeedback("Starting Config Optimization (Monthly Target & Floors)...", "ok");
+        const res = await apiCommand2({
+          command: "config_optimizer_run",
+          params: payload,
+          auto_replan_ai: true
+        });
+        setDraftDirty(false);
+        if (res.result) {
+          setOptData((prev) => ({
+            ...prev || {},
+            job: res.job || { status: "completed", progress_pct: 100 },
+            active: {
+              ...(prev == null ? void 0 : prev.active) || {},
+              params: payload,
+              result: res.result
+            }
+          }));
+        } else {
+          await fetchOptimizerState({ silent: true });
+        }
+        if ((res.job || res.ai_planner_job) && plannerJobsStatus) {
+          setPlannerJobsStatus({
+            ...plannerJobsStatus,
+            config_optimizer_job: res.job || plannerJobsStatus.config_optimizer_job,
+            ai_planner_job: res.ai_planner_job || plannerJobsStatus.ai_planner_job
+          });
+        }
+        const st = String(((_a2 = res.job) == null ? void 0 : _a2.status) || "completed").toLowerCase();
+        showFeedback(
+          st === "running" ? "Config Optimization running in background — progress updates live." : "Config Optimization completed and queued AI-Planner replan.",
+          "ok"
+        );
+      } catch (err) {
+        showFeedback(`Config Optimization failed: ${err.message}`, feedbackKindForError(err));
+      } finally {
+        setIsSubmitting(false);
+      }
+    };
+    const onExportJson = async () => {
+      try {
+        const res = await apiCommand2({ command: "config_optimizer_export" });
+        const filename = String(res.filename || "config_optimizer_result.json");
+        const content = typeof res.content === "string" ? res.content : JSON.stringify(res.result ?? activeResult ?? {}, null, 2);
+        downloadTextFile(filename, content, "application/json");
+        showFeedback(`Exported ${filename}.`, "ok");
+      } catch (err) {
+        if (activeResult) {
+          downloadTextFile(
+            "config_optimizer_result.json",
+            JSON.stringify(activeResult, null, 2),
+            "application/json"
+          );
+          showFeedback("Exported cached config_optimizer_result.json.", "ok");
+        } else {
+          showFeedback(`Export JSON failed: ${err.message}`, feedbackKindForError(err));
+        }
+      }
+    };
+    const onResetDefaults = () => {
+      setDraftDirty(false);
+      setDraft(draftFromParams((optData == null ? void 0 : optData.default_params) || null));
+      showFeedback("Reset Config Optimizer inputs to defaults.", "ok");
+    };
+    const summary = (activeResult == null ? void 0 : activeResult.summary) || {};
+    const gate = computeColonyGateInfo(dashboard, plannerJobsStatus, optData);
+    const shipKey = String(summary.target_ship_key || draft.target_ship_key || "s16");
+    const shipsPerMonth = safeFiniteNumber(
+      summary.ships_per_month ?? summary.whole_ships_per_month,
+      null
+    );
+    const wholeShips = safeFiniteNumber(summary.whole_ships_per_month, null);
+    const limitFactor = String(summary.bottleneck || summary.limiting_factor || "—");
+    const totalFieldsUsed = safeFiniteNumber(
+      summary.fields_used ?? summary.total_fields_used,
+      null
+    );
+    const totalFieldsMax = safeFiniteNumber(
+      summary.fields_max ?? (planetRows.length > 0 ? planetRows.reduce((s, r) => s + r.fieldsMax, 0) : null),
+      null
+    );
+    const whFields = safeFiniteNumber(summary.warehouse_fields ?? summary.warehouse_fields_used, null);
+    const elapsedMs = safeFiniteNumber(
+      (activeResult == null ? void 0 : activeResult.elapsed_ms) ?? ((_b = activeResult == null ? void 0 : activeResult.search) == null ? void 0 : _b.elapsed_ms) ?? (activeJob == null ? void 0 : activeJob.elapsed_ms),
+      null
+    );
+    const runTs = ((_c = optData == null ? void 0 : optData.active) == null ? void 0 : _c.updated_ts) ?? (activeResult == null ? void 0 : activeResult.generated_at);
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-tab-split", id: "ag-pane-config-optimizer", hidden, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window ag-main-window", id: "ag-co-main-window", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "OPT" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Config Optimization — Monthly Target & Hard Built Floors" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "span",
+              {
+                className: `ag-status-pill tabular ${isJobRunning ? "is-sim" : activeResult ? "is-live" : ""}`,
+                id: "co-job-status-pill",
+                role: "status",
+                children: formatJobBadgeText(activeJob)
+              }
+            )
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "tablist", "aria-label": "Config optimizer tables", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  role: "tab",
+                  "aria-selected": subView === "planets",
+                  className: `tab-btn${subView === "planets" ? " active" : ""}`,
+                  id: "co-subtab-planets",
+                  onClick: () => setSubView("planets"),
+                  children: `Planets (${planetRows.length})`
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  role: "tab",
+                  "aria-selected": subView === "research",
+                  className: `tab-btn${subView === "research" ? " active" : ""}`,
+                  id: "co-subtab-research",
+                  onClick: () => setSubView("research"),
+                  children: `Research (${researchRows.length})`
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-secondary btn-sm",
+                id: "btn-co-export",
+                onClick: onExportJson,
+                children: "Export JSON"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-secondary btn-sm",
+                id: "btn-co-refresh",
+                onClick: () => fetchOptimizerState({ silent: false }),
+                children: "Refresh"
+              }
+            )
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-strip", "aria-label": "Config optimization summary metrics", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Target Ships / Month" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "co-kpi-ships", children: shipsPerMonth !== null ? `${shipsPerMonth.toFixed(2)} ${shipKey}/mo` : `— ${shipKey}/mo` }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", children: wholeShips !== null ? `${fmtInt(Math.round(wholeShips))} whole · ${shipNameForKey(shipKey)}` : shipNameForKey(shipKey) })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Limiting Factor" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "co-kpi-limit", children: limitFactor }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", children: summary.investment_in_months_of_output != null ? `Payback ~${Number(summary.investment_in_months_of_output).toFixed(1)} mo` : `Colonies ${gate.coloniesOwned}/${gate.maxPlanets}` })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Total & Warehouse Fields" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "co-kpi-fields", children: totalFieldsUsed !== null ? `${fmtInt(Math.round(totalFieldsUsed))} / ${totalFieldsMax !== null ? fmtInt(Math.round(totalFieldsMax)) : "—"}` : "— / —" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", children: whFields !== null ? `Warehouse fields: ${fmtInt(Math.round(whFields))}` : "Hard built floors enforced" })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Last Run & Elapsed" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "co-kpi-elapsed", children: elapsedMs !== null ? `${Math.round(elapsedMs)} ms` : "Not Run" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", children: typeof runTs === "number" ? fmtShortDateTime(runTs) : typeof runTs === "string" && runTs ? runTs.slice(0, 19).replace("T", " ") : "Click Run Config Optimizer" })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-content", hidden: subView !== "planets", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "co-planets-table", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Planet",
+                  sortKey: "planet",
+                  activeKey: planetSort.sortKey,
+                  direction: planetSort.sortDirection,
+                  onSort: planetSort.requestSort
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Temp",
+                  sortKey: "temp",
+                  activeKey: planetSort.sortKey,
+                  direction: planetSort.sortDirection,
+                  onSort: planetSort.requestSort,
+                  align: "right"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Fields Used / Max",
+                  sortKey: "fields",
+                  activeKey: planetSort.sortKey,
+                  direction: planetSort.sortDirection,
+                  onSort: planetSort.requestSort,
+                  align: "right"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Built → Target (Key Buildings)" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Warehouse Driver" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Last-Lvl Time",
+                  sortKey: "time",
+                  activeKey: planetSort.sortKey,
+                  direction: planetSort.sortDirection,
+                  onSort: planetSort.requestSort,
+                  align: "right"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Monthly Output",
+                  sortKey: "output",
+                  activeKey: planetSort.sortKey,
+                  direction: planetSort.sortDirection,
+                  onSort: planetSort.requestSort,
+                  align: "right"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Reserved Floors" })
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "co-planets-tbody", children: pagedPlanets.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: isJobRunning ? "Optimizing planetary building targets..." : "No Config Optimization run yet. Adjust parameters on the right and click Run Config Optimizer." }) }) : pagedPlanets.map((row) => {
+              const isSel = (selectedPlanetDetail == null ? void 0 : selectedPlanetDetail.slot) === row.slot;
+              const keyPills = KEY_PLANET_BUILDINGS.filter(
+                (bk) => (row.targetLevels[bk] ?? 0) > 0 || (row.builtLevels[bk] ?? 0) > 0
+              ).slice(0, 8);
+              const resEntries = Object.entries(row.reservedFloors);
+              return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "tr",
+                {
+                  className: `clickable-row${isSel ? " row-selected" : ""}`,
+                  onClick: () => setSelectedSlot(row.slot),
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "action-title tabular", children: [
+                        `#${row.slot} ${row.name}`,
+                        row.isCentral ? " ★" : ""
+                      ] }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-sub tabular", children: `[${row.coords}]${row.isPlaceholder ? " · PREVIEW" : ""}` })
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: row.temperature !== null ? `${row.temperature}°C` : "—" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `${row.fieldsUsedCurrent ?? "—"}→${row.fieldsUsedTarget}/${row.fieldsMax}` }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-floor-pills", children: keyPills.map((bk) => {
+                      const b = row.builtLevels[bk] ?? 0;
+                      const t = row.targetLevels[bk] ?? b;
+                      const delta = t - b;
+                      return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "span",
+                        {
+                          className: `ag-mini-chip tabular${delta > 0 ? " is-upgrade" : ""}`,
+                          title: `${BUILDING_NAMES[bk] || bk}: built L${b}, target L${t}`,
+                          children: `${BUILDING_SHORT_NAMES[bk] || bk} ${b}→${t}`
+                        },
+                        bk
+                      );
+                    }) }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: row.warehouseDriver }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: row.lastLevelTimeText }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: row.monthlyShips !== null ? `${row.monthlyShips.toFixed(2)}/mo` : row.monthlySpiceEq !== null ? `${fmtCompact(row.monthlySpiceEq)} SpEq` : "—" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: resEntries.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: "Built floor" }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-floor-pills", children: resEntries.map(([bk, lvl]) => /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-mini-chip is-reserved tabular", children: `${bk} ≥ ${lvl}` }, bk)) }) })
+                  ]
+                },
+                `${row.slot}-${row.coords}`
+              );
+            }) })
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            TablePagination,
+            {
+              idPrefix: "co-planets",
+              totalItems: planetSort.sortedRows.length,
+              page: planetPage,
+              pageSize: planetPageSize,
+              itemLabel: "planets",
+              onPageChange: setPlanetPage,
+              onPageSizeChange: (sz) => {
+                setPlanetPageSize(sz);
+                setPlanetPage(1);
+              }
+            }
+          ),
+          selectedPlanetDetail ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-detail-strip", id: "co-planet-detail", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-detail-head tabular", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: `Slot #${selectedPlanetDetail.slot} · ${selectedPlanetDetail.name} [${selectedPlanetDetail.coords}]` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `Fields: ${selectedPlanetDetail.fieldsUsedTarget}/${selectedPlanetDetail.fieldsMax}` })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-co-detail-grid", children: selectedPlanetDetail.buildingsDetail.map((bd) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "div",
+              {
+                className: `ag-co-bld-cell tabular${bd.toBuild > 0 ? " is-upgrade" : ""}${bd.reserved > 0 ? " is-reserved" : ""}`,
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-co-bld-name", children: `${bd.key} ${BUILDING_SHORT_NAMES[bd.key] || bd.name}` }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-co-bld-vals", children: `${bd.built} → ${bd.target}${bd.toBuild > 0 ? ` (+${bd.toBuild})` : ""}` }),
+                  bd.reserved > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-co-bld-res", children: `Floor ≥ ${bd.reserved}` }) : null
+                ]
+              },
+              bd.key
+            )) })
+          ] }) : null
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-content", hidden: subView !== "research", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "co-research-table", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Research (r1–r15)",
+                  sortKey: "name",
+                  activeKey: researchSort.sortKey,
+                  direction: researchSort.sortDirection,
+                  onSort: researchSort.requestSort
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Current",
+                  sortKey: "current",
+                  activeKey: researchSort.sortKey,
+                  direction: researchSort.sortDirection,
+                  onSort: researchSort.requestSort,
+                  align: "right"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Universe Max",
+                  sortKey: "uniMax",
+                  activeKey: researchSort.sortKey,
+                  direction: researchSort.sortDirection,
+                  onSort: researchSort.requestSort,
+                  align: "right"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Planned Target",
+                  sortKey: "planned",
+                  activeKey: researchSort.sortKey,
+                  direction: researchSort.sortDirection,
+                  onSort: researchSort.requestSort,
+                  align: "right"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Levels to Build",
+                  sortKey: "gap",
+                  activeKey: researchSort.sortKey,
+                  direction: researchSort.sortDirection,
+                  onSort: researchSort.requestSort,
+                  align: "right"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Status" })
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "co-research-tbody", children: pagedResearch.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-title", children: r.name }),
+                " ",
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub tabular", children: `(${r.key})` })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `L${r.current}` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `L${r.universeMax}` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `L${r.planned}` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: r.gap > 0 ? `+${r.gap}` : "0" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `eta-pill tabular${r.gap > 0 ? " is-wait" : ""}`, children: r.gap > 0 ? `UPGRADE +${r.gap}` : "AT TARGET" }) })
+            ] }, r.key)) })
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            TablePagination,
+            {
+              idPrefix: "co-research",
+              totalItems: researchSort.sortedRows.length,
+              page: researchPage,
+              pageSize: researchPageSize,
+              itemLabel: "technologies",
+              onPageChange: setResearchPage,
+              onPageSizeChange: (sz) => {
+                setResearchPageSize(sz);
+                setResearchPage(1);
+              }
+            }
+          )
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "aside",
+        {
+          className: "hud-window ag-control-panel",
+          id: "ag-co-control-panel",
+          "aria-label": "Config optimizer parameters",
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "CFG" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Optimizer Parameters" })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "span",
+                {
+                  className: `ag-dirty-badge tabular ${draftDirty ? "is-dirty" : "is-synced"}`,
+                  id: "co-dirty-badge",
+                  children: draftDirty ? "MODIFIED" : "SYNCED"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-tabs", role: "tablist", "aria-label": "Config optimizer parameter tabs", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: `tab-btn${paramSubTab === "core" ? " active" : ""}`,
+                  role: "tab",
+                  "aria-selected": paramSubTab === "core",
+                  id: "co-ptab-core",
+                  onClick: () => setParamSubTab("core"),
+                  children: "Objective & Fleet"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: `tab-btn${paramSubTab === "buildings" ? " active" : ""}`,
+                  role: "tab",
+                  "aria-selected": paramSubTab === "buildings",
+                  id: "co-ptab-buildings",
+                  onClick: () => setParamSubTab("buildings"),
+                  children: "Buildings & GA"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-body", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", hidden: paramSubTab !== "core", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-target_ship_key", children: "Target Ship (Maximize / Month)" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "select",
+                    {
+                      id: "co-param-target_ship_key",
+                      value: draft.target_ship_key,
+                      onChange: (e) => {
+                        setDraftDirty(true);
+                        setDraft((prev) => ({ ...prev, target_ship_key: e.target.value }));
+                      },
+                      children: SHIP_OPTIONS.map((s) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: s.key, children: `${s.key} — ${s.name}` }, s.key))
+                    }
+                  )
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-production_month_days", children: "Month Days" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "number",
+                        id: "co-param-production_month_days",
+                        min: 1,
+                        max: 365,
+                        step: 1,
+                        value: draft.production_month_days,
+                        onChange: (e) => {
+                          setDraftDirty(true);
+                          setDraft((prev) => ({ ...prev, production_month_days: e.target.value }));
+                        }
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-research_percent_of_universe_max", children: "Research % Uni Max" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "number",
+                        id: "co-param-research_percent_of_universe_max",
+                        min: 0,
+                        max: 200,
+                        step: 5,
+                        value: draft.research_percent_of_universe_max,
+                        onChange: (e) => {
+                          setDraftDirty(true);
+                          setDraft((prev) => ({
+                            ...prev,
+                            research_percent_of_universe_max: e.target.value
+                          }));
+                        }
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-warehouse_hours_of_production", children: "Warehouse Hours" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "number",
+                        id: "co-param-warehouse_hours_of_production",
+                        min: 0,
+                        max: 720,
+                        step: 1,
+                        value: draft.warehouse_hours_of_production,
+                        onChange: (e) => {
+                          setDraftDirty(true);
+                          setDraft((prev) => ({
+                            ...prev,
+                            warehouse_hours_of_production: e.target.value
+                          }));
+                        }
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-central_planet_slot", children: "Central Planet Slot" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "number",
+                        id: "co-param-central_planet_slot",
+                        min: 1,
+                        max: 50,
+                        step: 1,
+                        value: draft.central_planet_slot,
+                        onChange: (e) => {
+                          setDraftDirty(true);
+                          setDraft((prev) => ({ ...prev, central_planet_slot: e.target.value }));
+                        }
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-central_planet_min_warehouse_level", children: "Central Min WH Lvl" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "number",
+                        id: "co-param-central_planet_min_warehouse_level",
+                        min: 0,
+                        max: 50,
+                        step: 1,
+                        value: draft.central_planet_min_warehouse_level,
+                        onChange: (e) => {
+                          setDraftDirty(true);
+                          setDraft((prev) => ({
+                            ...prev,
+                            central_planet_min_warehouse_level: e.target.value
+                          }));
+                        }
+                      }
+                    )
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Min Fleet per Planet" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: [
+                    ["s2", "s2 Large Transport"],
+                    ["s10", "s10 Spy Probe"],
+                    ["s11", "s11 Recycler"]
+                  ].map(([sk, label]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `co-param-min_fleet-${sk}`, children: label }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "number",
+                        id: `co-param-min_fleet-${sk}`,
+                        min: 0,
+                        max: 1e4,
+                        step: 1,
+                        value: draft.min_fleet_per_planet[sk] ?? "10",
+                        onChange: (e) => {
+                          setDraftDirty(true);
+                          setDraft((prev) => ({
+                            ...prev,
+                            min_fleet_per_planet: {
+                              ...prev.min_fleet_per_planet,
+                              [sk]: e.target.value
+                            }
+                          }));
+                        }
+                      }
+                    )
+                  ] }, sk)) })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-toggles-stack", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      type: "checkbox",
+                      id: "co-param-pad_generic_colonies",
+                      checked: draft.pad_generic_colonies,
+                      onChange: (e) => {
+                        const checked = e.target.checked;
+                        setDraftDirty(true);
+                        setDraft((prev) => ({ ...prev, pad_generic_colonies: checked }));
+                      }
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `Pad < ${gate.maxPlanets}/${gate.maxPlanets} missing slots with 300-field generic previews (${gate.coloniesOwned}/${gate.maxPlanets} owned)` })
+                ] }) })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", hidden: paramSubTab !== "buildings", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Optimized Building Max Caps" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: OPTIMIZED_BUILDING_KEYS.map((bk) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `co-param-opt_max-${bk}`, children: `${bk} ${BUILDING_SHORT_NAMES[bk] || bk}` }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "number",
+                        id: `co-param-opt_max-${bk}`,
+                        min: 1,
+                        max: 100,
+                        step: 1,
+                        value: draft.optimized_building_max_levels[bk] ?? "100",
+                        onChange: (e) => {
+                          setDraftDirty(true);
+                          setDraft((prev) => ({
+                            ...prev,
+                            optimized_building_max_levels: {
+                              ...prev.optimized_building_max_levels,
+                              [bk]: e.target.value
+                            }
+                          }));
+                        }
+                      }
+                    )
+                  ] }, bk)) })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Fixed / Minimum Misc Levels" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: MISC_BUILDING_KEYS.map((bk) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `co-param-misc-${bk}`, children: `${bk} ${BUILDING_SHORT_NAMES[bk] || bk}` }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "number",
+                        id: `co-param-misc-${bk}`,
+                        min: 0,
+                        max: 100,
+                        step: 1,
+                        value: draft.misc_building_levels[bk] ?? "0",
+                        onChange: (e) => {
+                          setDraftDirty(true);
+                          setDraft((prev) => ({
+                            ...prev,
+                            misc_building_levels: {
+                              ...prev.misc_building_levels,
+                              [bk]: e.target.value
+                            }
+                          }));
+                        }
+                      }
+                    )
+                  ] }, bk)) })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "GA Search Settings" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-ga_population_size", children: "GA Population" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: "co-param-ga_population_size",
+                          min: 4,
+                          max: 1e3,
+                          step: 10,
+                          value: draft.ga_population_size,
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({ ...prev, ga_population_size: e.target.value }));
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-ga_generations", children: "GA Generations" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: "co-param-ga_generations",
+                          min: 1,
+                          max: 1e3,
+                          step: 10,
+                          value: draft.ga_generations,
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({ ...prev, ga_generations: e.target.value }));
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "co-param-ga_random_seed", children: "GA Seed" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "input",
+                        {
+                          type: "number",
+                          id: "co-param-ga_random_seed",
+                          step: 1,
+                          value: draft.ga_random_seed,
+                          onChange: (e) => {
+                            setDraftDirty(true);
+                            setDraft((prev) => ({ ...prev, ga_random_seed: e.target.value }));
+                          }
+                        }
+                      )
+                    ] })
+                  ] })
+                ] })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-footer", children: [
+              isJobRunning ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-job-progress", id: "co-job-progress", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-job-progress-meta tabular", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: String((activeJob == null ? void 0 : activeJob.phase) || "Running Config Optimizer...") }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `${Math.max(0, Math.min(100, Math.round(safeFiniteNumber(activeJob == null ? void 0 : activeJob.progress_pct, 0) ?? 0)))}%` })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "meter-track", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "div",
+                  {
+                    className: "meter-fill gann-bar-mint",
+                    style: {
+                      transform: `scaleX(${Math.max(0, Math.min(100, safeFiniteNumber(activeJob == null ? void 0 : activeJob.progress_pct, 0) ?? 0)) / 100})`
+                    }
+                  }
+                ) })
+              ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-sim-note", children: "Enforces all current built building levels and reserved floors as hard minimums; auto-triggers AI-Planner replan on completion." }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-footer-actions", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn-secondary btn-sm",
+                    id: "btn-co-reset",
+                    onClick: onResetDefaults,
+                    children: "Reset Defaults"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn-secondary btn-sm",
+                    id: "btn-co-export-footer",
+                    onClick: onExportJson,
+                    children: "Export JSON"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn-primary btn-sm btn-span",
+                    id: "btn-co-run",
+                    disabled: isSubmitting || isJobRunning,
+                    onClick: onRunOptimizer,
+                    children: isJobRunning ? "Running Config Optimizer..." : "Run Config Optimizer"
+                  }
+                )
+              ] })
+            ] })
+          ]
+        }
+      )
+    ] });
+  };
+  const DEFAULT_SHIPYARD_SLUGS = [
+    "small-fighter",
+    "small-transport",
+    "large-transport",
+    "spy-probe",
+    "colony-ship",
+    "recycler",
+    "starcruiser",
+    "phoenix",
+    "transmitter",
+    "battleship",
+    "stealth-bomber",
+    "destroyer"
+  ];
+  const FLEET_BOOL_FIELDS = [
+    { key: "allow_raids", def: false },
+    { key: "allow_pvp_in_az", def: false },
+    { key: "allow_fleetsave", def: false },
+    { key: "allow_colonize", def: false },
+    { key: "allow_transport", def: false },
+    { key: "allow_transmitter", def: false },
+    { key: "allow_galaxy_scan", def: false },
+    { key: "galaxy_scan_explore_first", def: true },
+    { key: "galaxy_scan_all_galaxies", def: true },
+    { key: "allow_shipyard", def: true }
+  ];
+  const FLEET_NUM_DEFAULTS = {
+    combat_safety_margin: 1.4,
+    raid_min_loot_spice_eq: 1500,
+    fleet_save_fuel_reserve_spice: 500,
+    ai_resource_spare_pct: 10,
+    min_colony_fields: 300,
+    max_planets: 11,
+    galaxy_sweep_interval_seconds: 270,
+    galaxy_sweep_pages: 100,
+    galaxy_scan_click_delay_seconds: 1.5,
+    galaxy_scan_click_jitter_seconds: 0.6,
+    galaxy_scan_refresh_pct: 20,
+    galaxy_scan_near_weight: 1,
+    galaxy_scan_attack_weight: 1,
+    reserved_spy_slots: 1,
+    spy_dispatch_planet_id: 0
+  };
+  function buildFleetDraftFromConfig(cfg) {
+    const booleans = {};
+    for (const spec of FLEET_BOOL_FIELDS) {
+      booleans[spec.key] = cfg && spec.key in cfg ? Boolean(cfg[spec.key]) : spec.def;
+    }
+    const numbers = {};
+    for (const [key, fallback] of Object.entries(FLEET_NUM_DEFAULTS)) {
+      const val = safeFiniteNumber(cfg == null ? void 0 : cfg[key], fallback) ?? fallback;
+      numbers[key] = String(val);
+    }
+    const rawTargets = (cfg == null ? void 0 : cfg.shipyard_targets) && typeof cfg.shipyard_targets === "object" ? cfg.shipyard_targets : {};
+    const shipyard_targets = {};
+    for (const slug of DEFAULT_SHIPYARD_SLUGS) {
+      shipyard_targets[slug] = String(
+        Math.max(0, Math.round(safeFiniteNumber(rawTargets[slug], 0) ?? 0))
+      );
+    }
+    for (const [slug, val] of Object.entries(rawTargets)) {
+      if (!(slug in shipyard_targets)) {
+        shipyard_targets[slug] = String(Math.max(0, Math.round(safeFiniteNumber(val, 0) ?? 0)));
+      }
+    }
+    return { booleans, numbers, shipyard_targets };
+  }
+  function buildConfigPatchFromDraft(draft) {
+    const num = (key, min = 0, max = Number.MAX_SAFE_INTEGER) => {
+      const fb = FLEET_NUM_DEFAULTS[key] ?? 0;
+      const raw = safeFiniteNumber(draft.numbers[key], fb) ?? fb;
+      return Math.max(min, Math.min(max, raw));
+    };
+    const intNum = (key, min = 0, max = Number.MAX_SAFE_INTEGER) => Math.round(num(key, min, max));
+    const shipyardTargets = {};
+    for (const [slug, val] of Object.entries(draft.shipyard_targets)) {
+      shipyardTargets[slug] = Math.max(0, Math.round(safeFiniteNumber(val, 0) ?? 0));
+    }
+    return {
+      allow_raids: Boolean(draft.booleans.allow_raids),
+      allow_pvp_in_az: Boolean(draft.booleans.allow_pvp_in_az),
+      allow_fleetsave: Boolean(draft.booleans.allow_fleetsave),
+      combat_safety_margin: num("combat_safety_margin", 1, 10),
+      raid_min_loot_spice_eq: Math.round(num("raid_min_loot_spice_eq", 0, 1e9)),
+      fleet_save_fuel_reserve_spice: Math.round(num("fleet_save_fuel_reserve_spice", 0, 1e9)),
+      ai_resource_spare_pct: num("ai_resource_spare_pct", 0, 100),
+      allow_colonize: Boolean(draft.booleans.allow_colonize),
+      min_colony_fields: intNum("min_colony_fields", 50, 500),
+      max_planets: intNum("max_planets", 1, 20),
+      allow_transport: Boolean(draft.booleans.allow_transport),
+      allow_transmitter: Boolean(draft.booleans.allow_transmitter),
+      allow_galaxy_scan: Boolean(draft.booleans.allow_galaxy_scan),
+      galaxy_sweep_interval_seconds: intNum("galaxy_sweep_interval_seconds", 10, 86400),
+      galaxy_sweep_pages: intNum("galaxy_sweep_pages", 1, 400),
+      galaxy_scan_click_delay_seconds: num("galaxy_scan_click_delay_seconds", 0.1, 30),
+      galaxy_scan_click_jitter_seconds: num("galaxy_scan_click_jitter_seconds", 0, 20),
+      galaxy_scan_explore_first: Boolean(draft.booleans.galaxy_scan_explore_first),
+      galaxy_scan_refresh_pct: intNum("galaxy_scan_refresh_pct", 0, 100),
+      galaxy_scan_all_galaxies: Boolean(draft.booleans.galaxy_scan_all_galaxies),
+      galaxy_scan_near_weight: num("galaxy_scan_near_weight", 0, 10),
+      galaxy_scan_attack_weight: num("galaxy_scan_attack_weight", 0, 10),
+      reserved_spy_slots: intNum("reserved_spy_slots", 0, 20),
+      spy_dispatch_planet_id: intNum("spy_dispatch_planet_id", 0),
+      allow_shipyard: Boolean(draft.booleans.allow_shipyard),
+      shipyard_targets: shipyardTargets
+    };
+  }
+  function summarizeDockedShips(ships) {
+    if (!ships || typeof ships !== "object") {
+      return { total: 0, summary: "None" };
+    }
+    const entries = Object.entries(ships).map(([k, v]) => [k, Math.max(0, Math.round(safeFiniteNumber(v, 0) ?? 0))]).filter(([, count]) => count > 0).sort((a, b) => b[1] - a[1]);
+    const total = entries.reduce((acc, [, count]) => acc + count, 0);
+    if (entries.length === 0) return { total: 0, summary: "None" };
+    const labels = entries.slice(0, 3).map(([slug, count]) => {
+      const found = SHIP_OPTIONS.find((s) => s.slug === slug || s.key === slug);
+      return `${found ? found.name : slug}: ${fmtInt(count)}`;
+    });
+    return {
+      total,
+      summary: entries.length > 3 ? `${labels.join(" · ")} (+${entries.length - 3})` : labels.join(" · ")
+    };
+  }
+  function isFleetActionKind(kindRaw) {
+    const kind = String(kindRaw || "").toUpperCase();
+    return kind === "ATTACK" || kind === "RAID" || kind === "RECYCLE" || kind === "SPY" || kind === "GALAXY_SCAN" || kind === "COLONIZE" || kind === "TRANSPORT" || kind === "STATION" || kind === "FLEET_SAVE" || kind === "BUILD_SHIP" || kind === "SHIPS" || kind === "TRANSMITTER";
+  }
+  function buildClientFallbackFleetGraph(planets, activeQueues, plan, slotRows) {
+    var _a, _b;
+    const lanes = slotRows.map((row) => ({
+      id: `lane:planet:${row.planet_id}`,
+      scope: "planet",
+      label: row.planet_coords ? `${row.planet_name} [${row.planet_coords}]` : row.planet_name,
+      planet_id: row.planet_id,
+      coords: row.planet_coords,
+      fleet_slots_used: row.slots_used,
+      fleet_slots_max: row.slots_max
+    }));
+    const nodes = [];
+    const edges = [];
+    const lastByPlanet = /* @__PURE__ */ new Map();
+    let layerIdx = 0;
+    for (const job of activeQueues) {
+      const cat = String(job.category || "").toLowerCase();
+      if (cat !== "fleet" && cat !== "shipyard" && !isFleetActionKind(cat)) continue;
+      const pid = Math.round(safeFiniteNumber(job.planet_id, ((_a = planets[0]) == null ? void 0 : _a.planet_id) ?? 0) ?? 0);
+      const id = `flt_active_${nodes.length}`;
+      nodes.push({
+        id,
+        order_index: nodes.length,
+        topological_layer: 0,
+        lane_id: pid > 0 ? `lane:planet:${pid}` : "lane:global",
+        planet_id: pid,
+        planet_coords: String(job.planet_coords || ""),
+        kind: cat === "shipyard" ? "BUILD_SHIP" : "FLEET_SAVE",
+        priority: "P1",
+        status: "in_flight",
+        target_name: String(job.name || job.detail || "Active Flight"),
+        target_level: safeFiniteNumber(job.quantity ?? job.target_level, null),
+        reason: String(job.detail || job.remaining_text || "Live in-flight queue item"),
+        executable_now: false,
+        wait_eta: String(job.remaining_text || "In Flight"),
+        total_eta: String(job.remaining_text || "In Flight")
+      });
+      lastByPlanet.set(pid, id);
+      layerIdx = 1;
+    }
+    for (const act of plan) {
+      if (!isFleetActionKind(act.kind)) continue;
+      const pid = Math.round(safeFiniteNumber(act.planet_id, ((_b = planets[0]) == null ? void 0 : _b.planet_id) ?? 0) ?? 0);
+      const id = `flt_plan_${nodes.length}`;
+      nodes.push({
+        id,
+        order_index: nodes.length,
+        topological_layer: layerIdx,
+        lane_id: pid > 0 ? `lane:planet:${pid}` : "lane:global",
+        planet_id: pid,
+        planet_coords: String(act.planet_coords || ""),
+        kind: String(act.kind || "FLEET"),
+        priority: String(act.priority || "P2"),
+        status: act.executable_now ? "ready" : "queued",
+        target_name: String(act.target_name || act.kind || "Fleet Mission"),
+        target_level: safeFiniteNumber(act.target_level, null),
+        reason: String(act.reason || "Planned fleet action"),
+        executable_now: Boolean(act.executable_now),
+        wait_eta: act.wait_eta || (act.executable_now ? "Now" : "Queued"),
+        total_eta: act.total_eta || "—"
+      });
+      const prevId = lastByPlanet.get(pid);
+      if (prevId) {
+        edges.push({
+          from: prevId,
+          to: id,
+          primary_type: "queue_order",
+          types: ["queue_order"]
+        });
+      }
+      lastByPlanet.set(pid, id);
+      layerIdx += 1;
+    }
+    return {
+      planner_mode: "fleet_planner",
+      lanes,
+      nodes,
+      edges,
+      summary: {
+        node_count: nodes.length,
+        edge_count: edges.length,
+        layer_count: Math.max(1, layerIdx)
+      }
+    };
+  }
+  const FleetPlannerTab = ({ hidden = false }) => {
+    var _a, _b, _c, _d, _e, _f;
+    const {
+      dashboard,
+      setDashboard,
+      activePage,
+      apiOnline,
+      setConfigDirty,
+      setConfigSaving,
+      bumpDashboardSeq,
+      apiCommand: apiCommand2,
+      loadDashboard,
+      showFeedback
+    } = useConsole();
+    const [fleetData, setFleetData] = reactExports.useState(null);
+    const [draft, setDraft] = reactExports.useState(
+      () => buildFleetDraftFromConfig(dashboard == null ? void 0 : dashboard.config)
+    );
+    const [draftDirty, setDraftDirty] = reactExports.useState(false);
+    const [paramGroupTab, setParamGroupTab] = reactExports.useState("combat");
+    const [edgeFilter, setEdgeFilter] = reactExports.useState("all");
+    const [isApplying, setIsApplying] = reactExports.useState(false);
+    const [isSimulating, setIsSimulating] = reactExports.useState(false);
+    const [statusMessage, setStatusMessage] = reactExports.useState(
+      "Fleet & attack controls stay synchronized with global Config."
+    );
+    reactExports.useEffect(() => {
+      if (!draftDirty && (dashboard == null ? void 0 : dashboard.config)) {
+        setDraft(buildFleetDraftFromConfig(dashboard.config));
+      }
+    }, [dashboard == null ? void 0 : dashboard.config, draftDirty]);
+    const fetchFleetPlanner = reactExports.useCallback(
+      async ({
+        previewConfig = null,
+        silent = false
+      } = {}) => {
+        try {
+          const payload = { command: "fleet_planner_get" };
+          if (previewConfig) payload.config = previewConfig;
+          const data = await apiCommand2(payload, { timeoutMs: 2e4 });
+          if (data && data.ok) {
+            setFleetData(data);
+            if (!previewConfig && !draftDirty && data.config) {
+              setDraft(buildFleetDraftFromConfig(data.config));
+            }
+            if (!silent) {
+              setStatusMessage(
+                previewConfig ? "Simulated fleet plan with draft parameters." : "Fleet planner refreshed."
+              );
+            }
+          }
+        } catch (err) {
+          if (!silent) {
+            showFeedback(
+              `Fleet planner load failed: ${err.message}`,
+              feedbackKindForError(err)
+            );
+          }
+        }
+      },
+      [apiCommand2, draftDirty, showFeedback]
+    );
+    reactExports.useEffect(() => {
+      if (hidden || activePage !== "action-graph") return;
+      void fetchFleetPlanner({ silent: true });
+    }, [hidden, activePage, fetchFleetPlanner]);
+    const slotRows = reactExports.useMemo(() => {
+      var _a2, _b2;
+      const rawBudgets = fleetData == null ? void 0 : fleetData.slot_budgets;
+      const planets = Array.isArray((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.planets) ? dashboard.state.planets : [];
+      const activeQueues = Array.isArray((_b2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _b2.active_queues) ? dashboard.state.active_queues : [];
+      const plan = Array.isArray(dashboard == null ? void 0 : dashboard.plan) ? dashboard.plan : [];
+      if (Array.isArray(rawBudgets) && rawBudgets.length > 0) {
+        return rawBudgets.map((b, idx) => {
+          var _a3, _b3;
+          const pid = Math.round(safeFiniteNumber(b.planet_id, idx + 1) ?? idx + 1);
+          const matchedPlanet = planets.find((p) => Number(p.planet_id) === pid);
+          const shipsObj = b.docked_ships && typeof b.docked_ships === "object" ? b.docked_ships : matchedPlanet == null ? void 0 : matchedPlanet.ships;
+          const docked = summarizeDockedShips(shipsObj);
+          const slotsMax = Math.max(
+            1,
+            Math.round(
+              safeFiniteNumber(
+                b.slots_max ?? b.max_slots,
+                1 + (safeFiniteNumber(b.b10_level ?? ((_a3 = matchedPlanet == null ? void 0 : matchedPlanet.buildings) == null ? void 0 : _a3.b10), 0) ?? 0)
+              ) ?? 1
+            )
+          );
+          const slotsUsed = Math.max(
+            0,
+            Math.round(
+              safeFiniteNumber(
+                b.used_slots ?? b.slots_used ?? b.in_flight_count ?? b.active_flights,
+                0
+              ) ?? 0
+            )
+          );
+          const plannedFleetSum = safeFiniteNumber(b.planned_fleet_count, null) !== null || safeFiniteNumber(b.planned_shipyard_count, null) !== null ? Math.round(safeFiniteNumber(b.planned_fleet_count, 0) ?? 0) + Math.round(safeFiniteNumber(b.planned_shipyard_count, 0) ?? 0) : 0;
+          return {
+            planet_id: pid,
+            planet_coords: String(b.planet_coords ?? b.coords ?? (matchedPlanet == null ? void 0 : matchedPlanet.coords) ?? `P${pid}`),
+            planet_name: String(b.planet_name ?? (matchedPlanet == null ? void 0 : matchedPlanet.name) ?? "Colony"),
+            b10_level: Math.round(
+              safeFiniteNumber(b.b10_level ?? b.fleet_base_level ?? ((_b3 = matchedPlanet == null ? void 0 : matchedPlanet.buildings) == null ? void 0 : _b3.b10), 0) ?? 0
+            ),
+            slots_used: slotsUsed,
+            slots_max: slotsMax,
+            active_flights: Math.round(
+              safeFiniteNumber(b.in_flight_count ?? b.active_flights ?? slotsUsed, slotsUsed) ?? slotsUsed
+            ),
+            docked_ships_total: Math.round(
+              safeFiniteNumber(b.total_docked_ships ?? b.docked_ships_total, docked.total) ?? docked.total
+            ),
+            docked_summary: String(b.docked_summary || docked.summary),
+            planned_actions: Math.round(
+              safeFiniteNumber(b.planned_actions ?? b.planned_count, plannedFleetSum) ?? plannedFleetSum
+            ),
+            status: String(b.status || (slotsUsed >= slotsMax ? "FULL" : "OPEN"))
+          };
+        });
+      }
+      if (rawBudgets && !Array.isArray(rawBudgets) && typeof rawBudgets === "object") {
+        const entries = Object.entries(rawBudgets);
+        if (entries.length > 0) {
+          return entries.map(([pidKey, val]) => {
+            var _a3;
+            const pid = Math.round(safeFiniteNumber((val == null ? void 0 : val.planet_id) ?? pidKey, 0) ?? 0);
+            const matchedPlanet = planets.find((p) => Number(p.planet_id) === pid);
+            const docked = summarizeDockedShips((val == null ? void 0 : val.docked_ships) || (matchedPlanet == null ? void 0 : matchedPlanet.ships));
+            const b10Lvl = Math.round(
+              safeFiniteNumber((val == null ? void 0 : val.b10_level) ?? ((_a3 = matchedPlanet == null ? void 0 : matchedPlanet.buildings) == null ? void 0 : _a3.b10), 0) ?? 0
+            );
+            const slotsMax = Math.max(
+              1,
+              Math.round(safeFiniteNumber(val == null ? void 0 : val.slots_max, 1 + b10Lvl) ?? 1)
+            );
+            const slotsUsed = Math.max(0, Math.round(safeFiniteNumber(val == null ? void 0 : val.slots_used, 0) ?? 0));
+            return {
+              planet_id: pid,
+              planet_coords: String((val == null ? void 0 : val.planet_coords) || (matchedPlanet == null ? void 0 : matchedPlanet.coords) || pidKey),
+              planet_name: String((val == null ? void 0 : val.planet_name) || (matchedPlanet == null ? void 0 : matchedPlanet.name) || "Colony"),
+              b10_level: b10Lvl,
+              slots_used: slotsUsed,
+              slots_max: slotsMax,
+              active_flights: Math.round(
+                safeFiniteNumber((val == null ? void 0 : val.active_flights) ?? slotsUsed, slotsUsed) ?? slotsUsed
+              ),
+              docked_ships_total: docked.total,
+              docked_summary: docked.summary,
+              planned_actions: Math.round(safeFiniteNumber(val == null ? void 0 : val.planned_actions, 0) ?? 0),
+              status: slotsUsed >= slotsMax ? "FULL" : "OPEN"
+            };
+          });
+        }
+      }
+      const normalPlanets = planets.filter(
+        (p) => String(p.planet_type || "normal").toLowerCase() === "normal"
+      );
+      return normalPlanets.map((p) => {
+        var _a3;
+        const b10 = Math.round(safeFiniteNumber((_a3 = p.buildings) == null ? void 0 : _a3.b10, 0) ?? 0);
+        const activeFlights = activeQueues.filter(
+          (q) => Number(q.planet_id) === Number(p.planet_id) && String(q.category || "").toLowerCase() === "fleet"
+        ).length;
+        const plannedCount = plan.filter(
+          (a) => Number(a.planet_id) === Number(p.planet_id) && isFleetActionKind(a.kind)
+        ).length;
+        const docked = summarizeDockedShips(p.ships);
+        const slotsMax = Math.max(1, 1 + b10);
+        return {
+          planet_id: Number(p.planet_id || 0),
+          planet_coords: String(p.coords || "—"),
+          planet_name: String(p.name || "Colony"),
+          b10_level: b10,
+          slots_used: activeFlights,
+          slots_max: slotsMax,
+          active_flights: activeFlights,
+          docked_ships_total: docked.total,
+          docked_summary: docked.summary,
+          planned_actions: plannedCount,
+          status: activeFlights >= slotsMax ? "FULL" : "OPEN"
+        };
+      });
+    }, [fleetData == null ? void 0 : fleetData.slot_budgets, dashboard]);
+    const activeGraph = reactExports.useMemo(() => {
+      var _a2, _b2;
+      if ((fleetData == null ? void 0 : fleetData.graph) && typeof fleetData.graph === "object" && Array.isArray(fleetData.graph.nodes)) {
+        return fleetData.graph;
+      }
+      const planets = Array.isArray((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.planets) ? dashboard.state.planets : [];
+      const activeQueues = Array.isArray((_b2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _b2.active_queues) ? dashboard.state.active_queues : [];
+      const plan = Array.isArray(dashboard == null ? void 0 : dashboard.plan) ? dashboard.plan : [];
+      return buildClientFallbackFleetGraph(planets, activeQueues, plan, slotRows);
+    }, [fleetData == null ? void 0 : fleetData.graph, dashboard, slotRows]);
+    const slotSortCols = reactExports.useMemo(
+      () => ({
+        planet: (r) => coordsSortKey(r.planet_coords),
+        b10: { accessor: (r) => r.b10_level, defaultDirection: "desc" },
+        slots: { accessor: (r) => r.slots_used / Math.max(1, r.slots_max), defaultDirection: "desc" },
+        flights: { accessor: (r) => r.active_flights, defaultDirection: "desc" },
+        docked: { accessor: (r) => r.docked_ships_total, defaultDirection: "desc" },
+        planned: { accessor: (r) => r.planned_actions, defaultDirection: "desc" }
+      }),
+      []
+    );
+    const slotSort = useTableSort(slotRows, slotSortCols);
+    const totalSlotsUsed = slotRows.reduce((acc, r) => acc + r.slots_used, 0);
+    const totalSlotsMax = slotRows.reduce((acc, r) => acc + r.slots_max, 0);
+    const totalDockedShips = slotRows.reduce((acc, r) => acc + r.docked_ships_total, 0);
+    const graphNodes = Array.isArray(activeGraph == null ? void 0 : activeGraph.nodes) ? activeGraph.nodes : [];
+    const activeMissionsCount = graphNodes.length;
+    const telemetry = (fleetData == null ? void 0 : fleetData.attack_telemetry) || ((_a = dashboard == null ? void 0 : dashboard.ai_planner_summary) == null ? void 0 : _a.attack_telemetry) || {};
+    const sparePct = safeFiniteNumber(
+      draft.numbers.ai_resource_spare_pct,
+      safeFiniteNumber(
+        ((_b = fleetData == null ? void 0 : fleetData.spare_budget) == null ? void 0 : _b.spare_percent) ?? ((_c = fleetData == null ? void 0 : fleetData.spare_budget) == null ? void 0 : _c.ai_resource_spare_pct),
+        10
+      ) ?? 10
+    ) ?? 10;
+    const effMode = normalizeUiPlannerMode(
+      (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_d = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _d.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode)
+    );
+    const lootPerHour = safeFiniteNumber(
+      (telemetry == null ? void 0 : telemetry.hourly_loot_spice_eq) ?? ((_e = telemetry == null ? void 0 : telemetry.hourly_loot) == null ? void 0 : _e.spice_eq) ?? (telemetry == null ? void 0 : telemetry.median_loot_spice_eq_per_hour) ?? (telemetry == null ? void 0 : telemetry.median_loot_per_hour) ?? ((_f = telemetry == null ? void 0 : telemetry.median_loot) == null ? void 0 : _f.spice_eq),
+      null
+    );
+    const medianRtSec = safeFiniteNumber(
+      (telemetry == null ? void 0 : telemetry.median_round_trip_seconds) ?? (telemetry == null ? void 0 : telemetry.median_roundtrip_seconds),
+      null
+    );
+    const handleBoolChange = (key, checked) => {
+      setDraft((prev) => ({
+        ...prev,
+        booleans: { ...prev.booleans, [key]: checked }
+      }));
+      setDraftDirty(true);
+      setConfigDirty(true);
+    };
+    const handleNumChange = (key, value) => {
+      setDraft((prev) => ({
+        ...prev,
+        numbers: { ...prev.numbers, [key]: value }
+      }));
+      setDraftDirty(true);
+      setConfigDirty(true);
+    };
+    const handleShipyardTargetChange = (slug, value) => {
+      setDraft((prev) => ({
+        ...prev,
+        shipyard_targets: { ...prev.shipyard_targets, [slug]: value }
+      }));
+      setDraftDirty(true);
+      setConfigDirty(true);
+    };
+    const handleSimulate = async () => {
+      if (isSimulating) return;
+      setIsSimulating(true);
+      setStatusMessage("Simulating fleet & attack plan preview...");
+      try {
+        const previewPatch = buildConfigPatchFromDraft(draft);
+        await fetchFleetPlanner({ previewConfig: previewPatch, silent: false });
+      } finally {
+        setIsSimulating(false);
+      }
+    };
+    const handleReset = () => {
+      setDraft(buildFleetDraftFromConfig(dashboard == null ? void 0 : dashboard.config));
+      setDraftDirty(false);
+      setConfigDirty(false);
+      setStatusMessage("Fleet controls synced back to active Config.");
+      void fetchFleetPlanner({ silent: true });
+    };
+    const handleApplyToConfig = async () => {
+      if (isApplying) return;
+      const gState = globalThis.state;
+      if (gState) {
+        gState.configSaving = (gState.configSaving || 0) + 1;
+      }
+      setIsApplying(true);
+      setConfigSaving((c) => c + 1);
+      setStatusMessage("Applying fleet & logistics settings to active Config...");
+      const patch = buildConfigPatchFromDraft(draft);
+      try {
+        const res = await apiCommand2({ command: "update_config", config: patch });
+        const updatedCfg = (res == null ? void 0 : res.config) || { ...(dashboard == null ? void 0 : dashboard.config) || {}, ...patch };
+        if (gState == null ? void 0 : gState.dashboard) {
+          gState.dashboard = { ...gState.dashboard, config: updatedCfg };
+        }
+        setDashboard((prev) => ({
+          ...prev || {},
+          config: updatedCfg
+        }));
+        setDraft(buildFleetDraftFromConfig(updatedCfg));
+        setDraftDirty(false);
+        setConfigDirty(false);
+        bumpDashboardSeq();
+        if (typeof globalThis.renderConfigForm === "function") {
+          globalThis.renderConfigForm(updatedCfg);
+        }
+        setStatusMessage("Saved to Config and synced bidirectionally.");
+        showFeedback("Fleet planner settings applied to Config.", "ok");
+        await Promise.all([
+          fetchFleetPlanner({ silent: true }),
+          loadDashboard({ refresh: false, preserveConfig: false, force: true })
+        ]);
+      } catch (err) {
+        setStatusMessage(`Save failed: ${err.message}`);
+        showFeedback(
+          `Failed to apply fleet config: ${err.message}`,
+          feedbackKindForError(err)
+        );
+      } finally {
+        if (gState) gState.configSaving = Math.max(0, (gState.configSaving || 0) - 1);
+        setConfigSaving((c) => Math.max(0, c - 1));
+        setIsApplying(false);
+      }
+    };
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-tab-split", id: "ag-panel-fleet-planner", hidden, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window ag-main-window", id: "ag-flt-main-window", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "FLT" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Fleet, Raids & Logistics Planner" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "span",
+              {
+                id: "flt-sync-badge",
+                className: `ag-status-pill tabular ${draftDirty ? "is-sim" : "is-live"}`,
+                role: "status",
+                children: draftDirty ? "PREVIEW EDITED" : "CONFIG SYNCED"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inline-actions", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              className: "btn btn-secondary btn-sm",
+              id: "btn-flt-refresh",
+              type: "button",
+              disabled: !apiOnline,
+              onClick: () => void fetchFleetPlanner({ silent: false }),
+              children: "Refresh Fleet DAG"
+            }
+          ) })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-strip", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Empire Fleet Slots" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("strong", { className: "ag-kpi-val tabular", id: "flt-kpi-slots", children: [
+              fmtInt(totalSlotsUsed),
+              " / ",
+              fmtInt(totalSlotsMax)
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-kpi-sub tabular", children: [
+              slotRows.length,
+              " active planets · ",
+              fmtInt(totalDockedShips),
+              " docked ships"
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Active & Planned Flights" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "flt-kpi-missions", children: fmtInt(activeMissionsCount) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-kpi-sub tabular", children: [
+              "Raids: ",
+              draft.booleans.allow_raids ? "ON" : "OFF",
+              " · Scan:",
+              " ",
+              draft.booleans.allow_galaxy_scan ? "ON" : "OFF",
+              " · Shipyard:",
+              " ",
+              draft.booleans.allow_shipyard ? "ON" : "OFF"
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Soft Spare % Budget" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("strong", { className: "ag-kpi-val tabular", id: "flt-kpi-budget", children: [
+              fmtInt(sparePct),
+              "%"
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-kpi-sub tabular", children: [
+              "Feeds ",
+              effMode === "ai_planner" ? "AI-Planner" : "Heuristic",
+              " reserve budget"
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Median Attack Telemetry" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "flt-kpi-loot", children: lootPerHour !== null ? `${fmtCompact(lootPerHour)}/h` : "—" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-kpi-sub tabular", children: [
+              "Median RT: ",
+              formatDurationSecondsCompact(medianRtSec),
+              " · Reserve:",
+              " ",
+              fmtInt(safeFiniteNumber(draft.numbers.fleet_save_fuel_reserve_spice, 500) ?? 500),
+              " ",
+              "Spice"
+            ] })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          DagCanvas,
+          {
+            graph: activeGraph,
+            idPrefix: "ag-flt",
+            markerPrefix: "ag-flt",
+            edgeFilter,
+            onEdgeFilterChange: setEdgeFilter,
+            emptyMessage: "No active flights, raids, recyclers, or shipyard builds in the current queue."
+          }
+        ),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar ag-subtable-bar", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Per-Planet Fleet Slot & Docked Budget" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "sub", children: "1 + Fleet base (b10) slots per planet · Live & planned load" })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-toolbar-meta tabular", children: [
+            slotRows.length,
+            " planets"
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "flt-slots-table", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Planet",
+                sortKey: "planet",
+                activeKey: slotSort.sortKey,
+                direction: slotSort.sortDirection,
+                onSort: slotSort.requestSort
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Fleet Base",
+                sortKey: "b10",
+                activeKey: slotSort.sortKey,
+                direction: slotSort.sortDirection,
+                onSort: slotSort.requestSort,
+                align: "right"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Fleet Slots",
+                sortKey: "slots",
+                activeKey: slotSort.sortKey,
+                direction: slotSort.sortDirection,
+                onSort: slotSort.requestSort,
+                align: "right"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "In Flight",
+                sortKey: "flights",
+                activeKey: slotSort.sortKey,
+                direction: slotSort.sortDirection,
+                onSort: slotSort.requestSort,
+                align: "right"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Docked Ships",
+                sortKey: "docked",
+                activeKey: slotSort.sortKey,
+                direction: slotSort.sortDirection,
+                onSort: slotSort.requestSort,
+                align: "right"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              SortableTh,
+              {
+                label: "Planned",
+                sortKey: "planned",
+                activeKey: slotSort.sortKey,
+                direction: slotSort.sortDirection,
+                onSort: slotSort.requestSort,
+                align: "right"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Status" })
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: slotSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 7, className: "empty-note", children: "No planet fleet budget rows loaded yet." }) }) : slotSort.sortedRows.map((row) => {
+            const isFull = row.slots_used >= row.slots_max;
+            return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: sanitizeMainWindowText(row.planet_coords) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-cell-sub", children: sanitizeMainWindowText(row.planet_name) })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "num tabular", children: [
+                "b10 L",
+                row.b10_level
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "num tabular", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: row.slots_used }),
+                " / ",
+                row.slots_max
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "num tabular", children: row.active_flights }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "num tabular", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: fmtInt(row.docked_ships_total) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-cell-sub", children: sanitizeMainWindowText(row.docked_summary) })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "num tabular", children: row.planned_actions }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `ag-status-pill ${isFull ? "is-sim" : "is-live"}`, children: row.status }) })
+            ] }, `flt-slot-${row.planet_id}-${row.planet_coords}`);
+          }) })
+        ] }) })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("aside", { className: "hud-window ag-control-panel", id: "ag-flt-control-panel", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "CTL" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Fleet & Tactical Settings" })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "span",
+            {
+              className: `ag-status-pill tabular ${draftDirty ? "is-sim" : "is-live"}`,
+              id: "flt-panel-pill",
+              children: draftDirty ? "EDITED" : "SYNCED"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-tabs", role: "tablist", "aria-label": "Fleet settings sections", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              type: "button",
+              className: `tab-btn${paramGroupTab === "combat" ? " active" : ""}`,
+              "data-flt-ptab": "combat",
+              onClick: () => setParamGroupTab("combat"),
+              children: "Combat"
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              type: "button",
+              className: `tab-btn${paramGroupTab === "logistics" ? " active" : ""}`,
+              "data-flt-ptab": "logistics",
+              onClick: () => setParamGroupTab("logistics"),
+              children: "Logistics"
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              type: "button",
+              className: `tab-btn${paramGroupTab === "scanner" ? " active" : ""}`,
+              "data-flt-ptab": "scanner",
+              onClick: () => setParamGroupTab("scanner"),
+              children: "Scanner"
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              type: "button",
+              className: `tab-btn${paramGroupTab === "shipyard" ? " active" : ""}`,
+              "data-flt-ptab": "shipyard",
+              onClick: () => setParamGroupTab("shipyard"),
+              children: "Shipyard"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-body", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-pane", hidden: paramGroupTab !== "combat", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-group-title", children: "Combat, Raids & Escape Flights" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-toggles-stack", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_raids", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-allow_raids",
+                    type: "checkbox",
+                    checked: Boolean(draft.booleans.allow_raids),
+                    onChange: (e) => handleBoolChange("allow_raids", e.target.checked)
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow automated raids" })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_pvp_in_az", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-allow_pvp_in_az",
+                    type: "checkbox",
+                    checked: Boolean(draft.booleans.allow_pvp_in_az),
+                    onChange: (e) => handleBoolChange("allow_pvp_in_az", e.target.checked)
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow PvP targets in AZ" })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_fleetsave", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-allow_fleetsave",
+                    type: "checkbox",
+                    checked: Boolean(draft.booleans.allow_fleetsave),
+                    onChange: (e) => handleBoolChange("allow_fleetsave", e.target.checked)
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow escape fleetsave" })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-combat_safety_margin", children: "Combat Safety Margin" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-combat_safety_margin",
+                    type: "number",
+                    min: 1,
+                    max: 10,
+                    step: 0.05,
+                    value: draft.numbers.combat_safety_margin,
+                    onChange: (e) => handleNumChange("combat_safety_margin", e.target.value)
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-raid_min_loot_spice_eq", children: "Min Raid Loot (SpiceEq)" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-raid_min_loot_spice_eq",
+                    type: "number",
+                    min: 0,
+                    max: 1e7,
+                    step: 100,
+                    value: draft.numbers.raid_min_loot_spice_eq,
+                    onChange: (e) => handleNumChange("raid_min_loot_spice_eq", e.target.value)
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-fleet_save_fuel_reserve_spice", children: "Fleetsave Spice Reserve" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-fleet_save_fuel_reserve_spice",
+                    type: "number",
+                    min: 0,
+                    max: 1e7,
+                    step: 50,
+                    value: draft.numbers.fleet_save_fuel_reserve_spice,
+                    onChange: (e) => handleNumChange("fleet_save_fuel_reserve_spice", e.target.value)
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-ai_resource_spare_pct", children: "AI Spare Resource Budget (%)" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-ai_resource_spare_pct",
+                    type: "number",
+                    min: 0,
+                    max: 90,
+                    step: 1,
+                    value: draft.numbers.ai_resource_spare_pct,
+                    onChange: (e) => handleNumChange("ai_resource_spare_pct", e.target.value)
+                  }
+                )
+              ] })
+            ] })
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-pane", hidden: paramGroupTab !== "logistics", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-group-title", children: "Colonization & Inter-Planet Transport" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-toggles-stack", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_colonize", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-allow_colonize",
+                    type: "checkbox",
+                    checked: Boolean(draft.booleans.allow_colonize),
+                    onChange: (e) => handleBoolChange("allow_colonize", e.target.checked)
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow auto-colonization" })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_transport", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-allow_transport",
+                    type: "checkbox",
+                    checked: Boolean(draft.booleans.allow_transport),
+                    onChange: (e) => handleBoolChange("allow_transport", e.target.checked)
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow inter-planet transport" })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_transmitter", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-allow_transmitter",
+                    type: "checkbox",
+                    checked: Boolean(draft.booleans.allow_transmitter),
+                    onChange: (e) => handleBoolChange("allow_transmitter", e.target.checked)
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow transmitter flights" })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-min_colony_fields", children: "Min Colony Fields (300+)" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-min_colony_fields",
+                    type: "number",
+                    min: 50,
+                    max: 500,
+                    step: 5,
+                    value: draft.numbers.min_colony_fields,
+                    onChange: (e) => handleNumChange("min_colony_fields", e.target.value)
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-max_planets", children: "Max Planets Cap" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-max_planets",
+                    type: "number",
+                    min: 1,
+                    max: 20,
+                    step: 1,
+                    value: draft.numbers.max_planets,
+                    onChange: (e) => handleNumChange("max_planets", e.target.value)
+                  }
+                )
+              ] })
+            ] })
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-pane", hidden: paramGroupTab !== "scanner", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-group-title", children: "Smart Galaxy Scanner & Spy Slots" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-toggles-stack", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_galaxy_scan", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-allow_galaxy_scan",
+                    type: "checkbox",
+                    checked: Boolean(draft.booleans.allow_galaxy_scan),
+                    onChange: (e) => handleBoolChange("allow_galaxy_scan", e.target.checked)
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow smart galaxy scanner" })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-galaxy_scan_explore_first", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-galaxy_scan_explore_first",
+                    type: "checkbox",
+                    checked: Boolean(draft.booleans.galaxy_scan_explore_first),
+                    onChange: (e) => handleBoolChange("galaxy_scan_explore_first", e.target.checked)
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Explore unscanned systems first" })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-galaxy_scan_all_galaxies", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-galaxy_scan_all_galaxies",
+                    type: "checkbox",
+                    checked: Boolean(draft.booleans.galaxy_scan_all_galaxies),
+                    onChange: (e) => handleBoolChange("galaxy_scan_all_galaxies", e.target.checked)
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Sweep all galaxies" })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_sweep_interval_seconds", children: "Sweep Interval (sec)" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-galaxy_sweep_interval_seconds",
+                    type: "number",
+                    min: 10,
+                    max: 86400,
+                    step: 10,
+                    value: draft.numbers.galaxy_sweep_interval_seconds,
+                    onChange: (e) => handleNumChange("galaxy_sweep_interval_seconds", e.target.value)
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_sweep_pages", children: "Systems / Sweep" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-galaxy_sweep_pages",
+                    type: "number",
+                    min: 1,
+                    max: 400,
+                    step: 5,
+                    value: draft.numbers.galaxy_sweep_pages,
+                    onChange: (e) => handleNumChange("galaxy_sweep_pages", e.target.value)
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_scan_click_delay_seconds", children: "Click Delay (sec)" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-galaxy_scan_click_delay_seconds",
+                    type: "number",
+                    min: 0.1,
+                    max: 30,
+                    step: 0.1,
+                    value: draft.numbers.galaxy_scan_click_delay_seconds,
+                    onChange: (e) => handleNumChange("galaxy_scan_click_delay_seconds", e.target.value)
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_scan_click_jitter_seconds", children: "Click Jitter (sec)" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-galaxy_scan_click_jitter_seconds",
+                    type: "number",
+                    min: 0,
+                    max: 20,
+                    step: 0.1,
+                    value: draft.numbers.galaxy_scan_click_jitter_seconds,
+                    onChange: (e) => handleNumChange("galaxy_scan_click_jitter_seconds", e.target.value)
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_scan_refresh_pct", children: "Refresh Split (%)" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-galaxy_scan_refresh_pct",
+                    type: "number",
+                    min: 0,
+                    max: 100,
+                    step: 1,
+                    value: draft.numbers.galaxy_scan_refresh_pct,
+                    onChange: (e) => handleNumChange("galaxy_scan_refresh_pct", e.target.value)
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-reserved_spy_slots", children: "Reserved Spy Fleet Slots" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-reserved_spy_slots",
+                    type: "number",
+                    min: 0,
+                    max: 20,
+                    step: 1,
+                    value: draft.numbers.reserved_spy_slots,
+                    onChange: (e) => handleNumChange("reserved_spy_slots", e.target.value)
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_scan_near_weight", children: "Near Proximity Weight" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-galaxy_scan_near_weight",
+                    type: "number",
+                    min: 0,
+                    max: 10,
+                    step: 0.05,
+                    value: draft.numbers.galaxy_scan_near_weight,
+                    onChange: (e) => handleNumChange("galaxy_scan_near_weight", e.target.value)
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-galaxy_scan_attack_weight", children: "Raid History Weight" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-galaxy_scan_attack_weight",
+                    type: "number",
+                    min: 0,
+                    max: 10,
+                    step: 0.05,
+                    value: draft.numbers.galaxy_scan_attack_weight,
+                    onChange: (e) => handleNumChange("galaxy_scan_attack_weight", e.target.value)
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "flt-cfg-spy_dispatch_planet_id", children: "Spy Dispatch Planet ID" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: "flt-cfg-spy_dispatch_planet_id",
+                    type: "number",
+                    min: 0,
+                    step: 1,
+                    value: draft.numbers.spy_dispatch_planet_id,
+                    onChange: (e) => handleNumChange("spy_dispatch_planet_id", e.target.value)
+                  }
+                )
+              ] })
+            ] })
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-pane", hidden: paramGroupTab !== "shipyard", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-group-title", children: "Shipyard Targets per Hull" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-toggles-stack", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", htmlFor: "flt-cfg-allow_shipyard", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "input",
+                {
+                  id: "flt-cfg-allow_shipyard",
+                  type: "checkbox",
+                  checked: Boolean(draft.booleans.allow_shipyard),
+                  onChange: (e) => handleBoolChange("allow_shipyard", e.target.checked)
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Allow shipyard production" })
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: Object.keys(draft.shipyard_targets).map((slug) => {
+              const shipMeta = SHIP_OPTIONS.find((s) => s.slug === slug);
+              return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `flt-shipyard-${slug}`, children: shipMeta ? shipMeta.name : slug }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    id: `flt-shipyard-${slug}`,
+                    type: "number",
+                    min: 0,
+                    max: 9999999,
+                    step: 1,
+                    value: draft.shipyard_targets[slug] ?? "0",
+                    onChange: (e) => handleShipyardTargetChange(slug, e.target.value)
+                  }
+                )
+              ] }, `flt-ship-${slug}`);
+            }) })
+          ] }) })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-footer", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-sim-note", id: "flt-status-text", children: statusMessage }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-footer-actions", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                className: "btn btn-secondary btn-sm",
+                id: "btn-flt-simulate",
+                type: "button",
+                disabled: !apiOnline || isSimulating,
+                onClick: () => void handleSimulate(),
+                children: isSimulating ? "Simulating..." : "Preview Simulate"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                className: "btn btn-secondary btn-sm",
+                id: "btn-flt-reset",
+                type: "button",
+                disabled: isApplying,
+                onClick: handleReset,
+                children: "Reset"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                className: "btn btn-primary btn-sm btn-span",
+                id: "btn-flt-apply",
+                type: "button",
+                disabled: isApplying,
+                onClick: () => void handleApplyToConfig(),
+                children: isApplying ? "Saving..." : "Apply to Config"
+              }
+            )
+          ] })
+        ] })
+      ] })
+    ] });
+  };
   const useClientSyncEffect$1 = typeof window !== "undefined" ? reactExports.useLayoutEffect : reactExports.useEffect;
   const AG_BOOL_FIELDS = [
     "auto_throttle_blast_furnace",
@@ -12829,11 +17453,6 @@
     "forbid_planetary_solar"
   ];
   const AG_NUM_DEFAULTS = {
-    ga_population_size: 24,
-    ga_generations: 12,
-    ga_horizon_steps: 6,
-    ga_mutation_rate: 0.25,
-    ga_nn_weight: 0.35,
     storage_warn_ratio: 0.85,
     blast_pig_iron_max_share: 0.7,
     combat_safety_margin: 1.4,
@@ -12851,71 +17470,10 @@
     action_batch_interval_seconds: 120,
     max_actions_per_hour: 60
   };
-  const AG_SEMANTIC_EDGE_TYPES = /* @__PURE__ */ new Set([
-    "priority_gate",
-    "prerequisite",
-    "level_chain",
-    "energy_support",
-    "throttle_control",
-    "storage_cap",
-    "resource_feed",
-    "loot_feed"
-  ]);
-  function sanitizeMainWindowText(rawText) {
-    return String(rawText ?? "").replace(/generations?/gi, "cycles");
-  }
-  function edgeVisualSpec(edge) {
-    const pType = String((edge == null ? void 0 : edge.primary_type) || "execution_order");
-    if (pType === "priority_gate") {
-      return { cls: "is-gate", marker: "ag-arrow-gate" };
-    }
-    if (pType === "prerequisite" || pType === "level_chain") {
-      return { cls: "is-prereq", marker: "ag-arrow-prereq" };
-    }
-    if (pType === "energy_support" || pType === "throttle_control" || pType === "storage_cap" || pType === "resource_feed" || pType === "loot_feed") {
-      return { cls: "is-resource", marker: "ag-arrow-resource" };
-    }
-    if (pType === "queue_order") {
-      return { cls: "is-queue", marker: "ag-arrow-queue" };
-    }
-    return { cls: "is-seq", marker: "ag-arrow-seq" };
-  }
-  function edgeMatchesFilter(edge, filterMode) {
-    if (filterMode !== "deps") return true;
-    const types = Array.isArray(edge == null ? void 0 : edge.types) ? edge.types : [edge == null ? void 0 : edge.primary_type];
-    return types.some((t) => AG_SEMANTIC_EDGE_TYPES.has(String(t || "")));
-  }
-  function formatNodeTargetLabel(node) {
-    const base = String((node == null ? void 0 : node.target_name) || (node == null ? void 0 : node.kind) || "Action");
-    const lvl = safeFiniteNumber(node == null ? void 0 : node.target_level, null);
-    const kind = String((node == null ? void 0 : node.kind) || "");
-    if (lvl === null) return base;
-    if (kind === "THROTTLE_BUILDING") {
-      return `${base} → ${Math.round(lvl)}%`;
-    }
-    if (kind === "BUILD_SHIP") {
-      if (/\(x\d+\)$/i.test(base)) return base;
-      return `${base} (x${Math.max(1, Math.round(lvl))})`;
-    }
-    if (kind === "BUILD" || kind === "WAIT_RESOURCES" || kind === "RESEARCH") {
-      return `${base} L${Math.round(lvl)}`;
-    }
-    if (kind === "DEMOLISH_BUILDING") {
-      return `Demolish ${base} → L${Math.round(lvl)}`;
-    }
-    return base;
-  }
-  function formatNodeStatusShort(status) {
-    if (status === "ready") return "READY";
-    if (status === "waiting_resources") return "WAIT";
-    if (status === "blocked_gate") return "HOLD";
-    return "QUEUE";
-  }
   function buildDraftStateFromConfig(cfg) {
     const out = {
-      planner_mode: String((cfg == null ? void 0 : cfg.planner_mode) || "priority").toLowerCase() === "ga_nn" ? "ga_nn" : "priority",
-      playstyle: String((cfg == null ? void 0 : cfg.playstyle) || "fleeter"),
-      ga_seed: (cfg == null ? void 0 : cfg.ga_seed) != null ? String(cfg.ga_seed) : ""
+      planner_mode: normalizeUiPlannerMode(cfg == null ? void 0 : cfg.planner_mode),
+      playstyle: String((cfg == null ? void 0 : cfg.playstyle) || "fleeter")
     };
     for (const [k, fallback] of Object.entries(AG_NUM_DEFAULTS)) {
       const v = safeFiniteNumber(cfg == null ? void 0 : cfg[k], fallback) ?? fallback;
@@ -12927,15 +17485,15 @@
     }
     return out;
   }
-  const ActionGraphView = () => {
+  const HeuristicsTab = ({ hidden = false, onSwitchTab }) => {
     var _a;
     const {
       dashboard,
       setDashboard,
-      activePage,
       apiOnline,
       actionGraphData,
       setActionGraphData,
+      plannerJobsStatus,
       agSimDirty,
       setAgSimDirty,
       setAgSimRunning,
@@ -12951,17 +17509,7 @@
       loadDashboard,
       showFeedback
     } = useConsole();
-    const scrollRef = reactExports.useRef(null);
     const debounceRef = reactExports.useRef(null);
-    const {
-      isDragging,
-      consumeSuppressClick,
-      onMouseDown,
-      onMouseMove,
-      onMouseUp,
-      onMouseLeave
-    } = useDragScroll(scrollRef, 4);
-    const [selectedNodeId, setSelectedNodeId] = reactExports.useState(null);
     const [draftValues, setDraftValues] = reactExports.useState(
       () => buildDraftStateFromConfig(dashboard == null ? void 0 : dashboard.config)
     );
@@ -12993,12 +17541,10 @@
         setDraftValues((prev) => {
           const modeSel = readEl("ag-cfg-planner_mode");
           const playSel = readEl("ag-cfg-playstyle");
-          const seedInp = readEl("ag-cfg-ga_seed");
           const next = {
             ...prev,
-            planner_mode: modeOverride ?? (modeSel ? String(modeSel.value || "priority") : String(prev.planner_mode || "priority")),
-            playstyle: playSel ? String(playSel.value || "fleeter") : String(prev.playstyle || "fleeter"),
-            ga_seed: seedInp ? String(seedInp.value ?? "") : String(prev.ga_seed ?? "")
+            planner_mode: modeOverride ?? normalizeUiPlannerMode(modeSel ? modeSel.value : prev.planner_mode),
+            playstyle: playSel ? String(playSel.value || "fleeter") : String(prev.playstyle || "fleeter")
           };
           for (const boolField of AG_BOOL_FIELDS) {
             const box = readEl(`ag-cfg-${boolField}`);
@@ -13019,7 +17565,7 @@
         const modeSel = readEl("ag-cfg-planner_mode");
         const playSel = readEl("ag-cfg-playstyle");
         const payload = {
-          planner_mode: modeOverride ?? (modeSel ? String(modeSel.value || "priority") : String(draftValues.planner_mode || "priority")),
+          planner_mode: modeOverride ?? normalizeUiPlannerMode(modeSel ? modeSel.value : draftValues.planner_mode),
           playstyle: playSel ? String(playSel.value || "fleeter") : String(draftValues.playstyle || "fleeter")
         };
         for (const boolField of AG_BOOL_FIELDS) {
@@ -13037,16 +17583,6 @@
           } else {
             payload[numField] = raw;
           }
-        }
-        const seedInp = readEl("ag-cfg-ga_seed");
-        const rawSeed = seedInp ? String(seedInp.value ?? "").trim() : String(draftValues.ga_seed ?? "").trim();
-        if (rawSeed === "") {
-          payload.ga_seed = null;
-        } else if (/^-?\d+$/.test(rawSeed)) {
-          const parsedSeed = Number(rawSeed);
-          payload.ga_seed = Number.isSafeInteger(parsedSeed) ? parsedSeed : rawSeed;
-        } else {
-          payload.ga_seed = rawSeed;
         }
         return payload;
       },
@@ -13092,15 +17628,15 @@
           debounceRef.current = null;
         }
         const draft = collectDraftPayload(modeOverride);
-        const simMode = String(draft.planner_mode || "priority").toLowerCase() === "ga_nn" ? "ga_nn" : "priority";
+        const simMode = normalizeUiPlannerMode(draft.planner_mode);
         syncDraftValuesFromDom(simMode);
         setAgSimDirty(true);
         const gState = globalThis.state;
         const reqSeq = gState ? ++gState.agSimSeq : 1;
         if (gState) gState.agSimRunning = (gState.agSimRunning || 0) + 1;
         setAgSimRunning((c) => c + 1);
-        const useGaHud = simMode === "ga_nn";
-        if (useGaHud) beginGaCalc();
+        const useHud = simMode === "ai_planner";
+        if (useHud) beginGaCalc();
         try {
           const res = await apiCommand2({
             command: "action_graph",
@@ -13138,7 +17674,7 @@
         } finally {
           if (gState) gState.agSimRunning = Math.max(0, (gState.agSimRunning || 0) - 1);
           setAgSimRunning((c) => Math.max(0, c - 1));
-          if (useGaHud) endGaCalc();
+          if (useHud) endGaCalc();
         }
       },
       [
@@ -13211,8 +17747,8 @@
       }
       syncDraftValuesFromDom();
       const payload = collectDraftPayload();
-      const isGa = String(payload.planner_mode || "").toLowerCase() === "ga_nn";
-      if (isGa) beginGaCalc();
+      const isAi = normalizeUiPlannerMode(payload.planner_mode) === "ai_planner";
+      if (isAi) beginGaCalc();
       const gState = globalThis.state;
       if (gState) {
         gState.agSimSeq = (gState.agSimSeq || 0) + 1;
@@ -13256,7 +17792,7 @@
       } finally {
         if (gState) gState.configSaving = Math.max(0, (gState.configSaving || 0) - 1);
         setConfigSaving((c) => Math.max(0, c - 1));
-        if (isGa) endGaCalc();
+        if (isAi) endGaCalc();
       }
     };
     const graph = actionGraphData || (dashboard ? buildClientFallbackActionGraph(dashboard) : null);
@@ -13264,10 +17800,24 @@
     const allEdges = Array.isArray(graph == null ? void 0 : graph.edges) ? graph.edges : [];
     const edgeFilter = uiPrefs.agEdgeFilter || "all";
     const paramTab = uiPrefs.agParamTab || "core";
-    const visibleEdges = allEdges.filter((e) => edgeMatchesFilter(e, edgeFilter));
+    const visibleEdges = allEdges.filter((e) => {
+      if (edgeFilter !== "deps") return true;
+      const types = Array.isArray(e == null ? void 0 : e.types) ? e.types : [e == null ? void 0 : e.primary_type];
+      return types.some(
+        (t) => [
+          "priority_gate",
+          "prerequisite",
+          "level_chain",
+          "energy_support",
+          "throttle_control",
+          "storage_cap",
+          "resource_feed",
+          "loot_feed"
+        ].includes(String(t || ""))
+      );
+    });
     const summary = (graph == null ? void 0 : graph.summary) || {};
-    const graphMode = String((graph == null ? void 0 : graph.mode) || draftValues.planner_mode || "priority").toLowerCase() === "ga_nn" ? "ga_nn" : "priority";
-    const activeSelectedId = selectedNodeId && nodes.some((n) => n.id === selectedNodeId) ? selectedNodeId : null;
+    const graphMode = normalizeUiPlannerMode((graph == null ? void 0 : graph.mode) || draftValues.planner_mode);
     const totalNodes = Math.max(
       0,
       Math.round(safeFiniteNumber(summary.total_nodes, nodes.length) ?? nodes.length)
@@ -13302,165 +17852,357 @@
     const byEdgeType = summary.by_edge_type || {};
     const prereqCount = Math.round(safeFiniteNumber(byEdgeType.prerequisite, 0) ?? 0) + Math.round(safeFiniteNumber(byEdgeType.level_chain, 0) ?? 0) + Math.round(safeFiniteNumber(byEdgeType.priority_gate, 0) ?? 0);
     const resCount = Math.round(safeFiniteNumber(byEdgeType.energy_support, 0) ?? 0) + Math.round(safeFiniteNumber(byEdgeType.throttle_control, 0) ?? 0) + Math.round(safeFiniteNumber(byEdgeType.storage_cap, 0) ?? 0) + Math.round(safeFiniteNumber(byEdgeType.resource_feed, 0) ?? 0) + Math.round(safeFiniteNumber(byEdgeType.loot_feed, 0) ?? 0);
-    const gaSum = graph == null ? void 0 : graph.ga_summary;
-    const engineTitle = graphMode === "ga_nn" && gaSum && typeof gaSum === "object" ? sanitizeMainWindowText(
-      `GA+NN · ${fmtImprovementPct(
-        gaSum.improvement_pct,
-        safeFiniteNumber(gaSum.baseline_fitness ?? gaSum.initial_best_fitness, null),
-        safeFiniteNumber(gaSum.best_fitness ?? gaSum.final_best_fitness, null)
-      )}`
-    ) : graphMode === "ga_nn" ? "GA+NN · EVOLUTIONARY" : "PRIORITY · P0–P3";
-    const engineSub = graphMode === "ga_nn" && gaSum && typeof gaSum === "object" ? `Pop ${Math.max(1, Math.round(safeFiniteNumber(gaSum.population_size, 24) ?? 24))} · ${Math.max(1, Math.round(safeFiniteNumber(gaSum.generations, 12) ?? 12))} cycles · ${Math.max(0, Math.round(safeFiniteNumber(gaSum.elapsed_ms, 0) ?? 0))}ms` : sanitizeMainWindowText(
+    const gate = computeColonyGateInfo(dashboard, plannerJobsStatus);
+    const engineTitle = graphMode === "ai_planner" ? "AI-PLANNER · W-WEEK NPV" : "HEURISTIC · P0–P3";
+    const engineSub = sanitizeMainWindowText(
       `${Boolean((graph == null ? void 0 : graph.is_dirty) ?? (graph == null ? void 0 : graph.simulated)) ? "Simulated" : "Active"} · ${String(
         ((_a = graph == null ? void 0 : graph.effective_config) == null ? void 0 : _a.playstyle) || "fleeter"
-      )}`
+      )} · Colonies ${gate.coloniesOwned}/${gate.maxPlanets}`
     );
-    const LANE_HEADER_W = 168;
-    const PAD_X = 20;
-    const PAD_Y = 14;
-    const CARD_W = 228;
-    const CARD_H = 92;
-    const COL_GAP = 68;
-    const STACK_GAP = 14;
-    const LANE_PAD_Y = 16;
-    const rawLanes = Array.isArray(graph == null ? void 0 : graph.lanes) ? graph.lanes : [];
-    const activeLanes = [];
-    const laneIdxById = /* @__PURE__ */ new Map();
-    rawLanes.forEach((ln) => {
-      const lid = String((ln == null ? void 0 : ln.id) || "");
-      if (!lid) return;
-      if (nodes.some((n) => n.lane_id === lid)) {
-        laneIdxById.set(lid, activeLanes.length);
-        activeLanes.push(ln);
-      }
-    });
-    nodes.forEach((n) => {
-      const lid = String(n.lane_id || "lane:global");
-      if (!laneIdxById.has(lid)) {
-        laneIdxById.set(lid, activeLanes.length);
-        activeLanes.push({
-          id: lid,
-          scope: lid === "lane:global" ? "global" : "planet",
-          label: lid === "lane:global" ? "Empire & Global Research" : n.planet_coords ? `${n.planet_name || "Colony"} [${n.planet_coords}]` : String(n.planet_name || lid),
-          planet_id: safeFiniteNumber(n.planet_id, 0) ?? 0,
-          coords: String(n.planet_coords || ""),
-          energy: 0,
-          node_count: 1
-        });
-      }
-    });
-    const cellStacks = /* @__PURE__ */ new Map();
-    const maxStackByLane = new Array(activeLanes.length).fill(1);
-    let maxCol = 0;
-    const nodePlacement = /* @__PURE__ */ new Map();
-    nodes.forEach((n) => {
-      const lIdx = laneIdxById.get(String(n.lane_id || "lane:global")) ?? 0;
-      const colIdx = Math.max(0, Math.round(safeFiniteNumber(n.topological_layer, 0) ?? 0));
-      if (colIdx > maxCol) maxCol = colIdx;
-      const cellKey = `${lIdx}:${colIdx}`;
-      const stackIdx = cellStacks.get(cellKey) || 0;
-      cellStacks.set(cellKey, stackIdx + 1);
-      if (stackIdx + 1 > (maxStackByLane[lIdx] || 1)) {
-        maxStackByLane[lIdx] = stackIdx + 1;
-      }
-      nodePlacement.set(n.id, { laneIdx: lIdx, colIdx, stackIdx });
-    });
-    const laneTops = [];
-    const laneHeights = [];
-    let cursorY = PAD_Y;
-    for (let i = 0; i < activeLanes.length; i += 1) {
-      const stacks = maxStackByLane[i] || 1;
-      const h = stacks * CARD_H + Math.max(0, stacks - 1) * STACK_GAP + LANE_PAD_Y * 2;
-      laneTops.push(cursorY);
-      laneHeights.push(h);
-      cursorY += h;
-    }
-    const totalWidth = Math.max(
-      680,
-      LANE_HEADER_W + PAD_X * 2 + (maxCol + 1) * CARD_W + maxCol * COL_GAP + 24
-    );
-    const totalHeight = Math.max(240, cursorY + PAD_Y);
-    const coordsById = /* @__PURE__ */ new Map();
-    nodes.forEach((node) => {
-      const plc = nodePlacement.get(node.id) || { laneIdx: 0, colIdx: 0, stackIdx: 0 };
-      const x = LANE_HEADER_W + PAD_X + plc.colIdx * (CARD_W + COL_GAP);
-      const y = (laneTops[plc.laneIdx] || PAD_Y) + LANE_PAD_Y + plc.stackIdx * (CARD_H + STACK_GAP);
-      coordsById.set(node.id, { x, y, colIdx: plc.colIdx, laneIdx: plc.laneIdx });
-    });
-    const upstreamIds = /* @__PURE__ */ new Set();
-    const downstreamIds = /* @__PURE__ */ new Set();
-    if (activeSelectedId) {
-      allEdges.forEach((e) => {
-        if (e.target === activeSelectedId) upstreamIds.add(e.source);
-        if (e.source === activeSelectedId) downstreamIds.add(e.target);
-      });
-    }
-    const selectedObj = activeSelectedId ? nodes.find((n) => n.id === activeSelectedId) || null : null;
-    const nodesById = new Map(nodes.map((n) => [n.id, n]));
-    const incomingSel = selectedObj ? allEdges.filter((e) => e.target === selectedObj.id) : [];
-    const outgoingSel = selectedObj ? allEdges.filter((e) => e.source === selectedObj.id) : [];
-    const draftModeNorm = String(draftValues.planner_mode || "priority").toLowerCase() === "ga_nn" ? "ga_nn" : "priority";
+    const draftModeNorm = normalizeUiPlannerMode(draftValues.planner_mode);
     const knownPlaystyles = ["fleeter", "hybrid", "miner"];
     const curPlaystyle = String(draftValues.playstyle || "fleeter");
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-      "section",
-      {
-        id: "view-action-graph",
-        className: "page-view ag-view",
-        "aria-label": "Action sequence and dependency graph",
-        hidden: activePage !== "action-graph",
-        children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window ag-main-window", id: "ag-main-window", children: [
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-tab-split", id: "ag-pane-heuristics", hidden, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window ag-main-window", id: "ag-main-window", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "DAG" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Heuristics Action Sequence & Dependency Graph" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "span",
+              {
+                className: `ag-status-pill tabular ${agSimDirty ? "is-sim" : "is-live"}`,
+                id: "ag-sim-status-pill",
+                role: "status",
+                children: agSimDirty ? "SIMULATION PREVIEW · UNSAVED" : "LIVE ACTIVE CONFIG"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "div",
+              {
+                className: "tab-group",
+                id: "ag-mode-switch",
+                role: "radiogroup",
+                "aria-label": "Action graph planner mode",
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: `tab-btn${graphMode === "priority" ? " active" : ""}`,
+                      id: "ag-mode-priority",
+                      role: "radio",
+                      "aria-checked": graphMode === "priority" ? "true" : "false",
+                      "data-ag-mode": "priority",
+                      onClick: () => onModeSwitchClick("priority"),
+                      children: "Heuristic (priority)"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: `tab-btn${graphMode === "ai_planner" ? " active" : ""}`,
+                      id: "ag-mode-ai_planner",
+                      role: "radio",
+                      "aria-checked": graphMode === "ai_planner" ? "true" : "false",
+                      "data-ag-mode": "ai_planner",
+                      onClick: () => onModeSwitchClick("ai_planner"),
+                      children: "AI-Planner (ai_planner)"
+                    }
+                  )
+                ]
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-secondary btn-sm",
+                id: "btn-ag-refresh",
+                onClick: async () => {
+                  if (agSimDirty) {
+                    await runAgSimulation({ explicit: true });
+                  } else {
+                    const ok = await refreshActiveActionGraph(false);
+                    if (ok) {
+                      showFeedback("Action graph refreshed from empire snapshot.", "ok");
+                    }
+                  }
+                },
+                children: "Refresh"
+              }
+            )
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-strip", "aria-label": "Action graph summary metrics", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Planned Actions" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ag-kpi-nodes", children: `${totalNodes} ${totalNodes === 1 ? "node" : "nodes"}` }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", id: "ag-kpi-ready", children: blockedCount > 0 ? `${readyCount} ready · ${waitingCount} wait · ${blockedCount} hold` : `${readyCount} ready · ${waitingCount} waiting` })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Dependencies & Flow" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ag-kpi-edges", children: `${visibleEdges.length} ${visibleEdges.length === 1 ? "edge" : "edges"}` }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", id: "ag-kpi-dep-breakdown", children: `${prereqCount} prereq · ${resCount} resource` })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Critical Path ETA" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ag-kpi-horizon", children: sanitizeMainWindowText(summary.critical_path_eta || "Ready") }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", id: "ag-kpi-bottleneck", children: summary.primary_bottleneck ? `Bottleneck: ${String(summary.primary_bottleneck).replace(/_/g, " ")}` : "No resource bottleneck" })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Engine Telemetry" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ag-kpi-engine", children: engineTitle }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", id: "ag-kpi-engine-sub", children: engineSub })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          DagCanvas,
+          {
+            graph,
+            idPrefix: "ag",
+            markerPrefix: "ag",
+            edgeFilter,
+            onEdgeFilterChange: (next) => setUiPref("agEdgeFilter", next)
+          }
+        )
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "aside",
+        {
+          className: "hud-window ag-control-panel",
+          id: "ag-control-panel",
+          "aria-label": "Planner parameter simulation and apply controls",
+          children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "DAG" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Action Sequence & Dependency Graph" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "span",
-                  {
-                    className: `ag-status-pill tabular ${agSimDirty ? "is-sim" : "is-live"}`,
-                    id: "ag-sim-status-pill",
-                    role: "status",
-                    children: agSimDirty ? "SIMULATION PREVIEW · UNSAVED" : "LIVE ACTIVE CONFIG"
-                  }
-                )
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "PRM" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Heuristic Parameters" })
               ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                  "div",
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "span",
+                {
+                  className: `ag-dirty-badge tabular ${agSimDirty ? "is-dirty" : "is-synced"}`,
+                  id: "ag-dirty-badge",
+                  children: agSimDirty ? "MODIFIED (PREVIEW)" : "ACTIVE SYNCED"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-tabs", role: "tablist", "aria-label": "Parameter categories", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: `tab-btn${paramTab === "core" ? " active" : ""}`,
+                  role: "tab",
+                  "aria-selected": paramTab === "core" ? "true" : "false",
+                  id: "ag-ptab-btn-core",
+                  "data-ag-ptab": "core",
+                  onClick: () => {
+                    syncDraftValuesFromDom();
+                    setUiPref("agParamTab", "core");
+                  },
+                  children: "Mode & Thresholds"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: `tab-btn${paramTab === "scope" ? " active" : ""}`,
+                  role: "tab",
+                  "aria-selected": paramTab === "scope" ? "true" : "false",
+                  id: "ag-ptab-btn-scope",
+                  "data-ag-ptab": "scope",
+                  onClick: () => {
+                    syncDraftValuesFromDom();
+                    setUiPref("agParamTab", "scope");
+                  },
+                  children: "Automation & Limits"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-body", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", id: "ag-param-pane-core", hidden: paramTab !== "core", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ag-cfg-planner_mode", children: "Active Planner Mode" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                    "select",
+                    {
+                      id: "ag-cfg-planner_mode",
+                      value: draftModeNorm,
+                      onChange: (e) => {
+                        const v = normalizeUiPlannerMode(e.target.value);
+                        syncDraftValuesFromDom(v);
+                        void runAgSimulation({ explicit: false, modeOverride: v });
+                      },
+                      children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "priority", children: "priority — Rule-Based Heuristic" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "ai_planner", children: "ai_planner — AI-Planner (W-Week NPV)" })
+                      ]
+                    }
+                  )
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ag-cfg-playstyle", children: "Playstyle Doctrine" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                    "select",
+                    {
+                      id: "ag-cfg-playstyle",
+                      value: curPlaystyle,
+                      onChange: (e) => {
+                        const v = e.target.value;
+                        setDraftValues((prev) => ({ ...prev, playstyle: v }));
+                        setTimeout(() => runAgSimulation({ explicit: false }), 0);
+                      },
+                      children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "fleeter", children: "fleeter — Combat & Techs" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "hybrid", children: "hybrid — Balanced" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "miner", children: "miner — Economy ROI" }),
+                        !knownPlaystyles.includes(curPlaystyle) && curPlaystyle ? /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: curPlaystyle, children: curPlaystyle }) : null
+                      ]
+                    }
+                  )
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-ai-handoff-card", id: "ag-ai-handoff-card", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-ai-handoff-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-handoff-title", children: "AI-Planner Workspace" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "span",
+                      {
+                        className: `ag-gate-chip tabular ${gate.liveAiUnlocked ? "is-unlocked" : "is-locked"}`,
+                        children: gate.liveAiUnlocked ? `${gate.coloniesOwned}/${gate.maxPlanets} UNLOCKED` : `${gate.coloniesOwned}/${gate.maxPlanets} PREVIEW ONLY`
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-sim-note", children: gate.liveAiUnlocked ? "All colonies founded. Configure monthly targets and W-week discounted builds in Tab 2 & Tab 3." : `Live AI-Planner unlocks at ${gate.maxPlanets}/${gate.maxPlanets} colonies. Heuristic mode guides early expansion.` }),
+                  onSwitchTab ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-handoff-actions", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        type: "button",
+                        className: "btn btn-secondary btn-sm",
+                        id: "btn-ag-goto-config-opt",
+                        onClick: () => onSwitchTab("config-optimizer"),
+                        children: "Config Optimization →"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        type: "button",
+                        className: "btn btn-secondary btn-sm",
+                        id: "btn-ag-goto-ai-planner",
+                        onClick: () => onSwitchTab("ai-planner"),
+                        children: "Open AI-Planner →"
+                      }
+                    )
+                  ] }) : null
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", id: "ag-heuristic-params-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Economy & Safety Thresholds" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: [
+                    ["storage_warn_ratio", "Storage Warn Ratio", 0.1, 0.99, 0.05],
+                    ["blast_pig_iron_max_share", "Max b2 Pig Share", 0.1, 1, 0.05],
+                    ["combat_safety_margin", "Combat Margin (≥1.0)", 1, 1e3, 0.1],
+                    ["raid_min_loot_spice_eq", "Min Raid Loot (SpEq)", 0, void 0, 100],
+                    ["hot_planet_solar_temp_threshold", "Solar Temp (°C)", -273, 1e3, 5],
+                    ["min_free_fields_warning", "Min Free Fields", 1, 1e3, 1],
+                    ["min_colony_fields", "Min Colony Fields", 50, 600, 10],
+                    ["max_planets", "Max Planets Cap", 1, 50, 1]
+                  ].map(([key, label, minV, maxV, stepV]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `ag-cfg-${key}`, children: label }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "number",
+                        id: `ag-cfg-${key}`,
+                        min: minV,
+                        max: maxV,
+                        step: stepV,
+                        value: String(draftValues[key] ?? AG_NUM_DEFAULTS[key]),
+                        onChange: (e) => {
+                          setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
+                          scheduleDebouncedSim();
+                        }
+                      }
+                    )
+                  ] }, key)) })
+                ] })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", id: "ag-param-pane-scope", hidden: paramTab !== "scope", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: [
+                  ["fleet_save_fuel_reserve_spice", "Escape Fuel Reserve", 0, void 0, 50],
+                  ["action_batch_interval_seconds", "Batch & Refresh Interval (s)", 5, 86400, 5],
+                  ["galaxy_scan_click_delay_seconds", "Galaxy Scan Click Delay (s)", 0.2, 60, 0.1],
+                  ["galaxy_scan_click_jitter_seconds", "Galaxy Scan Jitter (s)", 0, 30, 0.1],
+                  ["max_actions_per_hour", "Max Actions / Hour", 1, 1e5, 1],
+                  ["reserved_spy_slots", "Reserved Spy Slots", 0, 10, 1]
+                ].map(([key, label, minV, maxV, stepV]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `ag-cfg-${key}`, children: label }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      type: "number",
+                      id: `ag-cfg-${key}`,
+                      min: minV,
+                      max: maxV,
+                      step: stepV,
+                      value: String(draftValues[key] ?? AG_NUM_DEFAULTS[key]),
+                      onChange: (e) => {
+                        setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
+                        scheduleDebouncedSim();
+                      }
+                    }
+                  )
+                ] }, key)) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-toggles-stack", children: [
+                  ["auto_throttle_blast_furnace", "Auto-pause Blast furnace (0%)"],
+                  ["merchant_mode", "Merchant Mode (Skip b2)"],
+                  ["allow_research", "Auto Research"],
+                  ["allow_shipyard", "Auto Shipyard"],
+                  ["allow_multi_planet", "Multi-Planet Planning"],
+                  ["allow_fleetsave", "P0 Auto Escape Flight"],
+                  ["allow_galaxy_scan", "Galaxy Scanner"],
+                  ["allow_raids", "Auto Raids (Inactive/Spacia)"],
+                  ["allow_pvp_in_az", "Allow PvP inside AZ"],
+                  ["allow_colonize", "Auto Colonize"],
+                  ["allow_transport", "Auto Inter-Planet Transport"],
+                  ["allow_transmitter", "Daily Free Transmitter"],
+                  ["forbid_planetary_solar", "Forbid Solar on Planets (Asteroid Only)"]
+                ].map(([bKey, label]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      type: "checkbox",
+                      id: `ag-cfg-${bKey}`,
+                      checked: Boolean(draftValues[bKey]),
+                      onChange: (e) => {
+                        const checked = e.target.checked;
+                        setDraftValues((prev) => ({ ...prev, [bKey]: checked }));
+                        setTimeout(() => runAgSimulation({ explicit: false }), 0);
+                      }
+                    }
+                  ),
+                  " ",
+                  label
+                ] }, bKey)) })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-footer", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-sim-note", id: "ag-sim-note", children: agSimDirty ? "Preview mode active: active StrategyConfig and config.yaml remain unchanged until applied." : "Edits simulate a preview graph without modifying active config.yaml until applied." }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-footer-actions", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
                   {
-                    className: "tab-group",
-                    id: "ag-mode-switch",
-                    role: "radiogroup",
-                    "aria-label": "Action graph planner mode",
-                    children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "button",
-                        {
-                          type: "button",
-                          className: `tab-btn${graphMode === "priority" ? " active" : ""}`,
-                          id: "ag-mode-priority",
-                          role: "radio",
-                          "aria-checked": graphMode === "priority" ? "true" : "false",
-                          "data-ag-mode": "priority",
-                          onClick: () => onModeSwitchClick("priority"),
-                          children: "Heuristic (priority)"
-                        }
-                      ),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "button",
-                        {
-                          type: "button",
-                          className: `tab-btn${graphMode === "ga_nn" ? " active" : ""}`,
-                          id: "ag-mode-ga_nn",
-                          role: "radio",
-                          "aria-checked": graphMode === "ga_nn" ? "true" : "false",
-                          "data-ag-mode": "ga_nn",
-                          onClick: () => onModeSwitchClick("ga_nn"),
-                          children: "GA + Neural (ga_nn)"
-                        }
-                      )
-                    ]
+                    type: "button",
+                    className: "btn btn-secondary btn-sm",
+                    id: "btn-ag-simulate",
+                    onClick: () => runAgSimulation({ explicit: true }),
+                    children: "Simulate Graph"
                   }
                 ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -13468,604 +18210,212 @@
                   {
                     type: "button",
                     className: "btn btn-secondary btn-sm",
-                    id: "btn-ag-refresh",
-                    onClick: async () => {
-                      if (agSimDirty) {
-                        await runAgSimulation({ explicit: true });
-                      } else {
-                        const ok = await refreshActiveActionGraph(false);
-                        if (ok) {
-                          showFeedback("Action graph refreshed from empire snapshot.", "ok");
-                        }
-                      }
-                    },
-                    children: "Refresh"
-                  }
-                )
-              ] })
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-strip", "aria-label": "Action graph summary metrics", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Planned Actions" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ag-kpi-nodes", children: `${totalNodes} ${totalNodes === 1 ? "node" : "nodes"}` }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", id: "ag-kpi-ready", children: blockedCount > 0 ? `${readyCount} ready · ${waitingCount} wait · ${blockedCount} hold` : `${readyCount} ready · ${waitingCount} waiting` })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Dependencies & Flow" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ag-kpi-edges", children: `${visibleEdges.length} ${visibleEdges.length === 1 ? "edge" : "edges"}` }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", id: "ag-kpi-dep-breakdown", children: `${prereqCount} prereq · ${resCount} resource` })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Critical Path ETA" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ag-kpi-horizon", children: sanitizeMainWindowText(summary.critical_path_eta || "Ready") }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", id: "ag-kpi-bottleneck", children: summary.primary_bottleneck ? `Bottleneck: ${String(summary.primary_bottleneck).replace(/_/g, " ")}` : "No resource bottleneck" })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Engine Telemetry" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ag-kpi-engine", children: engineTitle }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", id: "ag-kpi-engine-sub", children: engineSub })
-              ] })
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-legend-bar", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-legend-items", "aria-label": "Graph edge legend", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-legend-item", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-swatch is-seq", "aria-hidden": "true" }),
-                  "Sequence Flow"
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-legend-item", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-swatch is-prereq", "aria-hidden": "true" }),
-                  "Prerequisite Unlock"
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-legend-item", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-swatch is-resource", "aria-hidden": "true" }),
-                  "Resource / Power / B2%"
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-legend-item", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-swatch is-queue", "aria-hidden": "true" }),
-                  "Queue / Slot Order"
-                ] })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-chips", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: `chip-btn${edgeFilter === "all" ? " active" : ""}`,
-                    "data-ag-edge-filter": "all",
-                    onClick: () => setUiPref("agEdgeFilter", "all"),
-                    children: "All Links"
+                    id: "btn-ag-reset",
+                    onClick: onResetSim,
+                    children: "Reset to Active"
                   }
                 ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   "button",
                   {
                     type: "button",
-                    className: `chip-btn${edgeFilter === "deps" ? " active" : ""}`,
-                    "data-ag-edge-filter": "deps",
-                    onClick: () => setUiPref("agEdgeFilter", "deps"),
-                    children: "Dependencies Only"
+                    className: "btn btn-primary btn-sm btn-span",
+                    id: "btn-ag-apply",
+                    onClick: onApplySim,
+                    children: "Apply to Active Config"
                   }
                 )
               ] })
-            ] }),
+            ] })
+          ]
+        }
+      )
+    ] });
+  };
+  const VALID_AG_TABS = [
+    "heuristics",
+    "config-optimizer",
+    "ai-planner",
+    "fleet-planner"
+  ];
+  function normalizeAgTab(raw) {
+    const s = String(raw || "heuristics").toLowerCase();
+    if (VALID_AG_TABS.includes(s)) {
+      return s;
+    }
+    return "heuristics";
+  }
+  const ActionGraphView = () => {
+    var _a, _b, _c, _d, _e;
+    const {
+      activePage,
+      dashboard,
+      apiOnline,
+      plannerJobsStatus,
+      refreshPlannerJobsStatus,
+      uiPrefs,
+      setUiPref
+    } = useConsole();
+    const activeTab = normalizeAgTab(uiPrefs == null ? void 0 : uiPrefs.agActiveTab);
+    const switchTab = (next) => {
+      setUiPref("agActiveTab", next);
+    };
+    const coJobStatus = String(
+      ((_a = plannerJobsStatus == null ? void 0 : plannerJobsStatus.config_optimizer_job) == null ? void 0 : _a.status) || "idle"
+    ).toLowerCase();
+    const aiJobStatus = String(
+      ((_b = plannerJobsStatus == null ? void 0 : plannerJobsStatus.ai_planner_job) == null ? void 0 : _b.status) || "idle"
+    ).toLowerCase();
+    const hasRunningJob = coJobStatus === "running" || aiJobStatus === "running";
+    reactExports.useEffect(() => {
+      if (activePage !== "action-graph" || !apiOnline) return;
+      void refreshPlannerJobsStatus();
+      if (!hasRunningJob) return;
+      const timer = window.setInterval(() => {
+        void refreshPlannerJobsStatus();
+      }, 2200);
+      return () => window.clearInterval(timer);
+    }, [activePage, apiOnline, hasRunningJob, refreshPlannerJobsStatus]);
+    const gate = computeColonyGateInfo(dashboard, plannerJobsStatus);
+    const configuredMode = normalizeUiPlannerMode(
+      ((_c = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode)
+    );
+    const effectiveMode = normalizeUiPlannerMode(
+      (dashboard == null ? void 0 : dashboard.effective_planner_mode) || (plannerJobsStatus == null ? void 0 : plannerJobsStatus.effective_planner_mode) || configuredMode
+    );
+    const fallbackReason = (dashboard == null ? void 0 : dashboard.fallback_reason) || (plannerJobsStatus == null ? void 0 : plannerJobsStatus.fallback_reason) || null;
+    const pendingConflicts = Array.isArray(plannerJobsStatus == null ? void 0 : plannerJobsStatus.pending_field_conflicts) ? plannerJobsStatus.pending_field_conflicts : Array.isArray(dashboard == null ? void 0 : dashboard.pending_field_conflicts) ? dashboard.pending_field_conflicts : [];
+    const pendingConflictCount = pendingConflicts.filter(
+      (c) => String((c == null ? void 0 : c.status) || "pending").toLowerCase() === "pending"
+    ).length;
+    const coPct = Math.round(
+      safeFiniteNumber((_d = plannerJobsStatus == null ? void 0 : plannerJobsStatus.config_optimizer_job) == null ? void 0 : _d.progress_pct, 0) ?? 0
+    );
+    const aiPct = Math.round(
+      safeFiniteNumber((_e = plannerJobsStatus == null ? void 0 : plannerJobsStatus.ai_planner_job) == null ? void 0 : _e.progress_pct, 0) ?? 0
+    );
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "section",
+      {
+        className: `page-view ag-view${activePage === "action-graph" ? " active" : ""}`,
+        id: "view-action-graph",
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-subtab-bar", id: "ag-workspace-subbar", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs(
               "div",
               {
-                ref: scrollRef,
-                className: `ag-canvas-scroll${isDragging ? " is-dragging" : ""}`,
-                id: "ag-canvas-scroll",
-                onMouseDown,
-                onMouseMove,
-                onMouseUp,
-                onMouseLeave,
+                className: "ag-subtab-tabs",
+                id: "ag-workspace-tablist",
+                role: "tablist",
+                "aria-label": "Action Graph Workspace",
                 children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                    "div",
+                    "button",
                     {
-                      className: "ag-canvas-stage",
-                      id: "ag-canvas-stage",
-                      hidden: nodes.length === 0,
-                      style: nodes.length > 0 ? { width: `${totalWidth}px`, height: `${totalHeight}px` } : void 0,
+                      type: "button",
+                      role: "tab",
+                      id: "ag-tab-btn-heuristics",
+                      "data-ag-tab": "heuristics",
+                      "aria-selected": activeTab === "heuristics" ? "true" : "false",
+                      "aria-controls": "ag-panel-heuristics",
+                      className: `ag-subtab-btn${activeTab === "heuristics" ? " active" : ""}`,
+                      onClick: () => switchTab("heuristics"),
                       children: [
-                        /* @__PURE__ */ jsxRuntimeExports.jsx(
-                          "div",
-                          {
-                            className: "ag-lanes-layer",
-                            id: "ag-lanes-layer",
-                            "aria-hidden": "true",
-                            style: nodes.length > 0 ? { width: `${totalWidth}px`, height: `${totalHeight}px` } : void 0,
-                            children: activeLanes.map((ln, idx) => {
-                              const laneNodeCnt = nodes.filter((n) => n.lane_id === ln.id).length;
-                              const eNet = Math.round(safeFiniteNumber(ln.energy, 0) ?? 0);
-                              const metaText = ln.scope === "global" ? `${laneNodeCnt} global ${laneNodeCnt === 1 ? "task" : "tasks"}` : `${laneNodeCnt} ${laneNodeCnt === 1 ? "task" : "tasks"} · Energy ${eNet > 0 ? `+${eNet}` : String(eNet)}`;
-                              return /* @__PURE__ */ jsxRuntimeExports.jsx(
-                                "div",
-                                {
-                                  className: idx % 2 === 1 ? "ag-lane-band is-alt" : "ag-lane-band",
-                                  "data-lane-id": String(ln.id || ""),
-                                  style: {
-                                    top: `${laneTops[idx]}px`,
-                                    width: `${totalWidth}px`,
-                                    height: `${laneHeights[idx]}px`
-                                  },
-                                  children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-lane-header", children: [
-                                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-lane-title", children: sanitizeMainWindowText(ln.label || ln.id || "Lane") }),
-                                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-lane-meta tabular", children: metaText })
-                                  ] })
-                                },
-                                String(ln.id || idx)
-                              );
-                            })
-                          }
-                        ),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx(
-                          "div",
-                          {
-                            className: "ag-edges-layer",
-                            id: "ag-edges-layer",
-                            "aria-hidden": "true",
-                            style: nodes.length > 0 ? { width: `${totalWidth}px`, height: `${totalHeight}px` } : void 0,
-                            children: nodes.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                              "svg",
-                              {
-                                id: "ag-edges-svg",
-                                viewBox: `0 0 ${totalWidth} ${totalHeight}`,
-                                width: totalWidth,
-                                height: totalHeight,
-                                children: [
-                                  /* @__PURE__ */ jsxRuntimeExports.jsx("defs", { children: [
-                                    ["ag-arrow-seq", "#32e8ff"],
-                                    ["ag-arrow-prereq", "#16ec98"],
-                                    ["ag-arrow-resource", "#efb03b"],
-                                    ["ag-arrow-queue", "#9eb3b8"],
-                                    ["ag-arrow-gate", "#ff6873"]
-                                  ].map(([mId, color]) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-                                    "marker",
-                                    {
-                                      id: mId,
-                                      viewBox: "0 0 10 10",
-                                      refX: "9",
-                                      refY: "5",
-                                      markerWidth: "6",
-                                      markerHeight: "6",
-                                      orient: "auto-start-reverse",
-                                      children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M 0 1.5 L 9 5 L 0 8.5 z", fill: color })
-                                    },
-                                    mId
-                                  )) }),
-                                  visibleEdges.map((edge, idx) => {
-                                    const p1 = coordsById.get(edge.source);
-                                    const p2 = coordsById.get(edge.target);
-                                    if (!p1 || !p2) return null;
-                                    const x1 = p1.x + CARD_W;
-                                    const y1 = p1.y + CARD_H / 2;
-                                    const x2 = p2.x;
-                                    const y2 = p2.y + CARD_H / 2;
-                                    const dx = Math.max(36, Math.abs(x2 - x1) * 0.45);
-                                    const sameRowLongSpan = Math.abs(y2 - y1) < 6 && p2.colIdx - p1.colIdx > 1;
-                                    const arcLift = sameRowLongSpan ? -30 : 0;
-                                    const dStr = `M ${x1.toFixed(1)} ${y1.toFixed(1)} C ${(x1 + dx).toFixed(1)} ${(y1 + arcLift).toFixed(1)}, ${(x2 - dx).toFixed(1)} ${(y2 + arcLift).toFixed(1)}, ${x2.toFixed(1)} ${y2.toFixed(1)}`;
-                                    const spec = edgeVisualSpec(edge);
-                                    const connected = Boolean(
-                                      activeSelectedId && (edge.source === activeSelectedId || edge.target === activeSelectedId)
-                                    );
-                                    const dimmed = Boolean(activeSelectedId && !connected);
-                                    return /* @__PURE__ */ jsxRuntimeExports.jsx(
-                                      "path",
-                                      {
-                                        className: `ag-edge-path ${spec.cls}${connected ? " is-highlighted" : ""}${dimmed ? " is-dimmed" : ""}`,
-                                        d: dStr,
-                                        markerEnd: `url(#${spec.marker})`,
-                                        "data-edge-id": String(edge.id || ""),
-                                        "data-source": String(edge.source || ""),
-                                        "data-target": String(edge.target || ""),
-                                        "data-edge-type": String(edge.primary_type || "")
-                                      },
-                                      String(edge.id || idx)
-                                    );
-                                  })
-                                ]
-                              }
-                            ) : null
-                          }
-                        ),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx(
-                          "div",
-                          {
-                            className: "ag-nodes-layer",
-                            id: "ag-nodes-layer",
-                            role: "list",
-                            "aria-label": "Planned action graph nodes",
-                            style: nodes.length > 0 ? { width: `${totalWidth}px`, height: `${totalHeight}px` } : void 0,
-                            children: nodes.map((node) => {
-                              var _a2;
-                              const pos = coordsById.get(node.id) || { x: 0, y: 0 };
-                              const status = String(node.status || "queued");
-                              const statusCls = status === "ready" ? "is-ready" : status === "waiting_resources" ? "is-waiting" : status === "blocked_gate" ? "is-blocked" : "is-queued";
-                              const prio = String(node.priority || "P2").toUpperCase();
-                              const prioCls = prio === "P0" ? "is-p0" : prio === "P1" ? "is-p1" : prio === "P2" ? "is-p2" : "is-p3";
-                              const isSel = Boolean(activeSelectedId && node.id === activeSelectedId);
-                              const isUp = Boolean(activeSelectedId && upstreamIds.has(node.id));
-                              const isDown = Boolean(activeSelectedId && downstreamIds.has(node.id));
-                              const isDim = Boolean(activeSelectedId && !isSel && !isUp && !isDown);
-                              const ord = Math.max(
-                                1,
-                                Math.round(safeFiniteNumber(node.order_index, 0) ?? 0) + 1
-                              );
-                              const gaStepIdx = safeFiniteNumber((_a2 = node == null ? void 0 : node.ga_step) == null ? void 0 : _a2.step_index, null);
-                              return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                                "button",
-                                {
-                                  type: "button",
-                                  className: `ag-node-card ${statusCls}${isSel ? " is-selected" : ""}${!isSel && isUp ? " is-upstream" : ""}${!isSel && isDown ? " is-downstream" : ""}${isDim ? " is-dimmed" : ""}`,
-                                  role: "listitem",
-                                  "data-node-id": String(node.id),
-                                  "data-node-kind": String(node.kind || ""),
-                                  "data-node-priority": prio,
-                                  "data-node-status": status,
-                                  "aria-pressed": isSel ? "true" : "false",
-                                  style: { left: `${pos.x}px`, top: `${pos.y}px` },
-                                  title: sanitizeMainWindowText(node.reason || ""),
-                                  onClick: () => {
-                                    if (consumeSuppressClick()) return;
-                                    setSelectedNodeId((prev) => prev === node.id ? null : node.id);
-                                  },
-                                  children: [
-                                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-node-head", children: [
-                                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-node-badges", children: [
-                                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-step-tag tabular", children: gaStepIdx !== null ? `#${ord} · G${Math.round(gaStepIdx) + 1}` : `#${ord}` }),
-                                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `ag-prio-tag tabular ${prioCls}`, children: prio })
-                                      ] }),
-                                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `ag-state-tag tabular ${statusCls}`, children: formatNodeStatusShort(status) })
-                                    ] }),
-                                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-node-title", children: sanitizeMainWindowText(formatNodeTargetLabel(node)) }),
-                                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-node-foot", children: [
-                                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-node-coords", children: node.planet_coords ? `[${node.planet_coords}]` : "[GLOBAL]" }),
-                                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-node-eta", children: sanitizeMainWindowText(`ETA ${node.total_eta || "Ready"}`) })
-                                    ] })
-                                  ]
-                                },
-                                String(node.id)
-                              );
-                            })
-                          }
-                        )
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-subtab-label", children: "Heuristics" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-subtab-tag", children: "P0-P3" })
                       ]
                     }
                   ),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-empty-state", id: "ag-empty-state", hidden: nodes.length > 0, children: "No planned actions for the current empire snapshot and simulation parameters." })
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                    "button",
+                    {
+                      type: "button",
+                      role: "tab",
+                      id: "ag-tab-btn-config-optimizer",
+                      "data-ag-tab": "config-optimizer",
+                      "aria-selected": activeTab === "config-optimizer" ? "true" : "false",
+                      "aria-controls": "ag-pane-config-optimizer",
+                      className: `ag-subtab-btn${activeTab === "config-optimizer" ? " active" : ""}`,
+                      onClick: () => switchTab("config-optimizer"),
+                      children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-subtab-label", children: "Config Optimization" }),
+                        coJobStatus === "running" ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-subtab-badge is-running", children: coPct > 0 ? `${coPct}%` : "RUN" }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-subtab-tag", children: "TARGETS" })
+                      ]
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                    "button",
+                    {
+                      type: "button",
+                      role: "tab",
+                      id: "ag-tab-btn-ai-planner",
+                      "data-ag-tab": "ai-planner",
+                      "aria-selected": activeTab === "ai-planner" ? "true" : "false",
+                      "aria-controls": "ag-pane-ai-planner",
+                      className: `ag-subtab-btn${activeTab === "ai-planner" ? " active" : ""}`,
+                      onClick: () => switchTab("ai-planner"),
+                      children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-subtab-label", children: "AI-Planner" }),
+                        aiJobStatus === "running" ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-subtab-badge is-running", children: aiPct > 0 ? `${aiPct}%` : "RUN" }) : pendingConflictCount > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-subtab-badge is-conflict", id: "ag-tab-conflict-badge", children: [
+                          pendingConflictCount,
+                          " CONFLICT"
+                        ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: `ag-subtab-tag${gate.liveAiUnlocked ? " is-ok" : ""}`, children: [
+                          gate.coloniesOwned,
+                          "/",
+                          gate.maxPlanets
+                        ] })
+                      ]
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                    "button",
+                    {
+                      type: "button",
+                      role: "tab",
+                      id: "ag-tab-btn-fleet-planner",
+                      "data-ag-tab": "fleet-planner",
+                      "aria-selected": activeTab === "fleet-planner" ? "true" : "false",
+                      "aria-controls": "ag-panel-fleet-planner",
+                      className: `ag-subtab-btn${activeTab === "fleet-planner" ? " active" : ""}`,
+                      onClick: () => switchTab("fleet-planner"),
+                      children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-subtab-label", children: "Fleet / Attack" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-subtab-tag", children: "SLOTS" })
+                      ]
+                    }
+                  )
                 ]
               }
             ),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs(
-              "div",
-              {
-                className: "ag-inspector-bar",
-                id: "ag-node-inspector",
-                "aria-label": "Selected action node details",
-                children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-insp-main", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", id: "ag-insp-step", children: selectedObj ? `#${Math.max(1, Math.round(safeFiniteNumber(selectedObj.order_index, 0) ?? 0) + 1)}` : "#—" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-insp-copy", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { id: "ag-insp-title", children: selectedObj ? sanitizeMainWindowText(
-                        `${selectedObj.priority || "P2"} · ${formatNodeTargetLabel(selectedObj)} ${selectedObj.planet_coords ? `[${selectedObj.planet_coords}]` : "[GLOBAL]"}`
-                      ) : "Select a node in the graph to inspect dependencies and ETAs" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-insp-sub tabular", id: "ag-insp-meta", children: selectedObj ? `Wait: ${String(selectedObj.wait_eta || "Ready")} · Duration: ${String(selectedObj.duration_text || "Instant")} · Total: ${String(selectedObj.total_eta || "Ready")}${selectedObj.ga_step && typeof selectedObj.ga_step === "object" ? ` · GA Step #${Math.round(safeFiniteNumber(selectedObj.ga_step.step_index, 0) ?? 0) + 1} (${Math.round(safeFiniteNumber(selectedObj.ga_step.start_t, 0) ?? 0)}s → ${Math.round(safeFiniteNumber(selectedObj.ga_step.finish_t, 0) ?? 0)}s)` : ""} — ${sanitizeMainWindowText(selectedObj.reason || "Planned empire operation.")}` : "Click any node card above to highlight upstream prerequisites and downstream dependents." })
-                    ] })
-                  ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-insp-deps tabular", id: "ag-insp-deps", children: selectedObj ? incomingSel.length === 0 && outgoingSel.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-dep-pill", children: "Independent root action (0 links)" }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-                    incomingSel.slice(0, 4).map((edge, idx) => {
-                      const src = nodesById.get(edge.source);
-                      const srcNum = src ? Math.round(safeFiniteNumber(src.order_index, 0) ?? 0) + 1 : "?";
-                      return /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "span",
-                        {
-                          className: "ag-dep-pill is-up",
-                          title: sanitizeMainWindowText(edge.label || ""),
-                          children: sanitizeMainWindowText(
-                            `← #${srcNum} ${src ? src.target_name : edge.source} (${edge.primary_type})`
-                          )
-                        },
-                        `in-${idx}`
-                      );
-                    }),
-                    outgoingSel.slice(0, 4).map((edge, idx) => {
-                      const dst = nodesById.get(edge.target);
-                      const dstNum = dst ? Math.round(safeFiniteNumber(dst.order_index, 0) ?? 0) + 1 : "?";
-                      return /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "span",
-                        {
-                          className: "ag-dep-pill is-down",
-                          title: sanitizeMainWindowText(edge.label || ""),
-                          children: sanitizeMainWindowText(
-                            `→ #${dstNum} ${dst ? dst.target_name : edge.target} (${edge.primary_type})`
-                          )
-                        },
-                        `out-${idx}`
-                      );
-                    })
-                  ] }) : null })
-                ]
-              }
-            )
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-subtab-status", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "span",
+                {
+                  id: "ag-global-gate-pill",
+                  className: `pill ${gate.liveAiUnlocked ? "ok" : "warn"}`,
+                  children: gate.liveAiUnlocked ? `Colonies ${gate.coloniesOwned}/${gate.maxPlanets} · AI Unlocked` : `Colonies ${gate.coloniesOwned}/${gate.maxPlanets} · Preview Mode`
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "span",
+                {
+                  id: "ag-global-mode-pill",
+                  className: `pill ${fallbackReason ? "warn" : effectiveMode === "ai_planner" ? "ok" : "neutral"}`,
+                  children: fallbackReason ? "LIVE: HEURISTIC (FALLBACK)" : effectiveMode === "ai_planner" ? "LIVE: AI-PLANNER" : "LIVE: HEURISTIC"
+                }
+              )
+            ] })
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs(
-            "aside",
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            HeuristicsTab,
             {
-              className: "hud-window ag-control-panel",
-              id: "ag-control-panel",
-              "aria-label": "Planner parameter simulation and apply controls",
-              children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "PRM" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Planner Parameters" })
-                  ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "span",
-                    {
-                      className: `ag-dirty-badge tabular ${agSimDirty ? "is-dirty" : "is-synced"}`,
-                      id: "ag-dirty-badge",
-                      children: agSimDirty ? "MODIFIED (PREVIEW)" : "ACTIVE SYNCED"
-                    }
-                  )
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-tabs", role: "tablist", "aria-label": "Parameter categories", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "button",
-                    {
-                      type: "button",
-                      className: `tab-btn${paramTab === "core" ? " active" : ""}`,
-                      role: "tab",
-                      "aria-selected": paramTab === "core" ? "true" : "false",
-                      id: "ag-ptab-btn-core",
-                      "data-ag-ptab": "core",
-                      onClick: () => {
-                        syncDraftValuesFromDom();
-                        setUiPref("agParamTab", "core");
-                      },
-                      children: "Mode & Tuning"
-                    }
-                  ),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "button",
-                    {
-                      type: "button",
-                      className: `tab-btn${paramTab === "scope" ? " active" : ""}`,
-                      role: "tab",
-                      "aria-selected": paramTab === "scope" ? "true" : "false",
-                      id: "ag-ptab-btn-scope",
-                      "data-ag-ptab": "scope",
-                      onClick: () => {
-                        syncDraftValuesFromDom();
-                        setUiPref("agParamTab", "scope");
-                      },
-                      children: "Automation & Limits"
-                    }
-                  )
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-body", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", id: "ag-param-pane-core", hidden: paramTab !== "core", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ag-cfg-planner_mode", children: "Simulated Planner Mode" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                        "select",
-                        {
-                          id: "ag-cfg-planner_mode",
-                          value: draftModeNorm,
-                          onChange: (e) => {
-                            const v = e.target.value === "ga_nn" ? "ga_nn" : "priority";
-                            syncDraftValuesFromDom(v);
-                            void runAgSimulation({ explicit: false, modeOverride: v });
-                          },
-                          children: [
-                            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "priority", children: "priority — Rule-Based Heuristic" }),
-                            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "ga_nn", children: "ga_nn — GA + Neural Network" })
-                          ]
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ag-cfg-playstyle", children: "Playstyle Doctrine" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                        "select",
-                        {
-                          id: "ag-cfg-playstyle",
-                          value: curPlaystyle,
-                          onChange: (e) => {
-                            const v = e.target.value;
-                            setDraftValues((prev) => ({ ...prev, playstyle: v }));
-                            setTimeout(() => runAgSimulation({ explicit: false }), 0);
-                          },
-                          children: [
-                            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "fleeter", children: "fleeter — Combat & Techs" }),
-                            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "hybrid", children: "hybrid — Balanced" }),
-                            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "miner", children: "miner — Economy ROI" }),
-                            !knownPlaystyles.includes(curPlaystyle) && curPlaystyle ? /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: curPlaystyle, children: curPlaystyle }) : null
-                          ]
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                      "div",
-                      {
-                        className: `ag-param-group${draftModeNorm !== "ga_nn" ? " is-muted" : ""}`,
-                        id: "ag-ga-params-group",
-                        children: [
-                          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "GA + Neural Optimizer" }),
-                          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-grid", children: [
-                            [
-                              ["ga_population_size", "Population (4–200)", 4, 200, 1],
-                              ["ga_generations", "GA Generations (1–200)", 1, 200, 1],
-                              ["ga_horizon_steps", "Horizon Steps (1–24)", 1, 24, 1],
-                              ["ga_mutation_rate", "Mutation Rate (0–1)", 0, 1, 0.05],
-                              ["ga_nn_weight", "Neural Weight (0–1)", 0, 1, 0.05]
-                            ].map(([key, label, minV, maxV, stepV]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                              /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `ag-cfg-${key}`, children: label }),
-                              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                                "input",
-                                {
-                                  type: "number",
-                                  id: `ag-cfg-${key}`,
-                                  min: minV,
-                                  max: maxV,
-                                  step: stepV,
-                                  value: String(draftValues[key] ?? AG_NUM_DEFAULTS[key]),
-                                  onChange: (e) => {
-                                    setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
-                                    scheduleDebouncedSim();
-                                  }
-                                }
-                              )
-                            ] }, key)),
-                            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                              /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "ag-cfg-ga_seed", children: "GA Seed (Blank = Auto)" }),
-                              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                                "input",
-                                {
-                                  type: "text",
-                                  inputMode: "numeric",
-                                  id: "ag-cfg-ga_seed",
-                                  placeholder: "Auto",
-                                  value: String(draftValues.ga_seed ?? ""),
-                                  onChange: (e) => {
-                                    setDraftValues((prev) => ({ ...prev, ga_seed: e.target.value }));
-                                    scheduleDebouncedSim();
-                                  }
-                                }
-                              )
-                            ] })
-                          ] })
-                        ]
-                      }
-                    ),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", id: "ag-heuristic-params-group", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Economy & Safety Thresholds" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: [
-                        ["storage_warn_ratio", "Storage Warn Ratio", 0.1, 0.99, 0.05],
-                        ["blast_pig_iron_max_share", "Max b2 Pig Share", 0.1, 1, 0.05],
-                        ["combat_safety_margin", "Combat Margin (≥1.0)", 1, 1e3, 0.1],
-                        ["raid_min_loot_spice_eq", "Min Raid Loot (SpEq)", 0, void 0, 100],
-                        ["hot_planet_solar_temp_threshold", "Solar Temp (°C)", -273, 1e3, 5],
-                        ["min_free_fields_warning", "Min Free Fields", 1, 1e3, 1],
-                        ["min_colony_fields", "Min Colony Fields", 50, 600, 10]
-                      ].map(([key, label, minV, maxV, stepV]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `ag-cfg-${key}`, children: label }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx(
-                          "input",
-                          {
-                            type: "number",
-                            id: `ag-cfg-${key}`,
-                            min: minV,
-                            max: maxV,
-                            step: stepV,
-                            value: String(draftValues[key] ?? AG_NUM_DEFAULTS[key]),
-                            onChange: (e) => {
-                              setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
-                              scheduleDebouncedSim();
-                            }
-                          }
-                        )
-                      ] }, key)) })
-                    ] })
-                  ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", id: "ag-param-pane-scope", hidden: paramTab !== "scope", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-grid", children: [
-                      ["fleet_save_fuel_reserve_spice", "Escape Fuel Reserve", 0, void 0, 50],
-                      ["action_batch_interval_seconds", "Batch & Refresh Interval (s)", 5, 86400, 5],
-                      ["galaxy_scan_click_delay_seconds", "Galaxy Scan Click Delay (s)", 0.2, 60, 0.1],
-                      ["galaxy_scan_click_jitter_seconds", "Galaxy Scan Jitter (s)", 0, 30, 0.1],
-                      ["max_actions_per_hour", "Max Actions / Hour", 1, 1e5, 1],
-                      ["reserved_spy_slots", "Reserved Spy Slots", 0, 10, 1]
-                    ].map(([key, label, minV, maxV, stepV]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: `ag-cfg-${key}`, children: label }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "input",
-                        {
-                          type: "number",
-                          id: `ag-cfg-${key}`,
-                          min: minV,
-                          max: maxV,
-                          step: stepV,
-                          value: String(draftValues[key] ?? AG_NUM_DEFAULTS[key]),
-                          onChange: (e) => {
-                            setDraftValues((prev) => ({ ...prev, [key]: e.target.value }));
-                            scheduleDebouncedSim();
-                          }
-                        }
-                      )
-                    ] }, key)) }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-toggles-stack", children: [
-                      ["auto_throttle_blast_furnace", "Auto-pause Blast furnace (0%)"],
-                      ["merchant_mode", "Merchant Mode (Skip b2)"],
-                      ["allow_research", "Auto Research"],
-                      ["allow_shipyard", "Auto Shipyard"],
-                      ["allow_multi_planet", "Multi-Planet Planning"],
-                      ["allow_fleetsave", "P0 Auto Escape Flight"],
-                      ["allow_galaxy_scan", "Galaxy Scanner"],
-                      ["allow_raids", "Auto Raids (Inactive/Spacia)"],
-                      ["allow_pvp_in_az", "Allow PvP inside AZ"],
-                      ["allow_colonize", "Auto Colonize"],
-                      ["allow_transport", "Auto Inter-Planet Transport"],
-                      ["allow_transmitter", "Daily Free Transmitter"],
-                      ["forbid_planetary_solar", "Forbid Solar on Planets (Asteroid Only)"]
-                    ].map(([bKey, label]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle-chip", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "input",
-                        {
-                          type: "checkbox",
-                          id: `ag-cfg-${bKey}`,
-                          checked: Boolean(draftValues[bKey]),
-                          onChange: (e) => {
-                            const checked = e.target.checked;
-                            setDraftValues((prev) => ({ ...prev, [bKey]: checked }));
-                            setTimeout(() => runAgSimulation({ explicit: false }), 0);
-                          }
-                        }
-                      ),
-                      " ",
-                      label
-                    ] }, bKey)) })
-                  ] })
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-footer", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-sim-note", id: "ag-sim-note", children: agSimDirty ? "Preview mode active: active StrategyConfig and config.yaml remain unchanged until applied." : "Edits simulate a preview graph without modifying active config.yaml until applied." }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-footer-actions", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "button",
-                      {
-                        type: "button",
-                        className: "btn btn-secondary btn-sm",
-                        id: "btn-ag-simulate",
-                        onClick: () => runAgSimulation({ explicit: true }),
-                        children: "Simulate Graph"
-                      }
-                    ),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "button",
-                      {
-                        type: "button",
-                        className: "btn btn-secondary btn-sm",
-                        id: "btn-ag-reset",
-                        onClick: onResetSim,
-                        children: "Reset to Active"
-                      }
-                    ),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "button",
-                      {
-                        type: "button",
-                        className: "btn btn-primary btn-sm btn-span",
-                        id: "btn-ag-apply",
-                        onClick: onApplySim,
-                        children: "Apply to Active Config"
-                      }
-                    )
-                  ] })
-                ] })
-              ]
+              hidden: activeTab !== "heuristics",
+              onSwitchTab: switchTab
             }
-          )
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(ConfigOptimizerTab, { hidden: activeTab !== "config-optimizer" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(AiPlannerTab, { hidden: activeTab !== "ai-planner" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(FleetPlannerTab, { hidden: activeTab !== "fleet-planner" })
         ]
       }
     );
@@ -16078,105 +20428,6 @@
               /* @__PURE__ */ jsxRuntimeExports.jsx(EscapeFlightPane, { hidden: subTab !== "escape", cmb })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsx(CombatSimulator, { cmb })
-          ] })
-        ]
-      }
-    );
-  };
-  const TablePagination = ({
-    idPrefix,
-    totalItems,
-    page,
-    pageSize,
-    pageSizeOptions = [25, 50, 100, 200],
-    itemLabel = "items",
-    onPageChange,
-    onPageSizeChange
-  }) => {
-    const safeSize = Math.max(1, Math.round(pageSize));
-    const totalPages = Math.max(1, Math.ceil(totalItems / safeSize));
-    const safePage = Math.max(1, Math.min(totalPages, Math.round(page)));
-    const startIdx = totalItems === 0 ? 0 : (safePage - 1) * safeSize + 1;
-    const endIdx = totalItems === 0 ? 0 : Math.min(totalItems, safePage * safeSize);
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-      "div",
-      {
-        className: "table-pagination-bar tabular",
-        id: `${idPrefix}-pagination`,
-        role: "navigation",
-        "aria-label": `${itemLabel} pagination`,
-        children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "table-page-summary", id: `${idPrefix}-page-summary`, children: totalItems === 0 ? `0 ${itemLabel}` : `Showing ${startIdx}–${endIdx} of ${totalItems} ${itemLabel}` }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "table-page-controls", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "table-page-size-label", htmlFor: `${idPrefix}-page-size`, children: [
-              "Rows",
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "select",
-                {
-                  id: `${idPrefix}-page-size`,
-                  className: "table-page-size-select",
-                  value: String(safeSize),
-                  onChange: (e) => {
-                    const parsed = Number(e.target.value);
-                    if (Number.isFinite(parsed) && parsed >= 1) {
-                      onPageSizeChange(Math.round(parsed));
-                    }
-                  },
-                  children: pageSizeOptions.map((opt) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: String(opt), children: opt }, opt))
-                }
-              )
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "table-page-buttons", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  type: "button",
-                  className: "btn btn-secondary btn-sm",
-                  id: `${idPrefix}-page-first`,
-                  "aria-label": "First page",
-                  disabled: safePage <= 1,
-                  onClick: () => onPageChange(1),
-                  children: "« First"
-                }
-              ),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  type: "button",
-                  className: "btn btn-secondary btn-sm",
-                  id: `${idPrefix}-page-prev`,
-                  "aria-label": "Previous page",
-                  disabled: safePage <= 1,
-                  onClick: () => onPageChange(Math.max(1, safePage - 1)),
-                  children: "‹ Prev"
-                }
-              ),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "table-page-indicator", id: `${idPrefix}-page-indicator`, children: `Page ${safePage} / ${totalPages}` }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  type: "button",
-                  className: "btn btn-secondary btn-sm",
-                  id: `${idPrefix}-page-next`,
-                  "aria-label": "Next page",
-                  disabled: safePage >= totalPages,
-                  onClick: () => onPageChange(Math.min(totalPages, safePage + 1)),
-                  children: "Next ›"
-                }
-              ),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  type: "button",
-                  className: "btn btn-secondary btn-sm",
-                  id: `${idPrefix}-page-last`,
-                  "aria-label": "Last page",
-                  disabled: safePage >= totalPages,
-                  onClick: () => onPageChange(totalPages),
-                  children: "Last »"
-                }
-              )
-            ] })
           ] })
         ]
       }
@@ -20043,13 +24294,13 @@
           key: "planner_mode",
           id: "cfg-planner_mode",
           title: "Planner Mode",
-          boundsLabel: "default: priority · priority | ga_nn",
-          description: "Selects between the deterministic rule-based P0–P3 heuristic pipeline (priority) and evolutionary chromosome search blended with the 46-feature value network (ga_nn). Saved immediately to SQLite so both Game API and Commander ticks share the active planner.",
+          boundsLabel: "default: priority · priority | ai_planner",
+          description: "Selects between the deterministic rule-based P0–P3 heuristic pipeline (priority) and the full-horizon sequential rollout optimizer (ai_planner, auto-unlocks for live bot execution at 11/11 colonies). Saved immediately to SQLite so both Game API and Commander ticks share the active planner.",
           control: "select",
           defaultValue: "priority",
           options: [
             { value: "priority", label: "priority — Rule-Based Heuristic" },
-            { value: "ga_nn", label: "ga_nn — GA + Neural Network" }
+            { value: "ai_planner", label: "ai_planner — AI-Planner (Full Horizon)" }
           ]
         },
         {
@@ -20563,7 +24814,7 @@
   }
   function buildFormStateFromConfig(cfg) {
     const out = {
-      planner_mode: String((cfg == null ? void 0 : cfg.planner_mode) || "priority"),
+      planner_mode: normalizeUiPlannerMode(cfg == null ? void 0 : cfg.planner_mode),
       playstyle: String((cfg == null ? void 0 : cfg.playstyle) || "fleeter"),
       spy_dispatch_planet_id: String(
         Math.max(0, Math.round(safeFiniteNumber(cfg == null ? void 0 : cfg.spy_dispatch_planet_id, 0) ?? 0))
@@ -20692,8 +24943,8 @@
         payload.ga_seed = rawSeed;
       }
       setFormValues(syncedForm);
-      const isGa = String(plannerModeVal).toLowerCase() === "ga_nn";
-      if (isGa) beginGaCalc();
+      const isAiMode = String(plannerModeVal).toLowerCase() === "ai_planner" || String(plannerModeVal).toLowerCase() === "ga_nn";
+      if (isAiMode) beginGaCalc();
       bumpDashboardSeq();
       const gState = globalThis.state;
       if (gState) {
@@ -20730,7 +24981,7 @@
           gState.configSaving = Math.max(0, (gState.configSaving || 0) - 1);
         }
         setConfigSaving((c) => Math.max(0, c - 1));
-        if (isGa) endGaCalc();
+        if (isAiMode) endGaCalc();
       }
     };
     const onClaimTransmitter = async () => {

@@ -2760,11 +2760,112 @@ tbody tr.is-manual-queued:hover {
   }
 }
 
-.page-view.ag-view {
+.page-view.ag-view.active {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ag-tab-split {
   display: grid;
   grid-template-columns: minmax(0, 1.72fr) minmax(332px, 392px);
   gap: 12px;
   align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ag-tab-split[hidden],
+.ag-co-content[hidden],
+.ag-ai-subpane[hidden],
+.ag-param-pane[hidden] {
+  display: none !important;
+}
+
+/* 4-Tab Workspace Sub-Navigation Bar */
+
+.ag-subtab-bar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+}
+
+.ag-subtab-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ag-subtab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease;
+}
+
+.ag-subtab-btn:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.ag-subtab-btn.active {
+  color: var(--cyan);
+  background: rgba(50, 232, 255, 0.08);
+  border-color: var(--cyan);
+}
+
+.ag-subtab-tag,
+.ag-subtab-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--line-dim);
+  background: var(--bg-hud-deep);
+  color: var(--ink-muted);
+}
+
+.ag-subtab-tag.is-ok {
+  color: var(--mint);
+  border-color: rgba(22, 236, 152, 0.45);
+}
+
+.ag-subtab-badge.is-running {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+
+.ag-subtab-badge.is-conflict {
+  color: #ffcf5c;
+  background: var(--amber-surface);
+  border-color: var(--amber);
+}
+
+.ag-subtab-status {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .ag-main-window,
@@ -3352,6 +3453,316 @@ tbody tr.is-manual-queued:hover {
   grid-column: 1 / -1;
 }
 
+/* Colony Gate & Field Conflict Banners (Tab 3 AI-Planner & Tab 1 Handoff) */
+
+.ag-gate-banner {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line-mid);
+  font-size: 0.9rem;
+}
+
+.ag-gate-banner.is-locked {
+  background: rgba(239, 176, 59, 0.08);
+  color: var(--amber);
+}
+
+.ag-gate-banner.is-unlocked {
+  background: rgba(22, 236, 152, 0.08);
+  color: var(--mint);
+}
+
+.ag-gate-copy {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.ag-gate-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--line-mid);
+}
+
+.ag-gate-chip.is-locked {
+  color: var(--amber);
+  border-color: var(--amber);
+  background: var(--amber-surface);
+}
+
+.ag-gate-chip.is-unlocked {
+  color: var(--mint);
+  border-color: rgba(22, 236, 152, 0.5);
+  background: rgba(22, 236, 152, 0.12);
+}
+
+.ag-conflict-stack {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--amber);
+  background: rgba(239, 176, 59, 0.06);
+}
+
+.ag-conflict-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius);
+}
+
+.ag-conflict-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 320px;
+}
+
+.ag-conflict-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.88rem;
+}
+
+.ag-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ag-conflict-select {
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 0.86rem;
+  color: var(--ink);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+}
+
+.btn-warning {
+  background: rgba(239, 176, 59, 0.18);
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.btn-warning:hover {
+  background: rgba(239, 176, 59, 0.28);
+}
+
+/* Tab 1 Handoff Card */
+
+.ag-ai-handoff-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg-hud-deep);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+}
+
+.ag-ai-handoff-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ag-handoff-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.ag-handoff-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+/* Config Optimizer & AI-Planner & Fleet Tables + Controls */
+
+.ag-co-content,
+.ag-ai-subpane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ag-group-title,
+.ag-param-group h3 {
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+}
+
+.ag-co-row {
+  cursor: pointer;
+}
+
+.ag-co-row.is-selected {
+  background: rgba(50, 232, 255, 0.08);
+}
+
+.ag-co-bld-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 0.86rem;
+}
+
+.ag-co-detail-strip {
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line-mid);
+  background: var(--bg-hud-deep);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ag-co-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.88rem;
+}
+
+.ag-co-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
+  gap: 6px;
+}
+
+.ag-co-bld-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-dim);
+  border-radius: 4px;
+  font-size: 0.86rem;
+}
+
+.ag-co-bld-cell.is-upgrade {
+  border-color: rgba(50, 232, 255, 0.5);
+}
+
+.ag-co-bld-cell.is-reserved {
+  border-color: var(--amber);
+}
+
+.ag-co-bld-name {
+  color: var(--ink-muted);
+  font-size: 0.86rem;
+}
+
+.ag-co-bld-vals {
+  color: var(--ink);
+  font-size: 0.88rem;
+}
+
+.ag-co-bld-res {
+  color: var(--amber);
+  font-size: 0.86rem;
+}
+
+.ag-ai-window-bar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line-dim);
+  background: var(--bg-panel-alt);
+}
+
+.ag-inline-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+}
+
+.ag-inline-filter select {
+  min-height: 30px;
+  padding: 2px 8px;
+  font-size: 0.86rem;
+  color: var(--ink);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+}
+
+.ag-telemetry-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--radius);
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+}
+
+.ag-job-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ag-job-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.86rem;
+  color: var(--cyan);
+}
+
+.ag-subtable-bar {
+  border-top: 1px solid var(--line-mid);
+  background: var(--bg-panel-alt);
+}
+
+.ag-cell-sub {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+}
+
+.ag-toolbar-meta {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+}
+
 /* ==================== TOP-BAR NOTIFICATIONS, MODALS & RESPONSIVE QUERIES ==================== */
 
 .notif-bell-btn {
@@ -3618,6 +4029,9 @@ tbody tr.is-manual-queued:hover {
   .ag-main-window,
   .ag-control-panel,
   .ag-panel-body,
+  .ag-tab-split,
+  .ag-co-content,
+  .ag-ai-subpane,
   .dash-lower-grid,
   .ops-parallel-grid,
   .split-workspace,
@@ -3664,6 +4078,7 @@ tbody tr.is-manual-queued:hover {
   }
 
   .page-view.ag-view,
+  .ag-tab-split,
   .dash-upper-grid,
   .dash-lower-grid,
   .ops-parallel-grid,

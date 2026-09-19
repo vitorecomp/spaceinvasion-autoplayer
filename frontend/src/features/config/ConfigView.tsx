@@ -5,6 +5,7 @@ const useClientSyncEffect = typeof window !== "undefined" ? useLayoutEffect : us
 import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
+import { normalizeUiPlannerMode } from "../action-graph/plannerHelpers";
 import {
   timestampSortKey,
   useTableSort,
@@ -31,7 +32,7 @@ function fmtShortUpdated(tsSec: unknown): string {
 
 function buildFormStateFromConfig(cfg: StrategyConfigData | null | undefined): Record<string, any> {
   const out: Record<string, any> = {
-    planner_mode: String(cfg?.planner_mode || "priority"),
+    planner_mode: normalizeUiPlannerMode(cfg?.planner_mode),
     playstyle: String(cfg?.playstyle || "fleeter"),
     spy_dispatch_planet_id: String(
       Math.max(0, Math.round(safeFiniteNumber(cfg?.spy_dispatch_planet_id, 0) ?? 0))
@@ -189,8 +190,8 @@ export const ConfigView: React.FC = () => {
 
     setFormValues(syncedForm);
 
-    const isGa = String(plannerModeVal).toLowerCase() === "ga_nn";
-    if (isGa) beginGaCalc();
+    const isAiMode = String(plannerModeVal).toLowerCase() === "ai_planner" || String(plannerModeVal).toLowerCase() === "ga_nn";
+    if (isAiMode) beginGaCalc();
 
     bumpDashboardSeq();
     const gState = (globalThis as any).state;
@@ -231,7 +232,7 @@ export const ConfigView: React.FC = () => {
         gState.configSaving = Math.max(0, (gState.configSaving || 0) - 1);
       }
       setConfigSaving((c) => Math.max(0, c - 1));
-      if (isGa) endGaCalc();
+      if (isAiMode) endGaCalc();
     }
   };
 

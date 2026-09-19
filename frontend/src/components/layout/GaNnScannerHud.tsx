@@ -1,6 +1,7 @@
 import React from "react";
 import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
 import { useConsole } from "../../context/ConsoleContext";
+import { computeColonyGateInfo } from "../../features/action-graph/plannerHelpers";
 
 function clampPct(val: unknown): number {
   const n = safeFiniteNumber(val, 0) ?? 0;
@@ -50,17 +51,17 @@ function geneShortTag(kind: unknown): string {
   const k = String(kind || "").trim().toUpperCase();
   if (!k) return "";
   if (k === "BUILD") return "BLD";
-  if (k === "DEMOLISH_BUILDING") return "DEM";
+  if (k === "DEMOLISH_BUILDING" || k === "DEMOLISH") return "DEM";
   if (k === "WAIT_RESOURCES") return "WAIT";
   if (k === "RESEARCH") return "RES";
-  if (k === "BUILD_SHIP") return "SHP";
-  if (k === "ATTACK") return "ATK";
+  if (k === "BUILD_SHIP" || k === "SHIPS") return "SHP";
+  if (k === "ATTACK" || k === "RAID") return "ATK";
   if (k === "SPY") return "SPY";
   if (k === "TRANSPORT") return "TRN";
   if (k === "STATION") return "STN";
   if (k === "RECYCLE") return "REC";
   if (k === "COLONIZE") return "COL";
-  if (k === "SCAN_GALAXY") return "SCN";
+  if (k === "SCAN_GALAXY" || k === "GALAXY_SCAN") return "SCN";
   if (k === "THROTTLE_BUILDING") return "B2%";
   if (k === "CLAIM_TUTORIAL") return "TUT";
   return k.slice(0, 4);
@@ -76,15 +77,39 @@ export const GaNnScannerHud: React.FC = () => {
     bumpDashboardSeq,
     lastOptimizerSummary,
     setLastOptimizerSummary,
+    plannerJobsStatus,
+    refreshPlannerJobsStatus,
     apiCommand,
     loadDashboard,
     showFeedback,
   } = useConsole();
 
   const cfgMode = String(
-    dashboard?.config?.planner_mode || dashboard?.planner_mode || "priority"
+    dashboard?.effective_planner_mode ||
+      dashboard?.config?.planner_mode ||
+      dashboard?.planner_mode ||
+      "priority"
   ).toLowerCase();
-  const isGaNn = cfgMode === "ga_nn";
+  const isAiMode = cfgMode === "ai_planner";
+  const isLegacyGa = cfgMode === "ga_nn";
+
+  const jobsPayload =
+    plannerJobsStatus || dashboard?.planner_jobs_status || dashboard?.planner_status || null;
+  const coJob = jobsPayload?.config_optimizer_job || null;
+  const aiJob = jobsPayload?.ai_planner_job || null;
+  const coRunning = String(coJob?.status || "").toLowerCase() === "running";
+  const aiRunning = String(aiJob?.status || "").toLowerCase() === "running";
+  const runningJob = aiRunning ? aiJob : coRunning ? coJob : null;
+  const anyJobRunning = Boolean(runningJob);
+
+  const isActiveHud = isAiMode || isLegacyGa || anyJobRunning;
+  const isCalculating = Boolean(gaCalculating || anyJobRunning);
+
+  const gate = computeColonyGateInfo(dashboard, jobsPayload);
+  const aiSum =
+    dashboard?.ai_planner_summary && typeof dashboard.ai_planner_summary === "object"
+      ? dashboard.ai_planner_summary
+      : null;
 
   const incomingSum =
     dashboard?.optimizer_summary ||
@@ -94,9 +119,11 @@ export const GaNnScannerHud: React.FC = () => {
   const hasIncoming = Boolean(
     incomingSum && typeof incomingSum === "object" && Object.keys(incomingSum).length > 0
   );
-  const rawSum: Record<string, any> =
-    isGaNn ? (hasIncoming ? incomingSum! : lastOptimizerSummary) || {} : {};
-  const hasSummary = Boolean(rawSum && Object.keys(rawSum).length > 0);
+  const rawSum: Record<string, any> = isActiveHud
+    ? (hasIncoming ? incomingSum! : isLegacyGa ? lastOptimizerSummary : null) || {}
+    : {};
+  const hasLegacySum = Boolean(rawSum && Object.keys(rawSum).length > 0);
+  const hasAiSummary = Boolean(aiSum && Object.keys(aiSum).length > 0);
 
   const cfgPop = Math.max(
     4,
@@ -111,23 +138,37 @@ export const GaNnScannerHud: React.FC = () => {
     Math.round(safeFiniteNumber(dashboard?.config?.ga_horizon_steps, 6) ?? 6)
   );
 
-  const statusPillText = !isGaNn
+  const statusPillText = !isActiveHud
     ? "STANDBY"
-    : gaCalculating
+    : isCalculating
       ? "CALCULATING"
-      : hasSummary
-        ? "OPTIMIZED"
-        : "ACTIVE";
+      : isAiMode && !gate.liveAiUnlocked
+        ? "PREVIEW ONLY"
+        : hasAiSummary || hasLegacySum
+          ? "OPTIMIZED"
+          : "ACTIVE";
 
-  const popSize = Math.max(1, Math.round(safeFiniteNumber(rawSum.population_size, cfgPop) ?? cfgPop));
-  const nnBackend = String(rawSum.nn_backend || "mlp").toUpperCase();
-  const elapsedMs = safeFiniteNumber(rawSum.elapsed_ms, null);
+  const popSize = Math.max(
+    1,
+    Math.round(safeFiniteNumber(rawSum.population_size ?? aiSum?.ga_population_size, cfgPop) ?? cfgPop)
+  );
+  const nnBackend = String(
+    rawSum.nn_backend || (isAiMode ? `${gate.coloniesOwned}/${gate.maxPlanets} COL` : "MLP")
+  ).toUpperCase();
+  const elapsedMs = safeFiniteNumber(
+    runningJob?.elapsed_ms ?? rawSum.elapsed_ms ?? aiSum?.elapsed_ms,
+    null
+  );
   const safeElapsed = elapsedMs !== null ? Math.max(0, Math.round(elapsedMs)) : null;
-  const metaLineText = !isGaNn
-    ? "POP -- · NN --"
-    : safeElapsed !== null
-      ? `POP ${popSize} · ${nnBackend} · ${safeElapsed}ms`
-      : `POP ${popSize} · ${nnBackend}`;
+  const metaLineText = !isActiveHud
+    ? "HEURISTIC STANDBY"
+    : runningJob
+      ? `${aiRunning ? "AI-PLANNER" : "CONFIG OPT"} ${Math.round(safeFiniteNumber(runningJob.progress_pct, 0) ?? 0)}%${safeElapsed !== null ? ` · ${safeElapsed}ms` : ""}`
+      : isAiMode
+        ? `COL ${gate.coloniesOwned}/${gate.maxPlanets} · W${Math.round(safeFiniteNumber(aiSum?.reward_weeks, 26) ?? 26)}${safeElapsed !== null ? ` · ${safeElapsed}ms` : ""}`
+        : safeElapsed !== null
+          ? `POP ${popSize} · ${nnBackend} · ${safeElapsed}ms`
+          : `POP ${popSize} · ${nnBackend}`;
 
   const histLen = Array.isArray(rawSum.generation_history) ? rawSum.generation_history.length : null;
   const genDone = Math.max(
@@ -135,42 +176,87 @@ export const GaNnScannerHud: React.FC = () => {
     Math.round(safeFiniteNumber(rawSum.generation ?? rawSum.generations ?? histLen, 0) ?? 0)
   );
   const genTarget = Math.max(genDone, cfgGens);
-  const genPct = isGaNn ? clampPct(genTarget > 0 ? (genDone / genTarget) * 100 : 0) : 0;
+  const jobPct = clampPct(runningJob?.progress_pct ?? 0);
+  const aiStepsCompleted = Math.max(
+    0,
+    Math.round(safeFiniteNumber(aiSum?.steps_completed ?? aiSum?.steps_started, 0) ?? 0)
+  );
+  const rawAiStepsTotal = safeFiniteNumber(aiSum?.steps, null);
+  const aiStepsTotal = Math.max(
+    0,
+    Math.round(rawAiStepsTotal ?? 0)
+  );
+  const genPct = !isActiveHud
+    ? 0
+    : runningJob
+      ? jobPct
+      : isAiMode && aiStepsTotal > 0
+        ? clampPct((aiStepsCompleted / aiStepsTotal) * 100)
+        : clampPct(genTarget > 0 ? (genDone / genTarget) * 100 : 0);
+
   const seedVal = safeFiniteNumber(rawSum.seed ?? dashboard?.config?.ga_seed, null);
   const seedTxt = seedVal !== null ? `Seed ${Math.round(seedVal)}` : "Auto seed";
-  const genSubText = !isGaNn
+  const genSubText = !isActiveHud
     ? "Waiting for optimizer pass"
-    : gaCalculating
-      ? "Evolving action sequences..."
-      : `Horizon ${horizonSteps} steps · ${seedTxt}`;
+    : runningJob
+      ? String(runningJob.phase || "Running background optimizer...")
+      : isAiMode
+        ? `Colonies ${gate.coloniesOwned}/${gate.maxPlanets} · ${gate.liveAiUnlocked ? "Live Unlocked" : "Unlock at 11/11"}`
+        : gaCalculating
+          ? "Evolving action sequences..."
+          : `Horizon ${horizonSteps} steps · ${seedTxt}`;
 
+  const totalNetOutput = safeFiniteNumber(
+    aiSum?.total_net_spice_eq ?? aiSum?.total_spice_eq,
+    null
+  );
+  const hourlyLoot = safeFiniteNumber(
+    aiSum?.attack_telemetry?.hourly_loot_spice_eq ?? aiSum?.hourly_loot_spice_eq,
+    null
+  );
   const nnEvals = Math.max(
     0,
     Math.round(safeFiniteNumber(rawSum.nn_evaluations ?? rawSum.neural_evals, 0) ?? 0)
   );
   const lossRaw = safeFiniteNumber(rawSum.nn_final_loss, null);
   const loss = lossRaw !== null ? Math.max(0, lossRaw) : null;
-  const nnPct = !isGaNn
+  const nnPct = !isActiveHud
     ? 0
-    : gaCalculating
+    : isCalculating
       ? 72
-      : nnEvals > 0
-        ? clampPct(Math.max(14, Math.log10(nnEvals + 1) * 38))
-        : 0;
-  const nnSubText = !isGaNn
-    ? "MSE Loss --"
-    : loss !== null
-      ? `MSE Loss ${loss.toFixed(4)} · ${nnBackend}`
-      : `Backend ${nnBackend} · Horizon ${horizonSteps}`;
+      : isAiMode && !hasLegacySum
+        ? totalNetOutput !== null && totalNetOutput > 0
+          ? 78
+          : 0
+        : nnEvals > 0
+          ? clampPct(Math.max(14, Math.log10(nnEvals + 1) * 38))
+          : 0;
+  const nnSubText = !isActiveHud
+    ? "Output --"
+    : isAiMode && !hasLegacySum
+      ? hourlyLoot !== null
+        ? `Attack Loot ${fmtCompactLocal(hourlyLoot)}/h`
+        : "Horizon Net Production"
+      : loss !== null
+        ? `MSE Loss ${loss.toFixed(4)} · ${nnBackend}`
+        : `Backend ${nnBackend} · Horizon ${horizonSteps}`;
 
-  const baseFit = safeFiniteNumber(rawSum.baseline_fitness ?? rawSum.initial_best_fitness, null);
-  const bestFit = safeFiniteNumber(
-    rawSum.best_fitness ?? rawSum.fitness_score ?? rawSum.final_best_fitness,
+  const baseFit = safeFiniteNumber(
+    rawSum.baseline_fitness ?? rawSum.initial_best_fitness ?? aiSum?.baseline_discounted_reward,
     null
   );
-  const impText = isGaNn ? fmtImprovementPct(rawSum.improvement_pct, baseFit, bestFit) : "--%";
-  const rawImp = safeFiniteNumber(rawSum.improvement_pct, null);
-  const fitPct = !isGaNn
+  const bestFit = safeFiniteNumber(
+    rawSum.best_fitness ??
+      rawSum.fitness_score ??
+      rawSum.final_best_fitness ??
+      aiSum?.discounted_reward_spice_eq,
+    null
+  );
+  const impText = isActiveHud
+    ? fmtImprovementPct(rawSum.improvement_pct ?? aiSum?.improvement_pct, baseFit, bestFit)
+    : "--%";
+  const rawImp = safeFiniteNumber(rawSum.improvement_pct ?? aiSum?.improvement_pct, null);
+  const fitPct = !isActiveHud
     ? 0
     : impText.startsWith(">")
       ? 100
@@ -181,7 +267,7 @@ export const GaNnScannerHud: React.FC = () => {
               ? 35
               : 0
         );
-  const fitSubText = isGaNn
+  const fitSubText = isActiveHud
     ? `Base ${fmtCompactLocal(baseFit)} · Best ${fmtCompactLocal(bestFit)}`
     : "Base -- · Best --";
 
@@ -190,50 +276,73 @@ export const GaNnScannerHud: React.FC = () => {
   const gLen = Math.max(
     0,
     Math.round(
-      safeFiniteNumber(rawSum.genome_length ?? rawSum.actions_count, chrom.length || planLen) ?? 0
+      safeFiniteNumber(
+        rawSum.genome_length ?? rawSum.actions_count ?? rawAiStepsTotal,
+        chrom.length || planLen
+      ) ?? 0
     )
   );
-  const genomePct = !isGaNn
+  const genomePct = !isActiveHud
     ? 0
-    : clampPct(horizonSteps > 0 ? (Math.min(gLen, horizonSteps) / horizonSteps) * 100 : 0);
+    : clampPct(
+        isAiMode && aiStepsTotal > 0
+          ? (Math.min(gLen, aiStepsTotal) / aiStepsTotal) * 100
+          : horizonSteps > 0
+            ? (Math.min(gLen, horizonSteps) / horizonSteps) * 100
+            : 0
+      );
   const seqPreview = (chrom.length > 0 ? chrom : dashboard?.plan || [])
     .slice(0, 4)
     .map((g: any) => geneShortTag(typeof g === "string" ? g : g?.kind))
     .filter(Boolean)
     .join(" → ");
-  const genomeSubText = !isGaNn
+  const genomeSubText = !isActiveHud
     ? "Sequence standby"
     : seqPreview || (gLen > 0 ? `Top ${gLen} sequence steps` : "Sequence standby");
 
   const onRecalc = async () => {
     beginGaCalc();
     try {
-      showFeedback("Running GA + Neural Network sequence optimizer...", "ok");
-      const res = await apiCommand({ command: "plan", planner_mode: "ga_nn", refresh: false });
-      bumpDashboardSeq();
-      if (res.optimizer_summary) {
-        setLastOptimizerSummary(res.optimizer_summary);
-      }
-      const curDash = (globalThis as any).state?.dashboard || dashboard;
-      if (curDash) {
-        const updated = {
-          ...curDash,
-          plan: Array.isArray(res.actions) ? res.actions : curDash.plan,
-          optimizer_summary: res.optimizer_summary ?? curDash.optimizer_summary,
-        };
-        if ((globalThis as any).state) {
-          (globalThis as any).state.dashboard = updated;
-        }
-        setDashboard(updated);
+      if (isAiMode) {
+        showFeedback("Triggering AI-Planner recalculation...", "ok");
+        await apiCommand({ command: "ai_planner_run", trigger_source: "hud_recalc" });
+        await Promise.all([
+          refreshPlannerJobsStatus(),
+          loadDashboard({ refresh: false, preserveConfig: true, force: true }),
+        ]);
+        showFeedback("AI-Planner job triggered.", "ok");
       } else {
-        await loadDashboard({ refresh: false, preserveConfig: true, force: true });
+        showFeedback("Running planner recalculation...", "ok");
+        const res = await apiCommand({
+          command: "plan",
+          planner_mode: isLegacyGa ? "ga_nn" : "priority",
+          refresh: false,
+        });
+        bumpDashboardSeq();
+        if (res.optimizer_summary) {
+          setLastOptimizerSummary(res.optimizer_summary);
+        }
+        const curDash = (globalThis as any).state?.dashboard || dashboard;
+        if (curDash) {
+          const updated = {
+            ...curDash,
+            plan: Array.isArray(res.actions) ? res.actions : curDash.plan,
+            optimizer_summary: res.optimizer_summary ?? curDash.optimizer_summary,
+          };
+          if ((globalThis as any).state) {
+            (globalThis as any).state.dashboard = updated;
+          }
+          setDashboard(updated);
+        } else {
+          await loadDashboard({ refresh: false, preserveConfig: true, force: true });
+        }
+        showFeedback(
+          `Evaluation complete (${(res.actions || []).length} planned actions).`,
+          "ok"
+        );
       }
-      showFeedback(
-        `GA+NN evaluation complete (${(res.actions || []).length} planned actions).`,
-        "ok"
-      );
     } catch (err: any) {
-      showFeedback(`GA+NN calculation failed: ${err.message}`, feedbackKindForError(err));
+      showFeedback(`Recalculation failed: ${err.message}`, feedbackKindForError(err));
     } finally {
       endGaCalc();
     }
@@ -241,15 +350,21 @@ export const GaNnScannerHud: React.FC = () => {
 
   return (
     <article
-      className={`hud-window gann-hud${isGaNn ? " is-active" : ""}${isGaNn && gaCalculating ? " is-calculating" : ""}`}
+      className={`hud-window gann-hud${isActiveHud ? " is-active" : ""}${isCalculating ? " is-calculating" : ""}`}
       id="gann-calc-hud"
-      aria-label="Genetic algorithm and neural network search telemetry"
-      hidden={!isGaNn}
+      aria-label="AI-Planner and background optimizer telemetry"
+      hidden={!isActiveHud}
     >
       <div className="window-bar window-bar-wrap">
         <div className="window-title-group">
-          <span className="module-code tabular">GNN</span>
-          <h2>GA + Neural Search Scanner</h2>
+          <span className="module-code tabular">{isAiMode || anyJobRunning ? "AIP" : "GNN"}</span>
+          <h2>
+            {anyJobRunning
+              ? "Optimizer Background Engine"
+              : isAiMode
+                ? "AI-Planner & Colony Telemetry"
+                : "Planner Search Scanner"}
+          </h2>
           <span className="gann-state-pill tabular" id="gann-status-pill" role="status">
             {statusPillText}
           </span>
@@ -396,9 +511,17 @@ export const GaNnScannerHud: React.FC = () => {
                 style={{ ["--arc-pct" as any]: String(genPct) }}
               />
               <div className="gann-metric-titles">
-                <span className="gann-metric-label">Generation Progress</span>
+                <span className="gann-metric-label">
+                  {anyJobRunning ? "Background Job" : isAiMode ? "Horizon Progress" : "Cycle Progress"}
+                </span>
                 <strong className="gann-metric-val tabular" id="gann-gen-val">
-                  {isGaNn ? `${genDone} / ${genTarget}` : "0 / --"}
+                  {!isActiveHud
+                    ? "0 / --"
+                    : runningJob
+                      ? `${Math.round(jobPct)}%`
+                      : isAiMode && aiStepsTotal > 0
+                        ? `${aiStepsCompleted} / ${aiStepsTotal}`
+                        : `${genDone} / ${genTarget}`}
                 </strong>
               </div>
             </div>
@@ -423,9 +546,17 @@ export const GaNnScannerHud: React.FC = () => {
                 style={{ ["--arc-pct" as any]: String(nnPct) }}
               />
               <div className="gann-metric-titles">
-                <span className="gann-metric-label">Neural Eval Pass</span>
+                <span className="gann-metric-label">
+                  {isAiMode && !hasLegacySum ? "Horizon Output" : "Search Eval Pass"}
+                </span>
                 <strong className="gann-metric-val tabular" id="gann-nn-val">
-                  {isGaNn ? `${fmtIntLocal(nnEvals)} evals` : "0 evals"}
+                  {!isActiveHud
+                    ? "0 evals"
+                    : isAiMode && !hasLegacySum
+                      ? totalNetOutput !== null
+                        ? `${fmtCompactLocal(totalNetOutput)} SpEq`
+                        : "— SpEq"
+                      : `${fmtIntLocal(nnEvals)} evals`}
                 </strong>
               </div>
             </div>
@@ -450,7 +581,7 @@ export const GaNnScannerHud: React.FC = () => {
                 style={{ ["--arc-pct" as any]: String(fitPct) }}
               />
               <div className="gann-metric-titles">
-                <span className="gann-metric-label">Fitness Improvement</span>
+                <span className="gann-metric-label">Reward Gain</span>
                 <strong className="gann-metric-val tabular" id="gann-fit-val">
                   {impText}
                 </strong>
@@ -477,9 +608,15 @@ export const GaNnScannerHud: React.FC = () => {
                 style={{ ["--arc-pct" as any]: String(genomePct) }}
               />
               <div className="gann-metric-titles">
-                <span className="gann-metric-label">Genome Search</span>
+                <span className="gann-metric-label">
+                  {isAiMode ? "Horizon Sequence" : "Action Sequence"}
+                </span>
                 <strong className="gann-metric-val tabular" id="gann-genome-val">
-                  {isGaNn ? `${gLen} genes` : "0 genes"}
+                  {!isActiveHud
+                    ? "0 steps"
+                    : hasLegacySum && chrom.length > 0
+                      ? `${gLen} genes`
+                      : `${gLen} steps`}
                 </strong>
               </div>
             </div>

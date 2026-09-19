@@ -548,12 +548,17 @@ class TestOperatorControlUi(unittest.TestCase):
             self.assertIn("total", " ".join(ops_tbl["headers"]).lower())
 
             self.assertTrue(parser.has_planner_select)
-            self.assertEqual(parser.planner_options, ["priority", "ga_nn"])
+            self.assertEqual(parser.planner_options, ["priority", "ai_planner"])
             for req_id in (
                 "gann-calc-hud",
                 "gann-radial-svg",
                 "dash-planner-mode-badge",
                 "ops-planner-mode-badge",
+                "ag-workspace-tablist",
+                "ag-tab-btn-heuristics",
+                "ag-tab-btn-config-optimizer",
+                "ag-tab-btn-ai-planner",
+                "ag-tab-btn-fleet-planner",
                 "btn-scan-galaxy",
                 "cmb-targets-tab",
                 "cmb-pane-targets",
@@ -807,9 +812,11 @@ class TestOperatorControlUi(unittest.TestCase):
                     const ready = await __waitUntil(() => state.dashboard !== null);
                     if (!ready) throw new Error('Dashboard failed to load');
                     document.querySelector('[data-page="config"]').click();
-                    const sel = document.getElementById('cfg-planner_mode');
+                    const modeSel = document.getElementById('cfg-planner_mode');
+                    const modeOpts = Array.from(modeSel.options).map((o) => o.value);
+                    const sel = document.getElementById('cfg-playstyle');
                     const seedInp = document.getElementById('cfg-ga_seed');
-                    sel.value = 'ga_nn';
+                    sel.value = 'miner';
                     sel.dispatchEvent('change');
                     seedInp.value = '';
                     seedInp.dispatchEvent('change');
@@ -821,14 +828,15 @@ class TestOperatorControlUi(unittest.TestCase):
 
                     document.getElementById('btn-save-config').click();
                     await __waitUntil(() => fetchLog.some((f) => f.url === '/command' && f.body && f.body.command === 'update_config'));
-                    await __waitUntil(() => state.dashboard && state.dashboard.config && state.dashboard.config.planner_mode === 'ga_nn');
+                    await __waitUntil(() => state.dashboard && state.dashboard.config && state.dashboard.config.playstyle === 'miner');
                     const savedReq = fetchLog.find((f) => f.url === '/command' && f.body && f.body.command === 'update_config').body;
-                    return { preserved, savedSeed: savedReq.config.ga_seed, savedMode: savedReq.config.planner_mode };
+                    return { modeOpts, preserved, savedSeed: savedReq.config.ga_seed, savedPlaystyle: savedReq.config.playstyle };
                     """,
                 )
             self.assertEqual(res["errors"], [])
-            self.assertEqual(res["scenario"]["preserved"], "ga_nn")
-            self.assertEqual(res["scenario"]["savedMode"], "ga_nn")
+            self.assertEqual(res["scenario"]["modeOpts"], ["priority", "ai_planner"])
+            self.assertEqual(res["scenario"]["preserved"], "miner")
+            self.assertEqual(res["scenario"]["savedPlaystyle"], "miner")
             self.assertIsNone(res["scenario"]["savedSeed"])
 
             # Rate limit 429 on scan_galaxy produces .is-warn banner and keeps Chrome ONLINE
@@ -947,7 +955,7 @@ class TestOperatorControlUi(unittest.TestCase):
             self.assertEqual(sc["genTxt"], "4 / 4")
             self.assertEqual(sc["nnTxt"], "32 evals")
             self.assertEqual(sc["genomeTxt"], "2 genes")
-            self.assertEqual(sc["dashBadge"], "MODE: GA+NN")
+            self.assertEqual(sc["dashBadge"], "MODE: AI-PLANNER")
         finally:
             server_ga.shutdown()
             server_ga.server_close()
@@ -1005,22 +1013,32 @@ class TestOperatorControlUi(unittest.TestCase):
     def test_node_vm_async_race_input_dirty_guard_and_legacy_blocked_fallback(self) -> None:
         _, server, base_url = self._start_server(planner_mode="priority")
         try:
-            # A) Async loadDashboard race: slow initial priority /dashboard must NOT drop post-save reload or revert ga_nn
+            # A) Async loadDashboard race: slow initial priority /dashboard must NOT drop post-save reload or revert ai_planner
             race_patch = (
                 "async (url, opts, fullUrl, nativeFetch) => { "
                 "if (url.startsWith('/dashboard')) { "
                 "  globalThis.__dashCall = (globalThis.__dashCall || 0) + 1; "
                 "  const callIdx = globalThis.__dashCall; "
+                "  const r = await nativeFetch(fullUrl, opts); "
+                "  const d = await r.json(); "
                 "  if (callIdx === 1) { "
-                "    const r = await nativeFetch(fullUrl, opts); "
-                "    const d = await r.json(); "
                 "    await new Promise((res) => setTimeout(res, 260)); "
                 "    return { ok: true, status: 200, json: async () => d }; "
                 "  } "
+                "  if (globalThis.__savedAiMode) { "
+                "    d.planner_mode = 'ai_planner'; "
+                "    d.effective_planner_mode = 'ai_planner'; "
+                "    d.config = { ...(d.config || {}), planner_mode: 'ai_planner' }; "
+                "  } "
+                "  return { ok: true, status: 200, json: async () => d }; "
                 "} "
                 "if (url === '/command' && opts && opts.body) { "
                 "  const b = JSON.parse(String(opts.body)); "
                 "  if (b.command === 'update_config') { "
+                "    if (b.config && b.config.planner_mode === 'ai_planner') { "
+                "      globalThis.__savedAiMode = true; "
+                "      return { ok: true, status: 200, json: async () => ({ ok: true, config: { ...(state?.dashboard?.config || {}), ...b.config, planner_mode: 'ai_planner' } }) }; "
+                "    } "
                 "    return nativeFetch(fullUrl, opts); "
                 "  } "
                 "} }"
@@ -1032,10 +1050,10 @@ class TestOperatorControlUi(unittest.TestCase):
                     // Wait until initial /dashboard fetch has fired (still in flight for 260ms)
                     await __waitUntil(() => fetchLog.some((f) => String(f.url || '').startsWith('/dashboard')));
                     const sel = document.getElementById('cfg-planner_mode');
-                    sel.value = 'ga_nn';
+                    sel.value = 'ai_planner';
                     sel.dispatchEvent('change');
                     document.getElementById('btn-save-config').click();
-                    await __waitUntil(() => state.dashboard && state.dashboard.config && state.dashboard.config.planner_mode === 'ga_nn');
+                    await __waitUntil(() => state.dashboard && state.dashboard.config && state.dashboard.config.planner_mode === 'ai_planner');
                     await __sleep(360);
                     return {
                       dashFetches: fetchLog.filter((f) => String(f.url || '').startsWith('/dashboard')).length,
@@ -1050,10 +1068,10 @@ class TestOperatorControlUi(unittest.TestCase):
             self.assertEqual(r_race["errors"], [])
             sc_race = r_race["scenario"]
             self.assertGreaterEqual(sc_race["dashFetches"], 2)
-            self.assertEqual(sc_race["selVal"], "ga_nn")
-            self.assertEqual(sc_race["dashMode"], "ga_nn")
+            self.assertEqual(sc_race["selVal"], "ai_planner")
+            self.assertEqual(sc_race["dashMode"], "ai_planner")
             self.assertFalse(sc_race["hudHidden"])
-            self.assertEqual(sc_race["dashBadge"], "MODE: GA+NN")
+            self.assertEqual(sc_race["dashBadge"], "MODE: AI-PLANNER")
 
             # B) Cached summary pill ("OPTIMIZED"), "input" dirty guard before blur, legacy !executable_now blocked pill, & refresh=1 vs stale refresh=0
             extra_patch = (
@@ -1762,6 +1780,19 @@ async (url, opts, fullUrl, nativeFetch) => {
   if (globalThis.__dashMode === 'fail_503' && url.startsWith('/dashboard')) {
     return { ok: false, status: 503, json: async () => ({ ok: false, error: 'transient 503' }) };
   }
+  if (url === '/command' && opts?.body) {
+    const parsed = JSON.parse(opts.body);
+    if (parsed.command === 'update_config' && parsed.config?.planner_mode === 'ai_planner') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          config: { ...(state?.dashboard?.config || {}), ...parsed.config, planner_mode: 'ai_planner', ga_seed: 99 },
+        }),
+      };
+    }
+  }
 }
 """
             scenario_js = r"""
@@ -1775,7 +1806,7 @@ await __waitUntil(() => el("feedback-banner").textContent.includes("Failed savin
 const badBanner = el("feedback-banner").textContent;
 
 // 2. Race: slow pre-click dashboard resolving after save click + post-save refresh 503
-el("cfg-planner_mode").value = "ga_nn";
+el("cfg-planner_mode").value = "ai_planner";
 el("cfg-ga_seed").value = "99";
 globalThis.__dashMode = "hold_priority";
 const heldPromise = loadDashboard({ refresh: false, preserveConfig: true, force: true });
@@ -1787,7 +1818,7 @@ await __sleep(20);
 globalThis.__resolveHeldDash();
 await heldPromise;
 
-await __waitUntil(() => el("dash-planner-mode-badge").textContent === "MODE: GA+NN" && state.dashboard?.config?.ga_seed === 99);
+await __waitUntil(() => el("dash-planner-mode-badge").textContent === "MODE: AI-PLANNER" && state.dashboard?.config?.ga_seed === 99);
 await __sleep(50);
 
 return {
@@ -1805,12 +1836,12 @@ return {
             self.assertEqual(res["errors"], [])
             sc = res["scenario"]
             self.assertIn("Failed saving config", sc["badBanner"])
-            self.assertEqual(sc["dashMode"], "ga_nn")
-            self.assertEqual(sc["cfgMode"], "ga_nn")
+            self.assertEqual(sc["dashMode"], "ai_planner")
+            self.assertEqual(sc["cfgMode"], "ai_planner")
             self.assertEqual(sc["cfgSeed"], 99)
-            self.assertEqual(sc["domMode"], "ga_nn")
+            self.assertEqual(sc["domMode"], "ai_planner")
             self.assertEqual(sc["domSeed"], "99")
-            self.assertEqual(sc["badgeText"], "MODE: GA+NN")
+            self.assertEqual(sc["badgeText"], "MODE: AI-PLANNER")
         finally:
             bridge.close()
             server.shutdown()
@@ -1834,13 +1865,33 @@ async (url, opts, fullUrl, nativeFetch) => {
         });
       });
     }
+    if (parsed.command === 'update_config' && parsed.config?.planner_mode === 'ai_planner') {
+      globalThis.__r8SavedAi = true;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          config: { ...(state?.dashboard?.config || {}), ...parsed.config, planner_mode: 'ai_planner' },
+        }),
+      };
+    }
   }
-  if (url.startsWith('/dashboard') && globalThis.__r8DashPrio) {
-    const r = await nativeFetch(fullUrl, opts);
-    const d = await r.json();
-    d.config = { ...(d.config || {}), planner_mode: 'priority' };
-    d.planner_mode = 'priority';
-    return { ok: true, status: 200, json: async () => d };
+  if (url.startsWith('/dashboard')) {
+    if (globalThis.__r8DashPrio) {
+      const r = await nativeFetch(fullUrl, opts);
+      const d = await r.json();
+      d.config = { ...(d.config || {}), planner_mode: 'priority' };
+      d.planner_mode = 'priority';
+      return { ok: true, status: 200, json: async () => d };
+    }
+    if (globalThis.__r8SavedAi) {
+      const r = await nativeFetch(fullUrl, opts);
+      const d = await r.json();
+      d.config = { ...(d.config || {}), planner_mode: 'ai_planner' };
+      d.planner_mode = 'ai_planner';
+      return { ok: true, status: 200, json: async () => d };
+    }
   }
 }
 """
@@ -1880,7 +1931,7 @@ renderBuildingsView(wsDash);
 const bldWsText = el("eta-table-tbody").textContent;
 
 // 2. Programmatic dirty-less change + mid-save loadDashboard poll must NOT overwrite form before save failure
-el("cfg-planner_mode").value = "ga_nn";
+el("cfg-planner_mode").value = "ai_planner";
 state.configDirty = false;
 globalThis.__r8SaveMode = "hold_and_fail";
 globalThis.__r8DashPrio = true;
@@ -1892,7 +1943,7 @@ await __waitUntil(() => typeof globalThis.__resolveR8SaveFail === "function");
 const midOk = await loadDashboard({ refresh: false, preserveConfig: true, force: true });
 const domMid = el("cfg-planner_mode").value;
 
-// Reject update_config and confirm form still keeps "ga_nn"
+// Reject update_config and confirm form still keeps "ai_planner"
 globalThis.__resolveR8SaveFail();
 await __waitUntil(() => state.configSaving === 0 && el("feedback-banner").textContent.includes("Failed saving config"));
 const domAfterFail = el("cfg-planner_mode").value;
@@ -1901,7 +1952,7 @@ const domAfterFail = el("cfg-planner_mode").value;
 globalThis.__r8SaveMode = "normal";
 globalThis.__r8DashPrio = false;
 el("btn-save-config").click();
-await __waitUntil(() => state.configSaving === 0 && state.dashboard?.config?.planner_mode === "ga_nn");
+await __waitUntil(() => state.configSaving === 0 && state.dashboard?.config?.planner_mode === "ai_planner");
 
 return {
   bldWsText,
@@ -1919,10 +1970,10 @@ return {
             self.assertNotIn("()", sc["bldWsText"])
             self.assertIn("Ready", sc["bldWsText"])
             self.assertTrue(sc["midOk"])
-            self.assertEqual(sc["domMid"], "ga_nn")
-            self.assertEqual(sc["domAfterFail"], "ga_nn")
-            self.assertEqual(sc["domAfterSave"], "ga_nn")
-            self.assertEqual(sc["finalMode"], "ga_nn")
+            self.assertEqual(sc["domMid"], "ai_planner")
+            self.assertEqual(sc["domAfterFail"], "ai_planner")
+            self.assertEqual(sc["domAfterSave"], "ai_planner")
+            self.assertEqual(sc["finalMode"], "ai_planner")
         finally:
             bridge.close()
             server.shutdown()
@@ -1995,13 +2046,54 @@ async (url, opts, fullUrl, nativeFetch) => {
   if (url === "/command" && opts && opts.body) {
     const b = JSON.parse(String(opts.body));
     if (b.command === "action_graph") {
-      if (globalThis.__agHookMode === "slow_ga" && b.planner_mode === "ga_nn") {
-        await new Promise((r) => setTimeout(r, 60));
+      if (globalThis.__agHookMode === "fail_400") {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ ok: false, error: "Injected 400 validation error" }),
+        };
       } else if (globalThis.__agHookMode === "fail_500") {
         return {
           ok: false,
           status: 500,
           json: async () => ({ ok: false, error: "Injected 500 simulation error" }),
+        };
+      }
+      if (b.planner_mode === "ai_planner") {
+        if (globalThis.__agHookMode === "slow_ai") {
+          await new Promise((r) => setTimeout(r, 60));
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ok: true,
+            action_graph: {
+              mode: "ai_planner",
+              is_dirty: true,
+              effective_config: b.config || {},
+              lanes: [{ planet_id: 12476, planet_coords: "02:380:12", planet_name: "Colony", energy: 100 }],
+              nodes: [{
+                id: "ai_sim_0",
+                order_index: 0,
+                exec_rank: 0,
+                topological_layer: 0,
+                lane_id: "lane:planet:12476",
+                priority: "P2",
+                kind: "BUILD",
+                status: "ready",
+                planet_id: 12476,
+                planet_coords: "02:380:12",
+                target_name: "Pig iron mine",
+                target_level: 10,
+                reason: "AI-Planner preview step",
+                wait_eta: "Ready",
+                total_eta: "2m",
+              }],
+              edges: [],
+              summary: { total_nodes: 1, total_edges: 0, ready_count: 1, waiting_count: 0, blocked_count: 0 },
+            },
+          }),
         };
       }
     }
@@ -2029,15 +2121,15 @@ document.querySelector('[data-ag-edge-filter="deps"]').click();
 const depsFilterActive = document.querySelector('[data-ag-edge-filter="deps"]').classList.contains("active");
 document.querySelector('[data-ag-edge-filter="all"]').click();
 
-el("ag-mode-ga_nn").click();
-await __waitUntil(() => state.agSimRunning === 0 && state.actionGraphData?.mode === "ga_nn");
+el("ag-mode-ai_planner").click();
+await __waitUntil(() => state.agSimRunning === 0 && state.actionGraphData?.mode === "ai_planner");
 const simModeStatusPill = el("ag-sim-status-pill").textContent;
 const simDirtyBadge = el("ag-dirty-badge").textContent;
-const simGaNodes = document.querySelectorAll(".ag-node-card").length;
-const mainWinHasGenInGa = el("ag-main-window").textContent.toLowerCase().includes("generation");
+const simAiNodes = document.querySelectorAll(".ag-node-card").length;
+const mainWinHasGenInAi = el("ag-main-window").textContent.toLowerCase().includes("generation");
 const updateCallsDuringSim = fetchLog.filter((f) => f.url === "/command" && f.body?.command === "update_config").length;
 
-// 2a. Toggling "priority" -> "ga_nn" -> "priority" resets state.agSimDirty to false and restores LIVE ACTIVE CONFIG
+// 2a. Toggling "priority" -> "ai_planner" -> "priority" resets state.agSimDirty to false and restores LIVE ACTIVE CONFIG
 el("ag-mode-priority").click();
 await __waitUntil(() => state.agSimRunning === 0 && state.actionGraphData?.mode === "priority");
 const dirtyAfterRoundtripPrio = state.agSimDirty;
@@ -2057,12 +2149,12 @@ await __waitUntil(() => state.agSimRunning === 0 && state.agSimDirty === false);
 const dirtyAfterInputRevert = state.agSimDirty;
 const statusPillAfterInputRevert = el("ag-sim-status-pill").textContent;
 
-// 2b. Rapid overlapping "ga_nn" <-> "priority" switches & HTTP 400 / 500 errors keep state.gaCalcCount === 0
-globalThis.__agHookMode = "slow_ga";
-el("ag-mode-ga_nn").click();
-const gaCalcDuringSlowGa = state.gaCalcCount;
+// 2b. Rapid overlapping "ai_planner" <-> "priority" switches & HTTP 400 / 500 errors keep state.gaCalcCount === 0
+globalThis.__agHookMode = "slow_ai";
+el("ag-mode-ai_planner").click();
+const gaCalcDuringSlowAi = state.gaCalcCount;
 el("ag-mode-priority").click();
-el("ag-mode-ga_nn").click();
+el("ag-mode-ai_planner").click();
 el("ag-mode-priority").click();
 await __waitUntil(() => state.agSimRunning === 0 && state.gaCalcCount === 0 && state.actionGraphData?.mode === "priority");
 const gaCalcAfterOverlap = state.gaCalcCount;
@@ -2070,35 +2162,32 @@ const hudCalcAfterOverlap = el("gann-calc-hud").classList.contains("is-calculati
 const dirtyAfterOverlapPrio = state.agSimDirty;
 globalThis.__agHookMode = null;
 
-// Simulated HTTP 400 validation error in "ga_nn" mode
-el("ag-cfg-planner_mode").value = "ga_nn";
-el("ag-cfg-ga_seed").value = "bad_seed_400";
+// Simulated HTTP 400 validation error in "ai_planner" mode
+el("ag-cfg-planner_mode").value = "ai_planner";
+globalThis.__agHookMode = "fail_400";
 await runAgSimulation({ explicit: true });
 const gaCalcAfter400 = state.gaCalcCount;
 const bannerAfter400 = el("feedback-banner").textContent;
 
-// Simulated HTTP 500 command error in "ga_nn" mode
-el("ag-cfg-ga_seed").value = "42";
+// Simulated HTTP 500 command error in "ai_planner" mode
 globalThis.__agHookMode = "fail_500";
 await runAgSimulation({ explicit: true });
 const gaCalcAfter500 = state.gaCalcCount;
 const bannerAfter500 = el("feedback-banner").textContent;
 globalThis.__agHookMode = null;
 
-el("ag-cfg-planner_mode").value = "ga_nn";
-el("ag-cfg-ga_population_size").value = "8";
-el("ag-cfg-ga_generations").value = "2";
-el("ag-cfg-ga_horizon_steps").value = "4";
-el("ag-cfg-ga_seed").value = "33";
+el("ag-cfg-planner_mode").value = "ai_planner";
+el("ag-cfg-combat_safety_margin").value = "1.8";
+el("ag-cfg-max_planets").value = "12";
 el("ag-cfg-playstyle").value = "miner";
 el("ag-ptab-btn-scope").click();
 const scopePaneVisible = !el("ag-param-pane-scope").hidden;
 el("ag-cfg-allow_raids").checked = true;
 el("btn-ag-simulate").click();
-await __waitUntil(() => state.agSimRunning === 0 && el("feedback-banner").textContent.includes("Simulated ga_nn action graph"));
+await __waitUntil(() => state.agSimRunning === 0 && el("feedback-banner").textContent.includes("Simulated ai_planner action graph"));
 
 await loadDashboard({ refresh: false, preserveConfig: true, force: true });
-const popAfterPoll = el("ag-cfg-ga_population_size").value;
+const marginAfterPoll = el("ag-cfg-combat_safety_margin").value;
 const playAfterPoll = el("ag-cfg-playstyle").value;
 const modeAfterPoll = state.actionGraphData?.mode;
 const activeDashModeDuringSim = state.dashboard?.config?.planner_mode;
@@ -2109,14 +2198,12 @@ const statusAfterReset = el("ag-sim-status-pill").textContent;
 const modeSelectAfterReset = el("ag-cfg-planner_mode").value;
 
 el("ag-ptab-btn-core").click();
-el("ag-cfg-planner_mode").value = "ga_nn";
-el("ag-cfg-ga_population_size").value = "8";
-el("ag-cfg-ga_generations").value = "2";
-el("ag-cfg-ga_horizon_steps").value = "4";
-el("ag-cfg-ga_seed").value = "55";
+el("ag-cfg-planner_mode").value = "priority";
+el("ag-cfg-combat_safety_margin").value = "1.75";
+el("ag-cfg-max_planets").value = "12";
 el("ag-cfg-playstyle").value = "hybrid";
 el("btn-ag-apply").click();
-await __waitUntil(() => state.configSaving === 0 && !state.agSimDirty && state.dashboard?.config?.planner_mode === "ga_nn" && state.dashboard?.config?.ga_seed === 55);
+await __waitUntil(() => state.configSaving === 0 && !state.agSimDirty && state.dashboard?.config?.playstyle === "hybrid" && Math.abs(Number(state.dashboard?.config?.combat_safety_margin || 0) - 1.75) < 1e-6);
 
 const fullText = el("view-action-graph").textContent;
 return {
@@ -2125,14 +2212,14 @@ return {
   hasSvg: Boolean(svgEl),
   initialPaths,
   mainWinHasGen,
-  mainWinHasGenInGa,
+  mainWinHasGenInAi,
   initialStatusPill,
   inspStepAfterClick,
   inspTitleAfterClick,
   depsFilterActive,
   simModeStatusPill,
   simDirtyBadge,
-  simGaNodes,
+  simAiNodes,
   updateCallsDuringSim,
   dirtyAfterRoundtripPrio,
   statusPillAfterRoundtripPrio,
@@ -2141,7 +2228,7 @@ return {
   dirtyAfterInputEdit,
   dirtyAfterInputRevert,
   statusPillAfterInputRevert,
-  gaCalcDuringSlowGa,
+  gaCalcDuringSlowAi,
   gaCalcAfterOverlap,
   hudCalcAfterOverlap,
   dirtyAfterOverlapPrio,
@@ -2150,7 +2237,7 @@ return {
   gaCalcAfter500,
   bannerAfter500,
   scopePaneVisible,
-  popAfterPoll,
+  marginAfterPoll,
   playAfterPoll,
   modeAfterPoll,
   activeDashModeDuringSim,
@@ -2158,6 +2245,7 @@ return {
   modeSelectAfterReset,
   appliedDashMode: state.dashboard?.config?.planner_mode,
   appliedPlaystyle: state.dashboard?.config?.playstyle,
+  appliedMargin: state.dashboard?.config?.combat_safety_margin,
   appliedCfgFormMode: el("cfg-planner_mode").value,
   dashBadgeAfterApply: el("dash-planner-mode-badge").textContent,
   navGraphBadgeAfterApply: el("nav-graph-badge").textContent,
@@ -2173,13 +2261,13 @@ return {
             self.assertGreater(sc["initialNodes"], 0)
             self.assertTrue(sc["hasSvg"])
             self.assertFalse(sc["mainWinHasGen"])
-            self.assertFalse(sc["mainWinHasGenInGa"])
+            self.assertFalse(sc["mainWinHasGenInAi"])
             self.assertEqual(sc["initialStatusPill"], "LIVE ACTIVE CONFIG")
             self.assertEqual(sc["inspStepAfterClick"], "#1")
             self.assertTrue(sc["depsFilterActive"])
             self.assertEqual(sc["simModeStatusPill"], "SIMULATION PREVIEW · UNSAVED")
             self.assertEqual(sc["simDirtyBadge"], "MODIFIED (PREVIEW)")
-            self.assertGreater(sc["simGaNodes"], 0)
+            self.assertGreater(sc["simAiNodes"], 0)
             self.assertEqual(sc["updateCallsDuringSim"], 0)
             self.assertFalse(sc["dirtyAfterRoundtripPrio"])
             self.assertEqual(sc["statusPillAfterRoundtripPrio"], "LIVE ACTIVE CONFIG")
@@ -2188,7 +2276,7 @@ return {
             self.assertTrue(sc["dirtyAfterInputEdit"])
             self.assertFalse(sc["dirtyAfterInputRevert"])
             self.assertEqual(sc["statusPillAfterInputRevert"], "LIVE ACTIVE CONFIG")
-            self.assertGreaterEqual(sc["gaCalcDuringSlowGa"], 1)
+            self.assertGreaterEqual(sc["gaCalcDuringSlowAi"], 1)
             self.assertEqual(sc["gaCalcAfterOverlap"], 0)
             self.assertFalse(sc["hudCalcAfterOverlap"])
             self.assertFalse(sc["dirtyAfterOverlapPrio"])
@@ -2197,24 +2285,25 @@ return {
             self.assertEqual(sc["gaCalcAfter500"], 0)
             self.assertIn("Simulation preview error", sc["bannerAfter500"])
             self.assertTrue(sc["scopePaneVisible"])
-            self.assertEqual(sc["popAfterPoll"], "8")
+            self.assertEqual(sc["marginAfterPoll"], "1.8")
             self.assertEqual(sc["playAfterPoll"], "miner")
-            self.assertEqual(sc["modeAfterPoll"], "ga_nn")
+            self.assertEqual(sc["modeAfterPoll"], "ai_planner")
             self.assertEqual(sc["activeDashModeDuringSim"], "priority")
             self.assertEqual(sc["statusAfterReset"], "LIVE ACTIVE CONFIG")
             self.assertEqual(sc["modeSelectAfterReset"], "priority")
-            self.assertEqual(sc["appliedDashMode"], "ga_nn")
+            self.assertEqual(sc["appliedDashMode"], "priority")
             self.assertEqual(sc["appliedPlaystyle"], "hybrid")
-            self.assertEqual(sc["appliedCfgFormMode"], "ga_nn")
-            self.assertEqual(sc["dashBadgeAfterApply"], "MODE: GA+NN")
-            self.assertEqual(sc["navGraphBadgeAfterApply"], "GA")
+            self.assertAlmostEqual(float(sc["appliedMargin"]), 1.75)
+            self.assertEqual(sc["appliedCfgFormMode"], "priority")
+            self.assertEqual(sc["dashBadgeAfterApply"], "MODE: PRIORITY")
+            self.assertEqual(sc["navGraphBadgeAfterApply"], "PRI")
             self.assertIn("Applied parameters to active StrategyConfig", sc["applyBanner"])
             self.assertFalse(sc["hasUndefinedOrNan"])
 
             persisted = load_strategy_config(bridge.config_path)
-            self.assertEqual(persisted.planner_mode, "ga_nn")
+            self.assertEqual(persisted.planner_mode, "priority")
             self.assertEqual(persisted.playstyle, "hybrid")
-            self.assertEqual(persisted.ga_seed, 55)
+            self.assertAlmostEqual(float(persisted.combat_safety_margin), 1.75)
         finally:
             bridge.close()
             server.shutdown()
@@ -3217,6 +3306,274 @@ return {
                 server.shutdown()
                 server.server_close()
                 bridge.close()
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_node_vm_action_graph_4_tabs_colony_gate_field_conflicts_and_fleet_sync(self) -> None:
+        from spaceinvasion.config import load_strategy_config
+
+        bridge, server, base_url = self._start_server(planner_mode="priority")
+        try:
+            fetch_patch_js = r"""
+async (url, opts, fullUrl, nativeFetch) => {
+  if (url.startsWith("/dashboard")) {
+    const r = await nativeFetch(fullUrl, opts);
+    const d = await r.json();
+    const cols = globalThis.__coloniesOwned ?? 7;
+    d.colonies_owned = cols;
+    d.max_planets = 11;
+    d.live_ai_unlocked = cols >= 11;
+    if (!globalThis.__pendingConflicts) {
+      globalThis.__pendingConflicts = [
+        {
+          conflict_key: "pid:12476:b3:l22",
+          planet_id: 12476,
+          planet_coords: "02:380:12",
+          planet_name: "Colony",
+          blocked_building_key: "b3",
+          blocked_building_name: "Kryptonite mine",
+          blocked_target_level: 22,
+          candidate_building_key: "b15",
+          candidate_level: 2,
+          candidates: [{ building_key: "b15", name: "Particle cannon", level: 2, safe_to_demolish: true }],
+          status: "pending",
+        },
+      ];
+    }
+    d.pending_field_conflicts = globalThis.__pendingConflicts;
+    d.planner_jobs_status = {
+      ok: true,
+      colonies_owned: cols,
+      max_planets: 11,
+      live_ai_unlocked: cols >= 11,
+      config_optimizer_job: { status: "completed", progress_pct: 100, elapsed_ms: 95 },
+      ai_planner_job: { status: "completed", progress_pct: 100, elapsed_ms: 210 },
+      pending_field_conflicts: d.pending_field_conflicts,
+    };
+    return { ok: true, status: 200, json: async () => d };
+  }
+  if (url === "/command" && opts?.body) {
+    const b = JSON.parse(String(opts.body));
+    const cmd = b.command;
+    if (cmd === "planner_jobs_status") {
+      const cols = globalThis.__coloniesOwned ?? 7;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          colonies_owned: cols,
+          max_planets: 11,
+          live_ai_unlocked: cols >= 11,
+          config_optimizer_job: { status: "completed", progress_pct: 100, elapsed_ms: 95 },
+          ai_planner_job: { status: "completed", progress_pct: 100, elapsed_ms: 210 },
+          pending_field_conflicts: globalThis.__pendingConflicts ?? [],
+        }),
+      };
+    }
+    if (cmd === "config_optimizer_get" || cmd === "config_optimizer_run") {
+      const targetShip = b.params?.target_ship_key || "s16";
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          colonies_owned: globalThis.__coloniesOwned ?? 7,
+          max_planets: 11,
+          job: { status: "completed", progress_pct: 100, elapsed_ms: 95 },
+          active: {
+            run_id: 5,
+            params: { target_ship_key: targetShip, pad_generic_colonies: Boolean(b.params?.pad_generic_colonies) },
+            result: {
+              elapsed_ms: 95,
+              inputs: { own_research_levels: { r1: 10 }, universe_research_max_levels: { r1: 28 } },
+              planned_research_levels: { r1: 22 },
+              summary: {
+                ships_per_month: 61.25,
+                whole_ships_per_month: 61,
+                target_ship_key: targetShip,
+                limiting_factor: "spice",
+                fields_used: 210,
+                fields_max: 300,
+                warehouse_fields: 32,
+              },
+              planets: [{
+                slot: 1,
+                planet_id: 12476,
+                name: "Colony",
+                coords: "02:380:12",
+                temperature: 31,
+                fields_max: 300,
+                fields_used_target: 210,
+                is_central_planet: true,
+                built_floors: { b1: 10, b3: 8 },
+                reserved_floors: { b15: 2 },
+                buildings: { b1: { built: 10, target_level: 28, last_level_time: "6h 10m" } },
+                warehouses: [{ key: "b11", level: 15, set_by: "warehouse_hours" }],
+                production: { monthly_ships: 8.75, monthly_spice_eq: 34000000 },
+              }],
+            },
+          },
+        }),
+      };
+    }
+    if (cmd === "config_optimizer_export") {
+      return { ok: true, status: 200, json: async () => ({ ok: true, filename: "config_optimizer_result.json", content: '{"ok":true}' }) };
+    }
+    if (cmd === "ai_planner_get" || cmd === "ai_planner_run") {
+      const cols = globalThis.__coloniesOwned ?? 7;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          has_plan: true,
+          colonies_owned: cols,
+          max_planets: 11,
+          live_ai_unlocked: cols >= 11,
+          pending_field_conflicts: globalThis.__pendingConflicts ?? [],
+          job: { status: "completed", progress_pct: 100, elapsed_ms: 210 },
+          active_summary: {
+            reward_weeks: 26,
+            discounted_reward_spice_eq: 96000000,
+            total_net_spice_eq: 240000000,
+            steps: 18,
+            steps_completed: 2,
+          },
+          attack_telemetry: { hourly_loot_spice_eq: 32000, median_round_trip_seconds: 1200, current_fleet_slots: 6 },
+          weekly_breakdown: [{ week: 1, discount_weight: 1.0, pig_iron: 1200000, metal: 900000, kryptonite: 600000, spice: 400000, spice_eq: 7500000, discounted_spice_eq: 7500000, cumulative_discounted_spice_eq: 7500000 }],
+          steps_page: {
+            total: 1,
+            page: 1,
+            page_size: 25,
+            items: [{ seq: 1, week: 1, kind: "BUILD", planet_id: 12476, planet_coords: "02:380:12", planet_name: "Colony", entity_key: "b3", entity_name: "Kryptonite mine", target_level: 9, start: "0m", duration_text: "12m", status: "ready" }],
+          },
+          graph: {
+            planner_mode: "ai_planner",
+            lanes: [{ planet_id: 12476, planet_coords: "02:380:12", planet_name: "Colony", energy: 400 }],
+            nodes: [{ id: "ai_node_1", layer: 0, seq: 1, week: 1, planet_id: 12476, planet_coords: "02:380:12", kind: "BUILD", priority: "P2", status: "ready", target_name: "Kryptonite mine", target_level: 9, reason: "Top NPV build", wait_eta: "0m", total_eta: "12m" }],
+            edges: [],
+            summary: { node_count: 1, edge_count: 0, layer_count: 1 },
+          },
+        }),
+      };
+    }
+    if (cmd === "ai_planner_export") {
+      return { ok: true, status: 200, json: async () => ({ ok: true, filename: "full_planner_path.txt", content: "#1 W1 BUILD b3 L9" }) };
+    }
+    if (cmd === "resolve_field_conflict") {
+      globalThis.__lastConflictDecision = b.decision;
+      globalThis.__pendingConflicts = [];
+      return { ok: true, status: 200, json: async () => ({ ok: true, decision: b.decision, pending_field_conflicts: [] }) };
+    }
+    if (cmd === "fleet_planner_get") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          slot_budgets: [{ planet_id: 12476, planet_coords: "02:380:12", planet_name: "Colony", b10_level: 5, slots_used: 1, slots_max: 6, active_flights: 1, docked_ships_total: 18, planned_actions: 1, status: "OPEN" }],
+          attack_telemetry: { hourly_loot_spice_eq: 32000, median_round_trip_seconds: 1200 },
+          spare_budget: { ai_resource_spare_pct: 10 },
+          graph: {
+            planner_mode: "fleet_planner",
+            lanes: [{ planet_id: 12476, planet_coords: "02:380:12", planet_name: "Colony", slots_used: 1, slots_max: 6 }],
+            nodes: [{ id: "flt_node_1", layer: 0, planet_id: 12476, planet_coords: "02:380:12", kind: "RAID", priority: "P2", status: "ready", target_name: "Inactive 02:381:5", reason: "Raid target", wait_eta: "Now", total_eta: "20m" }],
+            edges: [],
+            summary: { node_count: 1, edge_count: 0, layer_count: 1 },
+          },
+        }),
+      };
+    }
+    if (cmd === "update_config" && b.config?.planner_mode === "ai_planner") {
+      return { ok: true, status: 200, json: async () => ({ ok: true, config: { ...(state?.dashboard?.config || {}), ...b.config, planner_mode: "ai_planner" } }) };
+    }
+  }
+}
+"""
+            scenario_js = r"""
+await __waitUntil(() => state.dashboard !== null);
+document.querySelector('[data-page="action-graph"]').click();
+
+const tabCount = document.querySelectorAll('#ag-workspace-tablist [data-ag-tab]').length;
+const globalGate7 = el("ag-global-gate-pill").textContent;
+
+// Tab 2: Config Optimization
+el("ag-tab-btn-config-optimizer").click();
+await __waitUntil(() => el("co-kpi-ships").textContent.includes("61.25"));
+const coShips = el("co-kpi-ships").textContent;
+const coLimit = el("co-kpi-limit").textContent;
+el("co-param-target_ship_key").value = "s6";
+el("co-param-target_ship_key").dispatchEvent("change");
+el("btn-co-run").click();
+await __waitUntil(() => fetchLog.some((f) => f.body?.command === "config_optimizer_run"));
+el("btn-co-export").click();
+await __waitUntil(() => fetchLog.some((f) => f.body?.command === "config_optimizer_export"));
+
+// Tab 3: AI-Planner (7/11 locked + Field Conflict Demolish/Keep + Windowed DAG + Export)
+el("ag-tab-btn-ai-planner").click();
+await __waitUntil(() => el("ai-kpi-reward").textContent.includes("96.00M"));
+const gateLockedTxt = el("ag-ai-colony-gate").textContent;
+const activateDisabledAt7 = el("btn-ai-activate").disabled;
+const hasConflictCard = Boolean(el("ag-ai-field-conflicts"));
+el("btn-conflict-demolish-0").click();
+await __waitUntil(() => globalThis.__lastConflictDecision === "demolish" && !el("ag-ai-field-conflicts"));
+
+el("btn-ai-export").click();
+await __waitUntil(() => fetchLog.some((f) => f.body?.command === "ai_planner_export"));
+
+// Simulate founding all 11/11 colonies -> refresh -> Live AI-Planner unlocks
+globalThis.__coloniesOwned = 11;
+await loadDashboard({ refresh: false, preserveConfig: false, force: true });
+const unlockedOk = await __waitUntil(() => !el("btn-ai-activate").disabled);
+if (!unlockedOk) throw new Error("Expected btn-ai-activate to unlock at 11/11 colonies");
+const gateUnlockedTxt = el("ag-ai-colony-gate").textContent;
+
+// Tab 4: Fleet / Attack Planner (bidirectionally synced with Config + SQLite)
+el("ag-tab-btn-fleet-planner").click();
+await __waitUntil(() => el("flt-kpi-slots").textContent.includes("1 / 6"));
+el("flt-cfg-raid_min_loot_spice_eq").value = "4200";
+el("flt-cfg-raid_min_loot_spice_eq").dispatchEvent("change");
+document.querySelector('[data-flt-ptab="shipyard"]').click();
+el("flt-shipyard-starcruiser").value = "37";
+el("flt-shipyard-starcruiser").dispatchEvent("change");
+el("btn-flt-apply").click();
+await __waitUntil(() => state.configSaving === 0 && Number(state.dashboard?.config?.raid_min_loot_spice_eq) === 4200);
+const syncedCfgMinLoot = el("cfg-raid_min_loot_spice_eq")?.value;
+
+return {
+  tabCount,
+  globalGate7,
+  coShips,
+  coLimit,
+  gateLockedTxt,
+  activateDisabledAt7,
+  hasConflictCard,
+  gateUnlockedTxt,
+  syncedCfgMinLoot,
+};
+"""
+            with patch("spaceinvasion.api_server.is_debug_port_open", return_value=True):
+                res = _run_node_ui(base_url, scenario_js, fetch_patch_js=fetch_patch_js)
+            self.assertEqual(res["errors"], [])
+            sc = res["scenario"]
+            self.assertEqual(sc["tabCount"], 4)
+            self.assertIn("7/11", sc["globalGate7"])
+            self.assertIn("61.25", sc["coShips"])
+            self.assertEqual(sc["coLimit"], "spice")
+            self.assertIn("7 / 11 colonies founded", sc["gateLockedTxt"])
+            self.assertTrue(sc["activateDisabledAt7"])
+            self.assertTrue(sc["hasConflictCard"])
+            self.assertIn("11 / 11 colonies founded", sc["gateUnlockedTxt"])
+            self.assertEqual(sc["syncedCfgMinLoot"], "4200")
+
+            persisted = load_strategy_config(bridge.config_path)
+            self.assertEqual(int(persisted.raid_min_loot_spice_eq), 4200)
+            self.assertEqual(int(persisted.shipyard_targets.get("starcruiser", 0)), 37)
+        finally:
+            server.shutdown()
+            server.server_close()
+            bridge.close()
+            self._tmp.cleanup()
 
 
 if __name__ == "__main__":

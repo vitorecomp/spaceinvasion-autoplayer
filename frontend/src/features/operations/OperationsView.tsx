@@ -117,10 +117,13 @@ export const OperationsView: React.FC = () => {
   const actionSort = useTableSort(filteredActions, PLAN_ACTION_SORT_COLUMNS);
 
   const cfgMode = String(
-    dashboard?.config?.planner_mode || dashboard?.planner_mode || "priority"
+    dashboard?.effective_planner_mode ||
+      dashboard?.config?.planner_mode ||
+      dashboard?.planner_mode ||
+      "priority"
   ).toLowerCase();
-  const isGaNn = cfgMode === "ga_nn";
-  const modeLabel = isGaNn ? "MODE: GA+NN" : "MODE: PRIORITY";
+  const isAiPlanner = cfgMode === "ai_planner" || cfgMode === "ga_nn";
+  const modeLabel = isAiPlanner ? "MODE: AI-PLANNER" : "MODE: PRIORITY";
 
   const handleDispatch = useCallback(
     async (action: PlannedActionData, dryRun: boolean) => {
@@ -215,7 +218,7 @@ export const OperationsView: React.FC = () => {
               {`${pinnedCount} PINNED`}
             </span>
             <span
-              className={`module-meta tabular mode-badge${isGaNn ? " is-ga" : ""}`}
+              className={`module-meta tabular mode-badge${isAiPlanner ? " is-ga" : ""}`}
               id="ops-planner-mode-badge"
             >
               {modeLabel}
