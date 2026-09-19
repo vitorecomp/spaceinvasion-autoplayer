@@ -83,9 +83,9 @@ export const AppSidebar: React.FC = () => {
     : "-- OPS/HR";
 
   const cfgMode = String(
-    dashboard?.effective_planner_mode ||
-      dashboard?.config?.planner_mode ||
+    dashboard?.config?.planner_mode ||
       dashboard?.planner_mode ||
+      dashboard?.effective_planner_mode ||
       "priority"
   ).toLowerCase();
   const isAiPlanner = cfgMode === "ai_planner" || cfgMode === "ga_nn";
@@ -158,7 +158,10 @@ export const AppSidebar: React.FC = () => {
     }
     const useAi =
       String(
-        dashboard?.effective_planner_mode || dashboard?.config?.planner_mode || ""
+        dashboard?.config?.planner_mode ||
+          dashboard?.planner_mode ||
+          dashboard?.effective_planner_mode ||
+          ""
       ).toLowerCase() === "ai_planner" ||
       String(dashboard?.config?.planner_mode || "").toLowerCase() === "ga_nn";
     if (useAi) beginGaCalc();
@@ -234,7 +237,10 @@ export const AppSidebar: React.FC = () => {
   const onTickNow = async () => {
     const useAi =
       String(
-        dashboard?.effective_planner_mode || dashboard?.config?.planner_mode || ""
+        dashboard?.config?.planner_mode ||
+          dashboard?.planner_mode ||
+          dashboard?.effective_planner_mode ||
+          ""
       ).toLowerCase() === "ai_planner" ||
       String(dashboard?.config?.planner_mode || "").toLowerCase() === "ga_nn";
     if (useAi) beginGaCalc();

@@ -340,9 +340,9 @@ export const DashboardView: React.FC = () => {
   }, [allPlanActions, scopedDashPlanet]);
 
   const cfgMode = String(
-    dashboard?.effective_planner_mode ||
-      dashboard?.config?.planner_mode ||
+    dashboard?.config?.planner_mode ||
       dashboard?.planner_mode ||
+      dashboard?.effective_planner_mode ||
       "priority"
   ).toLowerCase();
   const isAiPlanner = cfgMode === "ai_planner";

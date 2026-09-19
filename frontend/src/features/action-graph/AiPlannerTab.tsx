@@ -332,7 +332,11 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
           const nextDash = {
             ...curDash,
             config: res.config,
-            planner_mode: "ai_planner",
+            planner_mode: res.config.planner_mode || "ai_planner",
+            effective_planner_mode:
+              res.effective_planner_mode ?? res.config.planner_mode ?? "ai_planner",
+            fallback_reason: res.fallback_reason ?? null,
+            live_ai_unlocked: res.live_ai_unlocked ?? curDash.live_ai_unlocked,
           };
           if ((globalThis as any).state) (globalThis as any).state.dashboard = nextDash;
           setDashboard(nextDash);
