@@ -9934,6 +9934,32 @@
     "b9",
     "b17"
   ];
+  const PLANET_SPECIALIZATION_OPTIONS = [
+    { key: "auto", label: "Auto (Optimizer)", shortLabel: "Auto", buildingsHint: "All optimized buildings" },
+    { key: "metal", label: "Metal (b1 + b2)", shortLabel: "Metal", buildingsHint: "Pig iron + Blast furnace + Fusion" },
+    { key: "kryptonite", label: "Kryptonite (b3)", shortLabel: "Kryptonite", buildingsHint: "Kryptonite mine + Fusion" },
+    { key: "spice", label: "Spice (b4)", shortLabel: "Spice", buildingsHint: "Spice mine + Fusion" },
+    { key: "shipyard", label: "Shipyard (b9 + b17)", shortLabel: "Shipyard", buildingsHint: "Weapons factory + Microsystem + Fusion" },
+    {
+      key: "spice_shipyard",
+      label: "Spice + Shipyard (b4 + b9 + b17)",
+      shortLabel: "Spice + Yard",
+      buildingsHint: "Spice mine + Weapons factory + Microsystem + Fusion"
+    }
+  ];
+  function normalizeSpecializationKey(raw) {
+    const norm = String(raw ?? "auto").trim().toLowerCase().replace(/\s+/g, "_");
+    if (norm === "metal" || norm === "kryptonite" || norm === "spice" || norm === "shipyard" || norm === "spice_shipyard") {
+      return norm;
+    }
+    return "auto";
+  }
+  function formatSpecializationLabel(raw) {
+    const norm = String(raw ?? "").trim().toLowerCase();
+    if (norm === "balanced") return "Balanced";
+    const found = PLANET_SPECIALIZATION_OPTIONS.find((opt) => opt.key === norm);
+    return found ? found.shortLabel : norm ? norm : "Auto";
+  }
   const SHIP_OPTIONS = [
     { key: "s1", slug: "small-transport", name: "Small transport" },
     { key: "s2", slug: "large-transport", name: "Large transport" },
@@ -9992,6 +10018,9 @@
     warehouse_hours_of_production: "24",
     central_planet_slot: "1",
     central_planet_min_warehouse_level: "15",
+    preserve_previous_specializations: true,
+    specialization_switch_threshold_pct: "0.5",
+    planet_specializations: {},
     min_fleet_per_planet: {
       s2: "10",
       s10: "10",
@@ -14569,6 +14598,7 @@
   }
   const CONFIG_OPTIMIZER_GROUP_SUBTITLES = {
     objective: "Target hull objective, monthly window, research level scaling, and warehouse reserve rules governing steady-state planetary specialization.",
+    stability: "Protects already-invested colonies (mines and warehouses) from flipping roles across small parameter tweaks. Combines automatic sticky warm-start with explicit per-planet role locks in the Planets table.",
     minFleet: "Mandatory per-planet docked utility hulls. Any missing ships add their Weapons factory (b9) prerequisites, hull cost, and warehouse capacity floor to every normal colony.",
     previewScope: "Preview full-empire optimization before all colony slots are founded by padding missing slots with generic 300-field placeholder planets.",
     optimizedCaps: "Upper level ceilings for the 7 buildings freely optimized by the GA and coordinate-ascent polish on each planet. Existing built levels and reserved floors always remain hard minimums.",
@@ -14612,6 +14642,18 @@
       boundsLabel: "default: 15 · 0–50 lvl",
       description: "Hard minimum level enforced on all four warehouses (b11–b14) of the designated central_planet_slot, ensuring a safe logistics buffer even before late-game upgrade costs dominate warehouse sizing. Accepts integers from 0 to 50."
     },
+    preserve_previous_specializations: {
+      title: "Preserve Previous Planet Specializations",
+      paramKey: "preserve_previous_specializations",
+      boundsLabel: "default: true · boolean",
+      description: "When enabled and an active Config Optimizer plan exists, warm-starts and polishes a sticky candidate that keeps every unlocked colony in its previous specialization (Metal, Kryptonite, Spice, Shipyard, or Spice + Shipyard) while re-optimizing building levels for the new parameters. Prevents small tweaks from flipping a Kryptonite colony (and its warehouses) into Metal unless a fresh global plan beats the sticky plan by more than specialization_switch_threshold_pct. Explicit per-planet locks in the Planets table are always enforced regardless of this toggle."
+    },
+    specialization_switch_threshold_pct: {
+      title: "Role Switch Min Improvement (%)",
+      paramKey: "specialization_switch_threshold_pct",
+      boundsLabel: "default: 0.5% · 0–25%",
+      description: "Minimum percentage gain in monthly target ships required for an unlocked colony to switch away from its previous specialization when preserve_previous_specializations is active. Below this threshold (and on ties), the optimizer keeps existing colony roles and breaks remaining ties by lowest remaining building upgrade cost from current built levels. Set to 0% to allow any strictly better global swap on unlocked planets, or increase (e.g., 2–5%) for stricter role stability."
+    },
     pad_generic_colonies: {
       title: "Pad Missing Colony Slots with 300-Field Previews",
       paramKey: "pad_generic_colonies",
@@ -14634,7 +14676,7 @@
       title: "GA Deterministic PRNG Seed",
       paramKey: "ga_random_seed",
       boundsLabel: "default: 20261117 · integer",
-      description: "Integer seed initializing NumPy's random generator for reproducible GA search. Keeping the seed and inputs identical yields identical results; changing the seed (or other parameters) can swap specializations across symmetric or twin planets with equal monthly output."
+      description: "Integer seed initializing NumPy's random generator for reproducible GA search. Keeping the seed and inputs identical yields identical results; with preserve_previous_specializations enabled (or explicit per-planet role locks set), changing the seed will no longer randomly swap specializations across twin planets."
     }
   };
   const CONFIG_OPTIMIZER_MIN_FLEET_DOCS = {
@@ -16175,10 +16217,36 @@
       )
     ] });
   };
-  function draftFromParams(raw) {
+  function sanitizeSpecializationsMap(raw) {
+    if (!raw || typeof raw !== "object") return {};
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      const cleanKey = String(k || "").trim();
+      if (!cleanKey) continue;
+      const norm = normalizeSpecializationKey(v);
+      if (norm !== "auto") {
+        out[cleanKey] = norm;
+      }
+    }
+    return out;
+  }
+  function planetSpecKeyForRow(row) {
+    return row.planetId > 0 ? String(row.planetId) : row.coords;
+  }
+  function resolveLockedSpecForRow(row, specMap) {
+    const pidKey = row.planetId > 0 ? String(row.planetId) : "";
+    if (pidKey && specMap[pidKey]) return normalizeSpecializationKey(specMap[pidKey]);
+    if (row.coords && specMap[row.coords]) return normalizeSpecializationKey(specMap[row.coords]);
+    const slotKey = `slot:${row.slot}`;
+    if (specMap[slotKey]) return normalizeSpecializationKey(specMap[slotKey]);
+    return "auto";
+  }
+  function draftFromParams(raw, persistedSpecializations) {
+    const persistedSpecs = sanitizeSpecializationsMap(persistedSpecializations);
     if (!raw || typeof raw !== "object") {
       return {
         ...DEFAULT_CONFIG_OPTIMIZER_DRAFT,
+        planet_specializations: { ...persistedSpecs },
         min_fleet_per_planet: { ...DEFAULT_CONFIG_OPTIMIZER_DRAFT.min_fleet_per_planet },
         misc_building_levels: { ...DEFAULT_CONFIG_OPTIMIZER_DRAFT.misc_building_levels },
         optimized_building_max_levels: {
@@ -16221,6 +16289,19 @@
         )
       );
     }
+    const paramSpecs = sanitizeSpecializationsMap(
+      get("planet_specializations", "PLANET_SPECIALIZATIONS", {})
+    );
+    const mergedSpecs = persistedSpecializations !== void 0 && persistedSpecializations !== null ? persistedSpecs : paramSpecs;
+    const rawPreserve = get(
+      "preserve_previous_specializations",
+      "PRESERVE_PREVIOUS_SPECIALIZATIONS",
+      true
+    );
+    const rawSwitchThresh = safeFiniteNumber(
+      get("specialization_switch_threshold_pct", "SPECIALIZATION_SWITCH_THRESHOLD_PCT", 0.5),
+      0.5
+    );
     return {
       target_ship_key: String(get("target_ship_key", "TARGET_SHIP_KEY", "s16") || "s16"),
       production_month_days: String(
@@ -16255,6 +16336,11 @@
           )
         )
       ),
+      preserve_previous_specializations: rawPreserve === void 0 ? true : Boolean(rawPreserve),
+      specialization_switch_threshold_pct: String(
+        Math.max(0, Math.min(25, rawSwitchThresh ?? 0.5))
+      ),
+      planet_specializations: mergedSpecs,
       min_fleet_per_planet: minFleet,
       misc_building_levels: miscLevels,
       optimized_building_max_levels: optMax,
@@ -16309,6 +16395,12 @@
       warehouse_hours_of_production: Math.max(0, num(draft.warehouse_hours_of_production, 24)),
       central_planet_slot: intNum(draft.central_planet_slot, 1, 1),
       central_planet_min_warehouse_level: intNum(draft.central_planet_min_warehouse_level, 15, 0),
+      preserve_previous_specializations: Boolean(draft.preserve_previous_specializations),
+      specialization_switch_threshold_pct: Math.max(
+        0,
+        Math.min(25, num(draft.specialization_switch_threshold_pct, 0.5))
+      ),
+      planet_specializations: sanitizeSpecializationsMap(draft.planet_specializations),
       min_fleet_per_planet: minFleet,
       misc_building_levels: miscLevels,
       optimized_building_max_levels: optMax,
@@ -16444,6 +16536,10 @@
         prod.monthly_spice_eq ?? prod.spice_eq_per_month ?? prod.spice_eq_per_hr,
         null
       );
+      const detectedSpec = String(p.detected_specialization || "").trim().toLowerCase() || "balanced";
+      const lockedSpec = normalizeSpecializationKey(p.locked_specialization);
+      const prevSpec = p.previous_specialization && String(p.previous_specialization).trim() ? String(p.previous_specialization).trim().toLowerCase() : null;
+      const specChanged = Boolean(p.specialization_changed);
       return {
         slot,
         planetId: pid,
@@ -16455,6 +16551,10 @@
         fieldsUsedCurrent: builtSum > 0 ? builtSum : null,
         fieldsUsedTarget,
         fieldsMax,
+        detectedSpecialization: detectedSpec,
+        lockedSpecialization: lockedSpec,
+        previousSpecialization: prevSpec,
+        specializationChanged: specChanged,
         warehouseDriver: whDriver,
         lastLevelTimeSec: maxLastSec,
         lastLevelTimeText: maxLastTxt || "—",
@@ -16493,7 +16593,7 @@
     const [isSubmitting, setIsSubmitting] = reactExports.useState(false);
     const fetchOptimizerState = reactExports.useCallback(
       async ({ silent = false } = {}) => {
-        var _a2, _b2, _c2;
+        var _a2, _b2, _c2, _d, _e;
         try {
           const res = await apiCommand2({
             command: "config_optimizer_get"
@@ -16502,8 +16602,9 @@
             setOptData(res);
             if (!draftDirty) {
               const rawParams = ((_a2 = res.active) == null ? void 0 : _a2.params) || ((_c2 = (_b2 = res.active) == null ? void 0 : _b2.result) == null ? void 0 : _c2.meta_parameters) || res.default_params || null;
-              if (rawParams) {
-                setDraft(draftFromParams(rawParams));
+              const persistedSpecs = res.planet_specializations || ((_e = (_d = res.active) == null ? void 0 : _d.params) == null ? void 0 : _e.planet_specializations) || null;
+              if (rawParams || persistedSpecs) {
+                setDraft(draftFromParams(rawParams, persistedSpecs));
               }
             }
             if (res.job && plannerJobsStatus) {
@@ -16556,6 +16657,7 @@
     const planetSortCols = reactExports.useMemo(
       () => ({
         planet: (r) => r.slot,
+        spec: (r) => r.detectedSpecialization,
         temp: { accessor: (r) => r.temperature, defaultDirection: "desc" },
         fields: { accessor: (r) => r.fieldsUsedTarget, defaultDirection: "desc" },
         time: { accessor: (r) => r.lastLevelTimeSec, defaultDirection: "desc" },
@@ -16690,10 +16792,95 @@
     };
     const onResetDefaults = () => {
       setDraftDirty(false);
-      setDraft(draftFromParams((optData == null ? void 0 : optData.default_params) || null));
+      setDraft(draftFromParams((optData == null ? void 0 : optData.default_params) || null, {}));
       showFeedback("Reset Config Optimizer inputs to defaults.", "ok");
     };
+    const persistSpecializations = async (nextSpecs, successMsg) => {
+      const cleaned = sanitizeSpecializationsMap(nextSpecs);
+      setDraft((prev) => ({ ...prev, planet_specializations: cleaned }));
+      setDraftDirty(true);
+      if (!apiOnline) {
+        showFeedback(`${successMsg} (staged locally; will apply on next run).`, "ok");
+        return;
+      }
+      try {
+        const res = await apiCommand2({
+          command: "config_optimizer_set_specializations",
+          planet_specializations: cleaned,
+          replace: true
+        });
+        const persisted = sanitizeSpecializationsMap((res == null ? void 0 : res.planet_specializations) ?? cleaned);
+        setDraft((prev) => ({ ...prev, planet_specializations: persisted }));
+        setOptData(
+          (prev) => prev ? {
+            ...prev,
+            planet_specializations: persisted,
+            active: prev.active ? {
+              ...prev.active,
+              params: {
+                ...prev.active.params || {},
+                planet_specializations: persisted
+              }
+            } : prev.active
+          } : prev
+        );
+        showFeedback(successMsg, "ok");
+      } catch (err) {
+        showFeedback(
+          `Specialization lock staged locally (API save failed: ${err.message}).`,
+          feedbackKindForError(err)
+        );
+      }
+    };
+    const onPlanetSpecChange = async (row, rawValue) => {
+      const nextRole = normalizeSpecializationKey(rawValue);
+      const nextSpecs = { ...draft.planet_specializations };
+      if (row.planetId > 0) delete nextSpecs[String(row.planetId)];
+      if (row.coords) delete nextSpecs[row.coords];
+      delete nextSpecs[`slot:${row.slot}`];
+      const targetKey = planetSpecKeyForRow(row);
+      if (nextRole !== "auto") {
+        nextSpecs[targetKey] = nextRole;
+      }
+      const label = formatSpecializationLabel(nextRole);
+      await persistSpecializations(
+        nextSpecs,
+        nextRole === "auto" ? `Unlocked ${row.name} [${row.coords}] to Auto specialization.` : `Locked ${row.name} [${row.coords}] specialization to ${label}. Click Run Config Optimizer to re-solve.`
+      );
+    };
+    const onLockAllCurrentRoles = async () => {
+      const nextSpecs = {};
+      let locked = 0;
+      for (const row of planetRows) {
+        const detected = normalizeSpecializationKey(row.detectedSpecialization);
+        if (detected !== "auto") {
+          nextSpecs[planetSpecKeyForRow(row)] = detected;
+          locked += 1;
+        }
+      }
+      if (locked === 0) {
+        showFeedback("No detected planet specializations to lock yet — run Config Optimizer first.", "warn");
+        return;
+      }
+      await persistSpecializations(
+        nextSpecs,
+        `Locked ${locked} planet specialization${locked === 1 ? "" : "s"} to current roles.`
+      );
+    };
+    const onUnlockAllRoles = async () => {
+      await persistSpecializations({}, "Unlocked all planet specializations back to Auto.");
+    };
+    const lockedSpecsCount = Object.keys(draft.planet_specializations).length;
     const summary = (activeResult == null ? void 0 : activeResult.summary) || {};
+    const stickyPlanApplied = Boolean(summary.sticky_plan_applied);
+    const rolesPreservedCount = Math.max(
+      0,
+      Math.round(safeFiniteNumber(summary.roles_preserved_count, 0) ?? 0)
+    );
+    const rolesChangedCount = Math.max(
+      0,
+      Math.round(safeFiniteNumber(summary.roles_changed_count, 0) ?? 0)
+    );
     const gate = computeColonyGateInfo(dashboard, plannerJobsStatus, optData);
     const shipKey = String(summary.target_ship_key || draft.target_ship_key || "s16");
     const shipsPerMonth = safeFiniteNumber(
@@ -16804,6 +16991,36 @@
           ] })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-content", hidden: subView !== "planets", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-spec-bar", id: "co-spec-toolbar", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-spec-summary tabular", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `ag-co-spec-badge${lockedSpecsCount > 0 ? " is-locked" : ""}`, children: `Role Locks: ${lockedSpecsCount}/${planetRows.length}` }),
+              stickyPlanApplied ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-co-spec-badge is-sticky", children: `Sticky Plan Kept (${rolesPreservedCount} role${rolesPreservedCount === 1 ? "" : "s"} preserved)` }) : rolesChangedCount > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-co-spec-badge is-changed", children: `${rolesChangedCount} role${rolesChangedCount === 1 ? "" : "s"} switched` }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-toolbar-meta", children: "Lock any colony role below to guarantee it never flips on future optimizer runs." })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: "btn-co-lock-all",
+                  disabled: planetRows.length === 0 || isSubmitting,
+                  onClick: () => void onLockAllCurrentRoles(),
+                  children: "Lock Current Roles"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: "btn-co-unlock-all",
+                  disabled: lockedSpecsCount === 0 || isSubmitting,
+                  onClick: () => void onUnlockAllRoles(),
+                  children: "Unlock All"
+                }
+              )
+            ] })
+          ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "co-planets-table", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -16811,6 +17028,16 @@
                 {
                   label: "Planet",
                   sortKey: "planet",
+                  activeKey: planetSort.sortKey,
+                  direction: planetSort.sortDirection,
+                  onSort: planetSort.requestSort
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Specialization",
+                  sortKey: "spec",
                   activeKey: planetSort.sortKey,
                   direction: planetSort.sortDirection,
                   onSort: planetSort.requestSort
@@ -16864,12 +17091,14 @@
               ),
               /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Reserved Floors" })
             ] }) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "co-planets-tbody", children: pagedPlanets.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: isJobRunning ? "Optimizing planetary building targets..." : "No Config Optimization run yet. Adjust parameters on the right and click Run Config Optimizer." }) }) : pagedPlanets.map((row) => {
+            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "co-planets-tbody", children: pagedPlanets.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 9, className: "empty-cell", children: isJobRunning ? "Optimizing planetary building targets..." : "No Config Optimization run yet. Adjust parameters on the right and click Run Config Optimizer." }) }) : pagedPlanets.map((row) => {
               const isSel = (selectedPlanetDetail == null ? void 0 : selectedPlanetDetail.slot) === row.slot;
               const keyPills = KEY_PLANET_BUILDINGS.filter(
                 (bk) => (row.targetLevels[bk] ?? 0) > 0 || (row.builtLevels[bk] ?? 0) > 0
               ).slice(0, 8);
               const resEntries = Object.entries(row.reservedFloors);
+              const currentLock = resolveLockedSpecForRow(row, draft.planet_specializations);
+              const isLocked = currentLock !== "auto";
               return /* @__PURE__ */ jsxRuntimeExports.jsxs(
                 "tr",
                 {
@@ -16883,6 +17112,44 @@
                       ] }),
                       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-sub tabular", children: `[${row.coords}]${row.isPlaceholder ? " · PREVIEW" : ""}` })
                     ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                      "td",
+                      {
+                        className: "ag-co-spec-cell",
+                        onClick: (e) => e.stopPropagation(),
+                        children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-spec-tags", children: [
+                            /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                              "span",
+                              {
+                                className: `ag-co-spec-badge tabular${isLocked ? " is-locked" : ""}${row.specializationChanged ? " is-changed" : ""}`,
+                                title: row.previousSpecialization && row.specializationChanged ? `Switched from ${formatSpecializationLabel(row.previousSpecialization)} to ${formatSpecializationLabel(row.detectedSpecialization)}` : `Current target specialization: ${formatSpecializationLabel(row.detectedSpecialization)}`,
+                                children: [
+                                  formatSpecializationLabel(row.detectedSpecialization),
+                                  isLocked ? " · LOCKED" : ""
+                                ]
+                              }
+                            ),
+                            row.specializationChanged && row.previousSpecialization ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub tabular", children: `was ${formatSpecializationLabel(row.previousSpecialization)}` }) : null
+                          ] }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx(
+                            "select",
+                            {
+                              id: `co-spec-select-${row.slot}`,
+                              className: "ag-co-spec-select",
+                              "aria-label": `Specialization lock for ${row.name}`,
+                              value: currentLock,
+                              onClick: (e) => e.stopPropagation(),
+                              onChange: (e) => {
+                                e.stopPropagation();
+                                void onPlanetSpecChange(row, e.target.value);
+                              },
+                              children: PLANET_SPECIALIZATION_OPTIONS.map((opt) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: opt.key, children: opt.label }, opt.key))
+                            }
+                          )
+                        ]
+                      }
+                    ),
                     /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: row.temperature !== null ? `${row.temperature}°C` : "—" }),
                     /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `${row.fieldsUsedCurrent ?? "—"}→${row.fieldsUsedTarget}/${row.fieldsMax}` }),
                     /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-floor-pills", children: keyPills.map((bk) => {
@@ -16927,7 +17194,7 @@
           selectedPlanetDetail ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-detail-strip", id: "co-planet-detail", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-detail-head tabular", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: `Slot #${selectedPlanetDetail.slot} · ${selectedPlanetDetail.name} [${selectedPlanetDetail.coords}]` }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `Fields: ${selectedPlanetDetail.fieldsUsedTarget}/${selectedPlanetDetail.fieldsMax}` })
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `Role: ${formatSpecializationLabel(selectedPlanetDetail.detectedSpecialization)} · Fields: ${selectedPlanetDetail.fieldsUsedTarget}/${selectedPlanetDetail.fieldsMax}` })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-co-detail-grid", children: selectedPlanetDetail.buildingsDetail.map((bd) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
               "div",
@@ -17225,6 +17492,65 @@
                               setDraft((prev) => ({
                                 ...prev,
                                 central_planet_min_warehouse_level: e.target.value
+                              }));
+                            }
+                          }
+                        )
+                      }
+                    )
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Specialization Stability" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: CONFIG_OPTIMIZER_GROUP_SUBTITLES.stability })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: CONFIG_OPTIMIZER_PARAM_DOCS.preserve_previous_specializations,
+                        htmlFor: "co-param-preserve_previous_specializations",
+                        layout: "toggle",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "checkbox",
+                            className: "config-checkbox",
+                            id: "co-param-preserve_previous_specializations",
+                            checked: draft.preserve_previous_specializations,
+                            onChange: (e) => {
+                              const checked = e.target.checked;
+                              setDraftDirty(true);
+                              setDraft((prev) => ({
+                                ...prev,
+                                preserve_previous_specializations: checked
+                              }));
+                            }
+                          }
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: CONFIG_OPTIMIZER_PARAM_DOCS.specialization_switch_threshold_pct,
+                        htmlFor: "co-param-specialization_switch_threshold_pct",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "co-param-specialization_switch_threshold_pct",
+                            min: 0,
+                            max: 25,
+                            step: 0.1,
+                            value: draft.specialization_switch_threshold_pct,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({
+                                ...prev,
+                                specialization_switch_threshold_pct: e.target.value
                               }));
                             }
                           }

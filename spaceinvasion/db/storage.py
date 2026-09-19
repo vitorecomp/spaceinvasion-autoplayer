@@ -8612,6 +8612,56 @@ class GameDatabase:
             return f"b{int(txt[1:])}"
         return txt[:32]
 
+    _VALID_PLANET_SPECIALIZATIONS: frozenset[str] = frozenset(
+        {"metal", "kryptonite", "spice", "shipyard", "spice_shipyard"}
+    )
+    _PLANET_SPECIALIZATION_ALIASES: dict[str, str] = {
+        "metal": "metal",
+        "metal_mine": "metal",
+        "blast_furnace": "metal",
+        "pig_iron_metal": "metal",
+        "kryptonite": "kryptonite",
+        "kryptonite_mine": "kryptonite",
+        "krypt": "kryptonite",
+        "spice": "spice",
+        "spice_mine": "spice",
+        "shipyard": "shipyard",
+        "weapons_factory": "shipyard",
+        "fleet": "shipyard",
+        "spice_shipyard": "spice_shipyard",
+        "spice+shipyard": "spice_shipyard",
+        "spice-shipyard": "spice_shipyard",
+        "shipyard_spice": "spice_shipyard",
+    }
+
+    @classmethod
+    def _normalize_planet_specializations(cls, raw: Any) -> dict[str, str]:
+        if not isinstance(raw, Mapping):
+            return {}
+        out: dict[str, str] = {}
+        for p_key_raw, spec_raw in raw.items():
+            p_key = _sanitize_text(p_key_raw).strip()[:64]
+            if not p_key or spec_raw is None:
+                continue
+            norm_raw = _sanitize_text(spec_raw).strip().lower().replace(" ", "_")
+            if not norm_raw or norm_raw == "auto":
+                continue
+            spec = cls._PLANET_SPECIALIZATION_ALIASES.get(norm_raw, norm_raw)
+            if spec in cls._VALID_PLANET_SPECIALIZATIONS:
+                out[p_key] = spec
+        return out
+
+    def _read_planet_specializations_locked(self) -> dict[str, str]:
+        if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "config_optimizer_active"):
+            return {}
+        row = self._conn.execute(
+            "SELECT params_json FROM config_optimizer_active WHERE singleton_id = 1 LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return {}
+        params_dict = _safe_json_dict(row["params_json"])
+        return self._normalize_planet_specializations(params_dict.get("planet_specializations"))
+
     @classmethod
     def _normalize_reserved_floors(cls, raw: Any) -> dict[str, dict[str, int]]:
         if not isinstance(raw, Mapping):
@@ -8716,6 +8766,15 @@ class GameDatabase:
                     merged_b = eff_floors.setdefault(pk, {})
                     for bk, lvl in bmap.items():
                         merged_b[bk] = max(lvl, merged_b.get(bk, 0))
+
+            if "planet_specializations" in clean_params:
+                clean_params["planet_specializations"] = self._normalize_planet_specializations(
+                    clean_params.get("planet_specializations")
+                )
+            else:
+                existing_specs = self._read_planet_specializations_locked()
+                if existing_specs:
+                    clean_params["planet_specializations"] = existing_specs
 
             params_json = _json_dumps(clean_params)
             floors_json = _json_dumps(eff_floors)
@@ -8893,6 +8952,74 @@ class GameDatabase:
             )
             self._conn.commit()
         return _sanitize_obj(floors)
+
+    def get_config_optimizer_specializations(self) -> dict[str, str]:
+        """Return per-planet specialization locks persisted inside `config_optimizer_active.params_json`."""
+        with self._lock:
+            specs = self._read_planet_specializations_locked()
+        return _sanitize_obj(specs)
+
+    def update_config_optimizer_specializations(
+        self,
+        specializations: Mapping[str, Any],
+        *,
+        replace: bool = False,
+    ) -> dict[str, str]:
+        """Upsert or replace per-planet specialization locks on `config_optimizer_active.params_json`."""
+        now_ts = round(time.time(), 3)
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "config_optimizer_active"):
+                return {}
+            row = self._conn.execute(
+                """
+                SELECT run_id, params_json, reserved_floors_json, result_json
+                FROM config_optimizer_active
+                WHERE singleton_id = 1
+                LIMIT 1
+                """
+            ).fetchone()
+            params_dict = _safe_json_dict(row["params_json"]) if row is not None else {}
+            if replace:
+                next_specs = self._normalize_planet_specializations(specializations)
+            else:
+                next_specs = self._normalize_planet_specializations(
+                    params_dict.get("planet_specializations")
+                )
+                if isinstance(specializations, Mapping):
+                    for raw_pk, raw_spec in specializations.items():
+                        pk = _sanitize_text(raw_pk).strip()[:64]
+                        if not pk:
+                            continue
+                        norm_raw = (
+                            _sanitize_text(raw_spec).strip().lower().replace(" ", "_")
+                            if raw_spec is not None
+                            else ""
+                        )
+                        if not norm_raw or norm_raw == "auto":
+                            next_specs.pop(pk, None)
+                        else:
+                            spec = self._PLANET_SPECIALIZATION_ALIASES.get(norm_raw, norm_raw)
+                            if spec in self._VALID_PLANET_SPECIALIZATIONS:
+                                next_specs[pk] = spec
+            params_dict["planet_specializations"] = next_specs
+            params_json = _json_dumps(params_dict)
+            run_id = _sql_optional_int(row["run_id"]) if row is not None else None
+            floors_json = str(row["reserved_floors_json"]) if row is not None else "{}"
+            result_json = str(row["result_json"]) if row is not None else "{}"
+            self._conn.execute(
+                """
+                INSERT INTO config_optimizer_active(
+                    singleton_id, run_id, updated_ts, params_json,
+                    reserved_floors_json, result_json
+                ) VALUES (1, ?, ?, ?, ?, ?)
+                ON CONFLICT(singleton_id) DO UPDATE SET
+                    updated_ts = excluded.updated_ts,
+                    params_json = excluded.params_json
+                """,
+                (run_id, now_ts, params_json, floors_json, result_json),
+            )
+            self._conn.commit()
+        return _sanitize_obj(next_specs)
 
     def record_ai_planner_run(
         self,

@@ -1352,6 +1352,22 @@ class TestGameDatabase(unittest.TestCase):
                 self.assertEqual(floors3, {"02:380:15": {"b14": 9}})
                 self.assertEqual(db.get_active_config_optimizer()["run_id"], rid1)  # type: ignore[index]
 
+                # Per-planet specialization locks persist in params_json without disturbing run_id / floors / result
+                self.assertEqual(db.get_config_optimizer_specializations(), {})
+                specs1 = db.update_config_optimizer_specializations(
+                    {"12476": "kryptonite", "02:380:15": "spice+shipyard"},
+                    replace=False,
+                )
+                self.assertEqual(specs1, {"12476": "kryptonite", "02:380:15": "spice_shipyard"})
+                self.assertEqual(db.get_config_optimizer_specializations(), specs1)
+                self.assertEqual(db.get_active_config_optimizer()["run_id"], rid1)  # type: ignore[index]
+                self.assertEqual(db.get_reserved_building_floors(), {"02:380:15": {"b14": 9}})
+                specs2 = db.update_config_optimizer_specializations({"12476": "auto"}, replace=False)
+                self.assertEqual(specs2, {"02:380:15": "spice_shipyard"})
+                specs3 = db.update_config_optimizer_specializations({"12476": "metal"}, replace=True)
+                self.assertEqual(specs3, {"12476": "metal"})
+                self.assertEqual(db.get_active_config_optimizer()["result"]["summary"]["ships_per_month"], 42.5)  # type: ignore[index]
+
                 # 3. Record AI-Planner runs (active + history + config_run_id linkage + finite JSON)
                 self.assertIsNone(db.get_active_ai_planner())
                 ai_res1 = {

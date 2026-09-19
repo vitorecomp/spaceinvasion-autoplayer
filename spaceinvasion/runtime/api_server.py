@@ -1406,6 +1406,7 @@ class GameApiBridge:
         self._config_opt_runs_mem: list[dict[str, Any]] = []
         self._ai_planner_runs_mem: list[dict[str, Any]] = []
         self._reserved_floors_mem: dict[str, dict[str, int]] = {}
+        self._planet_specializations_mem: dict[str, str] = {}
         self._field_conflicts_mem: dict[str, dict[str, Any]] = {}
         self._notified_field_conflict_keys: set[str] = set()
         self._hydrate_persisted_bridge_state()
@@ -2723,6 +2724,45 @@ class GameApiBridge:
         p_map[str(building_key)] = max(max(0, int(min_level)), int(p_map.get(str(building_key), 0)))
         return {pk: dict(bm) for pk, bm in self._reserved_floors_mem.items()}
 
+    def _get_planet_specializations_locked(self) -> dict[str, str]:
+        if self._db is not None and hasattr(self._db, "get_config_optimizer_specializations"):
+            return self._db.get_config_optimizer_specializations()
+        return dict(self._planet_specializations_mem)
+
+    def _update_planet_specializations_locked(
+        self,
+        specializations: Mapping[str, Any],
+        *,
+        replace: bool = False,
+    ) -> dict[str, str]:
+        if self._db is not None and hasattr(self._db, "update_config_optimizer_specializations"):
+            updated = self._db.update_config_optimizer_specializations(
+                specializations,
+                replace=replace,
+            )
+            self._planet_specializations_mem = dict(updated)
+            return dict(updated)
+        co_mod = self._load_config_optimizer_mod()
+        if replace:
+            next_map = co_mod.normalize_planet_specializations_map(specializations)
+        else:
+            next_map = dict(self._planet_specializations_mem)
+            for raw_pk, raw_spec in specializations.items():
+                pk = str(raw_pk).strip()[:64]
+                if not pk:
+                    continue
+                norm_spec = co_mod.normalize_planet_specialization(raw_spec)
+                if norm_spec == "auto":
+                    next_map.pop(pk, None)
+                else:
+                    next_map[pk] = norm_spec
+        self._planet_specializations_mem = dict(next_map)
+        if isinstance(self._active_config_opt_mem, dict):
+            params_obj = self._active_config_opt_mem.get("params")
+            if isinstance(params_obj, dict):
+                params_obj["planet_specializations"] = dict(next_map)
+        return dict(next_map)
+
     def _get_active_ai_planner_locked(self) -> Optional[dict[str, Any]]:
         if self._db is not None and hasattr(self._db, "get_active_ai_planner"):
             return self._db.get_active_ai_planner()
@@ -3011,6 +3051,11 @@ class GameApiBridge:
                 }
                 self._config_opt_runs_mem.append(rec)
                 self._active_config_opt_mem = rec
+                raw_specs = params.get("planet_specializations")
+                if isinstance(raw_specs, Mapping):
+                    self._planet_specializations_mem = {
+                        str(k): str(v) for k, v in raw_specs.items() if str(v) and str(v) != "auto"
+                    }
             self._invalidate_dashboard_cache()
         return run_id
 
@@ -3077,15 +3122,26 @@ class GameApiBridge:
                 )
             uni_max = self._snapshot_universe_research_max_map_locked(snap_state)
             reserved_floors = self._get_reserved_floors_locked()
+            persisted_specs = self._get_planet_specializations_locked()
             active_co = self._get_active_config_optimizer_locked()
             cfg = self.strategy_config
 
+        previous_result = (
+            dict(active_co["result"])
+            if isinstance(active_co, Mapping) and isinstance(active_co.get("result"), Mapping)
+            else None
+        )
         base_params = dict(getattr(co_mod, "DEFAULT_CONFIG_OPTIMIZER_PARAMS", {}) or {})
         if isinstance(active_co, Mapping) and isinstance(active_co.get("params"), Mapping):
             base_params.update(dict(active_co["params"]))
+        base_params["planet_specializations"] = dict(persisted_specs)
         base_params["max_planets"] = max(1, _safe_api_int(getattr(cfg, "max_planets", 11), 11))
         if isinstance(params, Mapping):
             base_params.update(dict(params))
+            if "planet_specializations" in params:
+                base_params["planet_specializations"] = co_mod.normalize_planet_specializations_map(
+                    params.get("planet_specializations")
+                )
         # Always merge persisted reserved floors with any explicit override
         merged_floors: dict[str, dict[str, int]] = {
             str(pk): {str(bk): max(0, _safe_api_int(lv, 0)) for bk, lv in bm.items()}
@@ -3151,6 +3207,7 @@ class GameApiBridge:
                     snap_state,
                     universe_research_max=uni_max,
                     params=base_params,
+                    previous_result=previous_result,
                     progress_cb=_progress,
                 )
                 elapsed_ms = round((time.monotonic() - t0) * 1000.0, 2)
@@ -9121,6 +9178,7 @@ class GameApiBridge:
                 active_co = self._get_active_config_optimizer_locked()
                 runs = self._list_config_optimizer_runs_locked(limit=int(runs_limit))
                 reserved_floors = self._get_reserved_floors_locked()
+                planet_specializations = self._get_planet_specializations_locked()
                 jobs_snap = self._get_planner_jobs_snapshot(snap_state)
             return _sanitize_finite_json(
                 _redact_api_payload(
@@ -9131,10 +9189,46 @@ class GameApiBridge:
                         "job": jobs_snap["config_optimizer_job"],
                         "runs": runs,
                         "reserved_floors": reserved_floors,
+                        "planet_specializations": planet_specializations,
+                        "specialization_options": list(
+                            getattr(
+                                co_mod,
+                                "VALID_PLANET_SPECIALIZATIONS",
+                                ("auto", "metal", "kryptonite", "spice", "shipyard", "spice_shipyard"),
+                            )
+                        ),
                         "default_params": default_params,
                         "colonies_owned": gate["colonies_owned"],
                         "max_planets": gate["max_planets"],
                         "live_ai_unlocked": gate["live_ai_unlocked"],
+                    }
+                )
+            )
+
+        if cmd == "config_optimizer_set_specializations":
+            raw_specs = payload.get("planet_specializations")
+            if not isinstance(raw_specs, Mapping):
+                raise ApiRequestError(
+                    "'config_optimizer_set_specializations' field 'planet_specializations' must be a dictionary."
+                )
+            replace_raw = payload.get("replace", False)
+            if not isinstance(replace_raw, bool):
+                raise ApiRequestError(
+                    "'config_optimizer_set_specializations' field 'replace' must be a boolean."
+                )
+            with self._lock:
+                updated_specs = self._update_planet_specializations_locked(
+                    raw_specs,
+                    replace=bool(replace_raw),
+                )
+                self._invalidate_dashboard_cache()
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "planet_specializations": updated_specs,
+                        "locked_planets_count": len(updated_specs),
                     }
                 )
             )

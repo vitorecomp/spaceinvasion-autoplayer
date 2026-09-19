@@ -41,6 +41,8 @@ export function getStrategyParamDoc(key: string): ActionGraphParamDoc {
 export const CONFIG_OPTIMIZER_GROUP_SUBTITLES = {
   objective:
     "Target hull objective, monthly window, research level scaling, and warehouse reserve rules governing steady-state planetary specialization.",
+  stability:
+    "Protects already-invested colonies (mines and warehouses) from flipping roles across small parameter tweaks. Combines automatic sticky warm-start with explicit per-planet role locks in the Planets table.",
   minFleet:
     "Mandatory per-planet docked utility hulls. Any missing ships add their Weapons factory (b9) prerequisites, hull cost, and warehouse capacity floor to every normal colony.",
   previewScope:
@@ -96,6 +98,20 @@ export const CONFIG_OPTIMIZER_PARAM_DOCS: Record<string, ActionGraphParamDoc> = 
     description:
       "Hard minimum level enforced on all four warehouses (b11–b14) of the designated central_planet_slot, ensuring a safe logistics buffer even before late-game upgrade costs dominate warehouse sizing. Accepts integers from 0 to 50.",
   },
+  preserve_previous_specializations: {
+    title: "Preserve Previous Planet Specializations",
+    paramKey: "preserve_previous_specializations",
+    boundsLabel: "default: true · boolean",
+    description:
+      "When enabled and an active Config Optimizer plan exists, warm-starts and polishes a sticky candidate that keeps every unlocked colony in its previous specialization (Metal, Kryptonite, Spice, Shipyard, or Spice + Shipyard) while re-optimizing building levels for the new parameters. Prevents small tweaks from flipping a Kryptonite colony (and its warehouses) into Metal unless a fresh global plan beats the sticky plan by more than specialization_switch_threshold_pct. Explicit per-planet locks in the Planets table are always enforced regardless of this toggle.",
+  },
+  specialization_switch_threshold_pct: {
+    title: "Role Switch Min Improvement (%)",
+    paramKey: "specialization_switch_threshold_pct",
+    boundsLabel: "default: 0.5% · 0–25%",
+    description:
+      "Minimum percentage gain in monthly target ships required for an unlocked colony to switch away from its previous specialization when preserve_previous_specializations is active. Below this threshold (and on ties), the optimizer keeps existing colony roles and breaks remaining ties by lowest remaining building upgrade cost from current built levels. Set to 0% to allow any strictly better global swap on unlocked planets, or increase (e.g., 2–5%) for stricter role stability.",
+  },
   pad_generic_colonies: {
     title: "Pad Missing Colony Slots with 300-Field Previews",
     paramKey: "pad_generic_colonies",
@@ -122,7 +138,7 @@ export const CONFIG_OPTIMIZER_PARAM_DOCS: Record<string, ActionGraphParamDoc> = 
     paramKey: "ga_random_seed",
     boundsLabel: "default: 20261117 · integer",
     description:
-      "Integer seed initializing NumPy's random generator for reproducible GA search. Keeping the seed and inputs identical yields identical results; changing the seed (or other parameters) can swap specializations across symmetric or twin planets with equal monthly output.",
+      "Integer seed initializing NumPy's random generator for reproducible GA search. Keeping the seed and inputs identical yields identical results; with preserve_previous_specializations enabled (or explicit per-planet role locks set), changing the seed will no longer randomly swap specializations across twin planets.",
   },
 };
 

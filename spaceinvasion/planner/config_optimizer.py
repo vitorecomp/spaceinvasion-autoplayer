@@ -38,6 +38,48 @@ PRODUCTION_FLOW_KEYS: tuple[str, ...] = (
     "energy_used",
 )
 
+VALID_PLANET_SPECIALIZATIONS: tuple[str, ...] = (
+    "auto",
+    "metal",
+    "kryptonite",
+    "spice",
+    "shipyard",
+    "spice_shipyard",
+)
+LOCKABLE_PLANET_SPECIALIZATIONS: tuple[str, ...] = (
+    "metal",
+    "kryptonite",
+    "spice",
+    "shipyard",
+    "spice_shipyard",
+)
+SPECIALIZATION_ALLOWED_BUILDINGS: dict[str, frozenset[str]] = {
+    "metal": frozenset({"b1", "b2", "b5"}),
+    "kryptonite": frozenset({"b3", "b5"}),
+    "spice": frozenset({"b4", "b5"}),
+    "shipyard": frozenset({"b9", "b17", "b5"}),
+    "spice_shipyard": frozenset({"b4", "b5", "b9", "b17"}),
+}
+_SPECIALIZATION_ALIASES: dict[str, str] = {
+    "auto": "auto",
+    "metal": "metal",
+    "metal_mine": "metal",
+    "blast_furnace": "metal",
+    "pig_iron_metal": "metal",
+    "kryptonite": "kryptonite",
+    "kryptonite_mine": "kryptonite",
+    "krypt": "kryptonite",
+    "spice": "spice",
+    "spice_mine": "spice",
+    "shipyard": "shipyard",
+    "weapons_factory": "shipyard",
+    "fleet": "shipyard",
+    "spice_shipyard": "spice_shipyard",
+    "spice+shipyard": "spice_shipyard",
+    "spice-shipyard": "spice_shipyard",
+    "shipyard_spice": "spice_shipyard",
+}
+
 _MINE_BUILDING_TO_RESOURCE: dict[str, str] = {
     "b1": "pig_iron",
     "b2": "metal",
@@ -104,6 +146,9 @@ DEFAULT_CONFIG_OPTIMIZER_PARAMS: dict[str, Any] = {
     "max_planets": 11,
     "empty_colony_fields": 300,
     "reserved_floors_by_planet": {},
+    "planet_specializations": {},
+    "preserve_previous_specializations": True,
+    "specialization_switch_threshold_pct": 0.5,
 }
 
 _UPPER_PARAM_ALIASES: dict[str, str] = {
@@ -127,6 +172,9 @@ _UPPER_PARAM_ALIASES: dict[str, str] = {
     "GA_MUTATION_RATE": "ga_mutation_rate",
     "GA_ELITE_COUNT": "ga_elite_count",
     "GA_RANDOM_SEED": "ga_random_seed",
+    "PLANET_SPECIALIZATIONS": "planet_specializations",
+    "PRESERVE_PREVIOUS_SPECIALIZATIONS": "preserve_previous_specializations",
+    "SPECIALIZATION_SWITCH_THRESHOLD_PCT": "specialization_switch_threshold_pct",
 }
 
 
@@ -591,6 +639,32 @@ def _safe_speedup(state: GameState, params: Mapping[str, Any]) -> float:
     return 1.0
 
 
+def normalize_planet_specialization(raw: Any) -> str:
+    """Normalize a single planet specialization value into `VALID_PLANET_SPECIALIZATIONS`."""
+    if raw is None:
+        return "auto"
+    norm = str(raw).strip().lower().replace(" ", "_")
+    if not norm:
+        return "auto"
+    mapped = _SPECIALIZATION_ALIASES.get(norm, norm)
+    return mapped if mapped in VALID_PLANET_SPECIALIZATIONS else "auto"
+
+
+def normalize_planet_specializations_map(raw: Any) -> dict[str, str]:
+    """Normalize `{planet_key: specialization}` keeping only explicit non-`auto` locks."""
+    if not isinstance(raw, Mapping):
+        return {}
+    out: dict[str, str] = {}
+    for pk_raw, spec_raw in raw.items():
+        pk = str(pk_raw).strip()
+        if not pk:
+            continue
+        spec = normalize_planet_specialization(spec_raw)
+        if spec in SPECIALIZATION_ALLOWED_BUILDINGS:
+            out[pk] = spec
+    return out
+
+
 def _normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
     merged: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG_OPTIMIZER_PARAMS)
     if isinstance(raw_params, Mapping):
@@ -618,6 +692,8 @@ def _normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
                     for pk, bmap in raw_val.items()
                     if isinstance(bmap, Mapping)
                 }
+            elif key == "planet_specializations" and isinstance(raw_val, Mapping):
+                merged[key] = normalize_planet_specializations_map(raw_val)
             elif key == "hill_climb_step_sizes" and isinstance(raw_val, (list, tuple)):
                 steps = [max(1, int(x)) for x in raw_val]
                 merged[key] = steps if steps else [1, 2, 4, 8]
@@ -642,6 +718,15 @@ def _normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
     merged["pad_generic_colonies"] = bool(merged["pad_generic_colonies"])
     merged["max_planets"] = max(1, int(merged["max_planets"]))
     merged["empty_colony_fields"] = max(1, int(merged["empty_colony_fields"]))
+    merged["planet_specializations"] = normalize_planet_specializations_map(merged.get("planet_specializations"))
+    merged["preserve_previous_specializations"] = bool(merged.get("preserve_previous_specializations", True))
+    try:
+        raw_thresh = float(merged.get("specialization_switch_threshold_pct", 0.5))
+    except Exception:
+        raw_thresh = 0.5
+    merged["specialization_switch_threshold_pct"] = (
+        max(0.0, min(100.0, raw_thresh)) if math.isfinite(raw_thresh) else 0.5
+    )
     return merged
 
 
@@ -689,6 +774,41 @@ def _resolve_planet_reserved_floors(
                     if val > merged.get(bk, 0):
                         merged[bk] = val
     return merged
+
+
+def _resolve_planet_specialization(
+    planet: PlanetState,
+    slot_index: int,
+    planet_specializations: Mapping[str, str] | None,
+) -> str:
+    """Resolve an explicit specialization lock matching `planet_id`, `coords`, or `slot:<n>`."""
+    if not planet_specializations:
+        return "auto"
+    pid = int(planet.planet_id)
+    pid_str = str(pid) if pid > 0 else ""
+    raw_coords = str(planet.coords or "").strip()
+    norm_coords = normalize_coords(raw_coords) if raw_coords and not raw_coords.startswith("EMPTY:") else raw_coords
+    slot_key = f"slot:{int(slot_index)}"
+
+    # Priority: exact planet_id > exact coords > normalized coords > slot:<n>
+    if pid_str and pid_str in planet_specializations:
+        spec = normalize_planet_specialization(planet_specializations[pid_str])
+        if spec != "auto":
+            return spec
+    if raw_coords and raw_coords in planet_specializations:
+        spec = normalize_planet_specialization(planet_specializations[raw_coords])
+        if spec != "auto":
+            return spec
+    for lookup_key, raw_spec in planet_specializations.items():
+        lk = str(lookup_key).strip()
+        if not lk:
+            continue
+        lk_norm = normalize_coords(lk) if (":" in lk and not lk.startswith("EMPTY:") and not lk.startswith("slot:")) else lk
+        if (norm_coords and lk_norm == norm_coords) or lk.lower() == slot_key:
+            spec = normalize_planet_specialization(raw_spec)
+            if spec != "auto":
+                return spec
+    return "auto"
 
 
 def check_optimizer_settings(
@@ -793,12 +913,15 @@ def build_planet_plan(
     min_fleet: Mapping[str, int],
     reserved_floors: Mapping[str, int],
     central_min_warehouse_level: Optional[int] = None,
+    specialization: str = "auto",
 ) -> dict[str, Any]:
-    """Fixed part, hard built/reserved floors, and search range of one planet."""
+    """Fixed part, hard built/reserved floors, specialization lock, and search range of one planet."""
     all_keys = (*misc_levels, *optimized_max_levels)
     built = {key: max(0, int(planet.buildings.get(key, 0) or 0)) for key in all_keys}
     reserved = {key: max(0, int(reserved_floors.get(key, 0) or 0)) for key in all_keys}
     reserved_nonzero = {key: lvl for key, lvl in reserved.items() if lvl > 0}
+    locked_spec = normalize_planet_specialization(specialization)
+    allowed_for_spec = SPECIALIZATION_ALLOWED_BUILDINGS.get(locked_spec)
 
     wanted = {key: max(int(level), built[key], reserved[key]) for key, level in misc_levels.items()}
     required: dict[str, int] = {}
@@ -831,6 +954,8 @@ def build_planet_plan(
         hard_floor = max(built[key], reserved[key])
         min_levels[key] = max(required.get(key, 0), hard_floor)
         top_allowed = 0 if unmet else min(int(max_level), catalog_top_level(key))
+        if allowed_for_spec is not None and key not in allowed_for_spec:
+            top_allowed = min_levels[key]
         max_levels[key] = max(min_levels[key], top_allowed)
         if unmet and max_levels[key] == 0:
             locked_by[key] = ", ".join(unmet)
@@ -880,6 +1005,7 @@ def build_planet_plan(
         "free_fields": fields_max - fixed_fields,
         "built_levels": built,
         "reserved_floors": reserved_nonzero,
+        "locked_specialization": locked_spec,
         "fixed_levels": fixed_levels,
         "min_levels": min_levels,
         "max_levels": max_levels,
@@ -913,6 +1039,7 @@ def build_planet_plans(
     central_min_warehouse_level: int,
     research_costs: list[tuple[str, dict[str, Any]]],
     reserved_floors_by_planet: Mapping[str, Mapping[str, int]],
+    planet_specializations: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build per-planet plans for every normal planet in the roster."""
     plans: list[dict[str, Any]] = []
@@ -922,6 +1049,7 @@ def build_planet_plans(
         is_placeholder = slot_index > owned_count
         slot_misc = {**misc_levels, **misc_levels_by_slot.get(slot_index, {})}
         reserved = {} if is_placeholder else _resolve_planet_reserved_floors(planet, reserved_floors_by_planet)
+        locked_spec = _resolve_planet_specialization(planet, slot_index, planet_specializations)
         plans.append(
             build_planet_plan(
                 slot_index=slot_index,
@@ -934,6 +1062,7 @@ def build_planet_plans(
                 central_min_warehouse_level=(
                     central_min_warehouse_level if slot_index == central_planet_slot else None
                 ),
+                specialization=locked_spec,
             )
         )
     if not plans:
@@ -1695,17 +1824,412 @@ def _planet_building_rows(
     return rows
 
 
+def detect_planet_specialization(
+    planned_levels: Mapping[str, int],
+    *,
+    min_levels: Mapping[str, int] | None = None,
+    built_levels: Mapping[str, int] | None = None,
+    shipyard_ships: float = 0.0,
+    locked_specialization: str = "auto",
+) -> str:
+    """Classify a planet's target configuration into its primary SpaceInvasion Classic role."""
+    locked_norm = normalize_planet_specialization(locked_specialization)
+    if locked_norm in SPECIALIZATION_ALLOWED_BUILDINGS:
+        return locked_norm
+
+    floor_map = min_levels if min_levels is not None else (built_levels or {})
+    b1 = max(0, int(planned_levels.get("b1", 0) or 0))
+    b2 = max(0, int(planned_levels.get("b2", 0) or 0))
+    b3 = max(0, int(planned_levels.get("b3", 0) or 0))
+    b4 = max(0, int(planned_levels.get("b4", 0) or 0))
+    b9 = max(0, int(planned_levels.get("b9", 0) or 0))
+    b17 = max(0, int(planned_levels.get("b17", 0) or 0))
+
+    d_b1 = max(0, b1 - max(0, int(floor_map.get("b1", 0) or 0)))
+    d_b2 = max(0, b2 - max(0, int(floor_map.get("b2", 0) or 0)))
+    d_b3 = max(0, b3 - max(0, int(floor_map.get("b3", 0) or 0)))
+    d_b4 = max(0, b4 - max(0, int(floor_map.get("b4", 0) or 0)))
+    d_b9 = max(0, b9 - max(0, int(floor_map.get("b9", 0) or 0)))
+    d_b17 = max(0, b17 - max(0, int(floor_map.get("b17", 0) or 0)))
+
+    metal_lvl = float(b2) if (b2 > 0 and b1 >= max(1, b2 - 8)) else 0.5 * float(b1 + b2)
+    mine_scores = {
+        "metal": (metal_lvl, max(float(d_b2), 0.75 * float(d_b1))),
+        "kryptonite": (float(b3), float(d_b3)),
+        "spice": (float(b4), float(d_b4)),
+    }
+    top_mine_role, (top_mine_lvl, top_mine_delta) = max(mine_scores.items(), key=lambda kv: kv[1])
+    best_mine_delta = max(v[1] for v in mine_scores.values())
+    shipyard_delta = float(d_b9) + 3.0 * float(d_b17)
+    active_shipyard_growth = (float(shipyard_ships) > 0.0) and (d_b17 >= 1 or d_b9 >= 3)
+    static_shipyard_role = (
+        (float(shipyard_ships) > 0.0)
+        and (best_mine_delta <= 0.0)
+        and (b17 >= 2 or (b9 >= 12 and top_mine_lvl < 15.0))
+    )
+
+    if active_shipyard_growth or static_shipyard_role:
+        if b4 >= 12 and (top_mine_role == "spice" or d_b4 >= 4 or float(b4) >= top_mine_lvl - 6.0):
+            return "spice_shipyard"
+        if top_mine_lvl <= 15.0 or best_mine_delta <= 2.0 or (shipyard_delta >= best_mine_delta and top_mine_delta <= 8.0):
+            return "shipyard"
+
+    if top_mine_lvl > 0.0:
+        return top_mine_role
+    return "balanced"
+
+
+def _extract_previous_planet_state(
+    planet_plans: list[dict[str, Any]],
+    optimized_keys: tuple[str, ...],
+    previous_result: Mapping[str, Any] | None,
+) -> tuple[list[Optional[np.ndarray]], list[Optional[str]]]:
+    """Match current planet plans against a previous Config Optimizer result for sticky warm-start."""
+    prev_targets: list[Optional[np.ndarray]] = [None] * len(planet_plans)
+    prev_roles: list[Optional[str]] = [None] * len(planet_plans)
+    if not isinstance(previous_result, Mapping):
+        return prev_targets, prev_roles
+    raw_planets = previous_result.get("planets")
+    if not isinstance(raw_planets, (list, tuple)) or not raw_planets:
+        return prev_targets, prev_roles
+
+    by_pid: dict[int, Mapping[str, Any]] = {}
+    by_coords: dict[str, Mapping[str, Any]] = {}
+    by_placeholder_slot: dict[int, Mapping[str, Any]] = {}
+    for entry in raw_planets:
+        if not isinstance(entry, Mapping):
+            continue
+        pid = game_data.safe_int(entry.get("planet_id"), 0)
+        if pid > 0:
+            by_pid[pid] = entry
+        raw_c = str(entry.get("coords") or "").strip()
+        if raw_c:
+            by_coords[raw_c] = entry
+            if not raw_c.startswith("EMPTY:"):
+                by_coords[normalize_coords(raw_c)] = entry
+        if bool(entry.get("is_placeholder")):
+            slot = game_data.safe_int(entry.get("slot", entry.get("slot_index")), 0)
+            if slot > 0:
+                by_placeholder_slot[slot] = entry
+
+    for idx, plan in enumerate(planet_plans):
+        matched: Optional[Mapping[str, Any]] = None
+        pid = int(plan["planet_id"])
+        raw_c = str(plan["coords"] or "").strip()
+        norm_c = normalize_coords(raw_c) if raw_c and not raw_c.startswith("EMPTY:") else raw_c
+        if pid > 0 and pid in by_pid:
+            matched = by_pid[pid]
+        elif raw_c and raw_c in by_coords:
+            matched = by_coords[raw_c]
+        elif norm_c and norm_c in by_coords:
+            matched = by_coords[norm_c]
+        elif bool(plan["is_placeholder"]) and int(plan["slot_index"]) in by_placeholder_slot:
+            matched = by_placeholder_slot[int(plan["slot_index"])]
+        if matched is None:
+            continue
+
+        planned_map: dict[str, int] = {}
+        built_map: dict[str, int] = {}
+        raw_built = matched.get("built_floors")
+        if isinstance(raw_built, Mapping):
+            for bk, lvl in raw_built.items():
+                built_map[str(bk)] = max(0, game_data.safe_int(lvl, 0))
+        raw_blds = matched.get("buildings")
+        if isinstance(raw_blds, (list, tuple)):
+            for row in raw_blds:
+                if not isinstance(row, Mapping):
+                    continue
+                bk = str(row.get("key") or row.get("building_key") or "").strip()
+                if not bk:
+                    continue
+                planned_map[bk] = max(0, game_data.safe_int(row.get("target_level", row.get("level", 0)), 0))
+                if bk not in built_map:
+                    built_map[bk] = max(0, game_data.safe_int(row.get("built_level", 0), 0))
+        elif isinstance(raw_blds, Mapping):
+            for bk, entry in raw_blds.items():
+                if isinstance(entry, Mapping):
+                    planned_map[str(bk)] = max(
+                        0, game_data.safe_int(entry.get("target_level", entry.get("level", 0)), 0)
+                    )
+                else:
+                    planned_map[str(bk)] = max(0, game_data.safe_int(entry, 0))
+
+        if planned_map:
+            prev_targets[idx] = np.array(
+                [max(0, int(planned_map.get(key, 0))) for key in optimized_keys],
+                dtype=np.int64,
+            )
+
+        explicit_prev_role = normalize_planet_specialization(matched.get("detected_specialization"))
+        if explicit_prev_role in SPECIALIZATION_ALLOWED_BUILDINGS:
+            prev_roles[idx] = explicit_prev_role
+        elif planned_map:
+            prod = matched.get("production") if isinstance(matched.get("production"), Mapping) else {}
+            prev_shipyard = float(prod.get("shipyard_ships_per_month") or 0.0)
+            inferred = detect_planet_specialization(
+                planned_map,
+                built_levels=built_map,
+                shipyard_ships=prev_shipyard,
+            )
+            if inferred in SPECIALIZATION_ALLOWED_BUILDINGS:
+                prev_roles[idx] = inferred
+
+    return prev_targets, prev_roles
+
+
+def _trim_design_to_fit(
+    model: EmpireProductionModel,
+    planet_idx: int,
+    design: np.ndarray,
+) -> np.ndarray:
+    """Clip `design` into `[min_levels, max_levels]` and trim excess levels until feasible."""
+    lo = model.min_levels[planet_idx]
+    hi = model.max_levels[planet_idx]
+    cand = np.clip(np.asarray(design, dtype=np.int64), lo, hi).copy()
+    while not bool(model.is_feasible(cand[None, None, :], [planet_idx])[0]):
+        slack = cand - lo
+        if not (slack > 0).any():
+            return lo.copy()
+        drop_idx = int(np.argmax(slack))
+        cand[drop_idx] -= 1
+    return cand
+
+
+def _central_reserve_holds(model: EmpireProductionModel, outcome: Mapping[str, np.ndarray]) -> bool:
+    if model.central_planet < 0:
+        return True
+    net_per_hour = outcome["planet_net_per_hour"][0].sum(axis=0)
+    needed = model.warehouse_hours * np.maximum(net_per_hour, 0.0)
+    wh = outcome["planet_warehouse_levels"][0, model.central_planet]
+    if (wh > model.top_warehouse_level).any():
+        return False
+    held = model.warehouse_capacities[wh]
+    return not bool((needed > held).any())
+
+
+def _evaluate_stability_metrics(
+    model: EmpireProductionModel,
+    levels: np.ndarray,
+    planet_plans: list[dict[str, Any]],
+    prev_roles: list[Optional[str]],
+    cost_cache: dict[tuple[str, int, int], float],
+) -> tuple[float, int, float, list[str], dict[str, np.ndarray]]:
+    """Return `(ships_per_month, role_changes, upgrade_cost_spice_eq, detected_roles, outcome)`."""
+    outcome = model.simulate(levels[None])
+    limit_totals = outcome["planet_limits"][0].sum(axis=0)
+    ships = float(limit_totals.min())
+    shipyard_col = model.limit_names.index("shipyards")
+
+    roles: list[str] = []
+    role_changes = 0
+    total_cost = 0.0
+    for idx, plan in enumerate(planet_plans):
+        built = plan["built_levels"]
+        wh_lvls = outcome["planet_warehouse_levels"][0, idx]
+        planned_opt = dict(zip(model.optimized_keys, (int(v) for v in levels[idx])))
+        role = detect_planet_specialization(
+            planned_opt,
+            min_levels=plan["min_levels"],
+            built_levels=built,
+            shipyard_ships=float(outcome["planet_limits"][0, idx, shipyard_col]),
+            locked_specialization=str(plan.get("locked_specialization") or "auto"),
+        )
+        roles.append(role)
+        prev_role = prev_roles[idx]
+        if prev_role in SPECIALIZATION_ALLOWED_BUILDINGS and role != prev_role:
+            role_changes += 1
+
+        for b_idx, key in enumerate(model.optimized_keys):
+            frm = int(built[key])
+            to = int(levels[idx, b_idx])
+            if to > frm:
+                ckey = (key, frm, to)
+                val = cost_cache.get(ckey)
+                if val is None:
+                    val = building_upgrade_cost_spice_eq(key, frm, to)
+                    cost_cache[ckey] = val
+                total_cost += val
+        for w_idx, wkey in enumerate(WAREHOUSE_KEYS):
+            frm = int(built[wkey])
+            to = int(wh_lvls[w_idx])
+            if to > frm:
+                ckey = (wkey, frm, to)
+                val = cost_cache.get(ckey)
+                if val is None:
+                    val = building_upgrade_cost_spice_eq(wkey, frm, to)
+                    cost_cache[ckey] = val
+                total_cost += val
+
+    return ships, role_changes, total_cost, roles, outcome
+
+
+def _transfer_design_for_swap(
+    model: EmpireProductionModel,
+    src_idx: int,
+    dst_idx: int,
+    src_design: np.ndarray,
+) -> np.ndarray:
+    """Transfer `src_idx`'s actively chosen buildings onto `dst_idx` without leaking unrelated built floors."""
+    active = src_design > model.min_levels[src_idx]
+    transferred = np.where(active, src_design, model.min_levels[dst_idx])
+    return _trim_design_to_fit(model, dst_idx, transferred)
+
+
+def _polish_pair_in_place(
+    model: EmpireProductionModel,
+    levels: np.ndarray,
+    pair: tuple[int, int],
+    moves: np.ndarray,
+) -> np.ndarray:
+    """Locally polish only the two swapped planets against the rest of the empire."""
+    cand = np.array(levels, dtype=np.int64, copy=True)
+    planet_limits = model.simulate(cand[None])["planet_limits"][0]
+    for _pass in range(2):
+        changed = False
+        for planet in pair:
+            others = planet_limits.sum(axis=0) - planet_limits[planet]
+
+            def empire_score(own: np.ndarray, others: np.ndarray = others) -> np.ndarray:
+                return smallest_limit(others + own)
+
+            design = improve_design(model, planet, cand[planet], empire_score, moves)
+            if (design != cand[planet]).any():
+                cand[planet] = design
+                planet_limits[planet] = model.simulate(design[None, None, :], [planet])["planet_limits"][0, 0]
+                changed = True
+        if not changed:
+            break
+    return cand
+
+
+def _align_unlocked_planet_roles_for_sunk_cost(
+    model: EmpireProductionModel,
+    levels: np.ndarray,
+    planet_plans: list[dict[str, Any]],
+    prev_roles: list[Optional[str]],
+    cost_cache: dict[tuple[str, int, int], float],
+    step_sizes: tuple[int, ...] = (1, 2, 4, 8),
+) -> np.ndarray:
+    """Pairwise swap unlocked planets' target designs when it keeps/improves ships/mo and reduces role flips / sunk cost."""
+    unlocked = [
+        idx
+        for idx, plan in enumerate(planet_plans)
+        if normalize_planet_specialization(plan.get("locked_specialization")) == "auto"
+    ]
+    if len(unlocked) < 2:
+        return levels
+
+    moves = planet_moves(levels.shape[1], step_sizes)
+    cur = np.array(levels, dtype=np.int64, copy=True)
+    cur_ships, cur_changes, cur_cost, _roles, _outcome = _evaluate_stability_metrics(
+        model, cur, planet_plans, prev_roles, cost_cache
+    )
+    for _pass in range(len(unlocked) * 2):
+        improved = False
+        for pos_a in range(len(unlocked)):
+            i = unlocked[pos_a]
+            for pos_b in range(pos_a + 1, len(unlocked)):
+                j = unlocked[pos_b]
+                if np.array_equal(cur[i], cur[j]):
+                    continue
+                cand = cur.copy()
+                cand[i] = _transfer_design_for_swap(model, j, i, cur[j])
+                cand[j] = _transfer_design_for_swap(model, i, j, cur[i])
+                if np.array_equal(cand, cur):
+                    continue
+                if not bool(model.is_feasible(cand[None])[0]):
+                    continue
+                cand = _polish_pair_in_place(model, cand, (i, j), moves)
+                if not bool(model.is_feasible(cand[None])[0]):
+                    continue
+                cand_ships, cand_changes, cand_cost, _c_roles, cand_out = _evaluate_stability_metrics(
+                    model, cand, planet_plans, prev_roles, cost_cache
+                )
+                if not _central_reserve_holds(model, cand_out):
+                    continue
+                better = False
+                if cand_ships > cur_ships + 1e-6:
+                    better = True
+                elif cand_ships >= cur_ships - 1e-6:
+                    if cand_changes < cur_changes:
+                        better = True
+                    elif cand_changes == cur_changes and cand_cost < cur_cost - 1e-3:
+                        better = True
+                if better:
+                    cur = cand
+                    cur_ships, cur_changes, cur_cost = cand_ships, cand_changes, cand_cost
+                    improved = True
+        if not improved:
+            break
+    return cur
+
+
+def _build_sticky_candidate(
+    best_model: EmpireProductionModel,
+    fresh_levels: np.ndarray,
+    planet_plans: list[dict[str, Any]],
+    prev_targets: list[Optional[np.ndarray]],
+    prev_roles: list[Optional[str]],
+    step_sizes: tuple[int, ...],
+) -> tuple[Optional[EmpireProductionModel], Optional[np.ndarray], Optional[float]]:
+    """Build and polish a role-preserving candidate anchored to previous planet specializations."""
+    sticky_model = copy.copy(best_model)
+    sticky_max = best_model.max_levels.copy()
+    for idx, plan in enumerate(planet_plans):
+        eff_role = normalize_planet_specialization(plan.get("locked_specialization"))
+        if eff_role == "auto" and prev_roles[idx] in SPECIALIZATION_ALLOWED_BUILDINGS:
+            eff_role = str(prev_roles[idx])
+        allowed = SPECIALIZATION_ALLOWED_BUILDINGS.get(eff_role)
+        if allowed is not None:
+            for b_idx, key in enumerate(best_model.optimized_keys):
+                if key not in allowed:
+                    sticky_max[idx, b_idx] = best_model.min_levels[idx, b_idx]
+    sticky_model.max_levels = sticky_max
+
+    seed = np.zeros_like(fresh_levels)
+    for idx in range(len(planet_plans)):
+        base_vec = prev_targets[idx] if prev_targets[idx] is not None else fresh_levels[idx]
+        seed[idx] = _trim_design_to_fit(sticky_model, idx, base_vec)
+
+    sticky_levels = polish_both_ways(sticky_model, seed, step_sizes)
+    for _round in range(3):
+        outcome = sticky_model.simulate(sticky_levels[None])
+        if _central_reserve_holds(sticky_model, outcome):
+            break
+        needed = central_reserve_needed(sticky_model, sticky_levels)
+        next_reserve = np.maximum(sticky_model.central_reserve, needed)
+        try:
+            sticky_model = sticky_model.with_central_reserve(next_reserve)
+        except ValueError:
+            return None, None, None
+        for idx in range(len(planet_plans)):
+            sticky_levels[idx] = _trim_design_to_fit(sticky_model, idx, sticky_levels[idx])
+        sticky_levels = polish_both_ways(sticky_model, sticky_levels, step_sizes)
+
+    if not bool(sticky_model.is_feasible(sticky_levels[None])[0]):
+        return None, None, None
+    final_out = sticky_model.simulate(sticky_levels[None])
+    if not _central_reserve_holds(sticky_model, final_out):
+        return None, None, None
+    sticky_ships = float(final_out["planet_limits"][0].sum(axis=0).min())
+    return sticky_model, sticky_levels, sticky_ships
+
+
 def run_config_optimizer(
     state: GameState,
     *,
     universe_research_max: Mapping[str, int] | None = None,
     params: Mapping[str, Any] | None = None,
+    previous_result: Mapping[str, Any] | None = None,
     progress_cb: Callable[[str, float], None] | None = None,
 ) -> dict[str, Any]:
     """Optimize target building levels per planet to maximize monthly production of `target_ship_key`.
 
-    Always enforces every owned planet's built building levels (`planet.buildings`) AND
-    `reserved_floors_by_planet` as hard minimum floors (`target_level >= max(built, misc, reserved)`).
+    Always enforces every owned planet's built building levels (`planet.buildings`),
+    `reserved_floors_by_planet`, and any explicit `planet_specializations` locks.
+    When `previous_result` is supplied and `preserve_previous_specializations` is enabled,
+    warm-starts and compares a sticky role-preserving plan against the fresh global search
+    using `specialization_switch_threshold_pct` and sunk-cost tie-breaking.
     """
     t0 = time.perf_counter()
     if progress_cb is not None:
@@ -1782,6 +2306,7 @@ def run_config_optimizer(
         central_min_warehouse_level=cfg["central_planet_min_warehouse_level"],
         research_costs=research_upgrade_costs(own_researches, planned_research_levels),
         reserved_floors_by_planet=cfg["reserved_floors_by_planet"],
+        planet_specializations=cfg["planet_specializations"],
     )
     planet_contexts = [
         {
@@ -1833,6 +2358,75 @@ def run_config_optimizer(
     if progress_cb is not None:
         progress_cb("finalizing", 0.96)
 
+    prev_targets, prev_roles = _extract_previous_planet_state(
+        planet_plans,
+        best_model.optimized_keys,
+        previous_result,
+    )
+    has_prev_roles = any(role in SPECIALIZATION_ALLOWED_BUILDINGS for role in prev_roles)
+    has_built_levels = any(any(lvl > 0 for lvl in plan["built_levels"].values()) for plan in planet_plans)
+    cost_cache: dict[tuple[str, int, int], float] = {}
+
+    if has_prev_roles or has_built_levels:
+        fresh_levels = _align_unlocked_planet_roles_for_sunk_cost(
+            best_model,
+            best_levels,
+            planet_plans,
+            prev_roles,
+            cost_cache,
+            step_sizes=tuple(cfg["hill_climb_step_sizes"]),
+        )
+    else:
+        fresh_levels = best_levels
+
+    fresh_ships, fresh_changes, fresh_cost, _fresh_roles, _fresh_out = _evaluate_stability_metrics(
+        best_model,
+        fresh_levels,
+        planet_plans,
+        prev_roles,
+        cost_cache,
+    )
+    best_levels = fresh_levels
+    sticky_plan_applied = False
+    sticky_ships_out: Optional[float] = None
+
+    if cfg["preserve_previous_specializations"] and has_prev_roles:
+        sticky_model, sticky_levels, sticky_ships_raw = _build_sticky_candidate(
+            best_model,
+            fresh_levels,
+            planet_plans,
+            prev_targets,
+            prev_roles,
+            tuple(cfg["hill_climb_step_sizes"]),
+        )
+        if sticky_model is not None and sticky_levels is not None and sticky_ships_raw is not None:
+            sticky_ships, sticky_changes, sticky_cost, _s_roles, _s_out = _evaluate_stability_metrics(
+                sticky_model,
+                sticky_levels,
+                planet_plans,
+                prev_roles,
+                cost_cache,
+            )
+            sticky_ships_out = sticky_ships
+            threshold = max(0.0, float(cfg["specialization_switch_threshold_pct"])) / 100.0
+            choose_sticky = False
+            if sticky_ships > 0.0:
+                rel_gain = (fresh_ships - sticky_ships) / sticky_ships
+                if fresh_changes > sticky_changes:
+                    if rel_gain <= threshold:
+                        choose_sticky = True
+                elif fresh_changes == sticky_changes:
+                    if (sticky_ships, -sticky_cost, -int(sticky_levels.sum())) > (
+                        fresh_ships,
+                        -fresh_cost,
+                        -int(fresh_levels.sum()),
+                    ):
+                        choose_sticky = True
+            if choose_sticky:
+                best_model = sticky_model
+                best_levels = sticky_levels
+                sticky_plan_applied = True
+
     outcome = {name: values[0] for name, values in best_model.simulate(best_levels[None]).items()}
     limit_totals = outcome["planet_limits"].sum(axis=0)
     ships = float(limit_totals.min())
@@ -1847,6 +2441,9 @@ def run_config_optimizer(
     total_buildings_cost = 0.0
     total_fleet_cost = 0.0
     total_pig_iron_hr = 0.0
+    locked_planets_count = 0
+    roles_preserved_count = 0
+    roles_changed_count = 0
 
     for index, plan in enumerate(planet_plans):
         warehouses_map = dict(zip(WAREHOUSE_KEYS, (int(lvl) for lvl in outcome["planet_warehouse_levels"][index])))
@@ -1858,6 +2455,23 @@ def run_config_optimizer(
         fields_used_target = int(sum(planned_map.values()))
         fields_free = int(plan["fields_max"]) - fields_used_target
         shipyard_ships = float(outcome["planet_limits"][index, shipyard_column])
+        locked_spec = normalize_planet_specialization(plan.get("locked_specialization"))
+        if locked_spec != "auto":
+            locked_planets_count += 1
+        detected_spec = detect_planet_specialization(
+            planned_map,
+            min_levels=plan["min_levels"],
+            built_levels=plan["built_levels"],
+            shipyard_ships=shipyard_ships,
+            locked_specialization=locked_spec,
+        )
+        prev_spec = prev_roles[index]
+        spec_changed = bool(prev_spec in SPECIALIZATION_ALLOWED_BUILDINGS and detected_spec != prev_spec)
+        if prev_spec in SPECIALIZATION_ALLOWED_BUILDINGS:
+            if spec_changed:
+                roles_changed_count += 1
+            else:
+                roles_preserved_count += 1
         warehouse_fields = int(sum(warehouses_map.values()))
         levels_to_build = int(
             sum(max(0, planned_map[key] - plan["built_levels"][key]) for key in planned_map)
@@ -1932,6 +2546,10 @@ def run_config_optimizer(
                     for bid in sorted(game_data.BUILDING_BY_ID)
                 },
                 "reserved_floors": dict(plan["reserved_floors"]),
+                "detected_specialization": detected_spec,
+                "locked_specialization": locked_spec,
+                "previous_specialization": prev_spec,
+                "specialization_changed": spec_changed,
                 "production": production_info,
                 "warehouses": warehouse_rows,
                 "buildings": building_rows,
@@ -1984,6 +2602,12 @@ def run_config_optimizer(
         "first_generation_with_the_final_best": first_best_gen,
         "ga_ships_per_month": round(float(best_model.ships_per_month(ga_levels[None])[0]), 2),
         "polished_ships_per_month": round(ships, 2),
+        "fresh_ships_per_month": round(float(fresh_ships), 2),
+        "sticky_ships_per_month": round(float(sticky_ships_out), 2) if sticky_ships_out is not None else None,
+        "sticky_plan_applied": bool(sticky_plan_applied),
+        "locked_planets_count": int(locked_planets_count),
+        "roles_preserved_count": int(roles_preserved_count),
+        "roles_changed_count": int(roles_changed_count),
         "levels_changed_by_polish": int(np.abs(best_levels - ga_levels).sum()),
     }
 
@@ -2009,6 +2633,14 @@ def run_config_optimizer(
         "ship_cost_spice_eq": round(ship_cost_sp, 2),
         "monthly_output_spice_eq": round(monthly_output, 2),
         "investment_in_months_of_output": round(investment / monthly_output, 2) if monthly_output > 0.0 else None,
+        "sticky_plan_applied": bool(sticky_plan_applied),
+        "preserve_previous_specializations": bool(cfg["preserve_previous_specializations"]),
+        "specialization_switch_threshold_pct": float(cfg["specialization_switch_threshold_pct"]),
+        "locked_planets_count": int(locked_planets_count),
+        "roles_preserved_count": int(roles_preserved_count),
+        "roles_changed_count": int(roles_changed_count),
+        "fresh_ships_per_month": round(float(fresh_ships), 2),
+        "sticky_ships_per_month": round(float(sticky_ships_out), 2) if sticky_ships_out is not None else None,
         "elapsed_ms": elapsed_ms,
     }
 

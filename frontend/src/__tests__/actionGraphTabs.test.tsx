@@ -261,6 +261,10 @@ describe("ActionGraph 4-Tab Workspace", () => {
                         fields_max: 300,
                         fields_used_target: 245,
                         is_central_planet: true,
+                        detected_specialization: "kryptonite",
+                        locked_specialization: "auto",
+                        previous_specialization: "kryptonite",
+                        specialization_changed: false,
                         built_floors: { b1: 12, b3: 10, b11: 8 },
                         reserved_floors: { b15: 3 },
                         buildings: {
@@ -281,6 +285,18 @@ describe("ActionGraph 4-Tab Workspace", () => {
             ok: true,
             status: 200,
             text: async () => JSON.stringify({ ok: true, filename: "config_optimizer_result.json", content: '{"ships_per_month":84.5}' }),
+          };
+        }
+        if (cmd === "config_optimizer_set_specializations") {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                ok: true,
+                planet_specializations: body.planet_specializations || {},
+                locked_planets_count: Object.keys(body.planet_specializations || {}).length,
+              }),
           };
         }
         if (cmd === "ai_planner_get" || cmd === "ai_planner_run") {
@@ -463,7 +479,16 @@ describe("ActionGraph 4-Tab Workspace", () => {
     expect(document.getElementById("co-kpi-limit")?.textContent).toBe("kryptonite");
     expect(document.getElementById("co-planets-table")?.textContent).toContain("02:380:1");
 
-    // Change target ship & toggle padding preview -> Run Config Optimizer
+    // Change target ship, lock planet specialization, adjust switch threshold & toggle padding -> Run Config Optimizer
+    fireEvent.change(document.getElementById("co-spec-select-1")!, { target: { value: "kryptonite" } });
+    await waitFor(() => {
+      const lockCmd = postedCommands.find((c) => c.command === "config_optimizer_set_specializations");
+      expect(lockCmd?.planet_specializations).toEqual({ "100": "kryptonite" });
+    });
+
+    fireEvent.change(document.getElementById("co-param-specialization_switch_threshold_pct")!, {
+      target: { value: "1.5" },
+    });
     fireEvent.change(document.getElementById("co-param-target_ship_key")!, { target: { value: "s6" } });
     fireEvent.click(document.getElementById("co-param-pad_generic_colonies")!);
     fireEvent.click(document.getElementById("btn-co-run")!);
@@ -473,6 +498,25 @@ describe("ActionGraph 4-Tab Workspace", () => {
       expect(runCmd).toBeDefined();
       expect(runCmd?.params?.target_ship_key).toBe("s6");
       expect(runCmd?.params?.pad_generic_colonies).toBe(true);
+      expect(runCmd?.params?.preserve_previous_specializations).toBe(true);
+      expect(runCmd?.params?.specialization_switch_threshold_pct).toBe(1.5);
+      expect(runCmd?.params?.planet_specializations).toEqual({ "100": "kryptonite" });
+    });
+
+    // Lock Current Roles & Unlock All toolbar actions
+    fireEvent.click(document.getElementById("btn-co-unlock-all")!);
+    await waitFor(() => {
+      const unlockCmd = [...postedCommands]
+        .reverse()
+        .find((c) => c.command === "config_optimizer_set_specializations");
+      expect(unlockCmd?.planet_specializations).toEqual({});
+    });
+    fireEvent.click(document.getElementById("btn-co-lock-all")!);
+    await waitFor(() => {
+      const lockAllCmd = [...postedCommands]
+        .reverse()
+        .find((c) => c.command === "config_optimizer_set_specializations");
+      expect(lockAllCmd?.planet_specializations).toEqual({ "100": "kryptonite" });
     });
 
     // Switch to Research sub-tab and trigger Export JSON
@@ -631,13 +675,15 @@ describe("ActionGraph 4-Tab Workspace", () => {
     expect(document.getElementById("ag-control-panel")?.textContent).toContain("planner_mode");
     expect(document.getElementById("ag-control-panel")?.textContent).toContain("auto_throttle_blast_furnace");
 
-    // Tab 2: Config Optimization (34 parameters across Objective & Fleet + Buildings & GA)
+    // Tab 2: Config Optimization (36 parameters across Objective & Fleet + Stability + Buildings & GA)
     fireEvent.click(document.getElementById("ag-tab-btn-config-optimizer")!);
     await waitFor(() => {
       expect(document.getElementById("ag-co-control-panel")).not.toBeNull();
     });
-    assertPanelHasDetailedDocs("ag-co-control-panel", 34);
+    assertPanelHasDetailedDocs("ag-co-control-panel", 36);
     expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("central_planet_slot");
+    expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("preserve_previous_specializations");
+    expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("specialization_switch_threshold_pct");
     expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("optimized_building_max_levels.b2");
     expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("mine and shipyard specializations remain emergent");
 

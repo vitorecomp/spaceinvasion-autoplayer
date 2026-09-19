@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import json
 import math
 from pathlib import Path
@@ -112,6 +113,9 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
         self.assertEqual(d["max_planets"], 11)
         self.assertEqual(d["empty_colony_fields"], 300)
         self.assertEqual(d["reserved_floors_by_planet"], {})
+        self.assertEqual(d["planet_specializations"], {})
+        self.assertTrue(d["preserve_previous_specializations"])
+        self.assertEqual(d["specialization_switch_threshold_pct"], 0.5)
         all_bkeys = set(d["misc_building_levels"]) | set(d["optimized_building_max_levels"])
         self.assertEqual(all_bkeys, {f"b{bid}" for bid in game_data.BUILDING_BY_ID})
         self.assertEqual(set(d["misc_building_levels"]) & set(d["optimized_building_max_levels"]), set())
@@ -498,6 +502,222 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
         )
         nb_ships = round(float(nb_best_model.ships_per_month(nb_best_levels[None])[0]), 2)
         self.assertAlmostEqual(ours["summary"]["ships_per_month"], nb_ships, places=2)
+
+    def test_explicit_planet_specialization_locks_enforced(self) -> None:
+        p1 = _make_planet(
+            101,
+            "02:380:01",
+            "KryptWorld",
+            temperature=10,
+            fields_max=280,
+            buildings={"b1": 10, "b2": 8, "b3": 14, "b4": 6, "b5": 12, "b7": 12, "b8": 12, "b9": 5, "b10": 5},
+        )
+        p2 = _make_planet(
+            102,
+            "02:380:02",
+            "MetalWorld",
+            temperature=10,
+            fields_max=280,
+            buildings={"b1": 14, "b2": 12, "b3": 8, "b4": 6, "b5": 12, "b7": 12, "b9": 7, "b10": 5},
+        )
+        p3 = _make_planet(
+            103,
+            "02:380:03",
+            "ColdYard",
+            temperature=-45,
+            fields_max=280,
+            buildings={"b1": 8, "b2": 6, "b3": 6, "b4": 12, "b5": 12, "b7": 12, "b9": 8, "b10": 5},
+        )
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Locks",
+            timestamp=1_700_000_000.0,
+            planets=(p1, p2, p3),
+            active_planet_id=101,
+            researches={"r1": 10, "r2": 10, "r6": 10, "r15": 2},
+            speedup_factor=5.0,
+        )
+        res = co.run_config_optimizer(
+            state,
+            universe_research_max={"r1": 10, "r2": 10, "r6": 10, "r15": 2},
+            params=_fast_params(
+                central_planet_min_warehouse_level=10,
+                planet_specializations={
+                    "101": "kryptonite",
+                    "02:380:02": "metal",
+                    "103": "spice_shipyard",
+                },
+            ),
+        )
+        self.assertEqual(res["summary"]["locked_planets_count"], 3)
+        by_pid = {p["planet_id"]: p for p in res["planets"]}
+
+        # Planet 101 locked to kryptonite: only b3 & b5 may grow above built/prerequisite min floors
+        self.assertEqual(by_pid[101]["locked_specialization"], "kryptonite")
+        self.assertEqual(by_pid[101]["detected_specialization"], "kryptonite")
+        p1_b = {row["key"]: row for row in by_pid[101]["buildings"]}
+        self.assertGreater(p1_b["b3"]["target_level"], p1_b["b3"]["built_level"])
+        for forbidden_key in ("b1", "b2", "b4", "b17"):
+            if forbidden_key in p1_b:
+                self.assertEqual(p1_b[forbidden_key]["target_level"], p1_b[forbidden_key]["built_level"])
+        # b9 started at L5; min_fleet_per_planet requires b9 L6 prerequisite and never grows above L6
+        self.assertEqual(p1_b["b9"]["target_level"], 6)
+
+        # Planet 102 locked to metal: b1/b2 grow while b3/b4/b9/b17 stay strictly at built floors (b9=7 >= L6)
+        self.assertEqual(by_pid[102]["locked_specialization"], "metal")
+        self.assertEqual(by_pid[102]["detected_specialization"], "metal")
+        p2_b = {row["key"]: row for row in by_pid[102]["buildings"]}
+        self.assertGreater(p2_b["b2"]["target_level"], p2_b["b2"]["built_level"])
+        for forbidden_key in ("b3", "b4", "b9", "b17"):
+            if forbidden_key in p2_b:
+                self.assertEqual(p2_b[forbidden_key]["target_level"], p2_b[forbidden_key]["built_level"])
+
+        # Planet 103 locked to spice_shipyard: b1/b2/b3 stay at built floors
+        self.assertEqual(by_pid[103]["locked_specialization"], "spice_shipyard")
+        p3_b = {row["key"]: row for row in by_pid[103]["buildings"]}
+        for forbidden_key in ("b1", "b2", "b3"):
+            if forbidden_key in p3_b:
+                self.assertEqual(p3_b[forbidden_key]["target_level"], p3_b[forbidden_key]["built_level"])
+
+    def test_sticky_previous_plan_prevents_role_flips_and_prefers_sunk_cost(self) -> None:
+        # 4 symmetric colonies: without stickiness, changing seed/warehouse hours can permute roles.
+        planets = tuple(
+            _make_planet(
+                200 + i,
+                f"02:380:{i:02d}",
+                f"Twin-{i}",
+                temperature=0,
+                fields_max=280,
+                buildings={"b1": 5, "b2": 5, "b3": 5, "b4": 5, "b5": 8, "b7": 12, "b10": 5},
+            )
+            for i in range(1, 5)
+        )
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Sticky",
+            timestamp=1_700_000_000.0,
+            planets=planets,
+            active_planet_id=201,
+            researches={"r1": 10, "r2": 10, "r6": 10, "r15": 2},
+            speedup_factor=5.0,
+        )
+        res1 = co.run_config_optimizer(
+            state,
+            universe_research_max={"r1": 10, "r2": 10, "r6": 10, "r15": 2},
+            params=_fast_params(
+                central_planet_min_warehouse_level=10,
+                warehouse_hours_of_production=24.0,
+                ga_random_seed=20261117,
+            ),
+        )
+        roles1 = {p["planet_id"]: p["detected_specialization"] for p in res1["planets"]}
+
+        # Re-run with tweaked warehouse hours + different GA seed + previous_result: roles must stay pinned!
+        res2 = co.run_config_optimizer(
+            state,
+            universe_research_max={"r1": 10, "r2": 10, "r6": 10, "r15": 2},
+            params=_fast_params(
+                central_planet_min_warehouse_level=10,
+                warehouse_hours_of_production=26.0,
+                ga_random_seed=999999,
+                preserve_previous_specializations=True,
+                specialization_switch_threshold_pct=1.0,
+            ),
+            previous_result=res1,
+        )
+        roles2 = {p["planet_id"]: p["detected_specialization"] for p in res2["planets"]}
+        self.assertEqual(roles2, roles1)
+        self.assertEqual(res2["summary"]["roles_changed_count"], 0)
+        self.assertEqual(res2["summary"]["roles_preserved_count"], 4)
+        self.assertTrue(all(not p["specialization_changed"] for p in res2["planets"]))
+
+        # Regression guard: built mines must not bias detect_planet_specialization toward a smaller secondary mine.
+        self.assertEqual(
+            co.detect_planet_specialization(
+                {"b1": 34, "b2": 35, "b3": 23, "b4": 17, "b9": 6, "b17": 0},
+                built_levels={"b1": 22, "b2": 18, "b3": 0, "b4": 0, "b9": 0, "b17": 0},
+                shipyard_ships=0.0,
+            ),
+            "metal",
+        )
+
+        # Sunk-cost test: on realistic field-constrained colonies with existing Kryptonite / Metal / Spice investments,
+        # pairwise alignment preserves sunk cost without leaking unrelated built floors.
+        sc_p1 = _make_planet(
+            301,
+            "02:381:01",
+            "AlreadyKrypt",
+            temperature=0,
+            fields_max=220,
+            buildings={"b3": 20, "b13": 13, "b5": 15, "b7": 12, "b8": 12, "b10": 5},
+        )
+        sc_p2 = _make_planet(
+            302,
+            "02:381:02",
+            "AlreadyMetal",
+            temperature=0,
+            fields_max=220,
+            buildings={"b1": 22, "b2": 18, "b12": 13, "b5": 15, "b7": 12, "b10": 5},
+        )
+        sc_p3 = _make_planet(
+            303,
+            "02:381:03",
+            "ColdSpiceYard",
+            temperature=-55,
+            fields_max=220,
+            buildings={"b4": 18, "b9": 12, "b17": 3, "b5": 15, "b7": 12, "b10": 5},
+        )
+        sc_state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="SunkCost",
+            timestamp=1_700_000_000.0,
+            planets=(sc_p1, sc_p2, sc_p3),
+            active_planet_id=301,
+            researches={"r1": 10, "r2": 10, "r6": 10, "r15": 2},
+            speedup_factor=5.0,
+        )
+        sc_res = co.run_config_optimizer(
+            sc_state,
+            universe_research_max={"r1": 10, "r2": 10, "r6": 10, "r15": 2},
+            params=_fast_params(
+                central_planet_min_warehouse_level=10,
+                optimized_building_max_levels={
+                    "b1": 80,
+                    "b2": 80,
+                    "b3": 80,
+                    "b4": 80,
+                    "b5": 80,
+                    "b9": 60,
+                    "b17": 20,
+                },
+            ),
+        )
+        sc_roles = {p["planet_id"]: p["detected_specialization"] for p in sc_res["planets"]}
+        self.assertEqual(sc_roles[301], "kryptonite")
+        self.assertEqual(sc_roles[302], "metal")
+        self.assertIn(sc_roles[303], {"spice", "spice_shipyard"})
+
+        # Threshold override test: if previous plan had ALL planets as metal (0 kryptonite/spice/ships),
+        # fresh plan beats sticky by >> threshold and unlocked planets cleanly adapt.
+        bad_prev = copy.deepcopy(res1)
+        for p in bad_prev["planets"]:
+            p["detected_specialization"] = "metal"
+        res_adapted = co.run_config_optimizer(
+            state,
+            universe_research_max={"r1": 10, "r2": 10, "r6": 10, "r15": 2},
+            params=_fast_params(
+                central_planet_min_warehouse_level=10,
+                preserve_previous_specializations=True,
+                specialization_switch_threshold_pct=0.5,
+            ),
+            previous_result=bad_prev,
+        )
+        self.assertFalse(res_adapted["summary"]["sticky_plan_applied"])
+        self.assertGreater(res_adapted["summary"]["roles_changed_count"], 0)
+        self.assertGreater(res_adapted["summary"]["ships_per_month"], 1.0)
 
 
 if __name__ == "__main__":

@@ -93,6 +93,54 @@ export const OPTIMIZED_BUILDING_KEYS: readonly string[] = [
   "b17",
 ];
 
+export type PlanetSpecializationKey =
+  | "auto"
+  | "metal"
+  | "kryptonite"
+  | "spice"
+  | "shipyard"
+  | "spice_shipyard";
+
+export const PLANET_SPECIALIZATION_OPTIONS: ReadonlyArray<{
+  key: PlanetSpecializationKey;
+  label: string;
+  shortLabel: string;
+  buildingsHint: string;
+}> = [
+  { key: "auto", label: "Auto (Optimizer)", shortLabel: "Auto", buildingsHint: "All optimized buildings" },
+  { key: "metal", label: "Metal (b1 + b2)", shortLabel: "Metal", buildingsHint: "Pig iron + Blast furnace + Fusion" },
+  { key: "kryptonite", label: "Kryptonite (b3)", shortLabel: "Kryptonite", buildingsHint: "Kryptonite mine + Fusion" },
+  { key: "spice", label: "Spice (b4)", shortLabel: "Spice", buildingsHint: "Spice mine + Fusion" },
+  { key: "shipyard", label: "Shipyard (b9 + b17)", shortLabel: "Shipyard", buildingsHint: "Weapons factory + Microsystem + Fusion" },
+  {
+    key: "spice_shipyard",
+    label: "Spice + Shipyard (b4 + b9 + b17)",
+    shortLabel: "Spice + Yard",
+    buildingsHint: "Spice mine + Weapons factory + Microsystem + Fusion",
+  },
+];
+
+export function normalizeSpecializationKey(raw: unknown): PlanetSpecializationKey {
+  const norm = String(raw ?? "auto").trim().toLowerCase().replace(/\s+/g, "_");
+  if (
+    norm === "metal" ||
+    norm === "kryptonite" ||
+    norm === "spice" ||
+    norm === "shipyard" ||
+    norm === "spice_shipyard"
+  ) {
+    return norm;
+  }
+  return "auto";
+}
+
+export function formatSpecializationLabel(raw: unknown): string {
+  const norm = String(raw ?? "").trim().toLowerCase();
+  if (norm === "balanced") return "Balanced";
+  const found = PLANET_SPECIALIZATION_OPTIONS.find((opt) => opt.key === norm);
+  return found ? found.shortLabel : norm ? norm : "Auto";
+}
+
 export const SHIP_OPTIONS: ReadonlyArray<{ key: string; slug: string; name: string }> = [
   { key: "s1", slug: "small-transport", name: "Small transport" },
   { key: "s2", slug: "large-transport", name: "Large transport" },
@@ -154,6 +202,9 @@ export interface ConfigOptimizerDraft {
   warehouse_hours_of_production: string;
   central_planet_slot: string;
   central_planet_min_warehouse_level: string;
+  preserve_previous_specializations: boolean;
+  specialization_switch_threshold_pct: string;
+  planet_specializations: Record<string, string>;
   min_fleet_per_planet: Record<string, string>;
   misc_building_levels: Record<string, string>;
   optimized_building_max_levels: Record<string, string>;
@@ -170,6 +221,9 @@ export const DEFAULT_CONFIG_OPTIMIZER_DRAFT: ConfigOptimizerDraft = {
   warehouse_hours_of_production: "24",
   central_planet_slot: "1",
   central_planet_min_warehouse_level: "15",
+  preserve_previous_specializations: true,
+  specialization_switch_threshold_pct: "0.5",
+  planet_specializations: {},
   min_fleet_per_planet: {
     s2: "10",
     s10: "10",

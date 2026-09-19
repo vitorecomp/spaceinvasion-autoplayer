@@ -232,6 +232,10 @@ export interface ConfigOptimizerPlanetRecord {
   fields_free?: number;
   built_floors?: Record<string, number>;
   reserved_floors?: Record<string, number>;
+  detected_specialization?: string;
+  locked_specialization?: string;
+  previous_specialization?: string | null;
+  specialization_changed?: boolean;
   production?: Record<string, any>;
   warehouses?: Array<Record<string, any>> | Record<string, any>;
   buildings?: Array<Record<string, any>> | Record<string, any>;
@@ -265,6 +269,8 @@ export interface ConfigOptimizerGetPayload {
   job?: PlannerJobState | null;
   runs?: Array<Record<string, any>>;
   reserved_floors?: Record<string, Record<string, number>>;
+  planet_specializations?: Record<string, string>;
+  specialization_options?: string[];
   default_params?: Record<string, any>;
   colonies_owned?: number;
   max_planets?: number;

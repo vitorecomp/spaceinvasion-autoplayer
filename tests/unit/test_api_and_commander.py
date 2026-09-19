@@ -6926,6 +6926,47 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertIsNotNone(co_get["active"])
                 self.assertEqual(len(co_get["runs"]), 1)
                 self.assertIn("target_ship_key", co_get["default_params"])
+                self.assertEqual(co_get["planet_specializations"], {})
+                self.assertIn("kryptonite", co_get["specialization_options"])
+
+                # 3b. Per-planet specialization lock persistence & sticky rerun via API commands
+                spec_set = bridge.handle_command(
+                    {
+                        "command": "config_optimizer_set_specializations",
+                        "planet_specializations": {"701": "kryptonite"},
+                        "replace": True,
+                    }
+                )
+                self.assertTrue(spec_set["ok"])
+                self.assertEqual(spec_set["planet_specializations"], {"701": "kryptonite"})
+                self.assertEqual(spec_set["locked_planets_count"], 1)
+
+                co_get_locked = bridge.handle_command({"command": "config_optimizer_get"})
+                self.assertEqual(co_get_locked["planet_specializations"], {"701": "kryptonite"})
+
+                co_run_locked = bridge.handle_command(
+                    {
+                        "command": "config_optimizer_run",
+                        "params": {**fast_co_params, "warehouse_hours_of_production": 26.0},
+                        "auto_replan_ai": False,
+                        "sync": True,
+                    }
+                )
+                self.assertTrue(co_run_locked["ok"])
+                p701 = next(p for p in co_run_locked["result"]["planets"] if p["planet_id"] == 701)
+                self.assertEqual(p701["locked_specialization"], "kryptonite")
+                self.assertEqual(p701["detected_specialization"], "kryptonite")
+                self.assertEqual(co_run_locked["result"]["summary"]["locked_planets_count"], 1)
+
+                # Clear specialization locks back to auto
+                spec_clear = bridge.handle_command(
+                    {
+                        "command": "config_optimizer_set_specializations",
+                        "planet_specializations": {},
+                        "replace": True,
+                    }
+                )
+                self.assertEqual(spec_clear["planet_specializations"], {})
 
                 co_exp = bridge.handle_command({"command": "config_optimizer_export"})
                 self.assertEqual(co_exp["filename"], "config_optimizer_result.json")
