@@ -2760,7 +2760,7 @@ tbody tr.is-manual-queued:hover {
   }
 }
 
-.page-view.ag-view.active {
+.page-view.ag-view {
   display: flex;
   flex-direction: column;
   gap: 10px;

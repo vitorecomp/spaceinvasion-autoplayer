@@ -11494,8 +11494,20 @@
       ] })
     ] });
   };
+  function sumOptionalFinite(values) {
+    let total = 0;
+    let found = false;
+    for (const raw of values) {
+      const n = finiteNum(raw, null);
+      if (n !== null) {
+        total += n;
+        found = true;
+      }
+    }
+    return found ? total : null;
+  }
   const DashboardView = () => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
+    var _a, _b, _c, _d;
     const {
       dashboard,
       activePage,
@@ -11543,31 +11555,147 @@
       [chosenId]
     );
     const colonySort = useTableSort(planets, colonySortCols);
-    const currentEta = reactExports.useMemo(() => {
-      var _a2;
-      if (buildingsEtaData && activePlanet && ((_a2 = buildingsEtaData.planet) == null ? void 0 : _a2.planet_id) === activePlanet.planet_id) {
-        return buildingsEtaData;
+    const rawDashScope = String(uiPrefs.dashQueuePlanetScope || "all");
+    const scopedDashPlanet = reactExports.useMemo(
+      () => rawDashScope !== "all" ? planets.find((p) => String(p.planet_id) === rawDashScope) || null : null,
+      [planets, rawDashScope]
+    );
+    const activeDashScope = scopedDashPlanet ? String(scopedDashPlanet.planet_id) : "all";
+    const isAllColoniesScope = planets.length > 1 && scopedDashPlanet === null;
+    const resourcePlanet = scopedDashPlanet || activePlanet;
+    const hasResourceScope = isAllColoniesScope ? planets.length > 0 : Boolean(resourcePlanet);
+    const rnk = (dashboard == null ? void 0 : dashboard.ranking) || {};
+    const curRnk = rnk.current || {};
+    const rnkRates = rnk.rates || {};
+    const planetEconMap = (dashboard == null ? void 0 : dashboard.planet_economies) && typeof dashboard.planet_economies === "object" ? dashboard.planet_economies : null;
+    const scopedEcon = reactExports.useMemo(() => {
+      var _a2, _b2, _c2, _d2;
+      if (isAllColoniesScope) {
+        const allHavePerPlanetEcon = Boolean(planetEconMap) && planets.length > 0 && planets.every((p) => planetEconMap[String(p.planet_id)] != null);
+        if (allHavePerPlanetEcon) {
+          const econRows = planets.map((p) => planetEconMap[String(p.planet_id)]);
+          return {
+            pig_iron_per_hr: sumOptionalFinite(econRows.map((e) => e == null ? void 0 : e.pig_iron_per_hr)),
+            metal_per_hr: sumOptionalFinite(econRows.map((e) => e == null ? void 0 : e.metal_per_hr)),
+            kryptonite_per_hr: sumOptionalFinite(econRows.map((e) => e == null ? void 0 : e.kryptonite_per_hr)),
+            spice_per_hr: sumOptionalFinite(econRows.map((e) => e == null ? void 0 : e.spice_per_hr))
+          };
+        }
+        if (rnkRates && Object.keys(rnkRates).length > 0) {
+          return {
+            pig_iron_per_hr: rnkRates.pig_iron_per_hr ?? null,
+            metal_per_hr: rnkRates.metal_per_hr ?? null,
+            kryptonite_per_hr: rnkRates.kryptonite_per_hr ?? null,
+            spice_per_hr: rnkRates.spice_per_hr ?? null
+          };
+        }
+        return null;
       }
-      return (dashboard == null ? void 0 : dashboard.buildings_eta) || null;
-    }, [activePlanet, buildingsEtaData, dashboard == null ? void 0 : dashboard.buildings_eta]);
-    const pEcon = (currentEta == null ? void 0 : currentEta.planet_economy) || null;
+      if (!resourcePlanet) return null;
+      const directEcon = planetEconMap == null ? void 0 : planetEconMap[String(resourcePlanet.planet_id)];
+      if (directEcon && typeof directEcon === "object") {
+        return directEcon;
+      }
+      if (buildingsEtaData && ((_a2 = buildingsEtaData.planet) == null ? void 0 : _a2.planet_id) === resourcePlanet.planet_id && buildingsEtaData.planet_economy) {
+        return buildingsEtaData.planet_economy;
+      }
+      if (((_c2 = (_b2 = dashboard == null ? void 0 : dashboard.buildings_eta) == null ? void 0 : _b2.planet) == null ? void 0 : _c2.planet_id) === resourcePlanet.planet_id && dashboard.buildings_eta.planet_economy) {
+        return dashboard.buildings_eta.planet_economy;
+      }
+      if (planets.length <= 1) {
+        return ((_d2 = dashboard == null ? void 0 : dashboard.buildings_eta) == null ? void 0 : _d2.planet_economy) || null;
+      }
+      return null;
+    }, [
+      buildingsEtaData,
+      dashboard == null ? void 0 : dashboard.buildings_eta,
+      isAllColoniesScope,
+      planetEconMap,
+      planets,
+      resourcePlanet,
+      rnkRates
+    ]);
+    const scopedResources = reactExports.useMemo(() => {
+      var _a2, _b2, _c2, _d2;
+      if (isAllColoniesScope) {
+        return {
+          pig_iron: sumOptionalFinite(planets.map((p) => {
+            var _a3;
+            return (_a3 = p.resources) == null ? void 0 : _a3.pig_iron;
+          })),
+          metal: sumOptionalFinite(planets.map((p) => {
+            var _a3;
+            return (_a3 = p.resources) == null ? void 0 : _a3.metal;
+          })),
+          kryptonite: sumOptionalFinite(planets.map((p) => {
+            var _a3;
+            return (_a3 = p.resources) == null ? void 0 : _a3.kryptonite;
+          })),
+          spice: sumOptionalFinite(planets.map((p) => {
+            var _a3;
+            return (_a3 = p.resources) == null ? void 0 : _a3.spice;
+          }))
+        };
+      }
+      return {
+        pig_iron: (_a2 = resourcePlanet == null ? void 0 : resourcePlanet.resources) == null ? void 0 : _a2.pig_iron,
+        metal: (_b2 = resourcePlanet == null ? void 0 : resourcePlanet.resources) == null ? void 0 : _b2.metal,
+        kryptonite: (_c2 = resourcePlanet == null ? void 0 : resourcePlanet.resources) == null ? void 0 : _c2.kryptonite,
+        spice: (_d2 = resourcePlanet == null ? void 0 : resourcePlanet.resources) == null ? void 0 : _d2.spice
+      };
+    }, [isAllColoniesScope, planets, resourcePlanet]);
+    const scopedStorage = reactExports.useMemo(() => {
+      var _a2, _b2, _c2, _d2;
+      if (isAllColoniesScope) {
+        return {
+          pig_iron: sumOptionalFinite(planets.map((p) => {
+            var _a3;
+            return (_a3 = p.storage) == null ? void 0 : _a3.pig_iron;
+          })),
+          metal: sumOptionalFinite(planets.map((p) => {
+            var _a3;
+            return (_a3 = p.storage) == null ? void 0 : _a3.metal;
+          })),
+          kryptonite: sumOptionalFinite(planets.map((p) => {
+            var _a3;
+            return (_a3 = p.storage) == null ? void 0 : _a3.kryptonite;
+          })),
+          spice: sumOptionalFinite(planets.map((p) => {
+            var _a3;
+            return (_a3 = p.storage) == null ? void 0 : _a3.spice;
+          }))
+        };
+      }
+      return {
+        pig_iron: (_a2 = resourcePlanet == null ? void 0 : resourcePlanet.storage) == null ? void 0 : _a2.pig_iron,
+        metal: (_b2 = resourcePlanet == null ? void 0 : resourcePlanet.storage) == null ? void 0 : _b2.metal,
+        kryptonite: (_c2 = resourcePlanet == null ? void 0 : resourcePlanet.storage) == null ? void 0 : _c2.kryptonite,
+        spice: (_d2 = resourcePlanet == null ? void 0 : resourcePlanet.storage) == null ? void 0 : _d2.spice
+      };
+    }, [isAllColoniesScope, planets, resourcePlanet]);
     const b2Pct = getSelectedBlastFurnacePct(dashboard, selectedPlanetId, buildingsEtaData);
-    const prodRaw = (_a = activePlanet == null ? void 0 : activePlanet.energy) == null ? void 0 : _a.produced;
-    const usedRaw = (_b = activePlanet == null ? void 0 : activePlanet.energy) == null ? void 0 : _b.used;
-    const prodFinite = prodRaw == null ? 0 : finiteNum(prodRaw, null);
-    const usedFinite = usedRaw == null ? 0 : finiteNum(usedRaw, null);
+    const prodFinite = isAllColoniesScope ? sumOptionalFinite(
+      planets.map((p) => {
+        var _a2;
+        return ((_a2 = p.energy) == null ? void 0 : _a2.produced) == null ? 0 : p.energy.produced;
+      })
+    ) : ((_a = resourcePlanet == null ? void 0 : resourcePlanet.energy) == null ? void 0 : _a.produced) == null ? 0 : finiteNum(resourcePlanet.energy.produced, null);
+    const usedFinite = isAllColoniesScope ? sumOptionalFinite(
+      planets.map((p) => {
+        var _a2;
+        return ((_a2 = p.energy) == null ? void 0 : _a2.used) == null ? 0 : p.energy.used;
+      })
+    ) : ((_b = resourcePlanet == null ? void 0 : resourcePlanet.energy) == null ? void 0 : _b.used) == null ? 0 : finiteNum(resourcePlanet.energy.used, null);
     const netRaw = prodFinite !== null && usedFinite !== null ? prodFinite - usedFinite : null;
     const netEnergy = netRaw === null ? null : netRaw === 0 ? 0 : netRaw;
-    const energyValText = activePlanet ? netEnergy === null ? "—" : `${netEnergy >= 0 ? "+" : ""}${fmtInt(netEnergy)}` : "+0";
-    const energyRatioText = activePlanet ? `${prodFinite === null ? "—" : fmtInt(prodFinite)} / ${usedFinite === null ? "—" : fmtInt(usedFinite)} E` : "0 / 0 E";
+    const energyValText = hasResourceScope ? netEnergy === null ? "—" : `${netEnergy >= 0 ? "+" : ""}${fmtInt(netEnergy)}` : "+0";
+    const energyRatioText = hasResourceScope ? `${prodFinite === null ? "—" : fmtInt(prodFinite)} / ${usedFinite === null ? "—" : fmtInt(usedFinite)} E` : "0 / 0 E";
+    const sectorTitleText = isAllColoniesScope ? `SECTOR // ALL COLONIES (${planets.length})` : resourcePlanet ? `SECTOR // [${resourcePlanet.coords || "--"}] ${String(resourcePlanet.name || "COLONY").toUpperCase()}` : "SECTOR // ACTIVE COLONY";
     const pTemp = finiteNum(activePlanet == null ? void 0 : activePlanet.temperature, null);
     const pFieldsUsed = finiteNum(activePlanet == null ? void 0 : activePlanet.fields_used, null);
     const pFieldsMax = finiteNum(activePlanet == null ? void 0 : activePlanet.fields_max, null);
     const pType = String((activePlanet == null ? void 0 : activePlanet.planet_type) || "normal").toUpperCase();
     const planetMetaText = activePlanet ? `${pType} · ${pTemp === null ? "—" : `${pTemp}°C`} · ${pFieldsUsed === null ? "—" : pFieldsUsed}/${pFieldsMax === null ? "—" : pFieldsMax}` : "COLONY STANDBY";
-    const rnk = (dashboard == null ? void 0 : dashboard.ranking) || {};
-    const curRnk = rnk.current || {};
-    const rnkRates = rnk.rates || {};
     const az = curRnk.attack_zone || {};
     const rankFinite = finiteNum(curRnk.server_rank, null);
     const dashRankText = dashboard ? curRnk.server_rank != null ? rankFinite !== null ? `#${fmtInt(rankFinite)}` : "#—" : az.label || "#—" : "#—";
@@ -11609,12 +11737,6 @@
       );
     }, [allPlanActions, dashboard]);
     const pinnedCount = manualList.length;
-    const rawDashScope = String(uiPrefs.dashQueuePlanetScope || "all");
-    const scopedDashPlanet = reactExports.useMemo(
-      () => rawDashScope !== "all" ? planets.find((p) => String(p.planet_id) === rawDashScope) || null : null,
-      [planets, rawDashScope]
-    );
-    const activeDashScope = scopedDashPlanet ? String(scopedDashPlanet.planet_id) : "all";
     const planetQueueStats = reactExports.useMemo(() => {
       const map = /* @__PURE__ */ new Map();
       for (const p of planets) {
@@ -11772,7 +11894,7 @@
                   /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "SEC" }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Resources & Hourly Net Flow" })
                 ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "command-subpath", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { id: "planet-title", children: activePlanet ? `SECTOR // [${activePlanet.coords || "--"}] ${String(activePlanet.name || "COLONY").toUpperCase()}` : "SECTOR // ACTIVE COLONY" }) })
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "command-subpath", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { id: "planet-title", children: sectorTitleText }) })
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "telemetry-core", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "track-list", "aria-label": "Planetary resource levels and net hourly flow", children: [
@@ -11782,10 +11904,10 @@
                       idKey: "pig",
                       code: "PIG",
                       name: "Pig Iron",
-                      amount: (_e = activePlanet == null ? void 0 : activePlanet.resources) == null ? void 0 : _e.pig_iron,
-                      storage: (_f = activePlanet == null ? void 0 : activePlanet.storage) == null ? void 0 : _f.pig_iron,
-                      hourlyRate: pEcon == null ? void 0 : pEcon.pig_iron_per_hr,
-                      hasPlanet: Boolean(activePlanet)
+                      amount: scopedResources.pig_iron,
+                      storage: scopedStorage.pig_iron,
+                      hourlyRate: scopedEcon == null ? void 0 : scopedEcon.pig_iron_per_hr,
+                      hasPlanet: hasResourceScope
                     },
                     "pig"
                   ),
@@ -11795,10 +11917,10 @@
                       idKey: "metal",
                       code: "MET",
                       name: "Metal",
-                      amount: (_g = activePlanet == null ? void 0 : activePlanet.resources) == null ? void 0 : _g.metal,
-                      storage: (_h = activePlanet == null ? void 0 : activePlanet.storage) == null ? void 0 : _h.metal,
-                      hourlyRate: pEcon == null ? void 0 : pEcon.metal_per_hr,
-                      hasPlanet: Boolean(activePlanet)
+                      amount: scopedResources.metal,
+                      storage: scopedStorage.metal,
+                      hourlyRate: scopedEcon == null ? void 0 : scopedEcon.metal_per_hr,
+                      hasPlanet: hasResourceScope
                     },
                     "metal"
                   ),
@@ -11808,10 +11930,10 @@
                       idKey: "kryp",
                       code: "KRY",
                       name: "Kryptonite",
-                      amount: (_i = activePlanet == null ? void 0 : activePlanet.resources) == null ? void 0 : _i.kryptonite,
-                      storage: (_j = activePlanet == null ? void 0 : activePlanet.storage) == null ? void 0 : _j.kryptonite,
-                      hourlyRate: pEcon == null ? void 0 : pEcon.kryptonite_per_hr,
-                      hasPlanet: Boolean(activePlanet)
+                      amount: scopedResources.kryptonite,
+                      storage: scopedStorage.kryptonite,
+                      hourlyRate: scopedEcon == null ? void 0 : scopedEcon.kryptonite_per_hr,
+                      hasPlanet: hasResourceScope
                     },
                     "kryp"
                   ),
@@ -11821,10 +11943,10 @@
                       idKey: "spice",
                       code: "SPI",
                       name: "Spice",
-                      amount: (_k = activePlanet == null ? void 0 : activePlanet.resources) == null ? void 0 : _k.spice,
-                      storage: (_l = activePlanet == null ? void 0 : activePlanet.storage) == null ? void 0 : _l.spice,
-                      hourlyRate: pEcon == null ? void 0 : pEcon.spice_per_hr,
-                      hasPlanet: Boolean(activePlanet)
+                      amount: scopedResources.spice,
+                      storage: scopedStorage.spice,
+                      hourlyRate: scopedEcon == null ? void 0 : scopedEcon.spice_per_hr,
+                      hasPlanet: hasResourceScope
                     },
                     "spice"
                   )
@@ -11931,7 +12053,12 @@
                       "tr",
                       {
                         className: `clickable-row${isActive ? " is-active" : ""}`,
-                        onClick: () => setSelectedPlanetId(p.planet_id),
+                        onClick: () => {
+                          setSelectedPlanetId(p.planet_id);
+                          if (planets.length > 1) {
+                            setUiPref("dashQueuePlanetScope", String(p.planet_id));
+                          }
+                        },
                         children: [
                           /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: p.coords || "--" }),
                           /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: p.name || "Colony" }),
@@ -12012,7 +12139,10 @@
                           className: `chip-btn tabular${activeDashScope === pidKey ? " active" : ""}${stats.ready > 0 ? " has-ready" : ""}`,
                           "data-dash-planet-scope": pidKey,
                           title: `${p.name || "Colony"} [${p.coords}] — ${stats.ready} ready / ${stats.total} queued`,
-                          onClick: () => setUiPref("dashQueuePlanetScope", pidKey),
+                          onClick: () => {
+                            setUiPref("dashQueuePlanetScope", pidKey);
+                            setSelectedPlanetId(p.planet_id);
+                          },
                           children: stats.ready > 0 ? `${p.coords || p.name} · ${stats.ready} ready` : `${p.coords || p.name} (${stats.total})`
                         },
                         pidKey
@@ -18310,6 +18440,8 @@
       {
         className: `page-view ag-view${activePage === "action-graph" ? " active" : ""}`,
         id: "view-action-graph",
+        "aria-label": "Action Graph workspace",
+        hidden: activePage !== "action-graph",
         children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-subtab-bar", id: "ag-workspace-subbar", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs(

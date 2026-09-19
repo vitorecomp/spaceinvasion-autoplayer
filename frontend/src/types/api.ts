@@ -614,6 +614,7 @@ export interface DashboardPayload {
   plan?: PlannedActionData[];
   manual_queue?: Array<Record<string, any>>;
   buildings_eta?: Record<string, any> | null;
+  planet_economies?: Record<string, Record<string, any>> | null;
   combat?: Record<string, any> | null;
   ranking?: Record<string, any> | null;
   action_graph?: Record<string, any> | null;

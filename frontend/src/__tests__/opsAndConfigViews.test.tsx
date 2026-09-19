@@ -481,9 +481,29 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
     });
   });
 
-  it("supports per-planet parallel queue filtering on Dashboard and Parallel by Planet layout on Operations", async () => {
+  it("supports per-planet parallel queue filtering and scoped resources on Dashboard and Parallel by Planet layout on Operations", async () => {
     const multiPlanetDash = {
       ...MOCK_DASHBOARD,
+      planet_economies: {
+        "12476": {
+          planet_id: 12476,
+          planet_coords: "02:380:12",
+          blast_furnace_pct: 100,
+          pig_iron_per_hr: 1200,
+          metal_per_hr: 600,
+          kryptonite_per_hr: 450,
+          spice_per_hr: 180,
+        },
+        "12453": {
+          planet_id: 12453,
+          planet_coords: "02:379:05",
+          blast_furnace_pct: 100,
+          pig_iron_per_hr: 350,
+          metal_per_hr: 120,
+          kryptonite_per_hr: 90,
+          spice_per_hr: 40,
+        },
+      },
       state: {
         ...MOCK_DASHBOARD.state,
         planets: [
@@ -496,7 +516,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
             temperature: 28,
             fields_used: 12,
             fields_max: 315,
-            resources: { pig_iron: 2900, metal: 900, kryptonite: 950, spice: 0 },
+            resources: { pig_iron: 2900, metal: 900, kryptonite: 950, spice: 500 },
             storage: { pig_iron: 100000, metal: 100000, kryptonite: 100000, spice: 100000 },
             energy: { produced: 120, used: 41 },
             buildings: { b1: 4, b3: 1 },
@@ -557,18 +577,38 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
       );
     };
 
-    // 1) Dashboard planet scope filters Building Queue while keeping Research Queue global
+    // 1) Dashboard planet scope filters Building Queue + SEC resources while keeping Research Queue global
     const dashRender = render(
       <MultiSeed page="dashboard">
         <DashboardView />
+        <ActionGraphView />
       </MultiSeed>
     );
     await waitFor(() => {
       expect(dashRender.container.querySelector('[data-dash-planet-scope="12453"]')).not.toBeNull();
     });
+    // ActionGraphView MUST remain hidden when activePage is dashboard
+    expect(
+      (dashRender.container.querySelector("#view-action-graph") as HTMLElement | null)?.hidden
+    ).toBe(true);
     expect(dashRender.container.querySelector("#dash-queue-card-research")?.textContent).toContain(
       "GLOBAL · 1 SLOT"
     );
+    // Default "All Planets" scope aggregates resources, storage, hourly rates, and energy across all colonies
+    expect(dashRender.container.querySelector("#planet-title")?.textContent).toBe(
+      "SECTOR // ALL COLONIES (2)"
+    );
+    expect(dashRender.container.querySelector("#val-pig")?.textContent).toBe("27,900");
+    expect(dashRender.container.querySelector("#val-metal")?.textContent).toBe("12,900");
+    expect(dashRender.container.querySelector("#val-kryp")?.textContent).toBe("8,950");
+    expect(dashRender.container.querySelector("#val-spice")?.textContent).toBe("4,500");
+    expect(dashRender.container.querySelector("#cap-pig")?.textContent).toBe("/ 200,000 (14%)");
+    expect(dashRender.container.querySelector("#rate-pig")?.textContent).toBe("+1,550/h");
+    expect(dashRender.container.querySelector("#rate-metal")?.textContent).toBe("+720/h");
+    expect(dashRender.container.querySelector("#val-energy")?.textContent).toBe("+259");
+    expect(dashRender.container.querySelector("#energy-ratio")?.textContent).toBe("720 / 461 E");
+
+    // Clicking Colony 2 chip switches both Building Queue and SEC resources to Colony 2
     fireEvent.click(dashRender.container.querySelector('[data-dash-planet-scope="12453"]')!);
     await waitFor(() => {
       const bldBody = dashRender.container.querySelector("#dash-plan-tbody")?.textContent || "";
@@ -578,6 +618,27 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
       const resBody =
         dashRender.container.querySelector("#dash-plan-research-tbody")?.textContent || "";
       expect(resBody).toContain("Mining technology");
+      expect(dashRender.container.querySelector("#planet-title")?.textContent).toBe(
+        "SECTOR // [02:379:05] COLONY 2"
+      );
+      expect(dashRender.container.querySelector("#val-pig")?.textContent).toBe("2,900");
+      expect(dashRender.container.querySelector("#val-metal")?.textContent).toBe("900");
+      expect(dashRender.container.querySelector("#val-kryp")?.textContent).toBe("950");
+      expect(dashRender.container.querySelector("#val-spice")?.textContent).toBe("500");
+      expect(dashRender.container.querySelector("#cap-pig")?.textContent).toBe("/ 100,000 (3%)");
+      expect(dashRender.container.querySelector("#rate-pig")?.textContent).toBe("+350/h");
+      expect(dashRender.container.querySelector("#val-energy")?.textContent).toBe("+79");
+      expect(dashRender.container.querySelector("#energy-ratio")?.textContent).toBe("120 / 41 E");
+    });
+
+    // Clicking All Planets chip restores aggregated empire resources
+    fireEvent.click(dashRender.container.querySelector('[data-dash-planet-scope="all"]')!);
+    await waitFor(() => {
+      expect(dashRender.container.querySelector("#planet-title")?.textContent).toBe(
+        "SECTOR // ALL COLONIES (2)"
+      );
+      expect(dashRender.container.querySelector("#val-pig")?.textContent).toBe("27,900");
+      expect(dashRender.container.querySelector("#rate-pig")?.textContent).toBe("+1,550/h");
     });
     dashRender.unmount();
 

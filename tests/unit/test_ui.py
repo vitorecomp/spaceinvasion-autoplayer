@@ -1992,6 +1992,14 @@ return {
         self.assertIn('id="nav-graph-badge"', html_txt)
         self.assertIn('data-goto-page="action-graph"', html_txt)
         self.assertIn('id="view-action-graph"', html_txt)
+        ag_sec_match = re.search(r'<section\b[^>]*id="view-action-graph"[^>]*>', html_txt)
+        self.assertIsNotNone(ag_sec_match)
+        assert ag_sec_match is not None
+        self.assertRegex(
+            ag_sec_match.group(0),
+            r"\bhidden\b",
+            "#view-action-graph must be hidden on initial SSR Dashboard render",
+        )
         self.assertIn('id="ag-main-window"', html_txt)
         self.assertIn('id="ag-control-panel"', html_txt)
 
@@ -2103,6 +2111,7 @@ async (url, opts, fullUrl, nativeFetch) => {
             scenario_js = r"""
 await __waitUntil(() => state.dashboard !== null);
 
+const hiddenOnDashboard = Boolean(el("view-action-graph").hidden) && !el("view-dashboard").hidden;
 const navBtn = document.querySelector('[data-page="action-graph"]');
 navBtn.click();
 const viewVisible = !el("view-action-graph").hidden && el("view-dashboard").hidden;
@@ -2206,7 +2215,11 @@ el("btn-ag-apply").click();
 await __waitUntil(() => state.configSaving === 0 && !state.agSimDirty && state.dashboard?.config?.playstyle === "hybrid" && Math.abs(Number(state.dashboard?.config?.combat_safety_margin || 0) - 1.75) < 1e-6);
 
 const fullText = el("view-action-graph").textContent;
+document.querySelector('[data-page="buildings"]').click();
+const hiddenAfterLeaving = Boolean(el("view-action-graph").hidden) && !el("view-buildings").hidden;
 return {
+  hiddenOnDashboard,
+  hiddenAfterLeaving,
   viewVisible,
   initialNodes,
   hasSvg: Boolean(svgEl),
@@ -2257,6 +2270,8 @@ return {
                 res = _run_node_ui(base_url, scenario_js, fetch_patch_js=fetch_patch_js)
             self.assertEqual(res["errors"], [])
             sc = res["scenario"]
+            self.assertTrue(sc["hiddenOnDashboard"])
+            self.assertTrue(sc["hiddenAfterLeaving"])
             self.assertTrue(sc["viewVisible"])
             self.assertGreater(sc["initialNodes"], 0)
             self.assertTrue(sc["hasSvg"])

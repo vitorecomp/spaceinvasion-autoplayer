@@ -82,6 +82,7 @@ from spaceinvasion.combat.ranking import (
     build_buildings_eta,
     build_combat_overview,
     build_ranking_evolution,
+    estimate_planet_hourly_economy,
     load_rank_history,
     record_rank_snapshot,
     simulate_combat_matchup,
@@ -4544,6 +4545,7 @@ class GameApiBridge:
                 build_ranking_evolution,
                 build_buildings_eta,
                 build_combat_overview,
+                estimate_planet_hourly_economy,
             )
             if self._dash_static_cache_json is None or not _safe_sig_eq(
                 self._dash_static_cache_key, static_key
@@ -4558,6 +4560,14 @@ class GameApiBridge:
                     if dash_state is not None
                     else None
                 )
+                planet_economies = (
+                    {
+                        str(p.planet_id): estimate_planet_hourly_economy(dash_state, p)
+                        for p in dash_state.planets
+                    }
+                    if dash_state is not None
+                    else {}
+                )
                 combat = (
                     build_combat_overview(
                         dash_state,
@@ -4571,6 +4581,7 @@ class GameApiBridge:
                         "config": cfg_raw,
                         "state": asdict(dash_state) if dash_state else None,
                         "buildings_eta": buildings_eta,
+                        "planet_economies": planet_economies,
                         "combat": combat,
                         "ranking": ranking,
                     }
@@ -4693,6 +4704,7 @@ class GameApiBridge:
                 "universe_research_max": envelope["universe_research_max"],
                 "optimizer_summary": envelope["optimizer_summary"],
                 "buildings_eta": static_val["buildings_eta"],
+                "planet_economies": static_val["planet_economies"],
                 "combat": static_val["combat"],
                 "ranking": static_val["ranking"],
                 "db_summary": envelope["db_summary"],

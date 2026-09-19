@@ -91,6 +91,8 @@ export const ActionGraphView: React.FC = () => {
     <section
       className={`page-view ag-view${activePage === "action-graph" ? " active" : ""}`}
       id="view-action-graph"
+      aria-label="Action Graph workspace"
+      hidden={activePage !== "action-graph"}
     >
       {/* Top 4-Tab Workspace Navigation Bar */}
       <div className="ag-subtab-bar" id="ag-workspace-subbar">

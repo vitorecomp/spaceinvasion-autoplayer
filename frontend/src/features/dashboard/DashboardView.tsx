@@ -113,6 +113,19 @@ const ResourceTrackRow: React.FC<ResourceTrackSpec> = ({
   );
 };
 
+function sumOptionalFinite(values: unknown[]): number | null {
+  let total = 0;
+  let found = false;
+  for (const raw of values) {
+    const n = finiteNum(raw, null);
+    if (n !== null) {
+      total += n;
+      found = true;
+    }
+  }
+  return found ? total : null;
+}
+
 export const DashboardView: React.FC = () => {
   const {
     dashboard,
@@ -168,35 +181,153 @@ export const DashboardView: React.FC = () => {
 
   const colonySort = useTableSort(planets, colonySortCols);
 
-  const currentEta = useMemo(() => {
+  const rawDashScope = String(uiPrefs.dashQueuePlanetScope || "all");
+  const scopedDashPlanet = useMemo(
+    () =>
+      rawDashScope !== "all"
+        ? planets.find((p) => String(p.planet_id) === rawDashScope) || null
+        : null,
+    [planets, rawDashScope]
+  );
+  const activeDashScope = scopedDashPlanet ? String(scopedDashPlanet.planet_id) : "all";
+  const isAllColoniesScope = planets.length > 1 && scopedDashPlanet === null;
+  const resourcePlanet = scopedDashPlanet || activePlanet;
+  const hasResourceScope = isAllColoniesScope ? planets.length > 0 : Boolean(resourcePlanet);
+
+  const rnk = dashboard?.ranking || {};
+  const curRnk = rnk.current || {};
+  const rnkRates = rnk.rates || {};
+
+  const planetEconMap =
+    dashboard?.planet_economies && typeof dashboard.planet_economies === "object"
+      ? dashboard.planet_economies
+      : null;
+
+  const scopedEcon = useMemo(() => {
+    if (isAllColoniesScope) {
+      const allHavePerPlanetEcon =
+        Boolean(planetEconMap) &&
+        planets.length > 0 &&
+        planets.every((p) => planetEconMap![String(p.planet_id)] != null);
+      if (allHavePerPlanetEcon) {
+        const econRows = planets.map((p) => planetEconMap![String(p.planet_id)]);
+        return {
+          pig_iron_per_hr: sumOptionalFinite(econRows.map((e) => e?.pig_iron_per_hr)),
+          metal_per_hr: sumOptionalFinite(econRows.map((e) => e?.metal_per_hr)),
+          kryptonite_per_hr: sumOptionalFinite(econRows.map((e) => e?.kryptonite_per_hr)),
+          spice_per_hr: sumOptionalFinite(econRows.map((e) => e?.spice_per_hr)),
+        };
+      }
+      if (rnkRates && Object.keys(rnkRates).length > 0) {
+        return {
+          pig_iron_per_hr: rnkRates.pig_iron_per_hr ?? null,
+          metal_per_hr: rnkRates.metal_per_hr ?? null,
+          kryptonite_per_hr: rnkRates.kryptonite_per_hr ?? null,
+          spice_per_hr: rnkRates.spice_per_hr ?? null,
+        };
+      }
+      return null;
+    }
+
+    if (!resourcePlanet) return null;
+    const directEcon = planetEconMap?.[String(resourcePlanet.planet_id)];
+    if (directEcon && typeof directEcon === "object") {
+      return directEcon;
+    }
     if (
       buildingsEtaData &&
-      activePlanet &&
-      buildingsEtaData.planet?.planet_id === activePlanet.planet_id
+      buildingsEtaData.planet?.planet_id === resourcePlanet.planet_id &&
+      buildingsEtaData.planet_economy
     ) {
-      return buildingsEtaData;
+      return buildingsEtaData.planet_economy;
     }
-    return dashboard?.buildings_eta || null;
-  }, [activePlanet, buildingsEtaData, dashboard?.buildings_eta]);
+    if (
+      dashboard?.buildings_eta?.planet?.planet_id === resourcePlanet.planet_id &&
+      dashboard.buildings_eta.planet_economy
+    ) {
+      return dashboard.buildings_eta.planet_economy;
+    }
+    if (planets.length <= 1) {
+      return dashboard?.buildings_eta?.planet_economy || null;
+    }
+    return null;
+  }, [
+    buildingsEtaData,
+    dashboard?.buildings_eta,
+    isAllColoniesScope,
+    planetEconMap,
+    planets,
+    resourcePlanet,
+    rnkRates,
+  ]);
 
-  const pEcon = currentEta?.planet_economy || null;
+  const scopedResources = useMemo(() => {
+    if (isAllColoniesScope) {
+      return {
+        pig_iron: sumOptionalFinite(planets.map((p) => p.resources?.pig_iron)),
+        metal: sumOptionalFinite(planets.map((p) => p.resources?.metal)),
+        kryptonite: sumOptionalFinite(planets.map((p) => p.resources?.kryptonite)),
+        spice: sumOptionalFinite(planets.map((p) => p.resources?.spice)),
+      };
+    }
+    return {
+      pig_iron: resourcePlanet?.resources?.pig_iron,
+      metal: resourcePlanet?.resources?.metal,
+      kryptonite: resourcePlanet?.resources?.kryptonite,
+      spice: resourcePlanet?.resources?.spice,
+    };
+  }, [isAllColoniesScope, planets, resourcePlanet]);
+
+  const scopedStorage = useMemo(() => {
+    if (isAllColoniesScope) {
+      return {
+        pig_iron: sumOptionalFinite(planets.map((p) => p.storage?.pig_iron)),
+        metal: sumOptionalFinite(planets.map((p) => p.storage?.metal)),
+        kryptonite: sumOptionalFinite(planets.map((p) => p.storage?.kryptonite)),
+        spice: sumOptionalFinite(planets.map((p) => p.storage?.spice)),
+      };
+    }
+    return {
+      pig_iron: resourcePlanet?.storage?.pig_iron,
+      metal: resourcePlanet?.storage?.metal,
+      kryptonite: resourcePlanet?.storage?.kryptonite,
+      spice: resourcePlanet?.storage?.spice,
+    };
+  }, [isAllColoniesScope, planets, resourcePlanet]);
+
   const b2Pct = getSelectedBlastFurnacePct(dashboard, selectedPlanetId, buildingsEtaData);
 
-  // Energy readout
-  const prodRaw = activePlanet?.energy?.produced;
-  const usedRaw = activePlanet?.energy?.used;
-  const prodFinite = prodRaw == null ? 0 : finiteNum(prodRaw, null);
-  const usedFinite = usedRaw == null ? 0 : finiteNum(usedRaw, null);
+  // Energy readout (aggregated across all colonies when All Planets scope is active)
+  const prodFinite = isAllColoniesScope
+    ? sumOptionalFinite(
+        planets.map((p) => (p.energy?.produced == null ? 0 : p.energy.produced))
+      )
+    : resourcePlanet?.energy?.produced == null
+      ? 0
+      : finiteNum(resourcePlanet.energy.produced, null);
+  const usedFinite = isAllColoniesScope
+    ? sumOptionalFinite(
+        planets.map((p) => (p.energy?.used == null ? 0 : p.energy.used))
+      )
+    : resourcePlanet?.energy?.used == null
+      ? 0
+      : finiteNum(resourcePlanet.energy.used, null);
   const netRaw = prodFinite !== null && usedFinite !== null ? prodFinite - usedFinite : null;
   const netEnergy = netRaw === null ? null : netRaw === 0 ? 0 : netRaw;
-  const energyValText = activePlanet
+  const energyValText = hasResourceScope
     ? netEnergy === null
       ? "—"
       : `${netEnergy >= 0 ? "+" : ""}${fmtInt(netEnergy)}`
     : "+0";
-  const energyRatioText = activePlanet
+  const energyRatioText = hasResourceScope
     ? `${prodFinite === null ? "—" : fmtInt(prodFinite)} / ${usedFinite === null ? "—" : fmtInt(usedFinite)} E`
     : "0 / 0 E";
+
+  const sectorTitleText = isAllColoniesScope
+    ? `SECTOR // ALL COLONIES (${planets.length})`
+    : resourcePlanet
+      ? `SECTOR // [${resourcePlanet.coords || "--"}] ${String(resourcePlanet.name || "COLONY").toUpperCase()}`
+      : "SECTOR // ACTIVE COLONY";
 
   // Colony overview meta text
   const pTemp = finiteNum(activePlanet?.temperature, null);
@@ -208,9 +339,6 @@ export const DashboardView: React.FC = () => {
     : "COLONY STANDBY";
 
   // Ranking & hourly SpiceEq flow readouts
-  const rnk = dashboard?.ranking || {};
-  const curRnk = rnk.current || {};
-  const rnkRates = rnk.rates || {};
   const az = curRnk.attack_zone || {};
   const rankFinite = finiteNum(curRnk.server_rank, null);
   const dashRankText = dashboard
@@ -281,16 +409,6 @@ export const DashboardView: React.FC = () => {
     );
   }, [allPlanActions, dashboard]);
   const pinnedCount = manualList.length;
-
-  const rawDashScope = String(uiPrefs.dashQueuePlanetScope || "all");
-  const scopedDashPlanet = useMemo(
-    () =>
-      rawDashScope !== "all"
-        ? planets.find((p) => String(p.planet_id) === rawDashScope) || null
-        : null,
-    [planets, rawDashScope]
-  );
-  const activeDashScope = scopedDashPlanet ? String(scopedDashPlanet.planet_id) : "all";
 
   const planetQueueStats = useMemo(() => {
     const map = new Map<number, { total: number; ready: number }>();
@@ -482,11 +600,7 @@ export const DashboardView: React.FC = () => {
               <h2>Resources &amp; Hourly Net Flow</h2>
             </div>
             <span className="module-meta tabular" id="command-subpath">
-              <span id="planet-title">
-                {activePlanet
-                  ? `SECTOR // [${activePlanet.coords || "--"}] ${String(activePlanet.name || "COLONY").toUpperCase()}`
-                  : "SECTOR // ACTIVE COLONY"}
-              </span>
+              <span id="planet-title">{sectorTitleText}</span>
             </span>
           </div>
 
@@ -497,40 +611,40 @@ export const DashboardView: React.FC = () => {
                 idKey="pig"
                 code="PIG"
                 name="Pig Iron"
-                amount={activePlanet?.resources?.pig_iron}
-                storage={activePlanet?.storage?.pig_iron}
-                hourlyRate={pEcon?.pig_iron_per_hr}
-                hasPlanet={Boolean(activePlanet)}
+                amount={scopedResources.pig_iron}
+                storage={scopedStorage.pig_iron}
+                hourlyRate={scopedEcon?.pig_iron_per_hr}
+                hasPlanet={hasResourceScope}
               />
               <ResourceTrackRow
                 key="metal"
                 idKey="metal"
                 code="MET"
                 name="Metal"
-                amount={activePlanet?.resources?.metal}
-                storage={activePlanet?.storage?.metal}
-                hourlyRate={pEcon?.metal_per_hr}
-                hasPlanet={Boolean(activePlanet)}
+                amount={scopedResources.metal}
+                storage={scopedStorage.metal}
+                hourlyRate={scopedEcon?.metal_per_hr}
+                hasPlanet={hasResourceScope}
               />
               <ResourceTrackRow
                 key="kryp"
                 idKey="kryp"
                 code="KRY"
                 name="Kryptonite"
-                amount={activePlanet?.resources?.kryptonite}
-                storage={activePlanet?.storage?.kryptonite}
-                hourlyRate={pEcon?.kryptonite_per_hr}
-                hasPlanet={Boolean(activePlanet)}
+                amount={scopedResources.kryptonite}
+                storage={scopedStorage.kryptonite}
+                hourlyRate={scopedEcon?.kryptonite_per_hr}
+                hasPlanet={hasResourceScope}
               />
               <ResourceTrackRow
                 key="spice"
                 idKey="spice"
                 code="SPI"
                 name="Spice"
-                amount={activePlanet?.resources?.spice}
-                storage={activePlanet?.storage?.spice}
-                hourlyRate={pEcon?.spice_per_hr}
-                hasPlanet={Boolean(activePlanet)}
+                amount={scopedResources.spice}
+                storage={scopedStorage.spice}
+                hourlyRate={scopedEcon?.spice_per_hr}
+                hasPlanet={hasResourceScope}
               />
             </div>
 
@@ -655,7 +769,12 @@ export const DashboardView: React.FC = () => {
                         <tr
                           key={p.planet_id}
                           className={`clickable-row${isActive ? " is-active" : ""}`}
-                          onClick={() => setSelectedPlanetId(p.planet_id)}
+                          onClick={() => {
+                            setSelectedPlanetId(p.planet_id);
+                            if (planets.length > 1) {
+                              setUiPref("dashQueuePlanetScope", String(p.planet_id));
+                            }
+                          }}
                         >
                           <td className="tabular">{p.coords || "--"}</td>
                           <td>{p.name || "Colony"}</td>
@@ -759,7 +878,10 @@ export const DashboardView: React.FC = () => {
                     className={`chip-btn tabular${activeDashScope === pidKey ? " active" : ""}${stats.ready > 0 ? " has-ready" : ""}`}
                     data-dash-planet-scope={pidKey}
                     title={`${p.name || "Colony"} [${p.coords}] — ${stats.ready} ready / ${stats.total} queued`}
-                    onClick={() => setUiPref("dashQueuePlanetScope", pidKey)}
+                    onClick={() => {
+                      setUiPref("dashQueuePlanetScope", pidKey);
+                      setSelectedPlanetId(p.planet_id);
+                    }}
                   >
                     {stats.ready > 0
                       ? `${p.coords || p.name} · ${stats.ready} ready`
