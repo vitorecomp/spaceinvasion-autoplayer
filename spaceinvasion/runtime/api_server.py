@@ -49,6 +49,7 @@ from spaceinvasion.core.config import (
 )
 from spaceinvasion.session.executor import ActionExecutor
 from spaceinvasion.combat.fleet import (
+    ARROW_NAV_MAX_DISTANCE,
     SHIP_SLUG_BY_KEY,
     InboxMessage,
     SpyReport,
@@ -1386,6 +1387,7 @@ class GameApiBridge:
             "click_jitter_seconds": 0.6,
         }
         self._sweep_xhr_timestamps: Deque[float] = deque()
+        self._last_galaxy_browser_coords: Optional[tuple[int, int]] = None
         self._sweep_run_lock = threading.Lock()
         self._sweep_in_progress = False
         self._sweep_stop_event = threading.Event()
@@ -2208,6 +2210,30 @@ class GameApiBridge:
                 out.append(c)
         return out
 
+    def _current_galaxy_cursor_locked(
+        self,
+        *,
+        galaxies: Sequence[int] = (),
+    ) -> Optional[tuple[int, int]]:
+        """Return the active `(galaxy, system)` cursor for contiguous arrow-first sweep anchoring."""
+        gal_set = {max(1, min(14, _safe_api_int(g, 0))) for g in galaxies if _safe_api_int(g, 0) > 0}
+        live_coords = getattr(self, "_last_galaxy_browser_coords", None)
+        if (
+            isinstance(live_coords, tuple)
+            and len(live_coords) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in live_coords)
+        ):
+            lg, ls = live_coords
+            if 1 <= lg <= 14 and 1 <= ls <= 400 and (not gal_set or lg in gal_set):
+                return (lg, ls)
+        sw_st = self._get_galaxy_sweep_state_locked(include_smart=False)
+        if _safe_api_int(sw_st.get("total_sweeps"), 0) > 0:
+            cg = _safe_api_int(sw_st.get("cursor_galaxy"), 0)
+            cs = _safe_api_int(sw_st.get("cursor_system"), 0)
+            if 1 <= cg <= 14 and 1 <= cs <= 400 and (not gal_set or cg in gal_set):
+                return (cg, cs)
+        return None
+
     def _plan_smart_galaxy_sweep_locked(
         self,
         *,
@@ -2221,11 +2247,17 @@ class GameApiBridge:
         scanned_systems_override: Optional[Mapping[str, float]] = None,
         state_override: Optional[GameState] = None,
         raid_targets_override: Optional[Sequence[Mapping[str, Any]]] = None,
+        current_cursor: Optional[tuple[int, int]] = None,
     ) -> Optional[dict[str, Any]]:
         """Select the next smart sweep batch via SQLite `get_galaxy_sector_intel` + `select_smart_galaxy_scan_batch`."""
         cfg = self.strategy_config
         st_ref = state_override if state_override is not None else self._last_state
         gal_list = [g for g in (max(1, min(14, _safe_api_int(x, 1))) for x in galaxies)]
+        eff_cursor = (
+            current_cursor
+            if current_cursor is not None
+            else self._current_galaxy_cursor_locked(galaxies=gal_list)
+        )
         intel: Optional[Mapping[str, Any]] = (
             sector_intel_override if isinstance(sector_intel_override, Mapping) else None
         )
@@ -2281,6 +2313,7 @@ class GameApiBridge:
                 near_weight=max(0.0, min(20.0, _safe_api_float(getattr(cfg, "galaxy_scan_near_weight", 2.0), 2.0))),
                 attack_weight=max(0.0, min(20.0, _safe_api_float(getattr(cfg, "galaxy_scan_attack_weight", 3.0), 3.0))),
                 collect_colonies=bool(collect_colonies),
+                current_cursor=eff_cursor,
                 now_ts=now_ts,
             )
         except Exception as exc:  # pragma: no cover - defensive: contiguous cursor fallback
@@ -5467,6 +5500,7 @@ class GameApiBridge:
         delay_range: Optional[tuple[float, float]] = None,
         dry_run: bool = False,
         priority: str = "normal",
+        automatic: bool = False,
     ) -> dict[str, Any]:
         """Scan `pages` (default `100`) solar systems with randomized intervals, releasing `_lock` between steps."""
         with self._lock:
@@ -5507,12 +5541,15 @@ class GameApiBridge:
         players_found = 0
         colonies_found = 0
         debris_found = 0
+        arrow_steps_used = 0
         aborted_reason: Optional[str] = None
 
         try:
             with self._lock:
                 self._sweep_in_progress = True
                 cfg = self.strategy_config
+                started_with_scans_allowed = bool(getattr(cfg, "allow_galaxy_scan", False))
+                enforce_scan_toggle = (automatic or started_with_scans_allowed) and priority != "interactive"
                 total_pages = max(
                     1,
                     min(400, int(pages if pages is not None else getattr(cfg, "galaxy_sweep_pages", 100))),
@@ -5691,6 +5728,82 @@ class GameApiBridge:
             lo_d = max(0.0, float(min(delay_range[0], delay_range[1]))) if delay_range is not None else 0.0
             hi_d = max(lo_d, float(max(delay_range[0], delay_range[1]))) if delay_range is not None else 0.0
             has_pacing = (delay_range is None) or (hi_d > 0.0)
+            prev_browser_coords: Optional[tuple[int, int]] = getattr(self, "_last_galaxy_browser_coords", None)
+
+            def _record_sweep_page_locked(
+                page_html: str,
+                page_gal: int,
+                page_sys: int,
+                *,
+                collect_col_flag: bool,
+                count_as_planned: bool,
+            ) -> None:
+                nonlocal pages_scanned, players_found, debris_found, colonies_found, prev_browser_coords
+                self._sweep_xhr_timestamps.append(time.monotonic())
+                self._last_galaxy_browser_coords = (page_gal, page_sys)
+                prev_browser_coords = (page_gal, page_sys)
+                slots = parse_galaxy_system_html(page_html, galaxy=page_gal, system=page_sys)
+                players_on_page = sum(
+                    1
+                    for s in slots
+                    if s.status_color in ("yellow", "light_red") or s.is_spacia
+                )
+                debris_on_page = sum(1 for s in slots if bool(getattr(s, "has_debris", False)))
+                free_on_page = sum(1 for s in slots if s.status_color == "free")
+
+                slots_for_scan = (
+                    slots
+                    if collect_col_flag
+                    else [
+                        s
+                        for s in slots
+                        if s.status_color != "free"
+                        or bool(getattr(s, "has_debris", False))
+                        or bool(getattr(s, "is_spacia", False))
+                    ]
+                )
+                self._persist_galaxy_scan(page_gal, page_sys, slots_for_scan)
+                self._persist_galaxy_slots(slots_for_scan)
+
+                if count_as_planned:
+                    pages_scanned += 1
+                players_found += players_on_page
+                debris_found += debris_on_page
+                if collect_col_flag:
+                    colonies_found += free_on_page
+
+                skey_now = f"{page_gal:02d}:{page_sys:03d}"
+                if skey_now not in known_scanned_keys:
+                    known_scanned_keys.add(skey_now)
+                    sm_live = getattr(self, "_smart_sweep_summary", None)
+                    if isinstance(sm_live, dict):
+                        uni_tot_l = max(1, _safe_api_int(sm_live.get("universe_total_systems"), 5600))
+                        uni_exp_l = min(
+                            uni_tot_l,
+                            max(0, _safe_api_int(sm_live.get("universe_explored_systems"), 0)) + 1,
+                        )
+                        sm_live["universe_explored_systems"] = uni_exp_l
+                        sm_live["universe_coverage_pct"] = round(min(100.0, (uni_exp_l / uni_tot_l) * 100.0), 2)
+                        if page_gal in scan_gal_set:
+                            gal_tot_l = max(1, _safe_api_int(sm_live.get("total_systems"), 400))
+                            gal_exp_l = min(
+                                gal_tot_l,
+                                max(0, _safe_api_int(sm_live.get("explored_systems"), 0)) + 1,
+                            )
+                            gal_un_l = max(0, gal_tot_l - gal_exp_l)
+                            sm_live["explored_systems"] = gal_exp_l
+                            sm_live["unscanned_systems"] = gal_un_l
+                            sm_live["coverage_pct"] = round(min(100.0, (gal_exp_l / gal_tot_l) * 100.0), 2)
+                            if gal_un_l == 0:
+                                sm_live["scan_phase"] = "targeted_refresh"
+                        cur_samples = sm_live.get("sample_targets")
+                        if isinstance(cur_samples, list) and cur_samples:
+                            sm_live["sample_targets"] = [
+                                s_it for s_it in cur_samples if str((s_it or {}).get("sector") or "") != skey_now
+                            ]
+                        sm_live["smart_summary_ts"] = round(time.time(), 3)
+                        self._smart_sweep_summary_ts = time.time()
+                    self._invalidate_dashboard_cache()
 
             for step_idx, (cur_gal, cur_sys) in enumerate(sweep_targets):
                 if self._sweep_stop_event.is_set():
@@ -5718,12 +5831,28 @@ class GameApiBridge:
                         aborted_reason = "Sweep stopped on shutdown."
                         break
 
+                needed_xhr = 1
+                if (
+                    prev_browser_coords is not None
+                    and prev_browser_coords[0] == cur_gal
+                    and 1 <= prev_browser_coords[1] <= 400
+                    and 1 <= cur_sys <= 400
+                ):
+                    delta_est = abs(cur_sys - prev_browser_coords[1])
+                    circ_est = min(delta_est, 400 - delta_est)
+                    if 1 <= circ_est < ARROW_NAV_MAX_DISTANCE:
+                        needed_xhr = circ_est
+
                 if has_pacing:
                     budget_deadline = time.monotonic() + 75.0
                     while not self._sweep_stop_event.is_set() and time.monotonic() < budget_deadline:
+                        if enforce_scan_toggle and not bool(
+                            getattr(self.strategy_config, "allow_galaxy_scan", False)
+                        ):
+                            break
                         rem_rl = self.rate_limit_remaining()
                         total_60s = self._page_limiter.views_last_60s() + self._sweep_views_last_60s()
-                        if rem_rl <= 0.0 and total_60s < 24:
+                        if rem_rl <= 0.0 and (total_60s + needed_xhr) <= 24:
                             break
                         sleep_s = max(1.0, min(5.0, rem_rl if rem_rl > 0.0 else random.uniform(1.1, 2.2)))
                         if self._sweep_stop_event.wait(sleep_s):
@@ -5737,6 +5866,11 @@ class GameApiBridge:
                         break
                     if self._bot_control.get("paused") and priority != "interactive":
                         aborted_reason = "Bot paused via operator UI."
+                        break
+                    if enforce_scan_toggle and not bool(
+                        getattr(self.strategy_config, "allow_galaxy_scan", False)
+                    ):
+                        aborted_reason = "Galaxy scans suspended via operator UI."
                         break
                     self._raise_if_rate_limited()
                     cfg_now = self.strategy_config
@@ -5752,12 +5886,34 @@ class GameApiBridge:
                                     priority="interactive" if priority == "interactive" else "normal",
                                 )
                             if self._is_real_client_method(client, "step_galaxy_system"):
-                                html, actual_gal, actual_sys = client.step_galaxy_system(
-                                    galaxy=cur_gal,
-                                    system=cur_sys,
-                                    pace=False,
-                                    priority=priority,
-                                )
+                                step_kwargs: dict[str, Any] = {
+                                    "galaxy": cur_gal,
+                                    "system": cur_sys,
+                                    "pace": False,
+                                    "priority": priority,
+                                }
+                                try:
+                                    step_sig = inspect.signature(client.step_galaxy_system)
+                                    accepts_inter = any(
+                                        p.name == "on_intermediate_page"
+                                        or p.kind == inspect.Parameter.VAR_KEYWORD
+                                        for p in step_sig.parameters.values()
+                                    )
+                                except Exception:
+                                    accepts_inter = False
+                                if accepts_inter:
+                                    step_kwargs["on_intermediate_page"] = (
+                                        lambda inter_html, ig, isys, _cc=collect_colonies: _record_sweep_page_locked(
+                                            inter_html,
+                                            ig,
+                                            isys,
+                                            collect_col_flag=_cc,
+                                            count_as_planned=False,
+                                        )
+                                    )
+                                html, actual_gal, actual_sys = client.step_galaxy_system(**step_kwargs)
+                                if getattr(client, "last_galaxy_nav_method", "") == "arrow":
+                                    arrow_steps_used += 1
                             elif self._is_real_client_method(client, "open_galaxy_with_coords"):
                                 html, actual_gal, actual_sys = client.open_galaxy_with_coords(
                                     galaxy=cur_gal,
@@ -5784,62 +5940,13 @@ class GameApiBridge:
                         aborted_reason = f"Anti-bot challenge detected: {ab_exc}"
                         break
 
-                    self._sweep_xhr_timestamps.append(time.monotonic())
-                    slots = parse_galaxy_system_html(html, galaxy=actual_gal, system=actual_sys)
-                    players_on_page = sum(
-                        1
-                        for s in slots
-                        if s.status_color in ("yellow", "light_red") or s.is_spacia
+                    _record_sweep_page_locked(
+                        html,
+                        actual_gal,
+                        actual_sys,
+                        collect_col_flag=collect_colonies,
+                        count_as_planned=True,
                     )
-                    debris_on_page = sum(1 for s in slots if bool(getattr(s, "has_debris", False)))
-                    free_on_page = sum(1 for s in slots if s.status_color == "free")
-
-                    slots_for_scan = (
-                        slots
-                        if collect_colonies
-                        else [
-                            s
-                            for s in slots
-                            if s.status_color != "free"
-                            or bool(getattr(s, "has_debris", False))
-                            or bool(getattr(s, "is_spacia", False))
-                        ]
-                    )
-                    self._persist_galaxy_scan(actual_gal, actual_sys, slots_for_scan)
-                    self._persist_galaxy_slots(slots_for_scan)
-
-                    pages_scanned += 1
-                    players_found += players_on_page
-                    debris_found += debris_on_page
-                    if collect_colonies:
-                        colonies_found += free_on_page
-
-                    skey_now = f"{actual_gal:02d}:{actual_sys:03d}"
-                    if skey_now not in known_scanned_keys:
-                        known_scanned_keys.add(skey_now)
-                        sm_live = getattr(self, "_smart_sweep_summary", None)
-                        if isinstance(sm_live, dict):
-                            uni_tot_l = max(1, _safe_api_int(sm_live.get("universe_total_systems"), 5600))
-                            uni_exp_l = min(uni_tot_l, max(0, _safe_api_int(sm_live.get("universe_explored_systems"), 0)) + 1)
-                            sm_live["universe_explored_systems"] = uni_exp_l
-                            sm_live["universe_coverage_pct"] = round(min(100.0, (uni_exp_l / uni_tot_l) * 100.0), 2)
-                            if actual_gal in scan_gal_set:
-                                gal_tot_l = max(1, _safe_api_int(sm_live.get("total_systems"), 400))
-                                gal_exp_l = min(gal_tot_l, max(0, _safe_api_int(sm_live.get("explored_systems"), 0)) + 1)
-                                gal_un_l = max(0, gal_tot_l - gal_exp_l)
-                                sm_live["explored_systems"] = gal_exp_l
-                                sm_live["unscanned_systems"] = gal_un_l
-                                sm_live["coverage_pct"] = round(min(100.0, (gal_exp_l / gal_tot_l) * 100.0), 2)
-                                if gal_un_l == 0:
-                                    sm_live["scan_phase"] = "targeted_refresh"
-                            cur_samples = sm_live.get("sample_targets")
-                            if isinstance(cur_samples, list) and cur_samples:
-                                sm_live["sample_targets"] = [
-                                    s_it for s_it in cur_samples if str((s_it or {}).get("sector") or "") != skey_now
-                                ]
-                            sm_live["smart_summary_ts"] = round(time.time(), 3)
-                            self._smart_sweep_summary_ts = time.time()
-                        self._invalidate_dashboard_cache()
 
             # Next cursor: contiguous mode continues after the last scanned page; smart mode records the system
             # after the last visited sector (used only by explicit fallbacks / telemetry).
@@ -5935,6 +6042,7 @@ class GameApiBridge:
                         "dry_run": False,
                         "pages_planned": planned_pages,
                         "pages_scanned": pages_scanned,
+                        "arrow_steps": arrow_steps_used,
                         "players_found": players_found,
                         "colonies_found": colonies_found,
                         "debris_found": debris_found,
@@ -5984,7 +6092,7 @@ class GameApiBridge:
                     should_run = True
             if should_run:
                 try:
-                    self.run_galaxy_sweep(priority="normal")
+                    self.run_galaxy_sweep(priority="normal", automatic=True)
                 except Exception as exc:
                     if self.log_dir is not None:
                         append_crash_debug_log(
@@ -8736,6 +8844,7 @@ class GameApiBridge:
                 if any(
                     getattr(new_cfg, k, None) != getattr(prev_cfg, k, None)
                     for k in (
+                        "allow_galaxy_scan",
                         "galaxy_sweep_pages",
                         "galaxy_scan_explore_first",
                         "galaxy_scan_refresh_pct",
@@ -10268,6 +10377,7 @@ class GameApiBridge:
                                 system=actual_sys,
                             )
                             self._persist_galaxy_scan(actual_gal, actual_sys, slots)
+                            self._last_galaxy_browser_coords = (actual_gal, actual_sys)
                             saved_slots = self._persist_galaxy_slots(slots)
                             if self._last_state is not None:
                                 self._refresh_cached_economy(self._last_state)

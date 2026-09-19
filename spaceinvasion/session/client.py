@@ -34,7 +34,7 @@ from spaceinvasion.session.browser import (
     find_and_switch_game_tab,
     is_debug_port_open,
 )
-from spaceinvasion.combat.fleet import extract_galaxy_system_coords
+from spaceinvasion.combat.fleet import ARROW_NAV_MAX_DISTANCE, extract_galaxy_system_coords
 from spaceinvasion.core.state import (
     GameState,
     QueueJob,
@@ -606,6 +606,8 @@ class GameBrowserClient:
     page_limiter: PageViewLimiter = _DEFAULT_PAGE_VIEW_LIMITER
     max_limiter_wait: Optional[float] = None
     last_galaxy_coords: Optional[tuple[int, int]] = None
+    last_galaxy_nav_method: str = ""
+    last_galaxy_step_clicks: int = 0
     last_snapshot_observed_active_planet: bool = True
 
     def __init__(
@@ -633,6 +635,8 @@ class GameBrowserClient:
             else _safe_bounded_float(max_limiter_wait, 60.0, min_val=0.0, max_val=3600.0)
         )
         self.last_galaxy_coords: Optional[tuple[int, int]] = None
+        self.last_galaxy_nav_method: str = ""
+        self.last_galaxy_step_clicks: int = 0
         self.last_snapshot_observed_active_planet: bool = True
         self._driver_lock = threading.RLock()
         self._dom_healthy_epoch: int = 0
@@ -1761,65 +1765,19 @@ class GameBrowserClient:
         )
         return html
 
-    def step_galaxy_system(
+    def _wait_galaxy_step_landed(
         self,
         *,
-        galaxy: int,
-        system: int,
-        pace: bool = False,
-        priority: str = "normal",
-    ) -> tuple[str, int, int]:
-        """Step to `(galaxy, system)` via in-page `si.navigate(g, s)` XHR when already on `internalGalaxy`."""
-        gal_arg = game_data.cap_json_int(max(1, min(1000, game_data.safe_int(galaxy, 1))))
-        sys_arg = game_data.cap_json_int(max(1, min(1000, game_data.safe_int(system, 1))))
-        can_ajax_step = False
-        try:
-            self._switch_frame("F_Hauptframe")
-            probe = self.driver.execute_script(
-                "var cg = document.getElementById('si-captcha-gate');"
-                "if (cg && window.getComputedStyle(cg).display !== 'none' && window.getComputedStyle(cg).visibility !== 'hidden' && cg.offsetWidth > 0 && cg.offsetHeight > 0) return 'captcha';"
-                "if (window.si && typeof window.si.navigate === 'function' && typeof window.si.getData === 'function') {"
-                "  return {ok: true, g: Number(window.si.galaxy || 0), s: Number(window.si.sun || 0), busy: Boolean(window.si._getStatus)};"
-                "}"
-                "return null;"
-            )
-            if probe == "captcha":
-                html_cap = self.driver.page_source or ""
-                self._check_page_guards(html_cap)
-            if isinstance(probe, dict) and probe.get("ok"):
-                can_ajax_step = True
-        except SpaceInvasionAuthError:
-            raise
-        except Exception:
-            can_ajax_step = False
-
-        if not can_ajax_step:
-            return self.open_galaxy_with_coords(
-                galaxy=gal_arg,
-                system=sys_arg,
-                priority=priority,
-            )
-
-        if pace:
-            self._pace(priority=priority)
-
-        self._switch_frame("F_Hauptframe")
-        self.driver.execute_script(
-            "window.__siSweepDone = false;"
-            "var targetG = Number(arguments[0]), targetS = Number(arguments[1]);"
-            "if (Number(window.si.galaxy) === targetG && Number(window.si.sun) === targetS && !window.si._getStatus && window.si.result) {"
-            "  window.si.getData();"
-            "} else {"
-            "  window.si.navigate(targetG, targetS);"
-            "}",
-            gal_arg,
-            sys_arg,
-        )
-        deadline = time.monotonic() + min(4.0, max(0.4, self.timeout * 0.35))
-        landed = False
-        landed_coords: Optional[tuple[int, int]] = None
+        expected_galaxy: int,
+        expected_system: int,
+        before_coords: Optional[tuple[int, int]] = None,
+        bail_if_idle_unchanged: bool = False,
+    ) -> tuple[bool, Optional[tuple[int, int]]]:
+        """Poll `window.si` inside `F_Hauptframe` until `(expected_galaxy, expected_system)` lands or times out."""
+        started = time.monotonic()
+        deadline = started + min(4.0, max(0.4, self.timeout * 0.35))
         while time.monotonic() < deadline:
-            time.sleep(0.08)
+            time.sleep(0.06)
             self._switch_frame("F_Hauptframe")
             try:
                 status = self.driver.execute_script(
@@ -1849,16 +1807,204 @@ class GameBrowserClient:
                     )
                 if status.get("missing"):
                     break
-                if (
-                    not status.get("busy")
-                    and status.get("resG") == gal_arg
-                    and status.get("resS") == sys_arg
-                ):
+                busy = bool(status.get("busy"))
+                res_g = game_data.safe_int(status.get("resG"), 0)
+                res_s = game_data.safe_int(status.get("resS"), 0)
+                cur_g = game_data.safe_int(status.get("g"), 0)
+                cur_s = game_data.safe_int(status.get("s"), 0)
+                if not busy and res_g == expected_galaxy and res_s == expected_system:
+                    return True, (expected_galaxy, expected_system)
+                if bail_if_idle_unchanged and not busy and (time.monotonic() - started) >= 0.30:
+                    if before_coords is not None and (cur_g, cur_s) == before_coords and (res_g, res_s) == before_coords:
+                        return False, None
+                    if res_g > 0 and res_g != expected_galaxy:
+                        return False, None
+        return False, None
+
+    def _click_galaxy_system_arrow(self, delta: int) -> str:
+        """Click the live 2D Galaxy next/prev system arrow (`img[onclick*=\"navigateSystem(±1)\"]`) in `F_Hauptframe`."""
+        step_dir = 1 if int(delta) >= 0 else -1
+        self._switch_frame("F_Hauptframe")
+        res = self.driver.execute_script(
+            "var delta = Number(arguments[0]);"
+            "var sel = delta > 0"
+            "  ? 'img[onclick*=\"navigateSystem(1)\"], [onclick*=\"navigateSystem(1)\"], img[onclick*=\"navigateSystem(+1)\"]'"
+            "  : 'img[onclick*=\"navigateSystem(-1)\"], [onclick*=\"navigateSystem(-1)\"]';"
+            "var els = document.querySelectorAll ? document.querySelectorAll(sel) : [];"
+            "var chosen = null;"
+            "for (var i = 0; i < els.length; i++) {"
+            "  var el = els[i];"
+            "  var cs = window.getComputedStyle ? window.getComputedStyle(el) : null;"
+            "  if (el && el.offsetWidth > 0 && el.offsetHeight > 0 && (!cs || (cs.display !== 'none' && cs.visibility !== 'hidden'))) {"
+            "    chosen = el;"
+            "    break;"
+            "  }"
+            "}"
+            "if (!chosen && els.length > 0) chosen = els[0];"
+            "if (chosen && typeof chosen.click === 'function') {"
+            "  chosen.click();"
+            "  return {clicked: 'dom'};"
+            "}"
+            "if (window.si && typeof window.si.navigateSystem === 'function') {"
+            "  window.si.navigateSystem(delta);"
+            "  return {clicked: 'fn'};"
+            "}"
+            "return {clicked: 'none'};",
+            step_dir,
+        )
+        if isinstance(res, dict):
+            return str(res.get("clicked") or "none")
+        return "none"
+
+    def step_galaxy_system(
+        self,
+        *,
+        galaxy: int,
+        system: int,
+        pace: bool = False,
+        priority: str = "normal",
+        max_arrow_distance: int = ARROW_NAV_MAX_DISTANCE,
+        on_intermediate_page: Optional[Callable[[str, int, int], None]] = None,
+    ) -> tuple[str, int, int]:
+        """Step to `(galaxy, system)` in-place on `internalGalaxy`, prioritizing arrow clicks when same-galaxy distance `< 5`."""
+        gal_arg = game_data.cap_json_int(max(1, min(1000, game_data.safe_int(galaxy, 1))))
+        sys_arg = game_data.cap_json_int(max(1, min(1000, game_data.safe_int(system, 1))))
+        eff_arrow_max = max(1, game_data.safe_int(max_arrow_distance, ARROW_NAV_MAX_DISTANCE))
+        self.last_galaxy_nav_method = ""
+        self.last_galaxy_step_clicks = 0
+
+        can_ajax_step = False
+        cur_g = 0
+        cur_s = 0
+        max_sys = 400
+        try:
+            self._switch_frame("F_Hauptframe")
+            probe = self.driver.execute_script(
+                "var cg = document.getElementById('si-captcha-gate');"
+                "if (cg && window.getComputedStyle(cg).display !== 'none' && window.getComputedStyle(cg).visibility !== 'hidden' && cg.offsetWidth > 0 && cg.offsetHeight > 0) return 'captcha';"
+                "if (window.si && typeof window.si.navigate === 'function' && typeof window.si.getData === 'function') {"
+                "  var resPos = (window.si.result && window.si.result.position) ? window.si.result.position : null;"
+                "  var cgVal = Number((resPos && resPos.galaxy) || window.si.galaxy || 0);"
+                "  var csVal = Number((resPos && (resPos.system || resPos.sun)) || window.si.sun || 0);"
+                "  var maxS = Number(window.si.maxSystem || (window.SI_TPL && window.SI_TPL.galaxy && window.SI_TPL.galaxy.maxSystem) || 400);"
+                "  if (!maxS || maxS < 1) maxS = 400;"
+                "  return {ok: true, g: cgVal, s: csVal, maxS: maxS, busy: Boolean(window.si._getStatus)};"
+                "}"
+                "return null;"
+            )
+            if probe == "captcha":
+                html_cap = self.driver.page_source or ""
+                self._check_page_guards(html_cap)
+            if isinstance(probe, dict) and probe.get("ok"):
+                can_ajax_step = True
+                cur_g = game_data.safe_int(probe.get("g"), 0)
+                cur_s = game_data.safe_int(probe.get("s"), 0)
+                max_sys = max(1, min(1000, game_data.safe_int(probe.get("maxS"), 400)))
+                if probe.get("busy"):
+                    wait_busy_until = time.monotonic() + min(1.5, max(0.2, self.timeout * 0.15))
+                    while time.monotonic() < wait_busy_until:
+                        time.sleep(0.06)
+                        try:
+                            b_probe = self.driver.execute_script(
+                                "if (!window.si) return null;"
+                                "var rp = (window.si.result && window.si.result.position) ? window.si.result.position : null;"
+                                "return {busy: Boolean(window.si._getStatus), g: Number((rp && rp.galaxy) || window.si.galaxy || 0), s: Number((rp && (rp.system || rp.sun)) || window.si.sun || 0)};"
+                            )
+                        except Exception:
+                            break
+                        if isinstance(b_probe, dict) and not b_probe.get("busy"):
+                            cur_g = game_data.safe_int(b_probe.get("g"), cur_g)
+                            cur_s = game_data.safe_int(b_probe.get("s"), cur_s)
+                            break
+        except SpaceInvasionAuthError:
+            raise
+        except Exception:
+            can_ajax_step = False
+
+        if not can_ajax_step:
+            self.last_galaxy_nav_method = "full_load"
+            self.last_galaxy_step_clicks = 1
+            return self.open_galaxy_with_coords(
+                galaxy=gal_arg,
+                system=sys_arg,
+                priority=priority,
+            )
+
+        if pace:
+            self._pace(priority=priority)
+
+        landed = False
+        landed_coords: Optional[tuple[int, int]] = None
+
+        # Prioritize clicking the in-page next/prev system arrow button whenever in the same galaxy with distance < 5.
+        if cur_g == gal_arg and 1 <= cur_s <= max_sys and 1 <= sys_arg <= max_sys:
+            fwd_steps = (sys_arg - cur_s) % max_sys
+            bwd_steps = (cur_s - sys_arg) % max_sys
+            circ_dist = min(fwd_steps, bwd_steps)
+            if 1 <= circ_dist < eff_arrow_max:
+                step_dir = 1 if fwd_steps <= bwd_steps else -1
+                step_cur_s = cur_s
+                arrow_ok = True
+                for step_i in range(circ_dist):
+                    if step_i > 0:
+                        if pace:
+                            self._pace(priority=priority)
+                        elif self.min_nav_delay[1] > 0.0:
+                            inter_s = min(0.25, max(0.08, self.min_nav_delay[0] * 0.15))
+                            time.sleep(inter_s)
+                    exp_s = ((step_cur_s - 1 + step_dir) % max_sys) + 1
+                    clicked_mode = self._click_galaxy_system_arrow(step_dir)
+                    if clicked_mode == "none":
+                        arrow_ok = False
+                        break
+                    self.last_galaxy_step_clicks += 1
+                    step_ok, _ = self._wait_galaxy_step_landed(
+                        expected_galaxy=gal_arg,
+                        expected_system=exp_s,
+                        before_coords=(gal_arg, step_cur_s),
+                        bail_if_idle_unchanged=True,
+                    )
+                    if not step_ok:
+                        arrow_ok = False
+                        break
+                    step_cur_s = exp_s
+                    if step_i < circ_dist - 1 and callable(on_intermediate_page):
+                        self._switch_frame("F_Hauptframe")
+                        self._sync_galaxy_json_textarea()
+                        inter_html = self.driver.page_source or ""
+                        self._check_page_guards(inter_html)
+                        on_intermediate_page(inter_html, gal_arg, exp_s)
+                if arrow_ok:
                     landed = True
                     landed_coords = (gal_arg, sys_arg)
-                    break
+                    self.last_galaxy_nav_method = "arrow"
 
         if not landed:
+            self._switch_frame("F_Hauptframe")
+            self.driver.execute_script(
+                "window.__siSweepDone = false;"
+                "var targetG = Number(arguments[0]), targetS = Number(arguments[1]);"
+                "if (Number(window.si.galaxy) === targetG && Number(window.si.sun) === targetS && !window.si._getStatus && window.si.result) {"
+                "  window.si.getData();"
+                "} else {"
+                "  window.si.navigate(targetG, targetS);"
+                "}",
+                gal_arg,
+                sys_arg,
+            )
+            self.last_galaxy_step_clicks += 1
+            landed, landed_coords = self._wait_galaxy_step_landed(
+                expected_galaxy=gal_arg,
+                expected_system=sys_arg,
+            )
+            if landed:
+                self.last_galaxy_nav_method = (
+                    "ajax_refresh" if (cur_g == gal_arg and cur_s == sys_arg) else "ajax_navigate"
+                )
+
+        if not landed:
+            self.last_galaxy_nav_method = "full_load"
+            self.last_galaxy_step_clicks += 1
             return self.open_galaxy_with_coords(
                 galaxy=gal_arg,
                 system=sys_arg,

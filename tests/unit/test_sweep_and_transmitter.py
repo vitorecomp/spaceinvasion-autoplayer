@@ -1605,6 +1605,81 @@ class TestSweepAndTransmitter(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_suspend_scans_aborts_active_sweep_and_records_intermediate_arrow_pages(self) -> None:
+        import time as _time
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory(prefix="si_suspend_arrow_") as tmp:
+            tp = Path(tmp)
+            cfg_path = tp / "cfg.yaml"
+            cfg_path.write_text("allow_galaxy_scan: true\ngalaxy_sweep_pages: 10\n", encoding="utf-8")
+            visited: list[tuple[int, int]] = []
+            bridge_holder: list[GameApiBridge] = []
+
+            class _ArrowSuspendClient:
+                last_galaxy_nav_method = "arrow"
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_exc):
+                    return None
+
+                def ensure_in_game(self, **_kw):
+                    return None
+
+                def step_galaxy_system(
+                    self,
+                    *,
+                    galaxy: int,
+                    system: int,
+                    on_intermediate_page=None,
+                    **_kw,
+                ):
+                    visited.append((galaxy, system))
+                    # Simulate a 2-step arrow walk emitting an intermediate page on step 1
+                    if len(visited) == 1 and callable(on_intermediate_page):
+                        inter_s = ((system - 2) % 400) + 1
+                        on_intermediate_page(
+                            _make_galaxy_html(galaxy, inter_s, include_debris=True),
+                            galaxy,
+                            inter_s,
+                        )
+                    # Simulate operator clicking top-bar "SUSPEND SCANS" after 2nd page
+                    if len(visited) == 2:
+                        br = bridge_holder[0]
+                        br.strategy_config = replace(br.strategy_config, allow_galaxy_scan=False)
+                    return _make_galaxy_html(galaxy, system, include_debris=False), galaxy, system
+
+            from dataclasses import replace
+
+            bridge = GameApiBridge(
+                debug_port=19992,
+                config_path=cfg_path,
+                db_path=tp / "suspend.db",
+                log_dir=None,
+                client_factory=lambda _p: _ArrowSuspendClient(),
+                ensure_session_fn=lambda: None,
+            )
+            bridge_holder.append(bridge)
+            try:
+                bridge._last_state = GameState(
+                    31, 7, "cmdr", _time.time(), (_make_planet(101, "02:380:12"),), active_planet_id=101
+                )
+                with patch.object(bridge._sweep_stop_event, "wait", return_value=False):
+                    res = bridge.run_galaxy_sweep(pages=6, galaxy=2, start_system=380, delay_range=(0.0, 0.0))
+                self.assertEqual(res["pages_scanned"], 2)
+                self.assertEqual(res["arrow_steps"], 2)
+                self.assertIn("suspended", str(res.get("aborted_reason") or "").lower())
+                # Both planned pages (380, 381) AND the intermediate arrow page (379) were persisted & XHR-counted!
+                scanned_keys = set((bridge._get_scanned_systems() or {}).keys())
+                self.assertIn("02:379", scanned_keys)
+                self.assertIn("02:380", scanned_keys)
+                self.assertIn("02:381", scanned_keys)
+                self.assertGreaterEqual(bridge._sweep_views_last_60s(), 3)
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -299,6 +299,41 @@
   color: var(--mint);
 }
 
+.scan-toggle-pill {
+  padding: 4px 8px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
+  background: var(--bg-panel-alt);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease;
+}
+
+.scan-toggle-pill:hover:not(:disabled) {
+  border-color: var(--amber);
+  background: var(--bg-header);
+  color: var(--amber);
+}
+
+.scan-toggle-pill.is-suspended {
+  border-color: var(--amber);
+  background: var(--amber-surface);
+  color: var(--amber);
+}
+
+.scan-toggle-pill.is-suspended:hover:not(:disabled) {
+  border-color: var(--mint);
+  color: var(--mint);
+}
+
+.scan-toggle-pill:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
 .gal-cov-inline {
   display: inline-flex;
   align-items: center;

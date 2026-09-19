@@ -666,4 +666,99 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
       ).toContain("Mining technology");
     });
   });
+
+  it("AppHeader fast scan-suspend button toggles allow_galaxy_scan immediately without racing polls", async () => {
+    let liveAllowScan = true;
+    const cmds: any[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/command")) {
+        const body = JSON.parse(String(init?.body || "{}"));
+        cmds.push(body);
+        if (body.command === "update_config" && typeof body.config?.allow_galaxy_scan === "boolean") {
+          liveAllowScan = body.config.allow_galaxy_scan;
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ ok: true, config: { allow_galaxy_scan: liveAllowScan } }),
+        } as Response;
+      }
+      if (url.includes("/dashboard")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              ...MOCK_DASHBOARD,
+              config: { ...(MOCK_DASHBOARD.config || {}), allow_galaxy_scan: liveAllowScan },
+            }),
+        } as Response;
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ScanSeed: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+      const Inner: React.FC = () => {
+        const { setDashboard, setActivePage } = useConsole();
+        useEffect(() => {
+          setDashboard({
+            ...MOCK_DASHBOARD,
+            config: { ...(MOCK_DASHBOARD.config || {}), allow_galaxy_scan: true },
+          });
+          setActivePage("dashboard");
+        }, [setDashboard, setActivePage]);
+        return <>{children}</>;
+      };
+      return (
+        <ConsoleProvider disableInitialFetch>
+          <Inner />
+        </ConsoleProvider>
+      );
+    };
+
+    const { container } = render(
+      <ScanSeed>
+        <AppHeader />
+        <FeedbackBanner />
+      </ScanSeed>
+    );
+
+    await waitFor(() => {
+      const btn = container.querySelector("#btn-hud-scan-toggle") as HTMLButtonElement | null;
+      expect(btn).not.toBeNull();
+      expect(btn?.textContent).toBe("SUSPEND SCANS");
+      expect(btn?.getAttribute("aria-pressed")).toBe("false");
+      expect(btn?.classList.contains("is-suspended")).toBe(false);
+    });
+
+    // 1. Click to suspend scans
+    fireEvent.click(container.querySelector("#btn-hud-scan-toggle")!);
+    await waitFor(() => {
+      const btn = container.querySelector("#btn-hud-scan-toggle") as HTMLButtonElement | null;
+      expect(btn?.textContent).toBe("SCANS SUSPENDED");
+      expect(btn?.getAttribute("aria-pressed")).toBe("true");
+      expect(btn?.classList.contains("is-suspended")).toBe(true);
+      expect(container.querySelector("#feedback-banner")?.textContent).toContain("Galaxy scans suspended");
+    });
+    expect(cmds[0]).toEqual({
+      command: "update_config",
+      config: { allow_galaxy_scan: false },
+    });
+
+    // 2. Click again to resume scans
+    fireEvent.click(container.querySelector("#btn-hud-scan-toggle")!);
+    await waitFor(() => {
+      const btn = container.querySelector("#btn-hud-scan-toggle") as HTMLButtonElement | null;
+      expect(btn?.textContent).toBe("SUSPEND SCANS");
+      expect(btn?.getAttribute("aria-pressed")).toBe("false");
+      expect(btn?.classList.contains("is-suspended")).toBe(false);
+      expect(container.querySelector("#feedback-banner")?.textContent).toContain("Galaxy scans resumed");
+    });
+    expect(cmds[1]).toEqual({
+      command: "update_config",
+      config: { allow_galaxy_scan: true },
+    });
+  });
 });

@@ -3823,14 +3823,64 @@ def galaxy_sector_distance(
     return best if best is not None else 0
 
 
+ARROW_NAV_MAX_DISTANCE = 5
+
+
+def _circular_system_delta(
+    from_sys: int,
+    to_sys: int,
+    *,
+    systems_per_galaxy: int = 400,
+) -> tuple[int, int]:
+    """Return `(shortest_circular_distance, direction)` where `direction` is `+1`, `-1`, or `0`."""
+    n_sys = max(1, _safe_fleet_int(systems_per_galaxy, 400))
+    fwd = (int(to_sys) - int(from_sys)) % n_sys
+    bwd = (int(from_sys) - int(to_sys)) % n_sys
+    if fwd == 0:
+        return 0, 0
+    if fwd <= bwd:
+        return fwd, 1
+    return bwd, -1
+
+
+def _score_walk_sequence(
+    seq: Sequence[int],
+    *,
+    start_sys: Optional[int],
+    systems_per_galaxy: int,
+    arrow_max_distance: int,
+) -> tuple[int, int, int]:
+    """Score a within-galaxy system walk by `(non_arrow_jumps, total_steps, first_step_dist)`."""
+    if not seq:
+        return (0, 0, 0)
+    non_arrow = 0
+    total_steps = 0
+    first_dist = 0
+    prev = start_sys
+    if prev is not None:
+        first_dist, _ = _circular_system_delta(prev, seq[0], systems_per_galaxy=systems_per_galaxy)
+        if first_dist >= arrow_max_distance:
+            non_arrow += 1
+        total_steps += first_dist
+    for idx in range(len(seq) - 1):
+        d, _ = _circular_system_delta(seq[idx], seq[idx + 1], systems_per_galaxy=systems_per_galaxy)
+        if d >= arrow_max_distance:
+            non_arrow += 1
+        total_steps += d
+    return (non_arrow, total_steps, first_dist)
+
+
 def order_sectors_for_smooth_walk(
     sectors: Sequence[Mapping[str, Any]],
     *,
     primary_colony_by_galaxy: Optional[Mapping[int, int]] = None,
+    current_cursor: Optional[tuple[int, int]] = None,
     systems_per_galaxy: int = 400,
+    arrow_max_distance: int = ARROW_NAV_MAX_DISTANCE,
 ) -> list[dict[str, Any]]:
-    """Order selected `(galaxy, system)` sector dicts along the shortest forward circular arc per galaxy."""
+    """Order selected `(galaxy, system)` sector dicts along the smoothest arrow-friendly circular walk per galaxy."""
     n_sys = max(1, _safe_fleet_int(systems_per_galaxy, 400))
+    eff_arrow_max = max(2, _safe_fleet_int(arrow_max_distance, ARROW_NAV_MAX_DISTANCE))
     by_gal: dict[int, dict[int, dict[str, Any]]] = {}
     gal_order: list[int] = []
     for item in sectors:
@@ -3846,6 +3896,20 @@ def order_sectors_for_smooth_walk(
         if s not in by_gal[g]:
             by_gal[g][s] = dict(item)
 
+    cur_g: Optional[int] = None
+    cur_s: Optional[int] = None
+    if (
+        isinstance(current_cursor, (tuple, list))
+        and len(current_cursor) == 2
+    ):
+        cg_v = _safe_fleet_int(current_cursor[0], 0)
+        cs_v = _safe_fleet_int(current_cursor[1], 0)
+        if 1 <= cg_v <= 14 and 1 <= cs_v <= n_sys:
+            cur_g, cur_s = cg_v, cs_v
+
+    if cur_g is not None and cur_g in by_gal and gal_order and gal_order[0] != cur_g:
+        gal_order = [cur_g] + [g for g in gal_order if g != cur_g]
+
     col_map = primary_colony_by_galaxy if isinstance(primary_colony_by_galaxy, Mapping) else {}
     ordered: list[dict[str, Any]] = []
     for g in gal_order:
@@ -3859,24 +3923,242 @@ def order_sectors_for_smooth_walk(
         if not (1 <= anchor_sys <= n_sys):
             anchor_sys = sys_sorted[0]
         if k >= n_sys:
-            start_idx = sys_sorted.index(anchor_sys) if anchor_sys in sys_map else 0
+            if cur_g == g and cur_s is not None and cur_s in sys_map:
+                start_idx = sys_sorted.index(cur_s)
+            else:
+                start_idx = sys_sorted.index(anchor_sys) if anchor_sys in sys_map else 0
         else:
             best_gap_key: Optional[tuple[int, int, int]] = None
             start_idx = 0
             for idx in range(k):
-                cur_s = sys_sorted[idx]
+                cur_slot = sys_sorted[idx]
                 nxt_s = sys_sorted[(idx + 1) % k]
-                gap = (nxt_s - cur_s) if idx + 1 < k else ((nxt_s + n_sys) - cur_s)
+                gap = (nxt_s - cur_slot) if idx + 1 < k else ((nxt_s + n_sys) - cur_slot)
                 delta_anchor = abs(nxt_s - anchor_sys)
                 circ_anchor = min(delta_anchor, max(0, n_sys - delta_anchor))
                 cand_key = (gap, -circ_anchor, -nxt_s)
                 if best_gap_key is None or cand_key > best_gap_key:
                     best_gap_key = cand_key
                     start_idx = (idx + 1) % k
-        for offset in range(k):
-            s_val = sys_sorted[(start_idx + offset) % k]
-            ordered.append(sys_map[s_val])
+        arc_fwd = [sys_sorted[(start_idx + offset) % k] for offset in range(k)]
+
+        if cur_g == g and cur_s is not None:
+            arc_bwd = list(reversed(arc_fwd))
+            # Also evaluate a cursor-anchored nearest-neighbor walk that prefers `< arrow_max_distance` steps.
+            rem_set = set(sys_sorted)
+            nn_walk: list[int] = []
+            head = cur_s
+            pref_dir = 1
+            while rem_set:
+                chosen: Optional[int] = None
+                for step_d in range(0, eff_arrow_max):
+                    if step_d == 0:
+                        if head in rem_set:
+                            chosen = head
+                            break
+                        continue
+                    c_pref = ((head - 1 + pref_dir * step_d) % n_sys) + 1
+                    if c_pref in rem_set:
+                        chosen = c_pref
+                        break
+                    c_opp = ((head - 1 - pref_dir * step_d) % n_sys) + 1
+                    if c_opp in rem_set:
+                        chosen = c_opp
+                        pref_dir = -pref_dir
+                        break
+                if chosen is None:
+                    best_s: Optional[int] = None
+                    best_k: Optional[tuple[int, int, int]] = None
+                    for cand in rem_set:
+                        cd, cdir = _circular_system_delta(head, cand, systems_per_galaxy=n_sys)
+                        ck = (cd, 0 if cdir == pref_dir else 1, cand)
+                        if best_k is None or ck < best_k:
+                            best_k = ck
+                            best_s = cand
+                    chosen = best_s
+                    if chosen is not None:
+                        _, cdir = _circular_system_delta(head, chosen, systems_per_galaxy=n_sys)
+                        if cdir != 0:
+                            pref_dir = cdir
+                assert chosen is not None
+                rem_set.remove(chosen)
+                nn_walk.append(chosen)
+                head = chosen
+
+            best_seq = min(
+                (arc_fwd, arc_bwd, nn_walk),
+                key=lambda seq: _score_walk_sequence(
+                    seq,
+                    start_sys=cur_s,
+                    systems_per_galaxy=n_sys,
+                    arrow_max_distance=eff_arrow_max,
+                ),
+            )
+            ordered.extend(sys_map[s_val] for s_val in best_seq)
+        else:
+            ordered.extend(sys_map[s_val] for s_val in arc_fwd)
     return ordered
+
+
+def _select_contiguous_exploratory_sectors(
+    unscanned_pool: Sequence[dict[str, Any]],
+    target_count: int,
+    *,
+    colony_gal_set: set[int],
+    current_cursor: Optional[tuple[int, int]] = None,
+    systems_per_galaxy: int = 400,
+    arrow_max_distance: int = ARROW_NAV_MAX_DISTANCE,
+) -> list[dict[str, Any]]:
+    """Select up to `target_count` unscanned sectors favoring contiguous `< arrow_max_distance` runs for arrow navigation."""
+    if target_count <= 0 or not unscanned_pool:
+        return []
+    if len(unscanned_pool) <= target_count:
+        return list(unscanned_pool)
+
+    n_sys = max(1, _safe_fleet_int(systems_per_galaxy, 400))
+    eff_arrow_max = max(2, _safe_fleet_int(arrow_max_distance, ARROW_NAV_MAX_DISTANCE))
+
+    cur_g: Optional[int] = None
+    cur_s: Optional[int] = None
+    if isinstance(current_cursor, (tuple, list)) and len(current_cursor) == 2:
+        cg_v = _safe_fleet_int(current_cursor[0], 0)
+        cs_v = _safe_fleet_int(current_cursor[1], 0)
+        if 1 <= cg_v <= 14 and 1 <= cs_v <= n_sys:
+            cur_g, cur_s = cg_v, cs_v
+
+    tiers: list[list[tuple[int, dict[str, Any]]]] = [[], []]
+    for rank_idx, item in enumerate(unscanned_pool):
+        g = _safe_fleet_int(item.get("galaxy"), 0)
+        tiers[0 if g in colony_gal_set else 1].append((rank_idx, item))
+
+    picked: list[dict[str, Any]] = []
+    for tier_items in tiers:
+        if len(picked) >= target_count or not tier_items:
+            continue
+        by_gal: dict[int, dict[int, tuple[int, dict[str, Any]]]] = {}
+        gal_priority_order: list[int] = []
+        for rank_idx, item in tier_items:
+            g = _safe_fleet_int(item.get("galaxy"), 0)
+            s = _safe_fleet_int(item.get("system"), 0)
+            if not (1 <= g <= 14 and 1 <= s <= n_sys):
+                continue
+            if g not in by_gal:
+                by_gal[g] = {}
+                gal_priority_order.append(g)
+            if s not in by_gal[g]:
+                by_gal[g][s] = (rank_idx, item)
+
+        if cur_g is not None and cur_g in by_gal:
+            gal_priority_order = [cur_g] + [g for g in gal_priority_order if g != cur_g]
+
+        for g in gal_priority_order:
+            if len(picked) >= target_count:
+                break
+            rem = by_gal[g]
+            if not rem:
+                continue
+
+            if cur_g == g and cur_s is not None:
+                # Anchor at the unscanned system closest to the live browser cursor and march unidirectionally.
+                s0 = min(
+                    rem.keys(),
+                    key=lambda s: (
+                        _circular_system_delta(cur_s, s, systems_per_galaxy=n_sys)[0],
+                        0 if _circular_system_delta(cur_s, s, systems_per_galaxy=n_sys)[1] >= 0 else 1,
+                        rem[s][0],
+                    ),
+                )
+                _, init_dir = _circular_system_delta(cur_s, s0, systems_per_galaxy=n_sys)
+                pref_dir = init_dir if init_dir != 0 else 1
+                _, item0 = rem.pop(s0)
+                picked.append(item0)
+                head = s0
+
+                while len(picked) < target_count and rem:
+                    nxt: Optional[int] = None
+                    for step_d in range(1, eff_arrow_max):
+                        cand_p = ((head - 1 + pref_dir * step_d) % n_sys) + 1
+                        if cand_p in rem:
+                            nxt = cand_p
+                            break
+                    if nxt is None:
+                        for step_d in range(1, eff_arrow_max):
+                            cand_o = ((head - 1 - pref_dir * step_d) % n_sys) + 1
+                            if cand_o in rem:
+                                nxt = cand_o
+                                pref_dir = -pref_dir
+                                break
+                    if nxt is None:
+                        nxt = min(
+                            rem.keys(),
+                            key=lambda s: (
+                                _circular_system_delta(head, s, systems_per_galaxy=n_sys)[0],
+                                0 if _circular_system_delta(head, s, systems_per_galaxy=n_sys)[1] == pref_dir else 1,
+                                rem[s][0],
+                            ),
+                        )
+                        _, jump_dir = _circular_system_delta(head, nxt, systems_per_galaxy=n_sys)
+                        if jump_dir != 0:
+                            pref_dir = jump_dir
+                    _, item_n = rem.pop(nxt)
+                    picked.append(item_n)
+                    head = nxt
+                cur_g = None
+            else:
+                # Grow a contiguous arc from the highest-priority unscanned seed in this galaxy.
+                s0 = min(rem.keys(), key=lambda s: rem[s][0])
+                _, item0 = rem.pop(s0)
+                picked.append(item0)
+                arc_left = s0
+                arc_right = s0
+
+                while len(picked) < target_count and rem:
+                    r_cand: Optional[tuple[int, int]] = None
+                    l_cand: Optional[tuple[int, int]] = None
+                    for step_d in range(1, eff_arrow_max):
+                        c_r = ((arc_right - 1 + step_d) % n_sys) + 1
+                        if c_r in rem:
+                            r_cand = (step_d, c_r)
+                            break
+                    for step_d in range(1, eff_arrow_max):
+                        c_l = ((arc_left - 1 - step_d) % n_sys) + 1
+                        if c_l in rem:
+                            l_cand = (step_d, c_l)
+                            break
+
+                    if r_cand is not None and l_cand is not None:
+                        r_d, r_s = r_cand
+                        l_d, l_s = l_cand
+                        r_rank, r_item = rem[r_s]
+                        l_rank, l_item = rem[l_s]
+                        r_key = (_safe_fleet_int(r_item.get("distance"), 0), r_d, 0, r_rank)
+                        l_key = (_safe_fleet_int(l_item.get("distance"), 0), l_d, 1, l_rank)
+                        if r_key <= l_key:
+                            _, chosen_item = rem.pop(r_s)
+                            picked.append(chosen_item)
+                            arc_right = r_s
+                        else:
+                            _, chosen_item = rem.pop(l_s)
+                            picked.append(chosen_item)
+                            arc_left = l_s
+                    elif r_cand is not None:
+                        _, r_s = r_cand
+                        _, chosen_item = rem.pop(r_s)
+                        picked.append(chosen_item)
+                        arc_right = r_s
+                    elif l_cand is not None:
+                        _, l_s = l_cand
+                        _, chosen_item = rem.pop(l_s)
+                        picked.append(chosen_item)
+                        arc_left = l_s
+                    else:
+                        s_new = min(rem.keys(), key=lambda s: rem[s][0])
+                        _, chosen_item = rem.pop(s_new)
+                        picked.append(chosen_item)
+                        arc_left = s_new
+                        arc_right = s_new
+
+    return picked
 
 
 def _extract_own_colonies_and_coords(
@@ -4574,6 +4856,7 @@ def select_smart_galaxy_scan_batch(
     min_freshness_seconds: float = 120.0,
     max_radius: Optional[int] = None,
     smooth_walk: bool = True,
+    current_cursor: Optional[tuple[int, int]] = None,
     systems_per_galaxy: int = 400,
     now_ts: Optional[float] = None,
 ) -> dict[str, Any]:
@@ -4637,8 +4920,10 @@ def select_smart_galaxy_scan_batch(
     coverage_pct = round((explored_systems / total_systems) * 100.0, 2) if total_systems > 0 else 0.0
 
     primary_sys_by_gal: dict[int, int] = {}
+    colony_gal_set: set[int] = set()
     for cg, cs in own_colonies:
         primary_sys_by_gal.setdefault(cg, cs)
+        colony_gal_set.add(cg)
 
     def _build_scanned_pool(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         pool = [dict(it, phase="targeted_refresh") for it in items if it["scanned"]]
@@ -4663,30 +4948,66 @@ def select_smart_galaxy_scan_batch(
         target_ref = min(eff_batch, max(0, int(round(eff_batch * (eff_refresh_pct / 100.0)))))
         target_exp = max(0, eff_batch - target_ref)
         take_ref = list(scanned_pool[:target_ref])
-        take_exp = list(unscanned_pool[:target_exp])
-        if len(take_ref) < target_ref:
-            spill_exp = target_ref - len(take_ref)
-            take_exp.extend(unscanned_pool[len(take_exp) : len(take_exp) + spill_exp])
-        if len(take_exp) < target_exp:
-            spill_ref = target_exp - len(take_exp)
+        eff_exp_budget = target_exp + max(0, target_ref - len(take_ref))
+        take_exp = _select_contiguous_exploratory_sectors(
+            unscanned_pool,
+            eff_exp_budget,
+            colony_gal_set=colony_gal_set,
+            current_cursor=current_cursor if eff_refresh_pct < 100.0 else None,
+            systems_per_galaxy=n_sys,
+        )
+        if len(take_exp) < eff_exp_budget:
+            spill_ref = eff_exp_budget - len(take_exp)
             take_ref.extend(scanned_pool[len(take_ref) : len(take_ref) + spill_ref])
 
-        if smooth_walk and len(take_exp) > 1:
-            walk_exp = order_sectors_for_smooth_walk(
-                take_exp,
-                primary_colony_by_galaxy=primary_sys_by_gal,
-                systems_per_galaxy=n_sys,
+        if eff_refresh_pct >= 100.0:
+            if smooth_walk and len(take_ref) > 1:
+                walk_ref = order_sectors_for_smooth_walk(
+                    take_ref,
+                    primary_colony_by_galaxy=primary_sys_by_gal,
+                    current_cursor=current_cursor,
+                    systems_per_galaxy=n_sys,
+                )
+            else:
+                walk_ref = take_ref
+            exp_cursor = (
+                (int(walk_ref[-1]["galaxy"]), int(walk_ref[-1]["system"]))
+                if walk_ref
+                else current_cursor
             )
+            if smooth_walk and len(take_exp) > 1:
+                walk_exp = order_sectors_for_smooth_walk(
+                    take_exp,
+                    primary_colony_by_galaxy=primary_sys_by_gal,
+                    current_cursor=exp_cursor,
+                    systems_per_galaxy=n_sys,
+                )
+            else:
+                walk_exp = take_exp
         else:
-            walk_exp = take_exp
-        if smooth_walk and len(take_ref) > 1:
-            walk_ref = order_sectors_for_smooth_walk(
-                take_ref,
-                primary_colony_by_galaxy=primary_sys_by_gal,
-                systems_per_galaxy=n_sys,
+            if smooth_walk and len(take_exp) > 1:
+                walk_exp = order_sectors_for_smooth_walk(
+                    take_exp,
+                    primary_colony_by_galaxy=primary_sys_by_gal,
+                    current_cursor=current_cursor,
+                    systems_per_galaxy=n_sys,
+                )
+            else:
+                walk_exp = take_exp
+            ref_cursor = (
+                (int(walk_exp[-1]["galaxy"]), int(walk_exp[-1]["system"]))
+                if walk_exp
+                else current_cursor
             )
-        else:
-            walk_ref = take_ref
+            if smooth_walk and len(take_ref) > 1:
+                walk_ref = order_sectors_for_smooth_walk(
+                    take_ref,
+                    primary_colony_by_galaxy=primary_sys_by_gal,
+                    current_cursor=ref_cursor,
+                    systems_per_galaxy=n_sys,
+                )
+            else:
+                walk_ref = take_ref
 
         if walk_exp and walk_ref:
             phase = "mixed"
@@ -4704,7 +5025,13 @@ def select_smart_galaxy_scan_batch(
     elif explore_first and unscanned_systems > 0:
         phase = "exploratory"
         unscanned_pool = [dict(it, phase="exploratory") for it in ranked if not it["scanned"]]
-        take_exp = unscanned_pool[:eff_batch]
+        take_exp = _select_contiguous_exploratory_sectors(
+            unscanned_pool,
+            eff_batch,
+            colony_gal_set=colony_gal_set,
+            current_cursor=current_cursor,
+            systems_per_galaxy=n_sys,
+        )
         rem_budget = max(0, eff_batch - len(take_exp))
         take_ref: list[dict[str, Any]] = []
         if rem_budget > 0:
@@ -4715,14 +5042,21 @@ def select_smart_galaxy_scan_batch(
             walk_exp = order_sectors_for_smooth_walk(
                 take_exp,
                 primary_colony_by_galaxy=primary_sys_by_gal,
+                current_cursor=current_cursor,
                 systems_per_galaxy=n_sys,
             )
         else:
             walk_exp = take_exp
+        ref_cursor = (
+            (int(walk_exp[-1]["galaxy"]), int(walk_exp[-1]["system"]))
+            if walk_exp
+            else current_cursor
+        )
         if smooth_walk and len(take_ref) > 1:
             walk_ref = order_sectors_for_smooth_walk(
                 take_ref,
                 primary_colony_by_galaxy=primary_sys_by_gal,
+                current_cursor=ref_cursor,
                 systems_per_galaxy=n_sys,
             )
         else:
@@ -4753,6 +5087,7 @@ def select_smart_galaxy_scan_batch(
             walk_ref = order_sectors_for_smooth_walk(
                 priority_selected,
                 primary_colony_by_galaxy=primary_sys_by_gal,
+                current_cursor=current_cursor,
                 systems_per_galaxy=n_sys,
             )
         else:

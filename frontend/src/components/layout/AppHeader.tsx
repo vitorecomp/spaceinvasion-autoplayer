@@ -32,6 +32,7 @@ export function computeSelectedBlastFurnacePct(
 export const AppHeader: React.FC = () => {
   const {
     dashboard,
+    setDashboard,
     activePage,
     setActivePage,
     activePlanet,
@@ -43,8 +44,12 @@ export const AppHeader: React.FC = () => {
     ackActiveHelpPopup,
     apiCommand,
     loadDashboard,
+    setConfigSaving,
+    bumpDashboardSeq,
+    refreshSectorsView,
     showFeedback,
   } = useConsole();
+  const [scanToggling, setScanToggling] = React.useState(false);
 
   const gs = dashboard?.state || {};
   const universeText = dashboard
@@ -103,6 +108,63 @@ export const AppHeader: React.FC = () => {
       ? `${galList} explored: ${galExplored}/${galTotal} systems (${galCovPct.toFixed(1)}%) · Universe: ${uniExplored}/${uniTotal} (${(uniCovPct ?? 0).toFixed(2)}%) · Phase: ${galPhaseLabel}${galSweep?.in_progress ? " · Sweeping..." : ""}`
       : "Galaxy & Universe exploration progress — click to open Espionage & Galaxy Scanner";
 
+  const hasDashboard = Boolean(dashboard);
+  const scansAllowed = Boolean(dashboard?.config?.allow_galaxy_scan);
+  const scanToggleText = !hasDashboard
+    ? "SCANS: --"
+    : scanToggling
+      ? scansAllowed
+        ? "SUSPENDING..."
+        : "RESUMING..."
+      : scansAllowed
+        ? "SUSPEND SCANS"
+        : "SCANS SUSPENDED";
+  const scanToggleTitle = !hasDashboard
+    ? "Waiting for telemetry before toggling galaxy scans"
+    : scansAllowed
+      ? "Automatic galaxy scans are ACTIVE — click to immediately suspend new scans (stops any running sweep before the next system)"
+      : "Automatic galaxy scans are SUSPENDED — click to resume scheduled galaxy scans";
+
+  const onToggleScans = async () => {
+    if (!dashboard || scanToggling) return;
+    const nextAllowed = !scansAllowed;
+    setScanToggling(true);
+    const gState = typeof window !== "undefined" ? (window as any).state : null;
+    setConfigSaving((c) => c + 1);
+    if (gState) gState.configSaving = (gState.configSaving || 0) + 1;
+    bumpDashboardSeq();
+    try {
+      await apiCommand({
+        command: "update_config",
+        config: { allow_galaxy_scan: nextAllowed },
+      });
+      setDashboard((prev) =>
+        prev
+          ? {
+              ...prev,
+              config: { ...(prev.config || {}), allow_galaxy_scan: nextAllowed },
+            }
+          : prev
+      );
+      showFeedback(
+        nextAllowed
+          ? "Galaxy scans resumed — automatic sweeps & scan actions are enabled."
+          : "Galaxy scans suspended — no new automatic scans will start and any running sweep will stop before the next system.",
+        nextAllowed ? "ok" : "warn"
+      );
+      await loadDashboard({ refresh: false, preserveConfig: false, force: true });
+      if (activePage === "sectors") {
+        await refreshSectorsView(undefined, undefined, null, { background: true });
+      }
+    } catch (err: any) {
+      showFeedback(`Failed toggling galaxy scans: ${err.message}`, feedbackKindForError(err));
+    } finally {
+      setConfigSaving((c) => Math.max(0, c - 1));
+      if (gState) gState.configSaving = Math.max(0, (gState.configSaving || 0) - 1);
+      setScanToggling(false);
+    }
+  };
+
   const hostileCount = Array.isArray(gs.fleet_alerts)
     ? gs.fleet_alerts.filter((a) => a?.hostile).length
     : 0;
@@ -160,6 +222,17 @@ export const AppHeader: React.FC = () => {
             onClick={() => setActivePage("espionage")}
           >
             {galCovText}
+          </button>
+          <button
+            type="button"
+            className={`scan-toggle-pill tabular${hasDashboard && !scansAllowed ? " is-suspended" : ""}`}
+            id="btn-hud-scan-toggle"
+            aria-pressed={hasDashboard && !scansAllowed ? "true" : "false"}
+            title={scanToggleTitle}
+            disabled={!hasDashboard || scanToggling}
+            onClick={onToggleScans}
+          >
+            {scanToggleText}
           </button>
           <button
             type="button"

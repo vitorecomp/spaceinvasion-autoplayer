@@ -2597,6 +2597,129 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         self.assertEqual((actual_gal, actual_sys), (2, 387))
         self.assertEqual(cli.last_galaxy_coords, (2, 387))
 
+    def test_step_galaxy_system_prioritizes_arrow_button_when_distance_under_5_and_falls_back(self) -> None:
+        def _make_driver(start_g: int, start_s: int, *, arrow_available: bool = True):
+            state = {"g": start_g, "s": start_s, "arrow_clicks": [], "nav_calls": []}
+            drv = MagicMock()
+            drv.page_source = (
+                '<html><body><textarea id="json-element">'
+                f'{{"position":{{"galaxy":{start_g},"system":{start_s}}},"planets":{{}}}}'
+                "</textarea></body></html>"
+            )
+
+            def _exec(script: str, *args):
+                if "typeof window.si.navigate === 'function'" in script:
+                    return {"ok": True, "g": state["g"], "s": state["s"], "maxS": 400, "busy": False}
+                if "navigateSystem(1)" in script and "querySelectorAll" in script:
+                    if not arrow_available:
+                        return {"clicked": "none"}
+                    delta = int(args[0])
+                    state["arrow_clicks"].append(delta)
+                    state["s"] = ((state["s"] - 1 + delta) % 400) + 1
+                    drv.page_source = (
+                        '<html><body><textarea id="json-element">'
+                        f'{{"position":{{"galaxy":{state["g"]},"system":{state["s"]}}},"planets":{{}}}}'
+                        "</textarea></body></html>"
+                    )
+                    return {"clicked": "dom"}
+                if "window.si.navigate(targetG, targetS)" in script:
+                    state["g"] = int(args[0])
+                    state["s"] = int(args[1])
+                    state["nav_calls"].append((state["g"], state["s"]))
+                    drv.page_source = (
+                        '<html><body><textarea id="json-element">'
+                        f'{{"position":{{"galaxy":{state["g"]},"system":{state["s"]}}},"planets":{{}}}}'
+                        "</textarea></body></html>"
+                    )
+                    return None
+                if "resG:" in script:
+                    return {
+                        "busy": False,
+                        "g": state["g"],
+                        "s": state["s"],
+                        "resG": state["g"],
+                        "resS": state["s"],
+                    }
+                return None
+
+            drv.execute_script.side_effect = _exec
+            return drv, state
+
+        with patch("spaceinvasion.session.client.time.sleep"):
+            # 1. Forward dist=1 -> single +1 arrow click, zero si.navigate calls
+            drv1, st1 = _make_driver(2, 380)
+            cli1 = GameBrowserClient(drv1, min_nav_delay=(0.0, 0.0), timeout=2.0)
+            with patch.object(cli1, "_switch_frame"):
+                _h, g, s = cli1.step_galaxy_system(galaxy=2, system=381, pace=False)
+            self.assertEqual((g, s), (2, 381))
+            self.assertEqual(cli1.last_galaxy_nav_method, "arrow")
+            self.assertEqual(cli1.last_galaxy_step_clicks, 1)
+            self.assertEqual(st1["arrow_clicks"], [1])
+            self.assertEqual(st1["nav_calls"], [])
+
+            # 2. Backward dist=3 (< 5) -> 3 backward arrow clicks + intermediate callback for 379 & 378
+            drv2, st2 = _make_driver(2, 380)
+            cli2 = GameBrowserClient(drv2, min_nav_delay=(0.0, 0.0), timeout=2.0)
+            inter_seen: list[tuple[int, int]] = []
+            with patch.object(cli2, "_switch_frame"):
+                _h, g, s = cli2.step_galaxy_system(
+                    galaxy=2,
+                    system=377,
+                    pace=False,
+                    on_intermediate_page=lambda _html, ig, isys: inter_seen.append((ig, isys)),
+                )
+            self.assertEqual((g, s), (2, 377))
+            self.assertEqual(cli2.last_galaxy_nav_method, "arrow")
+            self.assertEqual(cli2.last_galaxy_step_clicks, 3)
+            self.assertEqual(st2["arrow_clicks"], [-1, -1, -1])
+            self.assertEqual(inter_seen, [(2, 379), (2, 378)])
+            self.assertEqual(st2["nav_calls"], [])
+
+            # 3. Circular wraparound dist=2 (400 -> 2) -> 2 forward arrow clicks + intermediate (2, 1)
+            drv3, st3 = _make_driver(2, 400)
+            cli3 = GameBrowserClient(drv3, min_nav_delay=(0.0, 0.0), timeout=2.0)
+            wrap_inter: list[tuple[int, int]] = []
+            with patch.object(cli3, "_switch_frame"):
+                _h, g, s = cli3.step_galaxy_system(
+                    galaxy=2,
+                    system=2,
+                    pace=False,
+                    on_intermediate_page=lambda _html, ig, isys: wrap_inter.append((ig, isys)),
+                )
+            self.assertEqual((g, s), (2, 2))
+            self.assertEqual(cli3.last_galaxy_nav_method, "arrow")
+            self.assertEqual(st3["arrow_clicks"], [1, 1])
+            self.assertEqual(wrap_inter, [(2, 1)])
+
+            # 4. Distance == 5 (NOT < 5) -> direct si.navigate jump, zero arrow clicks
+            drv4, st4 = _make_driver(2, 380)
+            cli4 = GameBrowserClient(drv4, min_nav_delay=(0.0, 0.0), timeout=2.0)
+            with patch.object(cli4, "_switch_frame"):
+                _h, g, s = cli4.step_galaxy_system(galaxy=2, system=385, pace=False)
+            self.assertEqual((g, s), (2, 385))
+            self.assertEqual(cli4.last_galaxy_nav_method, "ajax_navigate")
+            self.assertEqual(st4["arrow_clicks"], [])
+            self.assertEqual(st4["nav_calls"], [(2, 385)])
+
+            # 5. Cross-galaxy (2:380 -> 3:381) -> direct si.navigate jump, zero arrow clicks
+            drv5, st5 = _make_driver(2, 380)
+            cli5 = GameBrowserClient(drv5, min_nav_delay=(0.0, 0.0), timeout=2.0)
+            with patch.object(cli5, "_switch_frame"):
+                _h, g, s = cli5.step_galaxy_system(galaxy=3, system=381, pace=False)
+            self.assertEqual((g, s), (3, 381))
+            self.assertEqual(cli5.last_galaxy_nav_method, "ajax_navigate")
+            self.assertEqual(st5["arrow_clicks"], [])
+            self.assertEqual(st5["nav_calls"], [(3, 381)])
+
+            # 6. Arrow DOM missing -> clean fallback to si.navigate
+            drv6, st6 = _make_driver(2, 380, arrow_available=False)
+            cli6 = GameBrowserClient(drv6, min_nav_delay=(0.0, 0.0), timeout=2.0)
+            with patch.object(cli6, "_switch_frame"):
+                _h, g, s = cli6.step_galaxy_system(galaxy=2, system=381, pace=False)
+            self.assertEqual((g, s), (2, 381))
+            self.assertEqual(cli6.last_galaxy_nav_method, "ajax_navigate")
+            self.assertEqual(st6["nav_calls"], [(2, 381)])
+
     def test_renderer_timeout_recovery_ensure_wait_navigate_and_open_url(self) -> None:
         from selenium.common.exceptions import TimeoutException
 

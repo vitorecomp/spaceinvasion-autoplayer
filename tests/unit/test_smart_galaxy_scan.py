@@ -902,6 +902,50 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
                     bridge._db.close()
                 db.close()
 
+    def test_exploratory_contiguous_arrow_chain_and_cursor_anchoring(self) -> None:
+        now = 1_750_000_000.0
+        # 1. After Sweep 0 scanned 340..400 + 1..39 around 02:390, Sweep 1 MUST pick ONE contiguous 100-system run
+        # (every adjacent step distance == 1 for arrow clicks) instead of splitting left + right wings!
+        scanned_sw0 = {f"02:{s:03d}": now - 100.0 for s in list(range(340, 401)) + list(range(1, 40))}
+        sw1 = select_smart_galaxy_scan_batch(
+            own_coords=["02:390:05"],
+            galaxies=[2],
+            scanned_systems=scanned_sw0,
+            batch_size=100,
+            explore_first=True,
+            now_ts=now,
+        )
+        seq1 = [it["system"] for it in sw1["selected_sectors"]]
+        self.assertEqual(len(seq1), 100)
+        steps1 = [min((seq1[i + 1] - seq1[i]) % 400, (seq1[i] - seq1[i + 1]) % 400) for i in range(len(seq1) - 1)]
+        self.assertTrue(all(st == 1 for st in steps1), f"Expected all dist=1 steps, got {steps1[:10]}")
+
+        # 2. Outer-galaxy exploration anchored at current_cursor=(9, 333) continues 09:334 -> 09:335 -> ...
+        scanned_outer = {f"02:{s:03d}": now - 600.0 for s in range(1, 401)}
+        for s in range(1, 334):
+            scanned_outer[f"09:{s:03d}"] = now - 300.0
+        batch_cur = select_smart_galaxy_scan_batch(
+            own_coords=["02:380:12"],
+            galaxies=list(range(1, 15)),
+            scanned_systems=scanned_outer,
+            batch_size=25,
+            explore_first=True,
+            current_cursor=(9, 333),
+            now_ts=now,
+        )
+        sel = batch_cur["selected_sectors"]
+        self.assertEqual(len(sel), 25)
+        self.assertTrue(all(it["galaxy"] == 9 for it in sel))
+        self.assertEqual([it["system"] for it in sel[:5]], [334, 335, 336, 337, 338])
+
+        # 3. order_sectors_for_smooth_walk reverses arc when cursor is right next to the arc's trailing edge
+        walk_bwd = order_sectors_for_smooth_walk(
+            [{"galaxy": 2, "system": s} for s in (329, 330, 331, 332)],
+            primary_colony_by_galaxy={2: 100},
+            current_cursor=(2, 333),
+        )
+        self.assertEqual([w["system"] for w in walk_bwd], [332, 331, 330, 329])
+
 
 if __name__ == "__main__":
     unittest.main()

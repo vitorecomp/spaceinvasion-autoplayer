@@ -8841,9 +8841,10 @@
     return Math.max(0, Math.min(100, Math.round(pct)));
   }
   const AppHeader = () => {
-    var _a, _b;
+    var _a, _b, _c;
     const {
       dashboard,
+      setDashboard,
       activePage,
       setActivePage,
       activePlanet,
@@ -8855,8 +8856,12 @@
       ackActiveHelpPopup,
       apiCommand: apiCommand2,
       loadDashboard,
+      setConfigSaving,
+      bumpDashboardSeq,
+      refreshSectorsView,
       showFeedback
     } = useConsole();
+    const [scanToggling, setScanToggling] = React.useState(false);
     const gs = (dashboard == null ? void 0 : dashboard.state) || {};
     const universeText = dashboard ? `U${gs.universe_id || 31} · ${gs.nickname || "COMMANDER"}` : "U31 · COMMANDER";
     const clockText = fmtClock(gs.timestamp);
@@ -8885,10 +8890,49 @@
     const galList = Array.isArray(galSweep == null ? void 0 : galSweep.scan_galaxies) && galSweep.scan_galaxies.length > 0 ? galSweep.scan_galaxies.map((g) => `G${g}`).join(",") : "Galaxy";
     const galCovText = galCovPct !== null ? `GAL ${galCovPct.toFixed(1)}% · UNI ${(uniCovPct ?? 0).toFixed(1)}%` : "GAL --% · UNI --%";
     const galCovTitle = galCovPct !== null ? `${galList} explored: ${galExplored}/${galTotal} systems (${galCovPct.toFixed(1)}%) · Universe: ${uniExplored}/${uniTotal} (${(uniCovPct ?? 0).toFixed(2)}%) · Phase: ${galPhaseLabel}${(galSweep == null ? void 0 : galSweep.in_progress) ? " · Sweeping..." : ""}` : "Galaxy & Universe exploration progress — click to open Espionage & Galaxy Scanner";
+    const hasDashboard = Boolean(dashboard);
+    const scansAllowed = Boolean((_a = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a.allow_galaxy_scan);
+    const scanToggleText = !hasDashboard ? "SCANS: --" : scanToggling ? scansAllowed ? "SUSPENDING..." : "RESUMING..." : scansAllowed ? "SUSPEND SCANS" : "SCANS SUSPENDED";
+    const scanToggleTitle = !hasDashboard ? "Waiting for telemetry before toggling galaxy scans" : scansAllowed ? "Automatic galaxy scans are ACTIVE — click to immediately suspend new scans (stops any running sweep before the next system)" : "Automatic galaxy scans are SUSPENDED — click to resume scheduled galaxy scans";
+    const onToggleScans = async () => {
+      if (!dashboard || scanToggling) return;
+      const nextAllowed = !scansAllowed;
+      setScanToggling(true);
+      const gState = typeof window !== "undefined" ? window.state : null;
+      setConfigSaving((c) => c + 1);
+      if (gState) gState.configSaving = (gState.configSaving || 0) + 1;
+      bumpDashboardSeq();
+      try {
+        await apiCommand2({
+          command: "update_config",
+          config: { allow_galaxy_scan: nextAllowed }
+        });
+        setDashboard(
+          (prev) => prev ? {
+            ...prev,
+            config: { ...prev.config || {}, allow_galaxy_scan: nextAllowed }
+          } : prev
+        );
+        showFeedback(
+          nextAllowed ? "Galaxy scans resumed — automatic sweeps & scan actions are enabled." : "Galaxy scans suspended — no new automatic scans will start and any running sweep will stop before the next system.",
+          nextAllowed ? "ok" : "warn"
+        );
+        await loadDashboard({ refresh: false, preserveConfig: false, force: true });
+        if (activePage === "sectors") {
+          await refreshSectorsView(void 0, void 0, null, { background: true });
+        }
+      } catch (err) {
+        showFeedback(`Failed toggling galaxy scans: ${err.message}`, feedbackKindForError(err));
+      } finally {
+        setConfigSaving((c) => Math.max(0, c - 1));
+        if (gState) gState.configSaving = Math.max(0, (gState.configSaving || 0) - 1);
+        setScanToggling(false);
+      }
+    };
     const hostileCount = Array.isArray(gs.fleet_alerts) ? gs.fleet_alerts.filter((a) => a == null ? void 0 : a.hostile).length : 0;
     const unreadCnt = notifications.unread_count || 0;
-    const captchaBlocked = Boolean((_a = dashboard == null ? void 0 : dashboard.bot_control) == null ? void 0 : _a.captcha_blocked);
-    const captchaMsg = ((_b = dashboard == null ? void 0 : dashboard.bot_control) == null ? void 0 : _b.captcha_message) || "CAPTCHA / Security verification active in Chrome (:9222). Automation is paused and waiting passively — solve it manually in Chrome, then click Resume.";
+    const captchaBlocked = Boolean((_b = dashboard == null ? void 0 : dashboard.bot_control) == null ? void 0 : _b.captcha_blocked);
+    const captchaMsg = ((_c = dashboard == null ? void 0 : dashboard.bot_control) == null ? void 0 : _c.captcha_message) || "CAPTCHA / Security verification active in Chrome (:9222). Automation is paused and waiting passively — solve it manually in Chrome, then click Resume.";
     const helpModalHasCaptchaBtn = Boolean(
       activeHelpNotif && (activeHelpNotif.category === "captcha_gate" || activeHelpNotif.category === "antibot")
     );
@@ -8925,6 +8969,19 @@
               title: galCovTitle,
               onClick: () => setActivePage("espionage"),
               children: galCovText
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              type: "button",
+              className: `scan-toggle-pill tabular${hasDashboard && !scansAllowed ? " is-suspended" : ""}`,
+              id: "btn-hud-scan-toggle",
+              "aria-pressed": hasDashboard && !scansAllowed ? "true" : "false",
+              title: scanToggleTitle,
+              disabled: !hasDashboard || scanToggling,
+              onClick: onToggleScans,
+              children: scanToggleText
             }
           ),
           /* @__PURE__ */ jsxRuntimeExports.jsx(

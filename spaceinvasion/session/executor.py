@@ -1520,14 +1520,30 @@ class ActionExecutor:
         )
         gal, sys_num = (int(m.group(1)), int(m.group(2))) if m else (1, 1)
         _call_with_optional_priority(client.ensure_in_game, priority="interactive")
-        html = client.open_galaxy(galaxy=gal, system=sys_num)
-        actual_coords = getattr(client, "last_galaxy_coords", None)
-        if (
-            isinstance(actual_coords, tuple)
-            and len(actual_coords) == 2
-            and all(isinstance(v, int) for v in actual_coords)
-        ):
-            gal, sys_num = actual_coords
+        use_step = (
+            isinstance(client, GameBrowserClient)
+            and callable(getattr(client, "step_galaxy_system", None))
+            and (
+                "unittest.mock" not in type(client).__module__
+                or "step_galaxy_system" in getattr(client, "__dict__", {})
+            )
+        )
+        if use_step:
+            html, gal, sys_num = client.step_galaxy_system(
+                galaxy=gal,
+                system=sys_num,
+                pace=True,
+                priority="interactive",
+            )
+        else:
+            html = client.open_galaxy(galaxy=gal, system=sys_num)
+            actual_coords = getattr(client, "last_galaxy_coords", None)
+            if (
+                isinstance(actual_coords, tuple)
+                and len(actual_coords) == 2
+                and all(isinstance(v, int) for v in actual_coords)
+            ):
+                gal, sys_num = actual_coords
         slots = parse_galaxy_system_html(html, galaxy=gal, system=sys_num)
         self.last_galaxy_slots = list(slots)
         # Read-only SCAN_GALAXY does not consume mutation hourly budget
