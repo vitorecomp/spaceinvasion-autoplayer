@@ -575,5 +575,22 @@ describe("ActionGraph 4-Tab Workspace", () => {
       expect(upd).toBeDefined();
       expect(upd?.config?.shipyard_targets?.starcruiser).toBe(45);
     });
+
+    // Verify GaNnScannerHud honors configured planner_mode even when effective_planner_mode falls back to priority (<11/11)
+    cleanup();
+    const fallbackPreviewDash = makeDashboard({
+      coloniesOwned: 7,
+      maxPlanets: 11,
+      plannerMode: "ai_planner",
+      liveAiUnlocked: false,
+    });
+    fallbackPreviewDash.effective_planner_mode = "priority";
+    render(
+      <Harness initialDashboard={fallbackPreviewDash}>
+        <GaNnScannerHud />
+      </Harness>
+    );
+    expect(document.getElementById("gann-calc-hud")?.hidden).toBe(false);
+    expect(document.getElementById("gann-status-pill")?.textContent).toBe("PREVIEW ONLY");
   });
 });

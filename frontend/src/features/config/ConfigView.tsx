@@ -211,10 +211,20 @@ export const ConfigView: React.FC = () => {
               ...curDash,
               config: res.config,
               planner_mode: res.config.planner_mode || curDash.planner_mode,
+              effective_planner_mode:
+                res.effective_planner_mode ??
+                res.config.planner_mode ??
+                curDash.effective_planner_mode,
+              fallback_reason: res.fallback_reason ?? null,
+              live_ai_unlocked: res.live_ai_unlocked ?? curDash.live_ai_unlocked,
             }
           : {
               config: res.config,
               planner_mode: res.config.planner_mode || "priority",
+              effective_planner_mode:
+                res.effective_planner_mode ?? res.config.planner_mode ?? "priority",
+              fallback_reason: res.fallback_reason ?? null,
+              live_ai_unlocked: res.live_ai_unlocked,
             };
         if (gState) {
           gState.dashboard = nextDash;

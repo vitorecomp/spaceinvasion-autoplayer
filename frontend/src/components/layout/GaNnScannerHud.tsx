@@ -85,9 +85,9 @@ export const GaNnScannerHud: React.FC = () => {
   } = useConsole();
 
   const cfgMode = String(
-    dashboard?.effective_planner_mode ||
-      dashboard?.config?.planner_mode ||
+    dashboard?.config?.planner_mode ||
       dashboard?.planner_mode ||
+      dashboard?.effective_planner_mode ||
       "priority"
   ).toLowerCase();
   const isAiMode = cfgMode === "ai_planner";

@@ -117,9 +117,9 @@ export const OperationsView: React.FC = () => {
   const actionSort = useTableSort(filteredActions, PLAN_ACTION_SORT_COLUMNS);
 
   const cfgMode = String(
-    dashboard?.effective_planner_mode ||
-      dashboard?.config?.planner_mode ||
+    dashboard?.config?.planner_mode ||
       dashboard?.planner_mode ||
+      dashboard?.effective_planner_mode ||
       "priority"
   ).toLowerCase();
   const isAiPlanner = cfgMode === "ai_planner" || cfgMode === "ga_nn";

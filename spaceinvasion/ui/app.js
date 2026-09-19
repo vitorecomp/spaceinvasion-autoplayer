@@ -9043,7 +9043,7 @@
     );
     const budgetText = dashboard ? batchIv !== null && batchIv > 0 ? `BATCH ${Math.round(batchIv)}s` : `${health.remaining_hourly_actions ?? "—"} OPS/HR` : "-- OPS/HR";
     const cfgMode = String(
-      (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
+      ((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || (dashboard == null ? void 0 : dashboard.effective_planner_mode) || "priority"
     ).toLowerCase();
     const isAiPlanner = cfgMode === "ai_planner" || cfgMode === "ga_nn";
     const counts = ((_c = dashboard == null ? void 0 : dashboard.db_summary) == null ? void 0 : _c.counts) || {};
@@ -9100,7 +9100,7 @@
         return;
       }
       const useAi = String(
-        (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_b2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b2.planner_mode) || ""
+        ((_b2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b2.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ""
       ).toLowerCase() === "ai_planner" || String(((_c2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c2.planner_mode) || "").toLowerCase() === "ga_nn";
       if (useAi) beginGaCalc();
       try {
@@ -9173,7 +9173,7 @@
     const onTickNow = async () => {
       var _a2, _b2;
       const useAi = String(
-        (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_a2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a2.planner_mode) || ""
+        ((_a2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a2.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ""
       ).toLowerCase() === "ai_planner" || String(((_b2 = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b2.planner_mode) || "").toLowerCase() === "ga_nn";
       if (useAi) beginGaCalc();
       try {
@@ -10152,7 +10152,7 @@
       showFeedback
     } = useConsole();
     const cfgMode = String(
-      (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_a = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
+      ((_a = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _a.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || (dashboard == null ? void 0 : dashboard.effective_planner_mode) || "priority"
     ).toLowerCase();
     const isAiMode = cfgMode === "ai_planner";
     const isLegacyGa = cfgMode === "ga_nn";
@@ -11656,7 +11656,7 @@
       return { buildingActions: bld, fleetActions: flt, researchActions: res };
     }, [allPlanActions, scopedDashPlanet]);
     const cfgMode = String(
-      (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_c = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
+      ((_c = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || (dashboard == null ? void 0 : dashboard.effective_planner_mode) || "priority"
     ).toLowerCase();
     const isAiPlanner = cfgMode === "ai_planner";
     const isLegacyGa = cfgMode === "ga_nn";
@@ -12704,7 +12704,7 @@
     }, [filterMatchedActions, planets, scopedPlanet]);
     const actionSort = useTableSort(filteredActions, PLAN_ACTION_SORT_COLUMNS);
     const cfgMode = String(
-      (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || "priority"
+      ((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || (dashboard == null ? void 0 : dashboard.effective_planner_mode) || "priority"
     ).toLowerCase();
     const isAiPlanner = cfgMode === "ai_planner" || cfgMode === "ga_nn";
     const modeLabel = isAiPlanner ? "MODE: AI-PLANNER" : "MODE: PRIORITY";
@@ -14059,7 +14059,10 @@
             const nextDash = {
               ...curDash,
               config: res.config,
-              planner_mode: "ai_planner"
+              planner_mode: res.config.planner_mode || "ai_planner",
+              effective_planner_mode: res.effective_planner_mode ?? res.config.planner_mode ?? "ai_planner",
+              fallback_reason: res.fallback_reason ?? null,
+              live_ai_unlocked: res.live_ai_unlocked ?? curDash.live_ai_unlocked
             };
             if (globalThis.state) globalThis.state.dashboard = nextDash;
             setDashboard(nextDash);
@@ -17773,10 +17776,16 @@
             ...curDash,
             config: res.config,
             planner_mode: res.config.planner_mode || curDash.planner_mode,
+            effective_planner_mode: res.effective_planner_mode ?? res.config.planner_mode ?? curDash.effective_planner_mode,
+            fallback_reason: res.fallback_reason ?? null,
+            live_ai_unlocked: res.live_ai_unlocked ?? curDash.live_ai_unlocked,
             action_graph: res.action_graph || curDash.action_graph
           } : {
             config: res.config,
             planner_mode: res.config.planner_mode || "priority",
+            effective_planner_mode: res.effective_planner_mode ?? res.config.planner_mode ?? "priority",
+            fallback_reason: res.fallback_reason ?? null,
+            live_ai_unlocked: res.live_ai_unlocked,
             action_graph: res.action_graph || null
           };
           if (gState) gState.dashboard = nextDash;
@@ -24960,10 +24969,16 @@
           const nextDash = curDash ? {
             ...curDash,
             config: res.config,
-            planner_mode: res.config.planner_mode || curDash.planner_mode
+            planner_mode: res.config.planner_mode || curDash.planner_mode,
+            effective_planner_mode: res.effective_planner_mode ?? res.config.planner_mode ?? curDash.effective_planner_mode,
+            fallback_reason: res.fallback_reason ?? null,
+            live_ai_unlocked: res.live_ai_unlocked ?? curDash.live_ai_unlocked
           } : {
             config: res.config,
-            planner_mode: res.config.planner_mode || "priority"
+            planner_mode: res.config.planner_mode || "priority",
+            effective_planner_mode: res.effective_planner_mode ?? res.config.planner_mode ?? "priority",
+            fallback_reason: res.fallback_reason ?? null,
+            live_ai_unlocked: res.live_ai_unlocked
           };
           if (gState) {
             gState.dashboard = nextDash;
