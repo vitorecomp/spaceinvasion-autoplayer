@@ -3528,6 +3528,231 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(single_rec.planet_id, 301)
         self.assertEqual(single_rec.target_level, 40)
 
+    def test_compute_spare_ship_budget_and_filter_with_urgent_zero_count_replacements(self) -> None:
+        from spaceinvasion.planner.strategy import (
+            compute_spare_ship_budget,
+            filter_shipyard_actions_by_spare_budget,
+        )
+
+        p1 = PlanetState(
+            planet_id=501,
+            name="Core",
+            coords="01:100:05",
+            planet_type="normal",
+            temperature=30,
+            fields_used=40,
+            fields_max=300,
+            resources=Resources(pig_iron=60_000, metal=40_000, kryptonite=30_000, spice=20_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(produced=2000, used=1000),
+            buildings={"b1": 15, "b2": 10, "b3": 12, "b4": 10, "b5": 15, "b9": 6},
+            ships={"s4": 10},  # 0 Spy probes (s10) and 0 Transports (s1/s2)!
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=1000.0,
+            planets=(p1,),
+            active_planet_id=501,
+            researches={"r1": 8},
+        )
+        telemetry = {
+            "hourly_loot": {
+                "pig_iron": 50_000.0,
+                "metal": 30_000.0,
+                "kryptonite": 20_000.0,
+                "spice": 10_000.0,
+            }
+        }
+        # Reserve nearly all stock on hand for next P1 AI-Planner building step
+        reserved = Resources(pig_iron=59_500, metal=39_500, kryptonite=29_500, spice=19_500)
+        budget = compute_spare_ship_budget(
+            st,
+            {"pig_iron": 10.0, "metal": 10.0, "kryptonite": 10.0, "spice": 10.0},
+            attack_telemetry=telemetry,
+            reserved_cost=reserved,
+        )
+        self.assertGreater(budget["hourly_income"]["pig_iron"], 50_000.0)
+        self.assertAlmostEqual(budget["free_after_reserve"]["pig_iron"], 500.0)
+        self.assertAlmostEqual(budget["available_budget"]["pig_iron"], 500.0)
+        self.assertEqual(set(budget["urgent_zero_count_ships"]), {"s10", "s1", "s2"})
+
+        s4_expensive = PlannedAction(
+            priority="P2",
+            kind="BUILD_SHIP",
+            planet_id=501,
+            planet_coords="01:100:05",
+            target_id=4,
+            target_name="Small fighter",
+            target_level=1,
+            cost=Resources(pig_iron=3000, metal=1000, kryptonite=0, spice=0),
+            executable_now=True,
+            reason="Fleet target",
+        )
+        s10_urgent = PlannedAction(
+            priority="P2",
+            kind="BUILD_SHIP",
+            planet_id=501,
+            planet_coords="01:100:05",
+            target_id=10,
+            target_name="Spy probe",
+            target_level=1,
+            cost=Resources(pig_iron=0, metal=0, kryptonite=1000, spice=0),
+            executable_now=True,
+            reason="Fleet target",
+        )
+        s2_urgent = PlannedAction(
+            priority="P2",
+            kind="BUILD_SHIP",
+            planet_id=501,
+            planet_coords="01:100:05",
+            target_id=2,
+            target_name="Large transport",
+            target_level=1,
+            cost=Resources(pig_iron=6000, metal=6000, kryptonite=0, spice=0),
+            executable_now=True,
+            reason="Fleet target",
+        )
+        manual_ship = PlannedAction(
+            priority="P1",
+            kind="BUILD_SHIP",
+            planet_id=501,
+            planet_coords="01:100:05",
+            target_id=13,
+            target_name="Battleship",
+            target_level=1,
+            cost=Resources(pig_iron=40_000, metal=20_000, kryptonite=0, spice=0),
+            executable_now=True,
+            reason="Manual queue",
+            manual_queue_id=99,
+        )
+        filtered = filter_shipyard_actions_by_spare_budget(
+            st, [s4_expensive, s10_urgent, s2_urgent, manual_ship], budget
+        )
+        by_tid = {a.target_id: a for a in filtered}
+        # Non-urgent Small fighter exceeds 500 Pig Iron free-after-reserve -> HELD
+        self.assertFalse(by_tid[4].executable_now)
+        self.assertIn("spare %", by_tid[4].reason.lower())
+        # Urgent 0-count Spy probe & Large transport -> ALWAYS ALLOWED
+        self.assertTrue(by_tid[10].executable_now)
+        self.assertTrue(by_tid[2].executable_now)
+        # Manual queue override -> ALWAYS ALLOWED
+        self.assertTrue(by_tid[13].executable_now)
+
+        # When stock has huge surplus above reserve, rolling 10% hourly allowance still caps ship spending
+        budget_surplus = compute_spare_ship_budget(
+            replace(
+                st,
+                planets=(
+                    replace(
+                        p1,
+                        resources=Resources(500_000, 500_000, 500_000, 500_000),
+                        ships={"s10": 5, "s2": 5},
+                    ),
+                ),
+            ),
+            10.0,
+            attack_telemetry=telemetry,
+            reserved_cost=Resources(10_000, 10_000, 10_000, 10_000),
+        )
+        self.assertEqual(budget_surplus["urgent_zero_count_ships"], [])
+        self.assertAlmostEqual(
+            budget_surplus["available_budget"]["kryptonite"],
+            budget_surplus["hourly_spare_allowance"]["kryptonite"],
+        )
+
+    def test_interplanet_transport_routes_surplus_to_ai_planner_priority_target(self) -> None:
+        from spaceinvasion.planner.strategy import (
+            plan_fleet_and_attack_actions,
+            plan_interplanet_transports,
+        )
+
+        donor = PlanetState(
+            planet_id=601,
+            name="DonorHub",
+            coords="01:100:01",
+            planet_type="normal",
+            temperature=20,
+            fields_used=60,
+            fields_max=320,
+            resources=Resources(pig_iron=180_000, metal=120_000, kryptonite=90_000, spice=40_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(produced=2000, used=800),
+            buildings={"b1": 18, "b2": 12, "b3": 14, "b4": 10, "b5": 15, "b9": 6, "b10": 4},
+            ships={"s2": 20, "s10": 5},
+            ship_offers=(
+                UnitOffer(
+                    unit_type="ship",
+                    unit_id=4,
+                    name="Small fighter",
+                    owned=10,
+                    cost=Resources(3000, 1000, 0, 0),
+                    can_build=True,
+                    input_name="ship[4]",
+                    status_text="Available",
+                ),
+            ),
+        )
+        target_p = PlanetState(
+            planet_id=602,
+            name="AiTargetColony",
+            coords="01:100:08",
+            planet_type="normal",
+            temperature=-40,
+            fields_used=55,
+            fields_max=310,
+            resources=Resources(pig_iron=20_000, metal=10_000, kryptonite=5_000, spice=5_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(produced=1500, used=700),
+            buildings={"b1": 15, "b2": 10, "b3": 12, "b4": 10, "b5": 14, "b10": 2},
+            ships={},
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(donor, target_p),
+            active_planet_id=601,
+            researches={"r1": 8, "r3": 4, "r8": 6},
+        )
+        cfg = StrategyConfig(
+            allow_multi_planet=True,
+            allow_transport=True,
+            allow_shipyard=True,
+            allow_transmitter=True,
+            shipyard_targets={"small-fighter": 25},
+        )
+        ai_need = {602: Resources(pig_iron=80_000, metal=40_000, kryptonite=25_000, spice=0)}
+        transports = plan_interplanet_transports(st, cfg, (), priority_resource_need=ai_need)
+        self.assertEqual(len(transports), 1)
+        tr = transports[0]
+        self.assertEqual(tr.kind, "TRANSPORT")
+        self.assertEqual(tr.planet_id, 601)
+        self.assertEqual(tr.target_id, 602)
+        self.assertTrue(tr.executable_now)
+        self.assertIn("AI-Planner", tr.reason)
+        self.assertGreater(tr.cost.pig_iron, 0)
+        self.assertGreater(tr.cost.metal, 0)
+
+        # Also verify plan_fleet_and_attack_actions emits TRANSPORT + ACTIVATE_TRANSMITTER and respects spare_budget
+        fleet_acts = plan_fleet_and_attack_actions(
+            st,
+            config=cfg,
+            transmitter_status={"due": True, "free_spins_remaining": 1},
+            priority_resource_need=ai_need,
+            spare_budget={
+                "available_budget": {"pig_iron": 0.0, "metal": 0.0, "kryptonite": 0.0, "spice": 0.0},
+                "urgent_replacements": {"s10": False, "s1": False, "s2": False},
+            },
+        )
+        self.assertTrue(any(a.kind == "TRANSPORT" and a.target_id == 602 and a.executable_now for a in fleet_acts))
+        self.assertTrue(any(a.kind == "ACTIVATE_TRANSMITTER" and a.executable_now for a in fleet_acts))
+        ship_builds = [a for a in fleet_acts if a.kind == "BUILD_SHIP" and a.target_id == 4]
+        self.assertTrue(ship_builds and not ship_builds[0].executable_now)
+        self.assertFalse(any(a.kind == "DEMOLISH_BUILDING" for a in fleet_acts))
+
 
 if __name__ == "__main__":
     unittest.main()

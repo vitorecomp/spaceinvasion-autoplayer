@@ -39,7 +39,11 @@ _maybe_reexec_venv()
 from spaceinvasion.combat.fleet import parse_station_ships_spec  # noqa: E402
 from spaceinvasion.core import game_data # noqa: E402
 from spaceinvasion.runtime.commander_client import GameApiClient, GameApiError  # noqa: E402
-from spaceinvasion.core.config import StrategyConfig, load_strategy_config  # noqa: E402
+from spaceinvasion.core.config import (  # noqa: E402
+    StrategyConfig,
+    load_strategy_config,
+    normalize_planner_mode,
+)
 from spaceinvasion.core.logging_utils import (  # noqa: E402
     append_tick_logs,
     format_action_summary,
@@ -54,6 +58,8 @@ from spaceinvasion.runtime.reloader import (  # noqa: E402
 )
 from spaceinvasion.core.state import (  # noqa: E402
     GameState,
+    Resources,
+    count_allocated_normal_planets,
     game_state_from_dict,
     is_asteroid_planet,
     normalize_planet_type,
@@ -65,6 +71,8 @@ WATCH_PATHS = (
     _REPO_ROOT / "spaceinvasion/core/config.py",
     _REPO_ROOT / "spaceinvasion/combat/fleet.py",
     _REPO_ROOT / "spaceinvasion/core/game_data.py",
+    _REPO_ROOT / "spaceinvasion/planner/config_optimizer.py",
+    _REPO_ROOT / "spaceinvasion/planner/ai_planner.py",
     _REPO_ROOT / "spaceinvasion/planner/optimizer.py",
     _REPO_ROOT / "spaceinvasion/combat/ranking.py",
     _REPO_ROOT / "spaceinvasion/planner/strategy.py",
@@ -279,6 +287,63 @@ def _safe_cmd_str(
     if _depth == 0 and len(txt) > 1024:
         return txt[:1024]
     return txt[:4096] if len(txt) > 4096 else txt
+
+
+def _planned_action_from_dict(raw: Any) -> Optional[PlannedAction]:
+    if not isinstance(raw, Mapping):
+        return None
+    kind = _safe_cmd_str(raw.get("kind"), "").strip().upper()
+    if not kind:
+        return None
+    prio = _safe_cmd_str(raw.get("priority"), "P2").strip().upper()
+    if prio not in ("P0", "P1", "P2", "P3"):
+        prio = "P2"
+
+    def _res(val: Any) -> Resources:
+        if isinstance(val, Resources):
+            return val
+        if not isinstance(val, Mapping):
+            return Resources()
+        return Resources(
+            pig_iron=max(0, _safe_cmd_int(val.get("pig_iron", 0), 0)),
+            metal=max(0, _safe_cmd_int(val.get("metal", 0), 0)),
+            kryptonite=max(0, _safe_cmd_int(val.get("kryptonite", 0), 0)),
+            spice=max(0, _safe_cmd_int(val.get("spice", 0), 0)),
+        )
+
+    return PlannedAction(
+        priority=prio,
+        kind=kind,
+        planet_id=_safe_cmd_int(raw.get("planet_id", 0), 0),
+        planet_coords=_safe_cmd_str(raw.get("planet_coords"), ""),
+        target_name=_safe_cmd_str(raw.get("target_name"), kind),
+        reason=_safe_cmd_str(raw.get("reason"), ""),
+        target_id=_safe_cmd_opt_int(raw.get("target_id")),
+        target_level=_safe_cmd_opt_int(raw.get("target_level")),
+        cost=_res(raw.get("cost")),
+        missing=_res(raw.get("missing")),
+        executable_now=bool(raw.get("executable_now", False)),
+        action_href=(
+            _safe_cmd_str(raw.get("action_href"))
+            if raw.get("action_href") is not None
+            else None
+        ),
+        wait_hours=_safe_finite_float(raw.get("wait_hours")),
+        wait_seconds=_safe_finite_float(raw.get("wait_seconds")),
+        wait_eta=_safe_cmd_str(raw.get("wait_eta"), "Ready"),
+        duration_seconds=_safe_finite_float(raw.get("duration_seconds")) or 0.0,
+        duration_text=_safe_cmd_str(raw.get("duration_text"), "Instant"),
+        total_hours=_safe_finite_float(raw.get("total_hours")),
+        total_seconds=_safe_finite_float(raw.get("total_seconds")),
+        total_eta=_safe_cmd_str(raw.get("total_eta"), "Ready"),
+        eta_bottleneck=(
+            _safe_cmd_str(raw.get("eta_bottleneck"))
+            if raw.get("eta_bottleneck") is not None
+            else None
+        ),
+        manual_queue_id=_safe_cmd_opt_int(raw.get("manual_queue_id")),
+        manual_sort_rank=_safe_cmd_opt_int(raw.get("manual_sort_rank")),
+    )
 
 
 def _action_to_command_payload(action: PlannedAction, *, dry_run: bool) -> dict:
@@ -556,11 +621,34 @@ def run_commander_tick(
             except (requests.RequestException, GameApiError) as sync_exc:
                 if compute_rate_limit_backoff(_safe_cmd_str(sync_exc)) is not None:
                     raise
-    is_ga_nn = str(getattr(cfg, "planner_mode", "priority") or "priority").strip().lower() == "ga_nn"
+    norm_mode = normalize_planner_mode(getattr(cfg, "planner_mode", "priority"))
+    is_ga_nn = norm_mode == "ga_nn"
+    is_ai_planner = norm_mode == "ai_planner"
+    max_planets_gate = max(1, _safe_cmd_int(getattr(cfg, "max_planets", 11), 11))
     cur_mq: Optional[Sequence[Mapping[str, Any]]] = manual_queue
     active_fsc: dict[int, float] = dict(fleet_slot_cooldowns) if fleet_slot_cooldowns else {}
 
     def _compute_tick_actions(cur_st: GameState, mq_items: Optional[Sequence[Mapping[str, Any]]]) -> list[PlannedAction]:
+        if is_ai_planner and count_allocated_normal_planets(cur_st) >= max_planets_gate:
+            try:
+                plan_resp = api.send_command({"command": "plan", "refresh": False})
+                if (
+                    isinstance(plan_resp, Mapping)
+                    and plan_resp.get("effective_planner_mode") == "ai_planner"
+                    and isinstance(plan_resp.get("actions"), list)
+                ):
+                    parsed_ai = [
+                        act
+                        for item in plan_resp["actions"]
+                        if (act := _planned_action_from_dict(item)) is not None
+                    ]
+                    if parsed_ai:
+                        return _hold_busy_fleet_slots(parsed_ai, active_fsc, re_sort_priority=False)
+            except (requests.RequestException, GameApiError) as plan_exc:
+                if compute_rate_limit_backoff(_safe_cmd_str(plan_exc)) is not None or is_captcha_error(
+                    _safe_cmd_str(plan_exc)
+                ):
+                    raise
         base = _hold_busy_fleet_slots(
             plan_actions(
                 cur_st,

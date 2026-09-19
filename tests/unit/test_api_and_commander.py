@@ -6780,6 +6780,624 @@ class TestApiAndCommander(unittest.TestCase):
         self.assertNotIn("#0 0x", out)
         self.assertNotIn("Session info:", out)
 
+    def test_4tab_config_optimizer_ai_planner_fleet_planner_and_exports_sync_and_async(self) -> None:
+        import time
+        from spaceinvasion.core.state import (
+            BuildingOffer,
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+            UnitOffer,
+        )
+        from spaceinvasion.db.storage import GameDatabase
+        from spaceinvasion.runtime.api_server import ApiRequestError
+
+        p1 = PlanetState(
+            planet_id=701,
+            name="Prime",
+            coords="01:100:04",
+            planet_type="normal",
+            temperature=30,
+            fields_used=90,
+            fields_max=300,
+            resources=Resources(pig_iron=250_000, metal=150_000, kryptonite=100_000, spice=60_000),
+            storage=Resources(1_000_000, 1_000_000, 1_000_000, 1_000_000),
+            energy=EnergyBalance(produced=4000, used=1500),
+            buildings={"b1": 12, "b2": 8, "b3": 10, "b4": 8, "b5": 12, "b7": 6, "b8": 8, "b9": 6, "b10": 4},
+            ships={"s2": 15, "s10": 8, "s4": 10},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 12, 13, Resources(25_000, 10_000, 0, 0), True, "Available", "?b=1"),
+                BuildingOffer(3, "Kryptonite mine", 10, 11, Resources(15_000, 10_000, 0, 0), True, "Available", "?b=3"),
+            ),
+            ship_offers=(
+                UnitOffer("ship", 4, "Small fighter", 10, Resources(3000, 1000, 0, 0), True, "ship[4]", "Available"),
+            ),
+        )
+        p2 = PlanetState(
+            planet_id=702,
+            name="Outpost",
+            coords="01:100:09",
+            planet_type="normal",
+            temperature=-40,
+            fields_used=60,
+            fields_max=310,
+            resources=Resources(pig_iron=80_000, metal=50_000, kryptonite=35_000, spice=20_000),
+            storage=Resources(1_000_000, 1_000_000, 1_000_000, 1_000_000),
+            energy=EnergyBalance(produced=3000, used=1200),
+            buildings={"b1": 10, "b2": 6, "b3": 9, "b4": 8, "b5": 11, "b7": 5, "b10": 2},
+            ships={"s2": 5},
+            building_offers=(
+                BuildingOffer(4, "Spice mine", 8, 9, Resources(12_000, 8_000, 0, 0), True, "Available", "?b=4"),
+            ),
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2),
+            active_planet_id=701,
+            researches={"r1": 6, "r2": 5, "r3": 4, "r8": 5},
+        )
+        fast_co_params = {
+            "catalogue_grid_size": 120,
+            "catalogue_priority_steps": 2,
+            "ga_population_size": 8,
+            "ga_generations": 3,
+            "ga_elite_count": 2,
+            "ga_random_seed": 42,
+        }
+        fast_ai_params = {
+            "reward_weeks": 4,
+            "ga_population_size": 4,
+            "ga_generations": 2,
+            "ga_elite_count": 1,
+            "ga_random_seed": 42,
+            "revalue_every_steps": 20,
+        }
+        client_factory = MagicMock()
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            db_path = td_path / "planner.db"
+            # Seed raid history so SQLite live attack telemetry is populated
+            seed_db = GameDatabase(db_path, attack_history_path="")
+            seed_db.record_raid(
+                "01:100:12",
+                attacked_ts=1500.0,
+                outcome="win",
+                loot={"pig_iron": 40_000, "metal": 20_000, "kryptonite": 15_000, "spice": 8_000},
+            )
+            seed_db.close()
+
+            cfg_path = td_path / "cfg.yaml"
+            cfg_path.write_text(
+                "planner_mode: priority\nmax_planets: 11\nallow_raids: false\nallow_transport: true\n",
+                encoding="utf-8",
+            )
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=None,
+                client_factory=client_factory,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                bridge._last_state = st
+
+                # 1. Initial status (2/11 colonies -> locked)
+                st_resp = bridge.handle_command({"command": "planner_jobs_status"})
+                self.assertTrue(st_resp["ok"])
+                self.assertEqual(st_resp["colonies_owned"], 2)
+                self.assertEqual(st_resp["max_planets"], 11)
+                self.assertFalse(st_resp["live_ai_unlocked"])
+                self.assertEqual(st_resp["config_optimizer_job"]["status"], "idle")
+                self.assertEqual(st_resp["ai_planner_job"]["status"], "idle")
+
+                # 2. ai_planner_run fails clearly when auto_run_config_if_missing=False and no config target
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command(
+                        {
+                            "command": "ai_planner_run",
+                            "params": fast_ai_params,
+                            "auto_run_config_if_missing": False,
+                            "sync": True,
+                        }
+                    )
+
+                # 3. config_optimizer_run (sync=True, auto_replan_ai=False) + export JSON
+                co_run = bridge.handle_command(
+                    {
+                        "command": "config_optimizer_run",
+                        "params": fast_co_params,
+                        "auto_replan_ai": False,
+                        "sync": True,
+                    }
+                )
+                self.assertTrue(co_run["ok"])
+                self.assertEqual(co_run["job"]["status"], "completed")
+                self.assertEqual(co_run["result"]["schema_version"], 1)
+                self.assertEqual(len(co_run["result"]["planets"]), 2)
+
+                co_get = bridge.handle_command({"command": "config_optimizer_get"})
+                self.assertTrue(co_get["ok"])
+                self.assertIsNotNone(co_get["active"])
+                self.assertEqual(len(co_get["runs"]), 1)
+                self.assertIn("target_ship_key", co_get["default_params"])
+
+                co_exp = bridge.handle_command({"command": "config_optimizer_export"})
+                self.assertEqual(co_exp["filename"], "config_optimizer_result.json")
+                parsed_json = json.loads(co_exp["content"])
+                self.assertEqual(parsed_json["schema_version"], 1)
+
+                # 4. ai_planner_run (sync=True) + ai_planner_get pagination/search/graph + export TXT
+                ai_run = bridge.handle_command(
+                    {
+                        "command": "ai_planner_run",
+                        "params": fast_ai_params,
+                        "sync": True,
+                    }
+                )
+                self.assertTrue(ai_run["ok"])
+                self.assertEqual(ai_run["job"]["status"], "completed")
+                self.assertGreater(len(ai_run["result"]["steps"]), 0)
+
+                ai_get = bridge.handle_command(
+                    {
+                        "command": "ai_planner_get",
+                        "window_size": 25,
+                        "page": 1,
+                        "page_size": 10,
+                        "search": "mine",
+                    }
+                )
+                self.assertTrue(ai_get["ok"])
+                self.assertTrue(ai_get["has_plan"])
+                self.assertIsInstance(ai_get["active_summary"], dict)
+                self.assertIsInstance(ai_get["weekly_breakdown"], list)
+                self.assertEqual(ai_get["graph"]["planner_mode"], "ai_planner")
+                self.assertLessEqual(len(ai_get["steps_page"]["items"]), 10)
+                self.assertGreaterEqual(ai_get["attack_telemetry"]["sample_count"], 1)
+                self.assertFalse(ai_get["live_ai_unlocked"])
+
+                ai_exp = bridge.handle_command({"command": "ai_planner_export"})
+                self.assertEqual(ai_exp["filename"], "full_planner_path.txt")
+                self.assertTrue(ai_exp["content"].strip())
+
+                # 5. fleet_planner_get with isolated config preview override (no mutation of active config)
+                fp_get = bridge.handle_command(
+                    {
+                        "command": "fleet_planner_get",
+                        "config": {"allow_raids": True, "shipyard_targets": {"small-fighter": 20}},
+                    }
+                )
+                self.assertTrue(fp_get["ok"])
+                self.assertEqual(fp_get["graph"]["planner_mode"], "fleet_planner")
+                self.assertIsInstance(fp_get["slot_budgets"], list)
+                self.assertTrue(fp_get["config"]["allow_raids"])
+                self.assertFalse(bridge.strategy_config.allow_raids)
+                self.assertIn("available_budget", fp_get["spare_budget"])
+
+                # 6. Non-blocking async background worker + auto-replan chaining (sync=False)
+                async_resp = bridge.handle_command(
+                    {
+                        "command": "config_optimizer_run",
+                        "params": fast_co_params,
+                        "auto_replan_ai": True,
+                        "sync": False,
+                    }
+                )
+                self.assertTrue(async_resp["ok"])
+                self.assertIn(async_resp["job"]["status"], ("running", "completed"))
+                # Verify /health and planner_jobs_status never block while background GA runs
+                deadline = time.monotonic() + 20.0
+                done_co = False
+                done_ai = False
+                while time.monotonic() < deadline:
+                    polled = bridge.handle_command({"command": "planner_jobs_status"})
+                    co_j = polled["config_optimizer_job"]
+                    ai_j = polled["ai_planner_job"]
+                    if co_j["status"] == "completed" and (co_j.get("run_id") or 0) >= 2:
+                        done_co = True
+                    if done_co and ai_j["status"] == "completed" and (ai_j.get("run_id") or 0) >= 2:
+                        done_ai = True
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(done_co, "Background config_optimizer_run did not complete")
+                self.assertTrue(done_ai, "Chained auto-replan ai_planner_run did not complete")
+                # Zero Selenium/browser client invocations across all planner jobs!
+                self.assertEqual(client_factory.call_count, 0)
+            finally:
+                bridge.close()
+
+    def test_all_colonies_gate_hybrid_ai_planner_field_conflicts_and_commander_tick(self) -> None:
+        from dataclasses import replace
+        import time
+        from spaceinvasion.core.state import (
+            BuildingOffer,
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+            UnitOffer,
+        )
+        from spaceinvasion.runtime.api_server import ApiRequestError
+
+        p1 = PlanetState(
+            planet_id=801,
+            name="Alpha",
+            coords="01:200:04",
+            planet_type="normal",
+            temperature=25,
+            fields_used=80,
+            fields_max=300,
+            resources=Resources(pig_iron=220_000, metal=140_000, kryptonite=90_000, spice=50_000),
+            storage=Resources(1_000_000, 1_000_000, 1_000_000, 1_000_000),
+            energy=EnergyBalance(produced=4000, used=1500),
+            buildings={"b1": 10, "b2": 6, "b3": 8, "b4": 7, "b5": 12, "b7": 5, "b8": 8, "b9": 5, "b10": 3},
+            ships={"s2": 10, "s10": 5, "s4": 4},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 10, 11, Resources(15_000, 6_000, 0, 0), True, "Available", "?b=1"),
+                BuildingOffer(3, "Kryptonite mine", 8, 9, Resources(10_000, 5_000, 0, 0), True, "Available", "?b=3"),
+                BuildingOffer(4, "Spice mine", 7, 8, Resources(9_000, 4_000, 0, 0), True, "Available", "?b=4"),
+                BuildingOffer(5, "Fusion plant", 12, 13, Resources(20_000, 10_000, 5_000, 0), True, "Available", "?b=5"),
+            ),
+            ship_offers=(
+                UnitOffer("ship", 4, "Small fighter", 4, Resources(3000, 1000, 0, 0), True, "ship[4]", "Available"),
+            ),
+        )
+        p2 = PlanetState(
+            planet_id=802,
+            name="Beta",
+            coords="01:200:08",
+            planet_type="normal",
+            temperature=-30,
+            fields_used=70,
+            fields_max=300,
+            resources=Resources(pig_iron=15_000, metal=10_000, kryptonite=5_000, spice=5_000),
+            storage=Resources(1_000_000, 1_000_000, 1_000_000, 1_000_000),
+            energy=EnergyBalance(produced=3000, used=1000),
+            buildings={"b1": 8, "b2": 5, "b3": 7, "b4": 6, "b5": 10, "b7": 4, "b10": 2},
+            ships={},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 8, 9, Resources(50_000, 25_000, 0, 0), False, "Not enough resources", None),
+            ),
+        )
+        st_1col = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=3000.0,
+            planets=(p1,),
+            active_planet_id=801,
+            researches={"r1": 5, "r2": 4, "r3": 3, "r8": 4},
+        )
+        st_2col = replace(st_1col, planets=(p1, p2))
+
+        with (
+            patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=False),
+            tempfile.TemporaryDirectory() as td,
+        ):
+            td_path = Path(td)
+            db_path = td_path / "gate.db"
+            cfg_path = td_path / "gate.yaml"
+            cfg_path.write_text(
+                "planner_mode: ai_planner\nmax_planets: 2\nallow_transport: true\nallow_shipyard: true\nallow_transmitter: true\n",
+                encoding="utf-8",
+            )
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=None,
+                client_factory=lambda _: MagicMock(),
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                def _seed_state(st_obj: GameState) -> None:
+                    bridge._record_state(
+                        st_obj,
+                        fetched_buildings=True,
+                        fetched_research=True,
+                        fetched_shipyard=True,
+                        fetched_home=True,
+                        observed_active_planet=True,
+                    )
+                    bridge._last_spio_sync_at = time.monotonic()
+
+                # Phase A: 1/2 colonies -> live AI-Planner locked -> clean fallback to Heuristics!
+                _seed_state(st_1col)
+                plan_locked = bridge.handle_command({"command": "plan", "refresh": False})
+                self.assertEqual(plan_locked["planner_mode"], "ai_planner")
+                self.assertEqual(plan_locked["effective_planner_mode"], "priority")
+                self.assertFalse(plan_locked["live_ai_unlocked"])
+                self.assertIn("1/2", plan_locked["fallback_reason"])
+
+                dash_locked = bridge.dashboard(refresh=False)
+                self.assertEqual(dash_locked["planner_mode"], "ai_planner")
+                self.assertEqual(dash_locked["effective_planner_mode"], "priority")
+                self.assertFalse(dash_locked["live_ai_unlocked"])
+
+                # Phase B: 2/2 colonies + saved AI-Planner plan -> live hybrid AI-Planner + Fleet unlocked!
+                _seed_state(st_2col)
+                synthetic_plan = {
+                    "generated_at": "2026-11-18T00:00:00Z",
+                    "meta_parameters": {
+                        "reward_weeks": 4,
+                        "resource_spare_percent": {
+                            "pig_iron": 10.0,
+                            "metal": 10.0,
+                            "kryptonite": 10.0,
+                            "spice": 10.0,
+                        },
+                    },
+                    "summary": {"actions_count": 2, "discounted_reward_spice_eq": 100000.0},
+                    "weekly_breakdown": [],
+                    "steps": [
+                        {
+                            "seq": 1,
+                            "start_sec": 0.0,
+                            "duration_sec": 600.0,
+                            "finish_sec": 600.0,
+                            "week": 1,
+                            "kind": "BUILD",
+                            "planet_id": 801,
+                            "planet_coords": "01:200:04",
+                            "planet_name": "Alpha",
+                            "entity_key": "b1",
+                            "entity_name": "Pig iron mine",
+                            "target_level": 11,
+                            "cost": {"pig_iron": 15000, "metal": 6000, "kryptonite": 0, "spice": 0},
+                        },
+                        {
+                            "seq": 2,
+                            "start_sec": 600.0,
+                            "duration_sec": 900.0,
+                            "finish_sec": 1500.0,
+                            "week": 1,
+                            "kind": "BUILD",
+                            "planet_id": 802,
+                            "planet_coords": "01:200:08",
+                            "planet_name": "Beta",
+                            "entity_key": "b1",
+                            "entity_name": "Pig iron mine",
+                            "target_level": 9,
+                            "cost": {"pig_iron": 50000, "metal": 25000, "kryptonite": 0, "spice": 0},
+                        },
+                    ],
+                }
+                bridge._db.record_ai_planner_run(
+                    synthetic_plan,
+                    params=synthetic_plan["meta_parameters"],
+                    trigger_source="test",
+                    set_active=True,
+                )
+                bridge._invalidate_dashboard_cache()
+
+                plan_live = bridge.handle_command({"command": "plan", "refresh": False})
+                self.assertEqual(plan_live["effective_planner_mode"], "ai_planner")
+                self.assertTrue(plan_live["live_ai_unlocked"])
+                self.assertEqual(plan_live["fallback_reason"], "")
+                acts = plan_live["actions"]
+                # Emits executable AI-Planner BUILD b1 L11 on Alpha AND inter-planet TRANSPORT to Beta!
+                self.assertTrue(
+                    any(a["kind"] == "BUILD" and a["planet_id"] == 801 and a["target_id"] == 1 and a["executable_now"] for a in acts)
+                )
+                self.assertTrue(
+                    any(a["kind"] == "TRANSPORT" and a["planet_id"] == 801 and a["target_id"] == 802 and a["executable_now"] for a in acts)
+                )
+                self.assertFalse(any(a["kind"] == "DEMOLISH_BUILDING" for a in acts))
+
+                # Commander tick in ai_planner mode fetches live hybrid plan from API and dispatches ready action
+                fake_api = MagicMock()
+                fake_api.get_state.return_value = st_2col
+                fake_api.send_command.side_effect = [
+                    plan_live,
+                    {"ok": True, "executed": False, "dry_run": True, "message": "dry-run ok"},
+                ]
+                _, actual_act, _, _, _ = commander.run_commander_tick(
+                    fake_api,
+                    live=False,
+                    max_actions=1,
+                    config=bridge.strategy_config,
+                    include_buildings=True,
+                )
+                self.assertIsNotNone(actual_act)
+                self.assertEqual(fake_api.send_command.call_args_list[0].args[0]["command"], "plan")
+
+                # Phase C: Max-field blocker on planet 1 -> NEVER auto-demolishes, records conflict & 1 notification!
+                p1_full = replace(
+                    p1,
+                    fields_used=300,
+                    fields_max=300,
+                    energy=EnergyBalance(produced=1510, used=1500),  # Tight energy: demolishing b5 is unsafe!
+                    buildings={**p1.buildings, "b11": 5},
+                )
+                _seed_state(replace(st_2col, planets=(p1_full, p2)))
+                plan_conflict_1 = bridge.handle_command({"command": "plan", "refresh": False})
+                self.assertFalse(any(a["kind"] == "DEMOLISH_BUILDING" for a in plan_conflict_1["actions"]))
+                # Calling plan a second time must NOT duplicate notifications
+                bridge.handle_command({"command": "plan", "refresh": False})
+                pending_fc = bridge._db.list_field_conflict_prompts(status="pending")
+                self.assertEqual(len(pending_fc), 1)
+                ck = pending_fc[0]["conflict_key"]
+                fc_notifs = [
+                    n
+                    for n in bridge._db.get_notifications(limit=50)
+                    if n.get("category") == "field_conflict"
+                ]
+                self.assertEqual(len(fc_notifs), 1)
+
+                # Energy-safety guard rejects demolishing Fusion plant (b5) when spare energy is tight
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command(
+                        {
+                            "command": "resolve_field_conflict",
+                            "conflict_key": ck,
+                            "decision": "demolish",
+                            "building_key": "b5",
+                        }
+                    )
+
+                # Safe demolish on Pig iron warehouse (b11, 0 energy) enqueues DEMOLISH_BUILDING into manual_queue!
+                dem_resp = bridge.handle_command(
+                    {
+                        "command": "resolve_field_conflict",
+                        "conflict_key": ck,
+                        "decision": "demolish",
+                        "building_key": "b11",
+                    }
+                )
+                self.assertTrue(dem_resp["ok"])
+                self.assertEqual(dem_resp["conflict"]["status"], "resolved")
+                self.assertEqual(dem_resp["conflict"]["decision"], "demolish")
+                self.assertEqual(dem_resp["queued_demolish"]["kind"], "DEMOLISH_BUILDING")
+                self.assertEqual(dem_resp["queued_demolish"]["target_id"], 11)
+
+                # Phase D: keep_reserve updates reserved floor & triggers chained config_optimizer -> ai_planner rerun!
+                # Seed fast params in active config_optimizer & ai_planner so sync rerun is quick (<1s)
+                bridge._db.record_config_optimizer_run(
+                    {"schema_version": 1, "planets": [], "summary": {}},
+                    params={
+                        "catalogue_grid_size": 100,
+                        "catalogue_priority_steps": 2,
+                        "ga_population_size": 6,
+                        "ga_generations": 2,
+                        "ga_elite_count": 2,
+                        "ga_random_seed": 7,
+                    },
+                    trigger_source="test_seed",
+                    set_active=True,
+                )
+                bridge._db.record_ai_planner_run(
+                    synthetic_plan,
+                    params={
+                        "reward_weeks": 2,
+                        "ga_population_size": 4,
+                        "ga_generations": 1,
+                        "ga_elite_count": 1,
+                        "ga_random_seed": 7,
+                    },
+                    trigger_source="test_seed",
+                    set_active=True,
+                )
+                ck2 = "801:b3:9"
+                bridge._db.upsert_field_conflict_prompt(
+                    {
+                        "conflict_key": ck2,
+                        "planet_id": 801,
+                        "planet_coords": "01:200:04",
+                        "blocked_building_key": "b3",
+                        "blocked_target_level": 9,
+                        "candidate_building_key": "b11",
+                        "candidate_level": 5,
+                    }
+                )
+                kr_resp = bridge.handle_command(
+                    {
+                        "command": "resolve_field_conflict",
+                        "conflict_key": ck2,
+                        "decision": "keep_reserve",
+                        "sync": True,
+                    }
+                )
+                self.assertTrue(kr_resp["ok"])
+                self.assertEqual(kr_resp["conflict"]["decision"], "keep_reserve")
+                self.assertGreaterEqual(kr_resp["reserved_floors"]["801"]["b11"], 5)
+                self.assertEqual(kr_resp["job"]["status"], "completed")
+                self.assertEqual(kr_resp["ai_planner_job"]["status"], "completed")
+            finally:
+                bridge.close()
+
+    def test_ai_planner_auto_bootstrap_and_http_4tab_commands_redaction(self) -> None:
+        import requests
+        from spaceinvasion.core.state import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+        )
+
+        p1 = PlanetState(
+            planet_id=901,
+            name="Boot?sid=SecretToken999",
+            coords="01:300:04",
+            planet_type="normal",
+            temperature=20,
+            fields_used=50,
+            fields_max=300,
+            resources=Resources(150_000, 100_000, 75_000, 40_000),
+            storage=Resources(1_000_000, 1_000_000, 1_000_000, 1_000_000),
+            energy=EnergyBalance(3000, 1200),
+            buildings={"b1": 10, "b2": 6, "b3": 8, "b4": 7, "b5": 11, "b7": 5, "b8": 8, "b9": 5, "b10": 3},
+            ships={"s2": 10, "s10": 5},
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=4000.0,
+            planets=(p1,),
+            active_planet_id=901,
+            researches={"r1": 5, "r2": 4, "r8": 4},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=td_path / "c.yaml",
+                db_path=td_path / "boot.db",
+                log_dir=None,
+                client_factory=lambda _: MagicMock(),
+                ensure_session_fn=lambda: None,
+            )
+            bridge._last_state = st
+            server = create_api_server(bridge, host="127.0.0.1", port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                # Fresh DB with no Config Optimizer target -> ai_planner_run auto-bootstraps Config Optimizer!
+                r_run = requests.post(
+                    f"{base_url}/command",
+                    json={
+                        "command": "ai_planner_run",
+                        "params": {
+                            "reward_weeks": 2,
+                            "ga_population_size": 4,
+                            "ga_generations": 1,
+                            "ga_elite_count": 1,
+                            "ga_random_seed": 11,
+                        },
+                        "sync": True,
+                    },
+                    timeout=30,
+                )
+                self.assertEqual(r_run.status_code, 200)
+                run_body = r_run.json()
+                self.assertTrue(run_body["ok"])
+                self.assertEqual(run_body["job"]["status"], "completed")
+                self.assertNotIn("SecretToken999", r_run.text)
+
+                for cmd_payload in (
+                    {"command": "planner_jobs_status"},
+                    {"command": "config_optimizer_get"},
+                    {"command": "ai_planner_get", "window_size": 15, "page": 1, "page_size": 10},
+                    {"command": "fleet_planner_get"},
+                ):
+                    resp = requests.post(f"{base_url}/command", json=cmd_payload, timeout=15)
+                    self.assertEqual(resp.status_code, 200, msg=f"{cmd_payload} -> {resp.text}")
+                    self.assertTrue(resp.json()["ok"])
+                    self.assertNotIn("SecretToken999", resp.text)
+            finally:
+                server.shutdown()
+                server.server_close()
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,7 +19,7 @@ from typing import Any, Optional
 DEFAULT_CONFIG_DB_PATH: Path = Path("state") / "spaceinvasion.db"
 LEGACY_CONFIG_YAML_PATH: Path = Path("config.yaml")
 
-VALID_PLANNER_MODES: tuple[str, ...] = ("priority", "ga_nn")
+VALID_PLANNER_MODES: tuple[str, ...] = ("priority", "ai_planner", "ga_nn")
 
 _CFG_SECRET_DICT_KEYS: frozenset[str] = frozenset(
     {"sid", "password", "passwd", "cookie", "api_key", "secret", "authorization"}
@@ -372,7 +372,7 @@ def _safe_cfg_exc_text(
 
 
 def normalize_planner_mode(value: Any, *, strict: bool = False) -> str:
-    """Validate and normalize `planner_mode` (`'priority'` default or `'ga_nn'`)."""
+    """Validate and normalize `planner_mode` (`'priority'` default, `'ai_planner'`, or `'ga_nn'`)."""
     if value is None:
         return "priority"
     if isinstance(value, os.PathLike):
@@ -467,7 +467,8 @@ class StrategyConfig:
     galaxy_scan_attack_weight: float = 3.0
     reserved_spy_slots: int = 1
     spy_dispatch_planet_id: int = 0
-    planner_mode: str = "priority"  # "priority" | "ga_nn"
+    planner_mode: str = "priority"  # "priority" | "ai_planner" | "ga_nn"
+    ai_resource_spare_pct: float = 10.0
     ga_population_size: int = 24
     ga_generations: int = 12
     ga_horizon_steps: int = 6
@@ -1165,6 +1166,9 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         reserved_spy_slots=max(0, min(10, _safe_cfg_int(data.get("reserved_spy_slots"), 1))),
         spy_dispatch_planet_id=max(0, _safe_cfg_int(data.get("spy_dispatch_planet_id"), 0)),
         planner_mode=normalize_planner_mode(raw_mode),
+        ai_resource_spare_pct=max(
+            0.0, min(100.0, _safe_cfg_float(data.get("ai_resource_spare_pct"), 10.0))
+        ),
         ga_population_size=max(4, min(200, _safe_cfg_int(data.get("ga_population_size"), 24))),
         ga_generations=max(1, min(200, _safe_cfg_int(data.get("ga_generations"), 12))),
         ga_horizon_steps=max(1, min(24, _safe_cfg_int(data.get("ga_horizon_steps"), 6))),
@@ -1392,6 +1396,9 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
     res_spy_slots = max(0, min(10, _safe_cfg_int(cfg.reserved_spy_slots, 1)))
     spy_disp_pid = max(0, _safe_cfg_int(cfg.spy_dispatch_planet_id, 0))
     planner_mode = normalize_planner_mode(cfg.planner_mode)
+    ai_spare_pct = max(
+        0.0, min(100.0, _safe_cfg_float(getattr(cfg, "ai_resource_spare_pct", 10.0), 10.0))
+    )
     ga_pop = max(4, min(200, _safe_cfg_int(cfg.ga_population_size, 24)))
     ga_gen = max(1, min(200, _safe_cfg_int(cfg.ga_generations, 12)))
     ga_hor = max(1, min(24, _safe_cfg_int(cfg.ga_horizon_steps, 6)))
@@ -1427,6 +1434,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         f"allow_raids: {'true' if _safe_cfg_bool(cfg.allow_raids, False) else 'false'}",
         f"allow_pvp_in_az: {'true' if _safe_cfg_bool(cfg.allow_pvp_in_az, False) else 'false'}",
         f"allow_colonize: {'true' if _safe_cfg_bool(cfg.allow_colonize, False) else 'false'}",
+        f"allow_transport: {'true' if _safe_cfg_bool(cfg.allow_transport, False) else 'false'}",
         f"allow_transmitter: {'true' if _safe_cfg_bool(cfg.allow_transmitter, False) else 'false'}",
         f"forbid_planetary_solar: {'true' if _safe_cfg_bool(cfg.forbid_planetary_solar, False) else 'false'}",
         f"storage_warn_ratio: {storage_warn_ratio}",
@@ -1452,6 +1460,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         f"reserved_spy_slots: {res_spy_slots}",
         f"spy_dispatch_planet_id: {spy_disp_pid}",
         f"planner_mode: {planner_mode}",
+        f"ai_resource_spare_pct: {ai_spare_pct}",
         f"ga_population_size: {ga_pop}",
         f"ga_generations: {ga_gen}",
         f"ga_horizon_steps: {ga_hor}",
