@@ -1363,6 +1363,91 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual(packed.total(), 30_000)
         self.assertLessEqual(packed.spice, 1_500)
 
+    def test_retro_rubblefield1_beats_ghost_rubblefield_and_station_not_misclassified_as_recycle(self) -> None:
+        from spaceinvasion.combat.fleet import (
+            is_non_recycle_fleet_notice_text,
+            parse_galaxy_system_html,
+            parse_inbox_messages_html,
+        )
+
+        # SpaceInvasion RETRO `#json-element`: slot 1 has ghost `rubblefield` with live `rubblefield1=[0,0,0,0,1]`;
+        # slot 6 has live `rubblefield1=[10720, 10574, 15560, 11584, 1]` (5th elem `1` is flag, NOT resources!).
+        gal_html = """
+        <html><body>
+          <div class="planet-hit" data-planet="1">
+            <div class="rubble-orbit" name="rubblefield"></div>
+            <div><span>CleanPlanet (Ghost)</span><div>1</div></div>
+          </div>
+          <div class="planet-hit" data-planet="6">
+            <div class="rubble-orbit" name="rubblefield"></div>
+            <div><span>FreeRubble</span><div>6</div></div>
+          </div>
+          <textarea id="json-element">{
+            "position": {"galaxy": 2, "system": 379},
+            "planets": {
+              "1": {
+                "pla": 1, "uid": 99, "name": "CleanPlanet", "uname": "Ghost",
+                "rubblefield": [280000, 180000, 60000, 0, 1],
+                "rubblefield1": [0, 0, 0, 0, 1]
+              },
+              "6": {
+                "pla": 6, "uid": 0, "name": "", "uname": "",
+                "rubblefield": [10720, 10574, 15560, 11584, 1],
+                "rubblefield1": [10720, 10574, 15560, 11584, 1]
+              }
+            }
+          }</textarea>
+        </body></html>
+        """
+        slots = {s.position: s for s in parse_galaxy_system_html(gal_html, galaxy=2, system=379)}
+        self.assertFalse(slots[1].has_debris)
+        self.assertEqual(slots[1].debris_pig_iron, 0)
+        self.assertEqual(slots[1].debris_metal, 0)
+        self.assertTrue(slots[6].has_debris)
+        self.assertEqual(slots[6].debris_pig_iron, 10_720)
+        self.assertEqual(slots[6].debris_metal, 10_574)
+        self.assertEqual(slots[6].debris_kryptonite, 15_560)
+        self.assertEqual(slots[6].debris_spice, 11_584)
+
+        # Inbox: STATION notice mentioning `(6 Recycler)` MUST classify as `fleet_transport`, NOT `recycle_report`!
+        inbox_html = """
+        <html><body>
+          <table>
+            <tr id="msg_9001">
+              <td><input type="checkbox" name="check_9001" value="9001" /></td>
+              <td>2026-11-17 13:50:00</td>
+              <td>System</td>
+              <td>
+                Colony [02:380:06] station
+                <div class="si-expanded-body" data-si-expanded="1">
+                  Message from System: Colony [02:380:06] station One of your fleets (6 Recycler) was re-stationed
+                  from Colony [02:379:06] to Colony [02:380:06]. It delivers 0 Pig iron, 0 Metal, 0 Kryptonite, 0 Spice.
+                </div>
+              </td>
+            </tr>
+            <tr id="msg_9002">
+              <td><input type="checkbox" name="check_9002" value="9002" /></td>
+              <td>2026-11-17 13:56:00</td>
+              <td>System</td>
+              <td>
+                Space rubble [02:380:14] recycling report
+                <div class="si-expanded-body" data-si-expanded="1">
+                  Message from System: Space rubble [02:380:14] recycling report Your fleet (46 Recycler) from planet
+                  Colony [02:380:12] reached its goal Spacia Planet [02:380:14]. Too bad for them that they couldn't
+                  find any more resources there.
+                </div>
+              </td>
+            </tr>
+          </table>
+        </body></html>
+        """
+        msgs = {m.server_msg_id: m for m in parse_inbox_messages_html(inbox_html, folder_type="inbox")}
+        self.assertEqual(msgs["9001"].category, "fleet_transport")
+        self.assertTrue(is_non_recycle_fleet_notice_text(msgs["9001"].body_text, msgs["9001"].subject))
+        self.assertEqual(msgs["9002"].category, "recycle_report")
+        self.assertEqual(msgs["9002"].coords, "02:380:14")
+        self.assertFalse(is_non_recycle_fleet_notice_text(msgs["9002"].body_text, msgs["9002"].subject))
+
 
 if __name__ == "__main__":
     unittest.main()

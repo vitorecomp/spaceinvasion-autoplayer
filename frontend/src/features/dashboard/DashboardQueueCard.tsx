@@ -25,6 +25,7 @@ export interface DashboardQueueCardProps {
   planTbodyId: string;
   execJobs: QueueJobData[];
   plannedActions: PlannedActionData[];
+  maxRows?: number;
   emptyText: string;
   nowEpochSec: number;
   onDispatch: (act: PlannedActionData, dryRun: boolean) => void;
@@ -50,6 +51,7 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
   planTbodyId,
   execJobs,
   plannedActions,
+  maxRows,
   emptyText,
   nowEpochSec,
   onDispatch,
@@ -60,7 +62,10 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
   const activeList = Array.isArray(execJobs) ? execJobs : [];
   const totalCount = activeList.length + plannedActions.length;
   const planSort = useTableSort(plannedActions, PLAN_ACTION_SORT_COLUMNS);
-  const topSlice = planSort.sortedRows.slice(0, 10);
+  const visibleRows =
+    maxRows != null && maxRows > 0
+      ? planSort.sortedRows.slice(0, maxRows)
+      : planSort.sortedRows;
 
   return (
     <article className="hud-window dash-queue-card" id={cardId}>
@@ -151,8 +156,8 @@ export const DashboardQueueCard: React.FC<DashboardQueueCardProps> = ({
             ))}
           </tbody>
           <tbody id={planTbodyId}>
-            {topSlice.length > 0 ? (
-              topSlice.map((act, idx) => (
+            {visibleRows.length > 0 ? (
+              visibleRows.map((act, idx) => (
                 <PlanActionRow
                   key={`plan-${act.manual_queue_id ?? "auto"}-${act.kind}-${act.planet_id}-${act.target_id ?? act.target_name}-${idx}`}
                   action={act}

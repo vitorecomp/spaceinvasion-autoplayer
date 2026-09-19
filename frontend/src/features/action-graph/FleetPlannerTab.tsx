@@ -11,6 +11,7 @@ import type {
   StrategyConfigData,
 } from "../../types/api";
 import { fmtCompact, fmtInt } from "../../utils/formatters";
+import { formatQueueJobCargo } from "../operations/planActions";
 import { ActionGraphParamRow } from "./ActionGraphParamRow";
 import { DagCanvas } from "./DagCanvas";
 import {
@@ -239,6 +240,12 @@ function buildClientFallbackFleetGraph(
     if (cat !== "fleet" && cat !== "shipyard" && !isFleetActionKind(cat)) continue;
     const pid = Math.round(safeFiniteNumber(job.planet_id, planets[0]?.planet_id ?? 0) ?? 0);
     const id = `flt_active_${nodes.length}`;
+    const cargoInfo = formatQueueJobCargo(job);
+    const baseReason = String(job.detail || job.remaining_text || "Live in-flight queue item");
+    const reasonWithCargo =
+      cargoInfo && !cargoInfo.isEmpty
+        ? `${baseReason} · ${cargoInfo.label}: ${cargoInfo.inline}`
+        : baseReason;
     nodes.push({
       id,
       order_index: nodes.length,
@@ -251,7 +258,7 @@ function buildClientFallbackFleetGraph(
       status: "in_flight",
       target_name: String(job.name || job.detail || "Active Flight"),
       target_level: safeFiniteNumber(job.quantity ?? job.target_level, null),
-      reason: String(job.detail || job.remaining_text || "Live in-flight queue item"),
+      reason: reasonWithCargo,
       executable_now: false,
       wait_eta: String(job.remaining_text || "In Flight"),
       total_eta: String(job.remaining_text || "In Flight"),

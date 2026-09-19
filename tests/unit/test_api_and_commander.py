@@ -7439,6 +7439,174 @@ class TestApiAndCommander(unittest.TestCase):
                 server.server_close()
                 bridge.close()
 
+    def test_live_recycle_pre_dispatch_aborts_clean_planet_and_trims_qty_for_live_debris(self) -> None:
+        from dataclasses import replace as dc_replace
+        import time
+        from spaceinvasion.combat.fleet import GalaxySlot
+        from spaceinvasion.core.state import PlanetState, Resources
+        from spaceinvasion.planner.strategy import PlannedAction
+        from spaceinvasion.session.executor import ExecutionResult
+
+        with tempfile.TemporaryDirectory(prefix="si_rec_verify_") as tmp:
+            tmp_path = Path(tmp)
+            cfg_path = tmp_path / "config.yaml"
+            cfg_path.write_text("allow_raids: true\nallow_galaxy_scan: true\n", encoding="utf-8")
+            db_path = tmp_path / "spaceinvasion.db"
+
+            base_st = _sample_state()
+            p0 = dc_replace(base_st.planets[0], ships={"s11": 46})
+            st = dc_replace(base_st, planets=(p0,), tutorial=None)
+
+            clean_gal_html = """
+            <html><body>
+              <div class="planet-hit" data-planet="14">
+                <div class="rubble-orbit" name="rubblefield"></div>
+                <div><span>Spacia Planet (Spacia)</span><div>14</div></div>
+              </div>
+              <textarea id="json-element">{
+                "position": {"galaxy": 2, "system": 380},
+                "planets": {
+                  "14": {
+                    "pla": 14, "uid": 2, "name": "Spacia Planet", "uname": "Spacia",
+                    "rubblefield": [280000, 180000, 60000, 0, 1],
+                    "rubblefield1": [0, 0, 0, 0, 1]
+                  }
+                }
+              }</textarea>
+            </body></html>
+            """
+            live_debris_html = """
+            <html><body>
+              <div class="planet-hit" data-planet="1">
+                <div class="rubble-orbit" name="rubblefield"></div>
+                <div><span>Free</span><div>1</div></div>
+              </div>
+              <textarea id="json-element">{
+                "position": {"galaxy": 2, "system": 379},
+                "planets": {
+                  "1": {
+                    "pla": 1, "uid": 0, "name": "", "uname": "",
+                    "rubblefield1": [10000, 10000, 10000, 5000, 1]
+                  }
+                }
+              }</textarea>
+            </body></html>
+            """
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.open_galaxy_calls: list[tuple[int, int]] = []
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+                def open_galaxy(self, *, galaxy=None, system=None, priority="interactive"):
+                    self.open_galaxy_calls.append((int(galaxy), int(system)))
+                    if int(system) == 380:
+                        return clean_gal_html
+                    if int(system) == 378:
+                        return ""
+                    return live_debris_html
+
+                def read_full_snapshot(self, *args, **kwargs):
+                    return st
+
+            fake_client = _FakeClient()
+            exec_dispatched: list[PlannedAction] = []
+
+            class _FakeExec:
+                def execute_action(self, client, state, action, active_planet_confirmed=None):
+                    exec_dispatched.append(action)
+                    return ExecutionResult(action=action, executed=True, dry_run=False, message="Dispatched")
+
+            bridge = GameApiBridge(
+                debug_port=9222,
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=None,
+                client_factory=lambda _port: fake_client,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                assert bridge._db is not None
+                bridge._last_state = st
+                bridge._live_executor = _FakeExec()  # type: ignore[assignment]
+                # Seed stale has_debris=True for both targets (scanned long ago)
+                bridge._db.record_galaxy_slots(
+                    [
+                        GalaxySlot(coords="02:380:14", position=14, name="Spacia Planet", owner="Spacia", status_color="yellow", has_debris=True, is_spacia=True),
+                        GalaxySlot(coords="02:379:01", position=1, name="", owner="", status_color="free", has_debris=True),
+                    ],
+                    ts=100.0,
+                )
+                # Even if scanned 1s ago, RECYCLE MUST still open live internalGalaxy right before dispatch!
+                bridge._scanned_systems["02:380"] = time.time()
+                bridge._scanned_systems["02:379"] = time.time()
+                bridge._scanned_systems["02:378"] = time.time()
+
+                # 1. Clean planet 02:380:14 -> MUST open galaxy view, abort before executor, and clear has_debris in DB!
+                act_clean = PlannedAction(
+                    priority="P2",
+                    kind="RECYCLE",
+                    planet_id=p0.planet_id,
+                    planet_coords=p0.coords,
+                    target_id=11,
+                    target_level=46,
+                    target_name="Rubble -> 02:380:14",
+                    reason="test clean",
+                    executable_now=True,
+                )
+                res_clean = bridge._execute_and_summarize(fake_client, st, "step", act_clean, dry_run=False)
+                self.assertTrue(res_clean["ok"])
+                self.assertFalse(res_clean["executed"])
+                self.assertIn("clean", res_clean["message"].lower())
+                self.assertIn((2, 380), fake_client.open_galaxy_calls)
+                self.assertEqual(len(exec_dispatched), 0)
+                deb_after_clean = [t["coords"] for t in bridge._db.get_active_debris_targets()]
+                self.assertNotIn("02:380:14", deb_after_clean)
+
+                # 2. Live galaxy view fails/returns empty (02:378:05) -> MUST abort safely (never launch blind)
+                act_unverified = PlannedAction(
+                    priority="P2",
+                    kind="RECYCLE",
+                    planet_id=p0.planet_id,
+                    planet_coords=p0.coords,
+                    target_id=11,
+                    target_level=5,
+                    target_name="Rubble -> 02:378:05",
+                    reason="test unverified",
+                    executable_now=True,
+                )
+                res_unver = bridge._execute_and_summarize(fake_client, st, "step", act_unverified, dry_run=False)
+                self.assertTrue(res_unver["ok"])
+                self.assertFalse(res_unver["executed"])
+                self.assertIn("could not confirm debris", res_unver["message"].lower())
+                self.assertEqual(len(exec_dispatched), 0)
+
+                # 3. Live debris 02:379:01 (35,000 total -> 2 Recyclers @ 25k cap) -> opens galaxy view & trims 46 down to 2!
+                act_live = PlannedAction(
+                    priority="P2",
+                    kind="RECYCLE",
+                    planet_id=p0.planet_id,
+                    planet_coords=p0.coords,
+                    target_id=11,
+                    target_level=46,
+                    target_name="Rubble -> 02:379:01",
+                    reason="test live",
+                    executable_now=True,
+                )
+                res_live = bridge._execute_and_summarize(fake_client, st, "step", act_live, dry_run=False)
+                self.assertTrue(res_live["ok"])
+                self.assertTrue(res_live["executed"])
+                self.assertIn((2, 379), fake_client.open_galaxy_calls)
+                self.assertEqual(len(exec_dispatched), 1)
+                self.assertEqual(exec_dispatched[0].target_level, 2)
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

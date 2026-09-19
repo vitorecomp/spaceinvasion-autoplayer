@@ -57,6 +57,8 @@
 }
 
 .dash-queue-card .table-scroll {
+  max-height: 460px;
+  overflow-y: auto;
   overflow-x: auto;
 }
 

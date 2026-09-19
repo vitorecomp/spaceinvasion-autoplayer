@@ -25,6 +25,7 @@ from spaceinvasion.combat.fleet import (
     SpyReport,
     _classify_and_parse_inbox_block,
     grade_colony_candidate,
+    is_non_recycle_fleet_notice_text,
     is_non_spy_notice_text,
     normalize_coords,
 )
@@ -2372,15 +2373,14 @@ class GameDatabase:
             self._save_meta_json_locked(key, payload, now_ts)
             self._conn.commit()
 
-    def load_meta_json(self, key: str) -> Any:
+    def _load_meta_json_locked(self, key: str) -> Any:
         clean_key = _sanitize_text(key).strip()
         if not clean_key or clean_key in PROTECTED_META_KEYS:
             return None
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT value FROM meta WHERE key = ? LIMIT 1",
-                (clean_key,),
-            ).fetchone()
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key = ? LIMIT 1",
+            (clean_key,),
+        ).fetchone()
         if row is None or not row["value"]:
             return None
         try:
@@ -2388,6 +2388,13 @@ class GameDatabase:
         except (TypeError, ValueError):
             return None
         return _sanitize_obj(parsed)
+
+    def load_meta_json(self, key: str) -> Any:
+        clean_key = _sanitize_text(key).strip()
+        if not clean_key or clean_key in PROTECTED_META_KEYS:
+            return None
+        with self._lock:
+            return self._load_meta_json_locked(clean_key)
 
     def _save_latest_game_state_locked(
         self,
@@ -3517,6 +3524,7 @@ class GameDatabase:
                 self._last_slot_history_sig = (now_ts, sig_coords)
             touched_coords: set[str] = set()
             touched_sectors: set[tuple[int, int]] = set()
+            debris_amt_updates: dict[str, Optional[list[Any]]] = {}
             for slot in slots:
                 self._upsert_galaxy_slot_locked(slot, now_ts, append_history=append_hist)
                 has_debris = 1 if bool(getattr(slot, "has_debris", False)) else 0
@@ -3527,6 +3535,21 @@ class GameDatabase:
                     parsed_sc = self._parse_norm_gsp_fast(norm_slot_coords)
                     if parsed_sc is not None and 1 <= parsed_sc[1] <= 14 and 1 <= parsed_sc[2] <= 400:
                         touched_sectors.add((parsed_sc[1], parsed_sc[2]))
+                    if has_debris:
+                        d_pig = max(0, _safe_int(getattr(slot, "debris_pig_iron", 0), 0))
+                        d_met = max(0, _safe_int(getattr(slot, "debris_metal", 0), 0))
+                        d_kry = max(0, _safe_int(getattr(slot, "debris_kryptonite", 0), 0))
+                        d_spi = max(0, _safe_int(getattr(slot, "debris_spice", 0), 0))
+                        if (d_pig + d_met + d_kry + d_spi) > 0:
+                            debris_amt_updates[norm_slot_coords] = [
+                                game_data.cap_json_int(d_pig),
+                                game_data.cap_json_int(d_met),
+                                game_data.cap_json_int(d_kry),
+                                game_data.cap_json_int(d_spi),
+                                now_ts,
+                            ]
+                    else:
+                        debris_amt_updates[norm_slot_coords] = None
                 if slot.status_color == "free" and not has_debris:
                     if norm_slot_coords:
                         slot_uf = _sql_optional_int(getattr(slot, "uninhabited_fields", None))
@@ -3637,6 +3660,31 @@ class GameDatabase:
                     ),
                 )
                 saved += 1
+            if debris_amt_updates:
+                raw_deb_map = self._load_meta_json_locked("galaxy_debris_amounts")
+                deb_map: dict[str, Any] = dict(raw_deb_map) if isinstance(raw_deb_map, Mapping) else {}
+                deb_changed = False
+                for dc, dval in debris_amt_updates.items():
+                    if dval is None:
+                        if dc in deb_map:
+                            deb_map.pop(dc, None)
+                            deb_changed = True
+                    else:
+                        if deb_map.get(dc) != dval:
+                            deb_map[dc] = dval
+                            deb_changed = True
+                if deb_changed:
+                    if len(deb_map) > 4000:
+                        sorted_items = sorted(
+                            deb_map.items(),
+                            key=lambda kv: _safe_float(
+                                kv[1][4] if isinstance(kv[1], Sequence) and len(kv[1]) >= 5 else 0.0,
+                                0.0,
+                            ),
+                            reverse=True,
+                        )[:3500]
+                        deb_map = dict(sorted_items)
+                    self._save_meta_json_locked("galaxy_debris_amounts", deb_map, now_ts)
             if touched_coords:
                 self._refresh_colony_candidates_hot_locked(touched_coords, now_ts)
             if touched_sectors:
@@ -5127,6 +5175,80 @@ class GameDatabase:
             backfill_v012_hot_tables(self._conn, time.time())
         self._conn.commit()
 
+    def _enrich_debris_amounts_locked(self, targets: list[dict[str, Any]]) -> None:
+        debris_coords = [t["coords"] for t in targets if t.get("has_debris") and t.get("coords")]
+        if not debris_coords:
+            return
+        # Map: norm_coords -> (pig, met, kry, spi)
+        debris_lookup: dict[str, tuple[int, int, int, int]] = {}
+        raw_deb_map = self._load_meta_json_locked("galaxy_debris_amounts")
+        if isinstance(raw_deb_map, Mapping):
+            for nc in debris_coords:
+                entry = raw_deb_map.get(nc)
+                if isinstance(entry, Sequence) and not isinstance(entry, (str, bytes)) and len(entry) >= 4:
+                    dp = game_data.cap_json_int(max(0, _safe_int(entry[0], 0)))
+                    dm = game_data.cap_json_int(max(0, _safe_int(entry[1], 0)))
+                    dk = game_data.cap_json_int(max(0, _safe_int(entry[2], 0)))
+                    ds = game_data.cap_json_int(max(0, _safe_int(entry[3], 0)))
+                    if dp + dm + dk + ds > 0:
+                        debris_lookup[nc] = (dp, dm, dk, ds)
+        missing_after_meta = [c for c in debris_coords if c not in debris_lookup]
+        if missing_after_meta:
+            placeholders = ",".join("?" for _ in missing_after_meta)
+            try:
+                b_rows = self._conn.execute(
+                    f"""
+                    SELECT target_coords, debris_pig_iron, debris_metal, ts
+                    FROM battle_reports
+                    WHERE target_coords IN ({placeholders})
+                      AND (debris_pig_iron > 0 OR debris_metal > 0)
+                    ORDER BY ts DESC, id DESC
+                    """,
+                    tuple(missing_after_meta),
+                ).fetchall()
+                for br in b_rows:
+                    nc = normalize_coords(_raw_text(br["target_coords"], ""))
+                    if nc and nc not in debris_lookup:
+                        dp = game_data.cap_json_int(max(0, _safe_int(br["debris_pig_iron"], 0)))
+                        dm = game_data.cap_json_int(max(0, _safe_int(br["debris_metal"], 0)))
+                        if dp + dm > 0:
+                            debris_lookup[nc] = (dp, dm, 0, 0)
+            except sqlite3.Error:
+                pass
+        missing_deb = [c for c in debris_coords if c not in debris_lookup]
+        if missing_deb:
+            ph2 = ",".join("?" for _ in missing_deb)
+            try:
+                r_rows = self._conn.execute(
+                    f"""
+                    SELECT coords AS target_coords, debris_avail_pig, debris_avail_metal,
+                           harvested_pig_iron, harvested_metal, raw_text, ts
+                    FROM recycle_reports
+                    WHERE coords IN ({ph2})
+                    ORDER BY ts DESC, id DESC
+                    """,
+                    tuple(missing_deb),
+                ).fetchall()
+                for rr in r_rows:
+                    if is_non_recycle_fleet_notice_text(_raw_text(rr["raw_text"], "")):
+                        continue
+                    nc = normalize_coords(_raw_text(rr["target_coords"], ""))
+                    if nc and nc not in debris_lookup:
+                        dp = max(0, _safe_int(rr["debris_avail_pig"], 0) - _safe_int(rr["harvested_pig_iron"], 0))
+                        dm = max(0, _safe_int(rr["debris_avail_metal"], 0) - _safe_int(rr["harvested_metal"], 0))
+                        if dp + dm > 0:
+                            debris_lookup[nc] = (game_data.cap_json_int(dp), game_data.cap_json_int(dm), 0, 0)
+            except sqlite3.Error:
+                pass
+        for t in targets:
+            if t.get("has_debris") and t.get("coords") in debris_lookup:
+                dp, dm, dk, ds = debris_lookup[t["coords"]]
+                t["debris_pig_iron"] = dp
+                t["debris_metal"] = dm
+                t["debris_kryptonite"] = dk
+                t["debris_spice"] = ds
+                t["debris_total"] = game_data.cap_json_int(dp + dm + dk + ds)
+
     def get_spy_targets(
         self,
         *,
@@ -5158,62 +5280,64 @@ class GameDatabase:
                 """,
                 (max(1, _sql_int(limit, 50)),),
             ).fetchall()
-        out = [self._row_to_spy_target_dict(r) for r in rows]
-        debris_coords = [t["coords"] for t in out if t.get("has_debris") and t.get("coords")]
-        if debris_coords:
-            debris_lookup: dict[str, tuple[int, int]] = {}
-            with self._lock:
-                placeholders = ",".join("?" for _ in debris_coords)
-                try:
-                    b_rows = self._conn.execute(
-                        f"""
-                        SELECT target_coords, debris_pig_iron, debris_metal, ts
-                        FROM battle_reports
-                        WHERE target_coords IN ({placeholders})
-                          AND (debris_pig_iron > 0 OR debris_metal > 0)
-                        ORDER BY ts DESC, id DESC
-                        """,
-                        tuple(debris_coords),
-                    ).fetchall()
-                    for br in b_rows:
-                        nc = normalize_coords(_raw_text(br["target_coords"], ""))
-                        if nc and nc not in debris_lookup:
-                            dp = game_data.cap_json_int(max(0, _safe_int(br["debris_pig_iron"], 0)))
-                            dm = game_data.cap_json_int(max(0, _safe_int(br["debris_metal"], 0)))
-                            if dp + dm > 0:
-                                debris_lookup[nc] = (dp, dm)
-                except sqlite3.Error:
-                    pass
-                missing_deb = [c for c in debris_coords if c not in debris_lookup]
-                if missing_deb:
-                    ph2 = ",".join("?" for _ in missing_deb)
-                    try:
-                        r_rows = self._conn.execute(
-                            f"""
-                            SELECT target_coords, debris_avail_pig, debris_avail_metal,
-                                   harvested_pig_iron, harvested_metal, ts
-                            FROM recycle_reports
-                            WHERE target_coords IN ({ph2})
-                            ORDER BY ts DESC, id DESC
-                            """,
-                            tuple(missing_deb),
-                        ).fetchall()
-                        for rr in r_rows:
-                            nc = normalize_coords(_raw_text(rr["target_coords"], ""))
-                            if nc and nc not in debris_lookup:
-                                dp = max(0, _safe_int(rr["debris_avail_pig"], 0) - _safe_int(rr["harvested_pig_iron"], 0))
-                                dm = max(0, _safe_int(rr["debris_avail_metal"], 0) - _safe_int(rr["harvested_metal"], 0))
-                                if dp + dm > 0:
-                                    debris_lookup[nc] = (game_data.cap_json_int(dp), game_data.cap_json_int(dm))
-                    except sqlite3.Error:
-                        pass
-            for t in out:
-                if t.get("has_debris") and t.get("coords") in debris_lookup:
-                    dp, dm = debris_lookup[t["coords"]]
-                    t["debris_pig_iron"] = dp
-                    t["debris_metal"] = dm
-                    t["debris_total"] = game_data.cap_json_int(dp + dm)
+            out = [self._row_to_spy_target_dict(r) for r in rows]
+            self._enrich_debris_amounts_locked(out)
         return out
+
+    def get_active_debris_targets(
+        self,
+        *,
+        origin_coords: Sequence[str] = (),
+        limit: int = 100,
+        include_own: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return active debris targets (`has_debris = 1`) enriched with exact 4-resource
+        galaxy-scanned rubble amounts and ranked by proximity to `origin_coords` so nearby
+        free/player rubble fields are never evicted by distant Spacia planets."""
+        own_clause = "" if include_own else "AND is_own_planet = 0"
+        lim = max(1, _sql_int(limit, 100))
+        with self._lock:
+            own_filter = own_clause if self._has_column_locked("spy_targets", "is_own_planet") else ""
+            merged_filter = "merged_into = ''" if self._has_column_locked("spy_targets", "merged_into") else "1=1"
+            rows = self._conn.execute(
+                f"""
+                SELECT *
+                FROM spy_targets
+                WHERE {merged_filter} {own_filter}
+                  AND has_debris = 1
+                ORDER BY last_scanned_ts DESC
+                LIMIT 2000
+                """
+            ).fetchall()
+            out = [self._row_to_spy_target_dict(r) for r in rows]
+            self._enrich_debris_amounts_locked(out)
+
+        parsed_origins: list[tuple[int, int, int]] = []
+        for oc in origin_coords or ():
+            p_oc = self._parse_norm_gsp_fast(normalize_coords(_raw_text(oc, "")))
+            if p_oc is not None:
+                parsed_origins.append((p_oc[1], p_oc[2], p_oc[3]))
+
+        def _debris_sort_key(item: dict[str, Any]) -> tuple[int, int, int, int, int, float]:
+            tot = max(0, _safe_int(item.get("debris_total"), 0))
+            ts_scan = _safe_float(item.get("last_scanned_ts"), 0.0)
+            p_t = self._parse_norm_gsp_fast(normalize_coords(_raw_text(item.get("coords"), "")))
+            if parsed_origins and p_t is not None:
+                _, tg, ts_num, tp = p_t
+                best_d = min(
+                    (
+                        0 if tg == og else 1,
+                        abs(tg - og),
+                        abs(ts_num - osys),
+                        abs(tp - opos),
+                    )
+                    for og, osys, opos in parsed_origins
+                )
+                return (best_d[0], best_d[1], best_d[2], best_d[3], -tot, -ts_scan)
+            return (0, 0, 0, 0, -tot, -ts_scan)
+
+        out.sort(key=_debris_sort_key)
+        return out[:lim]
 
     def get_spy_reports(
         self,
@@ -5339,7 +5463,11 @@ class GameDatabase:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(msg_uid) DO UPDATE SET
                         server_msg_id = CASE WHEN game_messages.server_msg_id != '' THEN game_messages.server_msg_id ELSE excluded.server_msg_id END,
-                        category = CASE WHEN game_messages.category = 'other' AND excluded.category != 'other' THEN excluded.category ELSE game_messages.category END,
+                        category = CASE
+                            WHEN game_messages.category = 'other' AND excluded.category != 'other' THEN excluded.category
+                            WHEN game_messages.category = 'recycle_report' AND excluded.category IN ('fleet_transport', 'fleet_return') THEN excluded.category
+                            ELSE game_messages.category
+                        END,
                         coords = CASE WHEN game_messages.coords != '' THEN game_messages.coords ELSE excluded.coords END,
                         body_text = CASE WHEN LENGTH(excluded.body_text) > LENGTH(game_messages.body_text) THEN excluded.body_text ELSE game_messages.body_text END,
                         raw_html = CASE WHEN LENGTH(excluded.raw_html) > LENGTH(game_messages.raw_html) THEN excluded.raw_html ELSE game_messages.raw_html END,
@@ -5680,6 +5808,7 @@ class GameDatabase:
         limit: int = 200,
     ) -> list[dict[str, Any]]:
         lim = max(1, _sql_int(limit, 200))
+        fetch_lim = min(5000, max(lim * 3, lim + 100))
         with self._lock:
             if coords is not None:
                 norm_c = normalize_coords(_raw_text(coords, "").strip())
@@ -5694,7 +5823,7 @@ class GameDatabase:
                     ORDER BY ts DESC, id DESC
                     LIMIT ?
                     """,
-                    (norm_c, lim),
+                    (norm_c, fetch_lim),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
@@ -5707,10 +5836,13 @@ class GameDatabase:
                     ORDER BY ts DESC, id DESC
                     LIMIT ?
                     """,
-                    (lim,),
+                    (fetch_lim,),
                 ).fetchall()
         out_r: list[dict[str, Any]] = []
         for r in rows:
+            raw_txt = _raw_text(r["raw_text"], "")
+            if is_non_recycle_fleet_notice_text(raw_txt):
+                continue
             hpig = game_data.cap_json_int(max(0, _safe_int(r["harvested_pig_iron"], 0)))
             hmet = game_data.cap_json_int(max(0, _safe_int(r["harvested_metal"], 0)))
             hkry = game_data.cap_json_int(max(0, _safe_int(r["harvested_kryptonite"], 0)))
@@ -5751,6 +5883,8 @@ class GameDatabase:
                     }
                 )
             )
+            if len(out_r) >= lim:
+                break
         return out_r
 
     def get_discarded_colony_coords(self) -> set[str]:
@@ -6255,6 +6389,12 @@ class GameDatabase:
                 "UPDATE galaxy_slots SET has_debris = ? WHERE coords = ?",
                 (flag, norm_c),
             )
+            if not has_debris:
+                raw_deb_map = self._load_meta_json_locked("galaxy_debris_amounts")
+                if isinstance(raw_deb_map, Mapping) and norm_c in raw_deb_map:
+                    deb_map = dict(raw_deb_map)
+                    deb_map.pop(norm_c, None)
+                    self._save_meta_json_locked("galaxy_debris_amounts", deb_map, time.time())
             parsed_deb = self._parse_norm_gsp_fast(norm_c)
             if parsed_deb is not None and 1 <= parsed_deb[1] <= 14 and 1 <= parsed_deb[2] <= 400:
                 self._refresh_galaxy_sectors_hot_locked(((parsed_deb[1], parsed_deb[2]),), time.time())

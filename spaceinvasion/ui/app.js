@@ -11353,9 +11353,45 @@
       ] }) })
     ] });
   };
+  function formatQueueJobCargo(job) {
+    const cargo = job == null ? void 0 : job.cargo;
+    if (!cargo || typeof cargo !== "object") return null;
+    const pig = Math.max(0, Math.round(finiteNum(cargo.pig_iron, 0)));
+    const met = Math.max(0, Math.round(finiteNum(cargo.metal, 0)));
+    const kry = Math.max(0, Math.round(finiteNum(cargo.kryptonite, 0)));
+    const spi = Math.max(0, Math.round(finiteNum(cargo.spice, 0)));
+    const total = pig + met + kry + spi;
+    const nonZeroCount = [pig, met, kry, spi].filter((v) => v > 0).length;
+    const nameLow = String((job == null ? void 0 : job.name) || "").toLowerCase();
+    const detLow = String((job == null ? void 0 : job.detail) || "").toLowerCase();
+    const isReturning = detLow.includes("returning") || nameLow.includes("↩");
+    const isAttack = nameLow.includes("attack");
+    const isRecycle = nameLow.includes("recycle");
+    const label = isReturning && isAttack ? "Loot" : isReturning && isRecycle ? "Harvest" : "Cargo";
+    if (total > 0) {
+      return {
+        label,
+        inline: formatResourcesInline({ pig_iron: pig, metal: met, kryptonite: kry, spice: spi }),
+        total,
+        multiRes: nonZeroCount > 1,
+        isEmpty: false
+      };
+    }
+    if (isReturning && (isAttack || isRecycle)) {
+      return {
+        label,
+        inline: "0 (empty)",
+        total: 0,
+        multiRes: false,
+        isEmpty: true
+      };
+    }
+    return null;
+  }
   const ActiveExecJobRow = ({ job, nowEpochSec }) => {
     const slot = Math.max(1, Math.trunc(finiteNum(job == null ? void 0 : job.queue_slot, 1)));
     const detailText = String((job == null ? void 0 : job.detail) || "").trim() || (slot > 1 ? `In-game queue #${slot}` : "Executing now");
+    const cargoInfo = formatQueueJobCargo(job);
     const finTs = finiteNum(job == null ? void 0 : job.finish_ts, null);
     const effNowSec = nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : Math.floor(Date.now() / 1e3);
     const remSec = finTs !== null && finTs > 0 ? Math.max(0, Math.round(finTs - effNowSec)) : finiteNum(job == null ? void 0 : job.remaining_seconds, null);
@@ -11376,7 +11412,22 @@
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { className: slot > 1 ? "dash-exec-row is-queued-slot" : "dash-exec-row", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: slot > 1 ? "prio-badge prio-game-q tabular" : "prio-badge prio-exec tabular", children: slot > 1 ? `GAME #${slot}` : "EXEC" }) }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-title", children: cleanQueueJobTitle(job) }) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: detailText }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: detailText }),
+        cargoInfo ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+          "div",
+          {
+            className: `exec-cargo-line tabular${cargoInfo.isEmpty ? " is-empty" : ""}`,
+            title: `${cargoInfo.label}: ${cargoInfo.inline}${cargoInfo.total > 0 ? ` (${fmtInt(cargoInfo.total)} total)` : ""}`,
+            children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "exec-cargo-tag", children: cargoInfo.label }),
+              " ",
+              cargoInfo.inline,
+              cargoInfo.multiRes ? ` (${fmtCompact(cargoInfo.total)})` : ""
+            ]
+          }
+        ) : null
+      ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
         "span",
         {
@@ -11406,6 +11457,7 @@
     planTbodyId,
     execJobs,
     plannedActions,
+    maxRows,
     emptyText,
     nowEpochSec,
     onDispatch,
@@ -11416,7 +11468,7 @@
     const activeList = Array.isArray(execJobs) ? execJobs : [];
     const totalCount = activeList.length + plannedActions.length;
     const planSort = useTableSort(plannedActions, PLAN_ACTION_SORT_COLUMNS);
-    const topSlice = planSort.sortedRows.slice(0, 10);
+    const visibleRows = maxRows != null && maxRows > 0 ? planSort.sortedRows.slice(0, maxRows) : planSort.sortedRows;
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window dash-queue-card", id: cardId, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
@@ -11514,7 +11566,7 @@
           },
           `exec-${job.category || "job"}-${job.queue_slot ?? idx}-${job.name || idx}`
         )) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: planTbodyId, children: topSlice.length > 0 ? topSlice.map((act, idx) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+        /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: planTbodyId, children: visibleRows.length > 0 ? visibleRows.map((act, idx) => /* @__PURE__ */ jsxRuntimeExports.jsx(
           PlanActionRow,
           {
             action: act,
@@ -11530,6 +11582,28 @@
       ] }) })
     ] });
   };
+  function normalizeCoordKey(raw) {
+    const s = String(raw || "").trim();
+    if (!s) return "";
+    const m = s.match(/(\d{1,2})\s*:\s*(\d{1,3})\s*:\s*(\d{1,2})/);
+    if (!m) return s;
+    return `${Number(m[1])}:${Number(m[2])}:${Number(m[3])}`;
+  }
+  function queueJobMatchesPlanet(job, planet, activePlanetId, fallbackToActivePlanet) {
+    const jPid = job.planet_id != null ? Number(job.planet_id) : NaN;
+    if (Number.isFinite(jPid) && jPid > 0) {
+      return jPid === Number(planet.planet_id);
+    }
+    const jCoords = normalizeCoordKey(job.origin_coords || job.planet_coords);
+    if (jCoords) {
+      const pCoords = normalizeCoordKey(planet.coords);
+      return Boolean(pCoords) && jCoords === pCoords;
+    }
+    if (fallbackToActivePlanet && activePlanetId != null) {
+      return Number(planet.planet_id) === Number(activePlanetId);
+    }
+    return false;
+  }
   const ResourceTrackRow = ({
     idKey,
     code,
@@ -11839,11 +11913,18 @@
       return map;
     }, [allPlanActions, planets]);
     const scopedExecBuildingJobs = reactExports.useMemo(() => {
-      if (scopedDashPlanet && (gs == null ? void 0 : gs.active_planet_id) != null && Number(scopedDashPlanet.planet_id) !== Number(gs.active_planet_id)) {
-        return [];
-      }
-      return execBuildingJobs;
+      if (!scopedDashPlanet) return execBuildingJobs;
+      return execBuildingJobs.filter(
+        (job) => queueJobMatchesPlanet(job, scopedDashPlanet, gs == null ? void 0 : gs.active_planet_id, true)
+      );
     }, [execBuildingJobs, gs == null ? void 0 : gs.active_planet_id, scopedDashPlanet]);
+    const scopedExecFleetJobs = reactExports.useMemo(() => {
+      if (!scopedDashPlanet) return execFleetJobs;
+      return execFleetJobs.filter(
+        (job) => queueJobMatchesPlanet(job, scopedDashPlanet, gs == null ? void 0 : gs.active_planet_id, false)
+      );
+    }, [execFleetJobs, gs == null ? void 0 : gs.active_planet_id, scopedDashPlanet]);
+    const dashQueueMaxRows = planets.length <= 1 ? 10 : void 0;
     const { buildingActions, fleetActions, researchActions } = reactExports.useMemo(() => {
       const bld = [];
       const flt = [];
@@ -12164,14 +12245,16 @@
                   /* @__PURE__ */ jsxRuntimeExports.jsx("div", { id: "active-queues-list", className: "queue-summary tabular", children: activeQueues.length === 0 ? dashboard ? "No active construction or research jobs." : "No active construction jobs." : activeQueues.map((q, idx) => {
                     const catTag = `[${String(q.category || "JOB").toUpperCase()}]`;
                     const titleTxt = cleanQueueJobTitle(q);
+                    const cargoInfo = formatQueueJobCargo(q);
+                    const cargoSuffix = cargoInfo && !cargoInfo.isEmpty ? ` · ${cargoInfo.label}: ${cargoInfo.inline}` : "";
                     const finTs = finiteNum(q.finish_ts, null);
                     return /* @__PURE__ */ jsxRuntimeExports.jsxs(React.Fragment, { children: [
                       idx > 0 ? " · " : null,
                       /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: finTs !== null && finTs > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-                        `${catTag} ${titleTxt} (`,
+                        `${catTag} ${titleTxt}${cargoSuffix} (`,
                         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-finish-ts": String(finTs), children: fmtHms(Math.max(0, Math.round(finTs - effNowSec))) }),
                         ` · ${fmtClockTime(finTs, effNowSec)})`
-                      ] }) : q.remaining_text ? `${catTag} ${titleTxt} (${q.remaining_text})` : `${catTag} ${titleTxt}` })
+                      ] }) : q.remaining_text ? `${catTag} ${titleTxt}${cargoSuffix} (${q.remaining_text})` : `${catTag} ${titleTxt}${cargoSuffix}` })
                     ] }, `qstrip-${idx}-${q.name || idx}`);
                   }) })
                 ] })
@@ -12294,6 +12377,7 @@
                 planTbodyId: "dash-plan-tbody",
                 execJobs: scopedExecBuildingJobs,
                 plannedActions: buildingActions,
+                maxRows: dashQueueMaxRows,
                 emptyText: dashboard ? scopedDashPlanet ? `No queued building actions on ${scopedDashPlanet.coords || scopedDashPlanet.name}.` : "No queued building actions." : "Run Sync to populate building actions...",
                 nowEpochSec: effNowSec,
                 onDispatch: handleDispatch,
@@ -12318,8 +12402,9 @@
                 onGotoClick: () => setActivePage("combat"),
                 execTbodyId: "dash-exec-fleet-tbody",
                 planTbodyId: "dash-plan-fleet-tbody",
-                execJobs: execFleetJobs,
+                execJobs: scopedExecFleetJobs,
                 plannedActions: fleetActions,
+                maxRows: dashQueueMaxRows,
                 emptyText: scopedDashPlanet ? `No queued fleet or ship actions on ${scopedDashPlanet.coords || scopedDashPlanet.name}.` : "No queued fleet or ship actions.",
                 nowEpochSec: effNowSec,
                 onDispatch: handleDispatch,
@@ -12346,6 +12431,7 @@
                 planTbodyId: "dash-plan-research-tbody",
                 execJobs: execResearchJobs,
                 plannedActions: researchActions,
+                maxRows: dashQueueMaxRows,
                 emptyText: "No queued research actions.",
                 nowEpochSec: effNowSec,
                 onDispatch: handleDispatch,
@@ -17977,6 +18063,9 @@
       if (cat !== "fleet" && cat !== "shipyard" && !isFleetActionKind(cat)) continue;
       const pid = Math.round(safeFiniteNumber(job.planet_id, ((_a = planets[0]) == null ? void 0 : _a.planet_id) ?? 0) ?? 0);
       const id = `flt_active_${nodes.length}`;
+      const cargoInfo = formatQueueJobCargo(job);
+      const baseReason = String(job.detail || job.remaining_text || "Live in-flight queue item");
+      const reasonWithCargo = cargoInfo && !cargoInfo.isEmpty ? `${baseReason} · ${cargoInfo.label}: ${cargoInfo.inline}` : baseReason;
       nodes.push({
         id,
         order_index: nodes.length,
@@ -17989,7 +18078,7 @@
         status: "in_flight",
         target_name: String(job.name || job.detail || "Active Flight"),
         target_level: safeFiniteNumber(job.quantity ?? job.target_level, null),
-        reason: String(job.detail || job.remaining_text || "Live in-flight queue item"),
+        reason: reasonWithCargo,
         executable_now: false,
         wait_eta: String(job.remaining_text || "In Flight"),
         total_eta: String(job.remaining_text || "In Flight")

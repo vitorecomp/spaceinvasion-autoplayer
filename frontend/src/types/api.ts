@@ -73,7 +73,9 @@ export interface QueueJobData {
   queue_slot?: number | null;
   planet_id?: number | null;
   planet_coords?: string;
+  origin_coords?: string;
   detail?: string;
+  cargo?: ResourceBundle | null;
   [key: string]: any;
 }
 

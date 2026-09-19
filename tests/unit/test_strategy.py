@@ -3753,6 +3753,78 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertTrue(ship_builds and not ship_builds[0].executable_now)
         self.assertFalse(any(a.kind == "DEMOLISH_BUILDING" for a in fleet_acts))
 
+    def test_in_flight_recycle_dedup_normalizes_unpadded_coords_and_caps_cross_galaxy_trips(self) -> None:
+        from spaceinvasion.core.state import extract_in_flight_recycle_coords
+
+        p_rec = PlanetState(
+            planet_id=701,
+            name="Hub",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=20,
+            fields_used=50,
+            fields_max=300,
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(produced=1500, used=500),
+            buildings={"b1": 12, "b2": 8, "b3": 10, "b4": 8, "b5": 12, "b9": 4, "b10": 8},
+            ships={"s11": 20},
+        )
+        targets = (
+            {
+                "coords": "02:082:11",
+                "owner": "",
+                "planet_name": "",
+                "status_color": "free",
+                "has_debris": True,
+                "debris_total": 40_000,
+            },
+            {
+                "coords": "02:379:01",
+                "owner": "",
+                "planet_name": "",
+                "status_color": "free",
+                "has_debris": True,
+                "debris_total": 48_000,
+            },
+            {
+                "coords": "06:180:13",
+                "owner": "Spacia",
+                "planet_name": "Spacia Planet",
+                "status_color": "yellow",
+                "is_spacia": True,
+                "has_debris": True,
+                "debris_total": 30_000,
+            },
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p_rec,),
+            active_planet_id=701,
+            researches={"r1": 8, "r8": 6, "r9": 4},
+            raid_targets=targets,
+            active_queues=(
+                # Unpadded faData system format `[02:82:11]` must still match `02:082:11`!
+                QueueJob(
+                    category="fleet",
+                    name="Recycle → [02:82:11] Debris",
+                    remaining_seconds=3600.0,
+                    origin_coords="02:380:12",
+                ),
+            ),
+        )
+        self.assertEqual(extract_in_flight_recycle_coords(st), {"02:082:11"})
+        cfg = StrategyConfig(planner_mode="priority", allow_raids=True, allow_galaxy_scan=True, reserved_spy_slots=0)
+        acts = plan_actions(st, config=cfg, now_ts=2000.0)
+        rec_targets = [a.target_name for a in acts if a.kind == "RECYCLE"]
+        # 02:082:11 is skipped (already in flight), 06:180:13 is skipped (>12h RT cross-galaxy), 02:379:01 IS planned!
+        self.assertTrue(any("02:379:01" in t for t in rec_targets), msg=f"Expected 02:379:01 in {rec_targets}")
+        self.assertFalse(any("02:082:11" in t for t in rec_targets), msg=f"Duplicate in-flight 02:082:11 in {rec_targets}")
+        self.assertFalse(any("06:180:13" in t for t in rec_targets), msg=f"Cross-galaxy >12h 06:180:13 in {rec_targets}")
+
 
 if __name__ == "__main__":
     unittest.main()

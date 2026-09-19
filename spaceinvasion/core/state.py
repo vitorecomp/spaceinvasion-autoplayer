@@ -510,6 +510,7 @@ class QueueJob:
     queue_slot: int = 1
     detail: str = ""
     origin_coords: str = ""
+    cargo: Optional[Resources] = None
 
 
 @dataclass(frozen=True)
@@ -731,6 +732,26 @@ def extract_in_flight_colonize_coords(state: Any) -> set[str]:
         if "return" in combined_l or "rück" in combined_l or "rueck" in combined_l:
             continue
         if not any(tok in combined_l for tok in ("coloniz", "koloni", "siedel")):
+            continue
+        for m in re.finditer(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", f"{name_s} {detail_s}", re.ASCII):
+            g, s, p = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if 1 <= g <= 14 and 1 <= s <= 400 and 1 <= p <= 16:
+                out.add(f"{g:02d}:{s:03d}:{p:02d}")
+    return out
+
+
+def extract_in_flight_recycle_coords(state: Any) -> set[str]:
+    """Return normalized `GG:SSS:PP` target coordinates of in-flight `RECYCLE` missions
+    (both outbound and returning legs) so duplicate waves are never dispatched to the same
+    debris field."""
+    out: set[str] = set()
+    for q in getattr(state, "active_queues", ()) or ():
+        if not is_in_flight_fleet_job(q):
+            continue
+        name_s = _safe_state_str(getattr(q, "name", ""))
+        detail_s = _safe_state_str(getattr(q, "detail", ""))
+        combined_l = f"{name_s} {detail_s}".lower()
+        if not any(tok in combined_l for tok in ("recycl", "rubble", "debris", "harvest", "abbau", "trümmer", "truemmer")):
             continue
         for m in re.finditer(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", f"{name_s} {detail_s}", re.ASCII):
             g, s, p = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -1790,6 +1811,112 @@ def extract_in_flight_station_dest_coords(state: Any) -> set[str]:
     return out
 
 
+_FADATA_CARGO_EMPTY_TOKENS = frozenset({"", "none", "keine", "ninguno", "aucun", "nenhum", "-", "—"})
+_FADATA_CARGO_RES_ALIASES: tuple[tuple[str, str], ...] = (
+    ("pig iron", "pig_iron"),
+    ("pig_iron", "pig_iron"),
+    ("roheisen", "pig_iron"),
+    ("hierro", "pig_iron"),
+    ("ferro", "pig_iron"),
+    ("fonte", "pig_iron"),
+    ("pig", "pig_iron"),
+    ("kryptonite", "kryptonite"),
+    ("kryptonit", "kryptonite"),
+    ("kriptonita", "kryptonite"),
+    ("krypton", "kryptonite"),
+    ("kryp", "kryptonite"),
+    ("kry", "kryptonite"),
+    ("metall", "metal"),
+    ("métal", "metal"),
+    ("metal", "metal"),
+    ("met", "metal"),
+    ("gewürz", "spice"),
+    ("gewuerz", "spice"),
+    ("especia", "spice"),
+    ("épice", "spice"),
+    ("spice", "spice"),
+    ("spi", "spice"),
+)
+_FADATA_CARGO_NUM_FIRST_RE = re.compile(
+    r"^\s*([0-9][0-9.,'\s]*)\s*(?:x\s*)?([A-Za-zÀ-ÿ_][A-Za-zÀ-ÿ_\s-]{1,24})\s*$"
+)
+_FADATA_CARGO_LABEL_FIRST_RE = re.compile(
+    r"^\s*([A-Za-zÀ-ÿ_][A-Za-zÀ-ÿ_\s-]{1,24}?)\s*[:=]?\s*([0-9][0-9.,'\s]*)\s*$"
+)
+
+
+def _match_fadata_cargo_resource(label: str) -> Optional[str]:
+    norm = " ".join(str(label or "").strip().lower().split())
+    if not norm:
+        return None
+    for alias, field_name in _FADATA_CARGO_RES_ALIASES:
+        if norm == alias or norm.startswith(alias + " ") or norm.endswith(" " + alias):
+            return field_name
+    return None
+
+
+def _parse_fadata_cargo(tt_cargo_html: str) -> Optional[Resources]:
+    """Parse carried/returning cargo resources after `<hr>` in `internalHome` `var faData` tooltip `tt`."""
+    if not tt_cargo_html:
+        return None
+    totals = {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0}
+    chunks = re.split(r"(?:<br\s*/?>|</tr>|</div>|\n|\||;)", tt_cargo_html, flags=re.IGNORECASE)
+    found_any = False
+    for chunk in chunks:
+        txt = " ".join(BeautifulSoup(chunk, "html.parser").get_text(" ", strip=True).split())
+        if not txt or txt.lower() in _FADATA_CARGO_EMPTY_TOKENS:
+            continue
+        m_nf = _FADATA_CARGO_NUM_FIRST_RE.match(txt)
+        if m_nf:
+            field_name = _match_fadata_cargo_resource(m_nf.group(2))
+            if field_name:
+                amt = parse_si_int(m_nf.group(1))
+                if amt > 0:
+                    totals[field_name] += amt
+                    found_any = True
+                continue
+        m_lf = _FADATA_CARGO_LABEL_FIRST_RE.match(txt)
+        if m_lf:
+            field_name = _match_fadata_cargo_resource(m_lf.group(1))
+            if field_name:
+                amt = parse_si_int(m_lf.group(2))
+                if amt > 0:
+                    totals[field_name] += amt
+                    found_any = True
+                continue
+        # Fallback: inline pairs inside one segment (e.g. "16.378 Pig iron 11.572 Metal")
+        for m_pair in re.finditer(
+            r"([0-9][0-9.,']*)\s*(pig\s+iron|roheisen|hierro|ferro|fonte|metall|m[eé]tal|metal|kryptonite|kryptonit|kriptonita|krypton|spice|gew[uü]rz|especia|[eé]pice)",
+            txt,
+            flags=re.IGNORECASE,
+        ):
+            field_name = _match_fadata_cargo_resource(m_pair.group(2))
+            if field_name:
+                amt = parse_si_int(m_pair.group(1))
+                if amt > 0:
+                    totals[field_name] += amt
+                    found_any = True
+    if not found_any:
+        return None
+    return Resources(
+        pig_iron=totals["pig_iron"],
+        metal=totals["metal"],
+        kryptonite=totals["kryptonite"],
+        spice=totals["spice"],
+    )
+
+
+def _unescape_js_string(raw: str) -> str:
+    return (
+        str(raw or "")
+        .replace(r"\/", "/")
+        .replace(r"\"", '"')
+        .replace(r"\'", "'")
+        .replace(r"\n", "\n")
+        .replace(r"\t", " ")
+    )
+
+
 def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
     """Parse active own/returning fleet flights and exact countdowns (`t` seconds) from `var faData`."""
     m = _FADATA_BLOCK_RE.search(html or "")
@@ -1825,15 +1952,25 @@ def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
             dest_str = ""
             if m_dest:
                 dest_str = ((m_dest.group(1) or "") + (m_dest.group(2) or "")).strip()
-            m_tt = re.search(r'"tt"\s*:\s*"(.*?)"\s*,\s*"a"', body, re.DOTALL)
+            m_tt = re.search(r'"tt"\s*:\s*"((?:[^"\\]|\\.)*)"', body, re.DOTALL)
             ships_detail = ""
+            cargo_res: Optional[Resources] = None
             if m_tt:
-                tt_raw = m_tt.group(1).split("<hr>", 1)[0]
+                tt_unesc = _unescape_js_string(m_tt.group(1))
+                tt_sections = re.split(r"<hr\s*/?>", tt_unesc, maxsplit=1, flags=re.IGNORECASE)
+                tt_raw = tt_sections[0]
                 tt_parts = [
                     " ".join(BeautifulSoup(part, "html.parser").get_text(" ", strip=True).split())
-                    for part in tt_raw.split("<br>")
+                    for part in re.split(r"<br\s*/?>", tt_raw, flags=re.IGNORECASE)
                 ]
                 ships_detail = ", ".join(p for p in tt_parts if p)[:140]
+                if len(tt_sections) > 1:
+                    parsed_cargo = _parse_fadata_cargo(tt_sections[1])
+                    if parsed_cargo is not None:
+                        cargo_res = parsed_cargo
+                    elif is_ret and raw_act in ("ATTACK", "RECYCLE"):
+                        # Explicitly distinguish a confirmed 0-cargo returning Attack/Recycle from missing telemetry
+                        cargo_res = Resources(0, 0, 0, 0)
             raw_entries.append(
                 {
                     "row_id": row_id,
@@ -1844,6 +1981,7 @@ def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
                     "origin_coords": origin_coords,
                     "dest_str": dest_str,
                     "ships_detail": ships_detail,
+                    "cargo": cargo_res,
                 }
             )
 
@@ -1924,6 +2062,7 @@ def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
                 queue_slot=1,
                 detail=detail_full[:160],
                 origin_coords=origin_coords,
+                cargo=ent.get("cargo"),
             )
         )
     jobs.sort(key=lambda j: (j.finish_ts if j.finish_ts is not None else float("inf")))
@@ -2291,6 +2430,8 @@ def game_state_from_dict(data: Mapping[str, Any]) -> GameState:
         q_rem_s = _safe_optional_state_float(q.get("remaining_seconds"))
         q_fin_ts = _safe_optional_state_float(q.get("finish_ts"))
         q_slot = max(1, _safe_state_int(q.get("queue_slot", 1), 1))
+        raw_cargo = q.get("cargo")
+        q_cargo = _resources_from_mapping(raw_cargo) if isinstance(raw_cargo, Mapping) else None
         queues_list.append(
             QueueJob(
                 category=_safe_state_str(q.get("category") or ""),
@@ -2303,6 +2444,7 @@ def game_state_from_dict(data: Mapping[str, Any]) -> GameState:
                 queue_slot=q_slot,
                 detail=_safe_state_str(q.get("detail") or ""),
                 origin_coords=_normalize_queue_coords(_safe_state_str(q.get("origin_coords") or "")),
+                cargo=q_cargo,
             )
         )
     queues = tuple(queues_list)

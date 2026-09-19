@@ -1833,7 +1833,13 @@ def parse_galaxy_system_html(
                 owner = "Spacia"
 
             spy_href, attack_href = _extract_slot_links(hit)
-            has_debris = hit.select_one(".rubble-orbit, [name='rubblefield']") is not None
+            rubble_el = hit.select_one(".rubble-orbit, [name='rubblefield']")
+            has_debris = False
+            if rubble_el is not None and not rubble_el.has_attr("hidden"):
+                r_style = str(rubble_el.get("style") or "")
+                has_debris = not bool(
+                    re.search(r"display\s*:\s*none|visibility\s*:\s*hidden", r_style, re.IGNORECASE)
+                )
             has_asteroid = hit.select_one("[name='astro'], [id^='astro-']") is not None
             row_html = str(hit).lower()
             row_text = span_txt if occupied else ""
@@ -1880,7 +1886,24 @@ def parse_galaxy_system_html(
             except Exception:
                 parsed_j = None
         planets_j = parsed_j.get("planets") if isinstance(parsed_j, Mapping) else None
-        pos_meta: dict[int, tuple[Optional[int], Optional[int], Optional[int], Optional[int], bool, str, str, bool]] = {}
+        pos_meta: dict[
+            int,
+            tuple[
+                Optional[int],
+                Optional[int],
+                Optional[int],
+                Optional[int],
+                bool,
+                str,
+                str,
+                bool,
+                bool,
+                int,
+                int,
+                int,
+                int,
+            ],
+        ] = {}
         if isinstance(planets_j, Mapping):
             iter_items = list(planets_j.items())
         elif isinstance(planets_j, Sequence) and not isinstance(planets_j, (str, bytes)):
@@ -1933,34 +1956,110 @@ def parse_galaxy_system_html(
                 raw_exact = pdata.get("uninhabited_fields", pdata.get("fields"))
                 if isinstance(raw_exact, int) and not isinstance(raw_exact, bool) and 20 <= raw_exact <= 1000:
                     uf_exact = raw_exact
-            raw_rubble = pdata.get("rubblefield1") or pdata.get("rubblefield") or pdata.get("rubble") or pdata.get("debris") or pdata.get("tf")
+            # SpaceInvasion RETRO `#json-element` exposes `rubblefield1` as the authoritative live
+            # `[pig_iron, metal, kryptonite, spice, flag]` array; legacy `rubblefield` can retain
+            # ghost/stale amounts on completely clean slots, so NEVER fall back from `rubblefield1`!
+            has_rubble_key = False
+            raw_rubble: Any = None
+            if "rubblefield1" in pdata:
+                has_rubble_key = True
+                raw_rubble = pdata.get("rubblefield1")
+            else:
+                for rk in ("rubblefield", "rubble", "debris", "tf"):
+                    if rk in pdata:
+                        has_rubble_key = True
+                        raw_rubble = pdata.get(rk)
+                        break
+            d_pig = d_met = d_kry = d_spi = 0
             if isinstance(raw_rubble, Sequence) and not isinstance(raw_rubble, (str, bytes)):
-                has_deb_j = sum(max(0, _safe_fleet_int(x, 0)) for x in raw_rubble[:4]) > 0
+                vals4 = [max(0, _safe_fleet_int(x, 0)) for x in raw_rubble[:4]]
+                while len(vals4) < 4:
+                    vals4.append(0)
+                d_pig, d_met, d_kry, d_spi = vals4[0], vals4[1], vals4[2], vals4[3]
+                has_deb_j = (d_pig + d_met + d_kry + d_spi) > 0
+            elif isinstance(raw_rubble, Mapping):
+                d_pig = max(0, _safe_fleet_int(raw_rubble.get("pig_iron", raw_rubble.get("pig", 0)), 0))
+                d_met = max(0, _safe_fleet_int(raw_rubble.get("metal", 0), 0))
+                d_kry = max(0, _safe_fleet_int(raw_rubble.get("kryptonite", 0), 0))
+                d_spi = max(0, _safe_fleet_int(raw_rubble.get("spice", 0), 0))
+                has_deb_j = (d_pig + d_met + d_kry + d_spi) > 0
             else:
                 has_deb_j = bool(raw_rubble)
-            pos_meta[p_pos] = (c_min, c_max, uf_exact, temp_j, is_free_j, pname_j, owner_j, has_deb_j)
+            pos_meta[p_pos] = (
+                c_min,
+                c_max,
+                uf_exact,
+                temp_j,
+                is_free_j,
+                pname_j,
+                owner_j,
+                has_deb_j,
+                has_rubble_key,
+                d_pig,
+                d_met,
+                d_kry,
+                d_spi,
+            )
         if pos_meta:
             if slots:
                 enriched_slots: list[GalaxySlot] = []
                 for sl in slots:
                     meta_p = pos_meta.get(sl.position)
-                    if meta_p is not None and sl.status_color == "free":
-                        c_min, c_max, uf_exact, temp_j, _, _, _, _ = meta_p
-                        if c_min is not None or c_max is not None or uf_exact is not None or temp_j is not None:
-                            sl = replace(
-                                sl,
-                                colonize_min_fields=c_min if c_min is not None else sl.colonize_min_fields,
-                                colonize_max_fields=c_max if c_max is not None else sl.colonize_max_fields,
-                                uninhabited_fields=uf_exact if uf_exact is not None else sl.uninhabited_fields,
-                                temperature=temp_j if temp_j is not None else sl.temperature,
-                            )
-                    elif meta_p is not None and meta_p[3] is not None and sl.temperature is None:
-                        sl = replace(sl, temperature=meta_p[3])
+                    if meta_p is not None:
+                        (
+                            c_min,
+                            c_max,
+                            uf_exact,
+                            temp_j,
+                            _,
+                            _,
+                            _,
+                            has_deb_j,
+                            has_rubble_key,
+                            d_pig,
+                            d_met,
+                            d_kry,
+                            d_spi,
+                        ) = meta_p
+                        upd_kwargs: dict[str, Any] = {}
+                        if sl.status_color == "free":
+                            if c_min is not None:
+                                upd_kwargs["colonize_min_fields"] = c_min
+                            if c_max is not None:
+                                upd_kwargs["colonize_max_fields"] = c_max
+                            if uf_exact is not None:
+                                upd_kwargs["uninhabited_fields"] = uf_exact
+                            if temp_j is not None:
+                                upd_kwargs["temperature"] = temp_j
+                        elif temp_j is not None and sl.temperature is None:
+                            upd_kwargs["temperature"] = temp_j
+                        if has_rubble_key:
+                            upd_kwargs["has_debris"] = bool(has_deb_j)
+                            upd_kwargs["debris_pig_iron"] = d_pig if has_deb_j else 0
+                            upd_kwargs["debris_metal"] = d_met if has_deb_j else 0
+                            upd_kwargs["debris_kryptonite"] = d_kry if has_deb_j else 0
+                            upd_kwargs["debris_spice"] = d_spi if has_deb_j else 0
+                        if upd_kwargs:
+                            sl = replace(sl, **upd_kwargs)
                     enriched_slots.append(sl)
                 slots = enriched_slots
             else:
                 for p_pos in sorted(pos_meta):
-                    c_min, c_max, uf_exact, temp_j, is_free_j, pname_j, owner_j, has_deb_j = pos_meta[p_pos]
+                    (
+                        c_min,
+                        c_max,
+                        uf_exact,
+                        temp_j,
+                        is_free_j,
+                        pname_j,
+                        owner_j,
+                        has_deb_j,
+                        _has_rubble_key,
+                        d_pig,
+                        d_met,
+                        d_kry,
+                        d_spi,
+                    ) = pos_meta[p_pos]
                     coords = f"{gal:02d}:{sys_num:03d}:{p_pos:02d}"
                     is_sp_j = "spacia" in pname_j.lower() or "spacia" in owner_j.lower()
                     slots.append(
@@ -1972,6 +2071,10 @@ def parse_galaxy_system_html(
                             status_color=("free" if is_free_j else ("yellow" if is_sp_j else "light_red")),
                             has_debris=has_deb_j,
                             is_spacia=is_sp_j,
+                            debris_pig_iron=d_pig if has_deb_j else 0,
+                            debris_metal=d_met if has_deb_j else 0,
+                            debris_kryptonite=d_kry if has_deb_j else 0,
+                            debris_spice=d_spi if has_deb_j else 0,
                             colonize_min_fields=c_min,
                             colonize_max_fields=c_max,
                             uninhabited_fields=uf_exact,
@@ -2906,6 +3009,61 @@ def extract_message_folder_links(html: str) -> list[tuple[str, str, int, int]]:
     return list(found.values())
 
 
+def is_non_recycle_fleet_notice_text(text: str, subject: str = "") -> bool:
+    """Return True when inbox message text is a stationing, transport, fleet-return, spy,
+    or colonize notice that merely mentions 'Recycler' in its ship roster rather than a
+    genuine debris-field recycling report."""
+    low = (text or "").strip().lower()
+    subj_low = (subject or "").strip().lower()
+    combined = f"{subj_low} {low}".strip()
+    if not combined:
+        return False
+    if any(
+        tok in combined
+        for tok in (
+            "recycling report",
+            "trümmerfeldbericht",
+            "truemmerfeldbericht",
+            "space rubble",
+            "trümmerfeld abgebaut",
+            "couldn't find any more resources",
+            "could not find any more resources",
+            "pieces of rubble",
+        )
+    ):
+        return False
+    if any(
+        tok in combined
+        for tok in (
+            "was re-stationed",
+            "re-stationed",
+            "restationed",
+            "has been stationed",
+            "wurde stationiert",
+            "umstationiert",
+            "stationiert",
+            "it delivers",
+            "has delivered",
+            "delivered resources",
+            "fleet return",
+            "flottenrückkehr",
+            "flottenrueckkehr",
+            "returning from duty",
+            "were unloaded",
+            "wurden ausgeladen",
+            "espionage report",
+            "spionagebericht",
+            "spy report",
+        )
+    ):
+        return True
+    if re.search(r"\]\s*station\b", combined):
+        return True
+    if re.search(r"\bstation\s*$", subj_low):
+        return True
+    return False
+
+
 def _classify_and_parse_inbox_block(
     block_html: str,
     *,
@@ -3018,6 +3176,32 @@ def _classify_and_parse_inbox_block(
         and "trümmerfeldbericht" not in subj_low
     )
 
+    is_fleet_station_notice = (
+        not is_fleet_return_notice
+        and not any(
+            tok in subj_low or tok in low
+            for tok in ("recycling report", "trümmerfeldbericht", "truemmerfeldbericht", "space rubble")
+        )
+        and (
+            any(
+                tok in subj_low or tok in low
+                for tok in (
+                    "was re-stationed",
+                    "re-stationed",
+                    "restationed",
+                    "has been stationed",
+                    "wurde stationiert",
+                    "umstationiert",
+                    "stationiert",
+                    "it delivers",
+                    "has delivered",
+                )
+            )
+            or bool(re.search(r"\]\s*station\b", f"{subj_low} {low}"))
+            or bool(re.search(r"\bstation\s*$", subj_low))
+        )
+    )
+
     is_battle = (
         f_low == "battle"
         or battle_json_el is not None
@@ -3042,18 +3226,24 @@ def _classify_and_parse_inbox_block(
     is_recycle = (
         not is_battle
         and not is_fleet_return_notice
+        and not is_fleet_station_notice
+        and not is_non_recycle_fleet_notice_text(body_for_parse, subject)
         and any(
             tok in low or tok in subj_low
             for tok in (
                 "recycling report",
+                "trümmerfeldbericht",
+                "truemmerfeldbericht",
                 "space rubble",
-                "recycler",
+                "pieces of rubble",
                 "harvested",
                 "recycled",
                 "processed",
                 "abbau",
                 "verwertet",
                 "trümmerfeld abgebaut",
+                "couldn't find any more resources",
+                "could not find any more resources",
             )
         )
         and not any(tok in low or tok in subj_low for tok in ("espionage report", "spionagebericht", "spy report"))
@@ -3064,6 +3254,7 @@ def _classify_and_parse_inbox_block(
         and not is_battle
         and not is_recycle
         and not is_fleet_return_notice
+        and not is_fleet_station_notice
         and (
             f_low == "spio"
             or any(tok in low or tok in subj_low for tok in ("espionage report", "spionagebericht", "spy report", "uninhabited", "unbewohnt"))
@@ -3348,7 +3539,10 @@ def _classify_and_parse_inbox_block(
     elif any(tok in low or tok in subj_low for tok in ("coloniz", "kolonisier")):
         category = "colonize_report"
         parsed_data = {"coords": norm_coords}
-    elif not is_fleet_return_notice and any(tok in low or tok in subj_low for tok in ("transport", "delivered", "geliefert", "liefert")):
+    elif is_fleet_station_notice or (
+        not is_fleet_return_notice
+        and any(tok in low or tok in subj_low for tok in ("transport", "delivered", "geliefert", "liefert"))
+    ):
         category = "fleet_transport"
         parsed_data = {
             "coords": norm_coords,

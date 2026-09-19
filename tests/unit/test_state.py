@@ -1113,6 +1113,75 @@ class TestStateParsers(unittest.TestCase):
         self.assertEqual(count_in_flight_fleets_for_planet(gs_legacy, p_home), 1)
         self.assertEqual(count_in_flight_fleets_for_planet(gs_legacy, p_col_b), 1)
 
+    def test_fadata_cargo_parsing_for_returning_attack_recycle_and_transport_roundtrip(self) -> None:
+        from dataclasses import asdict
+        from spaceinvasion.core.state import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+            game_state_from_dict,
+            parse_home_metadata,
+        )
+
+        fadata_html = """
+        <html><body><script>
+        var faData=[
+          {"title":"Own fleet","type":"friendly","rows":[
+            ,{"id":101,"t":600,"n":10,"tt":"10 Large transport<br><hr>50.000 Pig iron<br>25.000 Metal","a":'TRANSPORT',"c":0,"start":"[02:380:12] Main","dest":"[02:380:08] Colony"},
+            {"id":102,"t":900,"n":6,"tt":"6 Small fighter<br><hr>None","a":'ATTACK',"c":0,"start":"[02:380:12] Main","dest":"[02:378:15] Target"}
+          ]},
+          {"title":"Returning Fleets","type":"friendly","rows":[
+            ,{"id":201,"t":1200,"n":10,"tt":"10 Large transport<br><hr>None","a":'TRANSPORT',"c":0,"return":true,"start":"[02:380:12] Main","dest":"[02:380:08] Colony"},
+            {"id":202,"t":1800,"n":6,"tt":"6 Small fighter<br><hr>None","a":'ATTACK',"c":0,"return":true,"start":"[02:380:12] Main","dest":"[02:378:15] Target"},
+            {"id":203,"t":400,"n":12,"tt":"12 Recycler<br><hr>16.378 Pig iron<br>11.572 Metal<br>10.598 Kryptonite<br>4.784 Spice","a":'RECYCLE',"c":0,"return":true,"start":"Colony [02:380:12]","dest":"[02:381:06] " + "Debris"},
+            {"id":204,"t":500,"n":20,"tt":"20 Small transport<br><hr>12.500 Pig iron<br>8.200 Metal","a":'ATTACK',"c":0,"return":true,"start":"Colony [02:380:08]","dest":"[02:377:04] Spacia"},
+            {"id":205,"t":700,"n":4,"tt":"4 Recycler<br><hr>None","a":'RECYCLE',"c":0,"return":true,"start":"Colony [02:380:08]","dest":"[02:380:14] Debris"}
+          ]}
+        ];
+        </script></body></html>
+        """
+        _, _, _, queues, _ = parse_home_metadata(fadata_html, now_ts=1_700_000_000.0)
+        fleet_jobs = [q for q in queues if q.category == "fleet"]
+        # Outbound TRANSPORT + outbound ATTACK pair with their future returns -> 5 total active flights
+        self.assertEqual(len(fleet_jobs), 5)
+
+        rec_full = next(q for q in fleet_jobs if "02:381:06" in q.name)
+        self.assertEqual(rec_full.cargo, Resources(16378, 11572, 10598, 4784))
+
+        atk_ret = next(q for q in fleet_jobs if "02:377:04" in q.name)
+        self.assertEqual(atk_ret.cargo, Resources(12500, 8200, 0, 0))
+
+        trn_out = next(q for q in fleet_jobs if "Transport →" in q.name)
+        self.assertEqual(trn_out.cargo, Resources(50000, 25000, 0, 0))
+
+        # Returning RECYCLE with <hr>None gets explicit 0-cargo Resources so UI distinguishes confirmed empty
+        rec_empty = next(q for q in fleet_jobs if "02:380:14" in q.name)
+        self.assertEqual(rec_empty.cargo, Resources(0, 0, 0, 0))
+
+        # Outbound ATTACK with <hr>None stays cargo=None
+        atk_out = next(q for q in fleet_jobs if "Attack →" in q.name)
+        self.assertIsNone(atk_out.cargo)
+
+        # JSON dict round-trip preserves cargo cleanly
+        p1 = PlanetState(
+            planet_id=1, name="Main", coords="02:380:12", planet_type="normal",
+            temperature=20, fields_used=10, fields_max=250,
+            resources=Resources(1, 1, 1, 1), storage=Resources(10, 10, 10, 10),
+            energy=EnergyBalance(10, 5),
+        )
+        gs = GameState(
+            universe_id=31, user_id=1, nickname="cmdr", timestamp=2000.0,
+            planets=(p1,), active_planet_id=1, active_queues=tuple(queues),
+        )
+        gs_rt = game_state_from_dict(asdict(gs))
+        rec_rt = next(q for q in gs_rt.active_queues if "02:381:06" in q.name)
+        self.assertEqual(rec_rt.cargo, Resources(16378, 11572, 10598, 4784))
+        rec_empty_rt = next(q for q in gs_rt.active_queues if "02:380:14" in q.name)
+        self.assertEqual(rec_empty_rt.cargo, Resources(0, 0, 0, 0))
+        atk_out_rt = next(q for q in gs_rt.active_queues if "Attack →" in q.name)
+        self.assertIsNone(atk_out_rt.cargo)
+
 
 if __name__ == "__main__":
     unittest.main()

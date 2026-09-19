@@ -56,6 +56,7 @@ from spaceinvasion.combat.fleet import (
     _parse_coords_distance,
     extract_galaxy_system_coords,
     extract_message_folder_links,
+    fleet_cargo_capacity,
     format_station_ships_spec,
     normalize_coords,
     parse_galaxy_system_html,
@@ -94,6 +95,7 @@ from spaceinvasion.core.state import (
     Resources,
     count_allocated_normal_planets,
     count_in_flight_fleets_for_planet,
+    extract_in_flight_recycle_coords,
     homeworld_planet_id,
     is_building_allowed_on_planet_type,
     is_in_flight_fleet_job,
@@ -1347,9 +1349,8 @@ class GameApiBridge:
         if self._db is not None:
             self._rank_samples = self._db.get_rank_samples()
             self._economy_rates.update(self._db.get_all_economy_rates())
-            self._raid_targets: tuple[dict[str, Any], ...] = self._enrich_raid_targets(
-                self._db.get_spy_targets(limit=100)
-            )
+            self._raid_targets: tuple[dict[str, Any], ...] = ()
+            self._refresh_raid_targets_locked(limit=100)
             self._scanned_systems.update(self._db.get_galaxy_scans())
             self._throttle_timestamps.update(self._db.get_last_throttle_timestamps())
             self._hydrate_colony_attempt_seen()
@@ -4233,6 +4234,45 @@ class GameApiBridge:
             )
         return state
 
+    def _refresh_raid_targets_locked(
+        self,
+        *,
+        limit: int = 100,
+        debris_limit: int = 60,
+        state_override: Optional[GameState] = None,
+    ) -> tuple[dict[str, Any], ...]:
+        """Refresh `self._raid_targets` by merging top spy/raid targets with proximity-ranked
+        active debris fields so nearby free/player rubble is never evicted by distant Spacia
+        planets."""
+        if self._db is None:
+            self._raid_targets = self._enrich_raid_targets(self._raid_targets)
+            return self._raid_targets
+        spy_rows = self._db.get_spy_targets(limit=limit)
+        st = state_override if state_override is not None else getattr(self, "_last_state", None)
+        own_coords = [str(p.coords or "") for p in (st.planets if st is not None else ()) if getattr(p, "coords", "")]
+        merged: list[dict[str, Any]] = []
+        seen_coords: set[str] = set()
+        get_deb_fn = getattr(self._db, "get_active_debris_targets", None)
+        if callable(get_deb_fn) and debris_limit > 0:
+            for drow in get_deb_fn(origin_coords=own_coords, limit=debris_limit, include_own=False):
+                if not isinstance(drow, Mapping):
+                    continue
+                nc = normalize_coords(drow.get("coords") or drow.get("target_coords") or "")
+                if nc and nc not in seen_coords:
+                    seen_coords.add(nc)
+                    merged.append(dict(drow))
+        for srow in spy_rows:
+            if not isinstance(srow, Mapping):
+                continue
+            nc = normalize_coords(srow.get("coords") or srow.get("target_coords") or "")
+            if nc and nc in seen_coords:
+                continue
+            if nc:
+                seen_coords.add(nc)
+            merged.append(dict(srow))
+        self._raid_targets = self._enrich_raid_targets(merged)
+        return self._raid_targets
+
     def _enrich_raid_targets(self, rows: Sequence[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
         if not rows:
             return ()
@@ -4331,7 +4371,7 @@ class GameApiBridge:
             else:
                 updated_planets.append(planet)
         if self._db is not None:
-            self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
+            self._refresh_raid_targets_locked(limit=100, state_override=state)
         out_state = replace(state, planets=tuple(updated_planets)) if changed else state
         if self._raid_targets and getattr(out_state, "raid_targets", ()) != self._raid_targets:
             out_state = replace(out_state, raid_targets=self._raid_targets)
@@ -5436,7 +5476,7 @@ class GameApiBridge:
             return 0
         if self._db is not None:
             saved = self._db.record_galaxy_slots(slots)
-            self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=250))
+            self._refresh_raid_targets_locked(limit=250)
             return saved
         by_coords: dict[str, dict[str, Any]] = {
             normalize_coords(r.get("coords") or r.get("target_coords") or ""): dict(r)
@@ -6239,7 +6279,7 @@ class GameApiBridge:
                     source="spy_report",
                     ts=now_ts,
                 )
-            self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
+            self._refresh_raid_targets_locked(limit=100)
             return len(filtered)
         by_coords: dict[str, dict[str, Any]] = {
             normalize_coords(r.get("coords") or r.get("target_coords") or ""): dict(r)
@@ -6370,16 +6410,17 @@ class GameApiBridge:
         if self._db is not None:
             for msg in newly_inserted:
                 mc = normalize_coords(msg.coords or "")
-                if not mc or mc in excl:
+                if not mc:
                     continue
                 if msg.category == "battle_report" and bool((msg.parsed_data or {}).get("has_debris")):
-                    self._db.set_target_debris(mc, True)
-                    debris_changed = True
+                    if mc not in excl:
+                        self._db.set_target_debris(mc, True)
+                        debris_changed = True
                 elif msg.category == "recycle_report":
                     self._db.set_target_debris(mc, False)
                     debris_changed = True
             if debris_changed:
-                self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
+                self._refresh_raid_targets_locked(limit=100)
 
         complete_msgs = [m for m in messages if bool(getattr(m, "body_complete", True))]
         all_complete = len(complete_msgs) == len(messages)
@@ -6799,6 +6840,149 @@ class GameApiBridge:
         return_home: bool = False,
     ) -> dict[str, Any]:
         planned = attach_action_etas(state, [planned])[0]
+
+        # Pre-dispatch safety verification for RECYCLE:
+        # 1) Never duplicate an already in-flight Recycle wave (auto-planned / step / execute_action).
+        # 2) Always open the target system in live `internalGalaxy` right before dispatching so we
+        #    confirm the debris field is actually present right now (SpaceInvasion RETRO accepts
+        #    RECYCLE on 0-rubble slots without error, wasting hours of flight time).
+        # 3) Re-size auto-planned Recycler quantity to exact live `rubblefield1` volume.
+        if not dry_run and planned.kind == "RECYCLE" and client is not None:
+            tname_pre = game_data.safe_key(planned.target_name) if planned.target_name is not None else ""
+            m_rc_pre = re.search(r"(\d{1,2}):(\d{1,3}):(\d{1,2})", tname_pre, re.ASCII)
+            if m_rc_pre:
+                t_gal = int(m_rc_pre.group(1))
+                t_sys = int(m_rc_pre.group(2))
+                t_pos = int(m_rc_pre.group(3))
+                norm_rec_target = f"{t_gal:02d}:{t_sys:03d}:{t_pos:02d}"
+                if cmd != "recycle" and norm_rec_target in extract_in_flight_recycle_coords(state):
+                    abort_msg = f"Aborted: Recyclers are already in transit to [{norm_rec_target}]."
+                    aborted_act = replace(planned, executable_now=False)
+                    if self._db is not None:
+                        self._db.record_action(
+                            source="api",
+                            command=cmd,
+                            action=aborted_act,
+                            executed=False,
+                            dry_run=False,
+                            message=abort_msg,
+                        )
+                    return _sanitize_finite_json(
+                        _redact_api_payload(
+                            {
+                                "ok": True,
+                                "command": cmd,
+                                "executed": False,
+                                "validated": True,
+                                "dry_run": False,
+                                "message": abort_msg,
+                                "action": self._serialize_action(aborted_act, state),
+                                "next_action": None,
+                            }
+                        )
+                    )
+                if self._is_real_client_method(client, "open_galaxy"):
+                    try:
+                        gal_html = self._open_galaxy(
+                            client,
+                            galaxy=t_gal,
+                            system=t_sys,
+                            priority="interactive",
+                        )
+                    except (RateLimitError, AntiBotChallengeError):
+                        raise
+                    except Exception:
+                        gal_html = ""
+                    live_slots = (
+                        parse_galaxy_system_html(gal_html, galaxy=t_gal, system=t_sys)
+                        if isinstance(gal_html, str) and gal_html.strip()
+                        else []
+                    )
+                    live_slot = None
+                    if live_slots:
+                        self._persist_galaxy_scan(t_gal, t_sys, live_slots)
+                        self._persist_galaxy_slots(live_slots)
+                        live_slot = next(
+                            (s for s in live_slots if normalize_coords(s.coords) == norm_rec_target),
+                            None,
+                        )
+                    if live_slot is None:
+                        abort_msg = (
+                            f"Aborted: live galaxy view could not confirm debris at [{norm_rec_target}] "
+                            "before dispatch."
+                        )
+                        aborted_act = replace(planned, executable_now=False)
+                        if self._db is not None:
+                            self._db.record_action(
+                                source="api",
+                                command=cmd,
+                                action=aborted_act,
+                                executed=False,
+                                dry_run=False,
+                                message=abort_msg,
+                            )
+                        return _sanitize_finite_json(
+                            _redact_api_payload(
+                                {
+                                    "ok": True,
+                                    "command": cmd,
+                                    "executed": False,
+                                    "validated": True,
+                                    "dry_run": False,
+                                    "message": abort_msg,
+                                    "action": self._serialize_action(aborted_act, state),
+                                    "next_action": None,
+                                }
+                            )
+                        )
+                    if not bool(live_slot.has_debris):
+                        if self._db is not None:
+                            self._db.set_target_debris(norm_rec_target, False)
+                        self._refresh_raid_targets_locked(limit=100, state_override=state)
+                        self._dash_ag_cache_json = None
+                        abort_msg = (
+                            f"Aborted: live galaxy check confirmed [{norm_rec_target}] is clean "
+                            "(no debris field); cleared stale debris flag."
+                        )
+                        aborted_act = replace(planned, executable_now=False)
+                        if self._db is not None:
+                            self._db.record_action(
+                                source="api",
+                                command=cmd,
+                                action=aborted_act,
+                                executed=False,
+                                dry_run=False,
+                                message=abort_msg,
+                            )
+                        return _sanitize_finite_json(
+                            _redact_api_payload(
+                                {
+                                    "ok": True,
+                                    "command": cmd,
+                                    "executed": False,
+                                    "validated": True,
+                                    "dry_run": False,
+                                    "message": abort_msg,
+                                    "action": self._serialize_action(aborted_act, state),
+                                    "next_action": None,
+                                }
+                            )
+                        )
+                    if cmd != "recycle":
+                        live_tot = (
+                            max(0, int(getattr(live_slot, "debris_pig_iron", 0) or 0))
+                            + max(0, int(getattr(live_slot, "debris_metal", 0) or 0))
+                            + max(0, int(getattr(live_slot, "debris_kryptonite", 0) or 0))
+                            + max(0, int(getattr(live_slot, "debris_spice", 0) or 0))
+                        )
+                        if live_tot > 0:
+                            miner_lvl = _safe_api_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
+                            per_rec_cap = max(1, fleet_cargo_capacity({"s11": 1}, miner_spec_level=miner_lvl))
+                            needed_rec = max(1, math.ceil(live_tot / per_rec_cap))
+                            cur_qty = _safe_api_int(planned.target_level, 0)
+                            if cur_qty > needed_rec:
+                                planned = replace(planned, target_level=needed_rec)
+
         executor = self._pick_executor(dry_run)
         res = None
         try:
@@ -6917,17 +7101,13 @@ class GameApiBridge:
                                 is_bash=bool(getattr(res, "target_is_bash_block", False)),
                                 ts=now_wall,
                             )
-                            self._raid_targets = self._enrich_raid_targets(
-                                self._db.get_spy_targets(limit=100)
-                            )
+                            self._refresh_raid_targets_locked(limit=100, state_override=state)
                         else:
                             self._raid_targets = self._enrich_raid_targets(self._raid_targets)
                 if f_coords and bool(getattr(res, "clear_target_debris", False)):
                     if self._db is not None:
                         self._db.set_target_debris(f_coords, False)
-                        self._raid_targets = self._enrich_raid_targets(
-                            self._db.get_spy_targets(limit=100)
-                        )
+                        self._refresh_raid_targets_locked(limit=100, state_override=state)
                     else:
                         updated_rt: list[dict[str, Any]] = []
                         for r_item in self._raid_targets:
@@ -6988,7 +7168,7 @@ class GameApiBridge:
                     "spacia" in reason_l or "inactive" in reason_l or "yellow" in reason_l
                 )
                 self._db.record_raid(t_coords, is_exempt=is_exempt, outcome=res.message)
-                self._raid_targets = self._enrich_raid_targets(self._db.get_spy_targets(limit=100))
+                self._refresh_raid_targets_locked(limit=100, state_override=state)
             if res.action.kind in ("COLONIZE", "ABANDON_COLONY"):
                 self._record_colony_attempt_from_result_locked(state, res, cmd)
         if self._db is not None:
@@ -8780,14 +8960,26 @@ class GameApiBridge:
                     if self._db is not None
                     else []
                 )
-                raw_targets = (
-                    self._enrich_raid_targets(
-                        self._db.get_spy_targets(limit=200, include_own=False)
+                own_coords_rec = [
+                    str(p.coords or "")
+                    for p in (self._last_state.planets if self._last_state is not None else ())
+                    if getattr(p, "coords", "")
+                ]
+                get_deb_fn = getattr(self._db, "get_active_debris_targets", None) if self._db is not None else None
+                if callable(get_deb_fn):
+                    raw_debris = self._enrich_raid_targets(
+                        get_deb_fn(origin_coords=own_coords_rec, limit=200, include_own=False)
                     )
-                    if self._db is not None
-                    else list(self._raid_targets)
-                )
-                debris_targets = [dict(t) for t in raw_targets if bool(t.get("has_debris"))]
+                    debris_targets = [dict(t) for t in raw_debris if bool(t.get("has_debris"))]
+                else:
+                    raw_targets = (
+                        self._enrich_raid_targets(
+                            self._db.get_spy_targets(limit=200, include_own=False)
+                        )
+                        if self._db is not None
+                        else list(self._raid_targets)
+                    )
+                    debris_targets = [dict(t) for t in raw_targets if bool(t.get("has_debris"))]
                 other_emails = (
                     self._db.get_game_messages(
                         category=cat_str,
@@ -8799,6 +8991,8 @@ class GameApiBridge:
                 )
                 db_sum = self._db.summary() if self._db is not None else {}
                 cat_counts = dict(db_sum.get("message_categories") or {})
+                if len(recycles) < int(limit):
+                    cat_counts["recycle_report"] = len(recycles)
                 cat_counts["general"] = sum(
                     _safe_api_int(cat_counts.get(k, 0))
                     for k in ("general", "player", "system", "other")

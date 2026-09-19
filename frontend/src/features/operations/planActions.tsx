@@ -10,7 +10,9 @@ import {
   bottleneckTag,
   finiteNum,
   fmtClockTime,
+  fmtCompact,
   fmtHms,
+  fmtInt,
   formatResourcesInline,
 } from "../../utils/formatters";
 
@@ -586,6 +588,55 @@ export const PlanActionRow: React.FC<PlanActionRowProps> = ({
   );
 };
 
+export interface QueueJobCargoDisplay {
+  label: "Loot" | "Harvest" | "Cargo";
+  inline: string;
+  total: number;
+  multiRes: boolean;
+  isEmpty: boolean;
+}
+
+export function formatQueueJobCargo(
+  job: QueueJobData | null | undefined
+): QueueJobCargoDisplay | null {
+  const cargo = job?.cargo;
+  if (!cargo || typeof cargo !== "object") return null;
+  const pig = Math.max(0, Math.round(finiteNum(cargo.pig_iron, 0)));
+  const met = Math.max(0, Math.round(finiteNum(cargo.metal, 0)));
+  const kry = Math.max(0, Math.round(finiteNum(cargo.kryptonite, 0)));
+  const spi = Math.max(0, Math.round(finiteNum(cargo.spice, 0)));
+  const total = pig + met + kry + spi;
+  const nonZeroCount = [pig, met, kry, spi].filter((v) => v > 0).length;
+
+  const nameLow = String(job?.name || "").toLowerCase();
+  const detLow = String(job?.detail || "").toLowerCase();
+  const isReturning = detLow.includes("returning") || nameLow.includes("↩");
+  const isAttack = nameLow.includes("attack");
+  const isRecycle = nameLow.includes("recycle");
+  const label: "Loot" | "Harvest" | "Cargo" =
+    isReturning && isAttack ? "Loot" : isReturning && isRecycle ? "Harvest" : "Cargo";
+
+  if (total > 0) {
+    return {
+      label,
+      inline: formatResourcesInline({ pig_iron: pig, metal: met, kryptonite: kry, spice: spi }),
+      total,
+      multiRes: nonZeroCount > 1,
+      isEmpty: false,
+    };
+  }
+  if (isReturning && (isAttack || isRecycle)) {
+    return {
+      label,
+      inline: "0 (empty)",
+      total: 0,
+      multiRes: false,
+      isEmpty: true,
+    };
+  }
+  return null;
+}
+
 export interface ActiveExecJobRowProps {
   job: QueueJobData;
   nowEpochSec?: number;
@@ -595,6 +646,7 @@ export const ActiveExecJobRow: React.FC<ActiveExecJobRowProps> = ({ job, nowEpoc
   const slot = Math.max(1, Math.trunc(finiteNum(job?.queue_slot, 1)));
   const detailText =
     String(job?.detail || "").trim() || (slot > 1 ? `In-game queue #${slot}` : "Executing now");
+  const cargoInfo = formatQueueJobCargo(job);
   const finTs = finiteNum(job?.finish_ts, null);
   const effNowSec =
     nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : Math.floor(Date.now() / 1000);
@@ -631,6 +683,16 @@ export const ActiveExecJobRow: React.FC<ActiveExecJobRowProps> = ({ job, nowEpoc
       </td>
       <td>
         <span className="action-sub">{detailText}</span>
+        {cargoInfo ? (
+          <div
+            className={`exec-cargo-line tabular${cargoInfo.isEmpty ? " is-empty" : ""}`}
+            title={`${cargoInfo.label}: ${cargoInfo.inline}${cargoInfo.total > 0 ? ` (${fmtInt(cargoInfo.total)} total)` : ""}`}
+          >
+            <span className="exec-cargo-tag">{cargoInfo.label}</span>{" "}
+            {cargoInfo.inline}
+            {cargoInfo.multiRes ? ` (${fmtCompact(cargoInfo.total)})` : ""}
+          </div>
+        ) : null}
       </td>
       <td className="col-right tabular">
         <span

@@ -761,4 +761,128 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
       config: { allow_galaxy_scan: true },
     });
   });
+
+  it("Dashboard multi-planet queues render all planets without 10-row truncation and scope active fleet jobs per planet", async () => {
+    const elevenPlanets = Array.from({ length: 11 }, (_, idx) => ({
+      planet_id: 13001 + idx,
+      name: `Colony ${idx + 1}`,
+      coords: `02:380:${String(idx + 1).padStart(2, "0")}`,
+      planet_type: "normal",
+      temperature: 20,
+      fields_used: 40,
+      fields_max: 320,
+      resources: { pig_iron: 10000, metal: 5000, kryptonite: 4000, spice: 2000 },
+      storage: { pig_iron: 200000, metal: 200000, kryptonite: 200000, spice: 200000 },
+      energy: { produced: 500, used: 200 },
+      economy_rates: { pig_iron: 500, metal: 300, kryptonite: 200, spice: 100 },
+      buildings: { b1: 10 },
+      ships: {},
+    }));
+    const manyBuildActions = elevenPlanets.map((p, idx) => ({
+      priority: idx < 4 ? "P1" : "P2",
+      kind: "BUILD",
+      planet_id: p.planet_id,
+      planet_coords: p.coords,
+      target_id: 7,
+      target_name: `Development center`,
+      target_level: idx + 2,
+      cost: { pig_iron: 1000, metal: 500, kryptonite: 500, spice: 0 },
+      missing: { pig_iron: 0, metal: 0, kryptonite: 0, spice: 0 },
+      reason: `Build on ${p.coords}`,
+      executable_now: true,
+    }));
+    const multiFleetDash: DashboardData = {
+      ...MOCK_DASHBOARD,
+      state: {
+        ...MOCK_DASHBOARD.state!,
+        active_planet_id: 13001,
+        planets: elevenPlanets,
+        active_queues: [
+          {
+            category: "fleet",
+            name: "Recycle ↩ [02:379:01] Debris",
+            detail: "Returning · 12 Recycler",
+            origin_coords: "02:380:01",
+            remaining_text: "00:30:00",
+            remaining_seconds: 1800,
+            cargo: { pig_iron: 16378, metal: 11572, kryptonite: 0, spice: 0 },
+          },
+          {
+            category: "fleet",
+            name: "Attack ↩ [02:377:04] Spacia",
+            detail: "Returning · 20 Small transport",
+            origin_coords: "02:380:02",
+            remaining_text: "00:15:00",
+            remaining_seconds: 900,
+            cargo: { pig_iron: 12500, metal: 8200, kryptonite: 0, spice: 0 },
+          },
+        ],
+      },
+      plan: manyBuildActions,
+    };
+
+    const ElevenSeed: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+      const Inner: React.FC = () => {
+        const { setDashboard, setActivePage } = useConsole();
+        useEffect(() => {
+          setDashboard(multiFleetDash as any);
+          setActivePage("dashboard");
+        }, [setActivePage, setDashboard]);
+        return null;
+      };
+      return (
+        <ConsoleProvider disableInitialFetch>
+          <Inner />
+          {children}
+        </ConsoleProvider>
+      );
+    };
+
+    const { container } = render(
+      <ElevenSeed>
+        <DashboardView />
+      </ElevenSeed>
+    );
+
+    // 1. All Planets view must render ALL 11 planets (no 10-row cap hiding planet 11!)
+    await waitFor(() => {
+      const bldRows = container.querySelectorAll("#dash-plan-tbody tr");
+      expect(bldRows.length).toBe(11);
+      expect(container.querySelector("#dash-plan-tbody")?.textContent).toContain("02:380:11");
+      // All Planets Fleet Queue shows both empire flights
+      expect(container.querySelector("#dash-fleet-q-count")?.textContent).toBe("2");
+      expect(container.querySelectorAll("#dash-exec-fleet-tbody tr").length).toBe(2);
+    });
+
+    // 2. Clicking Planet 11 (02:380:11, which has 0 flights) must scope Fleet Queue to 0 (NOT 2!)
+    fireEvent.click(container.querySelector('[data-dash-planet-scope="13011"]')!);
+    await waitFor(() => {
+      expect(container.querySelector("#dash-bld-q-count")?.textContent).toBe("1");
+      expect(container.querySelector("#dash-fleet-q-count")?.textContent).toBe("0");
+      expect(container.querySelectorAll("#dash-exec-fleet-tbody tr").length).toBe(0);
+    });
+
+    // 3. Clicking Planet 1 (02:380:01, which has 1 returning recycle flight) shows only its 1 flight + Harvest cargo!
+    fireEvent.click(container.querySelector('[data-dash-planet-scope="13001"]')!);
+    await waitFor(() => {
+      expect(container.querySelector("#dash-fleet-q-count")?.textContent).toBe("1");
+      expect(container.querySelectorAll("#dash-exec-fleet-tbody tr").length).toBe(1);
+      const fleetTxt = container.querySelector("#dash-exec-fleet-tbody")?.textContent || "";
+      expect(fleetTxt).toContain("02:379:01");
+      expect(fleetTxt).toContain("Harvest");
+      expect(fleetTxt).toContain("16,378 Pig");
+      expect(fleetTxt).toContain("11,572 Met");
+    });
+
+    // 4. Clicking Planet 2 (02:380:02, returning attack) shows Loot cargo!
+    fireEvent.click(container.querySelector('[data-dash-planet-scope="13002"]')!);
+    await waitFor(() => {
+      const fleetTxt = container.querySelector("#dash-exec-fleet-tbody")?.textContent || "";
+      expect(fleetTxt).toContain("02:377:04");
+      expect(fleetTxt).toContain("Loot");
+      expect(fleetTxt).toContain("12,500 Pig");
+      expect(fleetTxt).toContain("8,200 Met");
+      expect(fleetTxt).toContain("(20.7k)");
+    });
+  });
 });

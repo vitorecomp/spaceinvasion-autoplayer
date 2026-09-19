@@ -24,8 +24,38 @@ import {
   cleanQueueJobTitle,
   dashboardQueueDomainForAction,
   dashboardQueueDomainForJob,
+  formatQueueJobCargo,
 } from "../operations/planActions";
 import { DashboardQueueCard } from "./DashboardQueueCard";
+
+function normalizeCoordKey(raw?: string | null): string {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  const m = s.match(/(\d{1,2})\s*:\s*(\d{1,3})\s*:\s*(\d{1,2})/);
+  if (!m) return s;
+  return `${Number(m[1])}:${Number(m[2])}:${Number(m[3])}`;
+}
+
+function queueJobMatchesPlanet(
+  job: QueueJobData,
+  planet: PlanetData,
+  activePlanetId: number | null | undefined,
+  fallbackToActivePlanet: boolean
+): boolean {
+  const jPid = job.planet_id != null ? Number(job.planet_id) : NaN;
+  if (Number.isFinite(jPid) && jPid > 0) {
+    return jPid === Number(planet.planet_id);
+  }
+  const jCoords = normalizeCoordKey(job.origin_coords || job.planet_coords);
+  if (jCoords) {
+    const pCoords = normalizeCoordKey(planet.coords);
+    return Boolean(pCoords) && jCoords === pCoords;
+  }
+  if (fallbackToActivePlanet && activePlanetId != null) {
+    return Number(planet.planet_id) === Number(activePlanetId);
+  }
+  return false;
+}
 
 interface ResourceTrackSpec {
   idKey: "pig" | "metal" | "kryp" | "spice";
@@ -427,15 +457,20 @@ export const DashboardView: React.FC = () => {
   }, [allPlanActions, planets]);
 
   const scopedExecBuildingJobs = useMemo(() => {
-    if (
-      scopedDashPlanet &&
-      gs?.active_planet_id != null &&
-      Number(scopedDashPlanet.planet_id) !== Number(gs.active_planet_id)
-    ) {
-      return [];
-    }
-    return execBuildingJobs;
+    if (!scopedDashPlanet) return execBuildingJobs;
+    return execBuildingJobs.filter((job) =>
+      queueJobMatchesPlanet(job, scopedDashPlanet, gs?.active_planet_id, true)
+    );
   }, [execBuildingJobs, gs?.active_planet_id, scopedDashPlanet]);
+
+  const scopedExecFleetJobs = useMemo(() => {
+    if (!scopedDashPlanet) return execFleetJobs;
+    return execFleetJobs.filter((job) =>
+      queueJobMatchesPlanet(job, scopedDashPlanet, gs?.active_planet_id, false)
+    );
+  }, [execFleetJobs, gs?.active_planet_id, scopedDashPlanet]);
+
+  const dashQueueMaxRows = planets.length <= 1 ? 10 : undefined;
 
   const { buildingActions, fleetActions, researchActions } = useMemo(() => {
     const bld: PlannedActionData[] = [];
@@ -807,6 +842,11 @@ export const DashboardView: React.FC = () => {
                   : activeQueues.map((q, idx) => {
                       const catTag = `[${String(q.category || "JOB").toUpperCase()}]`;
                       const titleTxt = cleanQueueJobTitle(q);
+                      const cargoInfo = formatQueueJobCargo(q);
+                      const cargoSuffix =
+                        cargoInfo && !cargoInfo.isEmpty
+                          ? ` · ${cargoInfo.label}: ${cargoInfo.inline}`
+                          : "";
                       const finTs = finiteNum(q.finish_ts, null);
                       return (
                         <React.Fragment key={`qstrip-${idx}-${q.name || idx}`}>
@@ -814,16 +854,16 @@ export const DashboardView: React.FC = () => {
                           <span>
                             {finTs !== null && finTs > 0 ? (
                               <>
-                                {`${catTag} ${titleTxt} (`}
+                                {`${catTag} ${titleTxt}${cargoSuffix} (`}
                                 <span data-finish-ts={String(finTs)}>
                                   {fmtHms(Math.max(0, Math.round(finTs - effNowSec)))}
                                 </span>
                                 {` · ${fmtClockTime(finTs, effNowSec)})`}
                               </>
                             ) : q.remaining_text ? (
-                              `${catTag} ${titleTxt} (${q.remaining_text})`
+                              `${catTag} ${titleTxt}${cargoSuffix} (${q.remaining_text})`
                             ) : (
-                              `${catTag} ${titleTxt}`
+                              `${catTag} ${titleTxt}${cargoSuffix}`
                             )}
                           </span>
                         </React.Fragment>
@@ -950,6 +990,7 @@ export const DashboardView: React.FC = () => {
           planTbodyId="dash-plan-tbody"
           execJobs={scopedExecBuildingJobs}
           plannedActions={buildingActions}
+          maxRows={dashQueueMaxRows}
           emptyText={
             dashboard
               ? scopedDashPlanet
@@ -984,8 +1025,9 @@ export const DashboardView: React.FC = () => {
           onGotoClick={() => setActivePage("combat")}
           execTbodyId="dash-exec-fleet-tbody"
           planTbodyId="dash-plan-fleet-tbody"
-          execJobs={execFleetJobs}
+          execJobs={scopedExecFleetJobs}
           plannedActions={fleetActions}
+          maxRows={dashQueueMaxRows}
           emptyText={
             scopedDashPlanet
               ? `No queued fleet or ship actions on ${scopedDashPlanet.coords || scopedDashPlanet.name}.`
@@ -1014,6 +1056,7 @@ export const DashboardView: React.FC = () => {
           planTbodyId="dash-plan-research-tbody"
           execJobs={execResearchJobs}
           plannedActions={researchActions}
+          maxRows={dashQueueMaxRows}
           emptyText="No queued research actions."
           nowEpochSec={effNowSec}
           onDispatch={handleDispatch}

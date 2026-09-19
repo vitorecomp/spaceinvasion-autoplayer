@@ -1491,6 +1491,86 @@ class TestGameDatabase(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_debris_amounts_proximity_ranking_and_non_destructive_recycle_filter(self) -> None:
+        from spaceinvasion.combat.fleet import GalaxySlot, InboxMessage
+
+        with tempfile.TemporaryDirectory(prefix="si_deb_store_") as tmp:
+            db = GameDatabase(Path(tmp) / "spaceinvasion.db")
+            try:
+                db.record_galaxy_slots(
+                    [
+                        GalaxySlot(
+                            coords="06:180:13",
+                            position=13,
+                            name="Spacia Planet",
+                            owner="Spacia",
+                            status_color="yellow",
+                            has_debris=True,
+                            is_spacia=True,
+                            debris_pig_iron=10_000,
+                            debris_metal=5_000,
+                        ),
+                        GalaxySlot(
+                            coords="02:379:01",
+                            position=1,
+                            name="",
+                            owner="",
+                            status_color="free",
+                            has_debris=True,
+                            is_spacia=False,
+                            debris_pig_iron=10_720,
+                            debris_metal=10_574,
+                            debris_kryptonite=15_560,
+                            debris_spice=11_584,
+                        ),
+                    ],
+                    ts=1000.0,
+                )
+                active_deb = db.get_active_debris_targets(origin_coords=("02:380:12",), limit=10)
+                self.assertEqual([t["coords"] for t in active_deb], ["02:379:01", "06:180:13"])
+                self.assertEqual(active_deb[0]["debris_total"], 48_438)
+                self.assertEqual(active_deb[0]["debris_kryptonite"], 15_560)
+                self.assertEqual(active_deb[0]["debris_spice"], 11_584)
+
+                # Clearing debris prunes galaxy_debris_amounts and removes target from active debris
+                db.set_target_debris("02:379:01", False)
+                active_after = db.get_active_debris_targets(origin_coords=("02:380:12",), limit=10)
+                self.assertEqual([t["coords"] for t in active_after], ["06:180:13"])
+
+                # Legacy misclassified STATION notice in recycle_reports is filtered non-destructively
+                station_legacy = InboxMessage(
+                    msg_uid="id:legacy_st_1",
+                    server_msg_id="legacy_st_1",
+                    folder_type="inbox",
+                    category="recycle_report",
+                    msg_date_text="2026-11-17 13:50:00",
+                    sender="System",
+                    subject="Colony [02:380:06] station",
+                    coords="02:380:06",
+                    body_text="Colony [02:380:06] station One of your fleets (6 Recycler) was re-stationed from Colony [02:379:06] to Colony [02:380:06]. It delivers 0 Pig iron, 0 Metal, 0 Kryptonite, 0 Spice.",
+                    parsed_data={"recycler_count": 6, "harvested": {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0}},
+                )
+                genuine_rec = InboxMessage(
+                    msg_uid="id:real_rec_1",
+                    server_msg_id="real_rec_1",
+                    folder_type="inbox",
+                    category="recycle_report",
+                    msg_date_text="2026-11-17 13:56:00",
+                    sender="System",
+                    subject="Space rubble [02:379:13] recycling report",
+                    coords="02:379:13",
+                    body_text="Space rubble [02:379:13] recycling report Your fleet (10 Recycler) processed 10000 Pig iron, 5000 Metal pieces of rubble there.",
+                    parsed_data={"recycler_count": 10, "harvested": {"pig_iron": 10000, "metal": 5000, "kryptonite": 0, "spice": 0}},
+                )
+                db.record_game_messages([station_legacy, genuine_rec], ts=1050.0)
+                rec_rows = db.get_recycle_reports(limit=20)
+                self.assertEqual([r["msg_uid"] for r in rec_rows], ["id:real_rec_1"])
+                # Append-only guarantee: raw row remains in SQLite table untouched
+                raw_cnt = db._conn.execute("SELECT COUNT(*) FROM recycle_reports").fetchone()[0]
+                self.assertEqual(raw_cnt, 2)
+            finally:
+                db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

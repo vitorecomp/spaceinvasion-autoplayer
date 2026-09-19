@@ -22,6 +22,7 @@ from spaceinvasion.core.state import (
     UnitOffer,
     count_in_flight_fleets_for_planet,
     extract_in_flight_colonize_coords,
+    extract_in_flight_recycle_coords,
     extract_in_flight_station_dest_coords,
     has_in_flight_fleet_from_planet,
     is_building_allowed_on_planet_type,
@@ -1991,6 +1992,7 @@ def _plan_combat_and_raid_actions(
         else 0
     )
     in_flight_col_coords = extract_in_flight_colonize_coords(state)
+    in_flight_recycle_coords = extract_in_flight_recycle_coords(state)
     planets_fully_allocated = allocated_normal_planets >= max_planets_cap
     needed_colonies = max(0, max_planets_cap - allocated_normal_planets)
     open_colony_slots = max(0, needed_colonies - len(in_flight_col_coords))
@@ -2427,7 +2429,12 @@ def _plan_combat_and_raid_actions(
 
         owner = game_data.safe_key(raw.get("owner") or "")
         pname = game_data.safe_key(raw.get("planet_name") or "")
-        if bool(raw.get("has_debris", False)) and has_recyclers and norm_coords not in seen_recycle_coords:
+        if (
+            bool(raw.get("has_debris", False))
+            and has_recyclers
+            and norm_coords not in seen_recycle_coords
+            and norm_coords not in in_flight_recycle_coords
+        ):
             seen_recycle_coords.add(norm_coords)
             debris_entries.append((norm_coords, owner, pname, _fleet.extract_target_debris_resources(raw)))
 
@@ -2921,6 +2928,13 @@ def _plan_combat_and_raid_actions(
                 researches=state.researches,
                 round_trip=True,
             )
+            # Skip multi-galaxy recycle trips exceeding 12h round-trip (>6h one-way):
+            # distant cross-galaxy fields are nearly always cleaned before slow Recyclers arrive.
+            if not tutorial_recycle_pending and rec_flight_rp > 12.0 * 3600.0:
+                rp_g_m = re.match(r"(\d{1,2}):", _safe_strategy_str(rp.coords).strip())
+                tg_m = re.match(r"(\d{1,2}):", norm_coords)
+                if rp_g_m and tg_m and int(rp_g_m.group(1)) != int(tg_m.group(1)):
+                    continue
             rec_rph_rp = _fleet.estimate_resource_per_hour(exp_rubble_rp, rec_flight_rp)
             hold_rec_rp = bool(tutorial_recycle_pending and has_in_flight_fleet_from_planet(state, rp))
             can_exec_rp = bool((cfg.allow_raids or cfg.allow_galaxy_scan) and not hold_rec_rp)
