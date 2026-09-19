@@ -1458,6 +1458,7 @@ def plan_interplanet_transports(
     existing_plan: Sequence[PlannedAction] = (),
     *,
     now_ts: Optional[float] = None,
+    priority_resource_need: Optional[Mapping[int, Any]] = None,
 ) -> list[PlannedAction]:
     """Plan own-planet resource `TRANSPORT` shipments (Fleet Priority #2: after `SPY`, before `COLONIZE`)."""
     del now_ts
@@ -1472,6 +1473,27 @@ def plan_interplanet_transports(
     _fleet = _get_fleet()
     miner_spec = _safe_strategy_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
     fuel_reserve = max(500, _safe_strategy_int(getattr(cfg, "fleet_save_fuel_reserve_spice", 500), 500))
+
+    # Normalize optional AI-Planner priority resource needs (`planet_id -> Resources`)
+    norm_prio_needs: dict[int, Resources] = {}
+    if isinstance(priority_resource_need, Mapping):
+        for raw_pid, raw_need in priority_resource_need.items():
+            pid_k = _safe_strategy_int(raw_pid, 0)
+            if pid_k <= 0:
+                continue
+            if isinstance(raw_need, Resources):
+                r_obj = Resources(
+                    pig_iron=max(0, _safe_strategy_int(raw_need.pig_iron, 0)),
+                    metal=max(0, _safe_strategy_int(raw_need.metal, 0)),
+                    kryptonite=max(0, _safe_strategy_int(raw_need.kryptonite, 0)),
+                    spice=max(0, _safe_strategy_int(raw_need.spice, 0)),
+                )
+            elif isinstance(raw_need, Mapping):
+                r_obj = _resources_from_dict(dict(raw_need))
+            else:
+                continue
+            if not r_obj.is_zero():
+                norm_prio_needs[pid_k] = r_obj
 
     # Skip destinations that already have an outbound Transport flight inbound
     inbound_transport_coords: set[str] = set()
@@ -1497,7 +1519,7 @@ def plan_interplanet_transports(
             buf[2] += max(0, _safe_strategy_int(act.cost.kryptonite, 0))
             buf[3] += max(0, _safe_strategy_int(act.cost.spice, 0))
 
-    # Compute per-colony resource demands: concrete P1/P2 missing shortfalls + young-colony bootstrap
+    # Compute per-colony resource demands: AI-Planner priority targets + P1/P2 missing shortfalls + young-colony bootstrap
     demands: list[tuple[int, PlanetState, Resources, str]] = []
     for dest in normal_planets:
         norm_dest = _fleet.normalize_coords(dest.coords)
@@ -1521,6 +1543,19 @@ def plan_interplanet_transports(
             need_vals[1] = max(need_vals[1], max(0, _safe_strategy_int(act.missing.metal, 0)))
             need_vals[2] = max(need_vals[2], max(0, _safe_strategy_int(act.missing.kryptonite, 0)))
             need_vals[3] = max(need_vals[3], max(0, _safe_strategy_int(act.missing.spice, 0)))
+
+        prio_need = norm_prio_needs.get(dest.planet_id)
+        if prio_need is not None:
+            urgency = -1
+            need_vals[0] = max(need_vals[0], prio_need.pig_iron)
+            need_vals[1] = max(need_vals[1], prio_need.metal)
+            need_vals[2] = max(need_vals[2], prio_need.kryptonite)
+            need_vals[3] = max(need_vals[3], prio_need.spice)
+            need_label = (
+                f"AI-Planner: {need_label}"
+                if need_label and not need_label.lower().startswith("ai-planner")
+                else (need_label or "AI-Planner target upgrade")
+            )
 
         total_on_dest = (
             max(0, dest.resources.pig_iron)
@@ -1586,7 +1621,21 @@ def plan_interplanet_transports(
             max(0, p.storage.spice),
         ]
         surp: list[int] = []
+        donor_own_prio = norm_prio_needs.get(p.planet_id)
+        donor_prio_vals = (
+            (
+                donor_own_prio.pig_iron,
+                donor_own_prio.metal,
+                donor_own_prio.kryptonite,
+                donor_own_prio.spice,
+            )
+            if donor_own_prio is not None
+            else (0, 0, 0, 0)
+        )
         for idx_r in range(4):
+            if donor_prio_vals[idx_r] > 0:
+                surp.append(0)
+                continue
             near_cap = sto_vals[idx_r] > 0 and cur_vals[idx_r] >= int(sto_vals[idx_r] * 0.85)
             cushion = 0 if near_cap else min(int(cur_vals[idx_r] * 0.10), 5_000)
             extra = fuel_reserve if idx_r == 3 else 0
@@ -1910,6 +1959,7 @@ def _plan_combat_and_raid_actions(
     now_ts: Optional[float] = None,
     raid_stats: Optional[Mapping[str, Any]] = None,
     existing_plan: Sequence[PlannedAction] = (),
+    priority_resource_need: Optional[Mapping[int, Any]] = None,
 ) -> list[PlannedAction]:
     """Plan Galaxy exploration sweep, Spy probe scouting, Space Rubble recycling, and scored Attack targets."""
     if state.tutorial is not None and state.tutorial.can_complete:
@@ -2652,7 +2702,13 @@ def _plan_combat_and_raid_actions(
         return min(res_spy_cfg, max(0, _max_slots_for(p_obj) - 1)) if has_spy_demand_p else 0
 
     # Tier #2: Inter-planet TRANSPORT (yields only to SPY; reserves slots against COLONIZE, STATION, ATTACK, RECYCLE)
-    raw_transports = plan_interplanet_transports(state, cfg, existing_plan, now_ts=ref_now)
+    raw_transports = plan_interplanet_transports(
+        state,
+        cfg,
+        existing_plan,
+        now_ts=ref_now,
+        priority_resource_need=priority_resource_need,
+    )
     transport_actions: list[PlannedAction] = []
     tr_dispatch_by_pid: dict[int, int] = {}
     tr_count_by_planet: dict[int, int] = {}
@@ -3864,6 +3920,481 @@ def _plan_unlock_and_advisory_actions(
     return build_unlocks, advisories
 
 
+def _plan_planet_shipyard_targets(
+    state: GameState,
+    planet: PlanetState,
+    ship_offers: Mapping[int, UnitOffer],
+    config: StrategyConfig,
+) -> list[PlannedAction]:
+    """Emit Shipyard `BUILD_SHIP` target actions for a single non-raid planet with Weapons factory."""
+    if planet.building_level(WEAPONS_FACTORY) < 1 or not config.allow_shipyard or _norm_planet_type(planet) == "raid":
+        return []
+    slug_to_skey = {slug: skey for skey, slug in SHIP_SLUG_BY_KEY.items()}
+    tutorial_ship_ids: set[int] = set()
+    if state.tutorial and not state.tutorial.can_complete:
+        for t in state.tutorial.tasks:
+            if t.completed:
+                continue
+            t_bid = game_data.safe_optional_int(t.building_id, None)
+            if t.category == "ship" and t_bid is not None:
+                tutorial_ship_ids.add(t_bid)
+            elif t.category == "milestone":
+                h_sid = _milestone_helper_ship_id(_safe_strategy_str(t.description).lower())
+                if h_sid is not None:
+                    tutorial_ship_ids.add(h_sid)
+
+    out_ships: list[PlannedAction] = []
+    waiting_ships: list[tuple[float, PlannedAction]] = []
+    norm_shipyard_targets = _resolve_shipyard_targets(config.shipyard_targets)
+    for ship_slug, target_cnt in norm_shipyard_targets.items():
+        if target_cnt <= 0:
+            continue
+        if (
+            ship_slug == "solar-cells"
+            and _norm_planet_type(planet) != "asteroid"
+            and bool(getattr(config, "forbid_planetary_solar", False))
+            and 9 not in tutorial_ship_ids
+        ):
+            continue
+        skey = slug_to_skey.get(ship_slug)
+        if not skey or len(skey) > 8 or not skey[1:].isascii() or not skey[1:].isdigit():
+            continue
+        sid_num = int(skey[1:])
+        offer = ship_offers.get(sid_num)
+        if offer is None:
+            unmet_ship = game_data.missing_prerequisites(
+                "ships",
+                ship_slug,
+                buildings=planet.buildings,
+                researches=state.researches,
+            )
+            if unmet_ship:
+                continue
+
+        owned = max(0, _safe_strategy_int(planet.ships.get(skey, offer.owned if offer is not None else 0), 0))
+        need = target_cnt - owned
+        if need <= 0:
+            continue
+
+        if offer is not None:
+            ship_name = _safe_strategy_str(offer.name) or ship_slug
+            cost = offer.cost
+        else:
+            info = game_data.resolve_unit("ships", ship_slug) or {}
+            ship_name = str(info.get("name") or ship_slug)
+            cost = _resources_from_dict(info.get("base_cost", {}))
+
+        missing = planet.resources.missing(cost)
+        missing_b = [
+            m
+            for m in game_data.missing_prerequisites(
+                "ships",
+                ship_slug,
+                buildings=planet.buildings,
+                researches=state.researches,
+            )
+            if m.get("category") == "buildings"
+        ]
+        own_fleet_in_flight = has_in_flight_fleet_from_planet(state, planet)
+        hold_for_in_flight = (
+            own_fleet_in_flight
+            and sid_num not in tutorial_ship_ids
+            and sid_num in (1, 2, 3, 4, 5, 6, 7, 13, 14, 15, 16)
+        )
+        has_wf_now = planet.building_level(WEAPONS_FACTORY) >= 1 and not missing_b
+        can_exec = (
+            not hold_for_in_flight
+            and has_wf_now
+            and offer is not None
+            and offer.can_build
+            and planet.resources.can_afford(cost)
+        )
+        ship_reason = f"Fleet build target ({game_data.fmt_compact_int(owned)}/{game_data.fmt_compact_int(target_cnt)} {ship_name})"
+        if hold_for_in_flight:
+            ship_reason += " (hold while own fleet is in transit)"
+        elif planet.building_level(WEAPONS_FACTORY) < 1:
+            ship_reason += " (Weapons factory b9 required)"
+        elif missing_b:
+            first_req = missing_b[0]
+            ship_reason += (
+                f" (requires {first_req['name']} "
+                f"{game_data.fmt_compact_int(first_req['current'])}/{game_data.fmt_compact_int(first_req['required'])})"
+            )
+        ship_act = PlannedAction(
+            priority="P2",
+            kind="BUILD_SHIP",
+            planet_id=planet.planet_id,
+            planet_coords=_safe_strategy_str(planet.coords),
+            target_id=sid_num,
+            target_name=ship_name,
+            target_level=1,
+            cost=cost,
+            missing=missing,
+            reason=ship_reason,
+            executable_now=can_exec,
+        )
+        if can_exec:
+            out_ships.append(ship_act)
+        elif sid_num not in tutorial_ship_ids:
+            waiting_ships.append((game_data.spice_equivalent(missing), ship_act))
+
+    waiting_ships.sort(key=lambda pair: pair[0])
+    for _, wait_act in waiting_ships[:3]:
+        out_ships.append(wait_act)
+    return out_ships
+
+
+_BUDGET_RES_KEYS: tuple[str, ...] = ("pig_iron", "metal", "kryptonite", "spice")
+
+
+def compute_spare_ship_budget(
+    state: GameState,
+    spare_percent: Optional[Mapping[str, float] | float] = None,
+    *,
+    attack_telemetry: Optional[Mapping[str, Any]] = None,
+    reserved_cost: Optional[Resources | Mapping[str, Any]] = None,
+    window_hours: float = 1.0,
+) -> dict[str, Any]:
+    """Compute Soft Reserve + Rolling `spare %` Shipyard resource budget for hybrid AI-Planner + Fleet mode.
+
+    1. Reserves `reserved_cost` (cost of the next waiting P1 AI-Planner building/research step) first.
+    2. Sums empire hourly net mine production + `attack_telemetry` hourly loot.
+    3. Computes per-resource rolling `spare %` allowance bounded by free stock above reserve.
+    4. Flags urgent `0`-count replacements of Spy probes (`s10`) or Transports (`s1`/`s2`), which
+       are always permitted regardless of spare budget.
+    """
+    from spaceinvasion.combat.ranking import estimate_hourly_economy
+
+    norm_pct: dict[str, float] = {}
+    if isinstance(spare_percent, (int, float)) and not isinstance(spare_percent, bool):
+        p_val = max(0.0, min(100.0, _safe_strategy_float(spare_percent, 10.0)))
+        for rk in _BUDGET_RES_KEYS:
+            norm_pct[rk] = p_val
+    elif isinstance(spare_percent, Mapping):
+        for rk in _BUDGET_RES_KEYS:
+            norm_pct[rk] = max(0.0, min(100.0, _safe_strategy_float(spare_percent.get(rk, 10.0), 10.0)))
+    else:
+        for rk in _BUDGET_RES_KEYS:
+            norm_pct[rk] = 10.0
+
+    eff_window_h = max(0.1, min(168.0, _safe_strategy_float(window_hours, 1.0)))
+
+    non_raid_planets = [
+        p for p in (getattr(state, "planets", ()) or ()) if _norm_planet_type(p) != "raid"
+    ]
+    empire_stock: dict[str, float] = {rk: 0.0 for rk in _BUDGET_RES_KEYS}
+    total_s10 = 0
+    total_transports = 0
+    for p in non_raid_planets:
+        res_obj = getattr(p, "resources", None)
+        if res_obj is not None:
+            empire_stock["pig_iron"] += float(max(0, _safe_strategy_int(getattr(res_obj, "pig_iron", 0), 0)))
+            empire_stock["metal"] += float(max(0, _safe_strategy_int(getattr(res_obj, "metal", 0), 0)))
+            empire_stock["kryptonite"] += float(max(0, _safe_strategy_int(getattr(res_obj, "kryptonite", 0), 0)))
+            empire_stock["spice"] += float(max(0, _safe_strategy_int(getattr(res_obj, "spice", 0), 0)))
+        ships_m = getattr(p, "ships", None) or {}
+        if isinstance(ships_m, Mapping):
+            total_s10 += max(0, _safe_strategy_int(ships_m.get("s10", 0), 0))
+            total_transports += max(0, _safe_strategy_int(ships_m.get("s1", 0), 0))
+            total_transports += max(0, _safe_strategy_int(ships_m.get("s2", 0), 0))
+
+    econ = estimate_hourly_economy(state) if non_raid_planets else {}
+    mine_hourly: dict[str, float] = {
+        "pig_iron": max(0.0, _safe_strategy_float(econ.get("pig_iron_per_hr", 0.0), 0.0)),
+        "metal": max(0.0, _safe_strategy_float(econ.get("metal_per_hr", 0.0), 0.0)),
+        "kryptonite": max(0.0, _safe_strategy_float(econ.get("kryptonite_per_hr", 0.0), 0.0)),
+        "spice": max(0.0, _safe_strategy_float(econ.get("spice_per_hr", 0.0), 0.0)),
+    }
+
+    attack_hourly: dict[str, float] = {rk: 0.0 for rk in _BUDGET_RES_KEYS}
+    if isinstance(attack_telemetry, Mapping):
+        hl = attack_telemetry.get("hourly_loot")
+        if isinstance(hl, Mapping):
+            for rk in _BUDGET_RES_KEYS:
+                attack_hourly[rk] = max(0.0, _safe_strategy_float(hl.get(rk, 0.0), 0.0))
+        else:
+            ml = attack_telemetry.get("median_loot")
+            aph = max(0.0, _safe_strategy_float(attack_telemetry.get("estimated_attacks_per_hour", 0.0), 0.0))
+            if isinstance(ml, Mapping) and aph > 0.0:
+                for rk in _BUDGET_RES_KEYS:
+                    attack_hourly[rk] = max(0.0, _safe_strategy_float(ml.get(rk, 0.0), 0.0)) * aph
+
+    reserved: dict[str, float] = {rk: 0.0 for rk in _BUDGET_RES_KEYS}
+    if isinstance(reserved_cost, Resources):
+        reserved["pig_iron"] = float(max(0, _safe_strategy_int(reserved_cost.pig_iron, 0)))
+        reserved["metal"] = float(max(0, _safe_strategy_int(reserved_cost.metal, 0)))
+        reserved["kryptonite"] = float(max(0, _safe_strategy_int(reserved_cost.kryptonite, 0)))
+        reserved["spice"] = float(max(0, _safe_strategy_int(reserved_cost.spice, 0)))
+    elif isinstance(reserved_cost, Mapping):
+        for rk in _BUDGET_RES_KEYS:
+            reserved[rk] = max(0.0, _safe_strategy_float(reserved_cost.get(rk, 0.0), 0.0))
+
+    hourly_income: dict[str, float] = {}
+    hourly_spare_allowance: dict[str, float] = {}
+    free_after_reserve: dict[str, float] = {}
+    available_budget: dict[str, float] = {}
+    for rk in _BUDGET_RES_KEYS:
+        inc = mine_hourly[rk] + attack_hourly[rk]
+        hourly_income[rk] = round(inc, 2)
+        sp_hr = inc * (norm_pct[rk] / 100.0)
+        hourly_spare_allowance[rk] = round(sp_hr, 2)
+        free_r = max(0.0, empire_stock[rk] - reserved[rk])
+        free_after_reserve[rk] = round(free_r, 2)
+        if norm_pct[rk] <= 0.0:
+            avail = 0.0
+        elif inc > 0.0:
+            avail = min(free_r, sp_hr * eff_window_h)
+        else:
+            avail = free_r * (norm_pct[rk] / 100.0)
+        available_budget[rk] = round(max(0.0, avail), 2)
+
+    urgent_replacements = {
+        "s10": total_s10 == 0,
+        "s1": total_transports == 0,
+        "s2": total_transports == 0,
+    }
+    urgent_zero_count_ships = [k for k in ("s10", "s1", "s2") if urgent_replacements[k]]
+
+    return {
+        "spare_percent": {rk: round(norm_pct[rk], 2) for rk in _BUDGET_RES_KEYS},
+        "window_hours": round(eff_window_h, 2),
+        "empire_stock": {rk: int(round(empire_stock[rk])) for rk in _BUDGET_RES_KEYS},
+        "reserved_cost": {rk: int(round(reserved[rk])) for rk in _BUDGET_RES_KEYS},
+        "reserved_cost_spice_eq": round(game_data.spice_equivalent(reserved), 2),
+        "free_after_reserve": free_after_reserve,
+        "mine_hourly": {rk: round(mine_hourly[rk], 2) for rk in _BUDGET_RES_KEYS},
+        "attack_hourly": {rk: round(attack_hourly[rk], 2) for rk in _BUDGET_RES_KEYS},
+        "hourly_income": hourly_income,
+        "hourly_income_spice_eq": round(game_data.spice_equivalent(hourly_income), 2),
+        "hourly_spare_allowance": hourly_spare_allowance,
+        "hourly_spare_spice_eq": round(game_data.spice_equivalent(hourly_spare_allowance), 2),
+        "available_budget": available_budget,
+        "available_budget_spice_eq": round(game_data.spice_equivalent(available_budget), 2),
+        "urgent_replacements": urgent_replacements,
+        "urgent_zero_count_ships": urgent_zero_count_ships,
+    }
+
+
+def filter_shipyard_actions_by_spare_budget(
+    state: GameState,
+    actions: Sequence[PlannedAction],
+    spare_budget: Optional[Mapping[str, Any]],
+) -> list[PlannedAction]:
+    """Gate non-urgent `BUILD_SHIP` actions by `spare_budget` while allowing 0-count s10/s1/s2 replacements."""
+    if not isinstance(spare_budget, Mapping):
+        return list(actions)
+
+    avail_raw = spare_budget.get("available_budget")
+    rem: dict[str, float] = {
+        rk: max(0.0, _safe_strategy_float((avail_raw or {}).get(rk, 0.0), 0.0))
+        if isinstance(avail_raw, Mapping)
+        else 0.0
+        for rk in _BUDGET_RES_KEYS
+    }
+    urgent_map = spare_budget.get("urgent_replacements")
+    if isinstance(urgent_map, Mapping):
+        urg_s10 = bool(urgent_map.get("s10", False))
+        urg_tr = bool(urgent_map.get("s1", False) or urgent_map.get("s2", False))
+    else:
+        non_raid = [p for p in (getattr(state, "planets", ()) or ()) if _norm_planet_type(p) != "raid"]
+        urg_s10 = sum(max(0, _safe_strategy_int((p.ships or {}).get("s10", 0), 0)) for p in non_raid) == 0
+        urg_tr = (
+            sum(
+                max(0, _safe_strategy_int((p.ships or {}).get("s1", 0), 0))
+                + max(0, _safe_strategy_int((p.ships or {}).get("s2", 0), 0))
+                for p in non_raid
+            )
+            == 0
+        )
+
+    out: list[PlannedAction] = []
+    hold_tag = " [Hold: reserved for next AI-Planner step / spare % ship budget]"
+    for act in actions:
+        if act.kind != "BUILD_SHIP" or act.manual_queue_id is not None or not act.executable_now:
+            out.append(act)
+            continue
+        sid = game_data.safe_optional_int(act.target_id, None)
+        if sid == 10 and urg_s10:
+            out.append(act)
+            continue
+        if sid in (1, 2) and urg_tr:
+            out.append(act)
+            continue
+
+        cost_obj = act.cost
+        if cost_obj.is_zero() and sid is not None:
+            slug = SHIP_SLUG_BY_KEY.get(f"s{sid}")
+            if slug:
+                info = game_data.resolve_unit("ships", slug) or {}
+                base_c = _resources_from_dict(info.get("base_cost", {}))
+                qty = max(1, _safe_strategy_int(act.target_level, 1))
+                cost_obj = Resources(
+                    pig_iron=base_c.pig_iron * qty,
+                    metal=base_c.metal * qty,
+                    kryptonite=base_c.kryptonite * qty,
+                    spice=base_c.spice * qty,
+                )
+        need_c = {
+            "pig_iron": float(max(0, _safe_strategy_int(cost_obj.pig_iron, 0))),
+            "metal": float(max(0, _safe_strategy_int(cost_obj.metal, 0))),
+            "kryptonite": float(max(0, _safe_strategy_int(cost_obj.kryptonite, 0))),
+            "spice": float(max(0, _safe_strategy_int(cost_obj.spice, 0))),
+        }
+        fits = all(rem[rk] + 1e-6 >= need_c[rk] for rk in _BUDGET_RES_KEYS)
+        if fits:
+            for rk in _BUDGET_RES_KEYS:
+                rem[rk] = max(0.0, rem[rk] - need_c[rk])
+            out.append(act)
+        else:
+            cur_r = _safe_strategy_str(act.reason)
+            new_r = cur_r if hold_tag.strip() in cur_r else f"{cur_r}{hold_tag}"
+            out.append(replace(act, executable_now=False, reason=new_r))
+    return out
+
+
+def plan_fleet_and_attack_actions(
+    state: GameState,
+    *,
+    config: Optional[StrategyConfig] = None,
+    scanned_systems: Optional[Mapping[str, float]] = None,
+    now_ts: Optional[float] = None,
+    raid_stats: Optional[Mapping[str, Any]] = None,
+    transmitter_status: Optional[Mapping[str, Any]] = None,
+    existing_plan: Sequence[PlannedAction] = (),
+    priority_resource_need: Optional[Mapping[int, Any]] = None,
+    spare_budget: Optional[Mapping[str, Any]] = None,
+) -> list[PlannedAction]:
+    """Generate the tactical Fleet / Attack Planner action layer (Tab 4 & hybrid AI-Planner layer)."""
+    cfg = config or StrategyConfig()
+    state_for_plan = (
+        replace(state, raid_stats=dict(raid_stats))
+        if isinstance(raid_stats, Mapping)
+        else state
+    )
+    active = state_for_plan.active_planet()
+    if active is None:
+        return []
+
+    actions: list[PlannedAction] = []
+    # P0 survival alerts & Escape flight
+    active_coords_s = _safe_strategy_str(active.coords)
+    for alert in state_for_plan.fleet_alerts:
+        if alert.hostile:
+            actions.append(
+                PlannedAction(
+                    priority="P0",
+                    kind="ALERT_HOSTILE",
+                    planet_id=active.planet_id,
+                    planet_coords=active_coords_s,
+                    target_name="Escape flight / Fleet Save",
+                    reason=f"Hostile fleet detected: {_safe_strategy_str(alert.summary)}",
+                    executable_now=False,
+                )
+            )
+            other_coords = next(
+                (p.coords for p in state_for_plan.planets if p.planet_id != active.planet_id),
+                active.coords,
+            )
+            escape = _get_fleet().plan_escape_flight(
+                active,
+                target_coords=other_coords,
+                fuel_reserve_spice=cfg.fleet_save_fuel_reserve_spice,
+            )
+            if escape.feasible:
+                actions.append(
+                    PlannedAction(
+                        priority="P0",
+                        kind="ESCAPE_FLIGHT",
+                        planet_id=active.planet_id,
+                        planet_coords=active_coords_s,
+                        target_name=f"Save -> {_safe_strategy_str(escape.target_coords)}",
+                        cost=escape.cargo,
+                        reason=_safe_strategy_str(escape.reason),
+                        executable_now=cfg.allow_fleetsave,
+                    )
+                )
+
+    combined_context = [*existing_plan, *actions]
+    combat_acts = _plan_combat_and_raid_actions(
+        state_for_plan,
+        active,
+        cfg,
+        scanned_systems=scanned_systems,
+        now_ts=now_ts,
+        existing_plan=combined_context,
+        priority_resource_need=priority_resource_need,
+    )
+    actions.extend(combat_acts)
+
+    # Shipyard targets across planets with Weapons factory
+    planets_for_ships = list(state_for_plan.planets) if cfg.allow_multi_planet else [active]
+    planets_for_ships.sort(key=lambda p: 0 if p.planet_id == active.planet_id else 1)
+    for planet in planets_for_ships:
+        ship_acts = _plan_planet_shipyard_targets(
+            state_for_plan,
+            planet,
+            _ship_offer_map(planet),
+            cfg,
+        )
+        actions.extend(ship_acts)
+
+    tm_act = _plan_transmitter_action(state_for_plan, cfg, transmitter_status=transmitter_status)
+    if tm_act is not None:
+        actions.append(tm_act)
+
+    if spare_budget is not None:
+        actions = filter_shipyard_actions_by_spare_budget(state_for_plan, actions, spare_budget)
+
+    priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+    def _fleet_subrank(act: PlannedAction) -> tuple[int, int]:
+        if act.priority == "P1":
+            if act.kind == "ABANDON_COLONY":
+                return (0, 0)
+            if act.kind == "SPY":
+                return (0, 1 if "(free slot)" in _safe_strategy_str(act.target_name).lower() else 2)
+            if act.kind == "TRANSPORT":
+                return (0, 3)
+            if act.kind == "COLONIZE":
+                return (0, 4)
+            if act.kind == "BUILD_SHIP" and game_data.safe_optional_int(act.target_id, None) == 8:
+                return (0, 5)
+            if act.kind == "BUILD_SHIP" and game_data.safe_optional_int(act.target_id, None) == 10:
+                return (0, 6)
+            if act.kind == "SCAN_GALAXY":
+                return (0, 7)
+            return (1, 0)
+        if act.priority == "P2":
+            if act.kind == "SPY":
+                return (1 if "(free slot)" in _safe_strategy_str(act.target_name).lower() else 2, 0)
+            if act.kind == "TRANSPORT":
+                return (3, 0)
+            if act.kind == "COLONIZE":
+                return (4, 0)
+            if act.kind == "STATION":
+                return (4, 5)
+            if act.kind in ("ATTACK", "RECYCLE"):
+                return (5, 0)
+            return (6, 0)
+        return (0, 0)
+
+    actions.sort(
+        key=lambda a: (
+            priority_rank.get(a.priority, 9),
+            -1 if a.kind == "ALERT_HOSTILE" else (0 if a.executable_now else 1),
+            _fleet_subrank(a),
+        )
+    )
+    deduped: list[PlannedAction] = []
+    seen_keys: set[tuple[str, int, Optional[int], str]] = set()
+    for act in actions:
+        key = (act.kind, act.planet_id, act.target_id, act.target_name)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            deduped.append(act)
+    return attach_action_etas(state, deduped)
+
+
 def _plan_economy_for_planet(
     state: GameState,
     planet: PlanetState,
@@ -4699,6 +5230,7 @@ def _build_pre_throttle_plan(
     scanned_systems: Optional[Mapping[str, float]] = None,
     now_ts: Optional[float] = None,
     include_combat: bool = True,
+    priority_resource_need: Optional[Mapping[int, Any]] = None,
 ) -> tuple[list[PlannedAction], list[PlanetState]]:
     plan: list[PlannedAction] = []
     active = state.active_planet()
@@ -5207,6 +5739,7 @@ def _build_pre_throttle_plan(
                     scanned_systems=scanned_systems,
                     now_ts=now_ts,
                     existing_plan=plan,
+                    priority_resource_need=priority_resource_need,
                 )
             )
 
@@ -5266,8 +5799,9 @@ def plan_actions(
     now_ts: Optional[float] = None,
     raid_stats: Optional[Mapping[str, Any]] = None,
     transmitter_status: Optional[Mapping[str, Any]] = None,
+    priority_resource_need: Optional[Mapping[int, Any]] = None,
 ) -> list[PlannedAction]:
-    """Generate an ETA-annotated action plan via the configured planner (`priority` or `ga_nn`)."""
+    """Generate an ETA-annotated action plan via the configured planner (`priority`, `ai_planner` fallback, or `ga_nn`)."""
     cfg = config or StrategyConfig()
     warn_ratio = _resolve_storage_warn_ratio(cfg, storage_warn_ratio)
     state_for_plan = (
@@ -5311,6 +5845,7 @@ def plan_actions(
         scanned_systems=scanned_systems,
         now_ts=now_ts,
         include_combat=True,
+        priority_resource_need=priority_resource_need,
     )
     if tm_act is not None:
         plan.append(tm_act)

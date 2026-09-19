@@ -108,8 +108,11 @@ from spaceinvasion.db.storage import GameDatabase, server_day_key
 from spaceinvasion.planner.strategy import (
     PlannedAction,
     _tutorial_colonize_task,
+    compute_spare_ship_budget,
+    filter_shipyard_actions_by_spare_budget,
     merge_manual_queue_actions,
     plan_actions,
+    plan_fleet_and_attack_actions,
 )
 
 UI_DIR = Path(__file__).resolve().parents[1] / "ui"
@@ -561,7 +564,7 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         raw_mode = raw_cfg["planner_mode"]
         if not isinstance(raw_mode, str) or not raw_mode.strip():
             raise ApiRequestError(
-                "'planner_mode' must be a non-empty string ('priority' or 'ga_nn')."
+                "'planner_mode' must be a non-empty string ('priority', 'ai_planner', or 'ga_nn')."
             )
         try:
             normalize_planner_mode(raw_mode, strict=True)
@@ -605,6 +608,7 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
             )
 
     float_specs: dict[str, tuple[Optional[float], Optional[float]]] = {
+        "ai_resource_spare_pct": (0.0, 100.0),
         "ga_mutation_rate": (0.0, 1.0),
         "ga_nn_weight": (0.0, 1.0),
         "storage_warn_ratio": (0.1, 0.99),
@@ -1388,6 +1392,19 @@ class GameApiBridge:
         # Cached Smart 2-Phase Galaxy Scanner telemetry (`scan_phase`, coverage, `sample_targets`)
         self._smart_sweep_summary: dict[str, Any] = {}
         self._smart_sweep_summary_ts: float = 0.0
+        # Non-blocking background Config Optimizer & AI-Planner job runner state (decoupled from `_lock`)
+        self._planner_jobs_lock = threading.Lock()
+        self._planner_closed: bool = False
+        self._planner_job_seq: int = 0
+        self._config_opt_job: dict[str, Any] = self._new_idle_planner_job("config_optimizer")
+        self._ai_planner_job: dict[str, Any] = self._new_idle_planner_job("ai_planner")
+        self._active_config_opt_mem: Optional[dict[str, Any]] = None
+        self._active_ai_plan_mem: Optional[dict[str, Any]] = None
+        self._config_opt_runs_mem: list[dict[str, Any]] = []
+        self._ai_planner_runs_mem: list[dict[str, Any]] = []
+        self._reserved_floors_mem: dict[str, dict[str, int]] = {}
+        self._field_conflicts_mem: dict[str, dict[str, Any]] = {}
+        self._notified_field_conflict_keys: set[str] = set()
         self._hydrate_persisted_bridge_state()
         enforce_hourly = max_actions_per_hour is not None
         raw_budget = (
@@ -1437,6 +1454,9 @@ class GameApiBridge:
 
     def close(self) -> None:
         """Close owned database resources idempotently."""
+        planner_lock = getattr(self, "_planner_jobs_lock", None)
+        with (planner_lock if planner_lock is not None else contextlib.nullcontext()):
+            self._planner_closed = True
         self.stop_galaxy_sweep_worker()
         lock = getattr(self, "_lock", None)
         with (lock if lock is not None else contextlib.nullcontext()):
@@ -2569,6 +2589,1012 @@ class GameApiBridge:
                 raw[key] = None if key.startswith(("wait_", "total_")) else 0.0
         return _sanitize_finite_json(raw)
 
+    @staticmethod
+    def _new_idle_planner_job(kind: str) -> dict[str, Any]:
+        return {
+            "job_id": None,
+            "kind": kind,
+            "status": "idle",
+            "phase": "idle",
+            "progress": 0.0,
+            "progress_pct": 0.0,
+            "started_ts": None,
+            "finished_ts": None,
+            "elapsed_ms": 0.0,
+            "trigger_source": "",
+            "run_id": None,
+            "error": None,
+            "auto_replan_ai": False,
+        }
+
+    @staticmethod
+    def _load_config_optimizer_mod() -> Any:
+        try:
+            from spaceinvasion.planner import config_optimizer as mod
+
+            return mod
+        except ImportError as exc:
+            raise ApiRequestError(
+                f"Config Optimizer engine is unavailable: {_redact_api_payload(exc)}"
+            ) from exc
+
+    @staticmethod
+    def _load_ai_planner_mod() -> Any:
+        try:
+            from spaceinvasion.planner import ai_planner as mod
+
+            return mod
+        except ImportError as exc:
+            raise ApiRequestError(
+                f"AI-Planner engine is unavailable: {_redact_api_payload(exc)}"
+            ) from exc
+
+    @staticmethod
+    def _load_action_graph_builders() -> tuple[Any, Any]:
+        try:
+            from spaceinvasion.planner.action_graph import (
+                build_ai_planner_graph,
+                build_fleet_planner_graph,
+            )
+
+            return build_ai_planner_graph, build_fleet_planner_graph
+        except ImportError as exc:
+            raise ApiRequestError(
+                f"Action Graph 4-tab builders are unavailable: {_redact_api_payload(exc)}"
+            ) from exc
+
+    def _get_planner_state_locked(self) -> Optional[GameState]:
+        if self._last_state is not None:
+            return self._last_state
+        if self._db is not None and hasattr(self._db, "load_latest_game_state"):
+            try:
+                loaded = self._db.load_latest_game_state()
+                if loaded is not None:
+                    return loaded
+            except Exception:
+                return None
+        return None
+
+    def _get_active_config_optimizer_locked(self) -> Optional[dict[str, Any]]:
+        if self._db is not None and hasattr(self._db, "get_active_config_optimizer"):
+            return self._db.get_active_config_optimizer()
+        return dict(self._active_config_opt_mem) if isinstance(self._active_config_opt_mem, Mapping) else None
+
+    def _list_config_optimizer_runs_locked(self, limit: int = 20) -> list[dict[str, Any]]:
+        if self._db is not None and hasattr(self._db, "list_config_optimizer_runs"):
+            return list(self._db.list_config_optimizer_runs(limit=limit))
+        return list(reversed(self._config_opt_runs_mem[-limit:]))
+
+    def _get_reserved_floors_locked(self) -> dict[str, dict[str, int]]:
+        if self._db is not None and hasattr(self._db, "get_reserved_building_floors"):
+            return self._db.get_reserved_building_floors()
+        return {pk: dict(bm) for pk, bm in self._reserved_floors_mem.items()}
+
+    def _update_reserved_floor_locked(
+        self,
+        planet_key: str,
+        building_key: str,
+        min_level: int,
+        *,
+        reason: str = "",
+    ) -> dict[str, dict[str, int]]:
+        if self._db is not None and hasattr(self._db, "update_reserved_building_floor"):
+            return self._db.update_reserved_building_floor(
+                planet_key,
+                building_key,
+                min_level,
+                reason=reason,
+            )
+        p_map = self._reserved_floors_mem.setdefault(str(planet_key), {})
+        p_map[str(building_key)] = max(max(0, int(min_level)), int(p_map.get(str(building_key), 0)))
+        return {pk: dict(bm) for pk, bm in self._reserved_floors_mem.items()}
+
+    def _get_active_ai_planner_locked(self) -> Optional[dict[str, Any]]:
+        if self._db is not None and hasattr(self._db, "get_active_ai_planner"):
+            return self._db.get_active_ai_planner()
+        return dict(self._active_ai_plan_mem) if isinstance(self._active_ai_plan_mem, Mapping) else None
+
+    def _list_ai_planner_runs_locked(self, limit: int = 20) -> list[dict[str, Any]]:
+        if self._db is not None and hasattr(self._db, "list_ai_planner_runs"):
+            return list(self._db.list_ai_planner_runs(limit=limit))
+        return list(reversed(self._ai_planner_runs_mem[-limit:]))
+
+    def _list_field_conflicts_locked(self, status: Optional[str] = "pending") -> list[dict[str, Any]]:
+        if self._db is not None and hasattr(self._db, "list_field_conflict_prompts"):
+            return list(self._db.list_field_conflict_prompts(status=status))
+        items = list(self._field_conflicts_mem.values())
+        if status is not None:
+            items = [c for c in items if str(c.get("status", "pending")) == status]
+        return items
+
+    def _upsert_field_conflict_locked(self, conflict: Mapping[str, Any]) -> dict[str, Any]:
+        enriched = dict(conflict)
+        cands = conflict.get("candidates")
+        if isinstance(cands, Sequence) and not isinstance(cands, (str, bytes)) and cands:
+            first_c = cands[0]
+            if isinstance(first_c, Mapping):
+                enriched.setdefault(
+                    "candidate_building_key",
+                    str(first_c.get("building_key") or first_c.get("key") or ""),
+                )
+                enriched.setdefault(
+                    "candidate_level",
+                    max(0, _safe_api_int(first_c.get("level", first_c.get("current_level", 0)), 0)),
+                )
+        if self._db is not None and hasattr(self._db, "upsert_field_conflict_prompt"):
+            rec = self._db.upsert_field_conflict_prompt(enriched)
+        else:
+            ck = str(enriched.get("conflict_key") or "")
+            existing = self._field_conflicts_mem.get(ck)
+            if existing is not None:
+                rec = dict(existing)
+            else:
+                rec = {
+                    "conflict_key": ck,
+                    "planet_id": _safe_api_int(enriched.get("planet_id", 0), 0),
+                    "planet_coords": str(enriched.get("planet_coords") or ""),
+                    "blocked_building_key": str(enriched.get("blocked_building_key") or ""),
+                    "blocked_target_level": _safe_api_int(enriched.get("blocked_target_level", 0), 0),
+                    "candidate_building_key": str(enriched.get("candidate_building_key") or ""),
+                    "candidate_level": _safe_api_int(enriched.get("candidate_level", 0), 0),
+                    "status": "pending",
+                    "decision": "",
+                    "created_ts": round(time.time(), 3),
+                    "resolved_ts": None,
+                    "detail": dict(enriched),
+                }
+                self._field_conflicts_mem[ck] = rec
+        ck_str = str(rec.get("conflict_key") or enriched.get("conflict_key") or "").strip()
+        if (
+            ck_str
+            and str(rec.get("status", "pending")) == "pending"
+            and ck_str not in self._notified_field_conflict_keys
+        ):
+            self._notified_field_conflict_keys.add(ck_str)
+            if self._db is not None and hasattr(self._db, "create_or_bump_notification"):
+                p_coords = str(rec.get("planet_coords") or enriched.get("planet_coords") or "")
+                b_name = str(
+                    enriched.get("blocked_building_name")
+                    or rec.get("blocked_building_key")
+                    or "Building"
+                )
+                b_lvl = _safe_api_int(rec.get("blocked_target_level", 0), 0)
+                cand_k = str(rec.get("candidate_building_key") or "")
+                cand_l = _safe_api_int(rec.get("candidate_level", 0), 0)
+                self._db.create_or_bump_notification(
+                    title=f"Field conflict on {p_coords or 'colony'}: {b_name} L{b_lvl}",
+                    message=(
+                        f"Planet {p_coords or rec.get('planet_id')} has 0 free building fields for "
+                        f"AI-Planner target {b_name} L{b_lvl}. Bot will never auto-demolish — "
+                        f"choose Demolish ({cand_k} L{cand_l}) or Keep & Reserve Fields to rerun planner."
+                    ),
+                    help_prompt=(
+                        "Open Action Graph -> AI-Planner tab and choose Demolish Building or "
+                        "Keep & Reserve Fields (Rerun Pipeline)."
+                    ),
+                    severity="warning",
+                    category="field_conflict",
+                    action_kind="BUILD",
+                    planet_coords=p_coords,
+                    target_name=f"{b_name} L{b_lvl}",
+                    dedupe_key=f"field_conflict:{ck_str}",
+                    details=rec,
+                )
+        return rec
+
+    def _snapshot_universe_research_max_map_locked(
+        self, state: Optional[GameState]
+    ) -> dict[str, int]:
+        rows = self._get_universe_research_max_locked(state)
+        out: dict[str, int] = {}
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            rkey = str(row.get("key") or "").strip()
+            if rkey:
+                out[rkey] = max(0, _safe_api_int(row.get("universe_max_level", 0), 0))
+        return out
+
+    def _snapshot_attack_history_locked(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if self._db is None:
+            return [], []
+        raid_rows: list[dict[str, Any]] = []
+        if hasattr(self._db, "get_raid_stats"):
+            try:
+                rs = self._db.get_raid_stats()
+                hist = rs.get("history") if isinstance(rs, Mapping) else None
+                if isinstance(hist, Sequence) and not isinstance(hist, (str, bytes)):
+                    raid_rows = [dict(h) for h in hist if isinstance(h, Mapping)]
+            except Exception:
+                raid_rows = []
+        message_rows: list[dict[str, Any]] = []
+        if hasattr(self._db, "get_battle_reports"):
+            try:
+                raw_battles = list(self._db.get_battle_reports(limit=500))
+                for b in raw_battles:
+                    if not isinstance(b, Mapping):
+                        continue
+                    flat_b = dict(b)
+                    loot_m = b.get("loot")
+                    if isinstance(loot_m, Mapping):
+                        for rk in ("pig_iron", "metal", "kryptonite", "spice"):
+                            flat_b.setdefault(rk, loot_m.get(rk, 0))
+                    message_rows.append(flat_b)
+            except Exception:
+                message_rows = []
+        if not message_rows and hasattr(self._db, "get_game_messages"):
+            try:
+                message_rows = list(self._db.get_game_messages(category="battle_report", limit=500))
+            except Exception:
+                message_rows = []
+        return raid_rows, message_rows
+
+    def _compute_live_attack_telemetry_locked(
+        self, state: Optional[GameState]
+    ) -> dict[str, Any]:
+        raid_rows, message_rows = self._snapshot_attack_history_locked()
+        try:
+            ai_mod = self._load_ai_planner_mod()
+            return dict(ai_mod.compute_attack_telemetry(raid_rows, message_rows, state=state))
+        except ApiRequestError:
+            cur_slots = 0
+            if state is not None:
+                for p in state.planets:
+                    if normalize_planet_type(p) == "normal":
+                        cur_slots += 1 + max(0, p.building_level(10))
+            return {
+                "pig_iron": 0.0,
+                "metal": 0.0,
+                "kryptonite": 0.0,
+                "spice": 0.0,
+                "spice_eq": 0.0,
+                "median_round_trip_seconds": 1800.0,
+                "sample_count": 0,
+                "current_fleet_slots": cur_slots,
+                "estimated_attacks_per_hour": 0.0,
+                "hourly_loot": {
+                    "pig_iron": 0.0,
+                    "metal": 0.0,
+                    "kryptonite": 0.0,
+                    "spice": 0.0,
+                    "spice_eq": 0.0,
+                },
+            }
+
+    def _evaluate_ai_planner_gate_locked(
+        self,
+        state: Optional[GameState],
+        cfg: Optional[StrategyConfig] = None,
+    ) -> dict[str, Any]:
+        eff_cfg = cfg or self.strategy_config
+        colonies_owned = count_allocated_normal_planets(state) if state is not None else 0
+        max_planets = max(1, _safe_api_int(getattr(eff_cfg, "max_planets", 11), 11))
+        live_ai_unlocked = colonies_owned >= max_planets
+        active_rec = self._get_active_ai_planner_locked()
+        active_result = (
+            active_rec.get("result")
+            if isinstance(active_rec, Mapping) and isinstance(active_rec.get("result"), Mapping)
+            else None
+        )
+        has_plan = active_result is not None
+        active_mode = normalize_planner_mode(getattr(eff_cfg, "planner_mode", "priority"))
+        effective_mode = active_mode
+        fallback_reason = ""
+        if active_mode == "ai_planner":
+            if not live_ai_unlocked:
+                effective_mode = "priority"
+                fallback_reason = (
+                    f"Colonies {colonies_owned}/{max_planets} — live AI-Planner unlocks at "
+                    f"{max_planets}/{max_planets}"
+                )
+            elif not has_plan:
+                effective_mode = "priority"
+                fallback_reason = "No active AI-Planner path generated yet — falling back to Heuristics"
+        return {
+            "colonies_owned": colonies_owned,
+            "max_planets": max_planets,
+            "live_ai_unlocked": live_ai_unlocked,
+            "has_plan": has_plan,
+            "active_planner_mode": active_mode,
+            "effective_planner_mode": effective_mode,
+            "fallback_reason": fallback_reason,
+            "active_rec": active_rec,
+            "active_result": active_result,
+        }
+
+    def _get_planner_jobs_snapshot(
+        self,
+        state: Optional[GameState] = None,
+        cfg: Optional[StrategyConfig] = None,
+    ) -> dict[str, Any]:
+        eff_state = state if state is not None else self._get_planner_state_locked()
+        gate = self._evaluate_ai_planner_gate_locked(eff_state, cfg=cfg)
+        pending_conflicts = self._list_field_conflicts_locked(status="pending")
+        with self._planner_jobs_lock:
+            co_job = dict(self._config_opt_job)
+            ai_job = dict(self._ai_planner_job)
+            now_t = time.time()
+            for j in (co_job, ai_job):
+                if j.get("status") == "running" and isinstance(j.get("started_ts"), (int, float)):
+                    j["elapsed_ms"] = round(max(0.0, (now_t - float(j["started_ts"])) * 1000.0), 1)
+        return {
+            "config_optimizer_job": co_job,
+            "ai_planner_job": ai_job,
+            "colonies_owned": gate["colonies_owned"],
+            "max_planets": gate["max_planets"],
+            "live_ai_unlocked": gate["live_ai_unlocked"],
+            "active_planner_mode": gate["active_planner_mode"],
+            "effective_planner_mode": gate["effective_planner_mode"],
+            "fallback_reason": gate["fallback_reason"],
+            "pending_field_conflicts": pending_conflicts,
+        }
+
+    @staticmethod
+    def _normalize_progress_pct(raw_val: Any) -> float:
+        val = _safe_api_float(raw_val, 0.0)
+        if not math.isfinite(val):
+            return 0.0
+        if 0.0 < val <= 1.0:
+            return round(val * 100.0, 2)
+        return round(max(0.0, min(100.0, val)), 2)
+
+    def _persist_config_optimizer_result(
+        self,
+        result: Mapping[str, Any],
+        *,
+        params: Mapping[str, Any],
+        reserved_floors: Mapping[str, Any],
+        trigger_source: str,
+        elapsed_ms: float,
+    ) -> int:
+        with self._lock:
+            if self._planner_closed:
+                return 0
+            db = self._db
+            if db is not None and hasattr(db, "record_config_optimizer_run"):
+                run_id = int(
+                    db.record_config_optimizer_run(
+                        result,
+                        params=params,
+                        reserved_floors=reserved_floors,
+                        trigger_source=trigger_source,
+                        elapsed_ms=elapsed_ms,
+                        set_active=True,
+                    )
+                )
+            else:
+                run_id = len(self._config_opt_runs_mem) + 1
+                rec = {
+                    "run_id": run_id,
+                    "updated_ts": round(time.time(), 3),
+                    "trigger_source": trigger_source,
+                    "elapsed_ms": round(elapsed_ms, 2),
+                    "params": dict(params),
+                    "reserved_floors": {
+                        str(k): dict(v) for k, v in reserved_floors.items() if isinstance(v, Mapping)
+                    },
+                    "result": dict(result),
+                }
+                self._config_opt_runs_mem.append(rec)
+                self._active_config_opt_mem = rec
+            self._invalidate_dashboard_cache()
+        return run_id
+
+    def _persist_ai_planner_result(
+        self,
+        result: Mapping[str, Any],
+        *,
+        config_run_id: Optional[int],
+        params: Mapping[str, Any],
+        trigger_source: str,
+        elapsed_ms: float,
+    ) -> int:
+        with self._lock:
+            if self._planner_closed:
+                return 0
+            db = self._db
+            if db is not None and hasattr(db, "record_ai_planner_run"):
+                run_id = int(
+                    db.record_ai_planner_run(
+                        result,
+                        config_run_id=config_run_id,
+                        params=params,
+                        trigger_source=trigger_source,
+                        elapsed_ms=elapsed_ms,
+                        set_active=True,
+                    )
+                )
+            else:
+                run_id = len(self._ai_planner_runs_mem) + 1
+                rec = {
+                    "run_id": run_id,
+                    "config_run_id": config_run_id,
+                    "updated_ts": round(time.time(), 3),
+                    "trigger_source": trigger_source,
+                    "elapsed_ms": round(elapsed_ms, 2),
+                    "params": dict(params),
+                    "summary": (
+                        dict(result.get("summary") or {})
+                        if isinstance(result.get("summary"), Mapping)
+                        else {}
+                    ),
+                    "result": dict(result),
+                }
+                self._ai_planner_runs_mem.append(rec)
+                self._active_ai_plan_mem = rec
+            self._invalidate_dashboard_cache()
+        return run_id
+
+    def _start_config_optimizer_job(
+        self,
+        *,
+        params: Optional[Mapping[str, Any]] = None,
+        auto_replan_ai: bool = True,
+        sync: bool = False,
+        trigger_source: str = "manual",
+    ) -> dict[str, Any]:
+        co_mod = self._load_config_optimizer_mod()
+        # Snapshot state, universe research max, and reserved floors quickly under `_lock` (zero browser calls!)
+        with self._lock:
+            snap_state = self._get_planner_state_locked()
+            if snap_state is None:
+                raise ApiRequestError(
+                    "No game state snapshot available yet; open /state or /dashboard first."
+                )
+            uni_max = self._snapshot_universe_research_max_map_locked(snap_state)
+            reserved_floors = self._get_reserved_floors_locked()
+            active_co = self._get_active_config_optimizer_locked()
+            cfg = self.strategy_config
+
+        base_params = dict(getattr(co_mod, "DEFAULT_CONFIG_OPTIMIZER_PARAMS", {}) or {})
+        if isinstance(active_co, Mapping) and isinstance(active_co.get("params"), Mapping):
+            base_params.update(dict(active_co["params"]))
+        base_params["max_planets"] = max(1, _safe_api_int(getattr(cfg, "max_planets", 11), 11))
+        if isinstance(params, Mapping):
+            base_params.update(dict(params))
+        # Always merge persisted reserved floors with any explicit override
+        merged_floors: dict[str, dict[str, int]] = {
+            str(pk): {str(bk): max(0, _safe_api_int(lv, 0)) for bk, lv in bm.items()}
+            for pk, bm in reserved_floors.items()
+            if isinstance(bm, Mapping)
+        }
+        raw_param_floors = base_params.get("reserved_floors_by_planet")
+        if isinstance(raw_param_floors, Mapping):
+            for pk, bm in raw_param_floors.items():
+                if not isinstance(bm, Mapping):
+                    continue
+                slot_f = merged_floors.setdefault(str(pk), {})
+                for bk, lv in bm.items():
+                    slot_f[str(bk)] = max(slot_f.get(str(bk), 0), max(0, _safe_api_int(lv, 0)))
+        base_params["reserved_floors_by_planet"] = merged_floors
+
+        with self._planner_jobs_lock:
+            if not sync and self._config_opt_job.get("status") == "running":
+                return {
+                    "ok": True,
+                    "command": "config_optimizer_run",
+                    "already_running": True,
+                    "job": dict(self._config_opt_job),
+                }
+            self._planner_job_seq += 1
+            seq = self._planner_job_seq
+            started_ts = time.time()
+            job_id = f"config_optimizer-{seq}-{int(started_ts)}"
+            self._config_opt_job = {
+                "job_id": job_id,
+                "kind": "config_optimizer",
+                "status": "running",
+                "phase": "starting",
+                "progress": 0.0,
+                "progress_pct": 0.0,
+                "started_ts": started_ts,
+                "finished_ts": None,
+                "elapsed_ms": 0.0,
+                "trigger_source": str(trigger_source or "manual"),
+                "run_id": None,
+                "error": None,
+                "auto_replan_ai": bool(auto_replan_ai),
+            }
+            initial_job = dict(self._config_opt_job)
+
+        def _progress(phase: str, pct: float) -> None:
+            norm_p = self._normalize_progress_pct(pct)
+            with self._planner_jobs_lock:
+                if self._config_opt_job.get("job_id") == job_id:
+                    self._config_opt_job["phase"] = str(phase or "running")
+                    self._config_opt_job["progress"] = norm_p
+                    self._config_opt_job["progress_pct"] = norm_p
+                    self._config_opt_job["elapsed_ms"] = round(
+                        max(0.0, (time.time() - started_ts) * 1000.0), 1
+                    )
+
+        outcome: dict[str, Any] = {}
+
+        def _worker() -> None:
+            t0 = time.monotonic()
+            try:
+                res = co_mod.run_config_optimizer(
+                    snap_state,
+                    universe_research_max=uni_max,
+                    params=base_params,
+                    progress_cb=_progress,
+                )
+                elapsed_ms = round((time.monotonic() - t0) * 1000.0, 2)
+                run_id = self._persist_config_optimizer_result(
+                    res,
+                    params=base_params,
+                    reserved_floors=merged_floors,
+                    trigger_source=str(trigger_source or "manual"),
+                    elapsed_ms=elapsed_ms,
+                )
+                finished_ts = time.time()
+                with self._planner_jobs_lock:
+                    if self._config_opt_job.get("job_id") == job_id:
+                        self._config_opt_job.update(
+                            {
+                                "status": "completed",
+                                "phase": "completed",
+                                "progress": 100.0,
+                                "progress_pct": 100.0,
+                                "finished_ts": finished_ts,
+                                "elapsed_ms": elapsed_ms,
+                                "run_id": run_id,
+                                "error": None,
+                            }
+                        )
+                    closed_now = self._planner_closed
+                    final_job = dict(self._config_opt_job)
+                outcome["result"] = res
+                outcome["run_id"] = run_id
+                outcome["job"] = final_job
+                if auto_replan_ai and not closed_now:
+                    try:
+                        ai_resp = self._start_ai_planner_job(
+                            params=None,
+                            sync=sync,
+                            trigger_source=f"auto_replan:{trigger_source}",
+                            auto_run_config_if_missing=False,
+                            override_config_run_id=run_id,
+                            override_config_result=res,
+                        )
+                        outcome["ai_planner_job"] = ai_resp.get("job")
+                        if sync and "result" in ai_resp:
+                            outcome["ai_planner_result"] = ai_resp["result"]
+                    except Exception as ai_exc:
+                        outcome["ai_planner_error"] = str(_redact_api_payload(ai_exc))
+            except Exception as exc:
+                elapsed_ms = round((time.monotonic() - t0) * 1000.0, 2)
+                err_txt = str(_redact_api_payload(exc))
+                with self._planner_jobs_lock:
+                    if self._config_opt_job.get("job_id") == job_id:
+                        self._config_opt_job.update(
+                            {
+                                "status": "error",
+                                "phase": "error",
+                                "finished_ts": time.time(),
+                                "elapsed_ms": elapsed_ms,
+                                "error": err_txt,
+                            }
+                        )
+                    outcome["job"] = dict(self._config_opt_job)
+                outcome["exc"] = exc
+
+        if sync:
+            _worker()
+            if "exc" in outcome:
+                exc_obj = outcome["exc"]
+                if isinstance(exc_obj, ApiRequestError):
+                    raise exc_obj
+                raise ApiRequestError(f"Config Optimizer failed: {_redact_api_payload(exc_obj)}") from exc_obj
+            resp: dict[str, Any] = {
+                "ok": True,
+                "command": "config_optimizer_run",
+                "job": outcome["job"],
+                "run_id": outcome.get("run_id"),
+                "result": outcome.get("result"),
+            }
+            if "ai_planner_job" in outcome:
+                resp["ai_planner_job"] = outcome["ai_planner_job"]
+            return resp
+
+        th = threading.Thread(target=_worker, name=f"si-config-opt-{seq}", daemon=True)
+        th.start()
+        return {
+            "ok": True,
+            "command": "config_optimizer_run",
+            "job": initial_job,
+        }
+
+    def _start_ai_planner_job(
+        self,
+        *,
+        params: Optional[Mapping[str, Any]] = None,
+        sync: bool = False,
+        trigger_source: str = "manual",
+        auto_run_config_if_missing: bool = True,
+        override_config_run_id: Optional[int] = None,
+        override_config_result: Optional[Mapping[str, Any]] = None,
+    ) -> dict[str, Any]:
+        ai_mod = self._load_ai_planner_mod()
+        # Quick read-only snapshot under `_lock` (zero browser calls!)
+        with self._lock:
+            snap_state = self._get_planner_state_locked()
+            if snap_state is None:
+                raise ApiRequestError(
+                    "No game state snapshot available yet; open /state or /dashboard first."
+                )
+            active_co = self._get_active_config_optimizer_locked()
+            active_ai = self._get_active_ai_planner_locked()
+            raid_rows, message_rows = self._snapshot_attack_history_locked()
+            uni_max = self._snapshot_universe_research_max_map_locked(snap_state)
+            reserved_floors = self._get_reserved_floors_locked()
+            cfg = self.strategy_config
+
+        target_config: Optional[Mapping[str, Any]] = override_config_result
+        config_run_id: Optional[int] = override_config_run_id
+        if target_config is None and isinstance(active_co, Mapping) and isinstance(active_co.get("result"), Mapping):
+            target_config = active_co["result"]
+            config_run_id = _safe_api_int(active_co.get("run_id"), 0) or None
+
+        if target_config is None and not auto_run_config_if_missing:
+            raise ApiRequestError(
+                "No active Config Optimizer target found. Run Config Optimization first."
+            )
+
+        base_params = dict(getattr(ai_mod, "DEFAULT_AI_PLANNER_PARAMS", {}) or {})
+        if isinstance(active_ai, Mapping) and isinstance(active_ai.get("params"), Mapping):
+            base_params.update(dict(active_ai["params"]))
+        if isinstance(params, Mapping):
+            base_params.update(dict(params))
+
+        with self._planner_jobs_lock:
+            if not sync and self._ai_planner_job.get("status") == "running":
+                return {
+                    "ok": True,
+                    "command": "ai_planner_run",
+                    "already_running": True,
+                    "job": dict(self._ai_planner_job),
+                }
+            self._planner_job_seq += 1
+            seq = self._planner_job_seq
+            started_ts = time.time()
+            job_id = f"ai_planner-{seq}-{int(started_ts)}"
+            self._ai_planner_job = {
+                "job_id": job_id,
+                "kind": "ai_planner",
+                "status": "running",
+                "phase": "starting",
+                "progress": 0.0,
+                "progress_pct": 0.0,
+                "started_ts": started_ts,
+                "finished_ts": None,
+                "elapsed_ms": 0.0,
+                "trigger_source": str(trigger_source or "manual"),
+                "run_id": None,
+                "error": None,
+                "auto_replan_ai": False,
+            }
+            initial_job = dict(self._ai_planner_job)
+
+        def _progress(phase: str, pct: float) -> None:
+            norm_p = self._normalize_progress_pct(pct)
+            with self._planner_jobs_lock:
+                if self._ai_planner_job.get("job_id") == job_id:
+                    self._ai_planner_job["phase"] = str(phase or "running")
+                    self._ai_planner_job["progress"] = norm_p
+                    self._ai_planner_job["progress_pct"] = norm_p
+                    self._ai_planner_job["elapsed_ms"] = round(
+                        max(0.0, (time.time() - started_ts) * 1000.0), 1
+                    )
+
+        outcome: dict[str, Any] = {}
+
+        def _worker() -> None:
+            nonlocal target_config, config_run_id
+            t0 = time.monotonic()
+            try:
+                if target_config is None:
+                    _progress("config_optimizer_bootstrap", 5.0)
+                    co_mod = self._load_config_optimizer_mod()
+                    co_params = dict(getattr(co_mod, "DEFAULT_CONFIG_OPTIMIZER_PARAMS", {}) or {})
+                    co_params["max_planets"] = max(1, _safe_api_int(getattr(cfg, "max_planets", 11), 11))
+                    co_params["pad_generic_colonies"] = bool(base_params.get("pad_generic_colonies", False))
+                    co_params["reserved_floors_by_planet"] = reserved_floors
+                    # Fast bootstrap GA budget when auto-seeding a missing config target
+                    co_params["catalogue_grid_size"] = min(int(co_params.get("catalogue_grid_size", 25000)), 4000)
+                    co_params["ga_population_size"] = min(int(co_params.get("ga_population_size", 200)), 32)
+                    co_params["ga_generations"] = min(int(co_params.get("ga_generations", 150)), 24)
+                    t_co = time.monotonic()
+                    co_res = co_mod.run_config_optimizer(
+                        snap_state,
+                        universe_research_max=uni_max,
+                        params=co_params,
+                    )
+                    co_elapsed = round((time.monotonic() - t_co) * 1000.0, 2)
+                    config_run_id = self._persist_config_optimizer_result(
+                        co_res,
+                        params=co_params,
+                        reserved_floors=reserved_floors,
+                        trigger_source="auto_for_ai_planner",
+                        elapsed_ms=co_elapsed,
+                    )
+                    target_config = co_res
+
+                _progress("attack_telemetry", 10.0)
+                telemetry = ai_mod.compute_attack_telemetry(
+                    raid_rows,
+                    message_rows,
+                    state=snap_state,
+                )
+                res = ai_mod.run_ai_planner(
+                    snap_state,
+                    target_config,
+                    attack_telemetry=telemetry,
+                    params=base_params,
+                    progress_cb=_progress,
+                )
+                elapsed_ms = round((time.monotonic() - t0) * 1000.0, 2)
+                run_id = self._persist_ai_planner_result(
+                    res,
+                    config_run_id=config_run_id,
+                    params=base_params,
+                    trigger_source=str(trigger_source or "manual"),
+                    elapsed_ms=elapsed_ms,
+                )
+                finished_ts = time.time()
+                with self._planner_jobs_lock:
+                    if self._ai_planner_job.get("job_id") == job_id:
+                        self._ai_planner_job.update(
+                            {
+                                "status": "completed",
+                                "phase": "completed",
+                                "progress": 100.0,
+                                "progress_pct": 100.0,
+                                "finished_ts": finished_ts,
+                                "elapsed_ms": elapsed_ms,
+                                "run_id": run_id,
+                                "error": None,
+                            }
+                        )
+                    final_job = dict(self._ai_planner_job)
+                outcome["result"] = res
+                outcome["run_id"] = run_id
+                outcome["job"] = final_job
+            except Exception as exc:
+                elapsed_ms = round((time.monotonic() - t0) * 1000.0, 2)
+                err_txt = str(_redact_api_payload(exc))
+                with self._planner_jobs_lock:
+                    if self._ai_planner_job.get("job_id") == job_id:
+                        self._ai_planner_job.update(
+                            {
+                                "status": "error",
+                                "phase": "error",
+                                "finished_ts": time.time(),
+                                "elapsed_ms": elapsed_ms,
+                                "error": err_txt,
+                            }
+                        )
+                    outcome["job"] = dict(self._ai_planner_job)
+                outcome["exc"] = exc
+
+        if sync:
+            _worker()
+            if "exc" in outcome:
+                exc_obj = outcome["exc"]
+                if isinstance(exc_obj, ApiRequestError):
+                    raise exc_obj
+                raise ApiRequestError(f"AI-Planner failed: {_redact_api_payload(exc_obj)}") from exc_obj
+            return {
+                "ok": True,
+                "command": "ai_planner_run",
+                "job": outcome["job"],
+                "run_id": outcome.get("run_id"),
+                "result": outcome.get("result"),
+            }
+
+        th = threading.Thread(target=_worker, name=f"si-ai-planner-{seq}", daemon=True)
+        th.start()
+        return {
+            "ok": True,
+            "command": "ai_planner_run",
+            "job": initial_job,
+        }
+
+    @staticmethod
+    def _extract_ai_resource_targets(
+        ai_actions: Sequence[PlannedAction],
+    ) -> tuple[Resources, dict[int, Resources]]:
+        """Derive `(reserved_cost, priority_resource_need_by_planet)` from live AI-Planner steps."""
+        reserved = Resources()
+        first_waiting = next(
+            (
+                a
+                for a in ai_actions
+                if a.kind in ("BUILD", "WAIT_RESOURCES", "RESEARCH")
+                and not a.executable_now
+                and not a.cost.is_zero()
+            ),
+            None,
+        )
+        if first_waiting is None:
+            first_waiting = next(
+                (
+                    a
+                    for a in ai_actions
+                    if a.kind in ("BUILD", "WAIT_RESOURCES", "RESEARCH")
+                    and not a.cost.is_zero()
+                ),
+                None,
+            )
+        if first_waiting is not None:
+            reserved = first_waiting.cost
+
+        needs_by_pid: dict[int, list[int]] = {}
+        for act in ai_actions:
+            if act.kind not in ("BUILD", "WAIT_RESOURCES", "RESEARCH"):
+                continue
+            if act.planet_id <= 0 or act.missing.is_zero():
+                continue
+            buf = needs_by_pid.setdefault(act.planet_id, [0, 0, 0, 0])
+            buf[0] = max(buf[0], max(0, _safe_api_int(act.missing.pig_iron, 0)))
+            buf[1] = max(buf[1], max(0, _safe_api_int(act.missing.metal, 0)))
+            buf[2] = max(buf[2], max(0, _safe_api_int(act.missing.kryptonite, 0)))
+            buf[3] = max(buf[3], max(0, _safe_api_int(act.missing.spice, 0)))
+        prio_needs = {
+            pid: Resources(vals[0], vals[1], vals[2], vals[3])
+            for pid, vals in needs_by_pid.items()
+            if sum(vals) > 0
+        }
+        return reserved, prio_needs
+
+    @staticmethod
+    def _check_demolish_energy_safety(
+        state: Optional[GameState],
+        planet: Optional[PlanetState],
+        bid: int,
+    ) -> tuple[bool, str, int]:
+        """Validate whether demolishing 1 level of `bid` on `planet` is energy-safe."""
+        binfo = game_data.BUILDING_BY_ID.get(bid)
+        bname = (
+            str(binfo.get("name") or f"Building b{bid}")
+            if isinstance(binfo, Mapping)
+            else f"Building b{bid}"
+        )
+        if planet is None:
+            return True, f"Demolish {bname} (no live planet snapshot for energy check)", 1
+        cur_lvl = planet.building_level(bid)
+        if cur_lvl < 1:
+            return False, f"{bname} is already at Level 0 on {planet.coords}", 0
+        ptype_norm = normalize_planet_type(planet)
+        if ptype_norm in ("asteroid", "raid"):
+            return False, f"Building demolition unavailable on {ptype_norm}", cur_lvl
+        raw_loss = max(0, game_data.building_energy_delta(bid, cur_lvl))
+        if raw_loss > 0:
+            r2 = max(
+                0,
+                min(
+                    200,
+                    _safe_api_int(
+                        (
+                            state.researches
+                            if state is not None and isinstance(state.researches, Mapping)
+                            else {}
+                        ).get("r2", 0),
+                        0,
+                    ),
+                ),
+            )
+            safe_loss = int(math.ceil(raw_loss * (1.0 + 0.01 * r2)))
+            throttled_res = 0
+            econ_map = planet.economy_rates if isinstance(planet.economy_rates, Mapping) else {}
+            for mbid, rkey in ((1, "resource1"), (2, "resource2"), (3, "resource3"), (4, "resource4")):
+                mlvl = planet.building_level(mbid)
+                if mlvl <= 0:
+                    continue
+                mpct = max(0, min(100, _safe_api_int(econ_map.get(rkey, 100), 100)))
+                if mpct < 100:
+                    full_e = game_data.mine_energy_needed(mbid, mlvl)
+                    throttled_res += max(0, int(math.ceil(full_e * (100 - mpct) / 100.0)))
+            if _safe_api_int(planet.energy.net, 0) - throttled_res - safe_loss < 0:
+                return (
+                    False,
+                    f"Insufficient spare energy to demolish {bname} safely (upgrade Fusion plant first)",
+                    cur_lvl,
+                )
+        return True, f"Demolish {bname} L{cur_lvl} -> L{cur_lvl - 1} to reclaim 1 field", cur_lvl
+
+    def _plan_hybrid_ai_actions_locked(
+        self,
+        enriched_state: GameState,
+        active_plan_result: Mapping[str, Any],
+        cfg: StrategyConfig,
+        *,
+        record_conflicts: bool = True,
+    ) -> list[PlannedAction]:
+        ai_mod = self._load_ai_planner_mod()
+        raw_ai_actions, field_conflicts = ai_mod.reconcile_live_ai_actions(
+            enriched_state,
+            active_plan_result,
+            cfg,
+        )
+        # Belt-and-suspenders: never emit automatic demolitions from AI-Planner
+        ai_actions = [a for a in raw_ai_actions if a.kind != "DEMOLISH_BUILDING"]
+        if record_conflicts and field_conflicts:
+            for conflict in field_conflicts:
+                if isinstance(conflict, Mapping):
+                    self._upsert_field_conflict_locked(conflict)
+
+        reserved_cost, priority_resource_need = self._extract_ai_resource_targets(ai_actions)
+        meta_p = active_plan_result.get("meta_parameters")
+        spare_pct: Any = (
+            meta_p.get("resource_spare_percent")
+            if isinstance(meta_p, Mapping) and meta_p.get("resource_spare_percent") is not None
+            else float(getattr(cfg, "ai_resource_spare_pct", 10.0))
+        )
+        atk_tel = active_plan_result.get("attack_telemetry")
+        if not isinstance(atk_tel, Mapping):
+            atk_tel = self._compute_live_attack_telemetry_locked(enriched_state)
+        spare_budget = compute_spare_ship_budget(
+            enriched_state,
+            spare_pct,
+            attack_telemetry=atk_tel,
+            reserved_cost=reserved_cost,
+        )
+        fleet_actions = plan_fleet_and_attack_actions(
+            enriched_state,
+            config=cfg,
+            scanned_systems=self._get_scanned_systems(),
+            transmitter_status=self._get_transmitter_status_locked(),
+            existing_plan=ai_actions,
+            priority_resource_need=priority_resource_need,
+            spare_budget=spare_budget,
+        )
+        fleet_actions = [a for a in fleet_actions if a.kind != "DEMOLISH_BUILDING"]
+
+        combined: list[PlannedAction] = [*ai_actions, *fleet_actions]
+        prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+        def _hybrid_subrank(a: PlannedAction) -> tuple[int, int]:
+            if a.priority == "P0":
+                return (0 if a.kind == "ALERT_HOSTILE" else 1, 0)
+            if a.priority == "P1":
+                if a.kind == "SPY":
+                    return (0, 1)
+                if a.kind == "TRANSPORT":
+                    return (0, 2)
+                if a.kind in ("BUILD", "RESEARCH", "WAIT_RESOURCES"):
+                    return (1, 0)
+                return (2, 0)
+            if a.priority == "P2":
+                if a.kind in ("BUILD", "RESEARCH", "WAIT_RESOURCES"):
+                    return (0, 0)
+                if a.kind == "SPY":
+                    return (1, 0)
+                if a.kind == "TRANSPORT":
+                    return (2, 0)
+                if a.kind == "STATION":
+                    return (3, 0)
+                if a.kind in ("ATTACK", "RECYCLE"):
+                    return (4, 0)
+                return (5, 0)
+            return (0, 0)
+
+        combined.sort(
+            key=lambda a: (
+                prio_rank.get(a.priority, 9),
+                -1 if a.kind == "ALERT_HOSTILE" else (0 if a.executable_now else 1),
+                _hybrid_subrank(a),
+            )
+        )
+        deduped: list[PlannedAction] = []
+        seen: set[tuple[str, int, Optional[int], str]] = set()
+        for act in combined:
+            key = (act.kind, act.planet_id, act.target_id, act.target_name)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(act)
+        return attach_action_etas(enriched_state, deduped)
+
     def _plan_with_summary(
         self,
         state: GameState,
@@ -2581,7 +3607,23 @@ class GameApiBridge:
         enriched_state = state if _already_enriched else self._attach_raid_stats(state)
         if config is not None:
             enriched_state = self._merge_colony_candidates_if_needed(enriched_state, cfg)
-        eff_mode = normalize_planner_mode(getattr(cfg, "planner_mode", "priority"))
+        gate = self._evaluate_ai_planner_gate_locked(enriched_state, cfg=cfg)
+        eff_mode = gate["effective_planner_mode"]
+        if eff_mode == "ai_planner" and isinstance(gate["active_result"], Mapping):
+            actions = self._plan_hybrid_ai_actions_locked(
+                enriched_state,
+                gate["active_result"],
+                cfg,
+                record_conflicts=bool(record_summary and config is None),
+            )
+            actions = self._apply_fleet_slot_cooldowns(actions, re_sort_priority=False)
+            actions = self._apply_fleet_slot_holds(enriched_state, actions, cfg=cfg, re_sort_priority=False)
+            return self._apply_manual_queue_to_plan(
+                enriched_state,
+                actions,
+                cfg=cfg,
+                persist_auto_satisfied=bool(record_summary and config is None),
+            ), None
         if eff_mode == "ga_nn":
             if not record_summary:
                 raid_stats_kw: dict[str, Any] = {}
@@ -3538,6 +4580,7 @@ class GameApiBridge:
                 self._dash_static_cache_json = json.dumps(static_clean, allow_nan=False)
             static_val = json.loads(self._dash_static_cache_json)
 
+            planner_status = self._get_planner_jobs_snapshot(dash_state, cfg=self.strategy_config)
             manual_queue_pending = (
                 self._db.get_manual_queue(status="pending", limit=200)
                 if self._db is not None and hasattr(self._db, "get_manual_queue")
@@ -3550,6 +4593,8 @@ class GameApiBridge:
                 dash_sig,
                 cfg_sig,
                 eff_mode,
+                planner_status["effective_planner_mode"],
+                planner_status["ai_planner_job"].get("run_id"),
                 ag_opt_sig,
                 mq_sig,
                 tuple(actions),
@@ -3600,6 +4645,10 @@ class GameApiBridge:
                     },
                     "bot_control": dict(self._bot_control),
                     "planner_mode": eff_mode,
+                    "effective_planner_mode": planner_status["effective_planner_mode"],
+                    "fallback_reason": planner_status["fallback_reason"],
+                    "live_ai_unlocked": planner_status["live_ai_unlocked"],
+                    "planner_status": planner_status,
                     "optimizer_summary": ag_opt,
                     "manual_queue": manual_queue_pending,
                     "notifications": self._get_notifications_summary_locked(),
@@ -3629,6 +4678,10 @@ class GameApiBridge:
                 "health": envelope["health"],
                 "bot_control": envelope["bot_control"],
                 "planner_mode": envelope["planner_mode"],
+                "effective_planner_mode": envelope["effective_planner_mode"],
+                "fallback_reason": envelope["fallback_reason"],
+                "live_ai_unlocked": envelope["live_ai_unlocked"],
+                "planner_status": envelope["planner_status"],
                 "config": static_val["config"],
                 "state": static_val["state"],
                 "plan": ag_val["plan"],
@@ -7750,7 +8803,7 @@ class GameApiBridge:
                 raw_ag_mode = payload["planner_mode"]
                 if not isinstance(raw_ag_mode, str) or not raw_ag_mode.strip():
                     raise ApiRequestError(
-                        "'planner_mode' override must be a non-empty string ('priority' or 'ga_nn')."
+                        "'planner_mode' override must be a non-empty string ('priority', 'ai_planner', or 'ga_nn')."
                     )
                 try:
                     ag_req_mode = normalize_planner_mode(raw_ag_mode, strict=True)
@@ -7917,6 +8970,543 @@ class GameApiBridge:
                     "command": cmd,
                     "simulation": sim,
                 }
+            )
+
+        if cmd == "planner_jobs_status":
+            with self._lock:
+                snap = self._get_planner_jobs_snapshot()
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        **snap,
+                    }
+                )
+            )
+
+        if cmd == "config_optimizer_get":
+            runs_limit = _parse_command_int(
+                "limit",
+                payload.get("limit", 20),
+                min_val=1,
+                max_val=200,
+            ) or 20
+            co_mod = self._load_config_optimizer_mod()
+            default_params = dict(getattr(co_mod, "DEFAULT_CONFIG_OPTIMIZER_PARAMS", {}) or {})
+            with self._lock:
+                snap_state = self._get_planner_state_locked()
+                gate = self._evaluate_ai_planner_gate_locked(snap_state)
+                active_co = self._get_active_config_optimizer_locked()
+                runs = self._list_config_optimizer_runs_locked(limit=int(runs_limit))
+                reserved_floors = self._get_reserved_floors_locked()
+                jobs_snap = self._get_planner_jobs_snapshot(snap_state)
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "active": active_co,
+                        "job": jobs_snap["config_optimizer_job"],
+                        "runs": runs,
+                        "reserved_floors": reserved_floors,
+                        "default_params": default_params,
+                        "colonies_owned": gate["colonies_owned"],
+                        "max_planets": gate["max_planets"],
+                        "live_ai_unlocked": gate["live_ai_unlocked"],
+                    }
+                )
+            )
+
+        if cmd == "config_optimizer_run":
+            raw_params = payload.get("params")
+            if raw_params is not None and not isinstance(raw_params, Mapping):
+                raise ApiRequestError("'config_optimizer_run' field 'params' must be a dictionary.")
+            auto_replan_raw = payload.get("auto_replan_ai", True)
+            if not isinstance(auto_replan_raw, bool):
+                raise ApiRequestError("'config_optimizer_run' field 'auto_replan_ai' must be a boolean.")
+            sync_raw = payload.get("sync", False)
+            if not isinstance(sync_raw, bool):
+                raise ApiRequestError("'config_optimizer_run' field 'sync' must be a boolean.")
+            trig = _bounded_api_str(payload.get("trigger_source") or "manual", default="manual")[:64]
+            resp = self._start_config_optimizer_job(
+                params=raw_params,
+                auto_replan_ai=bool(auto_replan_raw),
+                sync=bool(sync_raw),
+                trigger_source=trig,
+            )
+            return _sanitize_finite_json(_redact_api_payload(resp))
+
+        if cmd == "config_optimizer_export":
+            co_mod = self._load_config_optimizer_mod()
+            with self._lock:
+                active_co = self._get_active_config_optimizer_locked()
+            if not isinstance(active_co, Mapping) or not isinstance(active_co.get("result"), Mapping):
+                raise ApiRequestError("No active Config Optimizer result available to export yet.")
+            content = co_mod.export_config_optimizer_json(active_co["result"])
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "filename": "config_optimizer_result.json",
+                        "content": str(content),
+                    }
+                )
+            )
+
+        if cmd == "ai_planner_get":
+            window_size = _parse_command_int(
+                "window_size",
+                payload.get("window_size", 40),
+                min_val=5,
+                max_val=200,
+            ) or 40
+            week_filter = _parse_command_int(
+                "week",
+                payload.get("week"),
+                allow_none=True,
+                min_val=1,
+                max_val=520,
+            )
+            raw_pid_filter = payload.get("planet_id")
+            planet_filter: Optional[int | str] = None
+            if raw_pid_filter not in (None, "", "all"):
+                if isinstance(raw_pid_filter, int) and not isinstance(raw_pid_filter, bool):
+                    planet_filter = int(raw_pid_filter)
+                elif isinstance(raw_pid_filter, str) and raw_pid_filter.strip():
+                    s_pf = raw_pid_filter.strip()
+                    planet_filter = int(s_pf) if s_pf.isascii() and s_pf.isdigit() else s_pf
+                else:
+                    raise ApiRequestError("'ai_planner_get' field 'planet_id' must be an integer or string.")
+            page = _parse_command_int("page", payload.get("page", 1), min_val=1, max_val=100_000) or 1
+            page_size = _parse_command_int(
+                "page_size",
+                payload.get("page_size", 50),
+                min_val=5,
+                max_val=500,
+            ) or 50
+            search_raw = payload.get("search")
+            search_q = str(search_raw).strip().lower() if isinstance(search_raw, str) else ""
+            runs_limit = _parse_command_int("limit", payload.get("limit", 20), min_val=1, max_val=200) or 20
+
+            ai_mod = self._load_ai_planner_mod()
+            build_ai_graph, _ = self._load_action_graph_builders()
+            default_params = dict(getattr(ai_mod, "DEFAULT_AI_PLANNER_PARAMS", {}) or {})
+            with self._lock:
+                snap_state = self._get_planner_state_locked()
+                gate = self._evaluate_ai_planner_gate_locked(snap_state)
+                jobs_snap = self._get_planner_jobs_snapshot(snap_state)
+                runs = self._list_ai_planner_runs_locked(limit=int(runs_limit))
+                active_result = gate["active_result"]
+                live_telemetry = self._compute_live_attack_telemetry_locked(snap_state)
+
+            has_plan = isinstance(active_result, Mapping)
+            active_summary = (
+                dict(active_result.get("summary") or {})
+                if has_plan and isinstance(active_result.get("summary"), Mapping)
+                else None
+            )
+            meta_parameters = (
+                dict(active_result.get("meta_parameters") or {})
+                if has_plan and isinstance(active_result.get("meta_parameters"), Mapping)
+                else dict(default_params)
+            )
+            weekly_breakdown = (
+                list(active_result.get("weekly_breakdown") or [])
+                if has_plan and isinstance(active_result.get("weekly_breakdown"), Sequence)
+                else []
+            )
+            plan_telemetry = (
+                dict(active_result.get("attack_telemetry") or {})
+                if has_plan and isinstance(active_result.get("attack_telemetry"), Mapping)
+                else live_telemetry
+            )
+
+            all_steps = (
+                list(active_result.get("steps") or [])
+                if has_plan and isinstance(active_result.get("steps"), Sequence)
+                else []
+            )
+            filtered_steps: list[dict[str, Any]] = []
+            for st_item in all_steps:
+                if not isinstance(st_item, Mapping):
+                    continue
+                if week_filter is not None and _safe_api_int(st_item.get("week"), 0) != int(week_filter):
+                    continue
+                if planet_filter is not None:
+                    spid = st_item.get("planet_id")
+                    scoords = str(st_item.get("planet_coords") or "")
+                    if isinstance(planet_filter, int):
+                        if _safe_api_int(spid, -1) != planet_filter:
+                            continue
+                    else:
+                        if str(spid) != planet_filter and scoords != planet_filter and str(st_item.get("planet_name") or "") != planet_filter:
+                            continue
+                if search_q:
+                    haystack = " ".join(
+                        str(st_item.get(k) or "")
+                        for k in ("seq", "kind", "entity_key", "entity_name", "planet_name", "planet_coords", "week")
+                    ).lower()
+                    if search_q not in haystack and f"w{st_item.get('week', '')}" not in search_q:
+                        continue
+                filtered_steps.append(dict(st_item))
+            total_steps = len(filtered_steps)
+            offset = (int(page) - 1) * int(page_size)
+            page_items = filtered_steps[offset : offset + int(page_size)]
+
+            graph_obj = build_ai_graph(
+                snap_state,
+                active_result,
+                window_size=int(window_size),
+                week_filter=week_filter,
+                planet_filter=planet_filter,
+            )
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "has_plan": has_plan,
+                        "active_summary": active_summary,
+                        "meta_parameters": meta_parameters,
+                        "weekly_breakdown": weekly_breakdown,
+                        "attack_telemetry": plan_telemetry,
+                        "live_attack_telemetry": live_telemetry,
+                        "graph": graph_obj,
+                        "steps_page": {
+                            "items": page_items,
+                            "total": total_steps,
+                            "page": int(page),
+                            "page_size": int(page_size),
+                        },
+                        "job": jobs_snap["ai_planner_job"],
+                        "runs": runs,
+                        "colonies_owned": gate["colonies_owned"],
+                        "max_planets": gate["max_planets"],
+                        "live_ai_unlocked": gate["live_ai_unlocked"],
+                        "active_planner_mode": gate["active_planner_mode"],
+                        "effective_planner_mode": gate["effective_planner_mode"],
+                        "fallback_reason": gate["fallback_reason"],
+                        "pending_field_conflicts": jobs_snap["pending_field_conflicts"],
+                        "default_params": default_params,
+                    }
+                )
+            )
+
+        if cmd == "ai_planner_run":
+            raw_params = payload.get("params")
+            if raw_params is not None and not isinstance(raw_params, Mapping):
+                raise ApiRequestError("'ai_planner_run' field 'params' must be a dictionary.")
+            sync_raw = payload.get("sync", False)
+            if not isinstance(sync_raw, bool):
+                raise ApiRequestError("'ai_planner_run' field 'sync' must be a boolean.")
+            auto_cfg_raw = payload.get("auto_run_config_if_missing", True)
+            if not isinstance(auto_cfg_raw, bool):
+                raise ApiRequestError(
+                    "'ai_planner_run' field 'auto_run_config_if_missing' must be a boolean."
+                )
+            trig = _bounded_api_str(payload.get("trigger_source") or "manual", default="manual")[:64]
+            resp = self._start_ai_planner_job(
+                params=raw_params,
+                sync=bool(sync_raw),
+                trigger_source=trig,
+                auto_run_config_if_missing=bool(auto_cfg_raw),
+            )
+            return _sanitize_finite_json(_redact_api_payload(resp))
+
+        if cmd == "ai_planner_export":
+            ai_mod = self._load_ai_planner_mod()
+            with self._lock:
+                active_ai = self._get_active_ai_planner_locked()
+            if not isinstance(active_ai, Mapping) or not isinstance(active_ai.get("result"), Mapping):
+                raise ApiRequestError("No active AI-Planner path available to export yet.")
+            content = ai_mod.export_ai_planner_txt(active_ai["result"])
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "filename": "full_planner_path.txt",
+                        "content": str(content),
+                    }
+                )
+            )
+
+        if cmd == "resolve_field_conflict":
+            raw_ck = payload.get("conflict_key")
+            if not isinstance(raw_ck, str) or not raw_ck.strip():
+                raise ApiRequestError("'resolve_field_conflict' requires a non-empty 'conflict_key'.")
+            conflict_key = raw_ck.strip()
+            raw_dec = payload.get("decision")
+            if raw_dec is None:
+                raw_dec = payload.get("action")
+            if not isinstance(raw_dec, str) or raw_dec.strip().lower() not in ("demolish", "keep_reserve"):
+                raise ApiRequestError(
+                    "'resolve_field_conflict' requires 'decision' of 'demolish' or 'keep_reserve'."
+                )
+            decision = raw_dec.strip().lower()
+            sync_raw = payload.get("sync", False)
+            if not isinstance(sync_raw, bool):
+                raise ApiRequestError("'resolve_field_conflict' field 'sync' must be a boolean.")
+            override_bkey = payload.get("candidate_building_key") or payload.get("building_key")
+
+            with self._lock:
+                all_conflicts = self._list_field_conflicts_locked(status=None)
+                target_conflict = next(
+                    (c for c in all_conflicts if str(c.get("conflict_key") or "") == conflict_key),
+                    None,
+                )
+                if target_conflict is None:
+                    raise ApiRequestError(f"Unknown field conflict {conflict_key!r}.")
+
+                pid = _safe_api_int(target_conflict.get("planet_id", 0), 0)
+                pcoords = str(target_conflict.get("planet_coords") or "")
+                cand_bkey = str(
+                    override_bkey
+                    or target_conflict.get("candidate_building_key")
+                    or ""
+                ).strip()
+                cand_lvl = _safe_api_int(target_conflict.get("candidate_level", 0), 0)
+                detail_m = target_conflict.get("detail") if isinstance(target_conflict.get("detail"), Mapping) else {}
+                cands_list = detail_m.get("candidates") if isinstance(detail_m.get("candidates"), Sequence) else ()
+                if not cand_bkey and cands_list:
+                    first_c = cands_list[0]
+                    if isinstance(first_c, Mapping):
+                        cand_bkey = str(first_c.get("building_key") or first_c.get("key") or "").strip()
+                        cand_lvl = max(
+                            cand_lvl,
+                            _safe_api_int(first_c.get("level", first_c.get("current_level", 0)), 0),
+                        )
+                elif override_bkey and cands_list:
+                    for c_it in cands_list:
+                        if isinstance(c_it, Mapping) and str(c_it.get("building_key") or c_it.get("key") or "") == cand_bkey:
+                            cand_lvl = max(
+                                1,
+                                _safe_api_int(c_it.get("level", c_it.get("current_level", cand_lvl)), cand_lvl),
+                            )
+                            break
+
+                m_bid = re.fullmatch(r"b?(\d{1,3})", cand_bkey.lower(), re.ASCII)
+                if not m_bid:
+                    raise ApiRequestError(
+                        f"Field conflict {conflict_key!r} has invalid candidate building key {cand_bkey!r}."
+                    )
+                bid = int(m_bid.group(1))
+                cand_bkey = f"b{bid}"
+                binfo = game_data.BUILDING_BY_ID.get(bid)
+                bname = (
+                    str(binfo.get("name") or f"Building b{bid}")
+                    if isinstance(binfo, Mapping)
+                    else f"Building b{bid}"
+                )
+                snap_state = self._get_planner_state_locked()
+                planet_obj: Optional[PlanetState] = None
+                if snap_state is not None:
+                    planet_obj = next(
+                        (
+                            p
+                            for p in snap_state.planets
+                            if (pid > 0 and p.planet_id == pid) or (pcoords and p.coords == pcoords)
+                        ),
+                        None,
+                    )
+                    if planet_obj is not None:
+                        pid = planet_obj.planet_id
+                        pcoords = planet_obj.coords
+
+                if decision == "demolish":
+                    safe_ok, safe_reason, live_lvl = self._check_demolish_energy_safety(
+                        snap_state, planet_obj, bid
+                    )
+                    if not safe_ok:
+                        raise ApiRequestError(safe_reason)
+                    if self._db is None or not hasattr(self._db, "enqueue_manual_command"):
+                        raise ApiRequestError("Database is not configured for manual command queuing.")
+                    queued_item = self._db.enqueue_manual_command(
+                        kind="DEMOLISH_BUILDING",
+                        priority="P1",
+                        position="top",
+                        planet_id=int(pid),
+                        planet_coords=pcoords,
+                        target_id=bid,
+                        target_name=bname,
+                        target_level=max(0, live_lvl - 1),
+                        note=f"Approved demolition via field conflict {conflict_key}",
+                        deduplicate_pending=True,
+                    )
+                    if hasattr(self._db, "resolve_field_conflict_prompt"):
+                        resolved = self._db.resolve_field_conflict_prompt(
+                            conflict_key,
+                            "demolish",
+                            detail={
+                                "building_key": cand_bkey,
+                                "queued_demolish_id": queued_item.get("id"),
+                            },
+                        )
+                    else:
+                        target_conflict["status"] = "resolved"
+                        target_conflict["decision"] = "demolish"
+                        resolved = dict(target_conflict)
+                    self._invalidate_dashboard_cache()
+                    return _sanitize_finite_json(
+                        _redact_api_payload(
+                            {
+                                "ok": True,
+                                "command": cmd,
+                                "conflict": resolved,
+                                "queued_demolish": queued_item,
+                            }
+                        )
+                    )
+
+                # decision == "keep_reserve": record floor & chain config_optimizer -> ai_planner rerun
+                live_lvl = planet_obj.building_level(bid) if planet_obj is not None else 0
+                min_lvl = max(1, cand_lvl, live_lvl)
+                planet_key = str(pid) if pid > 0 else pcoords
+                reserved_floors = self._update_reserved_floor_locked(
+                    planet_key,
+                    cand_bkey,
+                    min_lvl,
+                    reason=f"Field conflict {conflict_key}",
+                )
+                if self._db is not None and hasattr(self._db, "resolve_field_conflict_prompt"):
+                    resolved = self._db.resolve_field_conflict_prompt(
+                        conflict_key,
+                        "keep_reserve",
+                        detail={
+                            "planet_key": planet_key,
+                            "building_key": cand_bkey,
+                            "min_level": min_lvl,
+                        },
+                    )
+                else:
+                    target_conflict["status"] = "resolved"
+                    target_conflict["decision"] = "keep_reserve"
+                    resolved = dict(target_conflict)
+                self._invalidate_dashboard_cache()
+
+            # Trigger chained Config Optimizer -> AI-Planner rerun outside `_lock`!
+            rerun_resp = self._start_config_optimizer_job(
+                params=None,
+                auto_replan_ai=True,
+                sync=bool(sync_raw),
+                trigger_source="field_conflict_keep_reserve",
+            )
+            out_res: dict[str, Any] = {
+                "ok": True,
+                "command": cmd,
+                "conflict": resolved,
+                "reserved_floors": reserved_floors,
+                "job": rerun_resp.get("job"),
+            }
+            if "ai_planner_job" in rerun_resp:
+                out_res["ai_planner_job"] = rerun_resp["ai_planner_job"]
+            return _sanitize_finite_json(_redact_api_payload(out_res))
+
+        if cmd == "fleet_planner_get":
+            raw_fp_cfg = payload.get("config")
+            if raw_fp_cfg is not None:
+                if not isinstance(raw_fp_cfg, Mapping):
+                    raise ApiRequestError("'fleet_planner_get' field 'config' must be a dictionary.")
+                _validate_config_patch(raw_fp_cfg, strict_bools=False)
+            _, build_fleet_graph = self._load_action_graph_builders()
+            with self._lock:
+                effective_fp_cfg, _ = merge_strategy_config_overrides(
+                    self.strategy_config,
+                    raw_fp_cfg,
+                )
+                snap_state = self._get_planner_state_locked()
+                enriched_fp = (
+                    self._merge_colony_candidates_if_needed(
+                        self._attach_raid_stats(snap_state),
+                        effective_fp_cfg,
+                    )
+                    if snap_state is not None
+                    else None
+                )
+                atk_tel = self._compute_live_attack_telemetry_locked(enriched_fp)
+                active_ai = self._get_active_ai_planner_locked()
+                active_ai_res = (
+                    active_ai.get("result")
+                    if isinstance(active_ai, Mapping) and isinstance(active_ai.get("result"), Mapping)
+                    else None
+                )
+                reserved_cost = Resources()
+                priority_resource_need: dict[int, Resources] = {}
+                spare_pct: Any = float(getattr(effective_fp_cfg, "ai_resource_spare_pct", 10.0))
+                if enriched_fp is not None and active_ai_res is not None:
+                    meta_p = active_ai_res.get("meta_parameters")
+                    if isinstance(meta_p, Mapping) and meta_p.get("resource_spare_percent") is not None:
+                        spare_pct = meta_p["resource_spare_percent"]
+                    try:
+                        ai_mod = self._load_ai_planner_mod()
+                        ai_acts, _ = ai_mod.reconcile_live_ai_actions(
+                            enriched_fp,
+                            active_ai_res,
+                            effective_fp_cfg,
+                        )
+                        reserved_cost, priority_resource_need = self._extract_ai_resource_targets(ai_acts)
+                    except ApiRequestError:
+                        ai_acts = []
+                else:
+                    ai_acts = []
+
+                if enriched_fp is not None:
+                    spare_budget = compute_spare_ship_budget(
+                        enriched_fp,
+                        spare_pct,
+                        attack_telemetry=atk_tel,
+                        reserved_cost=reserved_cost,
+                    )
+                    fleet_actions = plan_fleet_and_attack_actions(
+                        enriched_fp,
+                        config=effective_fp_cfg,
+                        scanned_systems=self._get_scanned_systems(),
+                        transmitter_status=self._get_transmitter_status_locked(),
+                        existing_plan=ai_acts,
+                        priority_resource_need=priority_resource_need,
+                        spare_budget=spare_budget,
+                    )
+                    fleet_actions = self._apply_fleet_slot_cooldowns(fleet_actions, re_sort_priority=True)
+                    fleet_actions = self._apply_fleet_slot_holds(
+                        enriched_fp,
+                        fleet_actions,
+                        cfg=effective_fp_cfg,
+                        re_sort_priority=True,
+                    )
+                    graph_obj = build_fleet_graph(
+                        enriched_fp,
+                        fleet_actions,
+                        effective_fp_cfg,
+                        attack_telemetry=atk_tel,
+                        spare_budget=spare_budget,
+                    )
+                else:
+                    spare_budget = {
+                        "spare_percent": {"pig_iron": 10.0, "metal": 10.0, "kryptonite": 10.0, "spice": 10.0},
+                        "available_budget": {"pig_iron": 0.0, "metal": 0.0, "kryptonite": 0.0, "spice": 0.0},
+                        "urgent_zero_count_ships": [],
+                    }
+                    graph_obj = build_fleet_graph(
+                        None,
+                        [],
+                        effective_fp_cfg,
+                        attack_telemetry=atk_tel,
+                        spare_budget=spare_budget,
+                    )
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "graph": graph_obj,
+                        "slot_budgets": graph_obj.get("slot_budgets", []),
+                        "attack_telemetry": atk_tel,
+                        "spare_budget": spare_budget,
+                        "config": asdict(effective_fp_cfg),
+                    }
+                )
             )
 
         with self._lock:
@@ -8216,7 +9806,7 @@ class GameApiBridge:
                             raw_mode = payload["planner_mode"]
                             if not isinstance(raw_mode, str) or not raw_mode.strip():
                                 raise ApiRequestError(
-                                    "'planner_mode' override must be a non-empty string ('priority' or 'ga_nn')."
+                                    "'planner_mode' override must be a non-empty string ('priority', 'ai_planner', or 'ga_nn')."
                                 )
                             try:
                                 req_mode = normalize_planner_mode(raw_mode, strict=True)
@@ -8248,13 +9838,19 @@ class GameApiBridge:
                                 observed_active_planet=False,
                                 update_snapshot_ts=False,
                             )
-                        actions, opt_summary = self._plan_with_summary(state, config=effective_cfg)
+                        actions, opt_summary = self._plan_with_summary(state, config=override_cfg)
+                        gate = self._evaluate_ai_planner_gate_locked(state, cfg=effective_cfg)
                         return _sanitize_finite_json(
                             _redact_api_payload(
                                 {
                                     "ok": True,
                                     "command": cmd,
                                     "planner_mode": effective_mode,
+                                    "effective_planner_mode": gate["effective_planner_mode"],
+                                    "fallback_reason": gate["fallback_reason"],
+                                    "live_ai_unlocked": gate["live_ai_unlocked"],
+                                    "colonies_owned": gate["colonies_owned"],
+                                    "max_planets": gate["max_planets"],
                                     "actions": [self._serialize_action(a) for a in actions],
                                     "optimizer_summary": opt_summary,
                                 }

@@ -75,8 +75,10 @@ shipyard_targets:
                 self.assertEqual(reloaded, cfg)
 
     def test_planner_mode_normalization_and_ga_clamping(self) -> None:
-        self.assertEqual(VALID_PLANNER_MODES, ("priority", "ga_nn"))
+        self.assertEqual(VALID_PLANNER_MODES, ("priority", "ai_planner", "ga_nn"))
         self.assertEqual(normalize_planner_mode(" GA_NN "), "ga_nn")
+        self.assertEqual(normalize_planner_mode(" AI_PLANNER "), "ai_planner")
+        self.assertEqual(normalize_planner_mode("ai_planner", strict=True), "ai_planner")
         self.assertEqual(normalize_planner_mode("invalid_mode"), "priority")
         self.assertEqual(normalize_planner_mode(""), "priority")
         self.assertEqual(normalize_planner_mode(None), "priority")
@@ -855,6 +857,44 @@ shipyard_targets:
             self.assertAlmostEqual(loaded_db.galaxy_scan_click_jitter_seconds, 0.85)
             self.assertEqual(loaded_db.reserved_spy_slots, 3)
             self.assertEqual(loaded_db.spy_dispatch_planet_id, 12476)
+
+    def test_ai_planner_mode_and_spare_pct_roundtrip_and_clamping(self) -> None:
+        from spaceinvasion.db.storage import GameDatabase
+
+        default_cfg = StrategyConfig()
+        self.assertAlmostEqual(default_cfg.ai_resource_spare_pct, 10.0)
+
+        low_c = strategy_config_from_dict(
+            {"planner_mode": "AI_PLANNER", "ai_resource_spare_pct": -15.0}
+        )
+        self.assertEqual(low_c.planner_mode, "ai_planner")
+        self.assertAlmostEqual(low_c.ai_resource_spare_pct, 0.0)
+
+        high_c = strategy_config_from_dict(
+            {"planner_mode": "ai_planner", "ai_resource_spare_pct": 250.0}
+        )
+        self.assertEqual(high_c.planner_mode, "ai_planner")
+        self.assertAlmostEqual(high_c.ai_resource_spare_pct, 100.0)
+
+        nan_c = strategy_config_from_dict({"ai_resource_spare_pct": float("nan")})
+        self.assertAlmostEqual(nan_c.ai_resource_spare_pct, 10.0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            cfg = StrategyConfig(planner_mode="ai_planner", ai_resource_spare_pct=17.5)
+            yaml_path = tp / "ai_cfg.yaml"
+            save_strategy_config(cfg, yaml_path)
+            loaded_yaml = load_strategy_config(yaml_path)
+            self.assertEqual(loaded_yaml.planner_mode, "ai_planner")
+            self.assertAlmostEqual(loaded_yaml.ai_resource_spare_pct, 17.5)
+
+            db_path = tp / "ai_cfg.db"
+            db = GameDatabase(db_path, attack_history_path="")
+            db.close()
+            save_strategy_config(cfg, db_path)
+            loaded_db = load_strategy_config(db_path)
+            self.assertEqual(loaded_db.planner_mode, "ai_planner")
+            self.assertAlmostEqual(loaded_db.ai_resource_spare_pct, 17.5)
 
 
 if __name__ == "__main__":
