@@ -10,8 +10,7 @@ import type {
   QueueJobData,
   StrategyConfigData,
 } from "../../types/api";
-import { fmtCompact, fmtInt } from "../../utils/formatters";
-import { formatQueueJobCargo } from "../operations/planActions";
+import { fmtCompact, fmtHms, fmtInt, formatResourcesInline } from "../../utils/formatters";
 import { ActionGraphParamRow } from "./ActionGraphParamRow";
 import { DagCanvas } from "./DagCanvas";
 import {
@@ -247,6 +246,141 @@ function isFleetPlanAction(act: PlannedActionData): boolean {
   return false;
 }
 
+interface OngoingFlightCargoInfo {
+  tag: "EXPECTED" | "DELIVERED" | "Loot" | "Harvest" | "Cargo";
+  variant: "expected" | "delivered" | "loot" | "harvest" | "cargo";
+  inline: string;
+  total: number;
+  multiRes: boolean;
+  isEmpty: boolean;
+}
+
+function extractResourceTotals(raw: unknown): {
+  pig_iron: number;
+  metal: number;
+  kryptonite: number;
+  spice: number;
+  total: number;
+  nonZeroCount: number;
+} | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const pig_iron = Math.max(0, Math.round(safeFiniteNumber(obj.pig_iron, 0) ?? 0));
+  const metal = Math.max(0, Math.round(safeFiniteNumber(obj.metal, 0) ?? 0));
+  const kryptonite = Math.max(0, Math.round(safeFiniteNumber(obj.kryptonite, 0) ?? 0));
+  const spice = Math.max(0, Math.round(safeFiniteNumber(obj.spice, 0) ?? 0));
+  const total = pig_iron + metal + kryptonite + spice;
+  const nonZeroCount = [pig_iron, metal, kryptonite, spice].filter((v) => v > 0).length;
+  return { pig_iron, metal, kryptonite, spice, total, nonZeroCount };
+}
+
+function isFlightReturning(job: QueueJobData | null | undefined): boolean {
+  if (!job) return false;
+  const rec = job as Record<string, any>;
+  if (Boolean(rec.returning) || Boolean(rec.delivered)) return true;
+  const nameLow = String(job.name || "").toLowerCase();
+  const detLow = String(job.detail || "").toLowerCase();
+  return detLow.includes("returning") || nameLow.includes("↩");
+}
+
+function formatOngoingFlightCargo(
+  job: QueueJobData | null | undefined
+): OngoingFlightCargoInfo | null {
+  if (!job) return null;
+  const rec = job as Record<string, any>;
+  const nameLow = String(job.name || "").toLowerCase();
+  const detLow = String(job.detail || "").toLowerCase();
+  const missionLow = String(rec.mission_type || rec.mission || "").toLowerCase();
+  const returning = isFlightReturning(job);
+  const isAttack =
+    missionLow === "attack" ||
+    missionLow === "raid" ||
+    nameLow.includes("attack") ||
+    nameLow.includes("raid");
+  const isRecycle = missionLow === "recycle" || nameLow.includes("recycle");
+  const isTransport = missionLow === "transport" || nameLow.includes("transport");
+  const isDelivered = Boolean(rec.delivered) || (returning && isTransport);
+
+  // Returning Transport: always show DELIVERED flag + delivered_cargo values when available
+  if (isDelivered) {
+    const delivered = extractResourceTotals(rec.delivered_cargo);
+    if (delivered && delivered.total > 0) {
+      return {
+        tag: "DELIVERED",
+        variant: "delivered",
+        inline: formatResourcesInline(delivered),
+        total: delivered.total,
+        multiRes: delivered.nonZeroCount > 1,
+        isEmpty: false,
+      };
+    }
+    return {
+      tag: "DELIVERED",
+      variant: "delivered",
+      inline: "",
+      total: 0,
+      multiRes: false,
+      isEmpty: true,
+    };
+  }
+
+  // Outbound Attack / Recycle / Transport: show EXPECTED badge + expected_cargo (or transport cargo fallback)
+  if (!returning) {
+    const expected =
+      extractResourceTotals(rec.expected_cargo) ||
+      (isTransport ? extractResourceTotals(job.cargo) : null);
+    if (expected && expected.total > 0) {
+      return {
+        tag: "EXPECTED",
+        variant: "expected",
+        inline: formatResourcesInline(expected),
+        total: expected.total,
+        multiRes: expected.nonZeroCount > 1,
+        isEmpty: false,
+      };
+    }
+  }
+
+  // Returning Attack / Recycle or generic cargo
+  const actual = extractResourceTotals(job.cargo);
+  const tag: OngoingFlightCargoInfo["tag"] =
+    returning && isAttack ? "Loot" : returning && isRecycle ? "Harvest" : "Cargo";
+  const variant: OngoingFlightCargoInfo["variant"] =
+    returning && isAttack ? "loot" : returning && isRecycle ? "harvest" : "cargo";
+
+  if (actual && actual.total > 0) {
+    return {
+      tag,
+      variant,
+      inline: formatResourcesInline(actual),
+      total: actual.total,
+      multiRes: actual.nonZeroCount > 1,
+      isEmpty: false,
+    };
+  }
+  if (returning && (isAttack || isRecycle)) {
+    return {
+      tag,
+      variant,
+      inline: "0 (empty)",
+      total: 0,
+      multiRes: false,
+      isEmpty: true,
+    };
+  }
+  return null;
+}
+
+function isOngoingFleetFlight(job: QueueJobData | null | undefined): boolean {
+  if (!job) return false;
+  const cat = String(job.category || "").toLowerCase();
+  if (cat === "shipyard" || cat === "build_ship" || cat === "ships" || cat === "defense") {
+    return false;
+  }
+  if (cat === "fleet") return true;
+  return isFleetActionKind(cat);
+}
+
 function buildClientFallbackFleetGraph(
   planets: PlanetData[],
   activeQueues: QueueJobData[],
@@ -273,12 +407,13 @@ function buildClientFallbackFleetGraph(
     if (cat !== "fleet" && cat !== "shipyard" && !isFleetActionKind(cat)) continue;
     const pid = Math.round(safeFiniteNumber(job.planet_id, planets[0]?.planet_id ?? 0) ?? 0);
     const id = `flt_active_${nodes.length}`;
-    const cargoInfo = formatQueueJobCargo(job);
+    const cargoInfo = formatOngoingFlightCargo(job);
     const baseReason = String(job.detail || job.remaining_text || "Live in-flight queue item");
-    const reasonWithCargo =
-      cargoInfo && !cargoInfo.isEmpty
-        ? `${baseReason} · ${cargoInfo.label}: ${cargoInfo.inline}`
-        : baseReason;
+    const reasonWithCargo = cargoInfo
+      ? cargoInfo.inline
+        ? `${baseReason} · ${cargoInfo.tag}: ${cargoInfo.inline}`
+        : `${baseReason} · ${cargoInfo.tag}`
+      : baseReason;
     nodes.push({
       id,
       order_index: nodes.length,
@@ -427,6 +562,17 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
     void fetchFleetPlanner({ silent: true });
   }, [hidden, activePage, fetchFleetPlanner]);
 
+  const customPlanetNames = useMemo<Record<string, string>>(() => {
+    const raw = (dashboard as Record<string, any> | null | undefined)?.custom_planet_names;
+    if (!raw || typeof raw !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      const clean = String(v || "").trim();
+      if (clean) out[String(k)] = clean;
+    }
+    return out;
+  }, [dashboard]);
+
   const slotRows: FleetSlotBudgetRow[] = useMemo(() => {
     const rawBudgets = fleetData?.slot_budgets;
     const planets: PlanetData[] = Array.isArray(dashboard?.state?.planets)
@@ -473,7 +619,9 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
         return {
           planet_id: pid,
           planet_coords: String(b.planet_coords ?? b.coords ?? matchedPlanet?.coords ?? `P${pid}`),
-          planet_name: String(b.planet_name ?? matchedPlanet?.name ?? "Colony"),
+          planet_name: String(
+            customPlanetNames[String(pid)] || matchedPlanet?.name || b.planet_name || "Colony"
+          ),
           b10_level: Math.round(
             safeFiniteNumber(b.b10_level ?? b.fleet_base_level ?? matchedPlanet?.buildings?.b10, 0) ??
               0
@@ -516,7 +664,9 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
           return {
             planet_id: pid,
             planet_coords: String(val?.planet_coords || matchedPlanet?.coords || pidKey),
-            planet_name: String(val?.planet_name || matchedPlanet?.name || "Colony"),
+            planet_name: String(
+              customPlanetNames[String(pid)] || matchedPlanet?.name || val?.planet_name || "Colony"
+            ),
             b10_level: b10Lvl,
             slots_used: slotsUsed,
             slots_max: slotsMax,
@@ -537,21 +687,22 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
       (p) => String(p.planet_type || "normal").toLowerCase() === "normal"
     );
     return normalPlanets.map((p) => {
+      const pid = Number(p.planet_id || 0);
       const b10 = Math.round(safeFiniteNumber(p.buildings?.b10, 0) ?? 0);
       const activeFlights = activeQueues.filter(
         (q) =>
-          Number(q.planet_id) === Number(p.planet_id) &&
+          Number(q.planet_id) === pid &&
           String(q.category || "").toLowerCase() === "fleet"
       ).length;
       const plannedCount = plan.filter(
-        (a) => Number(a.planet_id) === Number(p.planet_id) && isFleetActionKind(a.kind)
+        (a) => Number(a.planet_id) === pid && isFleetActionKind(a.kind)
       ).length;
       const docked = summarizeDockedShips(p.ships);
       const slotsMax = Math.max(1, 1 + b10);
       return {
-        planet_id: Number(p.planet_id || 0),
+        planet_id: pid,
         planet_coords: String(p.coords || "—"),
-        planet_name: String(p.name || "Colony"),
+        planet_name: String(customPlanetNames[String(pid)] || p.name || "Colony"),
         b10_level: b10,
         slots_used: activeFlights,
         slots_max: slotsMax,
@@ -562,7 +713,66 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
         status: activeFlights >= slotsMax ? "FULL" : "OPEN",
       };
     });
-  }, [fleetData?.slot_budgets, dashboard]);
+  }, [fleetData?.slot_budgets, dashboard, customPlanetNames]);
+
+  const ongoingFlights = useMemo(() => {
+    const activeQueues: QueueJobData[] = Array.isArray(dashboard?.state?.active_queues)
+      ? dashboard!.state!.active_queues!
+      : [];
+    const planets: PlanetData[] = Array.isArray(dashboard?.state?.planets)
+      ? dashboard!.state!.planets!
+      : [];
+    const planetByPid = new Map<number, PlanetData>();
+    const planetByCoords = new Map<string, PlanetData>();
+    for (const pl of planets) {
+      const pid = Math.round(safeFiniteNumber(pl?.planet_id, 0) ?? 0);
+      if (pid > 0) planetByPid.set(pid, pl);
+      const c = String(pl?.coords || "").trim();
+      if (c) planetByCoords.set(c, pl);
+    }
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    return activeQueues
+      .filter((job) => isOngoingFleetFlight(job))
+      .map((job, idx) => {
+        const pid = Math.round(safeFiniteNumber(job.planet_id, 0) ?? 0);
+        const coords = String(
+          (job as Record<string, any>).origin_coords || job.planet_coords || ""
+        ).trim();
+        const pl = (pid > 0 ? planetByPid.get(pid) : undefined) || (coords ? planetByCoords.get(coords) : undefined);
+        const resolvedPid = pid > 0 ? pid : Math.round(safeFiniteNumber(pl?.planet_id, 0) ?? 0);
+        const originName =
+          (resolvedPid > 0 ? customPlanetNames[String(resolvedPid)] : "") ||
+          String(pl?.name || "").trim();
+        const originCoords = coords || String(pl?.coords || "").trim();
+        const returning = isFlightReturning(job);
+        const cargoInfo = formatOngoingFlightCargo(job);
+        const finTs = safeFiniteNumber(job.finish_ts, null);
+        const remSec =
+          finTs !== null && finTs > 0
+            ? Math.max(0, Math.round(finTs - nowSec))
+            : safeFiniteNumber(job.remaining_seconds, null);
+        const etaText =
+          String(job.remaining_text || "").trim() ||
+          (remSec !== null ? (remSec > 0 ? fmtHms(remSec) : "Arriving...") : "In Flight");
+
+        return {
+          key: `flt-ongoing-${idx}-${resolvedPid}-${String(job.name || "")}-${String(finTs ?? "")}`,
+          title: String(job.name || "Active Flight"),
+          detail: String(job.detail || "").trim(),
+          originLabel: originName
+            ? originCoords
+              ? `${originName} [${originCoords}]`
+              : originName
+            : originCoords
+              ? `[${originCoords}]`
+              : "Fleet",
+          returning,
+          cargoInfo,
+          etaText,
+        };
+      });
+  }, [customPlanetNames, dashboard?.state?.active_queues, dashboard?.state?.planets]);
 
   const activeGraph = useMemo(() => {
     if (
@@ -824,6 +1034,72 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
           emptyMessage="No active flights, raids, recyclers, or shipyard builds in the current queue."
         />
 
+        {ongoingFlights.length > 0 ? (
+          <div className="ag-flt-ongoing-box" id="flt-ongoing-flights" role="region" aria-label="Ongoing fleet flights">
+            <div className="ag-flt-ongoing-head">
+              <div className="window-title-group">
+                <h3>Ongoing Flights</h3>
+                <span className="sub">Live outbound expectations &amp; transport deliveries</span>
+              </div>
+              <span className="ag-toolbar-meta tabular">
+                {`${ongoingFlights.length} ${ongoingFlights.length === 1 ? "flight" : "flights"}`}
+              </span>
+            </div>
+            <div className="ag-flt-ongoing-list">
+              {ongoingFlights.map((flight) => (
+                <div key={flight.key} className="ag-flt-ongoing-row">
+                  <div className="ag-flt-ongoing-main">
+                    <span
+                      className={`ag-flt-dir-pill tabular ${flight.returning ? "is-returning" : "is-outbound"}`}
+                    >
+                      {flight.returning ? "RETURNING" : "OUTBOUND"}
+                    </span>
+                    <strong className="ag-flt-ongoing-title">
+                      {sanitizeMainWindowText(flight.title)}
+                    </strong>
+                    <span className="ag-cell-sub tabular">
+                      {sanitizeMainWindowText(flight.originLabel)}
+                    </span>
+                    {flight.detail ? (
+                      <span className="ag-cell-sub">
+                        {sanitizeMainWindowText(flight.detail)}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="ag-flt-ongoing-meta tabular">
+                    {flight.cargoInfo ? (
+                      <span
+                        className={`ag-flt-cargo-line is-${flight.cargoInfo.variant}`}
+                        title={
+                          flight.cargoInfo.inline
+                            ? `${flight.cargoInfo.tag}: ${flight.cargoInfo.inline}${flight.cargoInfo.total > 0 ? ` (${fmtInt(flight.cargoInfo.total)} total)` : ""}`
+                            : flight.cargoInfo.tag
+                        }
+                      >
+                        <span
+                          className={`ag-flt-cargo-badge is-${flight.cargoInfo.variant}`}
+                          data-cargo-kind={flight.cargoInfo.variant}
+                        >
+                          {flight.cargoInfo.tag}
+                        </span>
+                        {flight.cargoInfo.inline ? (
+                          <span className="ag-flt-cargo-vals">
+                            {flight.cargoInfo.inline}
+                            {flight.cargoInfo.multiRes
+                              ? ` (${fmtCompact(flight.cargoInfo.total)})`
+                              : ""}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : null}
+                    <span className="eta-pill tabular">{flight.etaText}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div className="window-bar ag-subtable-bar">
           <div className="window-title-group">
             <h3>Per-Planet Fleet Slot &amp; Docked Budget</h3>
@@ -930,7 +1206,7 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
 
       {/* Right Controls Pane: Bidirectional Sync with StrategyConfig */}
       <aside className="hud-window ag-control-panel" id="ag-flt-control-panel">
-        <div className="window-bar">
+        <div className="window-bar window-bar-wrap">
           <div className="window-title-group">
             <span className="module-code tabular">CTL</span>
             <h2>Fleet &amp; Tactical Settings</h2>

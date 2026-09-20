@@ -51,11 +51,15 @@
 .ag-subtab-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  padding: 7px 12px;
+  min-height: 36px;
+  padding: 6px 12px;
   font-family: var(--font-sans);
   font-size: 0.9rem;
   font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
   color: var(--ink-muted);
   background: var(--bg-inset);
   border: 1px solid var(--line-dim);
@@ -621,10 +625,22 @@
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
   gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--line-dim);
   background: var(--bg-panel-alt);
+}
+
+.ag-panel-tabs .tab-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  line-height: 1.2;
+  text-align: center;
 }
 
 .ag-panel-body {
@@ -840,7 +856,16 @@
 .ag-footer-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
   gap: 8px;
+}
+
+.ag-footer-actions .btn {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  line-height: 1.25;
+  text-align: center;
 }
 
 .ag-footer-actions .btn-span {
@@ -941,13 +966,19 @@
 }
 
 .ag-conflict-select {
+  width: auto;
+  min-width: 168px;
+  max-width: 260px;
   min-height: 32px;
-  padding: 4px 8px;
+  height: 32px;
+  padding: 0 8px;
   font-size: 0.86rem;
+  line-height: 1.2;
   color: var(--ink);
   background: var(--bg-inset);
   border: 1px solid var(--line-mid);
   border-radius: var(--radius);
+  box-sizing: border-box;
 }
 
 .btn-warning {
@@ -987,7 +1018,16 @@
 .ag-handoff-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
   gap: 6px;
+}
+
+.ag-handoff-actions .btn {
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  line-height: 1.2;
+  text-align: center;
 }
 
 /* Config Optimizer & AI-Planner & Fleet Tables + Controls */
@@ -1100,12 +1140,19 @@
   gap: 6px;
   font-size: 0.86rem;
   color: var(--ink-muted);
+  white-space: nowrap;
 }
 
 .ag-inline-filter select {
-  min-height: 30px;
-  padding: 2px 8px;
+  width: auto;
+  min-width: 112px;
+  max-width: 240px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 8px;
   font-size: 0.86rem;
+  line-height: 1.2;
+  box-sizing: border-box;
   color: var(--ink);
   background: var(--bg-inset);
   border: 1px solid var(--line-mid);
@@ -1220,11 +1267,334 @@
 .ag-co-spec-select {
   width: 100%;
   min-width: 158px;
-  min-height: 30px;
-  padding: 3px 7px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 8px;
   font-size: 0.86rem;
+  line-height: 1.2;
+  box-sizing: border-box;
   color: var(--ink);
   background: var(--bg-inset);
   border: 1px solid var(--line-mid);
   border-radius: var(--radius);
+}
+
+/* ── Unified Action Graph Toolbar & Control Row Alignment ────────────────── */
+
+.ag-view .window-bar,
+.ag-view .ag-co-spec-bar,
+.ag-view .ag-ai-window-bar,
+.ag-view .ag-legend-bar,
+.ag-view .ag-conflict-actions {
+  align-items: center;
+}
+
+.ag-view .window-bar .inline-actions,
+.ag-view .ag-co-spec-bar .inline-actions,
+.ag-view .ag-ai-window-bar .inline-actions,
+.ag-view .window-bar .tab-group,
+.ag-view .ag-ai-window-bar .tab-group,
+.ag-view .window-bar .filter-chips,
+.ag-view .ag-legend-bar .filter-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ag-view .window-bar .btn-sm,
+.ag-view .window-bar .tab-btn,
+.ag-view .window-bar .chip-btn,
+.ag-view .ag-co-spec-bar .btn-sm,
+.ag-view .ag-ai-window-bar .btn-sm,
+.ag-view .ag-ai-window-bar .tab-btn,
+.ag-view .ag-legend-bar .chip-btn,
+.ag-view .ag-conflict-actions .btn-sm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 11px;
+  line-height: 1.15;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+.ag-view .ag-ai-window-bar .table-search-input,
+.ag-view .window-bar .table-search-input {
+  height: 32px;
+  min-height: 32px;
+  padding: 0 10px;
+  line-height: 1.2;
+  box-sizing: border-box;
+}
+
+/* ── Config Optimizer Inline Planet Rename Controls ──────────────────────── */
+
+.ag-co-planet-cell {
+  min-width: 210px;
+}
+
+.ag-co-planet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ag-co-planet-head .action-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-co-rename-trigger {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 0.78rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ag-co-rename-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.ag-co-rename-input {
+  width: 100%;
+  min-width: 150px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 8px;
+  font-size: 0.88rem;
+  line-height: 1.2;
+  box-sizing: border-box;
+  color: var(--ink);
+  background: var(--bg-inset);
+  border: 1px solid var(--cyan);
+  border-radius: var(--radius);
+}
+
+.ag-co-rename-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(50, 232, 255, 0.22);
+}
+
+.ag-co-rename-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ag-co-rename-actions .btn-sm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 9px;
+  font-size: 0.8rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ag-co-rename-error {
+  font-size: 0.82rem;
+  color: var(--red, #ff5e78);
+  line-height: 1.3;
+}
+
+.ag-co-pre-run-planets {
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line-mid);
+  background: var(--bg-panel-alt);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ag-co-pre-run-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+}
+
+.ag-co-pre-run-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--radius);
+}
+
+/* ── Fleet Planner Ongoing Flights Strip (EXPECTED / DELIVERED Parity) ──── */
+
+.ag-flt-ongoing-box {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--line-mid);
+  background: var(--bg-panel-alt);
+  display: flex;
+  flex-direction: column;
+}
+
+.ag-flt-ongoing-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-dim);
+}
+
+.ag-flt-ongoing-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 210px;
+  overflow-y: auto;
+}
+
+.ag-flt-ongoing-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line-dim);
+  font-size: 0.86rem;
+}
+
+.ag-flt-ongoing-row:last-child {
+  border-bottom: none;
+}
+
+.ag-flt-ongoing-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ag-flt-ongoing-title {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.ag-flt-ongoing-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ag-flt-dir-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0 7px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border-radius: 4px;
+  border: 1px solid var(--line-mid);
+  white-space: nowrap;
+}
+
+.ag-flt-dir-pill.is-outbound {
+  border-color: rgba(50, 232, 255, 0.5);
+  background: rgba(50, 232, 255, 0.1);
+  color: var(--cyan);
+}
+
+.ag-flt-dir-pill.is-returning {
+  border-color: rgba(22, 236, 152, 0.5);
+  background: rgba(22, 236, 152, 0.1);
+  color: var(--mint);
+}
+
+.ag-flt-cargo-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ag-flt-cargo-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0 7px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 4px;
+  border: 1px solid var(--line-mid);
+  white-space: nowrap;
+}
+
+.ag-flt-cargo-badge.is-expected {
+  border-color: rgba(50, 232, 255, 0.55);
+  background: rgba(50, 232, 255, 0.12);
+  color: var(--cyan);
+}
+
+.ag-flt-cargo-badge.is-delivered {
+  border-color: rgba(22, 236, 152, 0.55);
+  background: rgba(22, 236, 152, 0.12);
+  color: var(--mint);
+}
+
+.ag-flt-cargo-badge.is-loot {
+  border-color: var(--amber);
+  background: var(--amber-surface);
+  color: var(--amber);
+}
+
+.ag-flt-cargo-badge.is-harvest {
+  border-color: rgba(22, 236, 152, 0.45);
+  background: rgba(22, 236, 152, 0.08);
+  color: var(--mint);
+}
+
+.ag-flt-cargo-vals {
+  color: var(--ink-muted);
+  font-size: 0.84rem;
+}
+
+/* ── GaNnScannerHud Telemetry Mini Charts (HTML5 Canvas, 0 New SVGs) ─────── */
+
+.gann-mini-chart-wrap {
+  width: 100%;
+  height: 38px;
+  border-radius: 4px;
+  border: 1px solid var(--line-dim);
+  background: #081012;
+  overflow: hidden;
+}
+
+.gann-mini-chart {
+  width: 100%;
+  height: 100%;
+  display: block;
 }

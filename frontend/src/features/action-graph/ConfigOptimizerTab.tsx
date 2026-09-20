@@ -8,6 +8,7 @@ import type {
   ConfigOptimizerGetPayload,
   ConfigOptimizerPlanetRecord,
   ConfigOptimizerResultData,
+  PlanetData,
   PlannerJobState,
 } from "../../types/api";
 import { fmtCompact, fmtInt, fmtShortDateTime } from "../../utils/formatters";
@@ -40,10 +41,62 @@ import {
   shipNameForKey,
 } from "./plannerHelpers";
 
+const MAX_PLANET_NAME_LENGTH = 48;
+
+interface RenamePlanetApiResponse {
+  ok?: boolean;
+  command?: string;
+  planet_id?: number;
+  name?: string;
+  game_name?: string;
+  cleared?: boolean;
+  custom_planet_names?: Record<string, string>;
+  planet?: {
+    planet_id?: number;
+    coords?: string;
+    name?: string;
+    game_name?: string;
+    custom_name?: string | null;
+  };
+  message?: string;
+}
+
+function sanitizeCustomNamesMap(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const cleanKey = String(k || "").trim();
+    const cleanVal = String(v || "").trim();
+    if (cleanKey && cleanVal) {
+      out[cleanKey] = cleanVal;
+    }
+  }
+  return out;
+}
+
+function validatePlanetRename(raw: string): { trimmed: string; error: string | null } {
+  const trimmed = String(raw ?? "").trim();
+  if (trimmed.length > MAX_PLANET_NAME_LENGTH) {
+    return {
+      trimmed,
+      error: `Planet name must be ${MAX_PLANET_NAME_LENGTH} characters or fewer.`,
+    };
+  }
+  if (/[\u0000-\u001F\u007F]/.test(trimmed)) {
+    return {
+      trimmed,
+      error: "Planet name cannot contain control characters.",
+    };
+  }
+  return { trimmed, error: null };
+}
+
 interface NormalizedPlanetRow {
   slot: number;
   planetId: number;
   name: string;
+  gameName: string;
+  hasCustomName: boolean;
   coords: string;
   isPlaceholder: boolean;
   isCentral: boolean;
@@ -300,11 +353,18 @@ function buildParamsPayload(draft: ConfigOptimizerDraft): Record<string, any> {
 
 function normalizePlanetRows(
   result: ConfigOptimizerResultData | null | undefined,
-  reservedFloorsMap: Record<string, Record<string, number>>
+  reservedFloorsMap: Record<string, Record<string, number>>,
+  customPlanetNames: Record<string, string>,
+  dashboardPlanets: PlanetData[]
 ): NormalizedPlanetRow[] {
   const rawPlanets: ConfigOptimizerPlanetRecord[] = Array.isArray(result?.planets)
     ? result!.planets!
     : [];
+  const dashByPid = new Map<number, PlanetData>();
+  for (const dp of dashboardPlanets) {
+    const dpId = Math.round(safeFiniteNumber(dp?.planet_id, 0) ?? 0);
+    if (dpId > 0) dashByPid.set(dpId, dp);
+  }
 
   return rawPlanets.map((p, idx) => {
     const slot = Math.max(1, Math.round(safeFiniteNumber(p.slot ?? p.slot_index, idx + 1) ?? idx + 1));
@@ -313,6 +373,7 @@ function normalizePlanetRows(
     const isPlaceholder = Boolean(
       p.is_placeholder ?? (String(p.planet_status || "").toLowerCase() === "generic")
     );
+    const dashPlanet = !isPlaceholder && pid > 0 ? dashByPid.get(pid) : undefined;
     const isCentral = Boolean(p.is_central_planet);
     const temp = safeFiniteNumber(p.temperature ?? p.temperature_c, null);
     const fieldsMax = Math.max(0, Math.round(safeFiniteNumber(p.fields_max, 300) ?? 300));
@@ -454,10 +515,26 @@ function normalizePlanetRows(
         : null;
     const specChanged = Boolean(p.specialization_changed);
 
+    const customName =
+      !isPlaceholder && pid > 0 ? String(customPlanetNames[String(pid)] || "").trim() : "";
+    const rawGameName = String(
+      (p as Record<string, any>).game_name ||
+        (dashPlanet as Record<string, any> | undefined)?.game_name ||
+        ""
+    ).trim();
+    const resolvedName =
+      customName ||
+      String(p.name || dashPlanet?.name || (isPlaceholder ? `Preview Slot ${slot}` : coords));
+    const gameName =
+      rawGameName ||
+      (!customName ? resolvedName : String(dashPlanet?.name || p.name || coords));
+
     return {
       slot,
       planetId: pid,
-      name: String(p.name || (isPlaceholder ? `Preview Slot ${slot}` : coords)),
+      name: resolvedName,
+      gameName,
+      hasCustomName: Boolean(customName),
       coords,
       isPlaceholder,
       isCentral,
@@ -489,11 +566,13 @@ export interface ConfigOptimizerTabProps {
 export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden = false }) => {
   const {
     dashboard,
+    setDashboard,
     activePage,
     apiOnline,
     plannerJobsStatus,
     setPlannerJobsStatus,
     apiCommand,
+    loadDashboard,
     showFeedback,
   } = useConsole();
 
@@ -510,6 +589,10 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
   const [researchPage, setResearchPage] = useState<number>(1);
   const [researchPageSize, setResearchPageSize] = useState<number>(25);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [editingPlanetId, setEditingPlanetId] = useState<number | null>(null);
+  const [renameDraft, setRenameDraft] = useState<string>("");
+  const [renamingPlanetId, setRenamingPlanetId] = useState<number | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   const fetchOptimizerState = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {
@@ -586,9 +669,57 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
     );
   }, [optData]);
 
+  const dashboardPlanets = useMemo<PlanetData[]>(
+    () => (Array.isArray(dashboard?.state?.planets) ? dashboard!.state!.planets! : []),
+    [dashboard?.state?.planets]
+  );
+
+  const customPlanetNames = useMemo<Record<string, string>>(() => {
+    const dashMap = (dashboard as Record<string, any> | null | undefined)?.custom_planet_names;
+    const optMap = (optData as Record<string, any> | null | undefined)?.custom_planet_names;
+    if (dashMap && typeof dashMap === "object") {
+      return sanitizeCustomNamesMap(dashMap);
+    }
+    if (optMap && typeof optMap === "object") {
+      return sanitizeCustomNamesMap(optMap);
+    }
+    return {};
+  }, [dashboard, optData]);
+
+  const ownedDashboardPlanets = useMemo(() => {
+    return dashboardPlanets
+      .filter((p) => {
+        const pid = Math.round(safeFiniteNumber(p?.planet_id, 0) ?? 0);
+        const ptype = String(p?.planet_type || "normal").toLowerCase();
+        return pid > 0 && ptype === "normal";
+      })
+      .map((p, idx) => {
+        const pid = Math.round(safeFiniteNumber(p.planet_id, 0) ?? 0);
+        const coords = String(p.coords || `Planet ${pid}`);
+        const customName = customPlanetNames[String(pid)] || "";
+        const rawGameName = String((p as Record<string, any>).game_name || "").trim();
+        const displayName = customName || String(p.name || coords);
+        const gameName = rawGameName || (!customName ? displayName : String(p.name || coords));
+        return {
+          slot: idx + 1,
+          planetId: pid,
+          name: displayName,
+          gameName,
+          hasCustomName: Boolean(customName),
+          coords,
+        };
+      });
+  }, [customPlanetNames, dashboardPlanets]);
+
   const planetRows = useMemo(
-    () => normalizePlanetRows(activeResult, reservedFloorsMap),
-    [activeResult, reservedFloorsMap]
+    () =>
+      normalizePlanetRows(
+        activeResult,
+        reservedFloorsMap,
+        customPlanetNames,
+        dashboardPlanets
+      ),
+    [activeResult, customPlanetNames, dashboardPlanets, reservedFloorsMap]
   );
 
   const planetSortCols = useMemo<
@@ -841,6 +972,250 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
 
   const onUnlockAllRoles = async () => {
     await persistSpecializations({}, "Unlocked all planet specializations back to Auto.");
+  };
+
+  const startRenamingPlanet = (planetId: number, currentName: string) => {
+    setEditingPlanetId(planetId);
+    setRenameDraft(currentName);
+    setRenameError(null);
+  };
+
+  const cancelRenamingPlanet = () => {
+    setEditingPlanetId(null);
+    setRenameDraft("");
+    setRenameError(null);
+  };
+
+  const submitPlanetRename = async (
+    planetId: number,
+    rawName: string,
+    fallbackGameName?: string
+  ) => {
+    if (planetId <= 0) return;
+    const { trimmed, error } = validatePlanetRename(rawName);
+    if (error) {
+      setRenameError(error);
+      return;
+    }
+
+    setRenamingPlanetId(planetId);
+    setRenameError(null);
+    try {
+      const res = await apiCommand<RenamePlanetApiResponse>({
+        command: "rename_planet",
+        planet_id: planetId,
+        name: trimmed,
+      });
+
+      const nextCustomNames: Record<string, string> =
+        res && res.custom_planet_names && typeof res.custom_planet_names === "object"
+          ? sanitizeCustomNamesMap(res.custom_planet_names)
+          : (() => {
+              const copy = { ...customPlanetNames };
+              if (trimmed) {
+                copy[String(planetId)] = trimmed;
+              } else {
+                delete copy[String(planetId)];
+              }
+              return copy;
+            })();
+
+      const cleared = Boolean(res?.cleared) || !trimmed;
+      const resolvedGameName = String(
+        res?.game_name || res?.planet?.game_name || fallbackGameName || ""
+      ).trim();
+      const resolvedDisplayName = String(
+        res?.planet?.name ||
+          (!cleared && res?.name ? res.name : "") ||
+          trimmed ||
+          resolvedGameName ||
+          `Planet ${planetId}`
+      ).trim();
+
+      setOptData((prev) => {
+        if (!prev) return prev;
+        const patchList = (list: unknown): ConfigOptimizerPlanetRecord[] | undefined => {
+          if (!Array.isArray(list)) return undefined;
+          return list.map((entry: any) => {
+            if (Math.round(safeFiniteNumber(entry?.planet_id, 0) ?? 0) !== planetId) {
+              return entry;
+            }
+            return {
+              ...entry,
+              name: resolvedDisplayName,
+              game_name: resolvedGameName || entry.game_name,
+            };
+          });
+        };
+        const nextActive = prev.active
+          ? {
+              ...prev.active,
+              ...(prev.active.result
+                ? {
+                    result: {
+                      ...prev.active.result,
+                      planets: patchList(prev.active.result.planets) ?? prev.active.result.planets,
+                    },
+                  }
+                : {}),
+              ...(Array.isArray((prev.active as Record<string, any>).planets)
+                ? { planets: patchList((prev.active as Record<string, any>).planets) }
+                : {}),
+            }
+          : prev.active;
+
+        return {
+          ...prev,
+          custom_planet_names: nextCustomNames,
+          active: nextActive,
+        } as ConfigOptimizerGetPayload;
+      });
+
+      const patchDashboardObj = (prevDash: any) => {
+        if (!prevDash || typeof prevDash !== "object") return prevDash;
+        const prevPlanets = Array.isArray(prevDash.state?.planets) ? prevDash.state.planets : null;
+        const nextPlanets = prevPlanets
+          ? prevPlanets.map((pl: any) => {
+              if (Math.round(safeFiniteNumber(pl?.planet_id, 0) ?? 0) !== planetId) {
+                return pl;
+              }
+              return {
+                ...pl,
+                name: resolvedDisplayName,
+                game_name: resolvedGameName || pl.game_name,
+              };
+            })
+          : prevDash.state?.planets;
+        const prevActivePl = prevDash.state?.active_planet;
+        const nextActivePl =
+          prevActivePl && Math.round(safeFiniteNumber(prevActivePl.planet_id, 0) ?? 0) === planetId
+            ? {
+                ...prevActivePl,
+                name: resolvedDisplayName,
+                game_name: resolvedGameName || prevActivePl.game_name,
+              }
+            : prevActivePl;
+        return {
+          ...prevDash,
+          custom_planet_names: nextCustomNames,
+          state: prevDash.state
+            ? {
+                ...prevDash.state,
+                planets: nextPlanets,
+                ...(prevActivePl ? { active_planet: nextActivePl } : {}),
+              }
+            : prevDash.state,
+        };
+      };
+
+      setDashboard((prev) => patchDashboardObj(prev));
+      const gState = (globalThis as any).state;
+      if (gState?.dashboard) {
+        gState.dashboard = patchDashboardObj(gState.dashboard);
+      }
+
+      setEditingPlanetId(null);
+      setRenameDraft("");
+      setRenameError(null);
+      showFeedback(
+        String(
+          res?.message ||
+            (cleared
+              ? `Reset planet name to "${resolvedDisplayName}".`
+              : `Renamed planet to "${resolvedDisplayName}".`)
+        ),
+        "ok"
+      );
+
+      await Promise.all([
+        fetchOptimizerState({ silent: true }),
+        loadDashboard({ refresh: false, preserveConfig: true, force: true }),
+      ]);
+    } catch (err: any) {
+      const msg = String(err?.message || "Failed to rename planet.");
+      setRenameError(msg);
+      showFeedback(`Planet rename failed: ${msg}`, feedbackKindForError(err));
+    } finally {
+      setRenamingPlanetId(null);
+    }
+  };
+
+  const renderInlineRenameEditor = (
+    planetId: number,
+    coords: string,
+    gameName: string
+  ) => {
+    const isSavingThis = renamingPlanetId === planetId;
+    return (
+      <div
+        className="ag-co-rename-form"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <input
+          type="text"
+          id={`co-rename-input-${planetId}`}
+          className="ag-co-rename-input"
+          aria-label={`New name for planet ${coords}`}
+          maxLength={64}
+          value={renameDraft}
+          placeholder={gameName || coords}
+          autoFocus
+          disabled={isSavingThis}
+          onChange={(e) => {
+            setRenameDraft(e.target.value);
+            if (renameError) setRenameError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void submitPlanetRename(planetId, renameDraft, gameName);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              cancelRenamingPlanet();
+            }
+          }}
+        />
+        <div className="ag-co-rename-actions">
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            id={`btn-co-rename-save-${planetId}`}
+            disabled={isSavingThis}
+            onClick={() => void submitPlanetRename(planetId, renameDraft, gameName)}
+          >
+            {isSavingThis ? "Saving..." : "Save"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            id={`btn-co-rename-reset-${planetId}`}
+            title="Clear custom name and restore in-game planet name"
+            disabled={isSavingThis}
+            onClick={() => void submitPlanetRename(planetId, "", gameName)}
+          >
+            Reset
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            id={`btn-co-rename-cancel-${planetId}`}
+            disabled={isSavingThis}
+            onClick={cancelRenamingPlanet}
+          >
+            Cancel
+          </button>
+        </div>
+        {renameError ? (
+          <div
+            className="ag-co-rename-error"
+            id={`co-rename-error-${planetId}`}
+            role="alert"
+          >
+            {renameError}
+          </div>
+        ) : null}
+      </div>
+    );
   };
 
   const lockedSpecsCount = Object.keys(draft.planet_specializations).length;
@@ -1104,19 +1479,43 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
                     const resEntries = Object.entries(row.reservedFloors);
                     const currentLock = resolveLockedSpecForRow(row, draft.planet_specializations);
                     const isLocked = currentLock !== "auto";
+                    const canRename = !row.isPlaceholder && row.planetId > 0;
+                    const isEditingName = canRename && editingPlanetId === row.planetId;
                     return (
                       <tr
                         key={`${row.slot}-${row.coords}`}
                         className={`clickable-row${isSel ? " row-selected" : ""}`}
                         onClick={() => setSelectedSlot(row.slot)}
                       >
-                        <td>
-                          <div className="action-title tabular">
-                            {`#${row.slot} ${row.name}`}
-                            {row.isCentral ? " ★" : ""}
-                          </div>
+                        <td className="ag-co-planet-cell">
+                          {isEditingName ? (
+                            renderInlineRenameEditor(row.planetId, row.coords, row.gameName)
+                          ) : (
+                            <div className="ag-co-planet-head">
+                              <div className="action-title tabular">
+                                {`#${row.slot} ${row.name}`}
+                                {row.isCentral ? " ★" : ""}
+                              </div>
+                              {canRename ? (
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary btn-sm ag-co-rename-trigger"
+                                  id={`btn-co-rename-${row.planetId}`}
+                                  data-co-rename-planet={String(row.planetId)}
+                                  aria-label={`Rename ${row.name} [${row.coords}]`}
+                                  disabled={renamingPlanetId !== null}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    startRenamingPlanet(row.planetId, row.name);
+                                  }}
+                                >
+                                  Rename
+                                </button>
+                              ) : null}
+                            </div>
+                          )}
                           <div className="action-sub tabular">
-                            {`[${row.coords}]${row.isPlaceholder ? " · PREVIEW" : ""}`}
+                            {`[${row.coords}]${row.isPlaceholder ? " · PREVIEW" : ""}${row.hasCustomName && row.gameName && row.gameName !== row.name ? ` · Game: ${row.gameName}` : ""}`}
                           </div>
                         </td>
                         <td
@@ -1225,6 +1624,47 @@ export const ConfigOptimizerTab: React.FC<ConfigOptimizerTabProps> = ({ hidden =
               setPlanetPage(1);
             }}
           />
+
+          {planetRows.length === 0 && ownedDashboardPlanets.length > 0 ? (
+            <div className="ag-co-pre-run-planets" id="co-owned-planets-rename">
+              <div className="ag-co-detail-head tabular">
+                <strong>Owned Planets — Quick Rename</strong>
+                <span className="ag-toolbar-meta">
+                  Custom names sync immediately across Config Optimizer and the console.
+                </span>
+              </div>
+              <div className="ag-co-pre-run-grid">
+                {ownedDashboardPlanets.map((pl) => {
+                  const isEditingName = editingPlanetId === pl.planetId;
+                  return (
+                    <div key={pl.planetId} className="ag-co-pre-run-card">
+                      {isEditingName ? (
+                        renderInlineRenameEditor(pl.planetId, pl.coords, pl.gameName)
+                      ) : (
+                        <div className="ag-co-planet-head">
+                          <div className="action-title tabular">{`#${pl.slot} ${pl.name}`}</div>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm ag-co-rename-trigger"
+                            id={`btn-co-rename-${pl.planetId}`}
+                            data-co-rename-planet={String(pl.planetId)}
+                            aria-label={`Rename ${pl.name} [${pl.coords}]`}
+                            disabled={renamingPlanetId !== null}
+                            onClick={() => startRenamingPlanet(pl.planetId, pl.name)}
+                          >
+                            Rename
+                          </button>
+                        </div>
+                      )}
+                      <div className="action-sub tabular">
+                        {`[${pl.coords}]${pl.hasCustomName && pl.gameName && pl.gameName !== pl.name ? ` · Game: ${pl.gameName}` : ""}`}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
 
           {selectedPlanetDetail ? (
             <div className="ag-co-detail-strip" id="co-planet-detail">

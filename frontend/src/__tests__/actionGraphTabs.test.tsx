@@ -173,9 +173,15 @@ describe("ActionGraph 4-Tab Workspace", () => {
   let postedCommands: Array<Record<string, any>> = [];
   let mockDashboardState: DashboardPayload;
   let mockConflicts: Array<Record<string, any>> = [];
+  let mockCustomPlanetNames: Record<string, string> = {};
+  let mockConfigOptimizerActiveNull = false;
+  let mockIncludePlaceholderPlanet = false;
 
   beforeEach(() => {
     postedCommands = [];
+    mockCustomPlanetNames = {};
+    mockConfigOptimizerActiveNull = false;
+    mockIncludePlaceholderPlanet = false;
     mockConflicts = [
       {
         conflict_key: "pid:100:blocked:b3:l22",
@@ -221,7 +227,105 @@ describe("ActionGraph 4-Tab Workspace", () => {
             text: async () => JSON.stringify(mockDashboardState.planner_jobs_status),
           };
         }
+        if (cmd === "rename_planet") {
+          const pid = Number(body.planet_id || 0);
+          const nextRawName = String(body.name || "").trim();
+          const cleared = !nextRawName;
+          if (cleared) {
+            delete mockCustomPlanetNames[String(pid)];
+          } else {
+            mockCustomPlanetNames[String(pid)] = nextRawName;
+          }
+          const matchedPlanet = (mockDashboardState.state?.planets || []).find(
+            (p) => Number(p.planet_id) === pid
+          );
+          const gameName = String((matchedPlanet as any)?.game_name || (pid === 100 ? "Homeworld" : `Colony ${pid - 99}`));
+          const resolvedName = cleared ? gameName : nextRawName;
+          if (mockDashboardState.state?.planets) {
+            mockDashboardState = {
+              ...mockDashboardState,
+              custom_planet_names: { ...mockCustomPlanetNames },
+              state: {
+                ...mockDashboardState.state,
+                planets: mockDashboardState.state.planets.map((p) =>
+                  Number(p.planet_id) === pid
+                    ? ({ ...p, name: resolvedName, game_name: gameName } as any)
+                    : p
+                ),
+              },
+            } as any;
+          }
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                ok: true,
+                command: "rename_planet",
+                planet_id: pid,
+                name: resolvedName,
+                game_name: gameName,
+                cleared,
+                custom_planet_names: { ...mockCustomPlanetNames },
+                planet: {
+                  planet_id: pid,
+                  coords: matchedPlanet?.coords || "02:380:1",
+                  name: resolvedName,
+                  game_name: gameName,
+                  custom_name: cleared ? null : nextRawName,
+                },
+                message: cleared
+                  ? `Reset planet name to "${resolvedName}".`
+                  : `Renamed planet to "${resolvedName}".`,
+              }),
+          };
+        }
         if (cmd === "config_optimizer_get" || cmd === "config_optimizer_run") {
+          const p100Name = mockCustomPlanetNames["100"] || "Homeworld";
+          const planetsList: Array<Record<string, any>> = [
+            {
+              slot: 1,
+              planet_id: 100,
+              name: p100Name,
+              game_name: "Homeworld",
+              coords: "02:380:1",
+              temperature: 25,
+              fields_max: 300,
+              fields_used_target: 245,
+              is_central_planet: true,
+              detected_specialization: "kryptonite",
+              locked_specialization: "auto",
+              previous_specialization: "kryptonite",
+              specialization_changed: false,
+              built_floors: { b1: 12, b3: 10, b11: 8 },
+              reserved_floors: { b15: 3 },
+              buildings: {
+                b1: { built: 12, target_level: 32, last_level_time: "14h 10m", last_level_time_seconds: 51000 },
+                b3: { built: 10, target_level: 30, last_level_time: "16h 20m", last_level_time_seconds: 58800 },
+              },
+              warehouses: [{ key: "b11", level: 16, set_by: "warehouse_hours" }],
+              production: { monthly_ships: 11.4, monthly_spice_eq: 52000000 },
+            },
+          ];
+          if (mockIncludePlaceholderPlanet) {
+            planetsList.push({
+              slot: 8,
+              planet_id: 0,
+              name: "Colony Slot #8",
+              coords: "PREVIEW-8",
+              is_placeholder: true,
+              temperature: 30,
+              fields_max: 300,
+              fields_used_target: 220,
+              detected_specialization: "metal",
+              locked_specialization: "auto",
+              built_floors: {},
+              reserved_floors: {},
+              buildings: {},
+              warehouses: [],
+              production: { monthly_ships: 9.2, monthly_spice_eq: 41000000 },
+            });
+          }
           return {
             ok: true,
             status: 200,
@@ -230,53 +334,33 @@ describe("ActionGraph 4-Tab Workspace", () => {
                 ok: true,
                 colonies_owned: mockDashboardState.colonies_owned,
                 max_planets: mockDashboardState.max_planets,
+                custom_planet_names: { ...mockCustomPlanetNames },
                 job: { status: "completed", progress_pct: 100, elapsed_ms: 142 },
-                active: {
-                  run_id: 12,
-                  updated_ts: 1763400000,
-                  params: {
-                    target_ship_key: body.params?.target_ship_key || "s16",
-                    pad_generic_colonies: Boolean(body.params?.pad_generic_colonies),
-                  },
-                  result: {
-                    elapsed_ms: 142,
-                    inputs: { own_research_levels: { r1: 12, r2: 14 }, universe_research_max_levels: { r1: 30, r2: 28 } },
-                    planned_research_levels: { r1: 24, r2: 22 },
-                    summary: {
-                      ships_per_month: 84.5,
-                      whole_ships_per_month: 84,
-                      target_ship_key: body.target_ship_key || "s16",
-                      limiting_factor: "kryptonite",
-                      fields_used: 245,
-                      fields_max: 300,
-                      warehouse_fields: 36,
-                    },
-                    planets: [
-                      {
-                        slot: 1,
-                        planet_id: 100,
-                        name: "Homeworld",
-                        coords: "02:380:1",
-                        temperature: 25,
-                        fields_max: 300,
-                        fields_used_target: 245,
-                        is_central_planet: true,
-                        detected_specialization: "kryptonite",
-                        locked_specialization: "auto",
-                        previous_specialization: "kryptonite",
-                        specialization_changed: false,
-                        built_floors: { b1: 12, b3: 10, b11: 8 },
-                        reserved_floors: { b15: 3 },
-                        buildings: {
-                          b1: { built: 12, target_level: 32, last_level_time: "14h 10m", last_level_time_seconds: 51000 },
-                          b3: { built: 10, target_level: 30, last_level_time: "16h 20m", last_level_time_seconds: 58800 },
-                        },
-                        warehouses: [{ key: "b11", level: 16, set_by: "warehouse_hours" }],
-                        production: { monthly_ships: 11.4, monthly_spice_eq: 52000000 },
+                active: mockConfigOptimizerActiveNull
+                  ? null
+                  : {
+                      run_id: 12,
+                      updated_ts: 1763400000,
+                      params: {
+                        target_ship_key: body.params?.target_ship_key || "s16",
+                        pad_generic_colonies: Boolean(body.params?.pad_generic_colonies),
                       },
-                    ],
-                  },
-                },
+                      result: {
+                        elapsed_ms: 142,
+                        inputs: { own_research_levels: { r1: 12, r2: 14 }, universe_research_max_levels: { r1: 30, r2: 28 } },
+                        planned_research_levels: { r1: 24, r2: 22 },
+                        summary: {
+                          ships_per_month: 84.5,
+                          whole_ships_per_month: 84,
+                          target_ship_key: body.target_ship_key || "s16",
+                          limiting_factor: "kryptonite",
+                          fields_used: 245,
+                          fields_max: 300,
+                          warehouse_fields: 36,
+                        },
+                        planets: planetsList,
+                      },
+                    },
               }),
           };
         }
@@ -728,5 +812,401 @@ describe("ActionGraph 4-Tab Workspace", () => {
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("shipyard_targets.starcruiser");
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("allow_fleet_research");
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("fleet_research_targets.r9");
+  });
+
+  it("supports inline planet renaming in Config Optimizer with validation, Escape cancel, Enter save, Reset, and Dashboard sync", async () => {
+    mockIncludePlaceholderPlanet = true;
+
+    const DashboardNameProbe: React.FC = () => {
+      const { dashboard } = useConsole();
+      const p100 = (dashboard?.state?.planets || []).find((p) => Number(p.planet_id) === 100);
+      return <span id="test-dash-p100-name">{p100?.name || ""}</span>;
+    };
+
+    render(
+      <Harness initialDashboard={mockDashboardState}>
+        <DashboardNameProbe />
+        <ActionGraphView />
+      </Harness>
+    );
+
+    fireEvent.click(document.getElementById("ag-tab-btn-config-optimizer")!);
+    await waitFor(() => {
+      expect(document.getElementById("btn-co-rename-100")).not.toBeNull();
+    });
+
+    // Placeholder preview planet row must NOT show a rename trigger; table must contain 0 inline SVGs
+    expect(document.querySelectorAll("[data-co-rename-planet]").length).toBe(1);
+    expect(document.getElementById("co-planets-table")?.querySelectorAll("svg").length).toBe(0);
+
+    // Open inline rename editor
+    fireEvent.click(document.getElementById("btn-co-rename-100")!);
+    const inputEl = document.getElementById("co-rename-input-100") as HTMLInputElement;
+    expect(inputEl).not.toBeNull();
+    expect(inputEl.value).toBe("Homeworld");
+
+    // Validation: > 48 chars displays role="alert" error and does not call API
+    fireEvent.change(inputEl, { target: { value: "A".repeat(55) } });
+    fireEvent.click(document.getElementById("btn-co-rename-save-100")!);
+    expect(document.getElementById("co-rename-error-100")?.getAttribute("role")).toBe("alert");
+    expect(document.getElementById("co-rename-error-100")?.textContent).toContain("48");
+    expect(postedCommands.some((c) => c.command === "rename_planet")).toBe(false);
+
+    // Escape cancels inline edit cleanly
+    fireEvent.keyDown(inputEl, { key: "Escape" });
+    expect(document.getElementById("co-rename-input-100")).toBeNull();
+    expect(document.getElementById("btn-co-rename-100")).not.toBeNull();
+
+    // Re-open, rename to "Fortress Prime", submit via Enter key
+    fireEvent.click(document.getElementById("btn-co-rename-100")!);
+    const inputEl2 = document.getElementById("co-rename-input-100") as HTMLInputElement;
+    fireEvent.change(inputEl2, { target: { value: "Fortress Prime" } });
+    fireEvent.keyDown(inputEl2, { key: "Enter" });
+
+    await waitFor(() => {
+      const renameCmd = postedCommands.find((c) => c.command === "rename_planet");
+      expect(renameCmd).toBeDefined();
+      expect(renameCmd?.planet_id).toBe(100);
+      expect(renameCmd?.name).toBe("Fortress Prime");
+    });
+
+    await waitFor(() => {
+      expect(document.getElementById("co-planets-table")?.textContent).toContain("Fortress Prime");
+      expect(document.getElementById("co-planets-table")?.textContent).toContain("Game: Homeworld");
+      expect(document.getElementById("co-planet-detail")?.textContent).toContain("Fortress Prime");
+      expect(document.getElementById("test-dash-p100-name")?.textContent).toBe("Fortress Prime");
+    });
+
+    // Reset clears custom override by sending name: "" and restores in-game name
+    fireEvent.click(document.getElementById("btn-co-rename-100")!);
+    fireEvent.click(document.getElementById("btn-co-rename-reset-100")!);
+
+    await waitFor(() => {
+      const resetCmd = [...postedCommands]
+        .reverse()
+        .find((c) => c.command === "rename_planet");
+      expect(resetCmd?.planet_id).toBe(100);
+      expect(resetCmd?.name).toBe("");
+    });
+
+    await waitFor(() => {
+      expect(document.getElementById("co-planets-table")?.textContent).toContain("Homeworld");
+      expect(document.getElementById("co-planet-detail")?.textContent).toContain("Homeworld");
+      expect(document.getElementById("test-dash-p100-name")?.textContent).toBe("Homeworld");
+    });
+
+    // Pre-run quick-rename strip works when no optimization run exists yet
+    cleanup();
+    mockConfigOptimizerActiveNull = true;
+    render(
+      <Harness initialDashboard={mockDashboardState}>
+        <ActionGraphView />
+      </Harness>
+    );
+    fireEvent.click(document.getElementById("ag-tab-btn-config-optimizer")!);
+    await waitFor(() => {
+      expect(document.getElementById("co-owned-planets-rename")).not.toBeNull();
+    });
+    expect(document.getElementById("btn-co-rename-100")).not.toBeNull();
+  });
+
+  it("renders FleetPlannerTab ongoing flights with EXPECTED and DELIVERED badges & values", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const fleetDash = makeDashboard({ coloniesOwned: 4, maxPlanets: 11, plannerMode: "priority" });
+    fleetDash.state!.active_queues = [
+      {
+        category: "fleet",
+        name: "Attack -> Inactive [02:381:5]",
+        planet_id: 100,
+        planet_coords: "02:380:1",
+        returning: false,
+        finish_ts: nowSec + 420,
+        remaining_text: "7m 0s",
+        expected_cargo: { pig_iron: 12000, metal: 8000, kryptonite: 4000, spice: 1000 },
+      } as any,
+      {
+        category: "fleet",
+        name: "Recycle -> 02:381:9",
+        planet_id: 100,
+        planet_coords: "02:380:1",
+        returning: false,
+        finish_ts: nowSec + 600,
+        remaining_text: "10m 0s",
+        expected_cargo: { pig_iron: 25000, kryptonite: 15000 },
+      } as any,
+      {
+        category: "fleet",
+        name: "Transport -> Colony 2 [02:380:2]",
+        planet_id: 100,
+        planet_coords: "02:380:1",
+        returning: false,
+        finish_ts: nowSec + 300,
+        remaining_text: "5m 0s",
+        expected_cargo: { pig_iron: 40000, spice: 5000 },
+      } as any,
+      {
+        category: "fleet",
+        name: "Return Transport <- Colony 2 [02:380:2]",
+        planet_id: 100,
+        planet_coords: "02:380:1",
+        returning: true,
+        delivered: true,
+        finish_ts: nowSec + 240,
+        remaining_text: "4m 0s",
+        delivered_cargo: { metal: 18000, kryptonite: 6000 },
+      } as any,
+      {
+        category: "fleet",
+        name: "Return Transport <- Colony 3 [02:380:3]",
+        planet_id: 101,
+        planet_coords: "02:380:2",
+        returning: true,
+        delivered: true,
+        finish_ts: nowSec + 180,
+        remaining_text: "3m 0s",
+        delivered_cargo: null,
+      } as any,
+      {
+        category: "fleet",
+        name: "Return Attack <- Inactive [02:381:5]",
+        planet_id: 100,
+        planet_coords: "02:380:1",
+        returning: true,
+        finish_ts: nowSec + 120,
+        remaining_text: "2m 0s",
+        cargo: { pig_iron: 9500, spice: 2500 },
+      } as any,
+    ];
+    mockDashboardState = fleetDash;
+
+    render(
+      <Harness initialDashboard={fleetDash}>
+        <ActionGraphView />
+      </Harness>
+    );
+
+    fireEvent.click(document.getElementById("ag-tab-btn-fleet-planner")!);
+    await waitFor(() => {
+      expect(document.getElementById("flt-ongoing-flights")).not.toBeNull();
+    });
+
+    const ongoingEl = document.getElementById("flt-ongoing-flights")!;
+    expect(ongoingEl.textContent).toContain("6 flights");
+    expect(ongoingEl.querySelectorAll("svg").length).toBe(0);
+
+    const expectedBadges = ongoingEl.querySelectorAll('[data-cargo-kind="expected"]');
+    const deliveredBadges = ongoingEl.querySelectorAll('[data-cargo-kind="delivered"]');
+    const lootBadges = ongoingEl.querySelectorAll('[data-cargo-kind="loot"]');
+
+    expect(expectedBadges.length).toBe(3);
+    expect(deliveredBadges.length).toBe(2);
+    expect(lootBadges.length).toBe(1);
+
+    expectedBadges.forEach((b) => expect(b.textContent).toBe("EXPECTED"));
+    deliveredBadges.forEach((b) => expect(b.textContent).toBe("DELIVERED"));
+    expect(lootBadges[0].textContent).toBe("Loot");
+
+    // Verify formatted cargo values appear cleanly alongside badges
+    expect(ongoingEl.textContent).toContain("12,000 Pig");
+    expect(ongoingEl.textContent).toContain("25,000 Pig");
+    expect(ongoingEl.textContent).toContain("40,000 Pig");
+    expect(ongoingEl.textContent).toContain("18,000 Met");
+    expect(ongoingEl.textContent).toContain("6,000 Kryp");
+    expect(ongoingEl.textContent).toContain("9,500 Pig");
+  });
+
+  it("renders GaNnScannerHud Active Builders, Hourly Production canvas line chart, Stolen & Recycled canvas bar chart, and preserves strict SVG & legacy ga_nn invariants", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const hudDash = makeDashboard({
+      coloniesOwned: 3,
+      maxPlanets: 11,
+      plannerMode: "ai_planner",
+      liveAiUnlocked: false,
+    }) as any;
+
+    // Add an asteroid that must NOT be counted in normal Active Builders total
+    hudDash.state.planets.push({
+      planet_id: 199,
+      name: "Asteroid",
+      coords: "02:380:1",
+      planet_type: "asteroid",
+      resources: { pig_iron: 0, metal: 0, kryptonite: 0, spice: 0 },
+      storage: { pig_iron: 10000, metal: 10000, kryptonite: 10000, spice: 10000 },
+      energy: { produced: 0, used: 0, net: 0 },
+      buildings: {},
+      ships: {},
+    });
+
+    // 2 active building queues + 1 expired building queue + 1 fleet queue -> exactly 2 / 3 builders
+    hudDash.state.active_queues = [
+      { category: "building", name: "Pig iron mine L13", planet_id: 100, planet_coords: "02:380:1", finish_ts: nowSec + 600 },
+      { category: "building", name: "Kryptonite mine L11", planet_id: 101, planet_coords: "02:380:2", finish_ts: nowSec + 420 },
+      { category: "building", name: "Expired Build", planet_id: 102, planet_coords: "02:380:3", finish_ts: nowSec - 30 },
+      { category: "fleet", name: "Raid -> Inactive", planet_id: 102, planet_coords: "02:380:3", finish_ts: nowSec + 300 },
+    ];
+
+    hudDash.hourly_production_history = [
+      {
+        minute_bucket: "2026-11-18T21:20",
+        recorded_at: nowSec - 120,
+        pig_iron_per_hour: 50000,
+        metal_per_hour: 30000,
+        kryptonite_per_hour: 20000,
+        spice_per_hour: 10000,
+        total_per_hour: 110000,
+        speq_per_hour: 45000,
+        planet_count: 3,
+        active_builders: 2,
+      },
+      {
+        minute_bucket: "2026-11-18T21:21",
+        recorded_at: nowSec - 60,
+        pig_iron_per_hour: 55000,
+        metal_per_hour: 32500,
+        kryptonite_per_hour: 22500,
+        spice_per_hour: 12500,
+        total_per_hour: 122500,
+        speq_per_hour: 50000,
+        planet_count: 3,
+        active_builders: 2,
+      },
+      {
+        minute_bucket: "2026-11-18T21:22",
+        recorded_at: nowSec,
+        pig_iron_per_hour: 60000,
+        metal_per_hour: 35000,
+        kryptonite_per_hour: 25000,
+        spice_per_hour: 15000,
+        total_per_hour: 135000,
+        speq_per_hour: 55000,
+        planet_count: 3,
+        active_builders: 2,
+      },
+    ];
+    hudDash.current_hourly_production = hudDash.hourly_production_history[2];
+
+    hudDash.loot_recycle_history = [
+      {
+        hour_bucket: "2026-11-18T20",
+        stolen_pig_iron: 20000,
+        stolen_metal: 12000,
+        stolen_kryptonite: 7000,
+        stolen_spice: 3000,
+        stolen_total: 42000,
+        recycled_pig_iron: 12000,
+        recycled_metal: 0,
+        recycled_kryptonite: 6000,
+        recycled_spice: 0,
+        recycled_total: 18000,
+        total: 60000,
+        attack_count: 2,
+        recycle_count: 1,
+        updated_at: nowSec - 3600,
+      },
+      {
+        hour_bucket: "2026-11-18T21",
+        stolen_pig_iron: 18000,
+        stolen_metal: 10000,
+        stolen_kryptonite: 7000,
+        stolen_spice: 3000,
+        stolen_total: 38000,
+        recycled_pig_iron: 14000,
+        recycled_metal: 0,
+        recycled_kryptonite: 8000,
+        recycled_spice: 0,
+        recycled_total: 22000,
+        total: 60000,
+        attack_count: 2,
+        recycle_count: 1,
+        updated_at: nowSec,
+      },
+    ];
+    hudDash.loot_recycle_summary = {
+      total_stolen: 80000,
+      total_recycled: 40000,
+      grand_total: 120000,
+      attack_count: 4,
+      recycle_count: 2,
+      window_hours: 24,
+    };
+
+    render(
+      <Harness initialDashboard={hudDash}>
+        <GaNnScannerHud />
+      </Harness>
+    );
+
+    const hudEl = document.getElementById("gann-calc-hud")!;
+    expect(hudEl.hidden).toBe(false);
+
+    // Metric 1: Active Builders (2 / 3)
+    expect(hudEl.textContent).toContain("Active Builders");
+    expect(document.getElementById("gann-gen-val")?.textContent).toBe("2 / 3");
+    expect(document.getElementById("gann-gen-sub")?.textContent).toContain("2/3 building · 1 idle");
+
+    // Metric 2: Hourly Production line chart (<canvas id="gann-prod-chart">)
+    expect(hudEl.textContent).toContain("Hourly Production");
+    expect(document.getElementById("gann-nn-val")?.textContent).toBe("135.0k /h");
+    const prodCanvas = document.getElementById("gann-prod-chart");
+    expect(prodCanvas?.tagName).toBe("CANVAS");
+    expect(document.getElementById("gann-nn-sub")?.textContent).toContain("PI 60.0k");
+    expect(document.getElementById("gann-nn-sub")?.textContent).toContain("3m");
+
+    // Metric 3: Stolen & Recycled stacked bar chart (<canvas id="gann-loot-chart">)
+    expect(hudEl.textContent).toContain("Stolen & Recycled");
+    expect(document.getElementById("gann-fit-val")?.textContent).toBe("120.0k");
+    const lootCanvas = document.getElementById("gann-loot-chart");
+    expect(lootCanvas?.tagName).toBe("CANVAS");
+    expect(document.getElementById("gann-fit-sub")?.textContent).toContain("Stolen 80.0k · Recycled 40.0k (24h)");
+
+    // Strict 2-SVG invariant: GaNnScannerHud renders ONLY #gann-radial-svg (0 new SVGs)
+    const svgs = Array.from(hudEl.querySelectorAll("svg"));
+    expect(svgs.length).toBe(1);
+    expect(svgs[0].id).toBe("gann-radial-svg");
+
+    // Background job running overrides Metric 1 to "Background Job"
+    cleanup();
+    const runningDash = {
+      ...hudDash,
+      planner_jobs_status: {
+        ...hudDash.planner_jobs_status,
+        ai_planner_job: { status: "running", progress_pct: 64, elapsed_ms: 910, phase: "ga_search" },
+      },
+    };
+    render(
+      <Harness initialDashboard={runningDash}>
+        <GaNnScannerHud />
+      </Harness>
+    );
+    expect(document.getElementById("gann-calc-hud")?.textContent).toContain("Background Job");
+    expect(document.getElementById("gann-gen-val")?.textContent).toBe("64%");
+
+    // Legacy ga_nn summary compatibility preserved (no regressions for test_ui.py)
+    cleanup();
+    const legacyGaDash = makeDashboard({
+      coloniesOwned: 3,
+      maxPlanets: 11,
+      plannerMode: "ga_nn",
+    }) as any;
+    legacyGaDash.config.ga_generations = 4;
+    legacyGaDash.optimizer_summary = {
+      generations: 4,
+      population_size: 8,
+      nn_evaluations: 32,
+      nn_train_loss: 0.0,
+      nn_backend: "python",
+      improvement_pct: 1200,
+      elapsed_ms: 88,
+      best_chromosome: ["BUILD:b1", "BUILD:b3"],
+    };
+    render(
+      <Harness initialDashboard={legacyGaDash}>
+        <GaNnScannerHud />
+      </Harness>
+    );
+    expect(document.getElementById("gann-gen-val")?.textContent).toBe("4 / 4");
+    expect(document.getElementById("gann-nn-val")?.textContent).toBe("32 evals");
+    expect(document.getElementById("gann-fit-val")?.textContent).toBe(">+999.9%");
+    expect(document.getElementById("gann-genome-val")?.textContent).toBe("2 genes");
   });
 });
