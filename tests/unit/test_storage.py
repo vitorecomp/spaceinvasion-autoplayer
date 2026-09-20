@@ -1571,6 +1571,156 @@ class TestGameDatabase(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_custom_planet_names_transport_dispatches_v014_telemetry_and_max_galaxies(self) -> None:
+        from spaceinvasion.combat.fleet import GalaxySlot, InboxMessage
+        from spaceinvasion.planner.strategy import PlannedAction
+
+        base_hr = 1_760_000_000 // 3600 * 3600
+        with tempfile.TemporaryDirectory(prefix="si_store_v14_") as tmp:
+            db = GameDatabase(Path(tmp) / "store_v14.db", attack_history_path="")
+            try:
+                # 1. Custom planet names: sanitization, 48-char cap, sid redaction, clear & batch
+                self.assertEqual(
+                    GameDatabase.sanitize_custom_planet_name("  Capital\x07  Prime  "),
+                    "Capital Prime",
+                )
+                self.assertEqual(len(GameDatabase.sanitize_custom_planet_name("A" * 80)), 48)
+                self.assertNotIn(
+                    "supersecret",
+                    GameDatabase.sanitize_custom_planet_name("Home sid=supersecret123"),
+                )
+
+                names1 = db.set_custom_planet_name(101, "Forge World")
+                self.assertEqual(names1, {"101": "Forge World"})
+                self.assertEqual(db.get_custom_planet_names(), {"101": "Forge World"})
+                names2 = db.set_custom_planet_names({102: "Spice Hub", 101: ""})
+                self.assertEqual(names2, {"102": "Spice Hub"})
+                self.assertNotIn("101", db.get_custom_planet_names())
+
+                # 2. Recent transport dispatches ring + dedupe + action_history fallback
+                db.record_transport_dispatch(
+                    origin_coords="2:380:12",
+                    dest_coords="2:380:08",
+                    cargo=Resources(25000, 15000, 5000, 1000),
+                    ships="5 Large transport",
+                    source="dispatch",
+                    ts=float(base_hr + 100),
+                )
+                # Duplicate within 5s window is collapsed
+                db.record_transport_dispatch(
+                    origin_coords="02:380:12",
+                    dest_coords="02:380:08",
+                    cargo={"pig_iron": 25000, "metal": 15000, "kryptonite": 5000, "spice": 1000},
+                    ships="5 Large transport",
+                    source="dispatch",
+                    ts=float(base_hr + 102),
+                )
+                dispatches = db.get_recent_transport_dispatches(max_age_seconds=86400.0, now_ts=float(base_hr + 300))
+                self.assertEqual(len(dispatches), 1)
+                self.assertEqual(dispatches[0]["origin_coords"], "02:380:12")
+                self.assertEqual(dispatches[0]["dest_coords"], "02:380:08")
+                self.assertEqual(dispatches[0]["cargo"]["pig_iron"], 25000)
+
+                # action_history fallback for legacy dispatches
+                tr_act = PlannedAction(
+                    priority="P1",
+                    kind="TRANSPORT",
+                    planet_id=101,
+                    planet_coords="02:380:12",
+                    target_name="Colony [02:380:09]",
+                    cost=Resources(10000, 8000, 2000, 0),
+                    reason="Deliver metal",
+                    executable_now=True,
+                )
+                db.record_action(
+                    source="api",
+                    command="transport",
+                    action=tr_act,
+                    executed=True,
+                    dry_run=False,
+                    message="Dispatched 2 Large transport to [02:380:09] (10,000P/8,000M/2,000K)",
+                    ts=float(base_hr + 120),
+                )
+                fb_rows = db.get_recent_transport_actions_fallback(max_age_seconds=86400.0, now_ts=float(base_hr + 300))
+                self.assertEqual(len(fb_rows), 1)
+                self.assertEqual(fb_rows[0]["dest_coords"], "02:380:09")
+                self.assertEqual(fb_rows[0]["cargo"]["metal"], 8000)
+
+                # 3. Galaxy debris amounts map & clearing
+                db.record_galaxy_slots(
+                    [
+                        GalaxySlot(
+                            coords="02:381:05",
+                            position=5,
+                            name="Farm",
+                            owner="Idle",
+                            status_color="yellow",
+                            has_debris=True,
+                            debris_pig_iron=8000,
+                            debris_metal=4000,
+                            debris_kryptonite=2000,
+                            debris_spice=1000,
+                        )
+                    ],
+                    ts=float(base_hr + 150),
+                )
+                deb_map = db.get_galaxy_debris_amounts()
+                self.assertEqual(deb_map["02:381:05"]["pig_iron"], 8000)
+                db.set_target_debris("02:381:05", False)
+                self.assertNotIn("02:381:05", db.get_galaxy_debris_amounts())
+
+                # 4. V014 auto-refresh of loot_recycle_hourly on message ingest (24h zero-filled)
+                db.record_game_messages(
+                    [
+                        InboxMessage(
+                            msg_uid="id:st_atk_h1",
+                            server_msg_id="st_atk_h1",
+                            folder_type="attack",
+                            category="battle_report",
+                            msg_date_text="2026-11-18 11:05:00",
+                            sender="System",
+                            subject="Battle report [02:380:11]",
+                            coords="02:380:11",
+                            body_text="You won the battle and stole 5000 Pig iron, 2500 Metal.",
+                            parsed_data={"outcome": "win", "loot": {"pig_iron": 5000, "metal": 2500, "kryptonite": 0, "spice": 0}},
+                        ),
+                        InboxMessage(
+                            msg_uid="id:st_rec_h2",
+                            server_msg_id="st_rec_h2",
+                            folder_type="inbox",
+                            category="recycle_report",
+                            msg_date_text="2026-11-18 12:15:00",
+                            sender="System",
+                            subject="Space rubble [02:380:12] recycling report",
+                            coords="02:380:12",
+                            body_text="Your fleet (8 Recycler) processed 3000 Kryptonite, 1000 Spice pieces of rubble there.",
+                            parsed_data={"recycler_count": 8, "harvested": {"pig_iron": 0, "metal": 0, "kryptonite": 3000, "spice": 1000}},
+                        ),
+                    ],
+                    ts=float(base_hr + 3600 + 300),
+                )
+                lr = db.get_loot_recycle_hourly(hours=24, now_ts=float(base_hr + 3600 + 600))
+                self.assertEqual(len(lr["history"]), 24)
+                self.assertEqual(lr["summary"]["total_stolen"], 7500.0)
+                self.assertEqual(lr["summary"]["total_recycled"], 4000.0)
+                self.assertEqual(lr["summary"]["grand_total"], 11500.0)
+                self.assertEqual(lr["summary"]["attack_count"], 1)
+                self.assertEqual(lr["summary"]["recycle_count"], 1)
+
+                # 5. Dynamic max_galaxies filtering in get_galaxy_sector_intel (#103)
+                db.record_galaxy_scan(2, 100, [], ts=float(base_hr + 100))
+                db.record_galaxy_scan(9, 10, [], ts=float(base_hr + 105))
+                intel_8 = db.get_galaxy_sector_intel(max_galaxies=8, now_ts=float(base_hr + 200))
+                self.assertEqual(intel_8["universe_total_systems"], 3200)
+                self.assertEqual(intel_8["universe_explored_systems"], 1)
+                self.assertIn("02:100", intel_8["sectors"])
+                self.assertNotIn("09:010", intel_8["sectors"])
+                intel_14 = db.get_galaxy_sector_intel(max_galaxies=14, now_ts=float(base_hr + 200))
+                self.assertEqual(intel_14["universe_total_systems"], 5600)
+                self.assertEqual(intel_14["universe_explored_systems"], 2)
+            finally:
+                db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

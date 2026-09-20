@@ -1182,6 +1182,112 @@ class TestStateParsers(unittest.TestCase):
         atk_out_rt = next(q for q in gs_rt.active_queues if "Attack →" in q.name)
         self.assertIsNone(atk_out_rt.cargo)
 
+    def test_queue_job_expected_delivered_roundtrip_and_building_origin_coords(self) -> None:
+        from dataclasses import asdict
+        from spaceinvasion.core.state import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            QueueJob,
+            Resources,
+            game_state_from_dict,
+            is_undersized_fresh_colony,
+            parse_building_queue,
+            parse_home_metadata,
+        )
+
+        # Default QueueJob backward compatibility
+        q_default = QueueJob(category="fleet", name="Attack → [02:378:15]")
+        self.assertIsNone(q_default.expected_cargo)
+        self.assertIsNone(q_default.delivered_cargo)
+        self.assertFalse(q_default.delivered)
+
+        # Round-trip expected_cargo, delivered_cargo, and delivered flag
+        q_exp = QueueJob(
+            category="fleet",
+            name="Attack → [02:378:15]",
+            detail="outbound · 6 Small fighter",
+            origin_coords="02:380:12",
+            expected_cargo=Resources(5000, 3000, 1000, 500),
+        )
+        q_del = QueueJob(
+            category="fleet",
+            name="Transport ↩ [02:380:08]",
+            detail="returning · 10 Large transport",
+            origin_coords="02:380:12",
+            delivered=True,
+            delivered_cargo=Resources(40000, 20000, 0, 5000),
+        )
+        p1 = PlanetState(
+            planet_id=101, name="Main", coords="02:380:12", planet_type="normal",
+            temperature=20, fields_used=5, fields_max=300,
+            resources=Resources(100, 100, 100, 100), storage=Resources(1000, 1000, 1000, 1000),
+            energy=EnergyBalance(50, 10),
+        )
+        p2 = PlanetState(
+            planet_id=102, name="FreshColony", coords="02:380:08", planet_type="normal",
+            temperature=20, fields_used=0, fields_max=180,
+            resources=Resources(0, 0, 0, 0), storage=Resources(1000, 1000, 1000, 1000),
+            energy=EnergyBalance(0, 0),
+        )
+        gs = GameState(
+            universe_id=31, user_id=1, nickname="cmdr", timestamp=2000.0,
+            planets=(p1, p2), active_planet_id=101, active_queues=(q_exp, q_del),
+        )
+        gs_rt = game_state_from_dict(asdict(gs))
+        self.assertEqual(gs_rt.active_queues[0].expected_cargo, Resources(5000, 3000, 1000, 500))
+        self.assertFalse(gs_rt.active_queues[0].delivered)
+        self.assertTrue(gs_rt.active_queues[1].delivered)
+        self.assertEqual(gs_rt.active_queues[1].delivered_cargo, Resources(40000, 20000, 0, 5000))
+
+        # parse_building_queue stamps normalized origin_coords
+        bld_html = """
+        <table>
+          <tr><td>Construction queue</td></tr>
+          <tr><td>Pig iron mine (Level 4) <span id="sicntbar-1-1">00:05:00</span> <span id="sicntbar-1-2">20%</span></td></tr>
+        </table>
+        """
+        b_jobs = parse_building_queue(bld_html, now_ts=1_700_000_000.0, origin_coords="2:380:12")
+        self.assertEqual(len(b_jobs), 1)
+        self.assertEqual(b_jobs[0].origin_coords, "02:380:12")
+
+        # parse_home_metadata propagates origin_coords to building jobs AND sets transport flags
+        home_html = """
+        <html><body>
+        <table><tr><td>Pig iron mine (Level 4)</td><td>00:05:00</td></tr></table>
+        <script>
+        var faData=[
+          {"title":"Own fleet","type":"friendly","rows":[
+            {"id":1,"t":300,"n":5,"tt":"5 Large transport<br><hr>10.000 Pig iron","a":'TRANSPORT',"c":0,"start":"[02:380:12] Main","dest":"[02:380:08] Colony"}
+          ]},
+          {"title":"Returning Fleets","type":"friendly","rows":[
+            {"id":2,"t":200,"n":5,"tt":"5 Large transport<br><hr>None","a":'TRANSPORT',"c":0,"return":true,"start":"[02:380:12] Main","dest":"[02:380:09] Colony2"}
+          ]}
+        ];
+        </script></body></html>
+        """
+        _, _, _, h_queues, _ = parse_home_metadata(home_html, now_ts=1_700_000_000.0, origin_coords="2:380:12")
+        h_trn_out = next(q for q in h_queues if q.category == "fleet" and "Transport →" in q.name)
+        self.assertEqual(h_trn_out.expected_cargo, Resources(10000, 0, 0, 0))
+        self.assertFalse(h_trn_out.delivered)
+        h_trn_ret = next(q for q in h_queues if q.category == "fleet" and "Transport" in q.name and "returning" in q.detail.lower())
+        self.assertTrue(h_trn_ret.delivered)
+
+        # is_undersized_fresh_colony scopes building queue checks by origin_coords
+        gs_b = GameState(
+            universe_id=31, user_id=1, nickname="cmdr", timestamp=2000.0,
+            planets=(p1, p2), active_planet_id=101, active_queues=b_jobs,
+        )
+        # p1 has the active building job -> p2 (fresh undersized colony) is STILL detected as undersized!
+        self.assertTrue(is_undersized_fresh_colony(p2, gs_b, 300))
+        # Building job on p2 itself protects p2 from abandonment
+        gs_b2 = GameState(
+            universe_id=31, user_id=1, nickname="cmdr", timestamp=2000.0,
+            planets=(p1, p2), active_planet_id=101,
+            active_queues=(QueueJob(category="building", name="Pig iron mine (Level 1)", origin_coords="02:380:08"),),
+        )
+        self.assertFalse(is_undersized_fresh_colony(p2, gs_b2, 300))
+
 
 if __name__ == "__main__":
     unittest.main()

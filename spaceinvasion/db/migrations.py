@@ -31,7 +31,7 @@ DEFAULT_RANK_HISTORY_JSON_PATH = Path("state") / "rank_history.json"
 DEFAULT_SNAPSHOT_JSON_PATH = Path("state") / "snapshot.json"
 DEFAULT_CONFIG_YAML_PATH = Path("config.yaml")
 
-LATEST_SCHEMA_VERSION: int = 13
+LATEST_SCHEMA_VERSION: int = 14
 SCHEMA_VERSION: str = str(LATEST_SCHEMA_VERSION)
 ATTACK_HISTORY_SCHEMA_VERSION: int = 2
 
@@ -970,6 +970,46 @@ CREATE INDEX IF NOT EXISTS idx_field_conflict_events_ts
     ON field_conflict_events(created_ts);
 """,
     ),
+    Migration(
+        version=14,
+        name="v014_hourly_production_and_loot_recycle_telemetry",
+        description="Add append-only hourly_production_history (per-minute empire production snapshots) and materialized loot_recycle_hourly (hourly stolen loot and recycled debris aggregates).",
+        sql="""
+CREATE TABLE IF NOT EXISTS hourly_production_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    minute_bucket INTEGER NOT NULL UNIQUE,
+    recorded_at REAL NOT NULL,
+    pig_iron_per_hour REAL NOT NULL DEFAULT 0,
+    metal_per_hour REAL NOT NULL DEFAULT 0,
+    kryptonite_per_hour REAL NOT NULL DEFAULT 0,
+    spice_per_hour REAL NOT NULL DEFAULT 0,
+    total_per_hour REAL NOT NULL DEFAULT 0,
+    speq_per_hour REAL NOT NULL DEFAULT 0,
+    planet_count INTEGER NOT NULL DEFAULT 0,
+    active_builders INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_hourly_production_minute
+    ON hourly_production_history(minute_bucket DESC);
+
+CREATE TABLE IF NOT EXISTS loot_recycle_hourly (
+    hour_bucket INTEGER PRIMARY KEY,
+    stolen_pig_iron REAL NOT NULL DEFAULT 0,
+    stolen_metal REAL NOT NULL DEFAULT 0,
+    stolen_kryptonite REAL NOT NULL DEFAULT 0,
+    stolen_spice REAL NOT NULL DEFAULT 0,
+    stolen_total REAL NOT NULL DEFAULT 0,
+    recycled_pig_iron REAL NOT NULL DEFAULT 0,
+    recycled_metal REAL NOT NULL DEFAULT 0,
+    recycled_kryptonite REAL NOT NULL DEFAULT 0,
+    recycled_spice REAL NOT NULL DEFAULT 0,
+    recycled_total REAL NOT NULL DEFAULT 0,
+    attack_count INTEGER NOT NULL DEFAULT 0,
+    recycle_count INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL DEFAULT 0
+);
+""",
+        data_hook_name="backfill_v014_loot_recycle_hourly",
+    ),
 )
 
 # Canonical table tier division:
@@ -993,6 +1033,7 @@ HOT_TABLES: tuple[str, ...] = (
     "config_optimizer_active",
     "ai_planner_active",
     "field_conflict_prompts",
+    "loot_recycle_hourly",
     "schema_migrations",
 )
 
@@ -1016,6 +1057,7 @@ HISTORY_TABLES: tuple[str, ...] = (
     "config_optimizer_runs",
     "ai_planner_runs",
     "field_conflict_events",
+    "hourly_production_history",
     "schema_migration_events",
 )
 
@@ -1061,6 +1103,8 @@ GAME_REQUIRED_TABLES: tuple[str, ...] = (
     "ai_planner_runs",
     "field_conflict_prompts",
     "field_conflict_events",
+    "hourly_production_history",
+    "loot_recycle_hourly",
     "schema_migrations",
     "schema_migration_events",
 )
@@ -2429,8 +2473,152 @@ def backfill_v012_hot_tables(conn: sqlite3.Connection, now_ts: float) -> dict[st
     return counts
 
 
+def backfill_v014_loot_recycle_hourly(conn: sqlite3.Connection, now_ts: float) -> dict[str, Any]:
+    """Idempotently aggregate historical battle_reports and recycle_reports into loot_recycle_hourly."""
+    counts: dict[str, Any] = {"loot_recycle_hourly": 0, "battle_rows": 0, "recycle_rows": 0}
+    if not MigrationRunner._table_exists(conn, "loot_recycle_hourly"):
+        return counts
+
+    ts_r = round(float(now_ts), 3) if math.isfinite(float(now_ts)) else round(time.time(), 3)
+    try:
+        from spaceinvasion.combat.fleet import is_non_recycle_fleet_notice_text as _is_non_rec_notice
+    except Exception:
+        _is_non_rec_notice = None
+
+    cur = conn.cursor()
+    cur.row_factory = None
+
+    # bucket -> [spig, smet, skry, sspi, rpig, rmet, rkry, rspi, atk_cnt, rec_cnt]
+    buckets: dict[int, list[float]] = {}
+
+    if MigrationRunner._table_exists(conn, "battle_reports"):
+        b_rows = cur.execute(
+            """
+            SELECT CAST(ts / 3600 AS INTEGER) * 3600 AS hour_bucket,
+                   SUM(CASE WHEN pig_iron > 0 THEN pig_iron ELSE 0 END),
+                   SUM(CASE WHEN metal > 0 THEN metal ELSE 0 END),
+                   SUM(CASE WHEN kryptonite > 0 THEN kryptonite ELSE 0 END),
+                   SUM(CASE WHEN spice > 0 THEN spice ELSE 0 END),
+                   COUNT(*)
+            FROM battle_reports
+            WHERE ts > 0
+            GROUP BY CAST(ts / 3600 AS INTEGER) * 3600
+            """
+        ).fetchall()
+        for r in b_rows:
+            if r[0] is None:
+                continue
+            try:
+                hb = int(r[0])
+            except (TypeError, ValueError):
+                continue
+            if hb <= 0:
+                continue
+            spig = max(0.0, float(r[1] or 0.0))
+            smet = max(0.0, float(r[2] or 0.0))
+            skry = max(0.0, float(r[3] or 0.0))
+            sspi = max(0.0, float(r[4] or 0.0))
+            acnt = max(0, int(r[5] or 0))
+            counts["battle_rows"] += acnt
+            acc = buckets.setdefault(hb, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            acc[0] += spig
+            acc[1] += smet
+            acc[2] += skry
+            acc[3] += sspi
+            acc[8] += float(acnt)
+
+    if MigrationRunner._table_exists(conn, "recycle_reports"):
+        cols = {
+            str(r[1])
+            for r in cur.execute("PRAGMA table_info(recycle_reports)").fetchall()
+        }
+        kry_expr = "harvested_kryptonite" if "harvested_kryptonite" in cols else "0"
+        spi_expr = "harvested_spice" if "harvested_spice" in cols else "0"
+        raw_expr = "raw_text" if "raw_text" in cols else "''"
+        r_rows = cur.execute(
+            f"""
+            SELECT ts, harvested_pig_iron, harvested_metal, {kry_expr}, {spi_expr}, {raw_expr}
+            FROM recycle_reports
+            WHERE ts > 0
+            """
+        ).fetchall()
+        for r in r_rows:
+            raw_txt = str(r[5] or "")
+            if _is_non_rec_notice is not None and raw_txt and _is_non_rec_notice(raw_txt):
+                continue
+            try:
+                ts_val = float(r[0])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(ts_val) or ts_val <= 0.0:
+                continue
+            hb = int(ts_val // 3600) * 3600
+            rpig = max(0.0, float(r[1] or 0.0))
+            rmet = max(0.0, float(r[2] or 0.0))
+            rkry = max(0.0, float(r[3] or 0.0))
+            rspi = max(0.0, float(r[4] or 0.0))
+            counts["recycle_rows"] += 1
+            acc = buckets.setdefault(hb, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            acc[4] += rpig
+            acc[5] += rmet
+            acc[6] += rkry
+            acc[7] += rspi
+            acc[9] += 1.0
+
+    upsert_params: list[tuple[Any, ...]] = []
+    for hb in sorted(buckets.keys()):
+        acc = buckets[hb]
+        spig = round(acc[0], 3)
+        smet = round(acc[1], 3)
+        skry = round(acc[2], 3)
+        sspi = round(acc[3], 3)
+        stot = round(spig + smet + skry + sspi, 3)
+        rpig = round(acc[4], 3)
+        rmet = round(acc[5], 3)
+        rkry = round(acc[6], 3)
+        rspi = round(acc[7], 3)
+        rtot = round(rpig + rmet + rkry + rspi, 3)
+        acnt = max(0, int(round(acc[8])))
+        rcnt = max(0, int(round(acc[9])))
+        upsert_params.append(
+            (hb, spig, smet, skry, sspi, stot, rpig, rmet, rkry, rspi, rtot, acnt, rcnt, ts_r)
+        )
+
+    if upsert_params:
+        cur.executemany(
+            """
+            INSERT INTO loot_recycle_hourly(
+                hour_bucket,
+                stolen_pig_iron, stolen_metal, stolen_kryptonite, stolen_spice, stolen_total,
+                recycled_pig_iron, recycled_metal, recycled_kryptonite, recycled_spice, recycled_total,
+                attack_count, recycle_count, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(hour_bucket) DO UPDATE SET
+                stolen_pig_iron = excluded.stolen_pig_iron,
+                stolen_metal = excluded.stolen_metal,
+                stolen_kryptonite = excluded.stolen_kryptonite,
+                stolen_spice = excluded.stolen_spice,
+                stolen_total = excluded.stolen_total,
+                recycled_pig_iron = excluded.recycled_pig_iron,
+                recycled_metal = excluded.recycled_metal,
+                recycled_kryptonite = excluded.recycled_kryptonite,
+                recycled_spice = excluded.recycled_spice,
+                recycled_total = excluded.recycled_total,
+                attack_count = excluded.attack_count,
+                recycle_count = excluded.recycle_count,
+                updated_at = excluded.updated_at
+            """,
+            upsert_params,
+        )
+    counts["loot_recycle_hourly"] = len(upsert_params)
+    return counts
+
+
 DEFAULT_GAME_MIGRATION_RUNNER = MigrationRunner(
-    data_hooks={"backfill_v012_hot_tables": backfill_v012_hot_tables},
+    data_hooks={
+        "backfill_v012_hot_tables": backfill_v012_hot_tables,
+        "backfill_v014_loot_recycle_hourly": backfill_v014_loot_recycle_hourly,
+    },
 )
 
 

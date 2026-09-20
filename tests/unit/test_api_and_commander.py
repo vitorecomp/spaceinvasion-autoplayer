@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import commander
-from spaceinvasion.api_server import GameApiBridge, create_api_server
+from spaceinvasion.api_server import ApiRequestError, GameApiBridge, create_api_server
 from spaceinvasion.commander_client import GameApiClient, GameApiError
 from spaceinvasion.config import StrategyConfig
 from spaceinvasion.logging_utils import append_tick_logs, redact_sensitive
@@ -34,7 +34,7 @@ from spaceinvasion.state import (
     TutorialTask,
     game_state_from_dict,
 )
-from spaceinvasion.strategy import FUSION_PLANT, PIG_IRON_MINE
+from spaceinvasion.strategy import FUSION_PLANT, PIG_IRON_MINE, PlannedAction
 
 
 def _sample_state() -> GameState:
@@ -2070,7 +2070,7 @@ class TestApiAndCommander(unittest.TestCase):
         import math
         import requests
         import commander
-        from spaceinvasion.api_server import GameApiBridge, create_api_server
+        from spaceinvasion.api_server import ApiRequestError, GameApiBridge, create_api_server
         from spaceinvasion.commander_client import GameApiClient
         from spaceinvasion.strategy import PlannedAction
 
@@ -2385,7 +2385,7 @@ class TestApiAndCommander(unittest.TestCase):
         import threading
         import requests
         from pathlib import Path
-        from spaceinvasion.api_server import GameApiBridge, create_api_server
+        from spaceinvasion.api_server import ApiRequestError, GameApiBridge, create_api_server
         from spaceinvasion.client import RateLimitError
         import commander
 
@@ -8235,6 +8235,535 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertTrue(run2["ok"])
                 self.assertEqual(run2["result"]["steps"], [])
                 self.assertEqual(client_factory.call_count, 0)
+            finally:
+                bridge.close()
+
+    def test_flight_expected_delivered_enrichment_planet_renaming_building_requests_and_v014_dashboard(self) -> None:
+        import time as _time
+        from spaceinvasion.combat.fleet import GalaxySlot, InboxMessage, SpyReport
+
+        now_ts = _time.time()
+        with tempfile.TemporaryDirectory(prefix="si_api_rc_") as tmp:
+            db_path = Path(tmp) / "rc.db"
+            cfg_path = Path(tmp) / "config.yaml"
+            bridge = GameApiBridge(
+                db_path=db_path,
+                config_path=cfg_path,
+                client_factory=lambda _port: MagicMock(),
+            )
+            try:
+                assert bridge._db is not None
+                # Seed spy intel for outbound ATTACK and debris for outbound RECYCLE
+                bridge._db.record_spy_report(
+                    SpyReport(
+                        target_coords="02:378:15",
+                        owner="IdleFarm",
+                        resources=Resources(pig_iron=40_000, metal=20_000, kryptonite=10_000, spice=4_000),
+                    ),
+                    ts=now_ts - 120.0,
+                )
+                bridge._persist_galaxy_slots(
+                    [
+                        GalaxySlot(
+                            coords="02:381:06",
+                            position=6,
+                            name="Rubble",
+                            owner="Idle",
+                            status_color="yellow",
+                            has_debris=True,
+                            debris_pig_iron=30_000,
+                            debris_metal=20_000,
+                            debris_kryptonite=10_000,
+                            debris_spice=5_000,
+                        )
+                    ]
+                )
+                # Seed battle + recycle report for V014 loot_recycle_history
+                bridge._db.record_game_messages(
+                    [
+                        InboxMessage(
+                            msg_uid="id:rc_atk_1",
+                            server_msg_id="rc_atk_1",
+                            folder_type="attack",
+                            category="battle_report",
+                            msg_date_text="2026-11-18 14:00:00",
+                            sender="System",
+                            subject="Battle report [02:378:15]",
+                            coords="02:378:15",
+                            body_text="You won the battle and stole 6000 Pig iron, 4000 Metal.",
+                            parsed_data={"outcome": "win", "loot": {"pig_iron": 6000, "metal": 4000, "kryptonite": 0, "spice": 0}},
+                        ),
+                        InboxMessage(
+                            msg_uid="id:rc_rec_1",
+                            server_msg_id="rc_rec_1",
+                            folder_type="inbox",
+                            category="recycle_report",
+                            msg_date_text="2026-11-18 14:05:00",
+                            sender="System",
+                            subject="Space rubble [02:381:06] recycling report",
+                            coords="02:381:06",
+                            body_text="Your fleet (4 Recycler) processed 2500 Kryptonite, 500 Spice pieces of rubble there.",
+                            parsed_data={"recycler_count": 4, "harvested": {"pig_iron": 0, "metal": 0, "kryptonite": 2500, "spice": 500}},
+                        ),
+                    ],
+                    ts=now_ts - 60.0,
+                )
+                # Record a live transport dispatch so returning TRANSPORT matches delivered_cargo
+                bridge._record_transport_dispatch_locked(
+                    origin_coords="02:380:12",
+                    dest_coords="02:380:08",
+                    cargo=Resources(18_000, 12_000, 4_000, 1_000),
+                    ships="2 Large transport",
+                    source="dispatch",
+                    ts=now_ts - 180.0,
+                )
+
+                p1 = PlanetState(
+                    planet_id=501,
+                    name="Homeworld",
+                    coords="02:380:12",
+                    planet_type="normal",
+                    temperature=20,
+                    fields_used=40,
+                    fields_max=300,
+                    resources=Resources(50_000, 50_000, 30_000, 20_000),
+                    storage=Resources(200_000, 200_000, 200_000, 200_000),
+                    energy=EnergyBalance(produced=500, used=200),
+                    buildings={"b1": 12, "b2": 10, "b3": 8, "b4": 6, "b5": 10},
+                    ships={"s9": 10},
+                )
+                p2 = PlanetState(
+                    planet_id=502,
+                    name="Colony Beta",
+                    coords="02:380:08",
+                    planet_type="normal",
+                    temperature=10,
+                    fields_used=20,
+                    fields_max=310,
+                    resources=Resources(100, 100, 100, 100),
+                    storage=Resources(100_000, 100_000, 100_000, 100_000),
+                    energy=EnergyBalance(produced=300, used=100),
+                    buildings={"b1": 8, "b2": 6, "b3": 4, "b4": 3, "b5": 6},
+                )
+                queues = (
+                    # Outbound ATTACK with 1 Large transport (30k cap < 37k 50% loot -> capped to 30k!)
+                    QueueJob(
+                        category="fleet",
+                        name="Attack → [02:378:15] IdleFarm",
+                        detail="outbound · 1 Large transport",
+                        origin_coords="02:380:12",
+                        remaining_seconds=300.0,
+                        finish_ts=now_ts + 300.0,
+                    ),
+                    # Outbound RECYCLE with 1 Recycler (25k cap < 65k debris -> capped to 25k!)
+                    QueueJob(
+                        category="fleet",
+                        name="Recycle → [02:381:06] Debris",
+                        detail="outbound · 1 Recycler",
+                        origin_coords="02:380:12",
+                        remaining_seconds=400.0,
+                        finish_ts=now_ts + 400.0,
+                    ),
+                    # Outbound TRANSPORT to Colony Beta (populates both expected_cargo and building_resource_requests!)
+                    QueueJob(
+                        category="fleet",
+                        name="Transport → [02:380:08] Colony Beta",
+                        detail="outbound · 2 Large transport",
+                        origin_coords="02:380:12",
+                        cargo=Resources(20_000, 10_000, 5_000, 0),
+                        remaining_seconds=250.0,
+                        finish_ts=now_ts + 250.0,
+                    ),
+                    # Returning TRANSPORT matching persisted dispatch
+                    QueueJob(
+                        category="fleet",
+                        name="Transport ↩ [02:380:08] Colony Beta",
+                        detail="returning · 2 Large transport",
+                        origin_coords="02:380:12",
+                        cargo=None,
+                        remaining_seconds=220.0,
+                        finish_ts=now_ts + 220.0,
+                    ),
+                    # Returning TRANSPORT with NO matching dispatch (still delivered=True, delivered_cargo=None)
+                    QueueJob(
+                        category="fleet",
+                        name="Transport ↩ [02:399:01] Unknown",
+                        detail="returning · 1 Small transport",
+                        origin_coords="02:380:12",
+                        cargo=None,
+                        remaining_seconds=180.0,
+                        finish_ts=now_ts + 180.0,
+                    ),
+                )
+                st = GameState(
+                    universe_id=31,
+                    user_id=77,
+                    nickname="cmdr",
+                    timestamp=now_ts,
+                    planets=(p1, p2),
+                    active_planet_id=501,
+                    active_queues=queues,
+                    researches={"r1": 4, "r2": 4},
+                )
+                bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+
+                # Seed a Config Optimizer result and AI-Planner result to test custom name overlay
+                bridge._db.record_config_optimizer_run(
+                    {
+                        "summary": {"total_planets": 2},
+                        "planets": [
+                            {"planet_id": 501, "coords": "02:380:12", "name": "Homeworld"},
+                            {"planet_id": 502, "coords": "02:380:08", "name": "Colony Beta"},
+                        ],
+                    },
+                    set_active=True,
+                )
+                bridge._db.record_ai_planner_run(
+                    {
+                        "summary": {"total_steps": 1},
+                        "steps": [
+                            {
+                                "seq": 1,
+                                "week": 1,
+                                "kind": "BUILD",
+                                "planet_id": 502,
+                                "planet_coords": "02:380:08",
+                                "planet_name": "Colony Beta",
+                                "entity_key": "b2",
+                                "entity_name": "Blast furnace",
+                                "target_level": 7,
+                            }
+                        ],
+                    },
+                    set_active=True,
+                )
+
+                # 1. Planet Renaming: invalid planet_id rejected
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "rename_planet", "planet_id": 9999, "name": "Nope"})
+
+                # Single rename
+                ren = bridge.handle_command({"command": "rename_planet", "planet_id": 501, "name": "Capital Prime"})
+                self.assertTrue(ren["ok"])
+                self.assertEqual(ren["name"], "Capital Prime")
+                self.assertEqual(ren["custom_name"], "Capital Prime")
+                self.assertEqual(ren["game_name"], "Homeworld")
+                self.assertEqual(ren["custom_planet_names"], {"501": "Capital Prime"})
+
+                # Batch rename
+                ren_b = bridge.handle_command(
+                    {"command": "rename_planet", "planet_names": {"502": "Metal Forge"}}
+                )
+                self.assertTrue(ren_b["ok"])
+                self.assertEqual(ren_b["custom_planet_names"], {"501": "Capital Prime", "502": "Metal Forge"})
+
+                # Raw _last_state planet names stay completely untouched (Selenium safety!)
+                self.assertEqual(bridge._last_state.planets[0].name, "Homeworld")
+                self.assertEqual(bridge._last_state.planets[1].name, "Colony Beta")
+
+                # 2. Verify /dashboard payload: custom names, expected/delivered flights, building_resource_requests, V014 telemetry
+                dash = bridge.dashboard(refresh=False)
+                self.assertEqual(dash["custom_planet_names"], {"501": "Capital Prime", "502": "Metal Forge"})
+                p_by_id = {p["planet_id"]: p for p in dash["state"]["planets"]}
+                self.assertEqual(p_by_id[501]["name"], "Capital Prime")
+                self.assertEqual(p_by_id[501]["game_name"], "Homeworld")
+                self.assertEqual(p_by_id[501]["custom_name"], "Capital Prime")
+                self.assertEqual(p_by_id[502]["name"], "Metal Forge")
+
+                q_list = dash["state"]["active_queues"]
+                atk_q = next(q for q in q_list if "Attack →" in q["name"])
+                self.assertIsNotNone(atk_q["expected_cargo"])
+                atk_tot = sum(atk_q["expected_cargo"].values())
+                self.assertEqual(atk_tot, 30_000)
+
+                rec_q = next(q for q in q_list if "Recycle →" in q["name"])
+                self.assertIsNotNone(rec_q["expected_cargo"])
+                self.assertEqual(sum(rec_q["expected_cargo"].values()), 25_000)
+
+                trn_out_q = next(q for q in q_list if "Transport →" in q["name"])
+                self.assertEqual(trn_out_q["expected_cargo"]["pig_iron"], 20_000)
+                self.assertFalse(trn_out_q["delivered"])
+
+                trn_ret_matched = next(
+                    q for q in q_list if "Transport ↩" in q["name"] and "02:380:08" in q["name"]
+                )
+                self.assertTrue(trn_ret_matched["delivered"])
+                self.assertIsNotNone(trn_ret_matched["delivered_cargo"])
+                self.assertEqual(trn_ret_matched["delivered_cargo"]["pig_iron"], 18_000)
+                self.assertEqual(trn_ret_matched["delivered_cargo"]["metal"], 12_000)
+
+                trn_ret_unmatched = next(
+                    q for q in q_list if "Transport ↩" in q["name"] and "02:399:01" in q["name"]
+                )
+                self.assertTrue(trn_ret_unmatched["delivered"])
+                self.assertIsNone(trn_ret_unmatched["delivered_cargo"])
+
+                # Building Queue resource requests include the in-flight transport to Metal Forge (502)
+                reqs = dash["building_resource_requests"]
+                in_flight_req = next((r for r in reqs if r["status"] == "in_flight" and r["planet_id"] == 502), None)
+                self.assertIsNotNone(in_flight_req)
+                assert in_flight_req is not None
+                self.assertEqual(in_flight_req["planet_name"], "Metal Forge")
+                self.assertEqual(in_flight_req["source_name"], "Capital Prime")
+                self.assertEqual(in_flight_req["pig_iron"], 20_000)
+                self.assertEqual(in_flight_req["metal"], 10_000)
+
+                # V014 hourly production & loot/recycle telemetry on /dashboard
+                self.assertGreater(dash["current_hourly_production"]["total_per_hour"], 0.0)
+                self.assertEqual(dash["current_hourly_production"]["planet_count"], 2)
+                self.assertGreaterEqual(len(dash["hourly_production_history"]), 1)
+                self.assertEqual(len(dash["loot_recycle_history"]), 24)
+                self.assertEqual(dash["loot_recycle_summary"]["total_stolen"], 10_000.0)
+                self.assertEqual(dash["loot_recycle_summary"]["total_recycled"], 3_000.0)
+                self.assertEqual(dash["loot_recycle_summary"]["grand_total"], 13_000.0)
+
+                # 3. Verify /state, config_optimizer_get, and ai_planner_get reflect custom names
+                st_out = bridge.get_state(include_buildings=False)
+                self.assertEqual(st_out["custom_planet_names"], {"501": "Capital Prime", "502": "Metal Forge"})
+                self.assertEqual(st_out["planets"][0]["name"], "Capital Prime")
+                self.assertEqual(st_out["planets"][0]["game_name"], "Homeworld")
+
+                co_get = bridge.handle_command({"command": "config_optimizer_get"})
+                self.assertEqual(co_get["custom_planet_names"], {"501": "Capital Prime", "502": "Metal Forge"})
+                self.assertEqual(co_get["active"]["result"]["planets"][0]["name"], "Capital Prime")
+                self.assertEqual(co_get["active"]["result"]["planets"][0]["game_name"], "Homeworld")
+
+                ai_get = bridge.handle_command({"command": "ai_planner_get"})
+                self.assertEqual(ai_get["custom_planet_names"], {"501": "Capital Prime", "502": "Metal Forge"})
+                self.assertEqual(ai_get["steps_page"]["items"][0]["planet_name"], "Metal Forge")
+
+                # Clear override back to game name
+                clr = bridge.handle_command({"command": "rename_planet", "planet_id": 501, "name": ""})
+                self.assertEqual(clr["name"], "Homeworld")
+                self.assertIsNone(clr["custom_name"])
+                self.assertNotIn("501", clr["custom_planet_names"])
+            finally:
+                bridge.close()
+
+    def test_parallel_building_subrank_multi_planet_queue_retention_and_dynamic_max_galaxies(self) -> None:
+        import time as _time
+
+        now_ts = _time.time()
+        with tempfile.TemporaryDirectory(prefix="si_api_p100_103_") as tmp:
+            db_path = Path(tmp) / "p100_103.db"
+            cfg_path = Path(tmp) / "config.yaml"
+            bridge = GameApiBridge(
+                db_path=db_path,
+                config_path=cfg_path,
+                client_factory=lambda _port: MagicMock(),
+            )
+            try:
+                # 1. Multi-planet building queue retention & active_builders count (#100)
+                p1 = PlanetState(
+                    planet_id=601, name="Alpha", coords="02:380:01", planet_type="normal",
+                    temperature=20, fields_used=20, fields_max=300,
+                    resources=Resources(10_000, 10_000, 5_000, 2_000),
+                    storage=Resources(100_000, 100_000, 100_000, 100_000),
+                    energy=EnergyBalance(produced=300, used=100),
+                    buildings={"b1": 10},
+                )
+                p2 = PlanetState(
+                    planet_id=602, name="Beta", coords="02:380:02", planet_type="normal",
+                    temperature=20, fields_used=20, fields_max=300,
+                    resources=Resources(10_000, 10_000, 5_000, 2_000),
+                    storage=Resources(100_000, 100_000, 100_000, 100_000),
+                    energy=EnergyBalance(produced=300, used=100),
+                    buildings={"b1": 8},
+                )
+                st_a = GameState(
+                    universe_id=31, user_id=77, nickname="cmdr", timestamp=now_ts,
+                    planets=(p1, p2), active_planet_id=601,
+                    active_queues=(
+                        QueueJob(
+                            category="building",
+                            name="Pig iron mine (Level 11)",
+                            building_id=1,
+                            target_level=11,
+                            origin_coords="",
+                            remaining_seconds=600.0,
+                            finish_ts=now_ts + 600.0,
+                        ),
+                        QueueJob(
+                            category="building",
+                            name="Expired job (Level 2)",
+                            building_id=2,
+                            target_level=2,
+                            origin_coords="02:380:01",
+                            remaining_seconds=0.0,
+                            finish_ts=now_ts - 60.0,
+                        ),
+                    ),
+                )
+                rec_a = bridge._record_state(st_a, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+                self.assertEqual(rec_a.active_queues[0].origin_coords, "02:380:01")
+
+                # Switch to planet Beta (602) with its own active build: Alpha's unexpired job is preserved, expired dropped!
+                st_b = GameState(
+                    universe_id=31, user_id=77, nickname="cmdr", timestamp=now_ts + 5.0,
+                    planets=(p1, p2), active_planet_id=602,
+                    active_queues=(
+                        QueueJob(
+                            category="building",
+                            name="Metal mine (Level 9)",
+                            building_id=2,
+                            target_level=9,
+                            origin_coords="",
+                            remaining_seconds=500.0,
+                            finish_ts=now_ts + 505.0,
+                        ),
+                    ),
+                )
+                rec_b = bridge._record_state(st_b, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+                b_origins = {q.origin_coords for q in rec_b.active_queues if q.category == "building"}
+                self.assertEqual(b_origins, {"02:380:01", "02:380:02"})
+                self.assertEqual(len([q for q in rec_b.active_queues if q.category == "building"]), 2)
+                self.assertEqual(bridge._count_active_builders(rec_b, now_ts=now_ts + 5.0), 2)
+
+                # 2. Hybrid AI-Planner P1 subrank prioritizes emergency THROTTLE -> BUILD -> TRANSPORT -> SPY -> non-emerg THROTTLE (#100)
+                fake_ai_mod = MagicMock()
+                fake_ai_mod.reconcile_live_ai_actions.return_value = (
+                    [
+                        PlannedAction(
+                            priority="P1",
+                            kind="WAIT_RESOURCES",
+                            planet_id=602,
+                            planet_coords="02:380:02",
+                            target_name="Mine L10",
+                            reason="Waiting on resources",
+                            executable_now=True,
+                        ),
+                        PlannedAction(
+                            priority="P1",
+                            kind="BUILD",
+                            planet_id=602,
+                            planet_coords="02:380:02",
+                            target_name="Mine L9",
+                            reason="Parallel colony build",
+                            executable_now=True,
+                        ),
+                    ],
+                    [],
+                )
+                fake_ai_mod.compute_early_transport_needs.return_value = {}
+                with (
+                    patch.object(bridge, "_load_ai_planner_mod", return_value=fake_ai_mod),
+                    patch(
+                        "spaceinvasion.runtime.api_server.plan_fleet_and_attack_actions",
+                        return_value=[
+                            PlannedAction(
+                                priority="P1",
+                                kind="SPY",
+                                planet_id=601,
+                                planet_coords="02:380:01",
+                                target_name="[02:380:09]",
+                                reason="Spy target",
+                                executable_now=True,
+                            ),
+                            PlannedAction(
+                                priority="P1",
+                                kind="TRANSPORT",
+                                planet_id=601,
+                                planet_coords="02:380:01",
+                                target_name="[02:380:02]",
+                                reason="Feed colony",
+                                executable_now=True,
+                            ),
+                        ],
+                    ),
+                    patch(
+                        "spaceinvasion.runtime.api_server.plan_ai_blast_furnace_throttles",
+                        return_value=[
+                            PlannedAction(
+                                priority="P1",
+                                kind="THROTTLE_BUILDING",
+                                planet_id=601,
+                                planet_coords="02:380:01",
+                                target_name="Blast furnace 80%",
+                                reason="Keep pig iron positive",
+                                executable_now=True,
+                            ),
+                            PlannedAction(
+                                priority="P1",
+                                kind="THROTTLE_BUILDING",
+                                planet_id=602,
+                                planet_coords="02:380:02",
+                                target_name="Blast furnace 0%",
+                                reason="Negative energy emergency",
+                                executable_now=True,
+                            ),
+                        ],
+                    ),
+                ):
+                    ranked = bridge._plan_hybrid_ai_actions_locked(
+                        rec_b,
+                        {"summary": {}, "steps": []},
+                        bridge.strategy_config,
+                        record_conflicts=False,
+                    )
+                p1_order = [(a.kind, a.target_name) for a in ranked if a.priority == "P1"]
+                self.assertEqual(
+                    p1_order,
+                    [
+                        ("THROTTLE_BUILDING", "Blast furnace 0%"),
+                        ("BUILD", "Mine L9"),
+                        ("TRANSPORT", "[02:380:02]"),
+                        ("SPY", "[02:380:09]"),
+                        ("THROTTLE_BUILDING", "Blast furnace 80%"),
+                        ("WAIT_RESOURCES", "Mine L10"),
+                    ],
+                )
+
+                # 3. Dynamic universe_max_galaxies observation, persistence, early sweep abort & scanned_sectors (#103)
+                self.assertEqual(bridge._max_galaxies_locked(), 14)
+                retro_html = '<script>SI_TPL.galaxy = {"maxGalaxies": 8, "maxSystem": 400};</script>'
+
+                class _FakeRetroGalaxyClient:
+                    last_galaxy_nav_method = "arrow"
+                    last_galaxy_max_galaxies = 8
+
+                    def __enter__(self) -> "_FakeRetroGalaxyClient":
+                        return self
+
+                    def __exit__(self, *_a: Any) -> None:
+                        return None
+
+                    def ensure_in_game(self, **_kw: Any) -> None:
+                        return None
+
+                    def step_galaxy_system(
+                        self,
+                        *,
+                        galaxy: int,
+                        system: int,
+                        pace: bool = False,
+                        priority: str = "normal",
+                        on_intermediate_page: Any = None,
+                    ) -> tuple[str, int, int]:
+                        # Server wraps non-existent galaxy 9 -> galaxy 1
+                        return (retro_html, 1 if galaxy > 8 else galaxy, system)
+
+                bridge._client_factory = lambda _port: _FakeRetroGalaxyClient()
+                sw_res = bridge.run_galaxy_sweep(
+                    pages=5,
+                    galaxy=9,
+                    start_system=10,
+                    delay_range=(0.0, 0.0),
+                    dry_run=False,
+                    priority="interactive",
+                )
+                self.assertTrue(sw_res["ok"])
+                self.assertEqual(bridge._max_galaxies_locked(), 8)
+                self.assertEqual(bridge._db.load_meta_json("universe_max_galaxies"), 8)
+                # Broke cleanly on first out-of-range page rather than hammering all 5 pages of galaxy 9!
+                self.assertEqual(sw_res["pages_scanned"], 1)
+                self.assertIn("maxGalaxies=8", sw_res["message"])
+                self.assertLessEqual(sw_res["galaxy_sweep"]["cursor_galaxy"], 8)
+                self.assertEqual(sw_res["galaxy_sweep"].get("last_arrow_steps"), 1)
+
+                sec_res = bridge.handle_command({"command": "scanned_sectors"})
+                self.assertEqual(sec_res["galaxies_available"], list(range(1, 9)))
+                self.assertEqual(len(sec_res["galaxy_stats"]), 8)
+                self.assertEqual(sec_res["summary"]["universe_total_systems"], 3200)
             finally:
                 bridge.close()
 

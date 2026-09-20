@@ -84,14 +84,17 @@ from spaceinvasion.combat.ranking import (
     build_buildings_eta,
     build_combat_overview,
     build_ranking_evolution,
+    estimate_hourly_economy,
     estimate_planet_hourly_economy,
     load_rank_history,
     record_rank_snapshot,
     simulate_combat_matchup,
 )
 from spaceinvasion.core.state import (
+    BUILDING_ID_BY_NAME,
     GameState,
     PlanetState,
+    QueueJob,
     Resources,
     count_allocated_normal_planets,
     count_in_flight_fleets_for_planet,
@@ -104,6 +107,7 @@ from spaceinvasion.core.state import (
     parse_daily_login_bonus,
     parse_economy_rates,
     parse_home_metadata,
+    parse_si_int,
     parse_tutorial_from_home,
     parse_universe_research_records,
     parse_unread_banner_count,
@@ -1250,6 +1254,188 @@ def _safe_hourly_budget(raw: Any, default: int = 60) -> int:
     return max(0, min(1_000_000, cap))
 
 
+_COORDS_INLINE_RE = re.compile(r"(\d{1,2}:\d{1,3}:\d{1,2})", re.ASCII)
+_SHIP_NUM_FIRST_RE = re.compile(r"^\s*([0-9][0-9.,']*)\s*(?:x\s*)?([A-Za-zÀ-ÿ0-9_\-\s]{1,40})\s*$")
+_SHIP_NAME_FIRST_RE = re.compile(r"^\s*([A-Za-zÀ-ÿ0-9_\-\s]{1,40}?)\s*[:=x]\s*([0-9][0-9.,']*)\s*$")
+_BLDG_LVL_HINT_RE = re.compile(
+    r"(?:early\s+pre-ship\s*#\d+\s*:\s*)?([A-Za-z][A-Za-z\s\-]{1,48}?)\s*(?:->\s*)?(?:L|level\s*)(\d{1,3})\b",
+    re.IGNORECASE,
+)
+
+
+def _build_ship_name_to_key_map() -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for skey, slug in SHIP_SLUG_BY_KEY.items():
+        mapping[skey.lower()] = skey
+        mapping[slug.lower()] = skey
+        mapping[slug.lower().replace("-", " ")] = skey
+        info = game_data.resolve_unit("ships", slug)
+        if isinstance(info, Mapping):
+            nm = str(info.get("name") or "").strip().lower()
+            if nm:
+                mapping[nm] = skey
+                if not nm.endswith("s"):
+                    mapping[nm + "s"] = skey
+    mapping.update(
+        {
+            "small transports": "s1",
+            "kleiner transporter": "s1",
+            "large transports": "s2",
+            "großer transporter": "s2",
+            "grosser transporter": "s2",
+            "transmitters": "s3",
+            "small fighters": "s4",
+            "kleiner jäger": "s4",
+            "kleiner jaeger": "s4",
+            "warships": "s5",
+            "kriegsschiff": "s5",
+            "kriegsschiffe": "s5",
+            "starcruisers": "s6",
+            "sternkreuzer": "s6",
+            "phoenixes": "s7",
+            "phönix": "s7",
+            "phonix": "s7",
+            "nixe": "s7",
+            "colony ships": "s8",
+            "kolonieschiff": "s8",
+            "solar cell": "s9",
+            "solarzelle": "s9",
+            "solarzellen": "s9",
+            "spy probes": "s10",
+            "spionagesonde": "s10",
+            "spionagesonden": "s10",
+            "recyclers": "s11",
+            "battleships": "s13",
+            "schlachtschiff": "s13",
+            "schlachtschiffe": "s13",
+            "stealth bombers": "s14",
+            "tarnkappenbomber": "s14",
+            "destroyers": "s15",
+            "zerstörer": "s15",
+            "zerstoerer": "s15",
+            "imperial starbases": "s16",
+            "imperiale sternenbasis": "s16",
+        }
+    )
+    return mapping
+
+
+_SHIP_NAME_TO_KEY: dict[str, str] = _build_ship_name_to_key_map()
+
+
+def _extract_coords_from_text(text: Any) -> str:
+    if not text:
+        return ""
+    m = _COORDS_INLINE_RE.search(str(text))
+    return normalize_coords(m.group(1)) if m else ""
+
+
+def _parse_ships_from_queue_detail(detail: str) -> dict[str, int]:
+    """Parse ship counts from `QueueJob.detail` (e.g. `'Outbound · 12 Recycler, 4 Large transport'`)."""
+    txt = str(detail or "").strip()
+    if not txt:
+        return {}
+    if "·" in txt:
+        head, tail = txt.split("·", 1)
+        if head.strip().lower() in ("outbound", "returning", "in flight", "flight"):
+            txt = tail.strip()
+    if not txt:
+        return {}
+    ships: dict[str, int] = {}
+    for seg in re.split(r"[,;|\n]+", txt):
+        part = " ".join(seg.strip().split())
+        if not part:
+            continue
+        m_nf = _SHIP_NUM_FIRST_RE.match(part)
+        qty = 0
+        raw_name = ""
+        if m_nf:
+            qty = parse_si_int(m_nf.group(1))
+            raw_name = m_nf.group(2)
+        else:
+            m_lf = _SHIP_NAME_FIRST_RE.match(part)
+            if m_lf:
+                raw_name = m_lf.group(1)
+                qty = parse_si_int(m_lf.group(2))
+        if qty <= 0 or not raw_name:
+            continue
+        norm_name = " ".join(raw_name.strip().lower().split())
+        skey = _SHIP_NAME_TO_KEY.get(norm_name)
+        if skey is None and norm_name.endswith("s"):
+            skey = _SHIP_NAME_TO_KEY.get(norm_name[:-1])
+        if skey is not None:
+            ships[skey] = ships.get(skey, 0) + qty
+    return ships
+
+
+def _cap_resources_by_capacity(
+    raw: Resources,
+    capacity: Optional[int],
+    *,
+    mode: str = "value",
+) -> Resources:
+    """Cap expected loot or debris harvest to fleet cargo capacity."""
+    if capacity is None or capacity <= 0:
+        return raw
+    total = raw.total()
+    if total <= 0 or total <= capacity:
+        return raw
+    if mode == "proportional":
+        scale = float(capacity) / float(total)
+        vals = {
+            "pig_iron": min(raw.pig_iron, int(raw.pig_iron * scale)),
+            "metal": min(raw.metal, int(raw.metal * scale)),
+            "kryptonite": min(raw.kryptonite, int(raw.kryptonite * scale)),
+            "spice": min(raw.spice, int(raw.spice * scale)),
+        }
+        rem = capacity - sum(vals.values())
+        if rem > 0:
+            for rk in ("metal", "pig_iron", "kryptonite", "spice"):
+                if rem <= 0:
+                    break
+                headroom = max(0, getattr(raw, rk) - vals[rk])
+                if headroom > 0:
+                    add = min(headroom, rem)
+                    vals[rk] += add
+                    rem -= add
+        return Resources(
+            pig_iron=vals["pig_iron"],
+            metal=vals["metal"],
+            kryptonite=vals["kryptonite"],
+            spice=vals["spice"],
+        )
+    # Default 'value' priority matches `simulate_raid_outcome`: Spice -> Metal -> Kryptonite -> Pig iron
+    rem = capacity
+    spi = min(raw.spice, rem)
+    rem -= spi
+    met = min(raw.metal, rem)
+    rem -= met
+    kry = min(raw.kryptonite, rem)
+    rem -= kry
+    pig = min(raw.pig_iron, rem)
+    return Resources(pig_iron=pig, metal=met, kryptonite=kry, spice=spi)
+
+
+def _parse_building_target_hint(label: str) -> tuple[str, Optional[int], Optional[int]]:
+    """Extract `(target_building, target_level, building_id)` from a human label or transport reason."""
+    txt = " ".join(str(label or "").strip().split())
+    if not txt:
+        return "", None, None
+    m = _BLDG_LVL_HINT_RE.search(txt)
+    if m:
+        name = " ".join(m.group(1).strip().split())
+        lvl = _safe_api_int(m.group(2), 0)
+        bid = BUILDING_ID_BY_NAME.get(name.lower())
+        return name, (lvl if lvl > 0 else None), bid
+    low = txt.lower()
+    for bname_low, bid in BUILDING_ID_BY_NAME.items():
+        if bname_low in low:
+            info = game_data.BUILDING_BY_ID.get(bid)
+            canon = str(info.get("name") or bname_low.title()) if isinstance(info, Mapping) else bname_low.title()
+            return canon, None, bid
+    return txt[:64], None, None
+
+
 class GameApiBridge:
     """Thread-safe facade connecting HTTP API calls to the Chrome debug port."""
 
@@ -1346,6 +1532,10 @@ class GameApiBridge:
         self._dash_static_cache_json: Optional[str] = None
         self._dash_ag_cache_key: Optional[Any] = None
         self._dash_ag_cache_json: Optional[str] = None
+        self._db_summary_cache_key: Optional[Any] = None
+        self._db_summary_cache: Optional[dict[str, Any]] = None
+        self._raid_stats_cache_key: Optional[Any] = None
+        self._raid_stats_cache: Optional[dict[str, Any]] = None
         self._last_bot_control_payload: Optional[dict[str, Any]] = None
         self._last_dashboard_payload: Optional[dict[str, Any]] = None
         resolved_db = (
@@ -1434,6 +1624,17 @@ class GameApiBridge:
         self._ai_planner_runs_mem: list[dict[str, Any]] = []
         self._reserved_floors_mem: dict[str, dict[str, int]] = {}
         self._planet_specializations_mem: dict[str, str] = {}
+        self._custom_planet_names: dict[str, str] = {}
+        self._recent_transport_dispatches: list[dict[str, Any]] = []
+        self._galaxy_debris_amounts: dict[str, dict[str, int]] = {}
+        self._last_early_transport_needs: dict[int, dict[str, Any]] = {}
+        self._last_early_transport_needs_sig: Optional[Any] = None
+        self._universe_max_galaxies: Optional[int] = None
+        self._last_recorded_prod_minute: Optional[int] = None
+        self._hourly_prod_cache_key: Optional[Any] = None
+        self._hourly_prod_cache: list[dict[str, Any]] = []
+        self._loot_recycle_cache_key: Optional[Any] = None
+        self._loot_recycle_cache: Optional[dict[str, Any]] = None
         self._field_conflicts_mem: dict[str, dict[str, Any]] = {}
         self._notified_field_conflict_keys: set[str] = set()
         self._hydrate_persisted_bridge_state()
@@ -1616,6 +1817,76 @@ class GameApiBridge:
                 self._last_home_fetched = False
                 ap0 = self._last_state.active_planet()
                 self._last_buildings_fetched = bool(ap0 is not None and ap0.building_offers)
+
+        get_names_fn = getattr(self._db, "get_custom_planet_names", None)
+        if callable(get_names_fn):
+            try:
+                loaded_names = get_names_fn()
+                if isinstance(loaded_names, Mapping):
+                    self._custom_planet_names = {
+                        str(k): str(v) for k, v in loaded_names.items() if str(k).strip() and str(v).strip()
+                    }
+            except Exception:
+                pass
+
+        get_deb_fn = getattr(self._db, "get_galaxy_debris_amounts", None)
+        if callable(get_deb_fn):
+            try:
+                loaded_deb = get_deb_fn()
+                if isinstance(loaded_deb, Mapping):
+                    self._galaxy_debris_amounts = {
+                        str(k): dict(v) for k, v in loaded_deb.items() if isinstance(v, Mapping)
+                    }
+            except Exception:
+                pass
+
+        hydrated_dispatches: list[dict[str, Any]] = []
+        get_tr_fn = getattr(self._db, "get_recent_transport_dispatches", None)
+        if callable(get_tr_fn):
+            try:
+                rows_tr = get_tr_fn(max_age_seconds=86400.0, limit=120)
+                if isinstance(rows_tr, Sequence):
+                    hydrated_dispatches.extend(dict(r) for r in rows_tr if isinstance(r, Mapping))
+            except Exception:
+                pass
+        get_tr_fb = getattr(self._db, "get_recent_transport_actions_fallback", None)
+        if callable(get_tr_fb):
+            try:
+                rows_fb = get_tr_fb(max_age_seconds=86400.0, limit=60)
+                if isinstance(rows_fb, Sequence):
+                    existing_sigs = {
+                        (
+                            str(r.get("origin_coords") or ""),
+                            str(r.get("dest_coords") or ""),
+                            int(round(_safe_api_float(r.get("ts"), 0.0) / 60.0)),
+                        )
+                        for r in hydrated_dispatches
+                    }
+                    for fb in rows_fb:
+                        if not isinstance(fb, Mapping):
+                            continue
+                        sig = (
+                            str(fb.get("origin_coords") or ""),
+                            str(fb.get("dest_coords") or ""),
+                            int(round(_safe_api_float(fb.get("ts"), 0.0) / 60.0)),
+                        )
+                        if sig not in existing_sigs:
+                            hydrated_dispatches.append(dict(fb))
+                            existing_sigs.add(sig)
+            except Exception:
+                pass
+        hydrated_dispatches.sort(key=lambda r: _safe_api_float(r.get("ts"), 0.0))
+        self._recent_transport_dispatches = hydrated_dispatches[-120:]
+
+        load_meta_fn = getattr(self._db, "load_meta_json", None) or getattr(self._db, "get_meta", None)
+        if callable(load_meta_fn):
+            try:
+                raw_mg = load_meta_fn("universe_max_galaxies")
+                mg_val = _safe_api_int(raw_mg, 0)
+                if 1 <= mg_val <= 14:
+                    self._universe_max_galaxies = mg_val
+            except Exception:
+                pass
 
     def _persist_runtime_state(self) -> None:
         if self._db is None:
@@ -2287,13 +2558,75 @@ class GameApiBridge:
                 out.append(c)
         return out
 
+    def _max_galaxies_locked(self) -> int:
+        mg = getattr(self, "_universe_max_galaxies", None)
+        if isinstance(mg, int) and not isinstance(mg, bool) and 1 <= mg <= 14:
+            return mg
+        return 14
+
+    def _observe_galaxy_universe_bounds_locked(
+        self,
+        *,
+        client: Any = None,
+        html: str = "",
+    ) -> int:
+        obs: Optional[int] = None
+        if client is not None:
+            raw_c = getattr(client, "last_galaxy_max_galaxies", None)
+            if isinstance(raw_c, int) and not isinstance(raw_c, bool) and 1 <= raw_c <= 14:
+                obs = raw_c
+        if obs is None and isinstance(html, str) and html and "SI_TPL.galaxy" in html:
+            m_mg = re.search(r"\bmaxGalaxies\b\s*[:=]\s*(\d{1,2})\b", html, re.ASCII)
+            if m_mg:
+                cand = _safe_api_int(m_mg.group(1), 0)
+                if 1 <= cand <= 14:
+                    obs = cand
+        if obs is not None and obs != getattr(self, "_universe_max_galaxies", None):
+            self._universe_max_galaxies = obs
+            if self._db is not None:
+                save_meta_fn = getattr(self._db, "save_meta_json", None)
+                if callable(save_meta_fn):
+                    try:
+                        save_meta_fn("universe_max_galaxies", obs)
+                    except Exception:
+                        pass
+                else:
+                    set_meta_fn = getattr(self._db, "set_meta", None)
+                    if callable(set_meta_fn):
+                        try:
+                            set_meta_fn("universe_max_galaxies", str(obs))
+                        except Exception:
+                            pass
+            self._smart_sweep_summary = None
+            self._smart_sweep_summary_ts = 0.0
+            self._invalidate_dashboard_cache()
+        return self._max_galaxies_locked()
+
+    def _call_get_galaxy_sector_intel_locked(
+        self,
+        db_obj: Any,
+        *,
+        galaxies: Optional[Sequence[int]],
+        now_ts: float,
+        max_galaxies: int,
+    ) -> Optional[Mapping[str, Any]]:
+        get_intel = getattr(db_obj, "get_galaxy_sector_intel", None) if db_obj is not None else None
+        if not callable(get_intel):
+            return None
+        kwargs: dict[str, Any] = {"galaxies": galaxies, "now_ts": now_ts}
+        if GameApiBridge._supports_kwarg(get_intel, "max_galaxies"):
+            kwargs["max_galaxies"] = max(1, min(14, int(max_galaxies)))
+        raw_intel = get_intel(**kwargs)
+        return raw_intel if isinstance(raw_intel, Mapping) else None
+
     def _current_galaxy_cursor_locked(
         self,
         *,
         galaxies: Sequence[int] = (),
     ) -> Optional[tuple[int, int]]:
         """Return the active `(galaxy, system)` cursor for contiguous arrow-first sweep anchoring."""
-        gal_set = {max(1, min(14, _safe_api_int(g, 0))) for g in galaxies if _safe_api_int(g, 0) > 0}
+        max_g = self._max_galaxies_locked()
+        gal_set = {max(1, min(max_g, _safe_api_int(g, 0))) for g in galaxies if _safe_api_int(g, 0) > 0}
         live_coords = getattr(self, "_last_galaxy_browser_coords", None)
         if (
             isinstance(live_coords, tuple)
@@ -2301,13 +2634,13 @@ class GameApiBridge:
             and all(isinstance(v, int) and not isinstance(v, bool) for v in live_coords)
         ):
             lg, ls = live_coords
-            if 1 <= lg <= 14 and 1 <= ls <= 400 and (not gal_set or lg in gal_set):
+            if 1 <= lg <= max_g and 1 <= ls <= 400 and (not gal_set or lg in gal_set):
                 return (lg, ls)
         sw_st = self._get_galaxy_sweep_state_locked(include_smart=False)
         if _safe_api_int(sw_st.get("total_sweeps"), 0) > 0:
             cg = _safe_api_int(sw_st.get("cursor_galaxy"), 0)
             cs = _safe_api_int(sw_st.get("cursor_system"), 0)
-            if 1 <= cg <= 14 and 1 <= cs <= 400 and (not gal_set or cg in gal_set):
+            if 1 <= cg <= max_g and 1 <= cs <= 400 and (not gal_set or cg in gal_set):
                 return (cg, cs)
         return None
 
@@ -2328,8 +2661,9 @@ class GameApiBridge:
     ) -> Optional[dict[str, Any]]:
         """Select the next smart sweep batch via SQLite `get_galaxy_sector_intel` + `select_smart_galaxy_scan_batch`."""
         cfg = self.strategy_config
+        max_g = self._max_galaxies_locked()
         st_ref = state_override if state_override is not None else self._last_state
-        gal_list = [g for g in (max(1, min(14, _safe_api_int(x, 1))) for x in galaxies)]
+        gal_list = sorted({max(1, min(max_g, _safe_api_int(x, 1))) for x in galaxies if _safe_api_int(x, 0) > 0})
         eff_cursor = (
             current_cursor
             if current_cursor is not None
@@ -2338,20 +2672,22 @@ class GameApiBridge:
         intel: Optional[Mapping[str, Any]] = (
             sector_intel_override if isinstance(sector_intel_override, Mapping) else None
         )
-        if intel is None:
-            get_intel = getattr(self._db, "get_galaxy_sector_intel", None) if self._db is not None else None
-            if callable(get_intel):
-                try:
-                    raw_intel = get_intel(galaxies=gal_list or None, now_ts=now_ts)
-                    intel = raw_intel if isinstance(raw_intel, Mapping) else None
-                except Exception as exc:  # pragma: no cover - defensive: in-memory fallback below
-                    intel = None
-                    if self.log_dir is not None:
-                        append_crash_debug_log(
-                            component="api_server.smart_galaxy_sweep",
-                            event="sector_intel_error",
-                            error=exc,
-                        )
+        if intel is None and self._db is not None:
+            try:
+                intel = self._call_get_galaxy_sector_intel_locked(
+                    self._db,
+                    galaxies=gal_list or None,
+                    now_ts=now_ts,
+                    max_galaxies=max_g,
+                )
+            except Exception as exc:  # pragma: no cover - defensive: in-memory fallback below
+                intel = None
+                if self.log_dir is not None:
+                    append_crash_debug_log(
+                        component="api_server.smart_galaxy_sweep",
+                        event="sector_intel_error",
+                        error=exc,
+                    )
         raid_stats = getattr(st_ref, "raid_stats", None) if st_ref is not None else None
         scanned_sys = (
             scanned_systems_override
@@ -2404,7 +2740,7 @@ class GameApiBridge:
         if not isinstance(plan, Mapping):
             return None
         out_plan = dict(plan)
-        uni_tot = 14 * 400
+        uni_tot = max_g * 400
         if isinstance(intel, Mapping) and intel.get("universe_explored_systems") is not None:
             uni_exp = max(0, _safe_api_int(intel.get("universe_explored_systems"), 0))
             uni_tot = max(1, _safe_api_int(intel.get("universe_total_systems"), uni_tot))
@@ -2417,7 +2753,7 @@ class GameApiBridge:
                 m_s = re.search(r"(\d{1,2})\s*:\s*(\d{1,3})", str(sk), re.ASCII)
                 if m_s:
                     gi_u, si_u = int(m_s.group(1)), int(m_s.group(2))
-                    if 1 <= gi_u <= 14 and 1 <= si_u <= 400:
+                    if 1 <= gi_u <= max_g and 1 <= si_u <= 400:
                         uni_keys.add((gi_u, si_u))
             uni_exp = max(len(uni_keys), _safe_api_int(out_plan.get("explored_systems"), 0))
         out_plan["universe_explored_systems"] = uni_exp
@@ -2435,6 +2771,7 @@ class GameApiBridge:
     ) -> dict[str, Any]:
         if not isinstance(plan, Mapping):
             return dict(getattr(self, "_smart_sweep_summary", {}) or {})
+        default_uni_tot = self._max_galaxies_locked() * 400
         samples = sample_targets if sample_targets is not None else (plan.get("sample_targets") or [])
         summary = {
             "scan_phase": str(plan.get("scan_phase") or plan.get("phase") or "exploratory"),
@@ -2444,7 +2781,7 @@ class GameApiBridge:
             "total_systems": max(0, _safe_api_int(plan.get("total_systems"), 0)),
             "coverage_pct": round(max(0.0, min(100.0, _safe_api_float(plan.get("coverage_pct"), 0.0))), 2),
             "universe_explored_systems": max(0, _safe_api_int(plan.get("universe_explored_systems"), 0)),
-            "universe_total_systems": max(1, _safe_api_int(plan.get("universe_total_systems"), 5600)),
+            "universe_total_systems": max(1, _safe_api_int(plan.get("universe_total_systems"), default_uni_tot)),
             "universe_coverage_pct": round(
                 max(0.0, min(100.0, _safe_api_float(plan.get("universe_coverage_pct"), 0.0))),
                 2,
@@ -2492,6 +2829,7 @@ class GameApiBridge:
 
     def _merge_smart_sweep_summary_locked(self, st: dict[str, Any]) -> dict[str, Any]:
         summary = getattr(self, "_smart_sweep_summary", None) or {}
+        default_uni_tot = self._max_galaxies_locked() * 400
         st.setdefault("scan_phase", summary.get("scan_phase", "exploratory"))
         st.setdefault("selection_mode", summary.get("selection_mode", "smart"))
         st.setdefault("explored_systems", summary.get("explored_systems", 0))
@@ -2499,7 +2837,7 @@ class GameApiBridge:
         st.setdefault("total_systems", summary.get("total_systems", 0))
         st.setdefault("coverage_pct", summary.get("coverage_pct", 0.0))
         st.setdefault("universe_explored_systems", summary.get("universe_explored_systems", 0))
-        st.setdefault("universe_total_systems", summary.get("universe_total_systems", 5600))
+        st.setdefault("universe_total_systems", summary.get("universe_total_systems", default_uni_tot))
         st.setdefault("universe_coverage_pct", summary.get("universe_coverage_pct", 0.0))
         st.setdefault("refresh_pct", summary.get("refresh_pct", 0.0))
         st.setdefault("discovery_pct", summary.get("discovery_pct", 100.0))
@@ -2665,20 +3003,1143 @@ class GameApiBridge:
             added_any = True
         return replace(state, raid_targets=tuple(ordered_rt)) if added_any else state
 
+    def _get_custom_planet_names_locked(self) -> dict[str, str]:
+        return dict(self._custom_planet_names)
+
+    def _set_custom_planet_name_locked(self, planet_id: int, raw_name: Any) -> dict[str, str]:
+        pid = _safe_api_int(planet_id, 0)
+        clean_name = GameDatabase.sanitize_custom_planet_name(raw_name)
+        if self._db is not None and hasattr(self._db, "set_custom_planet_name"):
+            updated = self._db.set_custom_planet_name(pid, clean_name)
+            self._custom_planet_names = dict(updated)
+        else:
+            if pid > 0:
+                if clean_name:
+                    self._custom_planet_names[str(pid)] = clean_name
+                else:
+                    self._custom_planet_names.pop(str(pid), None)
+        self._invalidate_dashboard_cache()
+        self._last_dashboard_payload = None
+        return dict(self._custom_planet_names)
+
+    def _set_custom_planet_names_batch_locked(self, updates: Mapping[int, Any]) -> dict[str, str]:
+        if self._db is not None and hasattr(self._db, "set_custom_planet_names"):
+            updated = self._db.set_custom_planet_names(updates)
+            self._custom_planet_names = dict(updated)
+        else:
+            for raw_pid, raw_name in updates.items():
+                pid = _safe_api_int(raw_pid, 0)
+                if pid <= 0:
+                    continue
+                clean_name = GameDatabase.sanitize_custom_planet_name(raw_name)
+                if clean_name:
+                    self._custom_planet_names[str(pid)] = clean_name
+                else:
+                    self._custom_planet_names.pop(str(pid), None)
+        self._invalidate_dashboard_cache()
+        self._last_dashboard_payload = None
+        return dict(self._custom_planet_names)
+
+    def _apply_custom_planet_names_to_state(
+        self,
+        state: Optional[GameState],
+        custom_names: Optional[Mapping[str, str]] = None,
+    ) -> Optional[GameState]:
+        if state is None:
+            return None
+        names_map = custom_names if custom_names is not None else self._custom_planet_names
+        if not names_map:
+            return state
+        changed = False
+        new_planets: list[PlanetState] = []
+        for p in state.planets:
+            custom = names_map.get(str(p.planet_id))
+            if custom and custom != p.name:
+                changed = True
+                new_planets.append(replace(p, name=custom))
+            else:
+                new_planets.append(p)
+        return replace(state, planets=tuple(new_planets)) if changed else state
+
+    def _serialize_state_with_custom_names(
+        self,
+        raw_state: GameState,
+        display_state: Optional[GameState] = None,
+        custom_names: Optional[Mapping[str, str]] = None,
+    ) -> dict[str, Any]:
+        names_map = custom_names if custom_names is not None else self._custom_planet_names
+        eff_state = (
+            display_state
+            if display_state is not None
+            else (self._apply_custom_planet_names_to_state(raw_state, names_map) or raw_state)
+        )
+        raw_by_pid = {int(p.planet_id): str(p.name or "") for p in (raw_state.planets or ())}
+        out = asdict(eff_state)
+        planets_list = out.get("planets")
+        if isinstance(planets_list, (list, tuple)):
+            planets_out: list[Any] = []
+            for p_dict in planets_list:
+                if not isinstance(p_dict, dict):
+                    planets_out.append(p_dict)
+                    continue
+                pid = _safe_api_int(p_dict.get("planet_id"), 0)
+                raw_name = raw_by_pid.get(pid, str(p_dict.get("name") or ""))
+                custom = names_map.get(str(pid)) if pid > 0 else None
+                p_dict["game_name"] = raw_name
+                p_dict["custom_name"] = custom if custom else None
+                if custom:
+                    p_dict["name"] = custom
+                planets_out.append(p_dict)
+            out["planets"] = planets_out
+        return out
+
+    def _overlay_custom_names_on_config_optimizer(
+        self,
+        active_co: Optional[dict[str, Any]],
+        snap_state: Optional[GameState],
+        custom_names: Mapping[str, str],
+    ) -> Optional[dict[str, Any]]:
+        if not isinstance(active_co, Mapping):
+            return active_co
+        out = dict(active_co)
+        res = out.get("result")
+        if not isinstance(res, Mapping):
+            return out
+        raw_by_pid: dict[int, str] = {}
+        pid_by_coords: dict[str, int] = {}
+        if snap_state is not None:
+            for p in snap_state.planets:
+                raw_by_pid[int(p.planet_id)] = str(p.name or "")
+                nc = normalize_coords(p.coords)
+                if nc:
+                    pid_by_coords[nc] = int(p.planet_id)
+
+        def _patch_planet_row(row: Any) -> Any:
+            if not isinstance(row, Mapping):
+                return row
+            d = dict(row)
+            pid = _safe_api_int(d.get("planet_id"), 0)
+            if pid <= 0:
+                nc = normalize_coords(str(d.get("coords") or ""))
+                if nc and nc in pid_by_coords:
+                    pid = pid_by_coords[nc]
+            raw_game = str(d.get("game_name") or raw_by_pid.get(pid) or d.get("name") or "")
+            custom = custom_names.get(str(pid)) if pid > 0 else None
+            d["game_name"] = raw_game
+            d["custom_name"] = custom if custom else None
+            if custom:
+                d["name"] = custom
+            elif pid > 0 and pid in raw_by_pid:
+                d["name"] = raw_by_pid[pid]
+            return d
+
+        res_copy = dict(res)
+        if isinstance(res_copy.get("planets"), Sequence) and not isinstance(res_copy.get("planets"), (str, bytes)):
+            res_copy["planets"] = [_patch_planet_row(r) for r in res_copy["planets"]]
+        if isinstance(res_copy.get("inputs"), Mapping):
+            inp_copy = dict(res_copy["inputs"])
+            if isinstance(inp_copy.get("planets"), Sequence) and not isinstance(inp_copy.get("planets"), (str, bytes)):
+                inp_copy["planets"] = [_patch_planet_row(r) for r in inp_copy["planets"]]
+            res_copy["inputs"] = inp_copy
+        out["result"] = res_copy
+        return out
+
+    def _overlay_custom_names_on_ai_items(
+        self,
+        items: Sequence[Mapping[str, Any]],
+        snap_state: Optional[GameState],
+        custom_names: Mapping[str, str],
+    ) -> list[dict[str, Any]]:
+        raw_by_pid: dict[int, str] = {}
+        pid_by_coords: dict[str, int] = {}
+        if snap_state is not None:
+            for p in snap_state.planets:
+                raw_by_pid[int(p.planet_id)] = str(p.name or "")
+                nc = normalize_coords(p.coords)
+                if nc:
+                    pid_by_coords[nc] = int(p.planet_id)
+        out: list[dict[str, Any]] = []
+        for item in items:
+            d = dict(item)
+            pid = _safe_api_int(d.get("planet_id"), 0)
+            if pid <= 0:
+                nc = normalize_coords(str(d.get("planet_coords") or ""))
+                if nc and nc in pid_by_coords:
+                    pid = pid_by_coords[nc]
+            if pid > 0:
+                custom = custom_names.get(str(pid))
+                if custom:
+                    d["planet_name"] = custom
+                elif pid in raw_by_pid:
+                    d["planet_name"] = raw_by_pid[pid]
+            out.append(d)
+        return out
+
+    def _record_transport_dispatch_locked(
+        self,
+        *,
+        origin_coords: str,
+        dest_coords: str,
+        cargo: Any,
+        ships: Any = "",
+        source: str = "dispatch",
+        ts: Optional[float] = None,
+    ) -> None:
+        orig = normalize_coords(origin_coords)
+        dest = normalize_coords(dest_coords)
+        if not orig or not dest:
+            return
+        cargo_d = GameDatabase._normalize_cargo_dict(cargo)
+        if sum(cargo_d.values()) <= 0:
+            return
+        now_ts = round(_safe_api_float(ts, time.time()) if ts is not None else time.time(), 3)
+        ships_s = _bounded_api_str(ships, default="")[:140] if ships else ""
+        src_s = str(source or "dispatch").strip().lower()[:32] or "dispatch"
+
+        # Fast in-memory dedupe before touching SQLite
+        dedupe_window = 7200.0 if src_s == "observed_outbound" else 5.0
+        for prev in reversed(self._recent_transport_dispatches):
+            if (now_ts - _safe_api_float(prev.get("ts"), 0.0)) > dedupe_window:
+                break
+            if (
+                prev.get("origin_coords") == orig
+                and prev.get("dest_coords") == dest
+                and prev.get("cargo") == cargo_d
+                and (src_s == "observed_outbound" or prev.get("source") == src_s)
+            ):
+                if ships_s and not prev.get("ships"):
+                    prev["ships"] = ships_s
+                    if self._db is not None and hasattr(self._db, "record_transport_dispatch"):
+                        self._recent_transport_dispatches = self._db.record_transport_dispatch(
+                            origin_coords=orig,
+                            dest_coords=dest,
+                            cargo=cargo_d,
+                            ships=ships_s,
+                            source=src_s,
+                            ts=now_ts,
+                        )
+                return
+
+        if self._db is not None and hasattr(self._db, "record_transport_dispatch"):
+            self._recent_transport_dispatches = self._db.record_transport_dispatch(
+                origin_coords=orig,
+                dest_coords=dest,
+                cargo=cargo_d,
+                ships=ships_s,
+                source=src_s,
+                ts=now_ts,
+            )
+        else:
+            self._recent_transport_dispatches.append(
+                {
+                    "origin_coords": orig,
+                    "dest_coords": dest,
+                    "cargo": cargo_d,
+                    "ships": ships_s,
+                    "ts": now_ts,
+                    "source": src_s,
+                }
+            )
+            self._recent_transport_dispatches = self._recent_transport_dispatches[-120:]
+
+    def _capture_observed_outbound_transports_locked(self, state: GameState) -> None:
+        """Remember cargo of live outbound `TRANSPORT` flights so returning legs still show `DELIVERED` values."""
+        for q in getattr(state, "active_queues", ()) or ():
+            if not is_in_flight_fleet_job(q):
+                continue
+            name_s = str(getattr(q, "name", "") or "")
+            det_s = str(getattr(q, "detail", "") or "")
+            name_l = name_s.lower()
+            det_l = det_s.lower()
+            is_ret = ("returning" in det_l) or ("↩" in name_s) or ("rück" in det_l) or ("rueck" in det_l)
+            if is_ret:
+                continue
+            if not (name_l.startswith("transport") or "transport →" in name_l or "transport ->" in name_l):
+                continue
+            cargo_obj = getattr(q, "cargo", None) or getattr(q, "expected_cargo", None)
+            if not isinstance(cargo_obj, Resources) or cargo_obj.is_zero():
+                continue
+            orig = normalize_coords(str(getattr(q, "origin_coords", "") or ""))
+            dest = _extract_coords_from_text(name_s)
+            if not orig or not dest:
+                continue
+            ships_part = det_s.split("·", 1)[1].strip() if "·" in det_s else ""
+            self._record_transport_dispatch_locked(
+                origin_coords=orig,
+                dest_coords=dest,
+                cargo=cargo_obj,
+                ships=ships_part,
+                source="observed_outbound",
+            )
+
+    def _match_recent_transport_dispatch_locked(
+        self,
+        origin_coords: str,
+        dest_coords: str,
+        *,
+        ships_detail: str = "",
+        used_indices: Optional[set[int]] = None,
+        max_age_seconds: float = 86400.0,
+    ) -> Optional[tuple[int, Resources]]:
+        if not self._recent_transport_dispatches:
+            return None
+        orig = normalize_coords(origin_coords)
+        dest = normalize_coords(dest_coords)
+        if not dest and not orig:
+            return None
+        now_ts = time.time()
+        ships_norm = " ".join(str(ships_detail or "").strip().lower().split())
+        used = used_indices if used_indices is not None else set()
+
+        eligible: list[tuple[int, dict[str, Any]]] = []
+        for idx in range(len(self._recent_transport_dispatches) - 1, -1, -1):
+            if idx in used:
+                continue
+            ent = self._recent_transport_dispatches[idx]
+            if not isinstance(ent, Mapping):
+                continue
+            ent_ts = _safe_api_float(ent.get("ts"), 0.0)
+            if ent_ts > 0.0 and (now_ts - ent_ts) > max_age_seconds:
+                continue
+            eligible.append((idx, ent))
+
+        if not eligible:
+            return None
+
+        def _entry_to_res(ent: Mapping[str, Any]) -> Optional[Resources]:
+            c = ent.get("cargo")
+            if not isinstance(c, Mapping):
+                return None
+            r = Resources(
+                pig_iron=max(0, _safe_api_int(c.get("pig_iron", 0), 0)),
+                metal=max(0, _safe_api_int(c.get("metal", 0), 0)),
+                kryptonite=max(0, _safe_api_int(c.get("kryptonite", 0), 0)),
+                spice=max(0, _safe_api_int(c.get("spice", 0), 0)),
+            )
+            return None if r.is_zero() else r
+
+        # 1. Exact (origin, dest) + matching ships summary
+        if orig and dest and ships_norm:
+            for idx, ent in eligible:
+                if ent.get("origin_coords") == orig and ent.get("dest_coords") == dest:
+                    es = " ".join(str(ent.get("ships") or "").strip().lower().split())
+                    if es and (es == ships_norm or es in ships_norm or ships_norm in es):
+                        res = _entry_to_res(ent)
+                        if res is not None:
+                            return idx, res
+        # 2. Exact (origin, dest)
+        if orig and dest:
+            for idx, ent in eligible:
+                if ent.get("origin_coords") == orig and ent.get("dest_coords") == dest:
+                    res = _entry_to_res(ent)
+                    if res is not None:
+                        return idx, res
+        # 3. Defensive swapped (dest, origin) in case server swaps endpoints on return
+        if orig and dest:
+            for idx, ent in eligible:
+                if ent.get("origin_coords") == dest and ent.get("dest_coords") == orig:
+                    res = _entry_to_res(ent)
+                    if res is not None:
+                        return idx, res
+        # 4. Destination-only fallback if origin_coords was absent on QueueJob
+        if dest and not orig:
+            for idx, ent in eligible:
+                if ent.get("dest_coords") == dest:
+                    res = _entry_to_res(ent)
+                    if res is not None:
+                        return idx, res
+        return None
+
+    def _enrich_active_queues_locked(self, state: GameState) -> GameState:
+        """Enrich ongoing fleet `QueueJob` entries with `expected_cargo`, `delivered_cargo`, and `delivered`."""
+        queues = getattr(state, "active_queues", ()) or ()
+        if not queues:
+            return state
+        has_fleet = any(is_in_flight_fleet_job(q) for q in queues)
+        if not has_fleet:
+            return state
+
+        raid_by_coords: dict[str, Mapping[str, Any]] = {}
+        for row in self._raid_targets or ():
+            if isinstance(row, Mapping):
+                nc = normalize_coords(row.get("coords") or row.get("target_coords") or "")
+                if nc:
+                    raid_by_coords[nc] = row
+        for row in getattr(state, "raid_targets", ()) or ():
+            if isinstance(row, Mapping):
+                nc = normalize_coords(row.get("coords") or row.get("target_coords") or "")
+                if nc:
+                    raid_by_coords[nc] = row
+
+        miner_lvl = _safe_api_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
+        used_dispatch_idxs: set[int] = set()
+        if self._recent_transport_dispatches:
+            # Reserve dispatch records belonging to currently outbound transports that already
+            # report live cargo so an earlier returning transport on the same route does not
+            # mis-match the still-outbound fleet's record.
+            for q0 in queues:
+                if not is_in_flight_fleet_job(q0):
+                    continue
+                n0 = str(getattr(q0, "name", "") or "")
+                d0 = str(getattr(q0, "detail", "") or "")
+                n0_l = n0.lower()
+                d0_l = d0.lower()
+                is_ret0 = ("returning" in d0_l) or ("↩" in n0) or ("rück" in d0_l) or ("rueck" in d0_l)
+                if "transport" not in n0_l or is_ret0:
+                    continue
+                c0 = getattr(q0, "cargo", None)
+                if not (isinstance(c0, Resources) and not c0.is_zero()):
+                    continue
+                o0 = normalize_coords(getattr(q0, "origin_coords", "") or "")
+                t0 = _extract_coords_from_text(n0)
+                if not t0:
+                    continue
+                c0_norm = GameDatabase._normalize_cargo_dict(c0)
+                for idx in range(len(self._recent_transport_dispatches) - 1, -1, -1):
+                    if idx in used_dispatch_idxs:
+                        continue
+                    ent = self._recent_transport_dispatches[idx]
+                    if not isinstance(ent, Mapping):
+                        continue
+                    if ent.get("dest_coords") != t0:
+                        continue
+                    if o0 and ent.get("origin_coords") and ent.get("origin_coords") != o0:
+                        continue
+                    if GameDatabase._normalize_cargo_dict(ent.get("cargo")) == c0_norm:
+                        used_dispatch_idxs.add(idx)
+                        break
+        changed = False
+        enriched_jobs: list[QueueJob] = []
+
+        for q in queues:
+            if not is_in_flight_fleet_job(q):
+                enriched_jobs.append(q)
+                continue
+            name_s = str(getattr(q, "name", "") or "")
+            det_s = str(getattr(q, "detail", "") or "")
+            name_l = name_s.lower()
+            det_l = det_s.lower()
+            is_ret = ("returning" in det_l) or ("↩" in name_s) or ("rück" in det_l) or ("rueck" in det_l)
+            is_attack = name_l.startswith("attack") or "attack →" in name_l or "attack ↩" in name_l or "attack ->" in name_l
+            is_recycle = any(tok in name_l for tok in ("recycl", "rubble", "debris", "harvest", "abbau", "trümmer", "truemmer"))
+            is_transport = name_l.startswith("transport") or "transport →" in name_l or "transport ↩" in name_l or "transport ->" in name_l
+
+            orig_coords = normalize_coords(str(getattr(q, "origin_coords", "") or ""))
+            dest_coords = _extract_coords_from_text(name_s)
+            ships_part = det_s.split("·", 1)[1].strip() if "·" in det_s else det_s
+
+            exp_cargo = getattr(q, "expected_cargo", None)
+            del_cargo = getattr(q, "delivered_cargo", None)
+            delivered = bool(getattr(q, "delivered", False))
+
+            if is_attack and not is_ret and exp_cargo is None and dest_coords:
+                trow = raid_by_coords.get(dest_coords)
+                if isinstance(trow, Mapping):
+                    res_src = trow.get("resources") if isinstance(trow.get("resources"), Mapping) else trow
+                    raw_pig = max(0, _safe_api_int(res_src.get("pig_iron", 0), 0))
+                    raw_met = max(0, _safe_api_int(res_src.get("metal", 0), 0))
+                    raw_kry = max(0, _safe_api_int(res_src.get("kryptonite", 0), 0))
+                    raw_spi = max(0, _safe_api_int(res_src.get("spice", 0), 0))
+                    plunder = Resources(
+                        pig_iron=raw_pig // 2,
+                        metal=raw_met // 2,
+                        kryptonite=raw_kry // 2,
+                        spice=raw_spi // 2,
+                    )
+                    if not plunder.is_zero():
+                        ships_map = _parse_ships_from_queue_detail(det_s)
+                        cap = (
+                            fleet_cargo_capacity(ships_map, miner_spec_level=miner_lvl)
+                            if ships_map
+                            else None
+                        )
+                        capped = _cap_resources_by_capacity(plunder, cap, mode="value")
+                        if not capped.is_zero():
+                            exp_cargo = capped
+
+            elif is_recycle and not is_ret and exp_cargo is None and dest_coords:
+                deb_map = self._galaxy_debris_amounts.get(dest_coords)
+                dp = dm = dk = ds = 0
+                if isinstance(deb_map, Mapping):
+                    dp = max(0, _safe_api_int(deb_map.get("pig_iron", 0), 0))
+                    dm = max(0, _safe_api_int(deb_map.get("metal", 0), 0))
+                    dk = max(0, _safe_api_int(deb_map.get("kryptonite", 0), 0))
+                    ds = max(0, _safe_api_int(deb_map.get("spice", 0), 0))
+                if dp + dm + dk + ds <= 0:
+                    trow = raid_by_coords.get(dest_coords)
+                    if isinstance(trow, Mapping):
+                        deb_sub = trow.get("debris") if isinstance(trow.get("debris"), Mapping) else None
+                        if deb_sub is not None:
+                            dp = max(0, _safe_api_int(deb_sub.get("pig_iron", 0), 0))
+                            dm = max(0, _safe_api_int(deb_sub.get("metal", 0), 0))
+                            dk = max(0, _safe_api_int(deb_sub.get("kryptonite", 0), 0))
+                            ds = max(0, _safe_api_int(deb_sub.get("spice", 0), 0))
+                        else:
+                            dp = max(0, _safe_api_int(trow.get("debris_pig_iron", 0), 0))
+                            dm = max(0, _safe_api_int(trow.get("debris_metal", 0), 0))
+                            dk = max(0, _safe_api_int(trow.get("debris_kryptonite", 0), 0))
+                            ds = max(0, _safe_api_int(trow.get("debris_spice", 0), 0))
+                debris_res = Resources(pig_iron=dp, metal=dm, kryptonite=dk, spice=ds)
+                if not debris_res.is_zero():
+                    ships_map = _parse_ships_from_queue_detail(det_s)
+                    if ships_map.get("s11", 0) > 0:
+                        cap = fleet_cargo_capacity({"s11": ships_map["s11"]}, miner_spec_level=miner_lvl)
+                    elif ships_map:
+                        cap = fleet_cargo_capacity(ships_map, miner_spec_level=miner_lvl)
+                    else:
+                        cap = None
+                    capped = _cap_resources_by_capacity(debris_res, cap, mode="proportional")
+                    if not capped.is_zero():
+                        exp_cargo = capped
+
+            elif is_transport and not is_ret:
+                if exp_cargo is None or (isinstance(exp_cargo, Resources) and exp_cargo.is_zero()):
+                    cur_cargo = getattr(q, "cargo", None)
+                    if isinstance(cur_cargo, Resources) and not cur_cargo.is_zero():
+                        exp_cargo = cur_cargo
+                    else:
+                        matched = self._match_recent_transport_dispatch_locked(
+                            orig_coords,
+                            dest_coords,
+                            ships_detail=ships_part,
+                            used_indices=used_dispatch_idxs,
+                        )
+                        if matched is not None:
+                            m_idx, m_res = matched
+                            used_dispatch_idxs.add(m_idx)
+                            exp_cargo = m_res
+
+            elif is_transport and is_ret:
+                delivered = True
+                if del_cargo is None:
+                    matched = self._match_recent_transport_dispatch_locked(
+                        orig_coords,
+                        dest_coords,
+                        ships_detail=ships_part,
+                        used_indices=used_dispatch_idxs,
+                    )
+                    if matched is not None:
+                        m_idx, m_res = matched
+                        used_dispatch_idxs.add(m_idx)
+                        del_cargo = m_res
+
+            if (
+                exp_cargo != getattr(q, "expected_cargo", None)
+                or del_cargo != getattr(q, "delivered_cargo", None)
+                or delivered != bool(getattr(q, "delivered", False))
+            ):
+                changed = True
+                enriched_jobs.append(
+                    replace(
+                        q,
+                        expected_cargo=exp_cargo,
+                        delivered_cargo=del_cargo,
+                        delivered=delivered,
+                    )
+                )
+            else:
+                enriched_jobs.append(q)
+
+        return replace(state, active_queues=tuple(enriched_jobs)) if changed else state
+
+    def _build_building_resource_requests_locked(
+        self,
+        display_state: Optional[GameState],
+        actions: Sequence[PlannedAction],
+        early_needs_map: Optional[Mapping[int, Mapping[str, Any]]] = None,
+    ) -> list[dict[str, Any]]:
+        """Build structured resource requests for the Dashboard Building Queue (`in_flight`, `planned`, `requested`)."""
+        if display_state is None or not display_state.planets:
+            return []
+
+        planet_by_id: dict[int, PlanetState] = {int(p.planet_id): p for p in display_state.planets}
+        planet_by_coords: dict[str, PlanetState] = {}
+        for p in display_state.planets:
+            nc = normalize_coords(p.coords)
+            if nc:
+                planet_by_coords[nc] = p
+
+        # First building action hint per planet (prefer stalled/waiting building with missing resources)
+        next_bldg_by_pid: dict[int, tuple[str, Optional[int], Optional[int], PlannedAction]] = {}
+        for act in actions:
+            if act.kind not in ("BUILD", "WAIT_RESOURCES"):
+                continue
+            pid = _safe_api_int(act.planet_id, 0)
+            if pid <= 0:
+                continue
+            is_stalled = (not act.executable_now) and (not act.missing.is_zero())
+            prev = next_bldg_by_pid.get(pid)
+            if prev is None or (is_stalled and prev[3].executable_now):
+                tname = str(act.target_name or "")
+                tlvl = act.target_level
+                bid = act.target_id if act.target_id is not None else BUILDING_ID_BY_NAME.get(tname.lower())
+                next_bldg_by_pid[pid] = (tname, tlvl, bid, act)
+
+        early_map: Mapping[int, Mapping[str, Any]] = early_needs_map if isinstance(early_needs_map, Mapping) else {}
+        items: list[dict[str, Any]] = []
+        in_flight_by_pid: dict[int, list[int]] = {}
+        planned_by_pid: dict[int, list[int]] = {}
+
+        def _make_item(
+            *,
+            item_id: str,
+            dest: PlanetState,
+            target_building: str,
+            target_level: Optional[int],
+            building_id: Optional[int],
+            label: str,
+            status: str,
+            pig: int,
+            met: int,
+            kry: int,
+            spi: int,
+            src: Optional[PlanetState] = None,
+            source_coords: str = "",
+            eta_seconds: Optional[float] = None,
+            finish_ts: Optional[float] = None,
+            reason: str = "",
+        ) -> dict[str, Any]:
+            src_pid = int(src.planet_id) if src is not None else None
+            src_coords = normalize_coords(source_coords) or (str(src.coords) if src is not None else "")
+            src_name = str(src.name) if src is not None else ""
+            eta_clean = round(float(eta_seconds), 1) if (eta_seconds is not None and math.isfinite(float(eta_seconds))) else None
+            fin_clean = round(float(finish_ts), 3) if (finish_ts is not None and math.isfinite(float(finish_ts)) and float(finish_ts) > 0.0) else None
+            return {
+                "id": item_id,
+                "planet_id": int(dest.planet_id),
+                "planet_coords": str(dest.coords),
+                "planet_name": str(dest.name or dest.coords),
+                "target_building": target_building,
+                "target_level": int(target_level) if target_level is not None else None,
+                "building_id": int(building_id) if building_id is not None else None,
+                "label": label,
+                "status": status,
+                "resources": {
+                    "pig_iron": pig,
+                    "metal": met,
+                    "kryptonite": kry,
+                    "spice": spi,
+                },
+                "pig_iron": pig,
+                "metal": met,
+                "kryptonite": kry,
+                "spice": spi,
+                "source_planet_id": src_pid,
+                "source_coords": src_coords,
+                "source_name": src_name,
+                "eta_seconds": eta_clean,
+                "finish_ts": fin_clean,
+                "reason": str(reason or ""),
+            }
+
+        # 1. Active in-flight outbound TRANSPORT flights heading to an owned colony
+        for idx, q in enumerate(display_state.active_queues or ()):
+            if not is_in_flight_fleet_job(q):
+                continue
+            name_s = str(getattr(q, "name", "") or "")
+            det_s = str(getattr(q, "detail", "") or "")
+            name_l = name_s.lower()
+            det_l = det_s.lower()
+            is_ret = ("returning" in det_l) or ("↩" in name_s) or ("rück" in det_l) or ("rueck" in det_l)
+            if is_ret:
+                continue
+            if not (name_l.startswith("transport") or "transport →" in name_l or "transport ->" in name_l):
+                continue
+            dest_coords = _extract_coords_from_text(name_s)
+            dest = planet_by_coords.get(dest_coords) if dest_coords else None
+            if dest is None:
+                continue
+            res = getattr(q, "expected_cargo", None) or getattr(q, "cargo", None)
+            if not isinstance(res, Resources) or res.is_zero():
+                continue
+            orig_coords = normalize_coords(str(getattr(q, "origin_coords", "") or ""))
+            src = planet_by_coords.get(orig_coords) if orig_coords else None
+            pid = int(dest.planet_id)
+            buf = in_flight_by_pid.setdefault(pid, [0, 0, 0, 0])
+            buf[0] += res.pig_iron
+            buf[1] += res.metal
+            buf[2] += res.kryptonite
+            buf[3] += res.spice
+
+            tb, tl, bid = "", None, None
+            lbl = "Incoming transport"
+            early_ent = early_map.get(pid)
+            if isinstance(early_ent, Mapping) and early_ent.get("label"):
+                tb, tl, bid = _parse_building_target_hint(str(early_ent.get("label")))
+                lbl = f"{tb} L{tl}" if tb and tl else (tb or str(early_ent.get("label"))[:64])
+            elif pid in next_bldg_by_pid:
+                tb, tl, bid, _ = next_bldg_by_pid[pid]
+                lbl = f"{tb} L{tl}" if tb and tl else (tb or lbl)
+
+            items.append(
+                _make_item(
+                    item_id=f"inflight:{orig_coords or 'src'}->{dest_coords}:{int(q.finish_ts or 0)}:{idx}",
+                    dest=dest,
+                    target_building=tb,
+                    target_level=tl,
+                    building_id=bid,
+                    label=lbl,
+                    status="in_flight",
+                    pig=res.pig_iron,
+                    met=res.metal,
+                    kry=res.kryptonite,
+                    spi=res.spice,
+                    src=src,
+                    source_coords=orig_coords,
+                    eta_seconds=q.remaining_seconds,
+                    finish_ts=q.finish_ts,
+                    reason=det_s or "Transport in flight",
+                )
+            )
+
+        # 2. Planned TRANSPORT actions in the current plan
+        for idx, act in enumerate(actions):
+            if act.kind != "TRANSPORT":
+                continue
+            res = act.cost
+            if not isinstance(res, Resources) or res.is_zero():
+                continue
+            dest = planet_by_id.get(_safe_api_int(act.target_id, 0))
+            if dest is None:
+                dest_coords = _extract_coords_from_text(act.target_name)
+                dest = planet_by_coords.get(dest_coords) if dest_coords else None
+            if dest is None:
+                continue
+            src = planet_by_id.get(_safe_api_int(act.planet_id, 0))
+            pid = int(dest.planet_id)
+            buf = planned_by_pid.setdefault(pid, [0, 0, 0, 0])
+            buf[0] += res.pig_iron
+            buf[1] += res.metal
+            buf[2] += res.kryptonite
+            buf[3] += res.spice
+
+            tb, tl, bid = "", None, None
+            rsn = str(act.reason or "")
+            m_for = re.search(r"\bfor\s+(.+?)\s*$", rsn)
+            hint_str = m_for.group(1).strip() if m_for else ""
+            if hint_str:
+                tb, tl, bid = _parse_building_target_hint(hint_str)
+            if not tb and pid in early_map and early_map[pid].get("label"):
+                tb, tl, bid = _parse_building_target_hint(str(early_map[pid].get("label")))
+            if not tb and pid in next_bldg_by_pid:
+                tb, tl, bid, _ = next_bldg_by_pid[pid]
+            lbl = f"{tb} L{tl}" if tb and tl else (tb or hint_str[:64] or "Scheduled transport")
+            eta_s = act.duration_seconds if (act.duration_seconds is not None and act.duration_seconds > 0) else act.wait_seconds
+
+            items.append(
+                _make_item(
+                    item_id=f"planned:{act.planet_id}->{pid}:{idx}",
+                    dest=dest,
+                    target_building=tb,
+                    target_level=tl,
+                    building_id=bid,
+                    label=lbl,
+                    status="planned",
+                    pig=res.pig_iron,
+                    met=res.metal,
+                    kry=res.kryptonite,
+                    spi=res.spice,
+                    src=src,
+                    source_coords=str(act.planet_coords or ""),
+                    eta_seconds=eta_s,
+                    finish_ts=None,
+                    reason=rsn or "Planned inter-planet transport",
+                )
+            )
+
+        # 3. Pending / early resource requests from AI-Planner `early_transport_needs`
+        requested_pids: set[int] = set()
+        for raw_pid, entry in early_map.items():
+            if not isinstance(entry, Mapping):
+                continue
+            pid = _safe_api_int(raw_pid, 0)
+            dest = planet_by_id.get(pid)
+            if dest is None:
+                continue
+            planned_buf = planned_by_pid.get(pid, [0, 0, 0, 0])
+            pig = max(0, _safe_api_int(entry.get("pig_iron", 0), 0) - planned_buf[0])
+            met = max(0, _safe_api_int(entry.get("metal", 0), 0) - planned_buf[1])
+            kry = max(0, _safe_api_int(entry.get("kryptonite", 0), 0) - planned_buf[2])
+            spi = max(0, _safe_api_int(entry.get("spice", 0), 0) - planned_buf[3])
+            requested_pids.add(pid)
+            if pig + met + kry + spi <= 0:
+                continue
+            raw_lbl = str(entry.get("label") or "").strip()
+            tb, tl, bid = _parse_building_target_hint(raw_lbl)
+            if not tb and pid in next_bldg_by_pid:
+                tb, tl, bid, _ = next_bldg_by_pid[pid]
+            lbl = f"{tb} L{tl}" if tb and tl else (raw_lbl[:64] or "Resource request")
+            need_by = _safe_api_float(entry.get("need_by_sec"), 0.0)
+            items.append(
+                _make_item(
+                    item_id=f"req:{pid}:{bid or 'b'}:{tl or 0}",
+                    dest=dest,
+                    target_building=tb,
+                    target_level=tl,
+                    building_id=bid,
+                    label=lbl,
+                    status="requested",
+                    pig=pig,
+                    met=met,
+                    kry=kry,
+                    spi=spi,
+                    eta_seconds=need_by if need_by > 0.0 else None,
+                    finish_ts=None,
+                    reason=raw_lbl or "AI-Planner early resource request",
+                )
+            )
+
+        # 4. Stalled building actions in multi-planet empires (covers priority/ga_nn modes too)
+        if len(display_state.planets) >= 2:
+            for pid, (tb, tl, bid, act) in next_bldg_by_pid.items():
+                if pid in requested_pids:
+                    continue
+                if act.executable_now or act.missing.is_zero():
+                    continue
+                dest = planet_by_id.get(pid)
+                if dest is None:
+                    continue
+                inb = in_flight_by_pid.get(pid, [0, 0, 0, 0])
+                pln = planned_by_pid.get(pid, [0, 0, 0, 0])
+                pig = max(0, act.missing.pig_iron - inb[0] - pln[0])
+                met = max(0, act.missing.metal - inb[1] - pln[1])
+                kry = max(0, act.missing.kryptonite - inb[2] - pln[2])
+                spi = max(0, act.missing.spice - inb[3] - pln[3])
+                if pig + met + kry + spi <= 0:
+                    continue
+                lbl = f"{tb} L{tl}" if tb and tl else (tb or "Building resource request")
+                items.append(
+                    _make_item(
+                        item_id=f"req:{pid}:{bid or 'b'}:{tl or 0}",
+                        dest=dest,
+                        target_building=tb,
+                        target_level=tl,
+                        building_id=bid,
+                        label=lbl,
+                        status="requested",
+                        pig=pig,
+                        met=met,
+                        kry=kry,
+                        spi=spi,
+                        eta_seconds=act.wait_seconds,
+                        finish_ts=None,
+                        reason=str(act.reason or "Waiting for building resources"),
+                    )
+                )
+
+        status_order = {"in_flight": 0, "planned": 1, "requested": 2}
+        items.sort(
+            key=lambda it: (
+                status_order.get(str(it.get("status") or ""), 9),
+                float(it["eta_seconds"]) if it.get("eta_seconds") is not None else float("inf"),
+                str(it.get("planet_coords") or ""),
+                str(it.get("label") or ""),
+            )
+        )
+        return items
+
+    @staticmethod
+    def _count_active_builders(
+        state: Optional[GameState],
+        *,
+        now_ts: Optional[float] = None,
+    ) -> int:
+        if state is None or not state.planets:
+            return 0
+        now_w = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        pid_by_coords: dict[str, int] = {}
+        owned_pids: set[int] = set()
+        for p in state.planets:
+            if normalize_planet_type(p) == "raid":
+                continue
+            pid = _safe_api_int(p.planet_id, 0)
+            if pid <= 0:
+                continue
+            owned_pids.add(pid)
+            nc = normalize_coords(p.coords)
+            if nc:
+                pid_by_coords[nc] = pid
+        active_pid = _safe_api_int(state.active_planet_id, 0)
+        busy_pids: set[int] = set()
+        for q in state.active_queues or ():
+            if getattr(q, "category", None) != "building":
+                continue
+            fin = getattr(q, "finish_ts", None)
+            rem = getattr(q, "remaining_seconds", None)
+            if fin is not None:
+                if _safe_api_float(fin, 0.0) <= now_w:
+                    continue
+            elif rem is not None and _safe_api_float(rem, 0.0) <= 0.0:
+                continue
+            q_orig = normalize_coords(getattr(q, "origin_coords", "") or "")
+            if q_orig and q_orig in pid_by_coords:
+                busy_pids.add(pid_by_coords[q_orig])
+            elif not q_orig and active_pid in owned_pids:
+                busy_pids.add(active_pid)
+        return len(busy_pids)
+
+    @classmethod
+    def _compute_current_hourly_production(
+        cls,
+        state: Optional[GameState],
+        *,
+        now_ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        minute_bucket = int(eff_now // 60) * 60
+        if state is None or not state.planets:
+            return {
+                "minute_bucket": minute_bucket,
+                "recorded_at": round(eff_now, 3),
+                "pig_iron_per_hour": 0.0,
+                "metal_per_hour": 0.0,
+                "kryptonite_per_hour": 0.0,
+                "spice_per_hour": 0.0,
+                "total_per_hour": 0.0,
+                "speq_per_hour": 0.0,
+                "planet_count": 0,
+                "active_builders": 0,
+            }
+        econ = estimate_hourly_economy(state)
+        pig_hr = round(_safe_api_float(econ.get("pig_iron_per_hr"), 0.0), 1)
+        met_hr = round(max(0.0, _safe_api_float(econ.get("metal_per_hr"), 0.0)), 1)
+        kry_hr = round(max(0.0, _safe_api_float(econ.get("kryptonite_per_hr"), 0.0)), 1)
+        spi_hr = round(max(0.0, _safe_api_float(econ.get("spice_per_hr"), 0.0)), 1)
+        tot_hr = round(max(0.0, _safe_api_float(econ.get("net_resources_per_hr"), max(0.0, pig_hr) + met_hr + kry_hr + spi_hr)), 1)
+        speq_hr = round(max(0.0, _safe_api_float(econ.get("spice_eq_per_hr"), 0.0)), 1)
+        p_cnt = sum(1 for p in state.planets if normalize_planet_type(p) != "raid")
+        b_cnt = cls._count_active_builders(state, now_ts=eff_now)
+        return {
+            "minute_bucket": minute_bucket,
+            "recorded_at": round(eff_now, 3),
+            "pig_iron_per_hour": pig_hr,
+            "metal_per_hour": met_hr,
+            "kryptonite_per_hour": kry_hr,
+            "spice_per_hour": spi_hr,
+            "total_per_hour": tot_hr,
+            "speq_per_hour": speq_hr,
+            "planet_count": p_cnt,
+            "active_builders": b_cnt,
+        }
+
+    def _db_total_changes_token(self) -> Optional[tuple[int, int, int]]:
+        db = self._db
+        if db is None:
+            return None
+        conn = getattr(db, "_conn", None)
+        if conn is None:
+            return None
+        db_lock = getattr(db, "_lock", None)
+        try:
+            if db_lock is not None:
+                with db_lock:
+                    dv_row = conn.execute("PRAGMA data_version").fetchone()
+                    tc = int(conn.total_changes)
+            else:
+                dv_row = conn.execute("PRAGMA data_version").fetchone()
+                tc = int(conn.total_changes)
+            dv = int(dv_row[0]) if dv_row is not None else 0
+            return (id(db), tc, dv)
+        except Exception:
+            return None
+
+    def _record_hourly_production_locked(
+        self,
+        state: Optional[GameState],
+        *,
+        now_ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        snap = self._compute_current_hourly_production(state, now_ts=now_ts)
+        if self._db is None or state is None or not state.planets:
+            return snap
+        has_economy_signal = (
+            float(snap.get("total_per_hour", 0.0)) > 0.0
+            or float(snap.get("speq_per_hour", 0.0)) > 0.0
+            or any(bool(p.buildings) or bool(p.economy_rates) for p in state.planets)
+        )
+        if not has_economy_signal:
+            return snap
+        m_bucket = int(snap["minute_bucket"])
+        if m_bucket == self._last_recorded_prod_minute:
+            return snap
+        rec_fn = getattr(self._db, "record_hourly_production", None)
+        if callable(rec_fn):
+            try:
+                rec_fn(
+                    pig_iron_per_hour=snap["pig_iron_per_hour"],
+                    metal_per_hour=snap["metal_per_hour"],
+                    kryptonite_per_hour=snap["kryptonite_per_hour"],
+                    spice_per_hour=snap["spice_per_hour"],
+                    total_per_hour=snap["total_per_hour"],
+                    speq_per_hour=snap["speq_per_hour"],
+                    planet_count=snap["planet_count"],
+                    active_builders=snap["active_builders"],
+                    ts=snap["recorded_at"],
+                )
+                self._last_recorded_prod_minute = m_bucket
+                self._hourly_prod_cache_key = None
+            except Exception:
+                pass
+        return snap
+
+    def _get_hourly_production_history_locked(self, limit: int = 120) -> list[dict[str, Any]]:
+        if self._db is None:
+            return []
+        get_fn = getattr(self._db, "get_hourly_production_history", None)
+        if not callable(get_fn):
+            return []
+        tok = self._db_total_changes_token()
+        ckey = (tok, int(limit)) if tok is not None else None
+        if ckey is not None and self._hourly_prod_cache_key == ckey:
+            return [dict(r) for r in self._hourly_prod_cache]
+        try:
+            rows = get_fn(limit=int(limit))
+            clean = _sanitize_finite_json([dict(r) for r in (rows or ()) if isinstance(r, Mapping)])
+        except Exception:
+            clean = []
+        if ckey is not None:
+            self._hourly_prod_cache_key = ckey
+            self._hourly_prod_cache = clean
+        return [dict(r) for r in clean]
+
+    def _get_loot_recycle_telemetry_locked(
+        self,
+        hours: int = 24,
+        *,
+        now_ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        win_hours = max(1, min(168, _safe_api_int(hours, 24)))
+        end_bucket = int(eff_now // 3600) * 3600
+        if self._db is None or not callable(getattr(self._db, "get_loot_recycle_hourly", None)):
+            start_bucket = end_bucket - (win_hours - 1) * 3600
+            empty_hist = [
+                {
+                    "hour_bucket": hb,
+                    "stolen_pig_iron": 0.0,
+                    "stolen_metal": 0.0,
+                    "stolen_kryptonite": 0.0,
+                    "stolen_spice": 0.0,
+                    "stolen_total": 0.0,
+                    "recycled_pig_iron": 0.0,
+                    "recycled_metal": 0.0,
+                    "recycled_kryptonite": 0.0,
+                    "recycled_spice": 0.0,
+                    "recycled_total": 0.0,
+                    "total": 0.0,
+                    "attack_count": 0,
+                    "recycle_count": 0,
+                    "updated_at": 0.0,
+                }
+                for hb in range(start_bucket, end_bucket + 3600, 3600)
+            ]
+            return {
+                "history": empty_hist,
+                "summary": {
+                    "total_stolen": 0.0,
+                    "total_recycled": 0.0,
+                    "grand_total": 0.0,
+                    "attack_count": 0,
+                    "recycle_count": 0,
+                    "window_hours": win_hours,
+                    "stolen_pig_iron": 0.0,
+                    "stolen_metal": 0.0,
+                    "stolen_kryptonite": 0.0,
+                    "stolen_spice": 0.0,
+                    "recycled_pig_iron": 0.0,
+                    "recycled_metal": 0.0,
+                    "recycled_kryptonite": 0.0,
+                    "recycled_spice": 0.0,
+                },
+            }
+        tok = self._db_total_changes_token()
+        ckey = (tok, end_bucket, win_hours) if (tok is not None and now_ts is None) else None
+        if ckey is not None and self._loot_recycle_cache_key == ckey and self._loot_recycle_cache is not None:
+            return {
+                "history": [dict(r) for r in self._loot_recycle_cache["history"]],
+                "summary": dict(self._loot_recycle_cache["summary"]),
+            }
+        try:
+            payload = self._db.get_loot_recycle_hourly(hours=win_hours, now_ts=eff_now)
+            if not isinstance(payload, Mapping):
+                raise ValueError("invalid loot_recycle_hourly payload")
+            clean = _sanitize_finite_json(
+                {
+                    "history": [dict(r) for r in (payload.get("history") or ()) if isinstance(r, Mapping)],
+                    "summary": dict(payload.get("summary") or {}),
+                }
+            )
+        except Exception:
+            return {
+                "history": [],
+                "summary": {
+                    "total_stolen": 0.0,
+                    "total_recycled": 0.0,
+                    "grand_total": 0.0,
+                    "attack_count": 0,
+                    "recycle_count": 0,
+                    "window_hours": win_hours,
+                },
+            }
+        if ckey is not None:
+            # Refresh token in case first-read auto-backfill incremented total_changes
+            tok_after = self._db_total_changes_token()
+            self._loot_recycle_cache_key = (tok_after, end_bucket, win_hours) if tok_after is not None else ckey
+            self._loot_recycle_cache = clean
+        return {
+            "history": [dict(r) for r in clean["history"]],
+            "summary": dict(clean["summary"]),
+        }
+
+    def _get_db_summary_cached_locked(self) -> Optional[dict[str, Any]]:
+        if self._db is None:
+            return None
+        sum_fn = getattr(self._db, "summary", None)
+        if not callable(sum_fn):
+            return None
+        tok = self._db_total_changes_token()
+        ckey = (tok, sum_fn) if tok is not None else None
+        if ckey is not None and self._db_summary_cache_key == ckey and self._db_summary_cache is not None:
+            return dict(self._db_summary_cache)
+        raw = sum_fn()
+        clean = _sanitize_finite_json(raw) if isinstance(raw, Mapping) else raw
+        if ckey is not None and isinstance(clean, dict):
+            self._db_summary_cache_key = ckey
+            self._db_summary_cache = clean
+            return dict(clean)
+        return clean
+
     def _attach_raid_stats(self, state: GameState) -> GameState:
         existing_rs = getattr(state, "raid_stats", None)
         base_rs: dict[str, Any] = dict(existing_rs) if isinstance(existing_rs, Mapping) else {}
         if self._db is not None:
             get_stats = getattr(self._db, "get_raid_stats", None)
             if callable(get_stats):
-                stats = get_stats()
+                tok = self._db_total_changes_token()
+                rs_ckey = (tok, int(time.time()), get_stats) if tok is not None else None
+                if (
+                    rs_ckey is not None
+                    and self._raid_stats_cache_key == rs_ckey
+                    and self._raid_stats_cache is not None
+                ):
+                    stats = self._raid_stats_cache
+                else:
+                    stats = get_stats()
+                    if rs_ckey is not None and isinstance(stats, Mapping):
+                        self._raid_stats_cache_key = rs_ckey
+                        self._raid_stats_cache = dict(stats)
                 if isinstance(stats, Mapping):
                     base_rs.update(stats)
             base_rs["transmitter_status"] = self._get_transmitter_status_locked()
         elif bool(getattr(self.strategy_config, "allow_transmitter", False)):
             base_rs["transmitter_status"] = self._get_transmitter_status_locked()
         enriched = replace(state, raid_stats=base_rs) if base_rs != existing_rs else state
-        return self._merge_colony_candidates_if_needed(enriched, self.strategy_config)
+        enriched = self._merge_colony_candidates_if_needed(enriched, self.strategy_config)
+        return self._enrich_active_queues_locked(enriched)
 
     def _invalidate_dashboard_cache(self) -> None:
         self._dash_cache_state_ref = None
@@ -3199,6 +4660,8 @@ class GameApiBridge:
             uni_max = self._snapshot_universe_research_max_map_locked(snap_state)
             reserved_floors = self._get_reserved_floors_locked()
             persisted_specs = self._get_planet_specializations_locked()
+            custom_names = self._get_custom_planet_names_locked()
+            display_state = self._apply_custom_planet_names_to_state(snap_state, custom_names) or snap_state
             active_co = self._get_active_config_optimizer_locked()
             cfg = self.strategy_config
 
@@ -3211,6 +4674,8 @@ class GameApiBridge:
         if isinstance(active_co, Mapping) and isinstance(active_co.get("params"), Mapping):
             base_params.update(dict(active_co["params"]))
         base_params["planet_specializations"] = dict(persisted_specs)
+        base_params["planet_names"] = dict(custom_names)
+        base_params["custom_planet_names"] = dict(custom_names)
         base_params["max_planets"] = max(1, _safe_api_int(getattr(cfg, "max_planets", 11), 11))
         if isinstance(params, Mapping):
             base_params.update(dict(params))
@@ -3280,7 +4745,7 @@ class GameApiBridge:
             t0 = time.monotonic()
             try:
                 res = co_mod.run_config_optimizer(
-                    snap_state,
+                    display_state,
                     universe_research_max=uni_max,
                     params=base_params,
                     previous_result=previous_result,
@@ -3425,6 +4890,8 @@ class GameApiBridge:
                     "No game state snapshot available yet; open /state or /dashboard first."
                 )
             snap_state = self._merge_economy_rates(snap_state)
+            custom_names = self._get_custom_planet_names_locked()
+            display_state = self._apply_custom_planet_names_to_state(snap_state, custom_names) or snap_state
             active_co = self._get_active_config_optimizer_locked()
             active_ai = self._get_active_ai_planner_locked()
             raid_rows, message_rows = self._snapshot_attack_history_locked()
@@ -3502,13 +4969,15 @@ class GameApiBridge:
                     co_params["max_planets"] = max(1, _safe_api_int(getattr(cfg, "max_planets", 11), 11))
                     co_params["pad_generic_colonies"] = bool(base_params.get("pad_generic_colonies", False))
                     co_params["reserved_floors_by_planet"] = reserved_floors
+                    co_params["planet_names"] = dict(custom_names)
+                    co_params["custom_planet_names"] = dict(custom_names)
                     # Fast bootstrap GA budget when auto-seeding a missing config target
                     co_params["catalogue_grid_size"] = min(int(co_params.get("catalogue_grid_size", 25000)), 4000)
                     co_params["ga_population_size"] = min(int(co_params.get("ga_population_size", 200)), 32)
                     co_params["ga_generations"] = min(int(co_params.get("ga_generations", 150)), 24)
                     t_co = time.monotonic()
                     co_res = co_mod.run_config_optimizer(
-                        snap_state,
+                        display_state,
                         universe_research_max=uni_max,
                         params=co_params,
                     )
@@ -3526,10 +4995,10 @@ class GameApiBridge:
                 telemetry = ai_mod.compute_attack_telemetry(
                     raid_rows,
                     message_rows,
-                    state=snap_state,
+                    state=display_state,
                 )
                 res = ai_mod.run_ai_planner(
-                    snap_state,
+                    display_state,
                     target_config,
                     attack_telemetry=telemetry,
                     params=base_params,
@@ -3747,6 +5216,8 @@ class GameApiBridge:
                     clean_entry = dict(entry)
                     early_needs_map[pid_int] = clean_entry
                     merged_priority_needs[pid_int] = clean_entry
+        self._last_early_transport_needs = {int(k): dict(v) for k, v in early_needs_map.items()}
+        self._last_early_transport_needs_sig = id(enriched_state)
         if reserved_cost.is_zero() and early_needs_map:
             first_early = min(
                 early_needs_map.values(),
@@ -3800,17 +5271,19 @@ class GameApiBridge:
             if a.priority == "P0":
                 return (0 if a.kind == "ALERT_HOSTILE" else 1, 0)
             if a.priority == "P1":
-                if a.kind == "SPY":
-                    return (0, 1)
-                if a.kind == "TRANSPORT":
-                    return (0, 2)
                 if a.kind == "THROTTLE_BUILDING":
                     rsn_l = str(a.reason or "").lower()
                     if "negative energy" in rsn_l or "metal storage full" in rsn_l:
-                        return (0, 3)
-                    return (1, 1)
-                if a.kind in ("BUILD", "RESEARCH", "WAIT_RESOURCES"):
+                        return (0, 0)
                     return (1, 0)
+                if a.kind in ("BUILD", "RESEARCH"):
+                    return (0, 1)
+                if a.kind == "TRANSPORT":
+                    return (0, 2)
+                if a.kind == "SPY":
+                    return (0, 3)
+                if a.kind == "WAIT_RESOURCES":
+                    return (1, 1)
                 return (2, 0)
             if a.priority == "P2":
                 if a.kind in ("BUILD", "RESEARCH", "WAIT_RESOURCES"):
@@ -4641,8 +6114,26 @@ class GameApiBridge:
             if upd_kwargs:
                 state = replace(state, **upd_kwargs)
         if prev is not None and not fetched_buildings and prev.active_queues:
-            cur_b_jobs = [q for q in state.active_queues if q.category == "building"]
-            prev_b_jobs = [q for q in prev.active_queues if q.category == "building"]
+            ap_cur = state.active_planet()
+            ap_prev = prev.active_planet()
+            cur_norm_c = normalize_coords(getattr(ap_cur, "coords", "") or "") if ap_cur is not None else ""
+            prev_norm_c = normalize_coords(getattr(ap_prev, "coords", "") or "") if ap_prev is not None else ""
+            cur_b_jobs = [
+                q
+                for q in state.active_queues
+                if q.category == "building"
+                and (not normalize_coords(q.origin_coords) or normalize_coords(q.origin_coords) == cur_norm_c)
+            ]
+            prev_b_jobs = [
+                q
+                for q in prev.active_queues
+                if q.category == "building"
+                and (
+                    (normalize_coords(q.origin_coords) or prev_norm_c) == cur_norm_c
+                    if cur_norm_c
+                    else True
+                )
+            ]
             if len(cur_b_jobs) == 1 and len(prev_b_jobs) > 1:
                 c0 = cur_b_jobs[0]
                 p0 = prev_b_jobs[0]
@@ -4658,6 +6149,72 @@ class GameApiBridge:
                 ]
                 if same_head and tail_b:
                     state = replace(state, active_queues=tuple(list(state.active_queues) + tail_b))
+
+        # Stamp `origin_coords` on active-planet building jobs and preserve unexpired
+        # building queues observed on other owned colonies across planet switches (#100).
+        ap_eff = state.active_planet()
+        active_norm_coords = normalize_coords(getattr(ap_eff, "coords", "") or "") if ap_eff is not None else ""
+        owned_planet_coords = {
+            normalize_coords(p.coords)
+            for p in (state.planets or ())
+            if normalize_coords(p.coords)
+        }
+        stamped_queues: list[QueueJob] = []
+        queues_changed = False
+        stamp_active_b = bool(active_norm_coords and (fetched_buildings or fetched_home or prev is None))
+        for q in state.active_queues or ():
+            if q.category == "building":
+                q_orig = normalize_coords(q.origin_coords)
+                if not q_orig and stamp_active_b:
+                    q = replace(q, origin_coords=active_norm_coords)
+                    queues_changed = True
+                elif q_orig and q_orig != q.origin_coords:
+                    q = replace(q, origin_coords=q_orig)
+                    queues_changed = True
+            stamped_queues.append(q)
+
+        if prev is not None and prev.active_queues and active_norm_coords:
+            now_wall_b = time.time()
+            ap_prev_b = prev.active_planet()
+            prev_active_norm = normalize_coords(getattr(ap_prev_b, "coords", "") or "") if ap_prev_b is not None else ""
+            existing_b_sigs = {
+                (
+                    normalize_coords(q.origin_coords),
+                    str(q.name or "").strip().lower(),
+                    q.target_level,
+                    int(q.queue_slot or 1),
+                )
+                for q in stamped_queues
+                if q.category == "building"
+            }
+            for pq in prev.active_queues:
+                if pq.category != "building":
+                    continue
+                pq_orig = normalize_coords(pq.origin_coords) or prev_active_norm
+                if not pq_orig or pq_orig == active_norm_coords:
+                    continue
+                if owned_planet_coords and pq_orig not in owned_planet_coords:
+                    continue
+                if pq.finish_ts is not None:
+                    if _safe_api_float(pq.finish_ts, 0.0) <= now_wall_b:
+                        continue
+                elif pq.remaining_seconds is not None and _safe_api_float(pq.remaining_seconds, 0.0) <= 0.0:
+                    continue
+                sig_b = (
+                    pq_orig,
+                    str(pq.name or "").strip().lower(),
+                    pq.target_level,
+                    int(pq.queue_slot or 1),
+                )
+                if sig_b in existing_b_sigs:
+                    continue
+                existing_b_sigs.add(sig_b)
+                stamped_queues.append(replace(pq, origin_coords=pq_orig) if pq.origin_coords != pq_orig else pq)
+                queues_changed = True
+
+        if queues_changed:
+            state = replace(state, active_queues=tuple(stamped_queues))
+
         now = time.monotonic()
         if fetched_home:
             self._last_home_fetched = True
@@ -4673,6 +6230,8 @@ class GameApiBridge:
             self._active_planet_confirmed = True
 
         merged = self._merge_economy_rates(self._merge_cached_offers(state))
+        self._capture_observed_outbound_transports_locked(merged)
+        self._record_hourly_production_locked(merged)
         self._record_new_colonies_locked(prev, merged)
         self._last_state = merged
         self._last_recorded_state_obj = merged
@@ -4823,6 +6382,15 @@ class GameApiBridge:
                 if self._last_state is not None
                 else None
             )
+            if refresh and dash_state is not None:
+                self._record_hourly_production_locked(dash_state)
+            custom_names = self._get_custom_planet_names_locked()
+            custom_names_sig = tuple(sorted(custom_names.items()))
+            display_state = (
+                self._apply_custom_planet_names_to_state(dash_state, custom_names)
+                if dash_state is not None
+                else None
+            )
             eff_mode = normalize_planner_mode(self.strategy_config.planner_mode)
             if dash_state is not None:
                 actions, opt_summary = self._plan_with_summary(dash_state, _already_enriched=True)
@@ -4836,6 +6404,7 @@ class GameApiBridge:
             static_key = (
                 dash_sig,
                 cfg_sig,
+                custom_names_sig,
                 build_ranking_evolution,
                 build_buildings_eta,
                 build_combat_overview,
@@ -4845,37 +6414,46 @@ class GameApiBridge:
                 self._dash_static_cache_key, static_key
             ):
                 ranking = (
-                    build_ranking_evolution(dash_state, self._rank_samples)
-                    if dash_state is not None
+                    build_ranking_evolution(display_state, self._rank_samples)
+                    if display_state is not None
                     else None
                 )
                 buildings_eta = (
-                    build_buildings_eta(dash_state)
-                    if dash_state is not None
+                    build_buildings_eta(display_state)
+                    if display_state is not None
                     else None
                 )
                 planet_economies = (
                     {
-                        str(p.planet_id): estimate_planet_hourly_economy(dash_state, p)
-                        for p in dash_state.planets
+                        str(p.planet_id): estimate_planet_hourly_economy(display_state, p)
+                        for p in display_state.planets
                     }
-                    if dash_state is not None
+                    if display_state is not None
                     else {}
                 )
                 combat = (
                     build_combat_overview(
-                        dash_state,
+                        display_state,
                         safety_margin=self.strategy_config.combat_safety_margin,
                     )
-                    if dash_state is not None
+                    if display_state is not None
                     else None
                 )
                 static_clean = _sanitize_finite_json(
                     {
                         "config": cfg_raw,
-                        "state": asdict(dash_state) if dash_state else None,
+                        "state": (
+                            self._serialize_state_with_custom_names(
+                                dash_state,
+                                display_state,
+                                custom_names,
+                            )
+                            if dash_state is not None
+                            else None
+                        ),
                         "buildings_eta": buildings_eta,
                         "planet_economies": planet_economies,
+                        "current_hourly_production_base": self._compute_current_hourly_production(dash_state),
                         "combat": combat,
                         "ranking": ranking,
                     }
@@ -4894,14 +6472,26 @@ class GameApiBridge:
             ag_opt = opt_summary if eff_mode == "ga_nn" else None
             ag_opt_sig = _freeze_sig_tree(_summary_without_elapsed(ag_opt))
             mq_sig = _freeze_sig_tree(manual_queue_pending)
+            early_needs_map = (
+                self._last_early_transport_needs
+                if (
+                    dash_state is not None
+                    and planner_status["effective_planner_mode"] == "ai_planner"
+                    and self._last_early_transport_needs_sig == id(dash_state)
+                )
+                else {}
+            )
+            early_needs_sig = _freeze_sig_tree(early_needs_map)
             ag_key = (
                 dash_sig,
                 cfg_sig,
+                custom_names_sig,
                 eff_mode,
                 planner_status["effective_planner_mode"],
                 planner_status["ai_planner_job"].get("run_id"),
                 ag_opt_sig,
                 mq_sig,
+                early_needs_sig,
                 tuple(actions),
                 build_action_graph,
             )
@@ -4910,7 +6500,7 @@ class GameApiBridge:
             ):
                 plan_json = [self._serialize_action(a) for a in actions]
                 raw_ag = build_action_graph(
-                    dash_state,
+                    display_state if display_state is not None else dash_state,
                     actions,
                     effective_config=self.strategy_config,
                     active_config=self.strategy_config,
@@ -4919,14 +6509,35 @@ class GameApiBridge:
                     sanitize=False,
                 )
                 ag_json = _sanitize_finite_json(_redact_action_graph_strings(raw_ag))
+                bld_res_reqs = _sanitize_finite_json(
+                    self._build_building_resource_requests_locked(
+                        display_state if display_state is not None else dash_state,
+                        actions,
+                        early_needs_map,
+                    )
+                )
                 ag_clean = {
                     "plan": plan_json,
                     "action_graph": ag_json,
+                    "building_resource_requests": bld_res_reqs,
                 }
                 self._dash_cache_state_ref = self._last_state
                 self._dash_ag_cache_key = ag_key
                 self._dash_ag_cache_json = json.dumps(ag_clean, allow_nan=False)
             ag_val = json.loads(self._dash_ag_cache_json)
+
+            now_dash_ts = time.time()
+            cur_prod_base = static_val.get("current_hourly_production_base")
+            if isinstance(cur_prod_base, dict):
+                current_hourly_prod = dict(cur_prod_base)
+                current_hourly_prod["minute_bucket"] = int(now_dash_ts // 60) * 60
+                current_hourly_prod["recorded_at"] = round(now_dash_ts, 3)
+                current_hourly_prod["active_builders"] = self._count_active_builders(dash_state, now_ts=now_dash_ts)
+            else:
+                current_hourly_prod = self._compute_current_hourly_production(dash_state, now_ts=now_dash_ts)
+            hourly_prod_hist = self._get_hourly_production_history_locked(limit=120)
+            loot_rec = self._get_loot_recycle_telemetry_locked(hours=24)
+            db_summary_clean = self._get_db_summary_cached_locked()
 
             rate_rem = self._page_limiter.rate_limit_remaining()
             ui_assets_clean = _sanitize_finite_json(compute_ui_assets_state())
@@ -4949,6 +6560,7 @@ class GameApiBridge:
                         "remaining_hourly_actions": self._live_executor.remaining_hourly_budget(),
                     },
                     "bot_control": dict(self._bot_control),
+                    "custom_planet_names": custom_names,
                     "planner_mode": eff_mode,
                     "effective_planner_mode": planner_status["effective_planner_mode"],
                     "fallback_reason": planner_status["fallback_reason"],
@@ -4960,7 +6572,6 @@ class GameApiBridge:
                     "transmitter_status": self._get_transmitter_status_locked(),
                     "galaxy_sweep": self._get_galaxy_sweep_state_locked(),
                     "universe_research_max": self._get_universe_research_max_locked(dash_state),
-                    "db_summary": self._db.summary() if self._db is not None else None,
                     "logs": {
                         "commander": self._read_log_tail("commander.log"),
                         "game_api": self._read_log_tail("game_api.log"),
@@ -4982,6 +6593,7 @@ class GameApiBridge:
                 **(ui_assets_clean if isinstance(ui_assets_clean, dict) else {}),
                 "health": envelope["health"],
                 "bot_control": envelope["bot_control"],
+                "custom_planet_names": envelope["custom_planet_names"],
                 "planner_mode": envelope["planner_mode"],
                 "effective_planner_mode": envelope["effective_planner_mode"],
                 "fallback_reason": envelope["fallback_reason"],
@@ -4991,17 +6603,22 @@ class GameApiBridge:
                 "state": static_val["state"],
                 "plan": ag_val["plan"],
                 "action_graph": ag_val["action_graph"],
+                "building_resource_requests": ag_val.get("building_resource_requests", []),
                 "manual_queue": envelope["manual_queue"],
                 "notifications": envelope["notifications"],
                 "transmitter_status": envelope["transmitter_status"],
                 "galaxy_sweep": envelope["galaxy_sweep"],
                 "universe_research_max": envelope["universe_research_max"],
+                "hourly_production_history": hourly_prod_hist,
+                "current_hourly_production": current_hourly_prod,
+                "loot_recycle_history": loot_rec["history"],
+                "loot_recycle_summary": loot_rec["summary"],
                 "optimizer_summary": envelope["optimizer_summary"],
                 "buildings_eta": static_val["buildings_eta"],
                 "planet_economies": static_val["planet_economies"],
                 "combat": static_val["combat"],
                 "ranking": static_val["ranking"],
-                "db_summary": envelope["db_summary"],
+                "db_summary": db_summary_clean,
                 "logs": envelope["logs"],
             }
             self._last_dashboard_payload = result
@@ -5036,7 +6653,14 @@ class GameApiBridge:
                 )
             ):
                 cached = self._refresh_cached_economy(self._last_state)
-                return _sanitize_finite_json(_redact_api_payload(asdict(self._attach_raid_stats(cached))))
+                custom_names = self._get_custom_planet_names_locked()
+                enriched_cached = self._attach_raid_stats(cached)
+                serialized = self._serialize_state_with_custom_names(
+                    enriched_cached,
+                    custom_names=custom_names,
+                )
+                serialized["custom_planet_names"] = custom_names
+                return _sanitize_finite_json(_redact_api_payload(serialized))
 
             batch_iv = max(5.0, float(self.strategy_config.action_batch_interval_seconds))
             has_cached_res = bool(self._last_state is not None and self._last_state.research_offers)
@@ -5148,7 +6772,14 @@ class GameApiBridge:
                         error=exc,
                     )
                 raise
-            return _sanitize_finite_json(_redact_api_payload(asdict(self._attach_raid_stats(merged))))
+            custom_names = self._get_custom_planet_names_locked()
+            enriched_merged = self._attach_raid_stats(merged)
+            serialized = self._serialize_state_with_custom_names(
+                enriched_merged,
+                custom_names=custom_names,
+            )
+            serialized["custom_planet_names"] = custom_names
+            return _sanitize_finite_json(_redact_api_payload(serialized))
 
     def _pick_executor(self, dry_run: bool) -> ActionExecutor:
         return self._dry_executor if dry_run else self._live_executor
@@ -5638,6 +7269,25 @@ class GameApiBridge:
     def _persist_galaxy_slots(self, slots: list[Any] | tuple[Any, ...]) -> int:
         if not slots:
             return 0
+        for s in slots:
+            norm_sc_deb = normalize_coords(getattr(s, "coords", "") or "")
+            if not norm_sc_deb:
+                continue
+            has_deb = bool(getattr(s, "has_debris", False))
+            if has_deb:
+                dp = max(0, _safe_api_int(getattr(s, "debris_pig_iron", 0), 0))
+                dm = max(0, _safe_api_int(getattr(s, "debris_metal", 0), 0))
+                dk = max(0, _safe_api_int(getattr(s, "debris_kryptonite", 0), 0))
+                ds = max(0, _safe_api_int(getattr(s, "debris_spice", 0), 0))
+                if dp + dm + dk + ds > 0:
+                    self._galaxy_debris_amounts[norm_sc_deb] = {
+                        "pig_iron": dp,
+                        "metal": dm,
+                        "kryptonite": dk,
+                        "spice": ds,
+                    }
+            else:
+                self._galaxy_debris_amounts.pop(norm_sc_deb, None)
         if self._db is not None:
             saved = self._db.record_galaxy_slots(slots)
             self._refresh_raid_targets_locked(limit=250)
@@ -5688,6 +7338,7 @@ class GameApiBridge:
 
     def _owned_sweep_galaxies_locked(self, *, state_override: Optional[GameState] = None) -> list[int]:
         gals: list[int] = []
+        max_g = self._max_galaxies_locked()
         st = state_override if state_override is not None else self._last_state
         if st is not None:
             for p in st.planets:
@@ -5695,7 +7346,7 @@ class GameApiBridge:
                     continue
                 m = re.search(r"(\d{1,2}):(\d{1,3})", str(p.coords or ""), re.ASCII)
                 if m:
-                    g = max(1, min(14, int(m.group(1))))
+                    g = max(1, min(max_g, int(m.group(1))))
                     if g not in gals:
                         gals.append(g)
         return gals or [1]
@@ -5709,8 +7360,9 @@ class GameApiBridge:
         state_override: Optional[GameState] = None,
         scanned_systems_override: Optional[Mapping[str, float]] = None,
     ) -> list[int]:
+        max_g = self._max_galaxies_locked()
         if explicit_galaxy is not None:
-            return [max(1, min(14, int(explicit_galaxy)))]
+            return [max(1, min(max_g, int(explicit_galaxy)))]
         cfg = self.strategy_config
         scan_all_gals = (
             bool(all_galaxies_override)
@@ -5718,7 +7370,7 @@ class GameApiBridge:
             else bool(getattr(cfg, "galaxy_scan_all_galaxies", False))
         )
         if scan_all_gals:
-            return list(range(1, 15))
+            return list(range(1, max_g + 1))
         owned = self._owned_sweep_galaxies_locked(state_override=state_override)
         refresh_pct_cfg = max(
             0,
@@ -5749,7 +7401,7 @@ class GameApiBridge:
                     if gi_u in owned_set and 1 <= si_u <= 400:
                         owned_scanned.add((gi_u, si_u))
             if len(owned_scanned) >= len(owned_set) * 400:
-                return list(range(1, 15))
+                return list(range(1, max_g + 1))
         return owned
 
     def run_galaxy_sweep(
@@ -5815,9 +7467,10 @@ class GameApiBridge:
                     1,
                     min(400, int(pages if pages is not None else getattr(cfg, "galaxy_sweep_pages", 100))),
                 )
+                max_g_start = self._max_galaxies_locked()
                 owned_gals = self._owned_sweep_galaxies_locked()
                 sw_state = self._get_galaxy_sweep_state_locked(now_ts=sweep_started_ts, include_smart=False)
-                cur_gal = int(galaxy) if galaxy is not None else int(sw_state.get("cursor_galaxy") or owned_gals[0])
+                cur_gal = max(1, min(max_g_start, int(galaxy) if galaxy is not None else int(sw_state.get("cursor_galaxy") or owned_gals[0])))
                 if galaxy is None and cur_gal not in owned_gals:
                     cur_gal = owned_gals[0]
                 if start_system is not None:
@@ -5875,7 +7528,7 @@ class GameApiBridge:
                         if not isinstance(sec, Mapping):
                             continue
                         tg = (_safe_api_int(sec.get("galaxy"), 0), _safe_api_int(sec.get("system"), 0))
-                        if 1 <= tg[0] <= 14 and 1 <= tg[1] <= 400 and tg not in seen_tg:
+                        if 1 <= tg[0] <= max_g_start and 1 <= tg[1] <= 400 and tg not in seen_tg:
                             seen_tg.add(tg)
                             sweep_targets.append(tg)
                     sweep_targets = sweep_targets[:total_pages]
@@ -5893,7 +7546,7 @@ class GameApiBridge:
                         # Coverage/phase telemetry only (targets stay contiguous)
                         smart_plan = self._plan_smart_galaxy_sweep_locked(
                             batch_size=1,
-                            galaxies=[max(1, min(14, int(cur_gal)))] if galaxy is not None else owned_gals,
+                            galaxies=[max(1, min(max_g_start, int(cur_gal)))] if galaxy is not None else owned_gals,
                             collect_colonies=collect_colonies,
                             now_ts=sweep_started_ts,
                         )
@@ -6038,7 +7691,7 @@ class GameApiBridge:
                     known_scanned_keys.add(skey_now)
                     sm_live = getattr(self, "_smart_sweep_summary", None)
                     if isinstance(sm_live, dict):
-                        uni_tot_l = max(1, _safe_api_int(sm_live.get("universe_total_systems"), 5600))
+                        uni_tot_l = max(1, _safe_api_int(sm_live.get("universe_total_systems"), self._max_galaxies_locked() * 400))
                         uni_exp_l = min(
                             uni_tot_l,
                             max(0, _safe_api_int(sm_live.get("universe_explored_systems"), 0)) + 1,
@@ -6201,6 +7854,7 @@ class GameApiBridge:
                         aborted_reason = f"Anti-bot challenge detected: {ab_exc}"
                         break
 
+                    eff_max_g = self._observe_galaxy_universe_bounds_locked(client=client, html=html)
                     _record_sweep_page_locked(
                         html,
                         actual_gal,
@@ -6208,19 +7862,33 @@ class GameApiBridge:
                         collect_col_flag=collect_colonies,
                         count_as_planned=True,
                     )
+                    if cur_gal > eff_max_g:
+                        aborted_reason = (
+                            f"Observed universe maxGalaxies={eff_max_g} (target galaxy {cur_gal} out of bounds); "
+                            "re-anchoring sweep."
+                        )
+                        break
 
             # Next cursor: contiguous mode continues after the last scanned page; smart mode records the system
-            # after the last visited sector (used only by explicit fallbacks / telemetry).
+            # after the last visited sector (clamped to observed universe maxGalaxies).
+            eff_max_g_end = self._max_galaxies_locked()
             if selection_mode == "contiguous":
                 if pages_scanned < len(sweep_targets):
                     cur_gal, cur_sys = sweep_targets[pages_scanned]
                 elif contiguous_tail is not None:
                     cur_gal, cur_sys = contiguous_tail
+            elif prev_browser_coords is not None and pages_scanned > 0:
+                last_g, last_s = prev_browser_coords
+                cur_gal = max(1, min(eff_max_g_end, int(last_g)))
+                cur_sys = 1 if int(last_s) >= 400 else max(1, int(last_s) + 1)
             elif pages_scanned > 0:
                 last_g, last_s = sweep_targets[pages_scanned - 1]
-                cur_gal, cur_sys = last_g, (1 if last_s >= 400 else last_s + 1)
+                cur_gal = max(1, min(eff_max_g_end, int(last_g)))
+                cur_sys = 1 if int(last_s) >= 400 else max(1, int(last_s) + 1)
             else:
                 cur_gal, cur_sys = sweep_targets[0]
+            cur_gal = max(1, min(eff_max_g_end, int(cur_gal)))
+            cur_sys = max(1, min(400, int(cur_sys)))
 
             now_done = round(time.time(), 3)
             with self._lock:
@@ -6244,6 +7912,7 @@ class GameApiBridge:
                         "last_sweep_completed_ts": now_done,
                         "next_sweep_due_ts": round(next_due, 3),
                         "last_pages_scanned": pages_scanned,
+                        "last_arrow_steps": arrow_steps_used,
                         "last_players_found": players_found,
                         "last_colonies_found": colonies_found,
                         "last_debris_found": debris_found,
@@ -6582,6 +8251,7 @@ class GameApiBridge:
                         debris_changed = True
                 elif msg.category == "recycle_report":
                     self._db.set_target_debris(mc, False)
+                    self._galaxy_debris_amounts.pop(mc, None)
                     debris_changed = True
             if debris_changed:
                 self._refresh_raid_targets_locked(limit=100)
@@ -7102,6 +8772,7 @@ class GameApiBridge:
                     if not bool(live_slot.has_debris):
                         if self._db is not None:
                             self._db.set_target_debris(norm_rec_target, False)
+                        self._galaxy_debris_amounts.pop(norm_rec_target, None)
                         self._refresh_raid_targets_locked(limit=100, state_override=state)
                         self._dash_ag_cache_json = None
                         abort_msg = (
@@ -7285,6 +8956,7 @@ class GameApiBridge:
                         else:
                             self._raid_targets = self._enrich_raid_targets(self._raid_targets)
                 if f_coords and bool(getattr(res, "clear_target_debris", False)):
+                    self._galaxy_debris_amounts.pop(f_coords, None)
                     if self._db is not None:
                         self._db.set_target_debris(f_coords, False)
                         self._refresh_raid_targets_locked(limit=100, state_override=state)
@@ -7349,6 +9021,22 @@ class GameApiBridge:
                 )
                 self._db.record_raid(t_coords, is_exempt=is_exempt, outcome=res.message)
                 self._refresh_raid_targets_locked(limit=100, state_override=state)
+            if res.executed and res.action.kind == "TRANSPORT":
+                orig_tr = normalize_coords(str(getattr(res.action, "planet_coords", "") or ""))
+                if not orig_tr:
+                    orig_p = next((p for p in state.planets if p.planet_id == res.action.planet_id), None)
+                    orig_tr = normalize_coords(getattr(orig_p, "coords", "") or "") if orig_p is not None else ""
+                dest_tr = _extract_coords_from_text(
+                    str(getattr(res.action, "target_name", "") or "")
+                ) or _extract_coords_from_text(str(getattr(res, "message", "") or ""))
+                if orig_tr and dest_tr and res.action.cost and not res.action.cost.is_zero():
+                    self._record_transport_dispatch_locked(
+                        origin_coords=orig_tr,
+                        dest_coords=dest_tr,
+                        cargo=res.action.cost,
+                        ships=_bounded_api_str(res.message, default="")[:140],
+                        source="dispatch",
+                    )
             if res.action.kind in ("COLONIZE", "ABANDON_COLONY"):
                 self._record_colony_attempt_from_result_locked(state, res, cmd)
         if self._db is not None:
@@ -8349,14 +10037,15 @@ class GameApiBridge:
                     else None
                 )
 
+                max_g = self._max_galaxies_locked()
                 intel: Mapping[str, Any] = {}
-                get_intel = (
-                    getattr(db_snap, "get_galaxy_sector_intel", None)
-                    if db_snap is not None
-                    else None
-                )
-                if callable(get_intel):
-                    raw_intel = get_intel(galaxies=None, now_ts=now_ts)
+                if db_snap is not None:
+                    raw_intel = self._call_get_galaxy_sector_intel_locked(
+                        db_snap,
+                        galaxies=None,
+                        now_ts=now_ts,
+                        max_galaxies=max_g,
+                    )
                     if isinstance(raw_intel, Mapping):
                         intel = raw_intel
 
@@ -8377,7 +10066,7 @@ class GameApiBridge:
                     preview_all_galaxies if preview_all_galaxies is not None else saved_scan_all_gals
                 )
 
-                all_galaxies = list(range(1, 15))
+                all_galaxies = list(range(1, max_g + 1))
                 owned_galaxies = self._owned_sweep_galaxies_locked(state_override=state_snap)
                 owned_gal_set = set(owned_galaxies)
                 queue_galaxies = self._sweep_target_galaxies_locked(
@@ -8439,7 +10128,7 @@ class GameApiBridge:
                         continue
                     qg = _safe_api_int(q_item.get("galaxy"), 0)
                     qs = _safe_api_int(q_item.get("system"), 0)
-                    if not (1 <= qg <= 14 and 1 <= qs <= 400):
+                    if not (1 <= qg <= max_g and 1 <= qs <= 400):
                         continue
                     q_key = f"{qg:02d}:{qs:03d}"
                     q_sec_raw = sectors_map.get(q_key)
@@ -8528,7 +10217,7 @@ class GameApiBridge:
                         continue
                     gi = _safe_api_int(sec_v.get("galaxy"), 0)
                     si = _safe_api_int(sec_v.get("system"), 0)
-                    if not (1 <= gi <= 14 and 1 <= si <= 400):
+                    if not (1 <= gi <= max_g and 1 <= si <= 400):
                         continue
                     norm_skey = f"{gi:02d}:{si:03d}"
                     scanned_by_key[norm_skey] = sec_v
@@ -8689,7 +10378,7 @@ class GameApiBridge:
                     for skey_s, sec_m in scanned_by_key.items():
                         gi = _safe_api_int(sec_m.get("galaxy"), 0)
                         si = _safe_api_int(sec_m.get("system"), 0)
-                        if 1 <= gi <= 14 and 1 <= si <= 400:
+                        if 1 <= gi <= max_g and 1 <= si <= 400:
                             rows_out.append(_build_sector_row(gi, si, sec_m))
                     if include_unscanned:
                         unscanned_candidates: list[tuple[int, int, int, int]] = []
@@ -8747,7 +10436,7 @@ class GameApiBridge:
                     total_scanned_all,
                     _safe_api_int(intel.get("universe_explored_systems"), sweep_summary.get("universe_explored_systems", 0)),
                 )
-                uni_tot = max(1, _safe_api_int(intel.get("universe_total_systems"), 5600))
+                uni_tot = max(1, _safe_api_int(intel.get("universe_total_systems"), max_g * 400))
                 uni_cov = round(min(100.0, (uni_exp / uni_tot) * 100.0), 2)
                 q_disc_cnt = sum(1 for q in scan_queue if q["phase"] == "exploratory")
                 q_ref_cnt = len(scan_queue) - q_disc_cnt
@@ -9557,7 +11246,12 @@ class GameApiBridge:
             with self._lock:
                 snap_state = self._get_planner_state_locked()
                 gate = self._evaluate_ai_planner_gate_locked(snap_state)
-                active_co = self._get_active_config_optimizer_locked()
+                custom_names = self._get_custom_planet_names_locked()
+                active_co = self._overlay_custom_names_on_config_optimizer(
+                    self._get_active_config_optimizer_locked(),
+                    snap_state,
+                    custom_names,
+                )
                 runs = self._list_config_optimizer_runs_locked(limit=int(runs_limit))
                 reserved_floors = self._get_reserved_floors_locked()
                 planet_specializations = self._get_planet_specializations_locked()
@@ -9572,6 +11266,7 @@ class GameApiBridge:
                         "runs": runs,
                         "reserved_floors": reserved_floors,
                         "planet_specializations": planet_specializations,
+                        "custom_planet_names": custom_names,
                         "specialization_options": list(
                             getattr(
                                 co_mod,
@@ -9583,6 +11278,110 @@ class GameApiBridge:
                         "colonies_owned": gate["colonies_owned"],
                         "max_planets": gate["max_planets"],
                         "live_ai_unlocked": gate["live_ai_unlocked"],
+                    }
+                )
+            )
+
+        if cmd == "rename_planet":
+            raw_batch = payload.get("planet_names")
+            if raw_batch is not None:
+                if not isinstance(raw_batch, Mapping) or not raw_batch:
+                    raise ApiRequestError(
+                        "'rename_planet' field 'planet_names' must be a non-empty dictionary."
+                    )
+                with self._lock:
+                    snap_state = self._get_planner_state_locked()
+                    if snap_state is None or not snap_state.planets:
+                        raise ApiRequestError("No game state snapshot available yet; cannot validate planet_id.")
+                    planets_by_id = {int(p.planet_id): p for p in snap_state.planets}
+                    validated_updates: dict[int, str] = {}
+                    for raw_pid, raw_nm in raw_batch.items():
+                        pid_i = _parse_command_int(
+                            "planet_id",
+                            raw_pid,
+                            min_val=1,
+                            max_val=2**63 - 1,
+                        )
+                        if pid_i is None or pid_i not in planets_by_id:
+                            raise ApiRequestError(f"Planet {raw_pid} does not belong to this empire.")
+                        if raw_nm is not None and not isinstance(raw_nm, str):
+                            raise ApiRequestError("'rename_planet' planet names must be strings.")
+                        validated_updates[int(pid_i)] = "" if raw_nm is None else str(raw_nm)
+                    updated_names = self._set_custom_planet_names_batch_locked(validated_updates)
+                    updated_planets: list[dict[str, Any]] = []
+                    for pid_i in validated_updates:
+                        p_obj = planets_by_id[pid_i]
+                        g_name = str(p_obj.name or "")
+                        c_name = updated_names.get(str(pid_i)) or None
+                        updated_planets.append(
+                            {
+                                "planet_id": pid_i,
+                                "coords": str(p_obj.coords or ""),
+                                "name": c_name or g_name,
+                                "game_name": g_name,
+                                "custom_name": c_name,
+                            }
+                        )
+                first_p = updated_planets[0] if updated_planets else None
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "planet_id": first_p["planet_id"] if first_p else None,
+                            "name": first_p["name"] if first_p else "",
+                            "custom_name": first_p["custom_name"] if first_p else None,
+                            "game_name": first_p["game_name"] if first_p else "",
+                            "custom_planet_names": updated_names,
+                            "planet": first_p,
+                            "updated": updated_planets,
+                        }
+                    )
+                )
+
+            pid_val = _parse_command_int(
+                "planet_id",
+                payload.get("planet_id"),
+                min_val=1,
+                max_val=2**63 - 1,
+            )
+            if pid_val is None:
+                raise ApiRequestError("'rename_planet' requires integer 'planet_id' or dict 'planet_names'.")
+            raw_name = payload.get("name", "")
+            if raw_name is not None and not isinstance(raw_name, str):
+                raise ApiRequestError("'rename_planet' field 'name' must be a string.")
+            with self._lock:
+                snap_state = self._get_planner_state_locked()
+                if snap_state is None or not snap_state.planets:
+                    raise ApiRequestError("No game state snapshot available yet; cannot validate planet_id.")
+                target_p = next((p for p in snap_state.planets if int(p.planet_id) == int(pid_val)), None)
+                if target_p is None:
+                    raise ApiRequestError(f"Planet {pid_val} does not belong to this empire.")
+                updated_names = self._set_custom_planet_name_locked(
+                    int(pid_val),
+                    "" if raw_name is None else str(raw_name),
+                )
+                g_name = str(target_p.name or "")
+                c_name = updated_names.get(str(pid_val)) or None
+                eff_name = c_name or g_name
+                planet_info = {
+                    "planet_id": int(pid_val),
+                    "coords": str(target_p.coords or ""),
+                    "name": eff_name,
+                    "game_name": g_name,
+                    "custom_name": c_name,
+                }
+            return _sanitize_finite_json(
+                _redact_api_payload(
+                    {
+                        "ok": True,
+                        "command": cmd,
+                        "planet_id": int(pid_val),
+                        "name": eff_name,
+                        "custom_name": c_name,
+                        "game_name": g_name,
+                        "custom_planet_names": updated_names,
+                        "planet": planet_info,
                     }
                 )
             )
@@ -9693,6 +11492,12 @@ class GameApiBridge:
             with self._lock:
                 snap_state = self._get_planner_state_locked()
                 gate = self._evaluate_ai_planner_gate_locked(snap_state)
+                custom_names = self._get_custom_planet_names_locked()
+                display_state = (
+                    self._apply_custom_planet_names_to_state(snap_state, custom_names)
+                    if snap_state is not None
+                    else None
+                )
                 jobs_snap = self._get_planner_jobs_snapshot(snap_state)
                 runs = self._list_ai_planner_runs_locked(limit=int(runs_limit))
                 active_result = gate["active_result"]
@@ -9720,10 +11525,15 @@ class GameApiBridge:
                 else live_telemetry
             )
 
-            all_steps = (
+            raw_all_steps = (
                 list(active_result.get("steps") or [])
                 if has_plan and isinstance(active_result.get("steps"), Sequence)
                 else []
+            )
+            all_steps = self._overlay_custom_names_on_ai_items(
+                [s for s in raw_all_steps if isinstance(s, Mapping)],
+                snap_state,
+                custom_names,
             )
             filtered_steps: list[dict[str, Any]] = []
             for st_item in all_steps:
@@ -9763,7 +11573,7 @@ class GameApiBridge:
                 else None
             )
             graph_obj = build_ai_graph(
-                snap_state,
+                display_state if display_state is not None else snap_state,
                 active_result,
                 window_size=int(window_size),
                 week_filter=week_filter,
@@ -9791,6 +11601,7 @@ class GameApiBridge:
                         },
                         "job": jobs_snap["ai_planner_job"],
                         "runs": runs,
+                        "custom_planet_names": custom_names,
                         "colonies_owned": gate["colonies_owned"],
                         "max_planets": gate["max_planets"],
                         "live_ai_unlocked": gate["live_ai_unlocked"],
@@ -10867,6 +12678,7 @@ class GameApiBridge:
                         actual_gal: Optional[int] = None
                         actual_sys: Optional[int] = None
                         if action == "internalGalaxy":
+                            self._observe_galaxy_universe_bounds_locked(client=client, html=html)
                             coords_attr = getattr(client, "last_galaxy_coords", None)
                             if (
                                 isinstance(coords_attr, tuple)

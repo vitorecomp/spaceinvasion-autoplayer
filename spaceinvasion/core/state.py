@@ -511,6 +511,9 @@ class QueueJob:
     detail: str = ""
     origin_coords: str = ""
     cargo: Optional[Resources] = None
+    expected_cargo: Optional[Resources] = None
+    delivered_cargo: Optional[Resources] = None
+    delivered: bool = False
 
 
 @dataclass(frozen=True)
@@ -713,10 +716,17 @@ def is_undersized_fresh_colony(
     d_map = getattr(planet, "defense", None)
     if isinstance(d_map, Mapping) and sum(max(0, _safe_state_int(v, 0)) for v in d_map.values()) > 0:
         return False
-    if pid == _safe_state_int(getattr(state, "active_planet_id", 0), 0):
-        for q in getattr(state, "active_queues", ()) or ():
-            if getattr(q, "category", None) == "building":
+    p_orig = _normalize_queue_coords(_safe_state_str(getattr(planet, "coords", "")))
+    active_pid = _safe_state_int(getattr(state, "active_planet_id", 0), 0)
+    for q in getattr(state, "active_queues", ()) or ():
+        if getattr(q, "category", None) != "building":
+            continue
+        q_orig = _normalize_queue_coords(_safe_state_str(getattr(q, "origin_coords", "")))
+        if q_orig:
+            if p_orig and q_orig == p_orig:
                 return False
+        elif pid == active_pid:
+            return False
     return True
 
 
@@ -1090,8 +1100,14 @@ def _format_hms_seconds(seconds: Optional[float]) -> str:
     return f"{h:02d}:{m:02d}:{sec:02d}"
 
 
-def parse_building_queue(html: str, *, now_ts: Optional[float] = None) -> tuple[QueueJob, ...]:
+def parse_building_queue(
+    html: str,
+    *,
+    now_ts: Optional[float] = None,
+    origin_coords: str = "",
+) -> tuple[QueueJob, ...]:
     """Parse active and queued jobs (with live countdowns and finish timestamps) from `Construction queue`."""
+    norm_origin = _normalize_queue_coords(origin_coords) if origin_coords else ""
     soup = BeautifulSoup(html, "html.parser")
     queue_table = None
     for tbl in soup.find_all("table"):
@@ -1181,6 +1197,7 @@ def parse_building_queue(html: str, *, now_ts: Optional[float] = None) -> tuple[
                 finish_ts=fin_ts,
                 queue_slot=slot_num,
                 detail=detail_txt,
+                origin_coords=norm_origin,
             )
         )
 
@@ -1208,6 +1225,7 @@ def parse_building_queue(html: str, *, now_ts: Optional[float] = None) -> tuple[
                 building_id=BUILDING_ID_BY_NAME.get(bname.lower()),
                 target_level=lvl,
                 queue_slot=slot_num,
+                origin_coords=norm_origin,
             )
         )
     return tuple(jobs)
@@ -2044,10 +2062,19 @@ def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
             continue
         rem_s = float(ent["rem_s"])
         is_ret = bool(ent["is_ret"])
+        raw_act = str(ent.get("raw_act") or "").upper()
         origin_coords = str(ent["origin_coords"])
         dest_str = str(ent["dest_str"])
         mission_lbl = str(ent["mission_lbl"])
         ships_detail = str(ent["ships_detail"])
+        cargo_val = ent.get("cargo")
+        expected_cargo_val: Optional[Resources] = None
+        delivered_flag = False
+        if raw_act == "TRANSPORT":
+            if is_ret:
+                delivered_flag = True
+            elif isinstance(cargo_val, Resources) and not cargo_val.is_zero():
+                expected_cargo_val = cargo_val
         arrow = "↩" if is_ret else "→"
         label = f"{mission_lbl} {arrow} {dest_str}".strip() if dest_str else mission_lbl
         leg_tag = "Returning" if is_ret else "Outbound"
@@ -2062,7 +2089,10 @@ def _parse_home_fadata_fleets(html: str, *, ref_now: float) -> list[QueueJob]:
                 queue_slot=1,
                 detail=detail_full[:160],
                 origin_coords=origin_coords,
-                cargo=ent.get("cargo"),
+                cargo=cargo_val,
+                expected_cargo=expected_cargo_val,
+                delivered_cargo=None,
+                delivered=delivered_flag,
             )
         )
     jobs.sort(key=lambda j: (j.finish_ts if j.finish_ts is not None else float("inf")))
@@ -2073,8 +2103,10 @@ def parse_home_metadata(
     html: str,
     *,
     now_ts: Optional[float] = None,
+    origin_coords: str = "",
 ) -> tuple[Optional[int], Optional[float], bool, tuple[QueueJob, ...], tuple[FleetAlert, ...]]:
     """Extract active planet ID, speedup factor, newbie protection, queues (with finish times), and fleet alerts."""
+    norm_origin = _normalize_queue_coords(origin_coords) if origin_coords else ""
     soup = BeautifulSoup(html, "html.parser")
     text = " ".join(soup.get_text(" ", strip=True).split())
     ref_now = _safe_state_float(now_ts, time.time()) if now_ts is not None else time.time()
@@ -2160,6 +2192,7 @@ def parse_home_metadata(
                         finish_ts=fin_ts,
                         queue_slot=1,
                         detail=detail_str,
+                        origin_coords=(norm_origin if cat == "building" else ""),
                     )
                 )
 
@@ -2432,6 +2465,11 @@ def game_state_from_dict(data: Mapping[str, Any]) -> GameState:
         q_slot = max(1, _safe_state_int(q.get("queue_slot", 1), 1))
         raw_cargo = q.get("cargo")
         q_cargo = _resources_from_mapping(raw_cargo) if isinstance(raw_cargo, Mapping) else None
+        raw_exp_cargo = q.get("expected_cargo")
+        q_exp_cargo = _resources_from_mapping(raw_exp_cargo) if isinstance(raw_exp_cargo, Mapping) else None
+        raw_del_cargo = q.get("delivered_cargo")
+        q_del_cargo = _resources_from_mapping(raw_del_cargo) if isinstance(raw_del_cargo, Mapping) else None
+        q_delivered = bool(q.get("delivered", False))
         queues_list.append(
             QueueJob(
                 category=_safe_state_str(q.get("category") or ""),
@@ -2445,6 +2483,9 @@ def game_state_from_dict(data: Mapping[str, Any]) -> GameState:
                 detail=_safe_state_str(q.get("detail") or ""),
                 origin_coords=_normalize_queue_coords(_safe_state_str(q.get("origin_coords") or "")),
                 cargo=q_cargo,
+                expected_cargo=q_exp_cargo,
+                delivered_cargo=q_del_cargo,
+                delivered=q_delivered,
             )
         )
     queues = tuple(queues_list)

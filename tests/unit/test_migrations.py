@@ -545,7 +545,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
     def test_v009_universe_research_max_monotonic_ledger_and_append_only_history(self) -> None:
         from spaceinvasion.combat.fleet import SpyReport
 
-        self.assertEqual(LATEST_SCHEMA_VERSION, 13)
+        self.assertEqual(LATEST_SCHEMA_VERSION, 14)
         with tempfile.TemporaryDirectory(prefix="si_mig_v9_") as tmp:
             db_path = Path(tmp) / "v9.db"
             db_v8 = GameDatabase(db_path, attack_history_path="", target_schema_version=8)
@@ -663,12 +663,12 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
         hot_set = set(HOT_TABLES)
         hist_set = set(HISTORY_TABLES)
         req_set = set(GAME_REQUIRED_TABLES)
-        self.assertEqual(len(hot_set), 18)
-        self.assertEqual(len(hist_set), 20)
-        self.assertEqual(len(req_set), 38)
+        self.assertEqual(len(hot_set), 19)
+        self.assertEqual(len(hist_set), 21)
+        self.assertEqual(len(req_set), 40)
         self.assertEqual(hot_set & hist_set, set())
         self.assertEqual(hot_set | hist_set, req_set)
-        self.assertEqual(len(TABLE_TIER_BY_NAME), 38)
+        self.assertEqual(len(TABLE_TIER_BY_NAME), 40)
         for tbl in hot_set:
             self.assertEqual(TABLE_TIER_BY_NAME[tbl], "hot")
         for tbl in hist_set:
@@ -773,8 +773,8 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 self.assertTrue(mig_head["up_to_date"])
                 chk = db.verify_schema(full_integrity=True)
                 self.assertTrue(chk["ok"], chk)
-                self.assertEqual(chk["table_tiers"]["hot_count"], 18)
-                self.assertEqual(chk["table_tiers"]["history_count"], 20)
+                self.assertEqual(chk["table_tiers"]["hot_count"], 19)
+                self.assertEqual(chk["table_tiers"]["history_count"], 21)
 
                 summ = db.summary()
                 self.assertEqual(summ["counts"]["latest_state_hot"], 1)
@@ -847,7 +847,7 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                 self.assertEqual(sv12["version"], 12)
                 self.assertEqual(sv12["version_tag"], "V012")
                 self.assertFalse(sv12["up_to_date"])
-                self.assertEqual(sv12["pending_count"], 1)
+                self.assertEqual(sv12["pending_count"], LATEST_SCHEMA_VERSION - 12)
                 self.assertEqual(sv12["pending_migrations"][0]["version"], 13)
 
                 # All V013 GameDatabase methods degrade safely when DB is pinned at V012
@@ -864,15 +864,15 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             finally:
                 db_v12.close()
 
-            # Upgrade V012 -> V013 via CLI entrypoint with online backup + full integrity verify
+            # Upgrade V012 -> LATEST via CLI entrypoint with online backup + full integrity verify
             buf_mig = io.StringIO()
             with contextlib.redirect_stdout(buf_mig):
                 rc_m = migrations_cli_main(["--db", str(db_path), "--json", "migrate", "--backup"])
             self.assertEqual(rc_m, 0)
             mig_res = json.loads(buf_mig.getvalue())
             self.assertEqual(mig_res["from_version"], 12)
-            self.assertEqual(mig_res["version"], 13)
-            self.assertEqual(mig_res["version_tag"], "V013")
+            self.assertEqual(mig_res["version"], LATEST_SCHEMA_VERSION)
+            self.assertEqual(mig_res["version_tag"], f"V{LATEST_SCHEMA_VERSION:03d}")
             self.assertTrue(mig_res["up_to_date"])
             self.assertIsNotNone(mig_res["backup_path"])
             self.assertTrue(Path(mig_res["backup_path"]).exists())
@@ -886,8 +886,8 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
             self.assertTrue(ver_res["sqlite_integrity_ok"])
             self.assertEqual(ver_res["missing_tables"], [])
             self.assertEqual(ver_res["checksum_drift"], [])
-            self.assertEqual(ver_res["table_tiers"]["hot_count"], 18)
-            self.assertEqual(ver_res["table_tiers"]["history_count"], 20)
+            self.assertEqual(ver_res["table_tiers"]["hot_count"], 19)
+            self.assertEqual(ver_res["table_tiers"]["history_count"], 21)
 
             # Verify V013 checksum & table usability on reopened GameDatabase
             db_v13 = GameDatabase(db_path, attack_history_path="")
@@ -903,6 +903,160 @@ class TestDatabaseMigrationsAndVersioning(unittest.TestCase):
                     self.assertEqual(summ["counts"][tbl], 0)
             finally:
                 db_v13.close()
+
+    def test_v014_hourly_production_and_loot_recycle_hourly_upgrade_and_backfill(self) -> None:
+        from spaceinvasion.combat.fleet import InboxMessage
+
+        self.assertIn("loot_recycle_hourly", set(HOT_TABLES))
+        self.assertIn("hourly_production_history", set(HISTORY_TABLES))
+        self.assertEqual(TABLE_TIER_BY_NAME["loot_recycle_hourly"], "hot")
+        self.assertEqual(TABLE_TIER_BY_NAME["hourly_production_history"], "history")
+
+        base_hr = 1_760_000_000 // 3600 * 3600
+        with tempfile.TemporaryDirectory(prefix="si_mig_v14_") as tmp:
+            db_path = Path(tmp) / "v13_to_v14.db"
+            db_v13 = GameDatabase(db_path, attack_history_path="", target_schema_version=13)
+            try:
+                sv13 = db_v13.get_migration_status(include_events=False)
+                self.assertEqual(sv13["version"], 13)
+                self.assertEqual(sv13["pending_count"], 1)
+                self.assertEqual(sv13["pending_migrations"][0]["version"], 14)
+
+                # V014 methods degrade safely when pinned at V013
+                self.assertIsNone(db_v13.record_hourly_production(pig_iron_per_hour=100.0, ts=float(base_hr + 60)))
+                self.assertEqual(db_v13.get_hourly_production_history(), [])
+                v13_lr = db_v13.get_loot_recycle_hourly(hours=6, now_ts=float(base_hr + 120))
+                self.assertEqual(len(v13_lr["history"]), 6)
+                self.assertEqual(v13_lr["summary"]["grand_total"], 0.0)
+
+                # Seed pre-existing battle & recycle reports (plus a non-recycle station notice)
+                db_v13.record_game_messages(
+                    [
+                        InboxMessage(
+                            msg_uid="id:v14_atk_1",
+                            server_msg_id="v14_atk_1",
+                            folder_type="attack",
+                            category="battle_report",
+                            msg_date_text="2026-11-18 10:15:00",
+                            sender="System",
+                            subject="Battle report [02:380:11]",
+                            coords="02:380:11",
+                            body_text="You won the battle and stole 4000 Pig iron, 3000 Metal, 2000 Kryptonite, 1000 Spice.",
+                            parsed_data={
+                                "outcome": "win",
+                                "loot": {"pig_iron": 4000, "metal": 3000, "kryptonite": 2000, "spice": 1000},
+                            },
+                        ),
+                        InboxMessage(
+                            msg_uid="id:v14_rec_1",
+                            server_msg_id="v14_rec_1",
+                            folder_type="inbox",
+                            category="recycle_report",
+                            msg_date_text="2026-11-18 10:25:00",
+                            sender="System",
+                            subject="Space rubble [02:380:11] recycling report",
+                            coords="02:380:11",
+                            body_text="Your fleet (10 Recycler) processed 1500 Pig iron, 500 Metal pieces of rubble there.",
+                            parsed_data={
+                                "recycler_count": 10,
+                                "harvested": {"pig_iron": 1500, "metal": 500, "kryptonite": 0, "spice": 0},
+                            },
+                        ),
+                        InboxMessage(
+                            msg_uid="id:v14_station_ignore",
+                            server_msg_id="v14_station_ignore",
+                            folder_type="inbox",
+                            category="recycle_report",
+                            msg_date_text="2026-11-18 10:30:00",
+                            sender="System",
+                            subject="Colony [02:380:06] station",
+                            coords="02:380:06",
+                            body_text="One of your fleets (6 Recycler) was re-stationed from Colony [02:379:06] to Colony [02:380:06]. It delivers 99999 Pig iron.",
+                            parsed_data={
+                                "recycler_count": 6,
+                                "harvested": {"pig_iron": 99999, "metal": 0, "kryptonite": 0, "spice": 0},
+                            },
+                        ),
+                    ],
+                    ts=float(base_hr + 900),
+                )
+            finally:
+                db_v13.close()
+
+            buf_mig = io.StringIO()
+            with contextlib.redirect_stdout(buf_mig):
+                rc_m = migrations_cli_main(["--db", str(db_path), "--json", "migrate", "--backup"])
+            self.assertEqual(rc_m, 0)
+            mig_res = json.loads(buf_mig.getvalue())
+            self.assertEqual(mig_res["from_version"], 13)
+            self.assertEqual(mig_res["version"], 14)
+            self.assertEqual(mig_res["version_tag"], "V014")
+            self.assertTrue(mig_res["up_to_date"])
+            self.assertTrue(Path(mig_res["backup_path"]).exists())
+
+            buf_ver = io.StringIO()
+            with contextlib.redirect_stdout(buf_ver):
+                rc_v = migrations_cli_main(["--db", str(db_path), "--json", "verify", "--full-integrity"])
+            self.assertEqual(rc_v, 0)
+            ver_res = json.loads(buf_ver.getvalue())
+            self.assertTrue(ver_res["ok"], ver_res)
+            self.assertEqual(ver_res["table_tiers"]["hot_count"], 19)
+            self.assertEqual(ver_res["table_tiers"]["history_count"], 21)
+
+            db_v14 = GameDatabase(db_path, attack_history_path="")
+            try:
+                v14_spec = next(m for m in GAME_DB_MIGRATIONS if m.version == 14)
+                applied_v14 = next(
+                    m for m in db_v14.get_migration_status(include_events=False)["applied_migrations"] if m["version"] == 14
+                )
+                self.assertEqual(applied_v14["checksum"], v14_spec.checksum)
+
+                # Backfill materialized battle + genuine recycle (excluding station notice!)
+                lr = db_v14.get_loot_recycle_hourly(hours=24, now_ts=float(base_hr + 1800))
+                self.assertEqual(len(lr["history"]), 24)
+                self.assertEqual(lr["summary"]["total_stolen"], 10000.0)
+                self.assertEqual(lr["summary"]["total_recycled"], 2000.0)
+                self.assertEqual(lr["summary"]["grand_total"], 12000.0)
+                self.assertEqual(lr["summary"]["attack_count"], 1)
+                self.assertEqual(lr["summary"]["recycle_count"], 1)
+
+                # Hourly production 1 row per minute (INSERT OR IGNORE)
+                p1 = db_v14.record_hourly_production(
+                    pig_iron_per_hour=5000.0,
+                    metal_per_hour=3000.0,
+                    kryptonite_per_hour=2000.0,
+                    spice_per_hour=1000.0,
+                    total_per_hour=11000.0,
+                    speq_per_hour=3200.0,
+                    planet_count=3,
+                    active_builders=2,
+                    ts=float(base_hr + 125),
+                )
+                p1_dup = db_v14.record_hourly_production(
+                    pig_iron_per_hour=9999.0,
+                    ts=float(base_hr + 155),
+                )
+                p2 = db_v14.record_hourly_production(
+                    pig_iron_per_hour=5500.0,
+                    metal_per_hour=3100.0,
+                    kryptonite_per_hour=2100.0,
+                    spice_per_hour=1100.0,
+                    total_per_hour=11800.0,
+                    speq_per_hour=3450.0,
+                    planet_count=3,
+                    active_builders=3,
+                    ts=float(base_hr + 185),
+                )
+                self.assertTrue(p1["inserted"])
+                self.assertFalse(p1_dup["inserted"])
+                self.assertTrue(p2["inserted"])
+                hist = db_v14.get_hourly_production_history(limit=10)
+                self.assertEqual(len(hist), 2)
+                self.assertEqual(hist[0]["pig_iron_per_hour"], 5000.0)
+                self.assertEqual(hist[1]["active_builders"], 3)
+                self.assertLess(hist[0]["minute_bucket"], hist[1]["minute_bucket"])
+            finally:
+                db_v14.close()
 
 
 if __name__ == "__main__":

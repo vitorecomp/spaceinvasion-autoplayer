@@ -48,6 +48,7 @@ from spaceinvasion.db.migrations import (
     SCHEMA_VERSION,
     TABLE_TIER_BY_NAME,
     backfill_v012_hot_tables,
+    backfill_v014_loot_recycle_hourly,
     create_sqlite_backup,
     import_legacy_attack_history_json,
     import_legacy_config_yaml,
@@ -1162,6 +1163,7 @@ class GameDatabase:
             """
         ).fetchall()
 
+        saw_loot_or_recycle = False
         for r in msg_rows:
             raw_html = _raw_text(r["raw_html"], "").strip()
             btxt_orig = _raw_text(r["body_text"], "").strip()
@@ -1224,6 +1226,7 @@ class GameDatabase:
             )
 
             if cat_s == "battle_report":
+                saw_loot_or_recycle = True
                 loot_obj = pdata.get("loot") if isinstance(pdata.get("loot"), Mapping) else {}
                 deb_obj = pdata.get("debris") if isinstance(pdata.get("debris"), Mapping) else {}
                 b_pig = max(0, _sql_int(loot_obj.get("pig_iron"), 0))
@@ -1289,6 +1292,7 @@ class GameDatabase:
                     ),
                 )
             elif cat_s == "recycle_report":
+                saw_loot_or_recycle = True
                 harv_obj = pdata.get("harvested") if isinstance(pdata.get("harvested"), Mapping) else {}
                 avail_obj = pdata.get("debris_available") if isinstance(pdata.get("debris_available"), Mapping) else {}
                 h_pig = max(0, _sql_int(harv_obj.get("pig_iron"), 0))
@@ -1406,6 +1410,9 @@ class GameDatabase:
                                 norm_c,
                             ),
                         )
+
+        if saw_loot_or_recycle:
+            self._refresh_loot_recycle_hourly_locked(ts=now_ts)
 
         self._conn.execute(
             """
@@ -3875,14 +3882,16 @@ class GameDatabase:
         *,
         galaxies: Optional[Sequence[int]] = None,
         now_ts: Optional[float] = None,
+        max_galaxies: int = 14,
     ) -> dict[str, Any]:
         """Aggregate longitudinal scan coverage, per-sector targets, direct raids, and player attack affinity."""
         eff_now = round(_safe_float(now_ts, time.time()) if now_ts is not None else time.time(), 3)
+        eff_max_g = max(1, min(14, _safe_int(max_galaxies, 14)))
         req_galaxies: list[int] = []
         if galaxies is not None and not isinstance(galaxies, (str, bytes, bytearray)):
             for g_raw in galaxies:
                 gi = _safe_int(g_raw, 0)
-                if 1 <= gi <= 14 and gi not in req_galaxies:
+                if 1 <= gi <= eff_max_g and gi not in req_galaxies:
                     req_galaxies.append(gi)
 
         hot_base: Optional[dict[str, Any]] = None
@@ -3890,7 +3899,7 @@ class GameDatabase:
             use_hot = self._ensure_hot_tables_synced_locked(check_sectors=True)
             if use_hot:
                 db_ver = self._db_version_locked()
-                base_key = (db_ver, tuple(req_galaxies))
+                base_key = (db_ver, tuple(req_galaxies), eff_max_g)
                 if self._galaxy_intel_base_ver == base_key and self._galaxy_intel_base_cache is not None:
                     hot_base = self._galaxy_intel_base_cache
                 else:
@@ -3927,7 +3936,7 @@ class GameDatabase:
                     for hr in hot_rows:
                         g_i = int(hr[0])
                         s_i = int(hr[1])
-                        if 1 <= g_i <= 14:
+                        if 1 <= g_i <= eff_max_g:
                             discovered_gals_h.add(g_i)
                             if 1 <= s_i <= 400 and float(hr[2] or 0.0) > 0.0:
                                 universe_scanned_cnt += 1
@@ -3945,7 +3954,7 @@ class GameDatabase:
                     for hr in hot_rows:
                         g_i = int(hr[0])
                         s_i = int(hr[1])
-                        if not (1 <= g_i <= 14 and 1 <= s_i <= 400):
+                        if not (1 <= g_i <= eff_max_g and 1 <= s_i <= 400):
                             continue
                         skey_all = f"{g_i:02d}:{s_i:03d}"
                         last_ts_r = float(hr[2] or 0.0)
@@ -4031,7 +4040,7 @@ class GameDatabase:
                             coord_owner_h[nc_b] = def_name
                             ok_b = def_name.lower()
                             owner_display_h.setdefault(ok_b, def_name)
-                            if 1 <= gb_i <= 14 and 1 <= sb_i <= 400:
+                            if 1 <= gb_i <= eff_max_g and 1 <= sb_i <= 400:
                                 owner_sectors_all_h.setdefault(ok_b, set()).add(f"{gb_i:02d}:{sb_i:03d}")
                                 if gb_i in active_gal_set_h:
                                     battle_extra_owners_h.setdefault((gb_i, sb_i), {}).setdefault(ok_b, set()).add(nc_b)
@@ -4314,9 +4323,9 @@ class GameDatabase:
             total_sys_h = len(active_galaxies_h) * 400
             unscanned_h = max(0, total_sys_h - explored_h)
             cov_pct_h = round((explored_h / total_sys_h) * 100.0, 2) if total_sys_h > 0 else 0.0
-            univ_total_h = 14 * 400
+            univ_total_h = eff_max_g * 400
             univ_exp_h = int(hot_base["universe_explored_systems"])
-            univ_cov_h = round((univ_exp_h / univ_total_h) * 100.0, 2)
+            univ_cov_h = round((univ_exp_h / univ_total_h) * 100.0, 2) if univ_total_h > 0 else 0.0
             return {
                 "now_ts": eff_now,
                 "galaxies": list(active_galaxies_h),
@@ -4407,15 +4416,15 @@ class GameDatabase:
         discovered_gals: set[int] = set()
         for r in scan_rows:
             gi = _safe_int(r["galaxy"], 0)
-            if 1 <= gi <= 14:
+            if 1 <= gi <= eff_max_g:
                 discovered_gals.add(gi)
         for r in hist_rows:
             gi = _safe_int(r["galaxy"], 0)
-            if 1 <= gi <= 14:
+            if 1 <= gi <= eff_max_g:
                 discovered_gals.add(gi)
         for r in slot_rows:
             gi = _safe_int(r["galaxy"], 0)
-            if 1 <= gi <= 14:
+            if 1 <= gi <= eff_max_g:
                 discovered_gals.add(gi)
 
         active_galaxies = req_galaxies if req_galaxies else (sorted(discovered_gals) or [1])
@@ -4461,7 +4470,7 @@ class GameDatabase:
             if parsed is None:
                 continue
             nc, gal_i, sys_i, pos_i = parsed
-            if not (1 <= gal_i <= 14 and 1 <= sys_i <= 400):
+            if not (1 <= gal_i <= eff_max_g and 1 <= sys_i <= 400):
                 continue
             scolor = _sanitize_text(r["status_color"] or "free").strip().lower()
             is_sp = bool(r["is_spacia"])
@@ -4505,7 +4514,7 @@ class GameDatabase:
             if parsed is None:
                 continue
             nc, gal_i, sys_i, pos_i = parsed
-            if nc in own_coords or not (1 <= gal_i <= 14 and 1 <= sys_i <= 400):
+            if nc in own_coords or not (1 <= gal_i <= eff_max_g and 1 <= sys_i <= 400):
                 continue
             scolor = _sanitize_text(r["status_color"] or "yellow").strip().lower()
             is_sp = bool(r["is_spacia"])
@@ -4559,7 +4568,7 @@ class GameDatabase:
                 coord_owner[nc] = def_name
                 okey = def_name.lower()
                 owner_display_by_key.setdefault(okey, def_name)
-                if 1 <= gal_i <= 14 and 1 <= sys_i <= 400:
+                if 1 <= gal_i <= eff_max_g and 1 <= sys_i <= 400:
                     owner_sectors_all.setdefault(okey, set()).add(f"{gal_i:02d}:{sys_i:03d}")
                     if gal_i in active_gal_set:
                         sector_owner_coords.setdefault((gal_i, sys_i), {}).setdefault(okey, set()).add(nc)
@@ -4655,7 +4664,7 @@ class GameDatabase:
             gal_i = _safe_int(r["galaxy"], 0)
             sys_i = _safe_int(r["system"], 0)
             last_sc_r = _safe_float(r["last_scanned_ts"], 0.0)
-            if 1 <= gal_i <= 14 and 1 <= sys_i <= 400 and last_sc_r > 0.0:
+            if 1 <= gal_i <= eff_max_g and 1 <= sys_i <= 400 and last_sc_r > 0.0:
                 universe_scanned_sectors.add((gal_i, sys_i))
             if gal_i not in active_gal_set or not (1 <= sys_i <= 400):
                 continue
@@ -4671,7 +4680,7 @@ class GameDatabase:
             gal_i = _safe_int(r["galaxy"], 0)
             sys_i = _safe_int(r["system"], 0)
             max_ts = _safe_float(r["max_ts"], 0.0)
-            if 1 <= gal_i <= 14 and 1 <= sys_i <= 400 and max_ts > 0.0:
+            if 1 <= gal_i <= eff_max_g and 1 <= sys_i <= 400 and max_ts > 0.0:
                 universe_scanned_sectors.add((gal_i, sys_i))
             if gal_i not in active_gal_set or not (1 <= sys_i <= 400):
                 continue
@@ -4701,11 +4710,12 @@ class GameDatabase:
         coverage_pct = (
             round((explored_systems / total_systems) * 100.0, 2) if total_systems > 0 else 0.0
         )
-        universe_total_systems = 14 * 400
+        universe_total_systems = eff_max_g * 400
         universe_explored_systems = len(universe_scanned_sectors)
-        universe_coverage_pct = round(
-            (universe_explored_systems / universe_total_systems) * 100.0,
-            2,
+        universe_coverage_pct = (
+            round((universe_explored_systems / universe_total_systems) * 100.0, 2)
+            if universe_total_systems > 0
+            else 0.0
         )
 
         all_sector_keys: set[tuple[int, int]] = set()
@@ -5433,6 +5443,7 @@ class GameDatabase:
         now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
         persisted_uids: list[str] = []
         newly_inserted: list[InboxMessage] = []
+        saw_loot_or_recycle = False
         with self._lock:
             for msg in messages:
                 uid = _sanitize_text(getattr(msg, "msg_uid", "") or "").strip()[:120]
@@ -5489,6 +5500,7 @@ class GameDatabase:
                     ),
                 )
                 if cat_s == "battle_report":
+                    saw_loot_or_recycle = True
                     loot_obj = pdata.get("loot") if isinstance(pdata.get("loot"), Mapping) else (
                         pdata.get("resources_mentioned") if isinstance(pdata.get("resources_mentioned"), Mapping) else {}
                     )
@@ -5556,6 +5568,7 @@ class GameDatabase:
                         ),
                     )
                 elif cat_s == "recycle_report":
+                    saw_loot_or_recycle = True
                     harv_obj = pdata.get("harvested") if isinstance(pdata.get("harvested"), Mapping) else {}
                     avail_obj = pdata.get("debris_available") if isinstance(pdata.get("debris_available"), Mapping) else {}
                     h_pig = max(0, _sql_int(harv_obj.get("pig_iron"), 0))
@@ -5608,6 +5621,8 @@ class GameDatabase:
                 persisted_uids.append(uid)
                 if exists is None or len(body_s) > prev_body_len:
                     newly_inserted.append(msg)
+            if saw_loot_or_recycle:
+                self._refresh_loot_recycle_hourly_locked(ts=now_ts)
             self._conn.commit()
         return (persisted_uids, newly_inserted)
 
@@ -7933,6 +7948,8 @@ class GameDatabase:
             "ai_planner_runs",
             "field_conflict_prompts",
             "field_conflict_events",
+            "hourly_production_history",
+            "loot_recycle_hourly",
             "schema_migrations",
             "schema_migration_events",
         )
@@ -8187,6 +8204,7 @@ class GameDatabase:
                 "next_sweep_due_ts": next_due_ts,
                 "due": eff_now >= next_due_ts,
                 "last_pages_scanned": game_data.cap_json_int(max(0, _safe_int(data.get("last_pages_scanned"), 0))),
+                "last_arrow_steps": game_data.cap_json_int(max(0, _safe_int(data.get("last_arrow_steps"), 0))),
                 "last_players_found": game_data.cap_json_int(max(0, _safe_int(data.get("last_players_found"), 0))),
                 "last_colonies_found": game_data.cap_json_int(max(0, _safe_int(data.get("last_colonies_found"), 0))),
                 "last_debris_found": game_data.cap_json_int(max(0, _safe_int(data.get("last_debris_found"), 0))),
@@ -9690,3 +9708,591 @@ class GameDatabase:
                     (clean_status,),
                 ).fetchall()
         return [self._row_to_field_conflict_dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Custom Planet Names & Recent Transport Dispatches (append-safe meta)
+    # ------------------------------------------------------------------
+
+    CUSTOM_PLANET_NAME_MAX_LEN: int = 48
+    RECENT_TRANSPORT_RING_MAX: int = 120
+
+    @classmethod
+    def sanitize_custom_planet_name(cls, raw: Any, *, max_len: int = 48) -> str:
+        """Sanitize a user-supplied custom planet display name (trimmed, control-free, sid-redacted)."""
+        if raw is None or isinstance(raw, (bool, Mapping, list, tuple, set, frozenset)):
+            return ""
+        text = _sanitize_text(raw)
+        text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
+        text = " ".join(text.split())
+        lim = max(1, min(128, _safe_int(max_len, cls.CUSTOM_PLANET_NAME_MAX_LEN)))
+        return text[:lim].strip()
+
+    @classmethod
+    def _normalize_custom_planet_names_map(cls, raw: Any) -> dict[str, str]:
+        if not isinstance(raw, Mapping):
+            return {}
+        out: dict[str, str] = {}
+        for raw_pid, raw_name in raw.items():
+            pid = _safe_int(raw_pid, 0)
+            if pid <= 0:
+                continue
+            clean_name = cls.sanitize_custom_planet_name(raw_name)
+            if clean_name:
+                out[str(pid)] = clean_name
+        return out
+
+    def get_custom_planet_names(self) -> dict[str, str]:
+        """Return persisted custom planet display names (`{str(planet_id): name}`)."""
+        with self._lock:
+            raw = self._load_meta_json_locked("custom_planet_names")
+        return self._normalize_custom_planet_names_map(raw)
+
+    def set_custom_planet_name(
+        self,
+        planet_id: int,
+        name: Any,
+        *,
+        ts: Optional[float] = None,
+    ) -> dict[str, str]:
+        """Persist or clear (`name=""`) a custom display name for `planet_id` in `meta`."""
+        pid = _safe_int(planet_id, 0)
+        now_ts = _safe_float(ts, time.time()) if ts is not None else time.time()
+        with self._lock:
+            names = self._normalize_custom_planet_names_map(
+                self._load_meta_json_locked("custom_planet_names")
+            )
+            if pid <= 0:
+                return dict(names)
+            clean_name = self.sanitize_custom_planet_name(name)
+            if clean_name:
+                names[str(pid)] = clean_name
+            else:
+                names.pop(str(pid), None)
+            self._save_meta_json_locked("custom_planet_names", names, now_ts)
+            self._conn.commit()
+        return dict(names)
+
+    def set_custom_planet_names(
+        self,
+        updates: Mapping[Any, Any],
+        *,
+        replace: bool = False,
+        ts: Optional[float] = None,
+    ) -> dict[str, str]:
+        """Batch-update custom display names in `meta["custom_planet_names"]`."""
+        now_ts = _safe_float(ts, time.time()) if ts is not None else time.time()
+        with self._lock:
+            names = (
+                {}
+                if replace
+                else self._normalize_custom_planet_names_map(
+                    self._load_meta_json_locked("custom_planet_names")
+                )
+            )
+            if isinstance(updates, Mapping):
+                for raw_pid, raw_name in updates.items():
+                    pid = _safe_int(raw_pid, 0)
+                    if pid <= 0:
+                        continue
+                    clean_name = self.sanitize_custom_planet_name(raw_name)
+                    if clean_name:
+                        names[str(pid)] = clean_name
+                    else:
+                        names.pop(str(pid), None)
+            self._save_meta_json_locked("custom_planet_names", names, now_ts)
+            self._conn.commit()
+        return dict(names)
+
+    def get_galaxy_debris_amounts(self) -> dict[str, dict[str, int]]:
+        """Return persisted debris resource amounts per normalized coordinate."""
+        with self._lock:
+            raw_deb_map = self._load_meta_json_locked("galaxy_debris_amounts")
+        out: dict[str, dict[str, int]] = {}
+        if not isinstance(raw_deb_map, Mapping):
+            return out
+        for raw_coords, entry in raw_deb_map.items():
+            nc = normalize_coords(_raw_text(raw_coords, ""))
+            if not nc:
+                continue
+            dp = dm = dk = ds = 0
+            if isinstance(entry, Sequence) and not isinstance(entry, (str, bytes)) and len(entry) >= 4:
+                dp = game_data.cap_json_int(max(0, _safe_int(entry[0], 0)))
+                dm = game_data.cap_json_int(max(0, _safe_int(entry[1], 0)))
+                dk = game_data.cap_json_int(max(0, _safe_int(entry[2], 0)))
+                ds = game_data.cap_json_int(max(0, _safe_int(entry[3], 0)))
+            elif isinstance(entry, Mapping):
+                dp = game_data.cap_json_int(max(0, _safe_int(entry.get("pig_iron", 0), 0)))
+                dm = game_data.cap_json_int(max(0, _safe_int(entry.get("metal", 0), 0)))
+                dk = game_data.cap_json_int(max(0, _safe_int(entry.get("kryptonite", 0), 0)))
+                ds = game_data.cap_json_int(max(0, _safe_int(entry.get("spice", 0), 0)))
+            if dp + dm + dk + ds > 0:
+                out[nc] = {
+                    "pig_iron": dp,
+                    "metal": dm,
+                    "kryptonite": dk,
+                    "spice": ds,
+                }
+        return out
+
+    @staticmethod
+    def _normalize_cargo_dict(cargo: Any) -> dict[str, int]:
+        if cargo is None:
+            return {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0}
+        if isinstance(cargo, Mapping):
+            return {
+                rk: game_data.cap_json_int(max(0, _safe_int(cargo.get(rk, 0), 0)))
+                for rk in _RESOURCE_KEYS
+            }
+        return {
+            rk: game_data.cap_json_int(max(0, _safe_int(getattr(cargo, rk, 0), 0)))
+            for rk in _RESOURCE_KEYS
+        }
+
+    @classmethod
+    def _normalize_transport_dispatch_entry(cls, raw: Any) -> Optional[dict[str, Any]]:
+        if not isinstance(raw, Mapping):
+            return None
+        orig = normalize_coords(_raw_text(raw.get("origin_coords"), ""))
+        dest = normalize_coords(_raw_text(raw.get("dest_coords"), ""))
+        if not orig or not dest:
+            return None
+        cargo = cls._normalize_cargo_dict(raw.get("cargo"))
+        if sum(cargo.values()) <= 0:
+            return None
+        ts_val = round(max(0.0, _safe_float(raw.get("ts"), 0.0)), 3)
+        raw_ships = raw.get("ships")
+        if isinstance(raw_ships, Mapping):
+            ships_str = ", ".join(
+                f"{max(0, _safe_int(v, 0))}x {_sanitize_text(k).strip()}"
+                for k, v in raw_ships.items()
+                if max(0, _safe_int(v, 0)) > 0
+            )[:140]
+        else:
+            ships_str = _sanitize_text(raw_ships).strip()[:140] if raw_ships is not None else ""
+        src = _sanitize_text(raw.get("source") or "dispatch").strip().lower()[:32] or "dispatch"
+        return {
+            "origin_coords": orig,
+            "dest_coords": dest,
+            "cargo": cargo,
+            "ships": ships_str,
+            "ts": ts_val,
+            "source": src,
+        }
+
+    def get_recent_transport_dispatches(
+        self,
+        *,
+        max_age_seconds: Optional[float] = None,
+        limit: int = 120,
+        now_ts: Optional[float] = None,
+    ) -> list[dict[str, Any]]:
+        """Return bounded ring of recent inter-planet transport dispatches from `meta`."""
+        with self._lock:
+            raw = self._load_meta_json_locked("recent_transport_dispatches")
+        items: list[dict[str, Any]] = []
+        if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+            for row in raw:
+                norm = self._normalize_transport_dispatch_entry(row)
+                if norm is not None:
+                    items.append(norm)
+        if max_age_seconds is not None and max_age_seconds > 0.0:
+            ref_now = _safe_float(now_ts, time.time()) if now_ts is not None else time.time()
+            cutoff = ref_now - float(max_age_seconds)
+            items = [it for it in items if float(it["ts"]) >= cutoff]
+        lim = max(1, min(500, _safe_int(limit, self.RECENT_TRANSPORT_RING_MAX)))
+        return items[-lim:]
+
+    def record_transport_dispatch(
+        self,
+        *,
+        origin_coords: str,
+        dest_coords: str,
+        cargo: Any,
+        ships: Any = "",
+        source: str = "dispatch",
+        ts: Optional[float] = None,
+        max_entries: int = 120,
+    ) -> list[dict[str, Any]]:
+        """Append a live or observed outbound transport dispatch to the bounded SQLite `meta` ring."""
+        now_ts = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        entry = self._normalize_transport_dispatch_entry(
+            {
+                "origin_coords": origin_coords,
+                "dest_coords": dest_coords,
+                "cargo": self._normalize_cargo_dict(cargo),
+                "ships": ships,
+                "ts": now_ts,
+                "source": source,
+            }
+        )
+        lim = max(1, min(500, _safe_int(max_entries, self.RECENT_TRANSPORT_RING_MAX)))
+        with self._lock:
+            raw = self._load_meta_json_locked("recent_transport_dispatches")
+            items: list[dict[str, Any]] = []
+            if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+                for row in raw:
+                    norm = self._normalize_transport_dispatch_entry(row)
+                    if norm is not None:
+                        items.append(norm)
+            if entry is None:
+                return items[-lim:]
+            # Deduplicate repeated polls of the same observed outbound flight or double-writes
+            dedupe_window = 7200.0 if entry["source"] == "observed_outbound" else 5.0
+            for prev in reversed(items):
+                if (now_ts - float(prev["ts"])) > dedupe_window:
+                    break
+                if (
+                    prev["origin_coords"] == entry["origin_coords"]
+                    and prev["dest_coords"] == entry["dest_coords"]
+                    and prev["cargo"] == entry["cargo"]
+                    and (
+                        entry["source"] == "observed_outbound"
+                        or prev["source"] == entry["source"]
+                    )
+                ):
+                    if entry["ships"] and not prev["ships"]:
+                        prev["ships"] = entry["ships"]
+                        self._save_meta_json_locked("recent_transport_dispatches", items[-lim:], now_ts)
+                        self._conn.commit()
+                    return items[-lim:]
+            items.append(entry)
+            items = items[-lim:]
+            self._save_meta_json_locked("recent_transport_dispatches", items, now_ts)
+            self._conn.commit()
+        return items
+
+    @staticmethod
+    def _parse_transport_cargo_from_text(text: str) -> Optional[dict[str, int]]:
+        """Best-effort extract transport cargo from `action_history` `reason`/`message` text."""
+        if not text:
+            return None
+        totals = {"pig_iron": 0, "metal": 0, "kryptonite": 0, "spice": 0}
+        found = False
+        # Pattern 1: compact summary like "50,000P/25,000M/1,000K/500S"
+        for m in re.finditer(r"(?<![A-Za-z0-9])([0-9][0-9.,']*)\s*([PMKS])(?![A-Za-z])", text):
+            digits = re.sub(r"[^\d]", "", m.group(1), flags=re.ASCII)
+            if not digits:
+                continue
+            val = game_data.cap_json_int(int(digits))
+            if val <= 0:
+                continue
+            code = m.group(2).upper()
+            key = {"P": "pig_iron", "M": "metal", "K": "kryptonite", "S": "spice"}[code]
+            if totals[key] == 0:
+                totals[key] = val
+                found = True
+        if found:
+            return totals
+        # Pattern 2: full resource labels like "50,000 Pig iron" or "pig_iron=50000"
+        for m in re.finditer(
+            r"(?:(pig[\s_]+iron|metal|kryptonite|spice)\s*[:=]\s*([0-9][0-9.,']*)|([0-9][0-9.,']*)\s*(pig[\s_]+iron|metal|kryptonite|spice))",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            lbl = (m.group(1) or m.group(4) or "").lower().replace(" ", "_")
+            num_s = m.group(2) or m.group(3) or ""
+            digits = re.sub(r"[^\d]", "", num_s, flags=re.ASCII)
+            if not digits or lbl not in totals:
+                continue
+            val = game_data.cap_json_int(int(digits))
+            if val > 0 and totals[lbl] == 0:
+                totals[lbl] = val
+                found = True
+        return totals if found else None
+
+    def get_recent_transport_actions_fallback(
+        self,
+        *,
+        max_age_seconds: float = 86400.0,
+        limit: int = 60,
+        now_ts: Optional[float] = None,
+    ) -> list[dict[str, Any]]:
+        """Read recent executed live `TRANSPORT` rows from `action_history` as fallback cargo intel."""
+        ref_now = _safe_float(now_ts, time.time()) if now_ts is not None else time.time()
+        cutoff = ref_now - max(60.0, float(max_age_seconds))
+        lim = max(1, min(200, _safe_int(limit, 60)))
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "action_history"):
+                return []
+            rows = self._conn.execute(
+                """
+                SELECT ts, planet_coords, target_name, reason, message
+                FROM action_history
+                WHERE kind = 'TRANSPORT' AND executed = 1 AND dry_run = 0 AND ts >= ?
+                ORDER BY ts ASC, id ASC
+                LIMIT ?
+                """,
+                (cutoff, lim),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            orig = normalize_coords(_raw_text(r["planet_coords"], ""))
+            tname = _raw_text(r["target_name"], "")
+            reason = _raw_text(r["reason"], "")
+            msg = _raw_text(r["message"], "")
+            m_dest = _ANY_GSP_RE.search(f"{tname} {msg} {reason}")
+            dest = normalize_coords(m_dest.group(0)) if m_dest else ""
+            if not orig or not dest:
+                continue
+            cargo = self._parse_transport_cargo_from_text(f"{msg} {reason}")
+            if not cargo or sum(cargo.values()) <= 0:
+                continue
+            out.append(
+                {
+                    "origin_coords": orig,
+                    "dest_coords": dest,
+                    "cargo": cargo,
+                    "ships": "",
+                    "ts": round(_safe_float(r["ts"], 0.0), 3),
+                    "source": "action_history",
+                }
+            )
+        return out
+
+    # ------------------------------------------------------------------
+    # V014 Hourly Production History (per-minute append-only snapshots)
+    # ------------------------------------------------------------------
+
+    def record_hourly_production(
+        self,
+        pig_iron_per_hour: float = 0.0,
+        metal_per_hour: float = 0.0,
+        kryptonite_per_hour: float = 0.0,
+        spice_per_hour: float = 0.0,
+        total_per_hour: float = 0.0,
+        speq_per_hour: float = 0.0,
+        planet_count: int = 0,
+        active_builders: int = 0,
+        *,
+        ts: Optional[float] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Append at most one empire hourly-production snapshot per minute bucket (`INSERT OR IGNORE`)."""
+        eff_now = _safe_float(ts, time.time()) if ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        now_r = round(eff_now, 3)
+        minute_bucket = int(eff_now // 60) * 60
+        pig_v = round(_safe_float(pig_iron_per_hour, 0.0), 1)
+        met_v = round(max(0.0, _safe_float(metal_per_hour, 0.0)), 1)
+        kry_v = round(max(0.0, _safe_float(kryptonite_per_hour, 0.0)), 1)
+        spi_v = round(max(0.0, _safe_float(spice_per_hour, 0.0)), 1)
+        tot_v = round(max(0.0, _safe_float(total_per_hour, 0.0)), 1)
+        speq_v = round(max(0.0, _safe_float(speq_per_hour, 0.0)), 1)
+        p_cnt = max(0, _sql_int(planet_count, 0))
+        b_cnt = max(0, _sql_int(active_builders, 0))
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "hourly_production_history"):
+                return None
+            cur = self._conn.execute(
+                """
+                INSERT OR IGNORE INTO hourly_production_history(
+                    minute_bucket, recorded_at,
+                    pig_iron_per_hour, metal_per_hour, kryptonite_per_hour, spice_per_hour,
+                    total_per_hour, speq_per_hour, planet_count, active_builders
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (minute_bucket, now_r, pig_v, met_v, kry_v, spi_v, tot_v, speq_v, p_cnt, b_cnt),
+            )
+            inserted = int(cur.rowcount or 0) > 0
+            if inserted:
+                self._conn.commit()
+        return {
+            "minute_bucket": minute_bucket,
+            "recorded_at": now_r,
+            "pig_iron_per_hour": pig_v,
+            "metal_per_hour": met_v,
+            "kryptonite_per_hour": kry_v,
+            "spice_per_hour": spi_v,
+            "total_per_hour": tot_v,
+            "speq_per_hour": speq_v,
+            "planet_count": p_cnt,
+            "active_builders": b_cnt,
+            "inserted": inserted,
+        }
+
+    def get_hourly_production_history(self, limit: int = 120) -> list[dict[str, Any]]:
+        """Return chronological (oldest -> newest) per-minute empire hourly production snapshots."""
+        lim = max(1, min(1440, _sql_int(limit, 120)))
+        with self._lock:
+            if not DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "hourly_production_history"):
+                return []
+            rows = self._conn.execute(
+                """
+                SELECT minute_bucket, recorded_at,
+                       pig_iron_per_hour, metal_per_hour, kryptonite_per_hour, spice_per_hour,
+                       total_per_hour, speq_per_hour, planet_count, active_builders
+                FROM hourly_production_history
+                ORDER BY minute_bucket DESC
+                LIMIT ?
+                """,
+                (lim,),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in reversed(rows):
+            out.append(
+                {
+                    "minute_bucket": game_data.cap_json_int(_safe_int(r["minute_bucket"], 0)),
+                    "recorded_at": round(_safe_float(r["recorded_at"], 0.0), 3),
+                    "pig_iron_per_hour": round(_safe_float(r["pig_iron_per_hour"], 0.0), 1),
+                    "metal_per_hour": round(_safe_float(r["metal_per_hour"], 0.0), 1),
+                    "kryptonite_per_hour": round(_safe_float(r["kryptonite_per_hour"], 0.0), 1),
+                    "spice_per_hour": round(_safe_float(r["spice_per_hour"], 0.0), 1),
+                    "total_per_hour": round(_safe_float(r["total_per_hour"], 0.0), 1),
+                    "speq_per_hour": round(_safe_float(r["speq_per_hour"], 0.0), 1),
+                    "planet_count": game_data.cap_json_int(max(0, _safe_int(r["planet_count"], 0))),
+                    "active_builders": game_data.cap_json_int(max(0, _safe_int(r["active_builders"], 0))),
+                }
+            )
+        return out
+
+    # ------------------------------------------------------------------
+    # V014 Pre-calculated Hourly Stolen Loot & Recycled Debris Telemetry
+    # ------------------------------------------------------------------
+
+    def _refresh_loot_recycle_hourly_locked(self, *, ts: Optional[float] = None) -> dict[str, Any]:
+        eff_now = _safe_float(ts, time.time()) if ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        return backfill_v014_loot_recycle_hourly(self._conn, eff_now)
+
+    def refresh_loot_recycle_hourly(self, *, ts: Optional[float] = None) -> dict[str, Any]:
+        """Re-aggregate battle_reports and recycle_reports into `loot_recycle_hourly` via upsert."""
+        with self._lock:
+            counts = self._refresh_loot_recycle_hourly_locked(ts=ts)
+            if counts.get("loot_recycle_hourly", 0) > 0:
+                self._conn.commit()
+            return counts
+
+    def get_loot_recycle_hourly(
+        self,
+        hours: int = 24,
+        *,
+        now_ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Return continuous chronological hourly stolen/recycled buckets and window summary."""
+        eff_now = _safe_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        win_hours = max(1, min(168, _sql_int(hours, 24)))
+        end_bucket = int(eff_now // 3600) * 3600
+        start_bucket = end_bucket - (win_hours - 1) * 3600
+
+        by_bucket: dict[int, dict[str, Any]] = {}
+        with self._lock:
+            has_tbl = DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "loot_recycle_hourly")
+            if has_tbl:
+                has_any = self._conn.execute("SELECT 1 FROM loot_recycle_hourly LIMIT 1").fetchone() is not None
+                if not has_any:
+                    need_backfill = False
+                    if (
+                        DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "battle_reports")
+                        and self._conn.execute("SELECT 1 FROM battle_reports WHERE ts > 0 LIMIT 1").fetchone() is not None
+                    ):
+                        need_backfill = True
+                    elif (
+                        DEFAULT_GAME_MIGRATION_RUNNER._table_exists(self._conn, "recycle_reports")
+                        and self._conn.execute("SELECT 1 FROM recycle_reports WHERE ts > 0 LIMIT 1").fetchone() is not None
+                    ):
+                        need_backfill = True
+                    if need_backfill:
+                        self._refresh_loot_recycle_hourly_locked(ts=eff_now)
+                        self._conn.commit()
+                rows = self._conn.execute(
+                    """
+                    SELECT hour_bucket,
+                           stolen_pig_iron, stolen_metal, stolen_kryptonite, stolen_spice, stolen_total,
+                           recycled_pig_iron, recycled_metal, recycled_kryptonite, recycled_spice, recycled_total,
+                           attack_count, recycle_count, updated_at
+                    FROM loot_recycle_hourly
+                    WHERE hour_bucket >= ? AND hour_bucket <= ?
+                    ORDER BY hour_bucket ASC
+                    """,
+                    (start_bucket, end_bucket),
+                ).fetchall()
+                for r in rows:
+                    hb = _safe_int(r["hour_bucket"], 0)
+                    spig = round(max(0.0, _safe_float(r["stolen_pig_iron"], 0.0)), 1)
+                    smet = round(max(0.0, _safe_float(r["stolen_metal"], 0.0)), 1)
+                    skry = round(max(0.0, _safe_float(r["stolen_kryptonite"], 0.0)), 1)
+                    sspi = round(max(0.0, _safe_float(r["stolen_spice"], 0.0)), 1)
+                    stot = round(max(0.0, _safe_float(r["stolen_total"], spig + smet + skry + sspi)), 1)
+                    rpig = round(max(0.0, _safe_float(r["recycled_pig_iron"], 0.0)), 1)
+                    rmet = round(max(0.0, _safe_float(r["recycled_metal"], 0.0)), 1)
+                    rkry = round(max(0.0, _safe_float(r["recycled_kryptonite"], 0.0)), 1)
+                    rspi = round(max(0.0, _safe_float(r["recycled_spice"], 0.0)), 1)
+                    rtot = round(max(0.0, _safe_float(r["recycled_total"], rpig + rmet + rkry + rspi)), 1)
+                    by_bucket[hb] = {
+                        "hour_bucket": game_data.cap_json_int(hb),
+                        "stolen_pig_iron": spig,
+                        "stolen_metal": smet,
+                        "stolen_kryptonite": skry,
+                        "stolen_spice": sspi,
+                        "stolen_total": stot,
+                        "recycled_pig_iron": rpig,
+                        "recycled_metal": rmet,
+                        "recycled_kryptonite": rkry,
+                        "recycled_spice": rspi,
+                        "recycled_total": rtot,
+                        "total": round(stot + rtot, 1),
+                        "attack_count": game_data.cap_json_int(max(0, _safe_int(r["attack_count"], 0))),
+                        "recycle_count": game_data.cap_json_int(max(0, _safe_int(r["recycle_count"], 0))),
+                        "updated_at": round(_safe_float(r["updated_at"], 0.0), 3),
+                    }
+
+        history: list[dict[str, Any]] = []
+        tot_spig = tot_smet = tot_skry = tot_sspi = tot_stolen = 0.0
+        tot_rpig = tot_rmet = tot_rkry = tot_rspi = tot_recycled = 0.0
+        tot_atk = tot_rec = 0
+        for hb in range(start_bucket, end_bucket + 3600, 3600):
+            row = by_bucket.get(hb)
+            if row is None:
+                row = {
+                    "hour_bucket": game_data.cap_json_int(hb),
+                    "stolen_pig_iron": 0.0,
+                    "stolen_metal": 0.0,
+                    "stolen_kryptonite": 0.0,
+                    "stolen_spice": 0.0,
+                    "stolen_total": 0.0,
+                    "recycled_pig_iron": 0.0,
+                    "recycled_metal": 0.0,
+                    "recycled_kryptonite": 0.0,
+                    "recycled_spice": 0.0,
+                    "recycled_total": 0.0,
+                    "total": 0.0,
+                    "attack_count": 0,
+                    "recycle_count": 0,
+                    "updated_at": 0.0,
+                }
+            history.append(row)
+            tot_spig += float(row["stolen_pig_iron"])
+            tot_smet += float(row["stolen_metal"])
+            tot_skry += float(row["stolen_kryptonite"])
+            tot_sspi += float(row["stolen_spice"])
+            tot_stolen += float(row["stolen_total"])
+            tot_rpig += float(row["recycled_pig_iron"])
+            tot_rmet += float(row["recycled_metal"])
+            tot_rkry += float(row["recycled_kryptonite"])
+            tot_rspi += float(row["recycled_spice"])
+            tot_recycled += float(row["recycled_total"])
+            tot_atk += int(row["attack_count"])
+            tot_rec += int(row["recycle_count"])
+
+        return {
+            "history": history,
+            "summary": {
+                "total_stolen": round(tot_stolen, 1),
+                "total_recycled": round(tot_recycled, 1),
+                "grand_total": round(tot_stolen + tot_recycled, 1),
+                "attack_count": game_data.cap_json_int(tot_atk),
+                "recycle_count": game_data.cap_json_int(tot_rec),
+                "window_hours": win_hours,
+                "stolen_pig_iron": round(tot_spig, 1),
+                "stolen_metal": round(tot_smet, 1),
+                "stolen_kryptonite": round(tot_skry, 1),
+                "stolen_spice": round(tot_sspi, 1),
+                "recycled_pig_iron": round(tot_rpig, 1),
+                "recycled_metal": round(tot_rmet, 1),
+                "recycled_kryptonite": round(tot_rkry, 1),
+                "recycled_spice": round(tot_rspi, 1),
+            },
+        }
