@@ -604,7 +604,7 @@ describe("ActionGraph 4-Tab Workspace", () => {
     });
     expect(document.getElementById("flt-slots-table")?.textContent).toContain("b10 L6");
 
-    // Edit AI Spare Resource Budget % and shipyard target in Tab 4 and Apply to Config
+    // Edit AI Spare Resource Budget %, shipyard target, and fleet research target in Tab 4 and Apply to Config
     fireEvent.change(document.getElementById("flt-cfg-ai_resource_spare_pct")!, {
       target: { value: "25" },
     });
@@ -612,12 +612,18 @@ describe("ActionGraph 4-Tab Workspace", () => {
     fireEvent.change(document.getElementById("flt-shipyard-starcruiser")!, {
       target: { value: "45" },
     });
+    expect(document.getElementById("flt-cfg-allow_fleet_research")).not.toBeNull();
+    fireEvent.change(document.getElementById("flt-research-r9")!, {
+      target: { value: "6" },
+    });
     fireEvent.click(document.getElementById("btn-flt-apply")!);
 
     await waitFor(() => {
       const upd = postedCommands.find((c) => c.command === "update_config" && c.config?.ai_resource_spare_pct === 25);
       expect(upd).toBeDefined();
       expect(upd?.config?.shipyard_targets?.starcruiser).toBe(45);
+      expect(upd?.config?.allow_fleet_research).toBe(true);
+      expect(upd?.config?.fleet_research_targets?.r9).toBe(6);
     });
 
     // Verify GaNnScannerHud honors configured planner_mode even when effective_planner_mode falls back to priority (<11/11)
@@ -697,14 +703,16 @@ describe("ActionGraph 4-Tab Workspace", () => {
     expect(document.getElementById("ag-ai-control-panel")?.textContent).toContain("resource_spare_percent.spice");
     expect(document.getElementById("ag-ai-control-panel")?.textContent).toContain("scarcity_focus");
 
-    // Tab 4: Fleet / Attack Planner (37+ parameters across Combat, Logistics, Scanner, Shipyard)
+    // Tab 4: Fleet / Attack Planner (51+ parameters across Combat, Logistics, Scanner, Shipyard & Tech)
     fireEvent.click(document.getElementById("ag-tab-btn-fleet-planner")!);
     await waitFor(() => {
       expect(document.getElementById("ag-flt-control-panel")).not.toBeNull();
     });
-    assertPanelHasDetailedDocs("ag-flt-control-panel", 37);
+    assertPanelHasDetailedDocs("ag-flt-control-panel", 51);
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("combat_safety_margin");
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("ai_resource_spare_pct");
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("shipyard_targets.starcruiser");
+    expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("allow_fleet_research");
+    expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("fleet_research_targets.r9");
   });
 });

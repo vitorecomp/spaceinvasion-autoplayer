@@ -14,7 +14,7 @@ const EXTRA_STRATEGY_PARAM_DOCS: Record<string, ActionGraphParamDoc> = {
     paramKey: "ai_resource_spare_pct",
     boundsLabel: "default: 10% · 0–90%",
     description:
-      "Soft-reserve percentage of rolling hourly empire income set aside for autonomous shipyard hull production while AI-Planner guides buildings and research. Urgent 0-count replacements for Spy probes (s10) and transports (s1/s2) remain exempt so scouting and hauling never stall. Accepts floats from 0 to 90%.",
+      "Soft-reserve percentage of rolling hourly empire income set aside for Fleet Planner ship-unlock/combat research and autonomous shipyard hull production while AI-Planner guides buildings and economy research. Urgent 0-count replacements for Spy probes (s10) and transports (s1/s2) remain exempt so scouting and hauling never stall. Accepts floats from 0 to 90%.",
   },
 };
 
@@ -430,6 +430,8 @@ export const FLEET_PLANNER_GROUP_SUBTITLES = {
     "Smart 2-phase Galaxy scanner (contiguous arrow-first exploration when distance < 5, then proximity + attack-history weighted refresh), click cadence, and reserved spy slots (synced with Config).",
   shipyard:
     "Per-hull empire shipyard quotas constructed at Weapons factory (b9) whenever allow_shipyard is enabled and soft spare-income budget permits (synced with Config).",
+  fleetResearch:
+    "Spends the same soft spare-income budget (ahead of non-urgent ship builds) to auto-unlock missing research prerequisites for any configured shipyard_targets > 0 and level explicit combat, drive, and stealth techs (r3–r15) whenever the global Research lab is free of P1 AI-Planner research.",
 } as const;
 
 const SHIP_HULL_ROLE_DESC: Record<string, string> = {
@@ -475,5 +477,99 @@ export function getShipyardHullDoc(slug: string): ActionGraphParamDoc {
     description:
       SHIP_HULL_ROLE_DESC[slug] ||
       `Target stationed hull count for ${keyTag} maintained automatically by Weapons factory (b9) when allow_shipyard is active.`,
+  };
+}
+
+export interface FleetResearchMeta {
+  key: string;
+  name: string;
+  desc: string;
+}
+
+export const FLEET_RESEARCH_OPTIONS: readonly FleetResearchMeta[] = [
+  {
+    key: "r3",
+    name: "Engine research",
+    desc: "Core propulsion prerequisite unlocking Rocket engine (r4 at L2), Diffusion engine (r5 at L6), and Warp engine (r6 at L8). Requires Research lab b8 L1.",
+  },
+  {
+    key: "r4",
+    name: "Rocket engine",
+    desc: "Boosts early ship speed and unlocks Small fighter (L1), Spy probe (L3), Small transport & Warship (L4), Large transport (L6), and Colony ship (L8). Requires r3 L2.",
+  },
+  {
+    key: "r5",
+    name: "Diffusion engine",
+    desc: "Mid-tier drive boosting cruiser/hauler speed and unlocking Recycler (L4), Starcruiser (L5), and Phoenix & Transmitter (L8). Requires r3 L6.",
+  },
+  {
+    key: "r6",
+    name: "Warp engine",
+    desc: "Capital-ship FTL drive unlocking Battleship (L4), Stealth bomber (L6), Destroyer (L8), and Black hole research (L10). Requires r3 L8 and b8 L8.",
+  },
+  {
+    key: "r7",
+    name: "Spy technology",
+    desc: "Improves espionage probe report depth & counter-espionage defense, and unlocks Spy probe (L2) and Stealth bomber (L8). Requires b8 L3.",
+  },
+  {
+    key: "r8",
+    name: "Weapons technology",
+    desc: "Increases attack firepower of all combat hulls and defenses, and unlocks Warship (L2). Requires b8 L3.",
+  },
+  {
+    key: "r9",
+    name: "Shield technology",
+    desc: "Strengthens fleet & defense shields, and unlocks Starcruiser (L4) and Particle analyzer (L5). Requires b8 L4 and Energy technology r2 L4.",
+  },
+  {
+    key: "r10",
+    name: "Defense systems",
+    desc: "Reinforces hull durability & planetary defenses, and unlocks Phoenix (L5). Requires b8 L5.",
+  },
+  {
+    key: "r11",
+    name: "Targeting systems",
+    desc: "Improves fleet weapon targeting effectiveness in combat simulations. Requires b8 L5 and Energy technology r2 L6.",
+  },
+  {
+    key: "r12",
+    name: "Particle analyzer",
+    desc: "Advanced combat & shield efficiency research. Requires b8 L6 and Shield technology r9 L5.",
+  },
+  {
+    key: "r13",
+    name: "Graviton technology",
+    desc: "High-tier energy-physics prerequisite required at L10 for Black hole research (r15). Requires b8 L2 and Energy technology r2 L2.",
+  },
+  {
+    key: "r14",
+    name: "Teleportation",
+    desc: "Unlocks Teleporter (b18) for instant inter-colony fleet jumps. Requires Research lab b8 L10.",
+  },
+  {
+    key: "r15",
+    name: "Black hole research",
+    desc: "End-game research unlocking Imperial starbase (s16 at L2). Requires Warp engine r6 L10 and Graviton technology r13 L10.",
+  },
+];
+
+export function getFleetResearchDoc(
+  rKey: string,
+  currentLevel?: number | null
+): ActionGraphParamDoc {
+  const meta = FLEET_RESEARCH_OPTIONS.find((r) => r.key === rKey);
+  const title = meta ? `${meta.name} (${meta.key})` : rKey;
+  const curPrefix =
+    typeof currentLevel === "number" && Number.isFinite(currentLevel)
+      ? `Current L${Math.max(0, Math.round(currentLevel))} · `
+      : "";
+  return {
+    title,
+    paramKey: `fleet_research_targets.${rKey}`,
+    boundsLabel: `${curPrefix}0 = auto-unlock only · 0–100 lvl`,
+    description:
+      meta?.desc ||
+      `Target research level for ${title} funded automatically by Fleet Planner spare resources when allow_fleet_research is enabled.`,
   };
 }

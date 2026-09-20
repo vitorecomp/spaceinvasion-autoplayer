@@ -238,6 +238,35 @@ def _resolve_shipyard_targets(raw_targets: Any) -> dict[str, int]:
     return resolved
 
 
+def _resolve_fleet_research_targets(raw_targets: Any) -> dict[str, int]:
+    """Resolve configured `fleet_research_targets` into canonical `r1`..`r15` positive level caps."""
+    if not isinstance(raw_targets, Mapping):
+        return {}
+    resolved: dict[str, int] = {}
+    for raw_k, raw_v in raw_targets.items():
+        key_s = _safe_strategy_str(raw_k).strip()
+        if not key_s or (key_s.isascii() and key_s.isdigit()):
+            continue
+        lvl = max(0, min(100, _safe_strategy_int(raw_v, 0)))
+        low_s = key_s.lower()
+        canon_rk: Optional[str] = None
+        if low_s in game_data.RESEARCH_BY_ID:
+            canon_rk = low_s
+        else:
+            unit_info = game_data.resolve_unit("research", key_s)
+            if unit_info:
+                u_id = unit_info.get("id")
+                if isinstance(u_id, str) and u_id in game_data.RESEARCH_BY_ID:
+                    canon_rk = u_id
+        if canon_rk is None:
+            continue
+        if lvl > 0:
+            resolved[canon_rk] = lvl
+        else:
+            resolved.pop(canon_rk, None)
+    return resolved
+
+
 def _norm_planet_type(planet: Optional[PlanetState]) -> str:
     return normalize_planet_type(planet)
 
@@ -4058,6 +4087,292 @@ def _plan_planet_shipyard_targets(
     return out_ships
 
 
+def _plan_fleet_research_actions(
+    state: GameState,
+    config: StrategyConfig,
+    *,
+    existing_plan: Sequence[PlannedAction] = (),
+) -> list[PlannedAction]:
+    """Plan P2 fleet/ship prerequisite and target `RESEARCH` actions funded by the Fleet Planner spare budget.
+
+    Combines two sources:
+    1. Auto-unlocking recursive research prerequisites for every ship configured with `target > 0` in
+       `config.shipyard_targets` (when `config.allow_shipyard` is enabled).
+    2. Explicit target levels configured in `config.fleet_research_targets` (e.g. `r3`..`r15`),
+       including any transitive research prerequisites they require (such as `r2` Energy or `r3` Engine).
+
+    Respects the single global Research Lab slot by never duplicating an AI-Planner `RESEARCH` action
+    and holding execution whenever the research queue is busy or a `P0`/`P1` AI-Planner `RESEARCH`
+    step is ready or first in line waiting for resources.
+    """
+    if not config.allow_research or not bool(getattr(config, "allow_fleet_research", True)):
+        return []
+    if state.tutorial and not state.tutorial.can_complete:
+        return []
+
+    active = state.active_planet()
+    if active is None:
+        return []
+
+    candidate_planets = list(state.planets) if config.allow_multi_planet else [active]
+    non_raid_planets = [p for p in candidate_planets if _norm_planet_type(p) != "raid"]
+    if not non_raid_planets:
+        return []
+
+    lab_planet = max(
+        non_raid_planets,
+        key=lambda p: (
+            p.building_level(RESEARCH_LAB),
+            1 if p.planet_id == active.planet_id else 0,
+        ),
+    )
+    if lab_planet.building_level(RESEARCH_LAB) < 1:
+        return []
+
+    research_offers = _research_offer_map(state) if lab_planet.planet_id == active.planet_id else {}
+    research_queue_busy = any(
+        getattr(q, "category", "") == "research" for q in (state.active_queues or ())
+    ) or any(getattr(o, "active", False) for o in (state.research_offers or ()))
+    active_res_inc = _active_research_increments(state)
+
+    existing_research_ids: set[int] = set()
+    ai_p1_research_ready = False
+    first_waiting_ai: Optional[PlannedAction] = None
+    for act in existing_plan or ():
+        if act.kind == "RESEARCH":
+            tid = game_data.safe_optional_int(act.target_id, None)
+            if tid is not None:
+                existing_research_ids.add(tid)
+            if act.priority in ("P0", "P1") and act.executable_now:
+                ai_p1_research_ready = True
+        if (
+            first_waiting_ai is None
+            and act.priority == "P1"
+            and not act.executable_now
+            and act.kind in ("BUILD", "RESEARCH", "WAIT_RESOURCES")
+        ):
+            first_waiting_ai = act
+    ai_p1_research_blocking = ai_p1_research_ready or bool(
+        first_waiting_ai is not None and first_waiting_ai.kind == "RESEARCH"
+    )
+
+    def _eff_res_level(rk: str) -> int:
+        live = max(0, _safe_strategy_int((state.researches or {}).get(rk, 0), 0))
+        return live + active_res_inc.get(rk, 0)
+
+    desired: dict[str, int] = {}
+    explicit_targets: dict[str, int] = _resolve_fleet_research_targets(
+        getattr(config, "fleet_research_targets", None)
+    )
+    unlock_ships: dict[str, list[str]] = {}
+    unlock_b9_ready: dict[str, bool] = {}
+
+    for rk, lvl in explicit_targets.items():
+        if lvl > desired.get(rk, 0):
+            desired[rk] = lvl
+
+    if config.allow_shipyard:
+        has_asteroid = any(_norm_planet_type(p) == "asteroid" for p in non_raid_planets)
+        max_b9 = max((p.building_level(WEAPONS_FACTORY) for p in non_raid_planets), default=0)
+        norm_shipyard_targets = _resolve_shipyard_targets(config.shipyard_targets)
+        for ship_slug, target_cnt in norm_shipyard_targets.items():
+            if target_cnt <= 0:
+                continue
+            if (
+                ship_slug == "solar-cells"
+                and bool(getattr(config, "forbid_planetary_solar", False))
+                and not has_asteroid
+            ):
+                continue
+            ship_info = game_data.SHIPS.get(ship_slug) or game_data.resolve_unit("ships", ship_slug)
+            if not isinstance(ship_info, Mapping):
+                continue
+            ship_name = str(ship_info.get("name") or ship_slug)
+            reqs = ship_info.get("requirements") or ()
+            req_b9 = 0
+            ship_res_reqs: list[tuple[str, int]] = []
+            for req in reqs:
+                if not isinstance(req, Mapping):
+                    continue
+                rcat = str(req.get("category") or "").strip().lower()
+                rlvl = max(0, _safe_strategy_int(req.get("level"), 0))
+                rslug = str(req.get("slug") or req.get("name") or "").strip()
+                if rcat == "buildings" and rslug in ("weapons-factory", "b9", "Weapons factory"):
+                    req_b9 = max(req_b9, rlvl)
+                elif rcat == "research" and rlvl > 0:
+                    r_info = game_data.resolve_unit("research", rslug)
+                    r_id = str(r_info.get("id") or "") if isinstance(r_info, Mapping) else ""
+                    if r_id in game_data.RESEARCH_BY_ID:
+                        ship_res_reqs.append((r_id, rlvl))
+            if not ship_res_reqs:
+                continue
+            ship_b9_ok = max_b9 >= req_b9
+            for req_rk, req_lvl in ship_res_reqs:
+                if req_lvl > desired.get(req_rk, 0):
+                    desired[req_rk] = req_lvl
+                if _eff_res_level(req_rk) < req_lvl:
+                    ships_list = unlock_ships.setdefault(req_rk, [])
+                    if ship_name not in ships_list:
+                        ships_list.append(ship_name)
+                    if ship_b9_ok:
+                        unlock_b9_ready[req_rk] = True
+
+    if not desired:
+        return []
+
+    # Recursively expand transitive research prerequisites (e.g. Warp r6 -> Engine r3; Shield r9 -> Energy r2)
+    for _ in range(16):
+        changed = False
+        for rk, goal_lvl in list(desired.items()):
+            if _eff_res_level(rk) >= goal_lvl:
+                continue
+            r_info = game_data.RESEARCH_BY_ID.get(rk)
+            if not isinstance(r_info, Mapping):
+                continue
+            parent_ships = unlock_ships.get(rk, ())
+            parent_b9_ready = bool(unlock_b9_ready.get(rk, False))
+            for req in r_info.get("requirements") or ():
+                if not isinstance(req, Mapping):
+                    continue
+                if str(req.get("category") or "").strip().lower() != "research":
+                    continue
+                dep_lvl = max(0, _safe_strategy_int(req.get("level"), 0))
+                if dep_lvl <= 0:
+                    continue
+                dep_slug = str(req.get("slug") or req.get("name") or "").strip()
+                dep_info = game_data.resolve_unit("research", dep_slug)
+                dep_rk = str(dep_info.get("id") or "") if isinstance(dep_info, Mapping) else ""
+                if dep_rk not in game_data.RESEARCH_BY_ID:
+                    continue
+                if dep_lvl > desired.get(dep_rk, 0):
+                    desired[dep_rk] = dep_lvl
+                    changed = True
+                if parent_ships and _eff_res_level(dep_rk) < dep_lvl:
+                    dep_ships = unlock_ships.setdefault(dep_rk, [])
+                    for sname in parent_ships:
+                        if sname not in dep_ships:
+                            dep_ships.append(sname)
+                            changed = True
+                if parent_b9_ready and _eff_res_level(dep_rk) < dep_lvl and not unlock_b9_ready.get(dep_rk, False):
+                    unlock_b9_ready[dep_rk] = True
+                    changed = True
+        if not changed:
+            break
+
+    ready_candidates: list[tuple[tuple[int, float, int], PlannedAction]] = []
+    waiting_candidates: list[tuple[tuple[int, int, float, int], PlannedAction]] = []
+    lab_coords_s = _safe_strategy_str(lab_planet.coords)
+
+    for rk, goal_lvl in desired.items():
+        if rk not in game_data.RESEARCH_BY_ID:
+            continue
+        live_lvl = max(0, _safe_strategy_int((state.researches or {}).get(rk, 0), 0))
+        eff_lvl = live_lvl + active_res_inc.get(rk, 0)
+        if eff_lvl >= goal_lvl:
+            continue
+        rid_num = int(rk[1:])
+        if rid_num in existing_research_ids:
+            continue
+
+        unmet = game_data.missing_prerequisites(
+            "research",
+            rk,
+            buildings=lab_planet.buildings,
+            researches=state.researches,
+        )
+        # If another research prerequisite is unmet, skip this node (that prerequisite is emitted directly)
+        if any(m.get("category") == "research" for m in unmet):
+            continue
+
+        next_lvl = live_lvl + 1
+        r_info = game_data.RESEARCH_BY_ID[rk]
+        r_name = str(r_info.get("name") or rk)
+        offer = research_offers.get(rk)
+
+        if offer is not None and game_data.safe_optional_int(offer.target_level, None) == next_lvl:
+            cost = offer.cost
+            can_offer = bool(offer.can_research)
+            raw_href = _safe_strategy_str(offer.research_href) or None
+            tid = game_data.safe_optional_int(offer.research_id, rid_num)
+        else:
+            lvl_row = (r_info.get("levels") or {}).get(next_lvl) or {}
+            cost = _resources_from_dict(lvl_row.get("cost") or {})
+            # When the highest-level Research Lab is on a non-active colony under multi-planet mode,
+            # `state.research_offers` belongs to the active planet; `executor._execute_research` switches
+            # to `lab_planet` and live-verifies `internalResearch` before clicking (matching `_find_research_action`).
+            can_offer = bool(
+                config.allow_multi_planet
+                and lab_planet.planet_id != active.planet_id
+                and not cost.is_zero()
+            )
+            raw_href = None
+            tid = rid_num
+
+        missing = lab_planet.resources.missing(cost)
+        can_exec = (
+            (not unmet)
+            and (not research_queue_busy)
+            and (not ai_p1_research_blocking)
+            and can_offer
+            and lab_planet.resources.can_afford(cost)
+        )
+
+        ships_unlocked = unlock_ships.get(rk, [])
+        if ships_unlocked:
+            ship_preview = ", ".join(ships_unlocked[:3])
+            if len(ships_unlocked) > 3:
+                ship_preview += f" (+{len(ships_unlocked) - 3})"
+            base_reason = (
+                f"Fleet research (spare budget): {r_name} L{next_lvl}/{goal_lvl} — unlocks {ship_preview}"
+            )
+        else:
+            base_reason = f"Fleet research target (spare budget): {r_name} L{next_lvl}/{goal_lvl}"
+
+        if unmet:
+            first_req = unmet[0]
+            note = (
+                f" (requires {first_req['name']} "
+                f"{game_data.fmt_compact_int(first_req['current'])}/{game_data.fmt_compact_int(first_req['required'])})"
+            )
+        elif research_queue_busy:
+            note = " (research slot busy)"
+        elif ai_p1_research_blocking:
+            note = " (holding Research Lab for AI-Planner research)"
+        else:
+            note = ""
+
+        act = PlannedAction(
+            priority="P2",
+            kind="RESEARCH",
+            planet_id=lab_planet.planet_id,
+            planet_coords=lab_coords_s,
+            target_id=tid,
+            target_name=r_name,
+            target_level=next_lvl,
+            cost=cost,
+            missing=missing,
+            reason=f"{base_reason}{note}",
+            executable_now=can_exec,
+            action_href=raw_href if can_exec else None,
+        )
+
+        tier = 0 if unlock_b9_ready.get(rk, False) else (1 if ships_unlocked else 2)
+        cost_sp = game_data.spice_equivalent(cost)
+        if can_exec:
+            ready_candidates.append(((tier, cost_sp, rid_num), act))
+        else:
+            blocked_rank = 1 if unmet else 0
+            waiting_candidates.append(((blocked_rank, tier, cost_sp, rid_num), act))
+
+    ready_candidates.sort(key=lambda pair: pair[0])
+    waiting_candidates.sort(key=lambda pair: pair[0])
+
+    out_research: list[PlannedAction] = [act for _, act in ready_candidates]
+    for _, wait_act in waiting_candidates[:3]:
+        out_research.append(wait_act)
+    return out_research
+
+
 _BUDGET_RES_KEYS: tuple[str, ...] = ("pig_iron", "metal", "kryptonite", "spice")
 
 
@@ -4194,7 +4509,14 @@ def filter_shipyard_actions_by_spare_budget(
     actions: Sequence[PlannedAction],
     spare_budget: Optional[Mapping[str, Any]],
 ) -> list[PlannedAction]:
-    """Gate non-urgent `BUILD_SHIP` actions by `spare_budget` while allowing 0-count s10/s1/s2 replacements."""
+    """Gate non-urgent `RESEARCH` (fleet tech) and `BUILD_SHIP` actions by `spare_budget`.
+
+    - Evaluates eligible Fleet Planner `RESEARCH` actions first (at most 1 approved per tick because
+      SpaceInvasion has 1 global Research Lab slot; additional ready fleet research candidates are
+      marked queued without draining spare budget).
+    - Spends any remaining `spare_budget` on non-urgent `BUILD_SHIP` actions while always exempting
+      0-count Spy probe (`s10`) and Transport (`s1`/`s2`) replacements and manual-queue items.
+    """
     if not isinstance(spare_budget, Mapping):
         return list(actions)
 
@@ -4221,18 +4543,54 @@ def filter_shipyard_actions_by_spare_budget(
             == 0
         )
 
-    out: list[PlannedAction] = []
-    hold_tag = " [Hold: reserved for next AI-Planner step / spare % ship budget]"
-    for act in actions:
+    out: list[PlannedAction] = list(actions)
+    ship_hold_tag = " [Hold: reserved for next AI-Planner step / spare % ship budget]"
+    res_hold_tag = " [Hold: reserved for next AI-Planner step / spare % fleet research budget]"
+    res_queued_tag = " (queued behind active fleet research slot)"
+
+    # Pass 1: Gate eligible Fleet Planner RESEARCH actions first (max 1 global research slot per tick)
+    approved_research = False
+    for idx, act in enumerate(out):
+        if act.kind != "RESEARCH" or act.manual_queue_id is not None or not act.executable_now:
+            continue
+        if approved_research:
+            cur_r = _safe_strategy_str(act.reason)
+            new_r = cur_r if res_queued_tag.strip() in cur_r else f"{cur_r}{res_queued_tag}"
+            out[idx] = replace(act, executable_now=False, reason=new_r, action_href=None)
+            continue
+
+        cost_obj = act.cost
+        if cost_obj.is_zero():
+            rid = game_data.safe_optional_int(act.target_id, None)
+            tlvl = game_data.safe_optional_int(act.target_level, None)
+            if rid is not None and tlvl is not None:
+                r_info = game_data.RESEARCH_BY_ID.get(f"r{rid}") or {}
+                lvl_row = (r_info.get("levels") or {}).get(tlvl) or {}
+                cost_obj = _resources_from_dict(lvl_row.get("cost") or {})
+        need_c = {
+            "pig_iron": float(max(0, _safe_strategy_int(cost_obj.pig_iron, 0))),
+            "metal": float(max(0, _safe_strategy_int(cost_obj.metal, 0))),
+            "kryptonite": float(max(0, _safe_strategy_int(cost_obj.kryptonite, 0))),
+            "spice": float(max(0, _safe_strategy_int(cost_obj.spice, 0))),
+        }
+        fits = all(rem[rk] + 1e-6 >= need_c[rk] for rk in _BUDGET_RES_KEYS)
+        if fits:
+            for rk in _BUDGET_RES_KEYS:
+                rem[rk] = max(0.0, rem[rk] - need_c[rk])
+            approved_research = True
+        else:
+            cur_r = _safe_strategy_str(act.reason)
+            new_r = cur_r if res_hold_tag.strip() in cur_r else f"{cur_r}{res_hold_tag}"
+            out[idx] = replace(act, executable_now=False, reason=new_r, action_href=None)
+
+    # Pass 2: Gate non-urgent BUILD_SHIP actions using remaining spare budget
+    for idx, act in enumerate(out):
         if act.kind != "BUILD_SHIP" or act.manual_queue_id is not None or not act.executable_now:
-            out.append(act)
             continue
         sid = game_data.safe_optional_int(act.target_id, None)
         if sid == 10 and urg_s10:
-            out.append(act)
             continue
         if sid in (1, 2) and urg_tr:
-            out.append(act)
             continue
 
         cost_obj = act.cost
@@ -4258,11 +4616,10 @@ def filter_shipyard_actions_by_spare_budget(
         if fits:
             for rk in _BUDGET_RES_KEYS:
                 rem[rk] = max(0.0, rem[rk] - need_c[rk])
-            out.append(act)
         else:
             cur_r = _safe_strategy_str(act.reason)
-            new_r = cur_r if hold_tag.strip() in cur_r else f"{cur_r}{hold_tag}"
-            out.append(replace(act, executable_now=False, reason=new_r))
+            new_r = cur_r if ship_hold_tag.strip() in cur_r else f"{cur_r}{ship_hold_tag}"
+            out[idx] = replace(act, executable_now=False, reason=new_r)
     return out
 
 
@@ -4340,6 +4697,14 @@ def plan_fleet_and_attack_actions(
     )
     actions.extend(combat_acts)
 
+    # Fleet / Ship prerequisite & combat research funded from spare budget
+    fleet_research_acts = _plan_fleet_research_actions(
+        state_for_plan,
+        cfg,
+        existing_plan=combined_context,
+    )
+    actions.extend(fleet_research_acts)
+
     # Shipyard targets across planets with Weapons factory
     planets_for_ships = list(state_for_plan.planets) if cfg.allow_multi_planet else [active]
     planets_for_ships.sort(key=lambda p: 0 if p.planet_id == active.planet_id else 1)
@@ -4389,6 +4754,8 @@ def plan_fleet_and_attack_actions(
                 return (4, 5)
             if act.kind in ("ATTACK", "RECYCLE"):
                 return (5, 0)
+            if act.kind == "RESEARCH":
+                return (5, 5)
             return (6, 0)
         return (0, 0)
 

@@ -426,6 +426,24 @@ DEFAULT_SHIPYARD_TARGETS: dict[str, int] = {
     "destroyer": 4,
 }
 
+FLEET_RESEARCH_KEYS: tuple[str, ...] = (
+    "r3",
+    "r4",
+    "r5",
+    "r6",
+    "r7",
+    "r8",
+    "r9",
+    "r10",
+    "r11",
+    "r12",
+    "r13",
+    "r14",
+    "r15",
+)
+
+DEFAULT_FLEET_RESEARCH_TARGETS: dict[str, int] = {}
+
 
 @dataclass(frozen=True)
 class StrategyConfig:
@@ -435,6 +453,7 @@ class StrategyConfig:
     merchant_mode: bool = False
     auto_throttle_blast_furnace: bool = True
     allow_research: bool = True
+    allow_fleet_research: bool = True
     allow_shipyard: bool = True
     allow_multi_planet: bool = True
     allow_fleetsave: bool = False
@@ -477,6 +496,9 @@ class StrategyConfig:
     ga_seed: Optional[int] = None
     shipyard_targets: dict[str, int] = field(
         default_factory=lambda: dict(DEFAULT_SHIPYARD_TARGETS)
+    )
+    fleet_research_targets: dict[str, int] = field(
+        default_factory=lambda: dict(DEFAULT_FLEET_RESEARCH_TARGETS)
     )
 
 
@@ -1081,6 +1103,65 @@ def _canonicalize_shipyard_target_key(raw_key: str) -> str:
     return _SHIPYARD_SLUG_ALIASES.get(norm, raw_key)
 
 
+_FLEET_RESEARCH_KEY_ALIASES: dict[str, str] = {
+    "r1": "r1",
+    "r2": "r2",
+    "r3": "r3",
+    "r4": "r4",
+    "r5": "r5",
+    "r6": "r6",
+    "r7": "r7",
+    "r8": "r8",
+    "r9": "r9",
+    "r10": "r10",
+    "r11": "r11",
+    "r12": "r12",
+    "r13": "r13",
+    "r14": "r14",
+    "r15": "r15",
+    "research[1]": "r1",
+    "research[2]": "r2",
+    "research[3]": "r3",
+    "research[4]": "r4",
+    "research[5]": "r5",
+    "research[6]": "r6",
+    "research[7]": "r7",
+    "research[8]": "r8",
+    "research[9]": "r9",
+    "research[10]": "r10",
+    "research[11]": "r11",
+    "research[12]": "r12",
+    "research[13]": "r13",
+    "research[14]": "r14",
+    "research[15]": "r15",
+    "mining technology": "r1",
+    "energy technology": "r2",
+    "engine research": "r3",
+    "rocket engine": "r4",
+    "diffusion engine": "r5",
+    "warp engine": "r6",
+    "spy technology": "r7",
+    "weapons technology": "r8",
+    "shield technology": "r9",
+    "defense systems": "r10",
+    "targeting systems": "r11",
+    "particle analyzer": "r12",
+    "graviton technology": "r13",
+    "teleportation": "r14",
+    "black hole research": "r15",
+}
+
+
+def _canonicalize_fleet_research_key(raw_key: str) -> str:
+    stripped = raw_key.strip()
+    if not stripped:
+        return raw_key
+    if stripped.isascii() and stripped.isdigit():
+        return raw_key
+    norm = " ".join(stripped.lower().replace("_", " ").replace("-", " ").split())
+    return _FLEET_RESEARCH_KEY_ALIASES.get(norm, raw_key)
+
+
 def strategy_config_from_dict(data: Any) -> StrategyConfig:
     """Build a validated `StrategyConfig` from parsed mapping data."""
     if not isinstance(data, Mapping):
@@ -1092,6 +1173,19 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         for k, v in raw_targets.items():
             key_str = _canonicalize_shipyard_target_key(_safe_cfg_key(k))
             targets[key_str] = max(0, _safe_cfg_int(v, targets.get(key_str, 0)))
+
+    fleet_research_targets: dict[str, int] = dict(DEFAULT_FLEET_RESEARCH_TARGETS)
+    raw_fr_targets = data.get("fleet_research_targets")
+    if isinstance(raw_fr_targets, Mapping):
+        for k, v in raw_fr_targets.items():
+            key_str = _canonicalize_fleet_research_key(_safe_cfg_key(k))
+            if not key_str:
+                continue
+            lvl = max(0, min(100, _safe_cfg_int(v, 0)))
+            if lvl > 0:
+                fleet_research_targets[key_str] = lvl
+            else:
+                fleet_research_targets.pop(key_str, None)
 
     raw_playstyle = data.get("playstyle", "fleeter")
     if isinstance(raw_playstyle, os.PathLike):
@@ -1123,6 +1217,7 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         merchant_mode=_safe_cfg_bool(data.get("merchant_mode"), False),
         auto_throttle_blast_furnace=_safe_cfg_bool(data.get("auto_throttle_blast_furnace"), True),
         allow_research=_safe_cfg_bool(data.get("allow_research"), True),
+        allow_fleet_research=_safe_cfg_bool(data.get("allow_fleet_research"), True),
         allow_shipyard=_safe_cfg_bool(data.get("allow_shipyard"), True),
         allow_multi_planet=_safe_cfg_bool(data.get("allow_multi_planet"), True),
         allow_fleetsave=_safe_cfg_bool(data.get("allow_fleetsave"), False),
@@ -1176,6 +1271,7 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         ga_nn_weight=max(0.0, min(1.0, _safe_cfg_float(data.get("ga_nn_weight"), 0.35))),
         ga_seed=_safe_cfg_optional_int(data.get("ga_seed"), None),
         shipyard_targets=targets,
+        fleet_research_targets=fleet_research_targets,
     )
 
 
@@ -1427,6 +1523,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         f"merchant_mode: {'true' if _safe_cfg_bool(cfg.merchant_mode, False) else 'false'}",
         f"auto_throttle_blast_furnace: {'true' if _safe_cfg_bool(cfg.auto_throttle_blast_furnace, True) else 'false'}",
         f"allow_research: {'true' if _safe_cfg_bool(cfg.allow_research, True) else 'false'}",
+        f"allow_fleet_research: {'true' if _safe_cfg_bool(getattr(cfg, 'allow_fleet_research', True), True) else 'false'}",
         f"allow_shipyard: {'true' if _safe_cfg_bool(cfg.allow_shipyard, True) else 'false'}",
         f"allow_multi_planet: {'true' if _safe_cfg_bool(cfg.allow_multi_planet, True) else 'false'}",
         f"allow_fleetsave: {'true' if _safe_cfg_bool(cfg.allow_fleetsave, False) else 'false'}",
@@ -1479,5 +1576,25 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         canonical_targets[canon_slug] = max(0, _safe_cfg_int(cnt, 0))
     for canon_slug, val in canonical_targets.items():
         lines.append(f"  {_format_yaml_string(canon_slug)}: {val}")
+    raw_fr_targets = (
+        cfg.fleet_research_targets
+        if isinstance(getattr(cfg, "fleet_research_targets", None), Mapping)
+        else DEFAULT_FLEET_RESEARCH_TARGETS
+    )
+    canonical_fr_targets: dict[str, int] = {}
+    for rk, lvl in raw_fr_targets.items():
+        safe_rk = _safe_cfg_key(rk)
+        if not safe_rk:
+            continue
+        canon_rk = _canonicalize_fleet_research_key(safe_rk)
+        clean_lvl = max(0, min(100, _safe_cfg_int(lvl, 0)))
+        if clean_lvl > 0:
+            canonical_fr_targets[canon_rk] = clean_lvl
+        else:
+            canonical_fr_targets.pop(canon_rk, None)
+    if canonical_fr_targets:
+        lines.append("fleet_research_targets:")
+        for canon_rk, val in canonical_fr_targets.items():
+            lines.append(f"  {_format_yaml_string(canon_rk)}: {val}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path

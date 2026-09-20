@@ -4078,6 +4078,204 @@ class TestStrategyPlanner(unittest.TestCase):
             [],
         )
 
+    def test_fleet_research_auto_unlock_explicit_targets_spare_budget_and_slot_guards(self) -> None:
+        from spaceinvasion.planner.strategy import (
+            PlannedAction,
+            _plan_fleet_research_actions,
+            filter_shipyard_actions_by_spare_budget,
+            plan_fleet_and_attack_actions,
+        )
+
+        # Homeworld with b8=8, b9=5 (Starcruiser b9=5 ready, Battleship b9=8 NOT ready)
+        # Researches: r2=7 (meets Shield r9 req r2>=6), r3=6 (needs r3=8 -> r6=4 for Battleship), r9=0, r10=0
+        p_home = PlanetState(
+            planet_id=501,
+            name="Homeworld",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=25,
+            fields_used=90,
+            fields_max=250,
+            resources=Resources(pig_iron=80_000, metal=80_000, kryptonite=80_000, spice=80_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(2500, 1200),
+            buildings={"b1": 15, "b2": 10, "b3": 14, "b4": 12, "b5": 16, "b7": 8, "b8": 8, "b9": 5},
+            ships={"s1": 6, "s4": 12, "s10": 10},
+            ship_offers=(
+                UnitOffer("ship", 4, "Small fighter", 12, Resources(3_000, 1_000, 0, 0), True, "ship[4]"),
+                UnitOffer("ship", 10, "Spy probe", 10, Resources(0, 0, 1_000, 0), True, "ship[10]"),
+            ),
+        )
+        base_offers = (
+            ResearchOffer(2, "r2", "Energy technology", 2, 3, Resources(0, 0, 1_600, 800), True, "", "?r=2"),
+            ResearchOffer(3, "r3", "Engine research", 6, 7, Resources(0, 10_000, 10_000, 5_000), True, "", "?r=3"),
+            ResearchOffer(8, "r8", "Weapons technology", 0, 1, Resources(0, 800, 200, 0), True, "", "?r=8"),
+            ResearchOffer(9, "r9", "Shield technology", 0, 1, Resources(0, 200, 600, 0), True, "", "?r=9"),
+            ResearchOffer(10, "r10", "Defense systems", 0, 1, Resources(0, 1_000, 0, 0), True, "", "?r=10"),
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="tester",
+            timestamp=6000.0,
+            planets=(p_home,),
+            active_planet_id=501,
+            researches={"r1": 8, "r2": 7, "r3": 6, "r4": 6, "r5": 5, "r6": 0, "r7": 4, "r8": 0, "r9": 0, "r10": 0},
+            research_offers=base_offers,
+        )
+        cfg = StrategyConfig(
+            allow_research=True,
+            allow_fleet_research=True,
+            allow_shipyard=True,
+            allow_raids=False,
+            allow_galaxy_scan=False,
+            allow_fleetsave=False,
+            shipyard_targets={"starcruiser": 6, "battleship": 4, "small-fighter": 20},
+            fleet_research_targets={"r8": 4},
+        )
+
+        # 1. Auto-unlock + explicit target prioritization:
+        #    Starcruiser (b9=5 ready) needs r9 (Shield) -> ranked tier 0 ahead of Battleship (b9=8 unmet -> r3 tier 1)
+        #    and ahead of explicit target r8 (tier 2).
+        res_acts = _plan_fleet_research_actions(st, cfg)
+        res_ids = [a.target_id for a in res_acts]
+        self.assertIn(9, res_ids)
+        self.assertIn(3, res_ids)
+        self.assertIn(8, res_ids)
+        self.assertEqual(res_ids[0], 9)
+        self.assertLess(res_ids.index(9), res_ids.index(3))
+        self.assertLess(res_ids.index(3), res_ids.index(8))
+        self.assertTrue(all(a.priority == "P2" and a.kind == "RESEARCH" and a.executable_now for a in res_acts[:3]))
+        self.assertIn("Starcruiser", res_acts[0].reason)
+        self.assertIn("Battleship", next(a for a in res_acts if a.target_id == 3).reason)
+
+        # 2. Transitive research prerequisite expansion:
+        #    If r2=2 (< 4 required by r9 Shield) and r5=5 (meets Starcruiser Diffusion L5),
+        #    r9 itself is skipped and r2 Energy is emitted transitively for Starcruiser!
+        st_low_r2 = replace(st, researches={**st.researches, "r2": 2})
+        res_trans = _plan_fleet_research_actions(st_low_r2, replace(cfg, shipyard_targets={"starcruiser": 6}, fleet_research_targets={}))
+        self.assertEqual([a.target_id for a in res_trans], [2])
+        self.assertTrue(res_trans[0].executable_now)
+        self.assertIn("Starcruiser", res_trans[0].reason)
+
+        # 2b. Multi-planet remote Research Lab: when another colony (b8=2) is active while Homeworld (b8=8)
+        #     holds the main Research Lab & resources, Fleet research still marks executable_now=True on Homeworld!
+        p_col = replace(p_home, planet_id=502, name="Colony 2", coords="02:380:13", buildings={"b1": 10, "b8": 2, "b9": 1})
+        st_remote = replace(st, planets=(p_home, p_col), active_planet_id=502, research_offers=())
+        res_remote = _plan_fleet_research_actions(st_remote, replace(cfg, allow_multi_planet=True))
+        self.assertTrue(res_remote and res_remote[0].planet_id == 501 and res_remote[0].target_id == 9 and res_remote[0].executable_now)
+
+        # 3. Spare-budget filtering evaluates Fleet RESEARCH before BUILD_SHIP and caps at 1 approved RESEARCH/tick
+        #    so the 2nd ready RESEARCH does NOT drain `rem` from BUILD_SHIP!
+        spare_budget = {
+            "available_budget": {"pig_iron": 5_000.0, "metal": 2_000.0, "kryptonite": 2_000.0, "spice": 1_000.0},
+            "spare_percent": {"pig_iron": 15.0, "metal": 15.0, "kryptonite": 15.0, "spice": 15.0},
+            "urgent_zero_spy_probes": False,
+            "urgent_zero_transports": False,
+        }
+        fleet_all = plan_fleet_and_attack_actions(st, config=cfg, spare_budget=spare_budget)
+        fleet_res = [a for a in fleet_all if a.kind == "RESEARCH"]
+        fleet_ships = [a for a in fleet_all if a.kind == "BUILD_SHIP" and a.target_id == 4]
+        self.assertTrue(fleet_res)
+        self.assertTrue(fleet_ships)
+        # r9 (200 Met, 600 Kryp) approved first; subsequent ready research items (r3, r8) are queued behind active slot
+        r9_act = next(a for a in fleet_res if a.target_id == 9)
+        r3_act = next(a for a in fleet_res if a.target_id == 3)
+        r8_act = next(a for a in fleet_res if a.target_id == 8)
+        self.assertTrue(r9_act.executable_now)
+        self.assertFalse(r3_act.executable_now)
+        self.assertIn("queued behind active fleet research slot", r3_act.reason)
+        self.assertFalse(r8_act.executable_now)
+        self.assertIn("queued behind active fleet research slot", r8_act.reason)
+        # Small fighter (3k Pig, 1k Met) STILL fits in remaining spare (5k Pig, 1.8k Met) because r3/r8 did not drain rem!
+        self.assertTrue(fleet_ships[0].executable_now)
+        # P2 RESEARCH is ranked ahead of P2 BUILD_SHIP in merged fleet actions
+        self.assertLess(fleet_all.index(r9_act), fleet_all.index(fleet_ships[0]))
+
+        # 3b. When the top-ranked RESEARCH (r9: 200 Met, 600 Kryp) exceeds spare budget (Kryp=300),
+        #     r9 is held with spare % fleet research budget tag and the next affordable RESEARCH (r8: 800 Met, 200 Kryp) runs!
+        tight_budget = {
+            "available_budget": {"pig_iron": 5_000.0, "metal": 1_000.0, "kryptonite": 300.0, "spice": 500.0},
+            "spare_percent": {"pig_iron": 10.0, "metal": 10.0, "kryptonite": 10.0, "spice": 10.0},
+            "urgent_zero_spy_probes": False,
+            "urgent_zero_transports": False,
+        }
+        fleet_tight = plan_fleet_and_attack_actions(st, config=cfg, spare_budget=tight_budget)
+        r9_tight = next(a for a in fleet_tight if a.kind == "RESEARCH" and a.target_id == 9)
+        r8_tight = next(a for a in fleet_tight if a.kind == "RESEARCH" and a.target_id == 8)
+        self.assertFalse(r9_tight.executable_now)
+        self.assertIn("spare % fleet research budget", r9_tight.reason)
+        self.assertTrue(r8_tight.executable_now)
+
+        # 4. Urgent 0-count Spy probe exemption still holds even when spare budget is 0
+        st_no_probe = replace(st, planets=(replace(p_home, ships={"s1": 6, "s4": 12, "s10": 0}),))
+        zero_budget = {
+            "available_budget": {"pig_iron": 0.0, "metal": 0.0, "kryptonite": 0.0, "spice": 0.0},
+            "spare_percent": {"pig_iron": 0.0, "metal": 0.0, "kryptonite": 0.0, "spice": 0.0},
+            "urgent_zero_spy_probes": True,
+            "urgent_zero_transports": False,
+        }
+        probe_act = PlannedAction(
+            priority="P2",
+            kind="BUILD_SHIP",
+            planet_id=501,
+            planet_coords="02:380:12",
+            target_id=10,
+            target_name="Spy probe",
+            target_level=1,
+            cost=Resources(0, 0, 1_000, 0),
+            missing=Resources(),
+            reason="Fleet build target (0/10 Spy probe)",
+            executable_now=True,
+        )
+        gated_zero = filter_shipyard_actions_by_spare_budget(st_no_probe, [res_acts[0], probe_act], zero_budget)
+        self.assertFalse(gated_zero[0].executable_now)
+        self.assertTrue(gated_zero[1].executable_now)
+
+        # 5. Slot & AI-Planner safety guards:
+        # 5a. Research queue busy -> all fleet research held
+        st_busy = replace(st, active_queues=(QueueJob("research", "Mining technology L9", 9, "00:30:00"),))
+        busy_acts = _plan_fleet_research_actions(st_busy, cfg)
+        self.assertTrue(busy_acts and all(not a.executable_now and "research slot busy" in a.reason for a in busy_acts))
+
+        # 5b. AI-Planner has a ready P1 RESEARCH or earliest waiting P1 is RESEARCH -> fleet research held
+        ai_wait_res = PlannedAction(
+            priority="P1",
+            kind="RESEARCH",
+            planet_id=501,
+            planet_coords="02:380:12",
+            target_id=1,
+            target_name="Mining technology",
+            target_level=9,
+            cost=Resources(0, 50_000, 50_000, 0),
+            missing=Resources(0, 10_000, 0, 0),
+            reason="AI-Planner next research",
+            executable_now=False,
+        )
+        ai_held = _plan_fleet_research_actions(st, cfg, existing_plan=[ai_wait_res])
+        self.assertTrue(ai_held and all(not a.executable_now and "holding Research Lab for AI-Planner" in a.reason for a in ai_held))
+
+        # 5c. AI-Planner earliest waiting P1 is BUILD (not RESEARCH) -> fleet research NOT blocked by Research Lab guard
+        ai_wait_bld = PlannedAction(
+            priority="P1",
+            kind="BUILD",
+            planet_id=501,
+            planet_coords="02:380:12",
+            target_id=1,
+            target_name="Pig iron mine",
+            target_level=16,
+            cost=Resources(50_000, 0, 20_000, 0),
+            missing=Resources(10_000, 0, 0, 0),
+            reason="AI-Planner next mine",
+            executable_now=False,
+        )
+        ai_ok = _plan_fleet_research_actions(st, cfg, existing_plan=[ai_wait_bld])
+        self.assertTrue(any(a.executable_now for a in ai_ok))
+
+        # 5d. Config flags allow_fleet_research=False or allow_research=False emit nothing
+        self.assertEqual(_plan_fleet_research_actions(st, replace(cfg, allow_fleet_research=False)), [])
+        self.assertEqual(_plan_fleet_research_actions(st, replace(cfg, allow_research=False)), [])
+
 
 if __name__ == "__main__":
     unittest.main()

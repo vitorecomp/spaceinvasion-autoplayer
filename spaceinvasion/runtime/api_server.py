@@ -633,6 +633,7 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         "merchant_mode",
         "auto_throttle_blast_furnace",
         "allow_research",
+        "allow_fleet_research",
         "allow_shipyard",
         "allow_multi_planet",
         "allow_fleetsave",
@@ -667,6 +668,25 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
                 sv,
                 min_val=0,
                 max_val=1_000_000_000,
+                allow_none=False,
+            )
+
+    if "fleet_research_targets" in raw_cfg:
+        raw_fr = raw_cfg["fleet_research_targets"]
+        if not isinstance(raw_fr, Mapping):
+            raise ApiRequestError(
+                "Config field 'fleet_research_targets' must be a mapping of research keys to integer target levels."
+            )
+        for rk, rv in raw_fr.items():
+            if not isinstance(rk, str) or not rk.strip():
+                raise ApiRequestError(
+                    "Config field 'fleet_research_targets' keys must be non-empty strings."
+                )
+            _validate_strict_int(
+                f"fleet_research_targets.{rk.strip()}",
+                rv,
+                min_val=0,
+                max_val=100,
                 allow_none=False,
             )
 
@@ -4417,6 +4437,7 @@ class GameApiBridge:
                 upd_fields: dict[str, Any] = {"active_planet_id": obs_pid}
                 if len(target_state.planets) > 1:
                     upd_fields["research_offers"] = ()
+                    self._last_research_sync_sig = None
                 self._last_state = replace(target_state, **upd_fields)
                 if was_recorded:
                     self._last_recorded_state_obj = self._last_state
@@ -4550,6 +4571,8 @@ class GameApiBridge:
         if fetched_research:
             self._last_research_sync_at = now
             self._last_research_sync_sig = (b8_lvl, res_sig, res_busy)
+        elif not merged.research_offers and prev is not None and prev.active_planet_id != merged.active_planet_id:
+            self._last_research_sync_sig = None
         if fetched_shipyard:
             self._last_shipyard_sync_at = now
             self._last_shipyard_sync_sig = (pid_sig, b9_lvl, res_sig)
@@ -7285,6 +7308,7 @@ class GameApiBridge:
                         active_planet_id=valid_obs_pid,
                         research_offers=(),
                     )
+                    self._last_research_sync_sig = None
             after_state = self._record_state(
                 state_to_record,
                 fetched_buildings=(
@@ -7336,6 +7360,7 @@ class GameApiBridge:
                 )
             ):
                 snap = replace(snap, research_offers=())
+                self._last_research_sync_sig = None
             after_state = self._record_state(
                 snap,
                 fetched_buildings=inc_b,
@@ -7361,6 +7386,7 @@ class GameApiBridge:
                         active_planet_id=valid_obs_pid,
                         research_offers=(),
                     )
+                    self._last_research_sync_sig = None
             merged_state = self._record_state(
                 state_to_record,
                 fetched_buildings=(
@@ -9098,6 +9124,11 @@ class GameApiBridge:
                     merged["shipyard_targets"] = {
                         **dict(prev_cfg.shipyard_targets or {}),
                         **dict(raw_cfg["shipyard_targets"]),
+                    }
+                if isinstance(raw_cfg.get("fleet_research_targets"), Mapping):
+                    merged["fleet_research_targets"] = {
+                        **dict(getattr(prev_cfg, "fleet_research_targets", None) or {}),
+                        **dict(raw_cfg["fleet_research_targets"]),
                     }
                 new_cfg = strategy_config_from_dict(merged)
                 if self._config_file_explicit or self._db is None:

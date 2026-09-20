@@ -110,6 +110,7 @@ export interface StrategyConfigData {
   merchant_mode?: boolean;
   auto_throttle_blast_furnace?: boolean;
   allow_research?: boolean;
+  allow_fleet_research?: boolean;
   allow_shipyard?: boolean;
   allow_multi_planet?: boolean;
   allow_fleetsave?: boolean;
@@ -150,6 +151,7 @@ export interface StrategyConfigData {
   ga_nn_weight?: number;
   ga_seed?: number | null;
   shipyard_targets?: Record<string, number>;
+  fleet_research_targets?: Record<string, number>;
   [key: string]: any;
 }
 

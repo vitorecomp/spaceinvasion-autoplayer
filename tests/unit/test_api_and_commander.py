@@ -7815,6 +7815,222 @@ class TestApiAndCommander(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_fleet_research_config_validation_merge_and_hybrid_ai_plan(self) -> None:
+        import time
+        from dataclasses import replace as dc_replace
+        from spaceinvasion.runtime.api_server import ApiRequestError
+        from spaceinvasion.core.state import (
+            BuildingOffer,
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            ResearchOffer,
+            Resources,
+            UnitOffer,
+        )
+
+        # 11-colony empire unlocking live ai_planner mode + homeworld Research Lab (b8=8, b9=5)
+        planets_list: list[PlanetState] = []
+        for idx in range(11):
+            pid = 910 + idx
+            is_home = idx == 0
+            planets_list.append(
+                PlanetState(
+                    planet_id=pid,
+                    name="Homeworld" if is_home else f"Colony {idx}",
+                    coords=f"02:380:{idx + 1:02d}",
+                    planet_type="normal",
+                    temperature=20,
+                    fields_used=60,
+                    fields_max=250,
+                    resources=Resources(pig_iron=80_000, metal=80_000, kryptonite=80_000, spice=80_000)
+                    if is_home
+                    else Resources(pig_iron=20_000, metal=20_000, kryptonite=20_000, spice=20_000),
+                    storage=Resources(500_000, 500_000, 500_000, 500_000),
+                    energy=EnergyBalance(3000, 1000),
+                    buildings={
+                        "b1": 14,
+                        "b2": 8,
+                        "b3": 14,
+                        "b4": 12,
+                        "b5": 16,
+                        "b7": 8,
+                        "b8": 8 if is_home else 0,
+                        "b9": 5 if is_home else 0,
+                    },
+                    ships={"s1": 6, "s10": 10} if is_home else {},
+                    building_offers=(
+                        BuildingOffer(
+                            1,
+                            "Pig iron mine",
+                            14,
+                            15,
+                            Resources(120_000, 0, 40_000, 0),
+                            False,
+                            "Not enough resources",
+                            None,
+                        ),
+                    )
+                    if is_home
+                    else (),
+                    ship_offers=(
+                        UnitOffer("ship", 4, "Small fighter", 0, Resources(3_000, 1_000, 0, 0), True, "ship[4]"),
+                    )
+                    if is_home
+                    else (),
+                )
+            )
+        st = GameState(
+            universe_id=31,
+            user_id=103603,
+            nickname="tester",
+            timestamp=7000.0,
+            planets=tuple(planets_list),
+            active_planet_id=910,
+            researches={"r1": 8, "r2": 7, "r3": 6, "r4": 6, "r5": 4, "r6": 0, "r7": 4, "r8": 0, "r9": 0},
+            research_offers=(
+                ResearchOffer(9, "r9", "Shield technology", 0, 1, Resources(0, 200, 600, 0), True, "", "?r=9"),
+                ResearchOffer(8, "r8", "Weapons technology", 0, 1, Resources(0, 800, 200, 0), True, "", "?r=8"),
+            ),
+            speedup_factor=10.0,
+        )
+        synthetic_plan = {
+            "meta_parameters": {"weeks": 4, "max_planets": 11},
+            "steps": [
+                {
+                    "seq": 1,
+                    "week": 1,
+                    "kind": "BUILD",
+                    "planet_id": 910,
+                    "planet_coords": "02:380:01",
+                    "planet_name": "Homeworld",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 15,
+                    "cost": {"pig_iron": 120_000, "metal": 0, "kryptonite": 40_000, "spice": 0},
+                    "start_sec": 0.0,
+                    "duration_sec": 600.0,
+                    "finish_sec": 600.0,
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            cfg_path = td_path / "config.yaml"
+            cfg_path.write_text(
+                "\n".join(
+                    [
+                        "planner_mode: ai_planner",
+                        "allow_research: true",
+                        "allow_fleet_research: true",
+                        "allow_shipyard: true",
+                        "allow_raids: false",
+                        "allow_galaxy_scan: false",
+                        "allow_fleetsave: false",
+                        "ai_resource_spare_pct: 50.0",
+                        "shipyard_targets:",
+                        "  starcruiser: 6",
+                        "  small-fighter: 10",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            bridge = GameApiBridge(
+                debug_port=19998,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=td_path / "fleet_res.db",
+                log_dir=None,
+                client_factory=lambda _: MagicMock(),
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                bridge._record_state(
+                    st,
+                    fetched_buildings=True,
+                    fetched_research=True,
+                    fetched_shipyard=True,
+                    fetched_home=True,
+                    observed_active_planet=True,
+                )
+                bridge._last_spio_sync_at = time.monotonic()
+                bridge._db.record_ai_planner_run(
+                    synthetic_plan,
+                    params=synthetic_plan["meta_parameters"],
+                    trigger_source="test",
+                    set_active=True,
+                )
+
+                # 1. update_config validates & partial-merges fleet_research_targets + allow_fleet_research
+                upd1 = bridge.handle_command(
+                    {
+                        "command": "update_config",
+                        "config": {"fleet_research_targets": {"weapons-technology": 5, "r9": 4}},
+                    }
+                )
+                self.assertTrue(upd1["ok"])
+                self.assertEqual(upd1["config"]["fleet_research_targets"], {"r8": 5, "r9": 4})
+
+                upd2 = bridge.handle_command(
+                    {
+                        "command": "update_config",
+                        "config": {"fleet_research_targets": {"r9": 0, "r11": 3}},
+                    }
+                )
+                self.assertTrue(upd2["ok"])
+                self.assertEqual(upd2["config"]["fleet_research_targets"], {"r8": 5, "r11": 3})
+
+                # Validation rejections
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "action_graph", "config": {"allow_fleet_research": "yes"}})
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "update_config", "config": {"fleet_research_targets": "r9"}})
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "update_config", "config": {"fleet_research_targets": {"r9": 101}}})
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "update_config", "config": {"fleet_research_targets": {"r9": -1}}})
+
+                # 2. Hybrid AI-Planner `plan` emits P2 Shield technology (r9) executable under spare budget!
+                plan_resp = bridge.handle_command({"command": "plan", "refresh": False})
+                self.assertEqual(plan_resp["effective_planner_mode"], "ai_planner")
+                r9_acts = [a for a in plan_resp["actions"] if a["kind"] == "RESEARCH" and a["target_id"] == 9]
+                self.assertEqual(len(r9_acts), 1)
+                self.assertEqual(r9_acts[0]["priority"], "P2")
+                self.assertTrue(r9_acts[0]["executable_now"])
+
+                # 3. fleet_planner_get honors preview override without mutating saved config
+                fp_preview = bridge.handle_command(
+                    {
+                        "command": "fleet_planner_get",
+                        "config": {"allow_fleet_research": False},
+                    }
+                )
+                self.assertTrue(fp_preview["ok"])
+                self.assertEqual(fp_preview["graph"]["summary"]["planned_research_actions"], 0)
+                self.assertTrue(bridge.strategy_config.allow_fleet_research)
+
+                # With default saved config (allow_fleet_research=True), fleet_planner_get shows r9 + r8 nodes
+                fp_live = bridge.handle_command({"command": "fleet_planner_get"})
+                self.assertTrue(fp_live["ok"])
+                self.assertGreaterEqual(fp_live["graph"]["summary"]["planned_research_actions"], 2)
+
+                # 4. Zero spare budget holds P2 fleet research cleanly
+                bridge.handle_command({"command": "update_config", "config": {"ai_resource_spare_pct": 0.0}})
+                plan_zero = bridge.handle_command({"command": "plan", "refresh": False})
+                r9_zero = next(a for a in plan_zero["actions"] if a["kind"] == "RESEARCH" and a["target_id"] == 9)
+                self.assertFalse(r9_zero["executable_now"])
+                self.assertIn("spare % fleet research budget", r9_zero["reason"])
+
+                # 5. Stale research_offers cache bug fix: _last_research_sync_sig resets when switching planets
+                bridge._last_research_sync_sig = (8, (("r1", 8),), False)
+                st_switched = dc_replace(st, active_planet_id=911, research_offers=())
+                bridge._record_state(st_switched, observed_active_planet=True)
+                self.assertIsNone(bridge._last_research_sync_sig)
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

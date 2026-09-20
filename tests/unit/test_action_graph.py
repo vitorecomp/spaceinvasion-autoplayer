@@ -1199,6 +1199,105 @@ class TestActionGraphEngine(unittest.TestCase):
         self.assertEqual(fg_none["nodes"], [])
         self.assertEqual(fg_none["slot_budgets"], [])
 
+    def test_build_fleet_planner_graph_includes_fleet_research_and_prerequisite_edges(self) -> None:
+        from spaceinvasion.planner.action_graph import build_fleet_planner_graph, merge_strategy_config_overrides
+
+        p1 = PlanetState(
+            planet_id=101,
+            name="HubWorld",
+            coords="01:042:05",
+            planet_type="normal",
+            temperature=25,
+            fields_used=60,
+            fields_max=240,
+            resources=Resources(100_000, 100_000, 100_000, 50_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(1500, 800),
+            buildings={"b8": 8, "b9": 8, "b10": 2},
+            ships={"s4": 10},
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="tester",
+            timestamp=2500.0,
+            planets=(p1,),
+            active_planet_id=101,
+            researches={"r1": 8, "r2": 7, "r3": 7, "r6": 3},
+        )
+        actions = [
+            # Pure economy research -> MUST remain excluded
+            PlannedAction(
+                priority="P2",
+                kind="RESEARCH",
+                planet_id=101,
+                planet_coords="01:042:05",
+                target_id=1,
+                target_name="Mining technology",
+                target_level=9,
+                reason="Economy boost",
+            ),
+            # Fleet research prereq chain: r3 (Engine) -> r6 (Warp) -> BUILD_SHIP Battleship (s13)
+            PlannedAction(
+                priority="P2",
+                kind="RESEARCH",
+                planet_id=101,
+                planet_coords="01:042:05",
+                target_id=3,
+                target_name="Engine research",
+                target_level=8,
+                reason="Fleet research (spare budget): Engine research L8/8 — unlocks Battleship",
+                executable_now=True,
+            ),
+            PlannedAction(
+                priority="P2",
+                kind="RESEARCH",
+                planet_id=101,
+                planet_coords="01:042:05",
+                target_id=6,
+                target_name="Warp engine",
+                target_level=4,
+                reason="Fleet research (spare budget): Warp engine L4/4 — unlocks Battleship",
+                executable_now=False,
+            ),
+            PlannedAction(
+                priority="P2",
+                kind="BUILD_SHIP",
+                planet_id=101,
+                planet_coords="01:042:05",
+                target_id=13,
+                target_name="Battleship",
+                target_level=1,
+                reason="Fleet build target (0/8 Battleship)",
+                executable_now=False,
+            ),
+        ]
+        fg = build_fleet_planner_graph(st, actions, StrategyConfig())
+        self._assert_generic_strict_dag(fg)
+
+        res_nodes = [n for n in fg["nodes"] if n["kind"] == "RESEARCH"]
+        self.assertEqual([n["target_id"] for n in res_nodes], [3, 6])
+        self.assertTrue(all(n["lane_id"] == "lane:global" for n in res_nodes))
+        self.assertEqual(fg["summary"]["planned_research_actions"], 2)
+
+        r3_node = next(n for n in res_nodes if n["target_id"] == 3)
+        r6_node = next(n for n in res_nodes if n["target_id"] == 6)
+        bs_node = next(n for n in fg["nodes"] if n["kind"] == "BUILD_SHIP" and n["target_id"] == 13)
+        edge_map = {(e["source"], e["target"]): e for e in fg["edges"]}
+        self.assertIn("prerequisite", edge_map[(r3_node["id"], r6_node["id"])]["types"])
+        self.assertIn("prerequisite", edge_map[(r6_node["id"], bs_node["id"])]["types"])
+
+        # Partial merge of fleet_research_targets + allow_fleet_research override
+        base_cfg = StrategyConfig(allow_fleet_research=True, fleet_research_targets={"r8": 4, "r9": 5})
+        merged_cfg, diff = merge_strategy_config_overrides(
+            base_cfg,
+            {"allow_fleet_research": False, "fleet_research_targets": {"r9": 0, "r11": 6}},
+        )
+        self.assertFalse(merged_cfg.allow_fleet_research)
+        self.assertEqual(merged_cfg.fleet_research_targets, {"r8": 4, "r11": 6})
+        self.assertIn("allow_fleet_research", diff)
+        self.assertIn("fleet_research_targets", diff)
+
 
 if __name__ == "__main__":
     unittest.main()

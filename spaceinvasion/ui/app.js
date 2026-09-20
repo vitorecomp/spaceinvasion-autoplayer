@@ -14295,6 +14295,15 @@
           defaultValue: true
         },
         {
+          key: "allow_fleet_research",
+          id: "cfg-allow_fleet_research",
+          title: "Fleet & Ship Unlock Research (Spare Budget)",
+          boundsLabel: "default: true · boolean",
+          description: "Spends Fleet Planner soft spare resources (ai_resource_spare_pct, after reserving the next waiting P1 AI-Planner step) on P2 RESEARCH upgrades to auto-unlock recursive prerequisites for configured shipyard_targets hulls and reach fleet_research_targets levels (r3–r15). Holds the Research lab whenever AI-Planner has a ready or next-waiting P1 research step; requires allow_research enabled.",
+          control: "checkbox",
+          defaultValue: true
+        },
+        {
           key: "allow_shipyard",
           id: "cfg-allow_shipyard",
           title: "Autonomous Shipyard Construction",
@@ -14660,7 +14669,7 @@
       title: "AI Spare Resource Budget (%)",
       paramKey: "ai_resource_spare_pct",
       boundsLabel: "default: 10% · 0–90%",
-      description: "Soft-reserve percentage of rolling hourly empire income set aside for autonomous shipyard hull production while AI-Planner guides buildings and research. Urgent 0-count replacements for Spy probes (s10) and transports (s1/s2) remain exempt so scouting and hauling never stall. Accepts floats from 0 to 90%."
+      description: "Soft-reserve percentage of rolling hourly empire income set aside for Fleet Planner ship-unlock/combat research and autonomous shipyard hull production while AI-Planner guides buildings and economy research. Urgent 0-count replacements for Spy probes (s10) and transports (s1/s2) remain exempt so scouting and hauling never stall. Accepts floats from 0 to 90%."
     }
   };
   function getStrategyParamDoc(key) {
@@ -15008,7 +15017,8 @@
     combat: "Zero-rapidfire 1:1 combat simulator gates, inactive/Spacia/PvP raid authorization, P0 Escape flight protection, and rolling spare-income shipyard budget (synced with Config).",
     logistics: "Free-slot 300+-field colonization caps, inter-planet resource transport, and daily free Interdimensional Transmitter automation (synced with Config).",
     scanner: "Smart 2-phase Galaxy scanner (contiguous arrow-first exploration when distance < 5, then proximity + attack-history weighted refresh), click cadence, and reserved spy slots (synced with Config).",
-    shipyard: "Per-hull empire shipyard quotas constructed at Weapons factory (b9) whenever allow_shipyard is enabled and soft spare-income budget permits (synced with Config)."
+    shipyard: "Per-hull empire shipyard quotas constructed at Weapons factory (b9) whenever allow_shipyard is enabled and soft spare-income budget permits (synced with Config).",
+    fleetResearch: "Spends the same soft spare-income budget (ahead of non-urgent ship builds) to auto-unlock missing research prerequisites for any configured shipyard_targets > 0 and level explicit combat, drive, and stealth techs (r3–r15) whenever the global Research lab is free of P1 AI-Planner research."
   };
   const SHIP_HULL_ROLE_DESC = {
     "small-transport": "Fast early-game cargo hull (s1) for small inactive raids, rapid colony bootstrapping, and urgent 0-count logistics replacements.",
@@ -15035,6 +15045,84 @@
       paramKey: `shipyard_targets.${slug}`,
       boundsLabel: "default: 0 · 0–9,999,999 hulls",
       description: SHIP_HULL_ROLE_DESC[slug] || `Target stationed hull count for ${keyTag} maintained automatically by Weapons factory (b9) when allow_shipyard is active.`
+    };
+  }
+  const FLEET_RESEARCH_OPTIONS = [
+    {
+      key: "r3",
+      name: "Engine research",
+      desc: "Core propulsion prerequisite unlocking Rocket engine (r4 at L2), Diffusion engine (r5 at L6), and Warp engine (r6 at L8). Requires Research lab b8 L1."
+    },
+    {
+      key: "r4",
+      name: "Rocket engine",
+      desc: "Boosts early ship speed and unlocks Small fighter (L1), Spy probe (L3), Small transport & Warship (L4), Large transport (L6), and Colony ship (L8). Requires r3 L2."
+    },
+    {
+      key: "r5",
+      name: "Diffusion engine",
+      desc: "Mid-tier drive boosting cruiser/hauler speed and unlocking Recycler (L4), Starcruiser (L5), and Phoenix & Transmitter (L8). Requires r3 L6."
+    },
+    {
+      key: "r6",
+      name: "Warp engine",
+      desc: "Capital-ship FTL drive unlocking Battleship (L4), Stealth bomber (L6), Destroyer (L8), and Black hole research (L10). Requires r3 L8 and b8 L8."
+    },
+    {
+      key: "r7",
+      name: "Spy technology",
+      desc: "Improves espionage probe report depth & counter-espionage defense, and unlocks Spy probe (L2) and Stealth bomber (L8). Requires b8 L3."
+    },
+    {
+      key: "r8",
+      name: "Weapons technology",
+      desc: "Increases attack firepower of all combat hulls and defenses, and unlocks Warship (L2). Requires b8 L3."
+    },
+    {
+      key: "r9",
+      name: "Shield technology",
+      desc: "Strengthens fleet & defense shields, and unlocks Starcruiser (L4) and Particle analyzer (L5). Requires b8 L4 and Energy technology r2 L4."
+    },
+    {
+      key: "r10",
+      name: "Defense systems",
+      desc: "Reinforces hull durability & planetary defenses, and unlocks Phoenix (L5). Requires b8 L5."
+    },
+    {
+      key: "r11",
+      name: "Targeting systems",
+      desc: "Improves fleet weapon targeting effectiveness in combat simulations. Requires b8 L5 and Energy technology r2 L6."
+    },
+    {
+      key: "r12",
+      name: "Particle analyzer",
+      desc: "Advanced combat & shield efficiency research. Requires b8 L6 and Shield technology r9 L5."
+    },
+    {
+      key: "r13",
+      name: "Graviton technology",
+      desc: "High-tier energy-physics prerequisite required at L10 for Black hole research (r15). Requires b8 L2 and Energy technology r2 L2."
+    },
+    {
+      key: "r14",
+      name: "Teleportation",
+      desc: "Unlocks Teleporter (b18) for instant inter-colony fleet jumps. Requires Research lab b8 L10."
+    },
+    {
+      key: "r15",
+      name: "Black hole research",
+      desc: "End-game research unlocking Imperial starbase (s16 at L2). Requires Warp engine r6 L10 and Graviton technology r13 L10."
+    }
+  ];
+  function getFleetResearchDoc(rKey, currentLevel) {
+    const meta = FLEET_RESEARCH_OPTIONS.find((r) => r.key === rKey);
+    const title = meta ? `${meta.name} (${meta.key})` : rKey;
+    const curPrefix = typeof currentLevel === "number" && Number.isFinite(currentLevel) ? `Current L${Math.max(0, Math.round(currentLevel))} · ` : "";
+    return {
+      title,
+      paramKey: `fleet_research_targets.${rKey}`,
+      boundsLabel: `${curPrefix}0 = auto-unlock only · 0–100 lvl`,
+      description: (meta == null ? void 0 : meta.desc) || `Target research level for ${title} funded automatically by Fleet Planner spare resources when allow_fleet_research is enabled.`
     };
   }
   function draftFromAiParams(raw) {
@@ -17940,7 +18028,8 @@
     { key: "allow_galaxy_scan", def: false },
     { key: "galaxy_scan_explore_first", def: true },
     { key: "galaxy_scan_all_galaxies", def: true },
-    { key: "allow_shipyard", def: true }
+    { key: "allow_shipyard", def: true },
+    { key: "allow_fleet_research", def: true }
   ];
   const FLEET_NUM_DEFAULTS = {
     combat_safety_margin: 1.4,
@@ -17981,7 +18070,14 @@
         shipyard_targets[slug] = String(Math.max(0, Math.round(safeFiniteNumber(val, 0) ?? 0)));
       }
     }
-    return { booleans, numbers, shipyard_targets };
+    const rawFrTargets = (cfg == null ? void 0 : cfg.fleet_research_targets) && typeof cfg.fleet_research_targets === "object" ? cfg.fleet_research_targets : {};
+    const fleet_research_targets = {};
+    for (const opt of FLEET_RESEARCH_OPTIONS) {
+      fleet_research_targets[opt.key] = String(
+        Math.max(0, Math.min(100, Math.round(safeFiniteNumber(rawFrTargets[opt.key], 0) ?? 0)))
+      );
+    }
+    return { booleans, numbers, shipyard_targets, fleet_research_targets };
   }
   function buildConfigPatchFromDraft(draft) {
     const num = (key, min = 0, max = Number.MAX_SAFE_INTEGER) => {
@@ -17993,6 +18089,10 @@
     const shipyardTargets = {};
     for (const [slug, val] of Object.entries(draft.shipyard_targets)) {
       shipyardTargets[slug] = Math.max(0, Math.round(safeFiniteNumber(val, 0) ?? 0));
+    }
+    const fleetResearchTargets = {};
+    for (const [rk, val] of Object.entries(draft.fleet_research_targets)) {
+      fleetResearchTargets[rk] = Math.max(0, Math.min(100, Math.round(safeFiniteNumber(val, 0) ?? 0)));
     }
     return {
       allow_raids: Boolean(draft.booleans.allow_raids),
@@ -18020,7 +18120,9 @@
       reserved_spy_slots: intNum("reserved_spy_slots", 0, 20),
       spy_dispatch_planet_id: intNum("spy_dispatch_planet_id", 0),
       allow_shipyard: Boolean(draft.booleans.allow_shipyard),
-      shipyard_targets: shipyardTargets
+      allow_fleet_research: Boolean(draft.booleans.allow_fleet_research),
+      shipyard_targets: shipyardTargets,
+      fleet_research_targets: fleetResearchTargets
     };
   }
   function summarizeDockedShips(ships) {
@@ -18042,6 +18144,16 @@
   function isFleetActionKind(kindRaw) {
     const kind = String(kindRaw || "").toUpperCase();
     return kind === "ATTACK" || kind === "RAID" || kind === "RECYCLE" || kind === "SPY" || kind === "GALAXY_SCAN" || kind === "COLONIZE" || kind === "TRANSPORT" || kind === "STATION" || kind === "FLEET_SAVE" || kind === "BUILD_SHIP" || kind === "SHIPS" || kind === "TRANSMITTER";
+  }
+  function isFleetPlanAction(act) {
+    const kind = String((act == null ? void 0 : act.kind) || "").toUpperCase();
+    if (isFleetActionKind(kind)) return true;
+    if (kind === "RESEARCH") {
+      const tid = safeFiniteNumber(act == null ? void 0 : act.target_id, 0) ?? 0;
+      const reason = String((act == null ? void 0 : act.reason) || "").toLowerCase();
+      return tid >= 3 || reason.includes("fleet research");
+    }
+    return false;
   }
   function buildClientFallbackFleetGraph(planets, activeQueues, plan, slotRows) {
     var _a, _b;
@@ -18087,14 +18199,15 @@
       layerIdx = 1;
     }
     for (const act of plan) {
-      if (!isFleetActionKind(act.kind)) continue;
+      if (!isFleetPlanAction(act)) continue;
+      const isRes = String(act.kind || "").toUpperCase() === "RESEARCH";
       const pid = Math.round(safeFiniteNumber(act.planet_id, ((_b = planets[0]) == null ? void 0 : _b.planet_id) ?? 0) ?? 0);
       const id = `flt_plan_${nodes.length}`;
       nodes.push({
         id,
         order_index: nodes.length,
         topological_layer: layerIdx,
-        lane_id: pid > 0 ? `lane:planet:${pid}` : "lane:global",
+        lane_id: isRes || pid <= 0 ? "lane:global" : `lane:planet:${pid}`,
         planet_id: pid,
         planet_coords: String(act.planet_coords || ""),
         kind: String(act.kind || "FLEET"),
@@ -18132,7 +18245,7 @@
     };
   }
   const FleetPlannerTab = ({ hidden = false }) => {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g;
     const {
       dashboard,
       setDashboard,
@@ -18385,6 +18498,15 @@
       setDraftDirty(true);
       setConfigDirty(true);
     };
+    const handleFleetResearchTargetChange = (rKey, value) => {
+      setDraft((prev) => ({
+        ...prev,
+        fleet_research_targets: { ...prev.fleet_research_targets, [rKey]: value }
+      }));
+      setDraftDirty(true);
+      setConfigDirty(true);
+    };
+    const liveResearches = ((_g = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _g.researches) && typeof dashboard.state.researches === "object" ? dashboard.state.researches : {};
     const handleSimulate = async () => {
       if (isSimulating) return;
       setIsSimulating(true);
@@ -18497,12 +18619,12 @@
             /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-kpi-sub tabular", children: [
               "Raids: ",
               draft.booleans.allow_raids ? "ON" : "OFF",
-              " · Scan:",
-              " ",
-              draft.booleans.allow_galaxy_scan ? "ON" : "OFF",
               " · Shipyard:",
               " ",
-              draft.booleans.allow_shipyard ? "ON" : "OFF"
+              draft.booleans.allow_shipyard ? "ON" : "OFF",
+              " · Tech:",
+              " ",
+              draft.booleans.allow_fleet_research ? "ON" : "OFF"
             ] })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
@@ -18701,7 +18823,7 @@
               className: `tab-btn${paramGroupTab === "shipyard" ? " active" : ""}`,
               "data-flt-ptab": "shipyard",
               onClick: () => setParamGroupTab("shipyard"),
-              children: "Shipyard"
+              children: "Shipyard & Tech"
             }
           )
         ] }),
@@ -19092,53 +19214,105 @@
               )
             ] })
           ] }) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-param-pane", hidden: paramGroupTab !== "shipyard", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Shipyard Targets per Hull" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: FLEET_PLANNER_GROUP_SUBTITLES.shipyard })
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", hidden: paramGroupTab !== "shipyard", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Fleet & Ship Research (Spare Budget)" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: FLEET_PLANNER_GROUP_SUBTITLES.fleetResearch })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  ActionGraphParamRow,
+                  {
+                    doc: getStrategyParamDoc("allow_fleet_research"),
+                    htmlFor: "flt-cfg-allow_fleet_research",
+                    layout: "toggle",
+                    children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        id: "flt-cfg-allow_fleet_research",
+                        type: "checkbox",
+                        className: "config-checkbox",
+                        checked: Boolean(draft.booleans.allow_fleet_research),
+                        onChange: (e) => handleBoolChange("allow_fleet_research", e.target.checked)
+                      }
+                    )
+                  }
+                ),
+                FLEET_RESEARCH_OPTIONS.map((opt) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  ActionGraphParamRow,
+                  {
+                    doc: getFleetResearchDoc(
+                      opt.key,
+                      safeFiniteNumber(liveResearches[opt.key], null)
+                    ),
+                    htmlFor: `flt-research-${opt.key}`,
+                    layout: "inline",
+                    children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        id: `flt-research-${opt.key}`,
+                        type: "number",
+                        min: 0,
+                        max: 100,
+                        step: 1,
+                        value: draft.fleet_research_targets[opt.key] ?? "0",
+                        onChange: (e) => handleFleetResearchTargetChange(opt.key, e.target.value)
+                      }
+                    )
+                  },
+                  `flt-res-${opt.key}`
+                ))
+              ] })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                ActionGraphParamRow,
-                {
-                  doc: getStrategyParamDoc("allow_shipyard"),
-                  htmlFor: "flt-cfg-allow_shipyard",
-                  layout: "toggle",
-                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "input",
-                    {
-                      id: "flt-cfg-allow_shipyard",
-                      type: "checkbox",
-                      className: "config-checkbox",
-                      checked: Boolean(draft.booleans.allow_shipyard),
-                      onChange: (e) => handleBoolChange("allow_shipyard", e.target.checked)
-                    }
-                  )
-                }
-              ),
-              Object.keys(draft.shipyard_targets).map((slug) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-                ActionGraphParamRow,
-                {
-                  doc: getShipyardHullDoc(slug),
-                  htmlFor: `flt-shipyard-${slug}`,
-                  layout: "inline",
-                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "input",
-                    {
-                      id: `flt-shipyard-${slug}`,
-                      type: "number",
-                      min: 0,
-                      max: 9999999,
-                      step: 1,
-                      value: draft.shipyard_targets[slug] ?? "0",
-                      onChange: (e) => handleShipyardTargetChange(slug, e.target.value)
-                    }
-                  )
-                },
-                `flt-ship-${slug}`
-              ))
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Shipyard Targets per Hull" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: FLEET_PLANNER_GROUP_SUBTITLES.shipyard })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  ActionGraphParamRow,
+                  {
+                    doc: getStrategyParamDoc("allow_shipyard"),
+                    htmlFor: "flt-cfg-allow_shipyard",
+                    layout: "toggle",
+                    children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        id: "flt-cfg-allow_shipyard",
+                        type: "checkbox",
+                        className: "config-checkbox",
+                        checked: Boolean(draft.booleans.allow_shipyard),
+                        onChange: (e) => handleBoolChange("allow_shipyard", e.target.checked)
+                      }
+                    )
+                  }
+                ),
+                Object.keys(draft.shipyard_targets).map((slug) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  ActionGraphParamRow,
+                  {
+                    doc: getShipyardHullDoc(slug),
+                    htmlFor: `flt-shipyard-${slug}`,
+                    layout: "inline",
+                    children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        id: `flt-shipyard-${slug}`,
+                        type: "number",
+                        min: 0,
+                        max: 9999999,
+                        step: 1,
+                        value: draft.shipyard_targets[slug] ?? "0",
+                        onChange: (e) => handleShipyardTargetChange(slug, e.target.value)
+                      }
+                    )
+                  },
+                  `flt-ship-${slug}`
+                ))
+              ] })
             ] })
-          ] }) })
+          ] })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-panel-footer", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-sim-note", id: "flt-status-text", children: statusMessage }),

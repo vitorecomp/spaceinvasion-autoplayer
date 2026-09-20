@@ -16,6 +16,8 @@ import { ActionGraphParamRow } from "./ActionGraphParamRow";
 import { DagCanvas } from "./DagCanvas";
 import {
   FLEET_PLANNER_GROUP_SUBTITLES,
+  FLEET_RESEARCH_OPTIONS,
+  getFleetResearchDoc,
   getShipyardHullDoc,
   getStrategyParamDoc,
 } from "./paramDocs";
@@ -55,6 +57,7 @@ const FLEET_BOOL_FIELDS: ReadonlyArray<{
   { key: "galaxy_scan_explore_first", def: true },
   { key: "galaxy_scan_all_galaxies", def: true },
   { key: "allow_shipyard", def: true },
+  { key: "allow_fleet_research", def: true },
 ];
 
 const FLEET_NUM_DEFAULTS: Record<string, number> = {
@@ -79,6 +82,7 @@ interface FleetDraftState {
   booleans: Record<string, boolean>;
   numbers: Record<string, string>;
   shipyard_targets: Record<string, string>;
+  fleet_research_targets: Record<string, string>;
 }
 
 function buildFleetDraftFromConfig(cfg: StrategyConfigData | null | undefined): FleetDraftState {
@@ -109,7 +113,18 @@ function buildFleetDraftFromConfig(cfg: StrategyConfigData | null | undefined): 
     }
   }
 
-  return { booleans, numbers, shipyard_targets };
+  const rawFrTargets =
+    cfg?.fleet_research_targets && typeof cfg.fleet_research_targets === "object"
+      ? cfg.fleet_research_targets
+      : {};
+  const fleet_research_targets: Record<string, string> = {};
+  for (const opt of FLEET_RESEARCH_OPTIONS) {
+    fleet_research_targets[opt.key] = String(
+      Math.max(0, Math.min(100, Math.round(safeFiniteNumber(rawFrTargets[opt.key], 0) ?? 0)))
+    );
+  }
+
+  return { booleans, numbers, shipyard_targets, fleet_research_targets };
 }
 
 function buildConfigPatchFromDraft(draft: FleetDraftState): Record<string, any> {
@@ -124,6 +139,11 @@ function buildConfigPatchFromDraft(draft: FleetDraftState): Record<string, any> 
   const shipyardTargets: Record<string, number> = {};
   for (const [slug, val] of Object.entries(draft.shipyard_targets)) {
     shipyardTargets[slug] = Math.max(0, Math.round(safeFiniteNumber(val, 0) ?? 0));
+  }
+
+  const fleetResearchTargets: Record<string, number> = {};
+  for (const [rk, val] of Object.entries(draft.fleet_research_targets)) {
+    fleetResearchTargets[rk] = Math.max(0, Math.min(100, Math.round(safeFiniteNumber(val, 0) ?? 0)));
   }
 
   return {
@@ -152,7 +172,9 @@ function buildConfigPatchFromDraft(draft: FleetDraftState): Record<string, any> 
     reserved_spy_slots: intNum("reserved_spy_slots", 0, 20),
     spy_dispatch_planet_id: intNum("spy_dispatch_planet_id", 0),
     allow_shipyard: Boolean(draft.booleans.allow_shipyard),
+    allow_fleet_research: Boolean(draft.booleans.allow_fleet_research),
     shipyard_targets: shipyardTargets,
+    fleet_research_targets: fleetResearchTargets,
   };
 }
 
@@ -214,6 +236,17 @@ function isFleetActionKind(kindRaw: unknown): boolean {
   );
 }
 
+function isFleetPlanAction(act: PlannedActionData): boolean {
+  const kind = String(act?.kind || "").toUpperCase();
+  if (isFleetActionKind(kind)) return true;
+  if (kind === "RESEARCH") {
+    const tid = safeFiniteNumber(act?.target_id, 0) ?? 0;
+    const reason = String(act?.reason || "").toLowerCase();
+    return tid >= 3 || reason.includes("fleet research");
+  }
+  return false;
+}
+
 function buildClientFallbackFleetGraph(
   planets: PlanetData[],
   activeQueues: QueueJobData[],
@@ -268,14 +301,15 @@ function buildClientFallbackFleetGraph(
   }
 
   for (const act of plan) {
-    if (!isFleetActionKind(act.kind)) continue;
+    if (!isFleetPlanAction(act)) continue;
+    const isRes = String(act.kind || "").toUpperCase() === "RESEARCH";
     const pid = Math.round(safeFiniteNumber(act.planet_id, planets[0]?.planet_id ?? 0) ?? 0);
     const id = `flt_plan_${nodes.length}`;
     nodes.push({
       id,
       order_index: nodes.length,
       topological_layer: layerIdx,
-      lane_id: pid > 0 ? `lane:planet:${pid}` : "lane:global",
+      lane_id: isRes || pid <= 0 ? "lane:global" : `lane:planet:${pid}`,
       planet_id: pid,
       planet_coords: String(act.planet_coords || ""),
       kind: String(act.kind || "FLEET"),
@@ -628,6 +662,20 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
     setConfigDirty(true);
   };
 
+  const handleFleetResearchTargetChange = (rKey: string, value: string) => {
+    setDraft((prev) => ({
+      ...prev,
+      fleet_research_targets: { ...prev.fleet_research_targets, [rKey]: value },
+    }));
+    setDraftDirty(true);
+    setConfigDirty(true);
+  };
+
+  const liveResearches: Record<string, number> =
+    dashboard?.state?.researches && typeof dashboard.state.researches === "object"
+      ? (dashboard.state.researches as Record<string, number>)
+      : {};
+
   const handleSimulate = async () => {
     if (isSimulating) return;
     setIsSimulating(true);
@@ -740,9 +788,9 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
               {fmtInt(activeMissionsCount)}
             </strong>
             <span className="ag-kpi-sub tabular">
-              Raids: {draft.booleans.allow_raids ? "ON" : "OFF"} · Scan:{" "}
-              {draft.booleans.allow_galaxy_scan ? "ON" : "OFF"} · Shipyard:{" "}
-              {draft.booleans.allow_shipyard ? "ON" : "OFF"}
+              Raids: {draft.booleans.allow_raids ? "ON" : "OFF"} · Shipyard:{" "}
+              {draft.booleans.allow_shipyard ? "ON" : "OFF"} · Tech:{" "}
+              {draft.booleans.allow_fleet_research ? "ON" : "OFF"}
             </span>
           </div>
           <div className="ag-kpi-cell">
@@ -926,7 +974,7 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
             data-flt-ptab="shipyard"
             onClick={() => setParamGroupTab("shipyard")}
           >
-            Shipyard
+            Shipyard &amp; Tech
           </button>
         </div>
 
@@ -1268,6 +1316,50 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
           </div>
 
           <div className="ag-param-pane" hidden={paramGroupTab !== "shipyard"}>
+            <div className="ag-param-group">
+              <div className="ag-param-group-head">
+                <h3>Fleet &amp; Ship Research (Spare Budget)</h3>
+                <p className="ag-param-group-sub">{FLEET_PLANNER_GROUP_SUBTITLES.fleetResearch}</p>
+              </div>
+              <div className="ag-param-list">
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("allow_fleet_research")}
+                  htmlFor="flt-cfg-allow_fleet_research"
+                  layout="toggle"
+                >
+                  <input
+                    id="flt-cfg-allow_fleet_research"
+                    type="checkbox"
+                    className="config-checkbox"
+                    checked={Boolean(draft.booleans.allow_fleet_research)}
+                    onChange={(e) => handleBoolChange("allow_fleet_research", e.target.checked)}
+                  />
+                </ActionGraphParamRow>
+
+                {FLEET_RESEARCH_OPTIONS.map((opt) => (
+                  <ActionGraphParamRow
+                    key={`flt-res-${opt.key}`}
+                    doc={getFleetResearchDoc(
+                      opt.key,
+                      safeFiniteNumber(liveResearches[opt.key], null)
+                    )}
+                    htmlFor={`flt-research-${opt.key}`}
+                    layout="inline"
+                  >
+                    <input
+                      id={`flt-research-${opt.key}`}
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={draft.fleet_research_targets[opt.key] ?? "0"}
+                      onChange={(e) => handleFleetResearchTargetChange(opt.key, e.target.value)}
+                    />
+                  </ActionGraphParamRow>
+                ))}
+              </div>
+            </div>
+
             <div className="ag-param-group">
               <div className="ag-param-group-head">
                 <h3>Shipyard Targets per Hull</h3>

@@ -158,6 +158,11 @@ def _serialize_config(
         _clean_str(k): max(0, _clean_int(v, 0))
         for k, v in (norm_cfg.shipyard_targets or {}).items()
     }
+    raw["fleet_research_targets"] = {
+        _clean_str(k): max(0, min(100, _clean_int(v, 0)))
+        for k, v in (getattr(norm_cfg, "fleet_research_targets", None) or {}).items()
+        if _clean_int(v, 0) > 0
+    }
     return game_data.sanitize_json_tree(raw, nonfinite_float=0.0) if sanitize else raw
 
 
@@ -170,7 +175,7 @@ def _diff_strategy_configs(active: StrategyConfig, effective: StrategyConfig) ->
         if fname == "planner_mode":
             if normalize_planner_mode(a_val) != normalize_planner_mode(e_val):
                 changed.append(fname)
-        elif fname == "shipyard_targets":
+        elif fname in ("shipyard_targets", "fleet_research_targets"):
             a_map = {str(k): int(v) for k, v in (a_val or {}).items()}
             e_map = {str(k): int(v) for k, v in (e_val or {}).items()}
             if a_map != e_map:
@@ -202,12 +207,18 @@ def merge_strategy_config_overrides(
     base_cfg = base if isinstance(base, StrategyConfig) else StrategyConfig()
     merged: dict[str, Any] = asdict(base_cfg)
     merged["shipyard_targets"] = dict(base_cfg.shipyard_targets or {})
+    merged["fleet_research_targets"] = dict(getattr(base_cfg, "fleet_research_targets", None) or {})
 
     if isinstance(overrides, Mapping):
         for k, v in overrides.items():
             if k == "shipyard_targets" and isinstance(v, Mapping):
                 merged["shipyard_targets"] = {
                     **dict(base_cfg.shipyard_targets or {}),
+                    **dict(v),
+                }
+            elif k == "fleet_research_targets" and isinstance(v, Mapping):
+                merged["fleet_research_targets"] = {
+                    **dict(getattr(base_cfg, "fleet_research_targets", None) or {}),
                     **dict(v),
                 }
             else:
@@ -1318,6 +1329,7 @@ def build_action_graph(
         eff_cfg_dict = {
             **act_cfg_dict,
             "shipyard_targets": dict(act_cfg_dict["shipyard_targets"]),
+            "fleet_research_targets": dict(act_cfg_dict.get("fleet_research_targets") or {}),
         }
     else:
         assert norm_act is not None and norm_eff is not None
@@ -1391,6 +1403,67 @@ _FLEET_DISPATCH_KINDS: frozenset[str] = frozenset(
         "COLONIZE",
     }
 )
+
+
+def _is_fleet_planner_action(act: Any) -> bool:
+    """Include tactical/shipyard actions plus fleet/ship-unlock `RESEARCH` actions (excluding pure economy `r1`/`r2`)."""
+    kind = _clean_str(getattr(act, "kind", "")).strip().upper()
+    if kind in _FLEET_PLANNER_KINDS:
+        return True
+    if kind == "RESEARCH":
+        rkey = _resolve_research_key(
+            getattr(act, "target_id", None),
+            _clean_str(getattr(act, "target_name", "")),
+        )
+        reason_l = _clean_str(getattr(act, "reason", "")).lower()
+        if "fleet research" in reason_l:
+            return True
+        if rkey is not None and rkey not in ("r1", "r2"):
+            return True
+    return False
+
+
+def _research_direct_deps(rkey: Optional[str]) -> set[str]:
+    if not rkey or rkey not in game_data.RESEARCH_BY_ID:
+        return set()
+    deps: set[str] = set()
+    for req in game_data.RESEARCH_BY_ID[rkey].get("requirements") or ():
+        if not isinstance(req, Mapping):
+            continue
+        if str(req.get("category") or "").strip().lower() != "research":
+            continue
+        r_info = game_data.resolve_unit("research", str(req.get("slug") or req.get("name") or ""))
+        dep_id = str(r_info.get("id") or "") if isinstance(r_info, Mapping) else ""
+        if dep_id in game_data.RESEARCH_BY_ID:
+            deps.add(dep_id)
+    return deps
+
+
+def _ship_all_research_deps(ship_slug: Optional[str]) -> set[str]:
+    if not ship_slug:
+        return set()
+    ship_info = game_data.SHIPS.get(ship_slug) or game_data.resolve_unit("ships", ship_slug)
+    if not isinstance(ship_info, Mapping):
+        return set()
+    deps: set[str] = set()
+    stack: list[str] = []
+    for req in ship_info.get("requirements") or ():
+        if not isinstance(req, Mapping):
+            continue
+        if str(req.get("category") or "").strip().lower() != "research":
+            continue
+        r_info = game_data.resolve_unit("research", str(req.get("slug") or req.get("name") or ""))
+        r_id = str(r_info.get("id") or "") if isinstance(r_info, Mapping) else ""
+        if r_id in game_data.RESEARCH_BY_ID and r_id not in deps:
+            deps.add(r_id)
+            stack.append(r_id)
+    while stack:
+        cur = stack.pop()
+        for dep_id in _research_direct_deps(cur):
+            if dep_id not in deps:
+                deps.add(dep_id)
+                stack.append(dep_id)
+    return deps
 
 
 def _extract_first_coords(text: str) -> str:
@@ -2244,11 +2317,11 @@ def build_fleet_planner_graph(
         inflight_by_pid[pid].sort(key=_rem_key)
     inflight_unassigned.sort(key=_rem_key)
 
-    # 2. Filter planned_actions to fleet/attack/shipyard/transmitter kinds and enrich ETAs if needed
+    # 2. Filter planned_actions to fleet/attack/shipyard/fleet-research/transmitter kinds and enrich ETAs if needed
     fleet_actions: list[PlannedAction] = [
         a
         for a in (planned_actions or ())
-        if _clean_str(getattr(a, "kind", "")).strip().upper() in _FLEET_PLANNER_KINDS
+        if _is_fleet_planner_action(a)
     ]
     if state is not None and fleet_actions:
         needs_eta = any(
@@ -2398,12 +2471,17 @@ def build_fleet_planner_graph(
 
         cost_d = _res_to_dict(getattr(act, "cost", None))
         missing_d = _res_to_dict(getattr(act, "missing", None))
-        sid, _ship_slug = (
+        sid, ship_slug = (
             _resolve_ship_id_and_slug(raw_tid, t_name)
             if kind in ("BUILD_SHIP", "SPY", "RECYCLE", "COLONIZE")
             else (None, None)
         )
-        lane_id = "lane:global" if (kind == "ACTIVATE_TRANSMITTER" or pid <= 0) else f"lane:planet:{pid}"
+        rkey = _resolve_research_key(raw_tid, t_name) if kind == "RESEARCH" else None
+        lane_id = (
+            "lane:global"
+            if (kind in ("ACTIVATE_TRANSMITTER", "RESEARCH") or pid <= 0)
+            else f"lane:planet:{pid}"
+        )
         lane_counts[lane_id] = lane_counts.get(lane_id, 0) + 1
 
         category = _classify_node_category(kind, None, sid)
@@ -2451,6 +2529,8 @@ def build_fleet_planner_graph(
                 "total_eta": tot_eta,
                 "eta_bottleneck": bottleneck,
                 "sid": sid,
+                "ship_slug": ship_slug,
+                "rkey": rkey,
                 "slot_key": _slot_key_for_action(kind, pid),
                 "sys_key": _extract_system_key(t_name) or _extract_system_key(reason),
                 "target_coords": _extract_first_coords(t_name) or _extract_first_coords(reason),
@@ -2554,6 +2634,22 @@ def build_fleet_planner_graph(
             u_pid = u["planet_id"]
             u_sid = u["sid"]
 
+            if u_kind == "RESEARCH" and u.get("rkey"):
+                if v_kind == "RESEARCH" and v.get("rkey") and u["rkey"] in _research_direct_deps(v["rkey"]):
+                    _add_fl_edge(
+                        u_pos,
+                        v_pos,
+                        "prerequisite",
+                        f"Prerequisite {u['target_name']} for {v['target_name']}",
+                    )
+                elif v_kind == "BUILD_SHIP" and v.get("ship_slug") and u["rkey"] in _ship_all_research_deps(v["ship_slug"]):
+                    _add_fl_edge(
+                        u_pos,
+                        v_pos,
+                        "prerequisite",
+                        f"Unlocks {v['target_name']} ({u['target_name']})",
+                    )
+
             if u_kind == "BUILD_SHIP" and u_pid in (0, v_pid):
                 if u_sid == 10 and v_kind == "SPY":
                     _add_fl_edge(u_pos, v_pos, "prerequisite", "Builds Spy probe (s10) for espionage")
@@ -2596,9 +2692,13 @@ def build_fleet_planner_graph(
             prev_idx = last_by_slot.get(skey)
             if prev_idx is not None and prev_idx < cur_idx:
                 q_lbl = (
-                    f"Weapons factory queue ({m['planet_coords'] or m['planet_name']})"
-                    if skey.endswith(":shipyard")
-                    else f"Colony fleet dispatch order ({m['planet_coords'] or m['planet_name']})"
+                    "Global Research lab queue"
+                    if skey == "global:research"
+                    else (
+                        f"Weapons factory queue ({m['planet_coords'] or m['planet_name']})"
+                        if skey.endswith(":shipyard")
+                        else f"Colony fleet dispatch order ({m['planet_coords'] or m['planet_name']})"
+                    )
                 )
                 _add_fl_edge(prev_idx, cur_idx, "queue_order", q_lbl)
             last_by_slot[skey] = cur_idx
@@ -2627,7 +2727,7 @@ def build_fleet_planner_graph(
             {
                 "id": "lane:global",
                 "scope": "global",
-                "label": "Empire Tactical & Transmitter",
+                "label": "Empire Tactical, Research & Transmitter",
                 "planet_id": 0,
                 "coords": "",
                 "planet_type": "global",
@@ -2779,8 +2879,13 @@ def build_fleet_planner_graph(
             "total_slots_used": total_slots_used,
             "total_slots_max": total_slots_max,
             "total_slots_available": max(0, total_slots_max - total_slots_used),
-            "planned_fleet_actions": sum(1 for a in fleet_actions if _clean_str(getattr(a, "kind", "")).upper() != "BUILD_SHIP"),
+            "planned_fleet_actions": sum(
+                1
+                for a in fleet_actions
+                if _clean_str(getattr(a, "kind", "")).upper() not in ("BUILD_SHIP", "RESEARCH")
+            ),
             "planned_shipyard_actions": sum(1 for a in fleet_actions if _clean_str(getattr(a, "kind", "")).upper() == "BUILD_SHIP"),
+            "planned_research_actions": sum(1 for a in fleet_actions if _clean_str(getattr(a, "kind", "")).upper() == "RESEARCH"),
             "by_priority": by_priority,
             "by_kind": by_kind,
             "by_edge_type": by_edge_type,

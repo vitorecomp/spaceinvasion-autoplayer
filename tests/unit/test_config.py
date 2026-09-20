@@ -896,6 +896,57 @@ shipyard_targets:
             self.assertEqual(loaded_db.planner_mode, "ai_planner")
             self.assertAlmostEqual(loaded_db.ai_resource_spare_pct, 17.5)
 
+    def test_fleet_research_targets_and_allow_fleet_research_roundtrip(self) -> None:
+        from spaceinvasion.db.storage import GameDatabase
+
+        default_cfg = StrategyConfig()
+        self.assertTrue(default_cfg.allow_fleet_research)
+        self.assertEqual(default_cfg.fleet_research_targets, {})
+
+        parsed = strategy_config_from_dict(
+            {
+                "allow_fleet_research": False,
+                "fleet_research_targets": {
+                    "weapons-technology": 8,
+                    "research[9]": 120,  # clamps to 100
+                    "r6": 5,
+                    "Defense Systems": 0,  # stripped when <= 0
+                    "r10": -3,  # stripped when <= 0
+                },
+            }
+        )
+        self.assertFalse(parsed.allow_fleet_research)
+        self.assertEqual(parsed.fleet_research_targets, {"r8": 8, "r9": 100, "r6": 5})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            cfg = StrategyConfig(
+                allow_fleet_research=True,
+                fleet_research_targets={"r6": 6, "r9": 8, "r11": 5},
+            )
+            yaml_path = tp / "fleet_res.yaml"
+            save_strategy_config(cfg, yaml_path)
+            loaded_yaml = load_strategy_config(yaml_path)
+            self.assertTrue(loaded_yaml.allow_fleet_research)
+            self.assertEqual(loaded_yaml.fleet_research_targets, {"r6": 6, "r9": 8, "r11": 5})
+
+            # Clearing targets back to {} omits section and round-trips cleanly
+            empty_cfg = StrategyConfig(allow_fleet_research=False, fleet_research_targets={})
+            empty_yaml = tp / "fleet_res_empty.yaml"
+            save_strategy_config(empty_cfg, empty_yaml)
+            self.assertNotIn("fleet_research_targets:", empty_yaml.read_text(encoding="utf-8"))
+            loaded_empty = load_strategy_config(empty_yaml)
+            self.assertFalse(loaded_empty.allow_fleet_research)
+            self.assertEqual(loaded_empty.fleet_research_targets, {})
+
+            db_path = tp / "fleet_res.db"
+            db = GameDatabase(db_path, attack_history_path="")
+            db.close()
+            save_strategy_config(cfg, db_path)
+            loaded_db = load_strategy_config(db_path)
+            self.assertTrue(loaded_db.allow_fleet_research)
+            self.assertEqual(loaded_db.fleet_research_targets, {"r6": 6, "r9": 8, "r11": 5})
+
 
 if __name__ == "__main__":
     unittest.main()

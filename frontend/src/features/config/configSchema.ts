@@ -203,6 +203,16 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
         defaultValue: true,
       },
       {
+        key: "allow_fleet_research",
+        id: "cfg-allow_fleet_research",
+        title: "Fleet & Ship Unlock Research (Spare Budget)",
+        boundsLabel: "default: true · boolean",
+        description:
+          "Spends Fleet Planner soft spare resources (ai_resource_spare_pct, after reserving the next waiting P1 AI-Planner step) on P2 RESEARCH upgrades to auto-unlock recursive prerequisites for configured shipyard_targets hulls and reach fleet_research_targets levels (r3–r15). Holds the Research lab whenever AI-Planner has a ready or next-waiting P1 research step; requires allow_research enabled.",
+        control: "checkbox",
+        defaultValue: true,
+      },
+      {
         key: "allow_shipyard",
         id: "cfg-allow_shipyard",
         title: "Autonomous Shipyard Construction",
