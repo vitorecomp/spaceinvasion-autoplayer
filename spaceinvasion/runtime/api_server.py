@@ -116,6 +116,7 @@ from spaceinvasion.planner.strategy import (
     filter_shipyard_actions_by_spare_budget,
     merge_manual_queue_actions,
     plan_actions,
+    plan_ai_blast_furnace_throttles,
     plan_fleet_and_attack_actions,
 )
 
@@ -3642,8 +3643,16 @@ class GameApiBridge:
             spare_budget=spare_budget,
         )
         fleet_actions = [a for a in fleet_actions if a.kind != "DEMOLISH_BUILDING"]
+        throttle_actions = plan_ai_blast_furnace_throttles(
+            enriched_state,
+            ai_actions,
+            fleet_actions,
+            cfg,
+            throttle_cooldowns=self._get_throttle_cooldowns(),
+            storage_warn_ratio=cfg.storage_warn_ratio,
+        )
 
-        combined: list[PlannedAction] = [*ai_actions, *fleet_actions]
+        combined: list[PlannedAction] = [*ai_actions, *fleet_actions, *throttle_actions]
         prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
         def _hybrid_subrank(a: PlannedAction) -> tuple[int, int]:
@@ -3654,12 +3663,19 @@ class GameApiBridge:
                     return (0, 1)
                 if a.kind == "TRANSPORT":
                     return (0, 2)
+                if a.kind == "THROTTLE_BUILDING":
+                    rsn_l = str(a.reason or "").lower()
+                    if "negative energy" in rsn_l or "metal storage full" in rsn_l:
+                        return (0, 3)
+                    return (1, 1)
                 if a.kind in ("BUILD", "RESEARCH", "WAIT_RESOURCES"):
                     return (1, 0)
                 return (2, 0)
             if a.priority == "P2":
                 if a.kind in ("BUILD", "RESEARCH", "WAIT_RESOURCES"):
                     return (0, 0)
+                if a.kind == "THROTTLE_BUILDING":
+                    return (0, 5)
                 if a.kind == "SPY":
                     return (1, 0)
                 if a.kind == "TRANSPORT":

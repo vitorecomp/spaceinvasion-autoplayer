@@ -7607,6 +7607,214 @@ class TestApiAndCommander(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_hybrid_ai_planner_blast_furnace_auto_throttle_and_manual_queue_override(self) -> None:
+        from dataclasses import replace as dc_replace
+        import time
+        from spaceinvasion.core.state import (
+            BuildingOffer,
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            Resources,
+        )
+
+        p_krypt = PlanetState(
+            planet_id=851,
+            name="KryptSpec",
+            coords="01:250:04",
+            planet_type="normal",
+            temperature=-20,
+            fields_used=60,
+            fields_max=300,
+            resources=Resources(pig_iron=15_000, metal=5_000, kryptonite=40_000, spice=10_000),
+            storage=Resources(1_000_000, 1_000_000, 1_000_000, 1_000_000),
+            energy=EnergyBalance(produced=4000, used=1200),
+            buildings={"b1": 0, "b2": 0, "b3": 10, "b4": 6, "b5": 12, "b8": 8},
+            building_offers=(
+                BuildingOffer(3, "Kryptonite mine", 10, 11, Resources(80_000, 60_000, 0, 0), False, "Not enough resources", None),
+            ),
+        )
+        p_metal_off = PlanetState(
+            planet_id=852,
+            name="MetalSpec",
+            coords="01:250:08",
+            planet_type="normal",
+            temperature=25,
+            fields_used=70,
+            fields_max=300,
+            resources=Resources(pig_iron=70_000, metal=10_000, kryptonite=10_000, spice=10_000),
+            storage=Resources(1_000_000, 1_000_000, 1_000_000, 1_000_000),
+            energy=EnergyBalance(produced=4000, used=1200),
+            buildings={"b1": 14, "b2": 10, "b3": 4, "b4": 4, "b5": 12},
+            economy_rates={"resource1": 100, "resource2": 0, "resource3": 100, "resource4": 100},
+            building_offers=(
+                BuildingOffer(1, "Pig iron mine", 14, 15, Resources(100_000, 45_000, 0, 0), False, "Not enough resources", None),
+            ),
+        )
+        base_st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=5000.0,
+            planets=(p_krypt, p_metal_off),
+            active_planet_id=851,
+            researches={"r1": 8, "r2": 6, "r8": 5},
+        )
+        synthetic_plan = {
+            "generated_at": "2026-11-18T13:00:00Z",
+            "meta_parameters": {
+                "reward_weeks": 4,
+                "resource_spare_percent": {"pig_iron": 10.0, "metal": 10.0, "kryptonite": 10.0, "spice": 10.0},
+            },
+            "summary": {"actions_count": 2, "discounted_reward_spice_eq": 100000.0},
+            "weekly_breakdown": [],
+            "steps": [
+                {
+                    "seq": 1,
+                    "start_sec": 0.0,
+                    "duration_sec": 900.0,
+                    "finish_sec": 900.0,
+                    "week": 1,
+                    "kind": "BUILD",
+                    "planet_id": 851,
+                    "planet_coords": "01:250:04",
+                    "planet_name": "KryptSpec",
+                    "entity_key": "b3",
+                    "entity_name": "Kryptonite mine",
+                    "target_level": 11,
+                    "cost": {"pig_iron": 80_000, "metal": 60_000, "kryptonite": 0, "spice": 0},
+                },
+                {
+                    "seq": 2,
+                    "start_sec": 900.0,
+                    "duration_sec": 900.0,
+                    "finish_sec": 1800.0,
+                    "week": 1,
+                    "kind": "BUILD",
+                    "planet_id": 852,
+                    "planet_coords": "01:250:08",
+                    "planet_name": "MetalSpec",
+                    "entity_key": "b1",
+                    "entity_name": "Pig iron mine",
+                    "target_level": 15,
+                    "cost": {"pig_iron": 100_000, "metal": 45_000, "kryptonite": 0, "spice": 0},
+                },
+            ],
+        }
+
+        with (
+            patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=False),
+            tempfile.TemporaryDirectory() as td,
+        ):
+            td_path = Path(td)
+            cfg_path = td_path / "ai_bf.yaml"
+            cfg_path.write_text(
+                (
+                    "planner_mode: ai_planner\n"
+                    "max_planets: 2\n"
+                    "allow_multi_planet: true\n"
+                    "allow_transport: true\n"
+                    "auto_throttle_blast_furnace: true\n"
+                    "merchant_mode: false\n"
+                ),
+                encoding="utf-8",
+            )
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=td_path / "ai_bf.db",
+                log_dir=None,
+                client_factory=lambda _: MagicMock(),
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                def _seed(st_obj: GameState) -> None:
+                    bridge._record_state(
+                        st_obj,
+                        fetched_buildings=True,
+                        fetched_research=True,
+                        fetched_shipyard=True,
+                        fetched_home=True,
+                        observed_active_planet=True,
+                    )
+                    bridge._last_spio_sync_at = time.monotonic()
+
+                bridge._db.record_ai_planner_run(
+                    synthetic_plan,
+                    params=synthetic_plan["meta_parameters"],
+                    trigger_source="test",
+                    set_active=True,
+                )
+
+                # Phase 1: Reserved AI-Planner step on b2=0 KryptSpec lacks Metal -> MetalSpec (0%) resumes to 100%!
+                _seed(base_st)
+                resp_on = bridge.handle_command({"command": "plan", "refresh": False})
+                self.assertEqual(resp_on["effective_planner_mode"], "ai_planner")
+                throttles_on = [a for a in resp_on["actions"] if a["kind"] == "THROTTLE_BUILDING"]
+                self.assertEqual(len(throttles_on), 1)
+                self.assertEqual(throttles_on[0]["planet_id"], 852)
+                self.assertEqual(throttles_on[0]["target_id"], 2)
+                self.assertEqual(throttles_on[0]["target_level"], 100)
+                self.assertEqual(throttles_on[0]["priority"], "P1")
+
+                # Phase 2: Empire now has 70k Metal (>= 60k) while reserved step needs 80k Pig iron (only 35k stock)
+                #          -> MetalSpec (100%) pauses Blast furnace to 0% (P1)!
+                p_metal_rich_on = dc_replace(
+                    p_metal_off,
+                    resources=Resources(pig_iron=20_000, metal=65_000, kryptonite=10_000, spice=10_000),
+                    economy_rates={"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
+                )
+                _seed(dc_replace(base_st, planets=(p_krypt, p_metal_rich_on)))
+                resp_off = bridge.handle_command({"command": "plan", "refresh": False})
+                throttles_off = [a for a in resp_off["actions"] if a["kind"] == "THROTTLE_BUILDING"]
+                self.assertEqual(len(throttles_off), 1)
+                self.assertEqual(throttles_off[0]["planet_id"], 852)
+                self.assertEqual(throttles_off[0]["target_level"], 0)
+                self.assertEqual(throttles_off[0]["priority"], "P1")
+
+                # Phase 3: Pinning a manual Metal-needing build on MetalSpec overrides auto b2 -> 0% pause!
+                p_metal_need_local = dc_replace(
+                    p_metal_rich_on,
+                    resources=Resources(pig_iron=20_000, metal=65_000, kryptonite=10_000, spice=10_000),
+                    building_offers=(
+                        BuildingOffer(
+                            3,
+                            "Kryptonite mine",
+                            4,
+                            5,
+                            Resources(10_000, 120_000, 0, 0),
+                            False,
+                            "Not enough resources",
+                            None,
+                        ),
+                    ),
+                )
+                _seed(dc_replace(base_st, planets=(p_krypt, p_metal_need_local)))
+                enq = bridge.handle_command(
+                    {
+                        "command": "queue_add",
+                        "kind": "BUILD",
+                        "planet_id": 852,
+                        "target_id": 3,
+                        "target_level": 5,
+                        "target_name": "Kryptonite mine",
+                    }
+                )
+                self.assertTrue(enq["ok"])
+                resp_pinned = bridge.handle_command({"command": "plan", "refresh": False})
+                self.assertFalse(
+                    any(
+                        a["kind"] == "THROTTLE_BUILDING"
+                        and a["planet_id"] == 852
+                        and a["target_level"] == 0
+                        for a in resp_pinned["actions"]
+                    ),
+                    msg=f"Pinned Metal-needing build should cancel auto b2->0%: {resp_pinned['actions']}",
+                )
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

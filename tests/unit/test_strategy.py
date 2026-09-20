@@ -3825,6 +3825,259 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertFalse(any("02:082:11" in t for t in rec_targets), msg=f"Duplicate in-flight 02:082:11 in {rec_targets}")
         self.assertFalse(any("06:180:13" in t for t in rec_targets), msg=f"Cross-galaxy >12h 06:180:13 in {rec_targets}")
 
+    def test_ai_planner_blast_furnace_throttles_empire_and_safety_rules(self) -> None:
+        from spaceinvasion.planner.strategy import plan_ai_blast_furnace_throttles
+
+        p_krypt = PlanetState(
+            planet_id=901,
+            name="KryptSpec",
+            coords="02:380:04",
+            planet_type="normal",
+            temperature=-20,
+            fields_used=60,
+            fields_max=300,
+            resources=Resources(pig_iron=10_000, metal=5_000, kryptonite=40_000, spice=10_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(produced=4000, used=1500),
+            buildings={"b1": 0, "b2": 0, "b3": 14, "b4": 6, "b5": 14, "b8": 10},
+        )
+        p_metal_off = PlanetState(
+            planet_id=902,
+            name="MetalSpec",
+            coords="02:380:08",
+            planet_type="normal",
+            temperature=25,
+            fields_used=70,
+            fields_max=300,
+            resources=Resources(pig_iron=60_000, metal=10_000, kryptonite=10_000, spice=10_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(produced=4000, used=1500),
+            buildings={"b1": 16, "b2": 10, "b3": 4, "b4": 4, "b5": 14},
+            economy_rates={"resource1": 100, "resource2": 0, "resource3": 100, "resource4": 100},
+        )
+        p_metal_on = replace(
+            p_metal_off,
+            economy_rates={"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
+        )
+        cfg = StrategyConfig(
+            planner_mode="ai_planner",
+            allow_multi_planet=True,
+            allow_transport=True,
+            auto_throttle_blast_furnace=True,
+            merchant_mode=False,
+        )
+
+        # 1. Cross-planet specialization: reserved AI-Planner step on b2=0 Kryptonite planet lacks Metal
+        #    -> Metal specialist (b2=10, currently 0%) resumes smelting to 100% (P1)!
+        ai_need_metal = [
+            PlannedAction(
+                priority="P1",
+                kind="WAIT_RESOURCES",
+                planet_id=901,
+                planet_coords="02:380:04",
+                target_id=3,
+                target_name="Kryptonite mine",
+                target_level=15,
+                cost=Resources(pig_iron=80_000, metal=50_000, kryptonite=0, spice=0),
+                missing=Resources(pig_iron=70_000, metal=45_000, kryptonite=0, spice=0),
+                reason="AI-Planner #1: build Kryptonite mine L15",
+                executable_now=False,
+            )
+        ]
+        st_resume = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=5000.0,
+            planets=(p_krypt, p_metal_off),
+            active_planet_id=901,
+            researches={"r1": 8},
+        )
+        acts_resume = plan_ai_blast_furnace_throttles(st_resume, ai_need_metal, [], cfg, now_ts=5000.0)
+        self.assertEqual(len(acts_resume), 1)
+        self.assertEqual(acts_resume[0].planet_id, 902)
+        self.assertEqual(acts_resume[0].kind, "THROTTLE_BUILDING")
+        self.assertEqual(acts_resume[0].priority, "P1")
+        self.assertEqual(acts_resume[0].target_level, 100)
+
+        # 2. In-flight friendly Transport carrying 40k Metal covers the remaining gap (5k + 10k + 40k = 55k >= 50k)
+        #    -> do NOT falsely resume Blast furnace!
+        st_inflight = replace(
+            st_resume,
+            active_queues=(
+                QueueJob(
+                    category="fleet",
+                    name="Transport → [02:380:04] KryptSpec",
+                    remaining_seconds=1200.0,
+                    origin_coords="02:380:08",
+                    cargo=Resources(pig_iron=0, metal=40_000, kryptonite=0, spice=0),
+                ),
+            ),
+        )
+        acts_inflight = plan_ai_blast_furnace_throttles(st_inflight, ai_need_metal, [], cfg, now_ts=5000.0)
+        self.assertEqual(acts_inflight, [])
+
+        # 3. Empire already has enough Metal for reserved step #1 (which needs Pig iron) -> pause Metal specialist
+        #    to 0% (P1), even though Metal specialist's own LATER step #2 lacks Metal!
+        p_metal_rich = replace(
+            p_metal_on,
+            resources=Resources(pig_iron=20_000, metal=55_000, kryptonite=10_000, spice=10_000),
+        )
+        ai_need_pig_first = [
+            PlannedAction(
+                priority="P1",
+                kind="WAIT_RESOURCES",
+                planet_id=901,
+                planet_coords="02:380:04",
+                target_id=3,
+                target_name="Kryptonite mine",
+                target_level=15,
+                cost=Resources(pig_iron=120_000, metal=30_000, kryptonite=0, spice=0),
+                missing=Resources(pig_iron=110_000, metal=25_000, kryptonite=0, spice=0),
+                reason="AI-Planner #1: build Kryptonite mine L15",
+                executable_now=False,
+            ),
+            PlannedAction(
+                priority="P1",
+                kind="WAIT_RESOURCES",
+                planet_id=902,
+                planet_coords="02:380:08",
+                target_id=1,
+                target_name="Pig iron mine",
+                target_level=17,
+                cost=Resources(pig_iron=90_000, metal=70_000, kryptonite=0, spice=0),
+                missing=Resources(pig_iron=70_000, metal=15_000, kryptonite=0, spice=0),
+                reason="AI-Planner #2: build Pig iron mine L17",
+                executable_now=False,
+            ),
+        ]
+        st_pause = replace(st_resume, planets=(p_krypt, p_metal_rich))
+        acts_pause = plan_ai_blast_furnace_throttles(st_pause, ai_need_pig_first, [], cfg, now_ts=5000.0)
+        self.assertEqual(len(acts_pause), 1)
+        self.assertEqual(acts_pause[0].planet_id, 902)
+        self.assertEqual(acts_pause[0].priority, "P1")
+        self.assertEqual(acts_pause[0].target_level, 0)
+
+        # 4. Deduct ready executable AI-Planner step cost first: ready #0 spends 45k Metal, leaving 15k < 30k
+        #    -> must NOT pause (and when off, resumes smelting)!
+        ai_with_ready = [
+            PlannedAction(
+                priority="P1",
+                kind="BUILD",
+                planet_id=902,
+                planet_coords="02:380:08",
+                target_id=5,
+                target_name="Fusion plant",
+                target_level=15,
+                cost=Resources(pig_iron=10_000, metal=45_000, kryptonite=0, spice=0),
+                missing=Resources(),
+                reason="AI-Planner #0: build Fusion plant L15",
+                executable_now=True,
+            ),
+            *ai_need_pig_first,
+        ]
+        acts_after_ready = plan_ai_blast_furnace_throttles(st_pause, ai_with_ready, [], cfg, now_ts=5000.0)
+        self.assertEqual(acts_after_ready, [])
+
+        # 5. Non-AI P1 fleet/shipyard Metal need (Colony ship s8) protects b2 from being paused!
+        p1_colony_ship = [
+            PlannedAction(
+                priority="P1",
+                kind="BUILD_SHIP",
+                planet_id=902,
+                planet_coords="02:380:08",
+                target_id=8,
+                target_name="Colony ship",
+                target_level=1,
+                cost=Resources(pig_iron=10_000, metal=75_000, kryptonite=10_000, spice=10_000),
+                missing=Resources(pig_iron=0, metal=20_000, kryptonite=0, spice=0),
+                reason="Colony expansion needs Colony ship",
+                executable_now=False,
+            )
+        ]
+        acts_protect = plan_ai_blast_furnace_throttles(st_pause, ai_need_pig_first, p1_colony_ship, cfg, now_ts=5000.0)
+        self.assertEqual(acts_protect, [])
+
+        # 6. Metal storage overflow (>=98% Metal while Pig iron has free capacity) immediately pauses to 0%
+        #    even when inside the 300s cooldown and even when Metal is needed!
+        p_metal_full = replace(
+            p_metal_on,
+            resources=Resources(pig_iron=50_000, metal=495_000, kryptonite=10_000, spice=10_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+        )
+        st_full = replace(st_resume, planets=(p_krypt, p_metal_full))
+        acts_full = plan_ai_blast_furnace_throttles(
+            st_full,
+            ai_need_metal,
+            [],
+            cfg,
+            throttle_cooldowns={902: 4950.0},
+            now_ts=5000.0,
+        )
+        self.assertEqual(len(acts_full), 1)
+        self.assertEqual(acts_full[0].target_level, 0)
+        self.assertIn("Metal storage full", acts_full[0].reason)
+
+        # 7. Pig iron storage overflow (>=98% Pig iron with Metal space <90%) resumes Blast furnace (P2)
+        p_pig_full = replace(
+            p_metal_off,
+            resources=Resources(pig_iron=495_000, metal=50_000, kryptonite=10_000, spice=10_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+        )
+        st_pig_full = replace(st_resume, planets=(p_krypt, p_pig_full))
+        acts_pig_full = plan_ai_blast_furnace_throttles(st_pig_full, ai_need_pig_first, [], cfg, now_ts=5000.0)
+        self.assertEqual(len(acts_pig_full), 1)
+        self.assertEqual(acts_pig_full[0].target_level, 100)
+        self.assertEqual(acts_pig_full[0].priority, "P2")
+
+        # 8. Negative energy safety: never turns ON into e_net < 0; pauses/throttles active b2 bypassing cooldown
+        p_neg_off = replace(p_metal_off, energy=EnergyBalance(produced=1000, used=1200))
+        st_neg_off = replace(st_resume, planets=(p_krypt, p_neg_off))
+        self.assertEqual(
+            plan_ai_blast_furnace_throttles(st_neg_off, ai_need_metal, [], cfg, now_ts=5000.0),
+            [],
+        )
+        p_neg_on = replace(p_metal_on, energy=EnergyBalance(produced=1000, used=1500))
+        st_neg_on = replace(st_resume, planets=(p_krypt, p_neg_on))
+        acts_neg_on = plan_ai_blast_furnace_throttles(
+            st_neg_on,
+            ai_need_pig_first,
+            [],
+            cfg,
+            throttle_cooldowns={902: 4950.0},
+            now_ts=5000.0,
+        )
+        self.assertEqual(len(acts_neg_on), 1)
+        self.assertEqual(acts_neg_on[0].target_level, 0)
+        self.assertIn("Negative energy", acts_neg_on[0].reason)
+
+        # 9. Respects 300s cooldown on non-emergency toggles, merchant_mode, and auto_throttle_blast_furnace=False
+        self.assertEqual(
+            plan_ai_blast_furnace_throttles(
+                st_resume, ai_need_metal, [], cfg, throttle_cooldowns={902: 4900.0}, now_ts=5000.0
+            ),
+            [],
+        )
+        self.assertEqual(
+            plan_ai_blast_furnace_throttles(
+                st_resume, ai_need_metal, [], replace(cfg, auto_throttle_blast_furnace=False), now_ts=5000.0
+            ),
+            [],
+        )
+        self.assertEqual(
+            plan_ai_blast_furnace_throttles(
+                st_resume, ai_need_metal, [], replace(cfg, merchant_mode=True), now_ts=5000.0
+            ),
+            [],
+        )
+
+        # 10. With allow_transport=False, colonies do not pool across planets
+        cfg_no_tx = replace(cfg, allow_transport=False)
+        self.assertEqual(
+            plan_ai_blast_furnace_throttles(st_resume, ai_need_metal, [], cfg_no_tx, now_ts=5000.0),
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

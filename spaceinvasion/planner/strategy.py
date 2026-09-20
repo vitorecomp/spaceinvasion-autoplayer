@@ -5236,6 +5236,527 @@ def _plan_blast_furnace_throttle(
     return candidate
 
 
+def plan_ai_blast_furnace_throttles(
+    state: GameState,
+    ai_actions: Sequence[PlannedAction],
+    fleet_actions: Sequence[PlannedAction],
+    cfg: StrategyConfig,
+    *,
+    throttle_cooldowns: Optional[Mapping[int, float]] = None,
+    now_ts: Optional[float] = None,
+    storage_warn_ratio: Optional[float] = None,
+) -> list[PlannedAction]:
+    """Mirror `EmpirePathSimulator.smelting` for live `ai_planner` hybrid execution.
+
+    Turns `Blast furnace` (`b2`, `resource2`) ON (`100%` or highest energy-safe /
+    Pig-iron-sustainable `%`) when the AI-Planner's next waiting step (or any local
+    `P0`/`P1` action / Pig iron storage overflow) needs Metal, and pauses `b2` to `0%`
+    when the AI-Planner's reserved step already has enough Metal (preserving 2:1 Pig iron
+    and energy) or on Metal storage overflow (`>=98%`) / negative energy emergencies.
+    """
+    if not cfg.auto_throttle_blast_furnace or cfg.merchant_mode:
+        return []
+    active = state.active_planet()
+    if active is None:
+        return []
+
+    normal_planets = [p for p in (state.planets or ()) if _norm_planet_type(p) == "normal"]
+    target_planets = (
+        normal_planets
+        if cfg.allow_multi_planet
+        else ([active] if _norm_planet_type(active) == "normal" else [])
+    )
+    if not target_planets:
+        return []
+
+    ref_now = _safe_strategy_float(now_ts, time.time()) if now_ts is not None else time.time()
+    cooldown_map = throttle_cooldowns or {}
+    warn_ratio = _resolve_storage_warn_ratio(cfg, storage_warn_ratio)
+
+    mining_tech = max(0, _safe_strategy_int((state.researches or {}).get("r1", 0), 0))
+    speedup = _safe_strategy_float(getattr(state, "speedup_factor", 1.0), 1.0)
+    if speedup <= 0:
+        speedup = 1.0
+
+    ai_steps = [a for a in ai_actions if a.kind in ("BUILD", "WAIT_RESOURCES", "RESEARCH")]
+    ready_ai = [a for a in ai_steps if a.executable_now]
+    waiting_ai = [a for a in ai_steps if not a.executable_now and not a.missing.is_zero()]
+    reserved_step: Optional[PlannedAction] = waiting_ai[0] if waiting_ai else None
+
+    use_empire_pool = bool(cfg.allow_transport and cfg.allow_multi_planet)
+    reserved_metal_gap = 0
+    reserved_pig_gap = 0
+    total_ai_metal_gap = 0
+    empire_smelt_mode = "idle"
+
+    if use_empire_pool:
+        empire_metal_stock = sum(
+            max(0, _safe_strategy_int(getattr(p.resources, "metal", 0), 0))
+            for p in normal_planets
+        )
+        empire_pig_stock = sum(
+            max(0, _safe_strategy_int(getattr(p.resources, "pig_iron", 0), 0))
+            for p in normal_planets
+        )
+        # Count non-hostile in-flight friendly transport/station/returning cargo so
+        # resources already dispatched between colonies are not transiently double-smelted.
+        for fq in getattr(state, "active_queues", None) or ():
+            if _safe_strategy_str(getattr(fq, "category", "")).lower() != "fleet":
+                continue
+            cargo = getattr(fq, "cargo", None)
+            if cargo is None:
+                continue
+            fq_txt = (
+                f"{_safe_strategy_str(getattr(fq, 'name', ''))} "
+                f"{_safe_strategy_str(getattr(fq, 'detail', ''))}"
+            ).lower()
+            if "hostile" in fq_txt or "enemy" in fq_txt:
+                continue
+            if any(tok in fq_txt for tok in ("transport", "station", "return")):
+                empire_metal_stock += max(0, _safe_strategy_int(getattr(cargo, "metal", 0), 0))
+                empire_pig_stock += max(0, _safe_strategy_int(getattr(cargo, "pig_iron", 0), 0))
+
+        ready_metal_cost = sum(
+            max(0, _safe_strategy_int(getattr(a.cost, "metal", 0), 0)) for a in ready_ai
+        )
+        ready_pig_cost = sum(
+            max(0, _safe_strategy_int(getattr(a.cost, "pig_iron", 0), 0)) for a in ready_ai
+        )
+        avail_empire_metal = max(0, empire_metal_stock - ready_metal_cost)
+        avail_empire_pig = max(0, empire_pig_stock - ready_pig_cost)
+
+        if reserved_step is not None:
+            reserved_metal_cost = max(0, _safe_strategy_int(getattr(reserved_step.cost, "metal", 0), 0))
+            reserved_pig_cost = max(0, _safe_strategy_int(getattr(reserved_step.cost, "pig_iron", 0), 0))
+            reserved_metal_gap = max(0, reserved_metal_cost - avail_empire_metal)
+            reserved_pig_gap = max(0, reserved_pig_cost - avail_empire_pig)
+            total_waiting_metal_cost = sum(
+                max(0, _safe_strategy_int(getattr(a.cost, "metal", 0), 0)) for a in waiting_ai
+            )
+            total_ai_metal_gap = max(0, total_waiting_metal_cost - avail_empire_metal)
+            parallel_pig_safe = (reserved_pig_cost == 0) or (
+                avail_empire_pig >= reserved_pig_cost + min(2 * total_ai_metal_gap, 5000)
+            )
+            if reserved_metal_gap > 0:
+                empire_smelt_mode = "reserved"
+            elif reserved_pig_gap == 0 and total_ai_metal_gap > 0 and parallel_pig_safe:
+                empire_smelt_mode = "parallel"
+            else:
+                empire_smelt_mode = "pause"
+
+    def _compute_safe_smelt_pct(
+        *,
+        avail_energy: int,
+        b2_energy_full: int,
+        net_pig_full: float,
+        bf_pig_full: float,
+        pig_gross: float,
+        res_pig_val: int,
+        pig_buffer: int,
+        ignore_pig_cap: bool,
+    ) -> tuple[int, list[str]]:
+        target_pct = 100
+        notes: list[str] = []
+        if b2_energy_full > 0 and avail_energy < b2_energy_full:
+            e_pct = (max(0, avail_energy) * 100 // b2_energy_full) // 10 * 10
+            if e_pct < 10:
+                return 0, notes
+            target_pct = min(target_pct, int(e_pct))
+            notes.append(f"energy-limited, net +{max(0, avail_energy)}")
+        if (
+            not ignore_pig_cap
+            and net_pig_full < 0
+            and res_pig_val < pig_buffer
+            and math.isfinite(bf_pig_full)
+            and bf_pig_full > 0
+        ):
+            sust_pct = 0
+            for cand_pct in (100, 90, 80, 70, 60, 50, 40, 30, 20, 10):
+                if bf_pig_full * (cand_pct / 100.0) <= pig_gross * 0.85:
+                    sust_pct = cand_pct
+                    break
+            if sust_pct == 0:
+                if pig_gross > 0 or res_pig_val >= 500:
+                    sust_pct = 10
+                else:
+                    return 0, notes
+            if sust_pct < target_pct:
+                target_pct = sust_pct
+                notes.append("Pig-iron-sustainable")
+        return target_pct, notes
+
+    out: list[PlannedAction] = []
+    combined_local_scope = (*ai_actions, *fleet_actions)
+
+    for planet in target_planets:
+        b2_lvl = planet.building_level(BLAST_FURNACE)
+        if b2_lvl <= 0:
+            continue
+
+        rates = getattr(planet, "economy_rates", None) or {}
+        cur_b2_pct = max(0, min(100, _safe_strategy_int(rates.get("resource2", 100), 100)))
+        cur_b1_pct = max(0, min(100, _safe_strategy_int(rates.get("resource1", 100), 100)))
+
+        e_prod = _safe_strategy_int(getattr(planet.energy, "produced", 0), 0)
+        e_used = _safe_strategy_int(getattr(planet.energy, "used", 0), 0)
+        e_net = _safe_strategy_int(getattr(planet.energy, "net", 0), 0)
+        res_pig = _safe_strategy_int(getattr(planet.resources, "pig_iron", 0), 0)
+        res_met = _safe_strategy_int(getattr(planet.resources, "metal", 0), 0)
+        sto_pig = _safe_strategy_int(getattr(planet.storage, "pig_iron", 0), 0)
+        sto_met = _safe_strategy_int(getattr(planet.storage, "metal", 0), 0)
+        pig_has_space = sto_pig <= 0 or res_pig * 100 < sto_pig * 99
+        metal_is_full = sto_met > 0 and res_met * 100 >= sto_met * 98
+        metal_full_with_pig_space = metal_is_full and pig_has_space
+        pig_full_with_metal_space = (
+            sto_pig > 0
+            and res_pig * 100 >= sto_pig * 98
+            and (sto_met <= 0 or res_met * 100 < sto_met * 90)
+        )
+        metal_cap_pct = game_data.safe_big_ratio(res_met, sto_met, cap=1e200) if sto_met > 0 else 0.0
+        pig_cap_pct = game_data.safe_big_ratio(res_pig, sto_pig, cap=1e200) if sto_pig > 0 else 0.0
+
+        raw_last = cooldown_map.get(planet.planet_id)
+        last_t_val = _safe_strategy_float(raw_last, -1.0) if raw_last is not None else None
+        is_emergency_pause = (e_net < 0 or metal_full_with_pig_space) and cur_b2_pct > 0
+        if last_t_val is not None and last_t_val >= 0.0 and (ref_now - last_t_val) < 300.0:
+            if not is_emergency_pause:
+                continue
+
+        prod_ratio = (
+            game_data.safe_big_ratio(e_prod, e_used, cap=1.0)
+            if (e_used > 0 and e_prod < e_used)
+            else 1.0
+        )
+        factor = speedup * prod_ratio
+        p_pig_gross = (
+            game_data.mine_production_per_hour(
+                PIG_IRON_MINE,
+                planet.building_level(PIG_IRON_MINE),
+                temperature=_safe_strategy_int(planet.temperature, 0),
+                mining_tech_level=mining_tech,
+            )
+            * factor
+            * (max(0, cur_b1_pct) / 100.0)
+        )
+        bf_pig_used_full = game_data.blast_furnace_pig_iron_used(b2_lvl) * factor
+        net_pig_at_100 = p_pig_gross - bf_pig_used_full
+        b2_full_energy = abs(
+            _safe_strategy_int(game_data.building_level_stats(BLAST_FURNACE, b2_lvl).get("energy", 0) or 0, 0)
+        )
+        pause_pig_floor = (
+            math.ceil(max(500.0, bf_pig_used_full * 0.5)) if math.isfinite(bf_pig_used_full) else 500
+        )
+        pause_pig_full = math.ceil(bf_pig_used_full) if math.isfinite(bf_pig_used_full) else 0
+
+        if use_empire_pool:
+            local_p1_metal_need, local_p1_metal_act = p1_metal_shortfall(planet, fleet_actions)
+            if (
+                reserved_step is not None
+                and reserved_step.planet_id == planet.planet_id
+                and reserved_pig_gap == 0
+            ):
+                res_need, res_act = p1_metal_shortfall(planet, (reserved_step,))
+                if res_need > local_p1_metal_need:
+                    local_p1_metal_need, local_p1_metal_act = res_need, res_act
+        else:
+            local_p1_metal_need, local_p1_metal_act = p1_metal_shortfall(planet, combined_local_scope)
+
+        is_local_power_p1 = (
+            local_p1_metal_act is not None
+            and local_p1_metal_act.kind in ("BUILD", "WAIT_RESOURCES", "BUILD_SHIP")
+            and local_p1_metal_act.target_id in (FUSION_PLANT, THERMOSOLAR_PLANT, SOLAR_CELLS_ID)
+        )
+
+        want_smelt_local = local_p1_metal_need > 0
+        want_smelt_empire = use_empire_pool and empire_smelt_mode in ("reserved", "parallel")
+        want_smelt_overflow = pig_full_with_metal_space
+        want_smelt = want_smelt_local or want_smelt_empire or want_smelt_overflow
+
+        # 1. Metal storage overflow protection (>=98% Metal while Pig iron has free capacity)
+        if metal_full_with_pig_space:
+            if cur_b2_pct > 0:
+                out.append(
+                    PlannedAction(
+                        priority="P1",
+                        kind="THROTTLE_BUILDING",
+                        planet_id=planet.planet_id,
+                        planet_coords=_safe_strategy_str(planet.coords),
+                        target_id=BLAST_FURNACE,
+                        target_name="Blast furnace 0%",
+                        target_level=0,
+                        reason=(
+                            f"Metal storage full ({metal_cap_pct * 100:.0f}%) while Pig iron has free capacity — "
+                            f"disable Blast furnace (0%) to avoid throwing Metal away and save +{bf_pig_used_full:.0f} Pig iron/h"
+                        ),
+                        executable_now=True,
+                    )
+                )
+            continue
+
+        # 2. Active negative energy safety (relieve energy deficit unless local P1 power needs Metal)
+        if e_net < 0 and not is_local_power_p1:
+            if cur_b2_pct > 0:
+                avail_e_now = e_net + int(round(b2_full_energy * cur_b2_pct / 100.0))
+                if want_smelt and not metal_is_full and b2_full_energy > 0 and avail_e_now > 0:
+                    safe_pct = min(
+                        cur_b2_pct - 10,
+                        (avail_e_now * 100 // b2_full_energy) // 10 * 10,
+                    )
+                    if safe_pct >= 10:
+                        out.append(
+                            PlannedAction(
+                                priority="P1",
+                                kind="THROTTLE_BUILDING",
+                                planet_id=planet.planet_id,
+                                planet_coords=_safe_strategy_str(planet.coords),
+                                target_id=BLAST_FURNACE,
+                                target_name=f"Blast furnace {safe_pct}%",
+                                target_level=int(safe_pct),
+                                reason=(
+                                    f"Negative energy ({e_net}): throttle Blast furnace "
+                                    f"({cur_b2_pct}% -> {safe_pct}%) to restore positive energy while smelting"
+                                ),
+                                executable_now=True,
+                            )
+                        )
+                        continue
+                out.append(
+                    PlannedAction(
+                        priority="P1",
+                        kind="THROTTLE_BUILDING",
+                        planet_id=planet.planet_id,
+                        planet_coords=_safe_strategy_str(planet.coords),
+                        target_id=BLAST_FURNACE,
+                        target_name="Blast furnace 0%",
+                        target_level=0,
+                        reason=(
+                            f"Negative energy ({e_net}): disable Blast furnace "
+                            f"({cur_b2_pct}% -> 0%) to relieve energy deficit"
+                        ),
+                        executable_now=True,
+                    )
+                )
+            continue
+
+        # 3. Desired smelting state: ON
+        if want_smelt:
+            if metal_is_full:
+                continue
+            if cur_b2_pct == 0:
+                if want_smelt_local and local_p1_metal_act is not None:
+                    resume_act = plan_p1_metal_resume_throttle(
+                        state, planet, local_p1_metal_need, local_p1_metal_act
+                    )
+                    if resume_act is not None:
+                        out.append(resume_act)
+                    continue
+
+                if not want_smelt_overflow and p_pig_gross <= 0 and res_pig < 500:
+                    continue
+                target_pct, pct_notes = _compute_safe_smelt_pct(
+                    avail_energy=e_net,
+                    b2_energy_full=b2_full_energy,
+                    net_pig_full=net_pig_at_100,
+                    bf_pig_full=bf_pig_used_full,
+                    pig_gross=p_pig_gross,
+                    res_pig_val=res_pig,
+                    pig_buffer=max(2000, pause_pig_floor),
+                    ignore_pig_cap=want_smelt_overflow,
+                )
+                if target_pct < 10:
+                    continue
+                note_s = f" ({', '.join(pct_notes)})" if pct_notes else ""
+                if want_smelt_empire and empire_smelt_mode == "reserved" and reserved_step is not None:
+                    prio = "P1"
+                    reason = (
+                        f"AI-Planner: {reserved_step.target_name} needs {reserved_metal_gap:,} more "
+                        f"empire Metal — resume Blast furnace to {target_pct}%{note_s}"
+                    )
+                elif want_smelt_empire and empire_smelt_mode == "parallel":
+                    prio = "P2"
+                    reason = (
+                        f"AI-Planner: parallel steps need {total_ai_metal_gap:,} more empire Metal — "
+                        f"resume Blast furnace to {target_pct}%{note_s}"
+                    )
+                else:
+                    prio = "P2"
+                    reason = (
+                        f"AI-Planner: Pig iron storage near full ({pig_cap_pct * 100:.0f}%) with Metal space — "
+                        f"resume Blast furnace to {target_pct}%{note_s}"
+                    )
+                out.append(
+                    PlannedAction(
+                        priority=prio,
+                        kind="THROTTLE_BUILDING",
+                        planet_id=planet.planet_id,
+                        planet_coords=_safe_strategy_str(planet.coords),
+                        target_id=BLAST_FURNACE,
+                        target_name=f"Blast furnace {target_pct}%",
+                        target_level=target_pct,
+                        reason=reason,
+                        executable_now=True,
+                    )
+                )
+                continue
+
+            if 0 < cur_b2_pct < 100:
+                avail_e_now = e_net + int(round(b2_full_energy * cur_b2_pct / 100.0))
+                pig_buf = (
+                    (2 * local_p1_metal_need + pause_pig_floor)
+                    if want_smelt_local
+                    else max(2000, pause_pig_floor)
+                )
+                target_pct, pct_notes = _compute_safe_smelt_pct(
+                    avail_energy=avail_e_now,
+                    b2_energy_full=b2_full_energy,
+                    net_pig_full=net_pig_at_100,
+                    bf_pig_full=bf_pig_used_full,
+                    pig_gross=p_pig_gross,
+                    res_pig_val=res_pig,
+                    pig_buffer=pig_buf,
+                    ignore_pig_cap=want_smelt_overflow,
+                )
+                if target_pct > cur_b2_pct:
+                    note_s = f" ({', '.join(pct_notes)})" if pct_notes else ""
+                    if want_smelt_local and local_p1_metal_act is not None:
+                        prio = "P1"
+                        reason = (
+                            f"AI-Planner: {local_p1_metal_act.target_name} needs {local_p1_metal_need:,} more Metal — "
+                            f"raise Blast furnace ({cur_b2_pct}% -> {target_pct}%){note_s}"
+                        )
+                    elif want_smelt_empire and empire_smelt_mode == "reserved" and reserved_step is not None:
+                        prio = "P1"
+                        reason = (
+                            f"AI-Planner: {reserved_step.target_name} needs {reserved_metal_gap:,} more empire Metal — "
+                            f"raise Blast furnace ({cur_b2_pct}% -> {target_pct}%){note_s}"
+                        )
+                    else:
+                        prio = "P2"
+                        reason = (
+                            f"AI-Planner: raise Blast furnace ({cur_b2_pct}% -> {target_pct}%) "
+                            f"to increase Metal smelting{note_s}"
+                        )
+                    out.append(
+                        PlannedAction(
+                            priority=prio,
+                            kind="THROTTLE_BUILDING",
+                            planet_id=planet.planet_id,
+                            planet_coords=_safe_strategy_str(planet.coords),
+                            target_id=BLAST_FURNACE,
+                            target_name=f"Blast furnace {target_pct}%",
+                            target_level=target_pct,
+                            reason=reason,
+                            executable_now=True,
+                        )
+                    )
+            continue
+
+        # 4. Desired smelting state: OFF (preserve Pig iron and energy)
+        if cur_b2_pct == 0:
+            continue
+
+        if use_empire_pool:
+            if empire_smelt_mode == "pause" and reserved_step is not None:
+                if reserved_pig_gap > 0:
+                    prio = "P1"
+                    reason = (
+                        f"AI-Planner: {reserved_step.target_name} already has enough empire Metal and "
+                        f"needs {reserved_pig_gap:,} more Pig iron — pause Blast furnace "
+                        f"({cur_b2_pct}% -> 0%) to save +{bf_pig_used_full:.0f} Pig iron/h"
+                    )
+                else:
+                    prio = "P2"
+                    reason = (
+                        f"AI-Planner: {reserved_step.target_name} already has enough empire Metal — "
+                        f"pause Blast furnace ({cur_b2_pct}% -> 0%) to preserve Pig iron "
+                        f"(+{bf_pig_used_full:.0f} Pig iron/h)"
+                    )
+                out.append(
+                    PlannedAction(
+                        priority=prio,
+                        kind="THROTTLE_BUILDING",
+                        planet_id=planet.planet_id,
+                        planet_coords=_safe_strategy_str(planet.coords),
+                        target_id=BLAST_FURNACE,
+                        target_name="Blast furnace 0%",
+                        target_level=0,
+                        reason=reason,
+                        executable_now=True,
+                    )
+                )
+            elif metal_cap_pct >= warn_ratio or (net_pig_at_100 < 0 and res_pig < pause_pig_full):
+                out.append(
+                    PlannedAction(
+                        priority="P2",
+                        kind="THROTTLE_BUILDING",
+                        planet_id=planet.planet_id,
+                        planet_coords=_safe_strategy_str(planet.coords),
+                        target_id=BLAST_FURNACE,
+                        target_name="Blast furnace 0%",
+                        target_level=0,
+                        reason=(
+                            f"AI-Planner: no Metal shortage — pause Blast furnace "
+                            f"({cur_b2_pct}% -> 0%) to preserve Pig iron (+{bf_pig_used_full:.0f} Pig iron/h)"
+                        ),
+                        executable_now=True,
+                    )
+                )
+        else:
+            local_waiting_ai = [a for a in waiting_ai if a.planet_id == planet.planet_id]
+            if local_waiting_ai:
+                local_pig_gap = max(
+                    (_safe_strategy_int(getattr(a.missing, "pig_iron", 0), 0) for a in local_waiting_ai),
+                    default=0,
+                )
+                first_local = local_waiting_ai[0]
+                if local_pig_gap > 0:
+                    prio = "P1"
+                    reason = (
+                        f"AI-Planner: {first_local.target_name} already has enough Metal and "
+                        f"needs {local_pig_gap:,} more Pig iron — pause Blast furnace "
+                        f"({cur_b2_pct}% -> 0%) to save +{bf_pig_used_full:.0f} Pig iron/h"
+                    )
+                else:
+                    prio = "P2"
+                    reason = (
+                        f"AI-Planner: {first_local.target_name} already has enough Metal — "
+                        f"pause Blast furnace ({cur_b2_pct}% -> 0%) to preserve Pig iron "
+                        f"(+{bf_pig_used_full:.0f} Pig iron/h)"
+                    )
+                out.append(
+                    PlannedAction(
+                        priority=prio,
+                        kind="THROTTLE_BUILDING",
+                        planet_id=planet.planet_id,
+                        planet_coords=_safe_strategy_str(planet.coords),
+                        target_id=BLAST_FURNACE,
+                        target_name="Blast furnace 0%",
+                        target_level=0,
+                        reason=reason,
+                        executable_now=True,
+                    )
+                )
+            elif metal_cap_pct >= warn_ratio or (net_pig_at_100 < 0 and res_pig < pause_pig_full):
+                out.append(
+                    PlannedAction(
+                        priority="P2",
+                        kind="THROTTLE_BUILDING",
+                        planet_id=planet.planet_id,
+                        planet_coords=_safe_strategy_str(planet.coords),
+                        target_id=BLAST_FURNACE,
+                        target_name="Blast furnace 0%",
+                        target_level=0,
+                        reason=(
+                            f"AI-Planner: no Metal shortage — pause Blast furnace "
+                            f"({cur_b2_pct}% -> 0%) to preserve Pig iron (+{bf_pig_used_full:.0f} Pig iron/h)"
+                        ),
+                        executable_now=True,
+                    )
+                )
+
+    return out
+
+
 def _build_pre_throttle_plan(
     state: GameState,
     *,
