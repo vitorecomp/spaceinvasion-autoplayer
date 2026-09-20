@@ -227,9 +227,23 @@ export function isPlanetConstructing(
 const FLIGHT_MISSION_RE =
   /\b(attack|recycle|transport|transfer|spy|espionage|colonize|escape|save|station|expedition|flight)\b/i;
 
+const NON_FLIGHT_DETAIL_PREFIXES = [
+  "shipyard",
+  "weapons factory",
+  "defense",
+  "defence",
+  "in construction",
+  "researching",
+  "constructing",
+];
+
 export function isOngoingFleetFlight(job: QueueJobData | null | undefined): boolean {
   if (!job) return false;
   const cat = String(job.category || "").toLowerCase();
+  const detailLow = String(job.detail || "").trim().toLowerCase();
+  if (NON_FLIGHT_DETAIL_PREFIXES.some((prefix) => detailLow.startsWith(prefix))) {
+    return false;
+  }
   if (cat === "fleet") return true;
   if (
     cat === "building" ||

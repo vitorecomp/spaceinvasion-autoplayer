@@ -1259,6 +1259,20 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
             origin_coords: "02:380:12",
             remaining_seconds: 200,
           },
+          {
+            category: "fleet",
+            name: "Small transport",
+            detail: "Shipyard (40%)",
+            origin_coords: "02:380:12",
+            remaining_seconds: 150,
+          },
+          {
+            category: "fleet",
+            name: "Laser turret",
+            detail: "Weapons factory",
+            origin_coords: "02:380:12",
+            remaining_seconds: 90,
+          },
         ],
       },
     };
@@ -1353,6 +1367,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
     expect(buildNav.textContent).toContain("Fleet Build");
     expect(buildNav.textContent).not.toContain("Combat & Fleet");
     expect(fltCtrlNav.textContent).toContain("Fleet Control");
+    // Only the 2 real ongoing flights count; Shipyard (40%) and Weapons factory jobs under category="fleet" are excluded
     expect(sidebar.querySelector("#nav-flt-ctrl-badge")?.textContent).toBe("2");
 
     // 4. Header titles update for research, combat (Fleet Build), and fleet-control (Fleet Control)
