@@ -2667,6 +2667,115 @@ def parse_transmitter_page(html: Any) -> dict[str, Any]:
     }
 
 
+_DAILY_BONUS_HIDE_RE = re.compile(r"hideloginbonus\s*=\s*1", re.IGNORECASE)
+_DAILY_BONUS_TRIGGER_RE = re.compile(
+    r"senddailylogin\s*\(|getloginbonus\s*=\s*1",
+    re.IGNORECASE,
+)
+_DAILY_BONUS_DAY_RE = re.compile(
+    r"\b(\d{1,5})\s*(?:st|nd|rd|th|\.)?\s+(?:consecutive|aufeinanderfolgende\w*)\s+login\b",
+    re.IGNORECASE,
+)
+_DAILY_BONUS_HIDDEN_STYLE_RE = re.compile(
+    r"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b",
+    re.IGNORECASE,
+)
+
+
+def _tag_or_ancestor_hidden(tag: Any) -> bool:
+    cur = tag
+    while cur is not None and getattr(cur, "name", None):
+        if cur.has_attr("hidden"):
+            return True
+        style = _safe_state_str(cur.get("style") or "")
+        if style and _DAILY_BONUS_HIDDEN_STYLE_RE.search(style):
+            return True
+        cur = getattr(cur, "parent", None)
+    return False
+
+
+def parse_daily_login_bonus(html: Any) -> dict[str, Any]:
+    """Parse the Daily Login Bonus popup shown on Command Central (`action=internalHome`)."""
+    raw_html = _safe_state_str(html) if html is not None else ""
+    if not raw_html:
+        return {
+            "present": False,
+            "button_label": "",
+            "has_send_daily_login": False,
+            "tpid_options": [],
+            "default_tpid": None,
+            "consecutive_day": None,
+            "grants_free_transmitter": False,
+        }
+
+    soup = BeautifulSoup(raw_html, "html.parser")
+    trigger_el = None
+    for el in soup.find_all(True):
+        onclick = _safe_state_str(el.get("onclick") or "")
+        href = _safe_state_str(el.get("href") or "")
+        if _DAILY_BONUS_HIDE_RE.search(onclick) or _DAILY_BONUS_HIDE_RE.search(href):
+            continue
+        if _DAILY_BONUS_TRIGGER_RE.search(onclick) or _DAILY_BONUS_TRIGGER_RE.search(href):
+            if not _tag_or_ancestor_hidden(el):
+                trigger_el = el
+                break
+
+    tpid_options: list[int] = []
+    default_tpid: Optional[int] = None
+    tpid_select = soup.find("select", attrs={"id": "tpid"}) or soup.find("select", attrs={"name": "tpid"})
+    if tpid_select is not None:
+        for opt in tpid_select.find_all("option"):
+            val_s = _safe_state_str(opt.get("value") or "").strip()
+            if val_s.isascii() and val_s.isdigit() and len(val_s) <= 18:
+                pid_i = game_data.cap_json_int(int(val_s))
+                if pid_i > 0:
+                    if pid_i not in tpid_options:
+                        tpid_options.append(pid_i)
+                    if opt.has_attr("selected") and default_tpid is None:
+                        default_tpid = pid_i
+        if default_tpid is None and tpid_options:
+            default_tpid = tpid_options[0]
+
+    has_send_fn = bool(
+        re.search(r"\bsendDailyLogin\s*=", raw_html, re.IGNORECASE)
+        or (
+            trigger_el is not None
+            and "senddailylogin" in _safe_state_str(trigger_el.get("onclick") or "").lower()
+        )
+    )
+
+    present = trigger_el is not None
+    button_label = (
+        " ".join(trigger_el.get_text(" ", strip=True).split())[:120]
+        if trigger_el is not None
+        else ""
+    )
+
+    body_text = " ".join(soup.get_text(" ", strip=True).split())
+    m_day = _DAILY_BONUS_DAY_RE.search(body_text)
+    consecutive_day = game_data.cap_json_int(int(m_day.group(1))) if m_day else None
+
+    grants_free_transmitter = False
+    if present:
+        low_body = body_text.lower()
+        low_html = raw_html.lower()
+        grants_free_transmitter = (
+            "transmitter" in low_body
+            or "freidreh" in low_body
+            or "payment/transmitter.png" in low_html
+        )
+
+    return {
+        "present": present,
+        "button_label": button_label,
+        "has_send_daily_login": has_send_fn,
+        "tpid_options": tpid_options,
+        "default_tpid": default_tpid,
+        "consecutive_day": consecutive_day,
+        "grants_free_transmitter": grants_free_transmitter,
+    }
+
+
 _UNIVERSE_RESEARCH_ALIASES: dict[str, str] = {
     "mining technology": "r1",
     "bergbautechnik": "r1",

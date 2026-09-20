@@ -46,6 +46,7 @@ from spaceinvasion.core.state import (
     normalize_planet_type,
     parse_building_queue,
     parse_buildings_page,
+    parse_daily_login_bonus,
     parse_economy_rates,
     parse_home_metadata,
     parse_research_page,
@@ -3403,6 +3404,119 @@ class ActionExecutor:
             active_planet_confirmed=active_planet_confirmed,
         )
 
+    def _collect_daily_login_bonus_on_home(
+        self,
+        client: GameBrowserClient,
+        hw_pid: Optional[int],
+        daily_info: Mapping[str, Any],
+    ) -> tuple[bool, str]:
+        """Collect the Command Central (`internalHome`) Daily Login Bonus popup targeting Homeworld `#tpid`."""
+        switch_fn = getattr(client, "_switch_frame", None)
+        wait_fn = getattr(client, "_wait_frame_ready", None)
+        tpid_opts = daily_info.get("tpid_options") or []
+        target_tpid: Optional[int] = None
+        if hw_pid is not None and hw_pid > 0:
+            if not tpid_opts or hw_pid in tpid_opts:
+                target_tpid = hw_pid
+        if target_tpid is None:
+            def_tpid = daily_info.get("default_tpid")
+            if isinstance(def_tpid, int) and not isinstance(def_tpid, bool) and def_tpid > 0:
+                target_tpid = def_tpid
+
+        def _select_tpid_js() -> None:
+            if target_tpid is None:
+                return
+            with contextlib.suppress(Exception):
+                client.driver.execute_script(
+                    "var sel = document.getElementById('tpid') || document.querySelector('select[name=\"tpid\"]');"
+                    "if (!sel || !sel.options) return false;"
+                    "var tgt = String(arguments[0]);"
+                    "for (var i = 0; i < sel.options.length; i++) {"
+                    "  if (String(sel.options[i].value) === tgt) {"
+                    "    sel.selectedIndex = i;"
+                    "    sel.value = tgt;"
+                    "    return true;"
+                    "  }"
+                    "}"
+                    "return false;",
+                    str(target_tpid),
+                )
+
+        def _trigger_send_daily_login_js() -> bool:
+            try:
+                res_js = client.driver.execute_script(
+                    "if (typeof sendDailyLogin === 'function') { sendDailyLogin(); return true; }"
+                    "return false;"
+                )
+                if res_js is True:
+                    return True
+            except Exception:
+                pass
+            build_url_fn = getattr(client, "_build_internal_url", None)
+            resolve_sid_fn = getattr(client, "_resolve_sid_query", None)
+            if callable(build_url_fn) and callable(resolve_sid_fn):
+                with contextlib.suppress(Exception):
+                    sid_q = str(resolve_sid_fn() or "").strip()
+                    tpid_part = f"&tpid={target_tpid}" if target_tpid is not None else ""
+                    sid_part = f"&{sid_q}" if sid_q else ""
+                    url = build_url_fn(f"action=internalHome&getLoginBonus=1{tpid_part}{sid_part}")
+                    if url:
+                        client.driver.execute_script("location.href = arguments[0];", url)
+                        return True
+            return False
+
+        after_html = ""
+        for attempt in range(2):
+            if callable(switch_fn):
+                switch_fn("F_Hauptframe")
+            _select_tpid_js()
+            self._pace_action(client, priority="interactive")
+            nav_tok = self._mark_frame_nav(client, "F_Hauptframe")
+
+            triggered = False
+            if attempt == 0:
+                for sel in (
+                    '[onclick*="sendDailyLogin"]',
+                    '[onclick*="getLoginBonus=1"]',
+                    'a[href*="getLoginBonus=1"]',
+                ):
+                    with contextlib.suppress(Exception):
+                        candidates = client.driver.find_elements(By.CSS_SELECTOR, sel)
+                        if not isinstance(candidates, list):
+                            candidates = []
+                        for cand in candidates:
+                            attr_txt = (
+                                str(cand.get_attribute("onclick") or "")
+                                + " "
+                                + str(cand.get_attribute("href") or "")
+                            ).lower()
+                            if "hideloginbonus" in attr_txt:
+                                continue
+                            self._safe_click(client, cand)
+                            triggered = True
+                            break
+                    if triggered:
+                        break
+            if not triggered:
+                triggered = _trigger_send_daily_login_js()
+            if not triggered:
+                break
+
+            if callable(wait_fn):
+                after_html = wait_fn(
+                    "F_Hauptframe",
+                    expected_action="internalHome",
+                    nav_token=nav_tok,
+                )
+            else:
+                after_html = str(getattr(client.driver, "page_source", "") or "")
+
+            after_str = after_html if isinstance(after_html, str) else ""
+            if not parse_daily_login_bonus(after_str).get("present", False):
+                return True, after_str
+
+        return False, (after_html if isinstance(after_html, str) else "")
+
     def _execute_activate_transmitter(
         self,
         client: GameBrowserClient,
@@ -3411,11 +3525,132 @@ class ActionExecutor:
     ) -> ExecutionResult:
         self.last_transmitter_info = None
         _call_with_optional_priority(client.ensure_in_game, priority="interactive")
-        html = _call_with_optional_priority(
+
+        # Always collect daily bonus & activate free IDT charge with the Pos. 1 Homeworld selected.
+        hw_pid = homeworld_planet_id(state)
+        if (
+            hw_pid is None
+            and isinstance(action.planet_id, int)
+            and not isinstance(action.planet_id, bool)
+            and action.planet_id > 0
+        ):
+            hw_pid = action.planet_id
+        if (
+            hw_pid is None
+            and isinstance(state.active_planet_id, int)
+            and not isinstance(state.active_planet_id, bool)
+            and state.active_planet_id > 0
+        ):
+            hw_pid = state.active_planet_id
+        planets_all = getattr(state, "planets", ()) or ()
+        multi_planet = len(planets_all) > 1
+        hw_planet = next((p for p in planets_all if p.planet_id == hw_pid), None)
+        hw_coords = _safe_str(getattr(hw_planet, "coords", "") or action.planet_coords).strip()
+        effective_action = (
+            replace(action, planet_id=hw_pid, planet_coords=hw_coords or action.planet_coords)
+            if hw_pid is not None
+            and (action.planet_id != hw_pid or (hw_coords and action.planet_coords != hw_coords))
+            else action
+        )
+
+        # Step 1: Open Command Central (`internalHome`) first so the Daily Login Bonus popup
+        # appears and can be collected (granting today's free Interdimensional Transmitter charge).
+        home_html = _call_with_optional_priority(
             client.navigate_menu,
-            "internalTransmitter",
+            "internalHome",
             priority="interactive",
         )
+        home_html_str = home_html if isinstance(home_html, str) else ""
+        daily_info = parse_daily_login_bonus(home_html_str)
+        daily_bonus_checked = bool(home_html_str)
+        daily_bonus_seen = bool(daily_info.get("present"))
+        daily_bonus_collected = False
+        if daily_bonus_seen:
+            daily_bonus_collected, _ = self._collect_daily_login_bonus_on_home(
+                client,
+                hw_pid,
+                daily_info,
+            )
+
+        def _base_tm_meta(extra: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+            out: dict[str, Any] = dict(extra or {})
+            out.update(
+                {
+                    "daily_bonus_checked": daily_bonus_checked,
+                    "daily_bonus_seen": daily_bonus_seen,
+                    "daily_bonus_collected": daily_bonus_collected,
+                    "homeworld_planet_id": hw_pid,
+                    "homeworld_coords": hw_coords,
+                }
+            )
+            return out
+
+        # Step 2: Navigate to `internalTransmitter` and strictly enforce Homeworld selection.
+        if hw_pid is not None and hw_pid > 0:
+            html = self._navigate_and_select_planet(
+                client,
+                state,
+                "internalTransmitter",
+                hw_pid,
+                active_planet_confirmed=False,
+            )
+            if not html:
+                err_hw = (
+                    f"Could not select Homeworld [{hw_coords or hw_pid}] on internalTransmitter; "
+                    "aborted so the free charge is not claimed on a secondary colony."
+                )
+                self.last_transmitter_info = _base_tm_meta(
+                    {"has_form": False, "free_spins": None, "activated": False}
+                )
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=effective_action,
+                    message=f"Aborted: {err_hw}",
+                    validated=False,
+                    validation_error=err_hw,
+                )
+            if (
+                multi_planet
+                and isinstance(html, str)
+                and "newplanet=" not in html.lower()
+                and state.active_planet_id != hw_pid
+            ):
+                b_html = self._navigate_and_select_planet(
+                    client,
+                    state,
+                    "internalBuildings",
+                    hw_pid,
+                    active_planet_confirmed=False,
+                )
+                if not b_html:
+                    err_hw_fb = (
+                        f"Could not switch to Homeworld [{hw_coords or hw_pid}] before opening "
+                        "internalTransmitter; aborted."
+                    )
+                    self.last_transmitter_info = _base_tm_meta(
+                        {"has_form": False, "free_spins": None, "activated": False}
+                    )
+                    return ExecutionResult(
+                        executed=False,
+                        dry_run=False,
+                        action=effective_action,
+                        message=f"Aborted: {err_hw_fb}",
+                        validated=False,
+                        validation_error=err_hw_fb,
+                    )
+                html = _call_with_optional_priority(
+                    client.navigate_menu,
+                    "internalTransmitter",
+                    priority="interactive",
+                )
+        else:
+            html = _call_with_optional_priority(
+                client.navigate_menu,
+                "internalTransmitter",
+                priority="interactive",
+            )
+
         info = parse_transmitter_page(html)
         if info.get("needs_src_switch_to_free") and info.get("free_src_href"):
             build_url_fn = getattr(client, "_build_internal_url", None)
@@ -3440,16 +3675,61 @@ class ActionExecutor:
                 )
             else:
                 html = str(getattr(client.driver, "page_source", "") or html)
+            if multi_planet and hw_pid is not None and isinstance(html, str) and html:
+                obs_after_src = self._extract_selected_planet_id(html, "internalTransmitter")
+                if obs_after_src is not None and obs_after_src != hw_pid:
+                    sw_ok, sw_html = self._select_planet_if_needed(client, hw_pid, html=html)
+                    if sw_ok and sw_html:
+                        html = sw_html
             info = parse_transmitter_page(html)
 
-        self.last_transmitter_info = {**info, "activated": False}
+        # Final Homeworld verification before accepting 0 charges or clicking spin.
+        if multi_planet and hw_pid is not None and isinstance(html, str) and html:
+            obs_tm_pid = self._extract_selected_planet_id(html, "internalTransmitter")
+            if obs_tm_pid is not None and obs_tm_pid != hw_pid:
+                err_hw_mismatch = (
+                    f"Active planet mismatch on internalTransmitter (observed={obs_tm_pid}, "
+                    f"expected Homeworld={hw_pid} [{hw_coords}]); aborted."
+                )
+                self.last_transmitter_info = _base_tm_meta({**info, "activated": False})
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=effective_action,
+                    message=f"Aborted: {err_hw_mismatch}",
+                    validated=False,
+                    validation_error=err_hw_mismatch,
+                )
+
+        self.last_transmitter_info = _base_tm_meta({**info, "activated": False})
         free_before = int(info.get("free_spins") or 0)
         if free_before <= 0:
+            if daily_bonus_seen and not daily_bonus_collected:
+                err_bonus = (
+                    "Daily login bonus popup on Command Central could not be collected "
+                    "before checking Interdimensional Transmitter."
+                )
+                return ExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    action=effective_action,
+                    message=f"Aborted: {err_bonus}",
+                    validated=False,
+                    validation_error=err_bonus,
+                )
+            bonus_note = (
+                " (daily login bonus collected on Command Central)"
+                if daily_bonus_collected
+                else ""
+            )
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
-                action=action,
-                message="Skipped: 0 free Interdimensional Transmitter charges available today (Urplasma spin blocked).",
+                action=effective_action,
+                message=(
+                    f"Skipped: 0 free Interdimensional Transmitter charges available today{bonus_note} "
+                    "(Urplasma spin blocked)."
+                ),
                 validated=True,
             )
 
@@ -3461,7 +3741,7 @@ class ActionExecutor:
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
-                action=action,
+                action=effective_action,
                 message=f"Aborted: {err_msg}",
                 validated=False,
                 validation_error=err_msg,
@@ -3493,7 +3773,7 @@ class ActionExecutor:
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
-                action=action,
+                action=effective_action,
                 message=f"Aborted: {err_dom}",
                 validated=False,
                 validation_error=err_dom,
@@ -3522,7 +3802,7 @@ class ActionExecutor:
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
-                action=action,
+                action=effective_action,
                 message="Aborted: could not find free #tm.submit control on internalTransmitter.",
                 validated=False,
                 validation_error="Missing #tm.submit button on internalTransmitter.",
@@ -3550,11 +3830,11 @@ class ActionExecutor:
             or (bool(reward_txt) and (reward_txt != prev_reward or after_date != prev_date))
         )
         if not spin_verified:
-            self.last_transmitter_info = {**after_info, "activated": False}
+            self.last_transmitter_info = _base_tm_meta({**after_info, "activated": False})
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
-                action=action,
+                action=effective_action,
                 message=(
                     f"Aborted: Interdimensional Transmitter free charges did not decrease "
                     f"(before={free_before}, after={free_after})."
@@ -3563,11 +3843,13 @@ class ActionExecutor:
                 validation_error=f"Free spin count unchanged ({free_before} -> {free_after}).",
             )
 
-        self.last_transmitter_info = {
-            **after_info,
-            "activated": True,
-            "before_free_spins": free_before,
-        }
+        self.last_transmitter_info = _base_tm_meta(
+            {
+                **after_info,
+                "activated": True,
+                "before_free_spins": free_before,
+            }
+        )
         self._recent_timestamps.append(time.monotonic())
         updated_state: Optional[GameState] = None
         if hasattr(client, "read_planets_overview"):
@@ -3580,16 +3862,23 @@ class ActionExecutor:
                 updated_state = self._build_updated_state(
                     client,
                     state,
-                    action,
+                    effective_action,
                     updated_planets,
+                    page_html=after_html if isinstance(after_html, str) else "",
                 )
+        bonus_prefix = (
+            "Collected daily login bonus on Command Central; "
+            if daily_bonus_collected
+            else ""
+        )
+        hw_label = f" on Homeworld [{hw_coords}]" if hw_coords else ""
         reward_note = f" — Won: {reward_txt}" if reward_txt else ""
         return ExecutionResult(
             executed=True,
             dry_run=False,
-            action=action,
+            action=effective_action,
             message=(
-                f"Activated free daily Interdimensional Transmitter spin "
+                f"{bonus_prefix}Activated free daily Interdimensional Transmitter spin{hw_label} "
                 f"(charges {free_before} -> {free_after}){reward_note}."
             ),
             updated_state=updated_state,

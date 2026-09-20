@@ -61,6 +61,9 @@ This document specifies how **SpaceInvasion Classic** works at the browser/HTTP 
   - Hostile movement banners match `[class*="attack"], [id*="attack"]` (ignoring benign protection text).
 - **REQ-UI-032 (Fleet Recall)**: `[WIKI-SPEC]`
   - Recalling a flight (including active Escape Flights) submits `POST` `recallFleet=<flight_id>` on `internalHome`. Normal recall returns in elapsed flight time; *Escape flight assistant+* halves return time.
+- **REQ-UI-033 (Daily Login Bonus Popup & Homeworld Free Transmitter Flow)**: `[VERIFIED-LIVE]`
+  - Opening Command Central (`action=internalHome`) triggers the Daily Login Bonus popup with a target-planet `<select id="tpid">` (which may sit inside a `display:none` wrapper on non-resource days), a defer link (`hideLoginBonus=1`, never click), and `onclick="sendDailyLogin();"` (`action=internalHome&getLoginBonus=1&tpid=<planet_id>&sid=...`).
+  - Collecting the daily bonus grants the free Interdimensional Transmitter charge on `action=internalTransmitter`. Both `#tpid` and `internalTransmitter`'s `select[name="planet"]` (`newPlanet=<homeworld_id>`) must target the Pos. 1 Homeworld before activating `#tm.submit`.
 
 ### 3.3 `internalBuildings` `[VERIFIED-LIVE]`
 - **REQ-UI-040 (Building Cards & Costs)**: Cards render inside `div.build-card.b-<id>` with detail link `a[href*="action=internalDetail&type=building&id=<id>"]`, cost text `Required: <Pig iron> <Metal> <Kryptonite> <Spice>` using dot-grouped thousands (`2.000` = `2000`), and build link `a.bau[href*="action=internalBuildItem&buildingID=<id>"]`.

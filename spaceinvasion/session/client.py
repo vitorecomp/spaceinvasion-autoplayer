@@ -41,6 +41,7 @@ from spaceinvasion.core.state import (
     normalize_planet_type,
     parse_building_queue,
     parse_buildings_page,
+    parse_daily_login_bonus,
     parse_economy_rates,
     parse_home_metadata,
     parse_menu_messages,
@@ -609,6 +610,7 @@ class GameBrowserClient:
     last_galaxy_nav_method: str = ""
     last_galaxy_step_clicks: int = 0
     last_snapshot_observed_active_planet: bool = True
+    last_home_daily_bonus_present: Optional[bool] = None
 
     def __init__(
         self,
@@ -638,6 +640,7 @@ class GameBrowserClient:
         self.last_galaxy_nav_method: str = ""
         self.last_galaxy_step_clicks: int = 0
         self.last_snapshot_observed_active_planet: bool = True
+        self.last_home_daily_bonus_present: Optional[bool] = None
         self._driver_lock = threading.RLock()
         self._dom_healthy_epoch: int = 0
 
@@ -1177,6 +1180,31 @@ class GameBrowserClient:
                     pass
         time.sleep(0.25)
 
+    @staticmethod
+    def _frame_matches_expected_action(
+        expected_action: Optional[str],
+        href: str,
+        html: str = "",
+    ) -> bool:
+        if not expected_action:
+            return True
+        if expected_action in href:
+            return True
+        href_l = href.lower()
+        if expected_action == "internalSendFleet" and "fleeterr." in href_l:
+            return True
+        if (
+            expected_action == "internalTransmitter"
+            and "indexinternal.es" in href_l
+            and (
+                'id="tm.form"' in html
+                or 'value="internalTransmitter"' in html
+                or "action=internalTransmitter" in html
+            )
+        ):
+            return True
+        return False
+
     def _try_read_landed_frame(
         self,
         frame_id: str,
@@ -1206,14 +1234,10 @@ class GameBrowserClient:
                 return None
             if nav_token is not None and cur_token == nav_token:
                 return None
-            if (
-                expected_action
-                and expected_action not in href
-                and not (expected_action == "internalSendFleet" and "fleeterr." in href.lower())
-            ):
-                return None
             html = self.driver.page_source or ""
             if len(html) < 64:
+                return None
+            if not self._frame_matches_expected_action(expected_action, href, html):
                 return None
         except Exception:
             return None
@@ -1272,11 +1296,7 @@ class GameBrowserClient:
                         raise SpaceInvasionAuthError(
                             "Browser redirected to BitMeUp portal/login while waiting for game frame."
                         )
-                    if (
-                        not expected_action
-                        or expected_action in href
-                        or (expected_action == "internalSendFleet" and "fleeterr." in href.lower())
-                    ):
+                    if self._frame_matches_expected_action(expected_action, href, html):
                         return html
             except Exception as wait_exc:
                 if not self._is_renderer_timeout(wait_exc):
@@ -3076,10 +3096,14 @@ class GameBrowserClient:
         if home_html:
             tutorial = parse_tutorial_from_home(home_html)
             active_pid, speedup, newbie, queues, alerts = parse_home_metadata(home_html)
+            self.last_home_daily_bonus_present = bool(
+                parse_daily_login_bonus(home_html).get("present", False)
+            )
         else:
             tutorial = None
             active_pid = self._extract_selected_planet_id(raw_main_html, main_url)
             speedup, newbie, queues, alerts = None, False, (), ()
+            self.last_home_daily_bonus_present = None
 
         merged_queues = list(queues)
         research_offers = state.research_offers

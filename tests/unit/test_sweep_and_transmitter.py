@@ -14,6 +14,7 @@ from spaceinvasion.core.state import (
     PlanetState,
     Resources,
     count_allocated_normal_planets,
+    parse_daily_login_bonus,
     parse_transmitter_page,
 )
 from spaceinvasion.db.storage import GameDatabase
@@ -211,6 +212,336 @@ class TestSweepAndTransmitter(unittest.TestCase):
             # Next day (+25 hours) -> due again!
             status_next_day = db.get_transmitter_status(now_ts=day1_ts + 25 * 3600.0)
             self.assertTrue(status_next_day["due"])
+
+    def test_parse_daily_login_bonus_live_popup_vs_clean_home(self) -> None:
+        popup_html = """
+        <html><body>
+        <div>Today, its your <b>3</b> consecutive Login for <b>RETRO-Universe</b></div>
+        <div><img src="/img/payment/transmitter.png" style="height:50px"/> 1x free interdimensional Transmitter Game</div>
+        <div onclick="location.href='indexInternal.es?action=internalHome&amp;hideLoginBonus=1&amp;showTutorial=1&amp;sid=secret';">
+          show on next login x
+        </div>
+        <div style="margin:10px;position:relative;display:none;">
+          <select id="tpid" style="font-size:12px;">
+            <option value="101">02:380:12 Colony</option>
+            <option value="102" selected="selected">02:381:05 Colony 2</option>
+          </select>
+        </div>
+        <script>
+          sendDailyLogin=function(){
+            var e=document.getElementById("tpid");
+            var tpid=e[e.selectedIndex].value;
+            location.href='indexInternal.es?action=internalHome&getLoginBonus=1&tpid=' + tpid + '&sid=secret';
+          };
+        </script>
+        <div onclick="sendDailyLogin();" style="display:inline-block;cursor:pointer;">
+          <table><tbody><tr><td align="center"><span> collect daily bonus </span></td></tr></tbody></table>
+        </div>
+        </body></html>
+        """
+        parsed = parse_daily_login_bonus(popup_html)
+        self.assertTrue(parsed["present"])
+        self.assertEqual(parsed["button_label"], "collect daily bonus")
+        self.assertTrue(parsed["has_send_daily_login"])
+        self.assertEqual(parsed["tpid_options"], [101, 102])
+        self.assertEqual(parsed["default_tpid"], 102)
+        self.assertEqual(parsed["consecutive_day"], 3)
+        self.assertTrue(parsed["grants_free_transmitter"])
+        self.assertNotIn("secret", repr(parsed))
+
+        clean_home = "<html><body><div>Command Central Overview</div></body></html>"
+        self.assertFalse(parse_daily_login_bonus(clean_home)["present"])
+
+        hidden_popup = popup_html.replace(
+            'style="display:inline-block;cursor:pointer;"',
+            'style="display:none;cursor:pointer;"',
+        )
+        self.assertFalse(parse_daily_login_bonus(hidden_popup)["present"])
+
+    def test_executor_collects_daily_bonus_and_switches_to_homeworld_before_spin(self) -> None:
+        p1 = _make_planet(101, "02:380:12")
+        p2 = _make_planet(102, "02:381:05")
+        st = GameState(31, 7, "cmdr", 1_700_000_000.0, (p1, p2), active_planet_id=102)
+        # Even if action mistakenly points to secondary colony 102, executor must target Homeworld 101.
+        act = PlannedAction(
+            priority="P2",
+            kind="ACTIVATE_TRANSMITTER",
+            planet_id=102,
+            planet_coords="02:381:05",
+            target_name="Interdimensional Transmitter",
+            reason="Daily free spin",
+            executable_now=True,
+        )
+
+        home_with_popup = """
+        <html><body>
+        <div>Today, its your <b>3</b> consecutive Login for <b>RETRO-Universe</b></div>
+        <div style="display:none;"><select id="tpid">
+          <option value="101">02:380:12 Home</option>
+          <option value="102" selected="selected">02:381:05 Colony</option>
+        </select></div>
+        <script>sendDailyLogin=function(){};</script>
+        <div onclick="sendDailyLogin();"><span>collect daily bonus</span></div>
+        </body></html>
+        """
+        home_after_bonus = "<html><body><div>Command Central - Bonus collected</div></body></html>"
+
+        def _make_tm_html(selected_pid: int, free_spins: int, reward_row: str = "<tr><td>---</td><td>---</td></tr>") -> str:
+            sel101 = ' selected="selected"' if selected_pid == 101 else ""
+            sel102 = ' selected="selected"' if selected_pid == 102 else ""
+            return f"""
+            <html><body>
+            <form name="fselect">
+              <select name="planet">
+                <option value="indexInternal.es?action=internalTransmitter&amp;newPlanet=101"{sel101}>Home [02:380:12]</option>
+                <option value="indexInternal.es?action=internalTransmitter&amp;newPlanet=102"{sel102}>Colony [02:381:05]</option>
+              </select>
+            </form>
+            <script>_freeSpins={free_spins};window.SI_TPL={{transmitterSpin:{{autoAddSpin:false}}}};</script>
+            <form action="/indexInternal.es" id="tm.form" method="POST">
+              <table><tr><td>charges: {free_spins}</td></tr></table>
+              <input name="action" type="hidden" value="internalTransmitter"/>
+              <input id="tm.play" name="play" type="hidden" value="1"/>
+              <input name="idtSrc" type="hidden" value="1"/>
+              <button id="tm.submit" type="button"><span class="buy__label">FREE</span> activate</button>
+            </form>
+            <table><tr><td>date</td><td>winning</td></tr>{reward_row}</table>
+            </body></html>
+            """
+
+        tm_on_colony_102 = _make_tm_html(102, 1)
+        tm_on_homeworld_101 = _make_tm_html(101, 1)
+        tm_after_spin = _make_tm_html(101, 0, "<tr><td>2026-11-19 00:05:00</td><td>50.000 Metal</td></tr>")
+
+        nav_calls: list[str] = []
+        tpid_script_args: list[tuple] = []
+
+        client = MagicMock()
+
+        def _nav_side_effect(action_name: str, **_kw: object) -> str:
+            nav_calls.append(action_name)
+            if action_name == "internalHome":
+                return home_with_popup
+            if action_name == "internalTransmitter":
+                return tm_on_colony_102
+            return ""
+
+        client.navigate_menu.side_effect = _nav_side_effect
+
+        bonus_btn = MagicMock()
+        bonus_btn.get_attribute.side_effect = lambda a: "sendDailyLogin();" if a == "onclick" else ""
+        client.driver.find_elements.return_value = [bonus_btn]
+
+        opt_101 = MagicMock()
+        opt_101.get_attribute.return_value = "indexInternal.es?action=internalTransmitter&newPlanet=101"
+        opt_101.is_selected.return_value = False
+        opt_102 = MagicMock()
+        opt_102.get_attribute.return_value = "indexInternal.es?action=internalTransmitter&newPlanet=102"
+        opt_102.is_selected.return_value = True
+        planet_select_el = MagicMock()
+        planet_select_el.tag_name = "select"
+        planet_select_el.find_elements.return_value = [opt_101, opt_102]
+
+        tm_btn = MagicMock()
+
+        def _find_el(by: object, val: str) -> MagicMock:
+            if val == 'select[name="planet"]':
+                return planet_select_el
+            if val == "tm.submit":
+                return tm_btn
+            raise AssertionError(f"Unexpected find_element({by!r}, {val!r})")
+
+        client.driver.find_element.side_effect = _find_el
+
+        def _exec_script(script: str, *args: object) -> object:
+            if "getElementById('tpid')" in script:
+                tpid_script_args.append(args)
+                return True
+            if "sel.onchange" in script:
+                return True
+            if "document.getElementById('tm.form')" in script:
+                return {"ok": True}
+            return True
+
+        client.driver.execute_script.side_effect = _exec_script
+        client._wait_frame_ready.side_effect = [
+            home_after_bonus,     # after clicking daily bonus
+            tm_on_homeworld_101,  # after switching planet 102 -> 101 on internalTransmitter
+            tm_after_spin,        # after clicking #tm.submit
+        ]
+        client.read_planets_overview.return_value = GameState(
+            31, 7, "cmdr", 1_700_000_010.0, (p1, p2), active_planet_id=102
+        )
+
+        ex = ActionExecutor(dry_run=False, allow_transmitter=True)
+        res = ex.execute_action(client, st, act)
+
+        self.assertTrue(res.executed, res.message)
+        self.assertTrue(res.validated, res.message)
+        self.assertEqual(nav_calls, ["internalHome", "internalTransmitter"])
+        self.assertIn(("101",), tpid_script_args)
+        bonus_btn.click.assert_called_once()
+        tm_btn.click.assert_called_once()
+        self.assertEqual(res.action.planet_id, 101)
+        self.assertEqual(res.action.planet_coords, "02:380:12")
+        self.assertIsNotNone(res.updated_state)
+        self.assertEqual(res.updated_state.active_planet_id, 101)
+        self.assertTrue(ex.last_transmitter_info["daily_bonus_checked"])
+        self.assertTrue(ex.last_transmitter_info["daily_bonus_collected"])
+        self.assertEqual(ex.last_transmitter_info["homeworld_planet_id"], 101)
+        self.assertIn("50.000 Metal", res.message)
+        self.assertIn("02:380:12", res.message)
+
+    def test_executor_aborts_transmitter_if_homeworld_selection_fails(self) -> None:
+        p1 = _make_planet(101, "02:380:12")
+        p2 = _make_planet(102, "02:381:05")
+        st = GameState(31, 7, "cmdr", 1_700_000_000.0, (p1, p2), active_planet_id=102)
+        act = PlannedAction(
+            priority="P2",
+            kind="ACTIVATE_TRANSMITTER",
+            planet_id=101,
+            planet_coords="02:380:12",
+            target_name="Interdimensional Transmitter",
+            reason="Daily free spin",
+            executable_now=True,
+        )
+        tm_stuck_on_102 = """
+        <html><body>
+        <form name="fselect">
+          <select name="planet">
+            <option value="indexInternal.es?action=internalTransmitter&amp;newPlanet=101">Home [02:380:12]</option>
+            <option value="indexInternal.es?action=internalTransmitter&amp;newPlanet=102" selected="selected">Colony [02:381:05]</option>
+          </select>
+        </form>
+        <script>_freeSpins=1;window.SI_TPL={transmitterSpin:{autoAddSpin:false}};</script>
+        <form id="tm.form"><input name="idtSrc" value="1"/><input id="tm.play" name="play" value="1"/>
+          <button id="tm.submit" type="button">FREE activate</button>
+        </form>
+        </body></html>
+        """
+        client = MagicMock()
+        client.navigate_menu.side_effect = lambda a, **_kw: (
+            "<html><body>Command Central</body></html>" if a == "internalHome" else tm_stuck_on_102
+        )
+        opt_101 = MagicMock()
+        opt_101.get_attribute.return_value = "indexInternal.es?action=internalTransmitter&newPlanet=101"
+        opt_101.is_selected.return_value = False
+        opt_102 = MagicMock()
+        opt_102.get_attribute.return_value = "indexInternal.es?action=internalTransmitter&newPlanet=102"
+        opt_102.is_selected.return_value = True
+        sel_el = MagicMock()
+        sel_el.find_elements.return_value = [opt_101, opt_102]
+        client.driver.find_element.return_value = sel_el
+        # Planet switch reload remains stuck on 102!
+        client._wait_frame_ready.return_value = tm_stuck_on_102
+        client.driver.execute_script.return_value = True
+
+        ex = ActionExecutor(dry_run=False, allow_transmitter=True)
+        res = ex.execute_action(client, st, act)
+        self.assertFalse(res.executed)
+        self.assertFalse(res.validated)
+        self.assertIn("Homeworld", res.validation_error or "")
+        # #tm.submit must never be queried or clicked when stuck on colony 102
+        for call in client.driver.find_element.call_args_list:
+            self.assertNotEqual(call.args[1], "tm.submit")
+
+    def test_plan_transmitter_targets_homeworld_and_db_recovers_missing_daily_bonus_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = GameDatabase(Path(tmp) / "test.db")
+            self.addCleanup(db.close)
+
+            day_ts = 1_794_960_100.0
+            # Simulate legacy/pre-fix check that went straight to internalTransmitter (0 free spins,
+            # no daily_bonus_checked_day): must remain due=True so the bot checks Command Central!
+            db.save_meta_json(
+                "transmitter_state",
+                {
+                    "last_activated_day": "",
+                    "last_checked_day": db.get_transmitter_status(now_ts=day_ts)["today_day_key"],
+                    "free_spins_remaining": 0,
+                    "total_activations": 0,
+                },
+                ts=day_ts,
+            )
+            st_legacy = db.get_transmitter_status(now_ts=day_ts + 5.0)
+            self.assertTrue(st_legacy["due"])
+
+            # Planning on multi-planet empire with secondary colony active must target Homeworld (101)
+            p1 = _make_planet(101, "02:380:12")
+            p2 = _make_planet(102, "02:381:05")
+            gs = GameState(31, 7, "cmdr", day_ts + 5.0, (p1, p2), active_planet_id=102)
+            cfg = StrategyConfig(allow_transmitter=True)
+            acts = plan_actions(gs, config=cfg, transmitter_status=st_legacy, now_ts=day_ts + 5.0)
+            tm_acts = [a for a in acts if a.kind == "ACTIVATE_TRANSMITTER"]
+            self.assertEqual(len(tm_acts), 1)
+            self.assertEqual(tm_acts[0].planet_id, 101)
+            self.assertEqual(tm_acts[0].planet_coords, "02:380:12")
+
+            # After Command Central check confirms 0 charges -> due=False (no infinite loop)
+            st_checked = db.record_transmitter_state(
+                activated=False,
+                free_spins_remaining=0,
+                daily_bonus_checked=True,
+                daily_bonus_collected=False,
+                ts=day_ts + 20.0,
+            )
+            self.assertFalse(st_checked["due"])
+
+            # Passive Command Central read later spots Daily Login Bonus popup -> re-arms due=True!
+            st_rearmed = db.note_daily_login_bonus_seen(present=True, ts=day_ts + 40.0)
+            self.assertTrue(st_rearmed["due"])
+            self.assertTrue(st_rearmed["daily_bonus_available"])
+
+            # Once activated today -> due=False and passive popup note cannot re-arm same day
+            st_done = db.record_transmitter_state(
+                activated=True,
+                free_spins_remaining=0,
+                reward="25.000 Pig iron",
+                daily_bonus_checked=True,
+                daily_bonus_collected=True,
+                ts=day_ts + 60.0,
+            )
+            self.assertFalse(st_done["due"])
+            st_done_after_note = db.note_daily_login_bonus_seen(present=True, ts=day_ts + 80.0)
+            self.assertFalse(st_done_after_note["due"])
+
+    def test_api_activate_transmitter_enforces_homeworld_planet(self) -> None:
+        p1 = _make_planet(101, "02:380:12")
+        p2 = _make_planet(102, "02:381:05")
+        gs = GameState(31, 7, "cmdr", 1_700_000_000.0, (p1, p2), active_planet_id=102)
+        with tempfile.TemporaryDirectory() as tmp:
+            bridge = GameApiBridge(
+                db_path=Path(tmp) / "api.db",
+                config_path=Path(tmp) / "cfg.yaml",
+            )
+            self.addCleanup(bridge.close)
+            bridge._last_state = gs
+            bridge._last_snapshot_at = 1_700_000_000.0
+            res = bridge.handle_command(
+                {"command": "activate_transmitter", "planet_id": 102, "dry_run": True},
+            )
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["action"]["planet_id"], 101)
+            self.assertEqual(res["action"]["planet_coords"], "02:380:12")
+
+    def test_wait_frame_ready_accepts_post_internal_transmitter_without_query_action(self) -> None:
+        from spaceinvasion.session.client import GameBrowserClient
+
+        driver = MagicMock()
+        driver.execute_script.return_value = {
+            "ready": "complete",
+            "href": "https://spaceinvasion.bitmeup.com/indexInternal.es",
+            "token": None,
+        }
+        driver.page_source = _IDT_FREE_HTML_AFTER
+        client = GameBrowserClient(driver, timeout=1.0)
+        client._switch_frame = MagicMock()
+        html = client._wait_frame_ready(
+            "F_Hauptframe",
+            expected_action="internalTransmitter",
+            nav_token="old-token",
+        )
+        self.assertIn("25.000 Kryptonite", html)
 
     def test_colony_allocation_cap_gates_colonies_but_keeps_players_and_debris(self) -> None:
         raid_targets = (

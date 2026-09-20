@@ -25,6 +25,7 @@ from spaceinvasion.core.state import (
     extract_in_flight_recycle_coords,
     extract_in_flight_station_dest_coords,
     has_in_flight_fleet_from_planet,
+    homeworld_planet_id,
     is_building_allowed_on_planet_type,
     is_in_flight_fleet_job,
     is_undersized_fresh_colony,
@@ -6699,8 +6700,12 @@ def _plan_transmitter_action(
                 eff_tm = cand_tm
     if eff_tm is None or not bool(eff_tm.get("due", False)):
         return None
-    active = state.active_planet() or (state.planets[0] if state.planets else None)
-    if active is None:
+    hw_pid = homeworld_planet_id(state)
+    target_planet = next(
+        (p for p in state.planets if hw_pid is not None and p.planet_id == hw_pid),
+        None,
+    ) or state.active_planet() or (state.planets[0] if state.planets else None)
+    if target_planet is None:
         return None
     can_exec = bool(getattr(cfg, "allow_transmitter", False))
     if not can_exec:
@@ -6711,14 +6716,18 @@ def _plan_transmitter_action(
         if isinstance(free_rem, int) and not isinstance(free_rem, bool) and free_rem > 0
         else ""
     )
+    hw_coords = _safe_strategy_str(target_planet.coords)
     hold_note = "" if can_exec else " [Hold: allow_transmitter=false in Config]"
     return PlannedAction(
         priority="P2",
         kind="ACTIVATE_TRANSMITTER",
-        planet_id=active.planet_id,
-        planet_coords=_safe_strategy_str(active.coords),
+        planet_id=target_planet.planet_id,
+        planet_coords=hw_coords,
         target_name="Interdimensional Transmitter",
-        reason=f"Activate daily free Interdimensional Transmitter spin{charges_hint} (0 Urplasma){hold_note}",
+        reason=(
+            f"Collect Command Central daily bonus & activate free Interdimensional Transmitter spin "
+            f"on Homeworld [{hw_coords}]{charges_hint} (0 Urplasma){hold_note}"
+        ),
         executable_now=can_exec,
     )
 
@@ -7356,17 +7365,26 @@ def merge_manual_queue_actions(
 
         elif kind == "ACTIVATE_TRANSMITTER":
             can_tm = bool(getattr(cfg, "allow_transmitter", True))
+            hw_pid_mq = homeworld_planet_id(state)
+            tm_planet = (
+                planets_by_id.get(hw_pid_mq)
+                if hw_pid_mq is not None and hw_pid_mq in planets_by_id
+                else planet
+            )
             built_act = PlannedAction(
                 priority=prio,
                 kind="ACTIVATE_TRANSMITTER",
-                planet_id=planet.planet_id,
-                planet_coords=planet.coords,
+                planet_id=tm_planet.planet_id,
+                planet_coords=tm_planet.coords,
                 target_id=None,
                 target_name="Interdimensional Transmitter",
                 target_level=None,
                 cost=Resources(),
                 missing=Resources(),
-                reason=f"{base_tag}: Claim free Interdimensional Transmitter spin{note_suffix}",
+                reason=(
+                    f"{base_tag}: Collect Command Central daily bonus & claim free Interdimensional "
+                    f"Transmitter spin on Homeworld [{tm_planet.coords}]{note_suffix}"
+                ),
                 executable_now=can_tm,
                 manual_queue_id=qid,
                 manual_sort_rank=srank,

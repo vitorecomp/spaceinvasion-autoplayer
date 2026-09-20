@@ -101,6 +101,7 @@ from spaceinvasion.core.state import (
     is_in_flight_fleet_job,
     is_undersized_fresh_colony,
     normalize_planet_type,
+    parse_daily_login_bonus,
     parse_economy_rates,
     parse_home_metadata,
     parse_tutorial_from_home,
@@ -1387,6 +1388,10 @@ class GameApiBridge:
         self._transmitter_state_mem: dict[str, Any] = {
             "last_activated_day": "",
             "last_checked_day": "",
+            "daily_bonus_checked_day": "",
+            "daily_bonus_collected_day": "",
+            "daily_bonus_available": False,
+            "daily_bonus_available_day": "",
             "last_activated_ts": 0.0,
             "last_checked_ts": 0.0,
             "free_spins_remaining": None,
@@ -1727,9 +1732,10 @@ class GameApiBridge:
             return None
         msg_s = _bounded_api_str(getattr(res, "message", ""), default="")
         msg_l = msg_s.lower()
-        # Skip benign non-errors (fleet slot capacity waits, no-ops, hourly caps)
+        # Skip benign non-errors (fleet slot capacity waits, no-ops, validated skips, hourly caps)
         if (
             msg_l.startswith("no-op:")
+            or (validated and msg_l.startswith("skipped:"))
             or "hourly action rate cap" in msg_l
             or "no free fleet slot" in msg_l
             or "too many fleets" in msg_l
@@ -2126,13 +2132,22 @@ class GameApiBridge:
         mem = self._transmitter_state_mem
         last_act_day = str(mem.get("last_activated_day") or "")
         last_chk_day = str(mem.get("last_checked_day") or "")
+        db_chk_day = str(mem.get("daily_bonus_checked_day") or "")
+        db_col_day = str(mem.get("daily_bonus_collected_day") or "")
+        db_avail_day = str(mem.get("daily_bonus_available_day") or "")
+        db_avail = bool(mem.get("daily_bonus_available", False)) and (db_avail_day in ("", today))
         free_rem = mem.get("free_spins_remaining")
-        already_done = (last_act_day == today) or (last_chk_day == today and free_rem == 0)
+        already_done = (last_act_day == today) or (
+            last_chk_day == today and free_rem == 0 and db_chk_day == today and not db_avail
+        )
         return {
             "today_day_key": today,
             "due": not already_done,
             "last_activated_day": last_act_day,
             "last_checked_day": last_chk_day,
+            "daily_bonus_checked_day": db_chk_day,
+            "daily_bonus_collected_day": db_col_day,
+            "daily_bonus_available": db_avail,
             "last_activated_ts": _safe_api_float(mem.get("last_activated_ts"), 0.0),
             "last_checked_ts": _safe_api_float(mem.get("last_checked_ts"), 0.0),
             "free_spins_remaining": free_rem,
@@ -2146,6 +2161,9 @@ class GameApiBridge:
         activated: bool,
         free_spins_remaining: Optional[int] = None,
         reward: str = "",
+        daily_bonus_checked: Optional[bool] = None,
+        daily_bonus_collected: Optional[bool] = None,
+        daily_bonus_available: Optional[bool] = None,
         ts: Optional[float] = None,
     ) -> dict[str, Any]:
         eff_now = round(_safe_api_float(ts, time.time()) if ts is not None else time.time(), 3)
@@ -2155,6 +2173,9 @@ class GameApiBridge:
                     activated=activated,
                     free_spins_remaining=free_spins_remaining,
                     reward=reward,
+                    daily_bonus_checked=daily_bonus_checked,
+                    daily_bonus_collected=daily_bonus_collected,
+                    daily_bonus_available=daily_bonus_available,
                     ts=eff_now,
                 )
             )
@@ -2164,12 +2185,45 @@ class GameApiBridge:
             mem["last_activated_day"] = today
             mem["last_activated_ts"] = eff_now
             mem["total_activations"] = _safe_api_int(mem.get("total_activations"), 0) + 1
+        if daily_bonus_checked is True or daily_bonus_collected is True:
+            mem["daily_bonus_checked_day"] = today
+        if daily_bonus_collected is True:
+            mem["daily_bonus_collected_day"] = today
+        if daily_bonus_available is not None:
+            mem["daily_bonus_available"] = bool(daily_bonus_available)
+            mem["daily_bonus_available_day"] = today if daily_bonus_available else ""
+        elif activated or daily_bonus_collected is True or daily_bonus_checked is True:
+            mem["daily_bonus_available"] = False
+            mem["daily_bonus_available_day"] = ""
         mem["last_checked_day"] = today
         mem["last_checked_ts"] = eff_now
         if free_spins_remaining is not None:
             mem["free_spins_remaining"] = max(0, _safe_api_int(free_spins_remaining, 0))
         if reward:
             mem["last_reward"] = _bounded_api_str(reward, default="")[:160]
+        return self._get_transmitter_status_locked(now_ts=eff_now)
+
+    def _note_daily_login_bonus_seen_locked(
+        self,
+        *,
+        present: bool,
+        ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        eff_now = round(_safe_api_float(ts, time.time()) if ts is not None else time.time(), 3)
+        if self._db is not None and hasattr(self._db, "note_daily_login_bonus_seen"):
+            return dict(self._db.note_daily_login_bonus_seen(present=present, ts=eff_now))
+        today = server_day_key(eff_now)
+        mem = self._transmitter_state_mem
+        if present:
+            if (
+                str(mem.get("last_activated_day") or "") != today
+                and str(mem.get("daily_bonus_collected_day") or "") != today
+            ):
+                mem["daily_bonus_available"] = True
+                mem["daily_bonus_available_day"] = today
+        else:
+            mem["daily_bonus_available"] = False
+            mem["daily_bonus_available_day"] = ""
         return self._get_transmitter_status_locked(now_ts=eff_now)
 
     def _get_galaxy_sweep_state_locked(
@@ -4023,8 +4077,8 @@ class GameApiBridge:
             call_kwargs["priority"] = priority
         return fn(*args, **call_kwargs)
 
-    @staticmethod
     def _read_snapshot(
+        self,
         client: Any,
         *,
         include_buildings: bool = True,
@@ -4038,7 +4092,7 @@ class GameApiBridge:
         extra: dict[str, Any] = {}
         if not include_home and GameApiBridge._supports_kwarg(fn, "include_home"):
             extra["include_home"] = False
-        return GameApiBridge._call_with_optional_priority(
+        snap = GameApiBridge._call_with_optional_priority(
             fn,
             include_buildings=include_buildings,
             include_research=include_research,
@@ -4047,6 +4101,10 @@ class GameApiBridge:
             priority=priority,
             **extra,
         )
+        bonus_seen = getattr(client, "last_home_daily_bonus_present", None)
+        if isinstance(bonus_seen, bool):
+            self._note_daily_login_bonus_seen_locked(present=bonus_seen)
+        return snap
 
     @staticmethod
     def _open_galaxy(
@@ -7152,11 +7210,24 @@ class GameApiBridge:
                     if isinstance(tm_info, Mapping)
                     else ""
                 )
+                db_checked_val = (
+                    bool(tm_info.get("daily_bonus_checked", True))
+                    if isinstance(tm_info, Mapping)
+                    else True
+                )
+                db_collected_val = (
+                    bool(tm_info.get("daily_bonus_collected", False))
+                    if isinstance(tm_info, Mapping)
+                    else False
+                )
                 if res.executed:
                     self._record_transmitter_state_locked(
                         activated=True,
                         free_spins_remaining=free_rem_val,
                         reward=rew_val,
+                        daily_bonus_checked=db_checked_val,
+                        daily_bonus_collected=db_collected_val,
+                        daily_bonus_available=False,
                     )
                 elif (
                     isinstance(tm_info, Mapping)
@@ -7166,6 +7237,9 @@ class GameApiBridge:
                     self._record_transmitter_state_locked(
                         activated=False,
                         free_spins_remaining=0,
+                        daily_bonus_checked=db_checked_val,
+                        daily_bonus_collected=db_collected_val,
+                        daily_bonus_available=False,
                     )
             if res.executed and res.action.kind == "THROTTLE_BUILDING":
                 pid_i = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
@@ -10718,11 +10792,15 @@ class GameApiBridge:
                                     and "sip-tab-universe" not in low_h
                                 ):
                                     obs_nav_pid = parse_home_metadata(html)[0]
+                                    self._note_daily_login_bonus_seen_locked(
+                                        present=bool(parse_daily_login_bonus(html).get("present", False)),
+                                    )
                             elif action in (
                                 "internalBuildings",
                                 "internalEconomy",
                                 "internalResearch",
                                 "internalWeaponFactory",
+                                "internalTransmitter",
                             ):
                                 obs_nav_pid = GameBrowserClient._extract_selected_planet_id(
                                     html,
@@ -10938,14 +11016,18 @@ class GameApiBridge:
                                 fetched_home=False,
                                 observed_active_planet=obs_active,
                             )
-                        planet = self._resolve_planet(state, pid)
+                        hw_pid = homeworld_planet_id(state)
+                        planet = self._resolve_planet(state, hw_pid if hw_pid is not None else pid)
                         planned = PlannedAction(
                             priority="P2",
                             kind="ACTIVATE_TRANSMITTER",
                             planet_id=planet.planet_id,
                             planet_coords=planet.coords,
                             target_name="Interdimensional Transmitter",
-                            reason="Activate daily free Interdimensional Transmitter spin (0 Urplasma)",
+                            reason=(
+                                f"Collect Command Central daily bonus & activate daily free "
+                                f"Interdimensional Transmitter spin on Homeworld [{planet.coords}] (0 Urplasma)"
+                            ),
                             executable_now=True,
                         )
                         res_out = self._execute_and_summarize(

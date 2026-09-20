@@ -8042,6 +8042,12 @@ class GameDatabase:
         data = raw if isinstance(raw, Mapping) else {}
         last_activated_day = _sanitize_text(data.get("last_activated_day") or "").strip()
         last_checked_day = _sanitize_text(data.get("last_checked_day") or "").strip()
+        daily_bonus_checked_day = _sanitize_text(data.get("daily_bonus_checked_day") or "").strip()
+        daily_bonus_collected_day = _sanitize_text(data.get("daily_bonus_collected_day") or "").strip()
+        daily_bonus_available_day = _sanitize_text(data.get("daily_bonus_available_day") or "").strip()
+        daily_bonus_available = bool(data.get("daily_bonus_available", False)) and (
+            daily_bonus_available_day in ("", today)
+        )
         last_activated_ts = _safe_float(data.get("last_activated_ts"), 0.0)
         last_checked_ts = _safe_float(data.get("last_checked_ts"), 0.0)
         free_spins_rem = data.get("free_spins_remaining")
@@ -8053,7 +8059,10 @@ class GameDatabase:
         last_reward = _sanitize_text(data.get("last_reward") or "").strip()[:160]
         total_activations = game_data.cap_json_int(max(0, _safe_int(data.get("total_activations"), 0)))
         already_done_today = (last_activated_day == today) or (
-            last_checked_day == today and free_spins_opt == 0
+            last_checked_day == today
+            and free_spins_opt == 0
+            and daily_bonus_checked_day == today
+            and not daily_bonus_available
         )
         return _sanitize_obj(
             {
@@ -8061,6 +8070,9 @@ class GameDatabase:
                 "due": not already_done_today,
                 "last_activated_day": last_activated_day,
                 "last_checked_day": last_checked_day,
+                "daily_bonus_checked_day": daily_bonus_checked_day,
+                "daily_bonus_collected_day": daily_bonus_collected_day,
+                "daily_bonus_available": daily_bonus_available,
                 "last_activated_ts": last_activated_ts,
                 "last_checked_ts": last_checked_ts,
                 "free_spins_remaining": free_spins_opt,
@@ -8075,15 +8087,34 @@ class GameDatabase:
         activated: bool,
         free_spins_remaining: Optional[int] = None,
         reward: str = "",
+        daily_bonus_checked: Optional[bool] = None,
+        daily_bonus_collected: Optional[bool] = None,
+        daily_bonus_available: Optional[bool] = None,
         ts: Optional[float] = None,
     ) -> dict[str, Any]:
         """Persist Interdimensional Transmitter daily check or activation outcome into `meta`."""
         eff_now = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
         today = server_day_key(eff_now)
         cur = self.get_transmitter_status(now_ts=eff_now)
+        checked_day = (
+            today
+            if (daily_bonus_checked is True or daily_bonus_collected is True)
+            else cur["daily_bonus_checked_day"]
+        )
+        collected_day = today if daily_bonus_collected is True else cur["daily_bonus_collected_day"]
+        if daily_bonus_available is not None:
+            avail_flag = bool(daily_bonus_available)
+        elif activated or daily_bonus_collected is True or daily_bonus_checked is True:
+            avail_flag = False
+        else:
+            avail_flag = bool(cur["daily_bonus_available"])
         payload: dict[str, Any] = {
             "last_activated_day": today if activated else cur["last_activated_day"],
             "last_checked_day": today,
+            "daily_bonus_checked_day": checked_day,
+            "daily_bonus_collected_day": collected_day,
+            "daily_bonus_available": avail_flag,
+            "daily_bonus_available_day": today if avail_flag else "",
             "last_activated_ts": eff_now if activated else cur["last_activated_ts"],
             "last_checked_ts": eff_now,
             "free_spins_remaining": (
@@ -8101,6 +8132,42 @@ class GameDatabase:
                 if activated
                 else cur["total_activations"]
             ),
+        }
+        self.save_meta_json("transmitter_state", payload, ts=eff_now)
+        return self.get_transmitter_status(now_ts=eff_now)
+
+    def note_daily_login_bonus_seen(
+        self,
+        *,
+        present: bool,
+        ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Record passive observation of the Command Central Daily Login Bonus popup without overwriting checks."""
+        eff_now = round(_safe_float(ts, time.time()) if ts is not None else time.time(), 3)
+        today = server_day_key(eff_now)
+        cur = self.get_transmitter_status(now_ts=eff_now)
+        if present:
+            if cur["last_activated_day"] == today or cur["daily_bonus_collected_day"] == today:
+                return cur
+            if cur["daily_bonus_available"]:
+                return cur
+            new_avail = True
+        else:
+            if not cur["daily_bonus_available"]:
+                return cur
+            new_avail = False
+        payload: dict[str, Any] = {
+            "last_activated_day": cur["last_activated_day"],
+            "last_checked_day": cur["last_checked_day"],
+            "daily_bonus_checked_day": cur["daily_bonus_checked_day"],
+            "daily_bonus_collected_day": cur["daily_bonus_collected_day"],
+            "daily_bonus_available": new_avail,
+            "daily_bonus_available_day": today if new_avail else "",
+            "last_activated_ts": cur["last_activated_ts"],
+            "last_checked_ts": cur["last_checked_ts"],
+            "free_spins_remaining": cur["free_spins_remaining"],
+            "last_reward": cur["last_reward"],
+            "total_activations": cur["total_activations"],
         }
         self.save_meta_json("transmitter_state", payload, ts=eff_now)
         return self.get_transmitter_status(now_ts=eff_now)

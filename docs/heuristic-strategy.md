@@ -330,12 +330,14 @@ All account-wide technologies scale cost and base duration by exact `2.0x` per l
 
 ### 5.5 Daily Free Interdimensional Transmitter (`ACTIVATE_TRANSMITTER`)
 
-`_plan_transmitter_action` emits one `P2` `ACTIVATE_TRANSMITTER` action per calendar day in **`Europe/Berlin`** server time (`server_day_key`) when `transmitter_status["due"] == True` and `allow_transmitter=true`. Live execution (`_execute_activate_transmitter` + `parse_transmitter_page`) enforces a **4-gate zero-Urplasma guard**:
+`_plan_transmitter_action` emits one `P2` `ACTIVATE_TRANSMITTER` action per calendar day in **`Europe/Berlin`** server time (`server_day_key`) when `transmitter_status["due"] == True` and `allow_transmitter=true`, always targeting the **Pos. 1 Homeworld** (`homeworld_planet_id(state)`). Live execution (`_execute_activate_transmitter` + `parse_daily_login_bonus` + `parse_transmitter_page`) enforces a **6-gate daily-bonus, Homeworld & zero-Urplasma workflow**:
 
-1. **Free Spin Count**: Requires `_freeSpins >= 1` (or parsed free charges `>= 1`) on `internalTransmitter`; skips cleanly if `0`.
-2. **Free Source Mode (`idtSrc == 1`)**: Verifies `<input name="idtSrc" value="1">` inside `#tm.form` (automatically switching to `idtSrc=1` first if `free_spins >= 1` and another tab is selected; blocks `idtSrc == 3` Urplasma mode).
-3. **Zero-Urplasma DOM & Label Verification**: Requires `play == 1`, `autoAddSpin == False`, an explicit free button token (`"free"`, `"gratis"`, `"kostenlos"`, `"frei"`), and **zero** `.urplasma-icon-30` / `[class*="urplasma"]` elements or `"urplasma"` / `"activate for"` text in both BeautifulSoup and a pre-click Selenium JS check on `#tm.submit`.
-4. **Post-Spin Audit**: Confirms `free_after < free_before` (or a new winning log entry) before marking the `Europe/Berlin` day complete in SQLite.
+1. **Command Central Daily Login Bonus Popup (`internalHome`)**: Opens Command Central (`action=internalHome`) first so the Daily Login Bonus popup appears; selects the Pos. 1 Homeworld in `<select id="tpid">` and clicks `collect daily bonus` (`sendDailyLogin()` -> `getLoginBonus=1&tpid=<homeworld_id>`, ignoring `hideLoginBonus=1`) so today's free Interdimensional Transmitter charge is granted.
+2. **Strict Homeworld Selection (`internalTransmitter`)**: Navigates to `action=internalTransmitter` and enforces that the Pos. 1 Homeworld (`homeworld_planet_id(state)`) is the active planet in `<select name="planet">`, aborting cleanly if switching from a secondary colony fails so rewards never land on a non-homeworld colony.
+3. **Free Spin Count**: Requires `_freeSpins >= 1` (or parsed free charges `>= 1`) on `internalTransmitter`; skips cleanly if `0` (and stays due if a prior check skipped Command Central or a passive `internalHome` read later spots an uncollected Daily Login Bonus popup).
+4. **Free Source Mode (`idtSrc == 1`)**: Verifies `<input name="idtSrc" value="1">` inside `#tm.form` (automatically switching to `idtSrc=1` first if `free_spins >= 1` and another tab is selected; blocks `idtSrc == 3` Urplasma mode).
+5. **Zero-Urplasma DOM & Label Verification**: Requires `play == 1`, `autoAddSpin == False`, an explicit free button token (`"free"`, `"gratis"`, `"kostenlos"`, `"frei"`), and **zero** `.urplasma-icon-30` / `[class*="urplasma"]` elements or `"urplasma"` / `"activate for"` text in both BeautifulSoup and a pre-click Selenium JS check on `#tm.submit`.
+6. **Post-Spin Audit**: Confirms `free_after < free_before` (or a new winning log entry) before marking the `Europe/Berlin` day complete in SQLite.
 
 ### 5.6 Autonomous Fleet Dispatch Priority, Inter-Planet `TRANSPORT` / `STATION`, Per-Planet Slots & Multi-Planet Resource-Per-Time Ranking (`_plan_combat_and_raid_actions` & `optimizer.py`)
 
