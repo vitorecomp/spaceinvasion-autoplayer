@@ -8031,6 +8031,213 @@ class TestApiAndCommander(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_ai_planner_early_transport_in_progress_and_reruns_with_dispatch_delay(self) -> None:
+        from dataclasses import replace as dc_replace
+        import time
+        from spaceinvasion.core.state import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            QueueJob,
+            Resources,
+        )
+        from spaceinvasion.runtime.api_server import ApiRequestError
+
+        donor = PlanetState(
+            planet_id=951,
+            name="Hub",
+            coords="02:380:01",
+            planet_type="normal",
+            temperature=20,
+            fields_used=90,
+            fields_max=300,
+            resources=Resources(pig_iron=450_000, metal=300_000, kryptonite=200_000, spice=100_000),
+            storage=Resources(2_000_000, 2_000_000, 2_000_000, 2_000_000),
+            energy=EnergyBalance(produced=6000, used=2000),
+            buildings={"b1": 12, "b2": 8, "b3": 10, "b4": 8, "b5": 14, "b7": 6, "b8": 8, "b10": 4, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+            ships={"s2": 30, "s10": 5},
+        )
+        dest_busy_soon = PlanetState(
+            planet_id=952,
+            name="BuilderSoon",
+            coords="02:380:05",
+            planet_type="normal",
+            temperature=-10,
+            fields_used=80,
+            fields_max=300,
+            resources=Resources(pig_iron=1_000, metal=500, kryptonite=500, spice=500),
+            storage=Resources(2_000_000, 2_000_000, 2_000_000, 2_000_000),
+            energy=EnergyBalance(produced=5000, used=1500),
+            buildings={"b1": 14, "b2": 0, "b3": 0, "b4": 0, "b5": 16, "b7": 6, "b10": 2, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+            ships={},
+        )
+        st_soon = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="early_api",
+            timestamp=5000.0,
+            planets=(donor, dest_busy_soon),
+            active_planet_id=951,
+            researches={"r1": 4, "r2": 6, "r4": 4, "r5": 4},
+            active_queues=(
+                QueueJob(
+                    category="building",
+                    name="Pig iron mine (Level 15)",
+                    building_id=1,
+                    target_level=15,
+                    origin_coords="02:380:05",
+                    remaining_seconds=1800,
+                    remaining_text="00:30:00",
+                ),
+            ),
+            speedup_factor=5.0,
+        )
+
+        client_factory = MagicMock()
+        with (
+            patch("spaceinvasion.runtime.api_server.is_debug_port_open", return_value=False),
+            tempfile.TemporaryDirectory() as td,
+        ):
+            td_path = Path(td)
+            cfg_path = td_path / "early.yaml"
+            cfg_path.write_text(
+                "planner_mode: ai_planner\nmax_planets: 2\nallow_transport: true\nallow_shipyard: false\nallow_raids: false\nallow_galaxy_scan: false\n",
+                encoding="utf-8",
+            )
+            bridge = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=td_path / "early.db",
+                log_dir=None,
+                client_factory=client_factory,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                def _seed(st_obj: GameState) -> None:
+                    bridge._record_state(
+                        st_obj,
+                        fetched_buildings=True,
+                        fetched_research=True,
+                        fetched_shipyard=True,
+                        fetched_home=True,
+                        observed_active_planet=True,
+                    )
+                    bridge._last_spio_sync_at = time.monotonic()
+
+                _seed(st_soon)
+
+                # Validation rejects out-of-range / non-numeric dispatch delay & non-bool refresh
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "ai_planner_run", "params": {"transport_dispatch_delay_minutes": -1}})
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "ai_planner_run", "params": {"transport_dispatch_delay_minutes": 2000}})
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "ai_planner_run", "params": {"transport_dispatch_delay_minutes": True}})
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command({"command": "ai_planner_run", "refresh": "yes"})
+
+                # Run AI-Planner with custom 90m dispatch delay -> persists delay, in_progress, and transport_matrix
+                co_target = {
+                    "schema_version": 1,
+                    "generated_at": "2026-11-18T00:00:00Z",
+                    "meta_parameters": {"min_fleet_per_planet": {"s2": 10}},
+                    "inputs": {"universe_speedup_factor": 5.0},
+                    "planned_research_levels": {"r1": 4, "r2": 6},
+                    "summary": {"target_ship": "Imperial starbase", "ships_per_month": 10.0},
+                    "planets": [
+                        {
+                            "slot": 1,
+                            "planet_id": 951,
+                            "coords": "02:380:01",
+                            "name": "Hub",
+                            "is_central_planet": True,
+                            "pays_for_research": True,
+                            "temperature": 20,
+                            "fields_max": 300,
+                            "buildings": [{"key": k, "target_level": v} for k, v in donor.buildings.items()],
+                        },
+                        {
+                            "slot": 2,
+                            "planet_id": 952,
+                            "coords": "02:380:05",
+                            "name": "BuilderSoon",
+                            "temperature": -10,
+                            "fields_max": 300,
+                            "buildings": [{"key": k, "target_level": (16 if k == "b1" else v)} for k, v in dest_busy_soon.buildings.items()],
+                        },
+                    ],
+                }
+                bridge._db.record_config_optimizer_run(
+                    co_target,
+                    params={},
+                    reserved_floors={},
+                    trigger_source="test",
+                    set_active=True,
+                )
+
+                run1 = bridge.handle_command(
+                    {
+                        "command": "ai_planner_run",
+                        "params": {"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 90},
+                        "sync": True,
+                        "refresh": False,
+                    }
+                )
+                self.assertTrue(run1["ok"])
+                self.assertEqual(run1["result"]["meta_parameters"]["transport_dispatch_delay_minutes"], 90.0)
+                self.assertEqual(run1["result"]["summary"]["in_progress_buildings_count"], 1)
+
+                ai_get = bridge.handle_command({"command": "ai_planner_get"})
+                self.assertEqual(ai_get["meta_parameters"]["transport_dispatch_delay_minutes"], 90.0)
+                self.assertEqual(len(ai_get["in_progress"]["buildings"]), 1)
+                self.assertIn("pairs", ai_get["transport_matrix"])
+
+                # Hybrid live `plan` dispatches early TRANSPORT to BuilderSoon WHILE b1 L15 is still in progress!
+                plan_soon = bridge.handle_command({"command": "plan", "refresh": False})
+                self.assertEqual(plan_soon["effective_planner_mode"], "ai_planner")
+                tr_soon = [a for a in plan_soon["actions"] if a["kind"] == "TRANSPORT" and a["target_id"] == 952]
+                self.assertEqual(len(tr_soon), 1)
+                self.assertTrue(tr_soon[0]["executable_now"])
+                self.assertIn("early pre-ship", tr_soon[0]["reason"])
+
+                # If active build still has 50_000s remaining (> 90m dispatch + travel), NO premature early transport!
+                st_far = dc_replace(
+                    st_soon,
+                    active_queues=(
+                        QueueJob(
+                            category="building",
+                            name="Pig iron mine (Level 15)",
+                            building_id=1,
+                            target_level=15,
+                            origin_coords="02:380:05",
+                            remaining_seconds=50_000,
+                            remaining_text="13:53:20",
+                        ),
+                    ),
+                )
+                _seed(st_far)
+                plan_far = bridge.handle_command({"command": "plan", "refresh": False})
+                tr_far = [a for a in plan_far["actions"] if a["kind"] == "TRANSPORT" and a["target_id"] == 952]
+                self.assertEqual(tr_far, [])
+
+                # Rerunning AI-Planner after BuilderSoon finished b1 L16 starts cleanly from the new live colony state!
+                dest_done = dc_replace(dest_busy_soon, buildings={**dest_busy_soon.buildings, "b1": 16})
+                _seed(dc_replace(st_soon, planets=(donor, dest_done), active_queues=()))
+                run2 = bridge.handle_command(
+                    {
+                        "command": "ai_planner_run",
+                        "params": {"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 90},
+                        "sync": True,
+                        "refresh": False,
+                    }
+                )
+                self.assertTrue(run2["ok"])
+                self.assertEqual(run2["result"]["steps"], [])
+                self.assertEqual(client_factory.call_count, 0)
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

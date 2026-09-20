@@ -3323,19 +3323,54 @@ class GameApiBridge:
         *,
         params: Optional[Mapping[str, Any]] = None,
         sync: bool = False,
+        refresh: bool = False,
         trigger_source: str = "manual",
         auto_run_config_if_missing: bool = True,
         override_config_run_id: Optional[int] = None,
         override_config_result: Optional[Mapping[str, Any]] = None,
     ) -> dict[str, Any]:
         ai_mod = self._load_ai_planner_mod()
-        # Quick read-only snapshot under `_lock` (zero browser calls!)
+        # Snapshot latest live state under `_lock` (optional live browser refresh when `refresh=True`)
         with self._lock:
+            if (
+                refresh
+                and is_debug_port_open(self.debug_port)
+                and self._page_limiter.rate_limit_remaining() <= 0.0
+                and not self._bot_control.get("captcha_blocked")
+            ):
+                try:
+                    with self._client_factory(self.debug_port) as client:
+                        fresh_snap = self._read_snapshot(
+                            client,
+                            include_buildings=True,
+                            include_research=True,
+                            include_shipyard=True,
+                            return_home=False,
+                            priority="normal",
+                        )
+                        obs_active = bool(getattr(client, "last_snapshot_observed_active_planet", True))
+                        self._record_state(
+                            fresh_snap,
+                            fetched_buildings=True,
+                            fetched_research=True,
+                            fetched_shipyard=True,
+                            fetched_home=True,
+                            observed_active_planet=obs_active,
+                        )
+                        self._last_url = str(getattr(client.driver, "current_url", "") or self._last_url)
+                except RateLimitError as exc:
+                    self._record_server_rate_limit(exc)
+                except AntiBotChallengeError as exc:
+                    self._record_antibot_pause(exc)
+                except (SpaceInvasionAuthError, Exception):
+                    pass
+
             snap_state = self._get_planner_state_locked()
             if snap_state is None:
                 raise ApiRequestError(
                     "No game state snapshot available yet; open /state or /dashboard first."
                 )
+            snap_state = self._merge_economy_rates(snap_state)
             active_co = self._get_active_config_optimizer_locked()
             active_ai = self._get_active_ai_planner_locked()
             raid_rows, message_rows = self._snapshot_attack_history_locked()
@@ -3638,6 +3673,38 @@ class GameApiBridge:
                     self._upsert_field_conflict_locked(conflict)
 
         reserved_cost, priority_resource_need = self._extract_ai_resource_targets(ai_actions)
+        merged_priority_needs: dict[int, Any] = dict(priority_resource_need)
+        early_needs_fn = getattr(ai_mod, "compute_early_transport_needs", None)
+        early_needs_map: dict[int, dict[str, Any]] = {}
+        if callable(early_needs_fn):
+            raw_early = early_needs_fn(
+                enriched_state,
+                active_plan_result,
+                ai_actions,
+                config=cfg,
+            )
+            if isinstance(raw_early, Mapping):
+                for pid_k, entry in raw_early.items():
+                    if not isinstance(entry, Mapping):
+                        continue
+                    pid_int = _safe_api_int(pid_k, 0)
+                    if pid_int <= 0:
+                        continue
+                    clean_entry = dict(entry)
+                    early_needs_map[pid_int] = clean_entry
+                    merged_priority_needs[pid_int] = clean_entry
+        if reserved_cost.is_zero() and early_needs_map:
+            first_early = min(
+                early_needs_map.values(),
+                key=lambda item: float(item.get("need_by_sec", 0.0) or 0.0),
+            )
+            reserved_cost = Resources(
+                pig_iron=max(0, _safe_api_int(first_early.get("pig_iron"), 0)),
+                metal=max(0, _safe_api_int(first_early.get("metal"), 0)),
+                kryptonite=max(0, _safe_api_int(first_early.get("kryptonite"), 0)),
+                spice=max(0, _safe_api_int(first_early.get("spice"), 0)),
+            )
+
         meta_p = active_plan_result.get("meta_parameters")
         spare_pct: Any = (
             meta_p.get("resource_spare_percent")
@@ -3659,7 +3726,7 @@ class GameApiBridge:
             scanned_systems=self._get_scanned_systems(),
             transmitter_status=self._get_transmitter_status_locked(),
             existing_plan=ai_actions,
-            priority_resource_need=priority_resource_need,
+            priority_resource_need=merged_priority_needs,
             spare_budget=spare_budget,
         )
         fleet_actions = [a for a in fleet_actions if a.kind != "DEMOLISH_BUILDING"]
@@ -9611,6 +9678,16 @@ class GameApiBridge:
             offset = (int(page) - 1) * int(page_size)
             page_items = filtered_steps[offset : offset + int(page_size)]
 
+            in_progress_snap = (
+                dict(active_result.get("in_progress") or {})
+                if has_plan and isinstance(active_result.get("in_progress"), Mapping)
+                else None
+            )
+            transport_matrix_snap = (
+                dict(active_result.get("transport_matrix") or {})
+                if has_plan and isinstance(active_result.get("transport_matrix"), Mapping)
+                else None
+            )
             graph_obj = build_ai_graph(
                 snap_state,
                 active_result,
@@ -9629,6 +9706,8 @@ class GameApiBridge:
                         "weekly_breakdown": weekly_breakdown,
                         "attack_telemetry": plan_telemetry,
                         "live_attack_telemetry": live_telemetry,
+                        "in_progress": in_progress_snap,
+                        "transport_matrix": transport_matrix_snap,
                         "graph": graph_obj,
                         "steps_page": {
                             "items": page_items,
@@ -9654,9 +9733,34 @@ class GameApiBridge:
             raw_params = payload.get("params")
             if raw_params is not None and not isinstance(raw_params, Mapping):
                 raise ApiRequestError("'ai_planner_run' field 'params' must be a dictionary.")
+            if isinstance(raw_params, Mapping):
+                for delay_key in (
+                    "transport_dispatch_delay_minutes",
+                    "PATH_TRANSPORT_DISPATCH_DELAY_MINUTES",
+                    "fleet_dispatch_delay_minutes",
+                ):
+                    if delay_key in raw_params and raw_params.get(delay_key) is not None:
+                        raw_delay = raw_params.get(delay_key)
+                        if isinstance(raw_delay, bool):
+                            raise ApiRequestError(
+                                f"'ai_planner_run' param '{delay_key}' must be a number between 0 and 1440."
+                            )
+                        try:
+                            delay_val = float(raw_delay)
+                        except (TypeError, ValueError) as exc:
+                            raise ApiRequestError(
+                                f"'ai_planner_run' param '{delay_key}' must be a number between 0 and 1440."
+                            ) from exc
+                        if not math.isfinite(delay_val) or delay_val < 0.0 or delay_val > 1440.0:
+                            raise ApiRequestError(
+                                f"'ai_planner_run' param '{delay_key}' must be between 0 and 1440 minutes."
+                            )
             sync_raw = payload.get("sync", False)
             if not isinstance(sync_raw, bool):
                 raise ApiRequestError("'ai_planner_run' field 'sync' must be a boolean.")
+            refresh_raw = payload.get("refresh", False)
+            if not isinstance(refresh_raw, bool):
+                raise ApiRequestError("'ai_planner_run' field 'refresh' must be a boolean.")
             auto_cfg_raw = payload.get("auto_run_config_if_missing", True)
             if not isinstance(auto_cfg_raw, bool):
                 raise ApiRequestError(
@@ -9666,6 +9770,7 @@ class GameApiBridge:
             resp = self._start_ai_planner_job(
                 params=raw_params,
                 sync=bool(sync_raw),
+                refresh=bool(refresh_raw),
                 trigger_source=trig,
                 auto_run_config_if_missing=bool(auto_cfg_raw),
             )

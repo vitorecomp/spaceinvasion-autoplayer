@@ -56,6 +56,18 @@ function draftFromAiParams(raw: Record<string, any> | null | undefined): AiPlann
     weekly_discount: String(
       safeFiniteNumber(get("weekly_discount", "PATH_WEEKLY_DISCOUNT", 0.9), 0.9) ?? 0.9
     ),
+    transport_dispatch_delay_minutes: String(
+      Math.max(
+        0,
+        Math.min(
+          1440,
+          safeFiniteNumber(
+            get("transport_dispatch_delay_minutes", "PATH_TRANSPORT_DISPATCH_DELAY_MINUTES", 120),
+            120
+          ) ?? 120
+        )
+      )
+    ),
     resource_spare_percent: spare,
     fleet_command_center_level:
       b10Raw !== null && b10Raw !== undefined && String(b10Raw).trim() !== ""
@@ -94,6 +106,10 @@ function buildAiParamsPayload(draft: AiPlannerDraft): Record<string, any> {
   return {
     reward_weeks: Math.max(1, Math.min(104, intNum(draft.reward_weeks, 26, 1))),
     weekly_discount: Math.max(0.05, Math.min(1.0, num(draft.weekly_discount, 0.9))),
+    transport_dispatch_delay_minutes: Math.max(
+      0,
+      Math.min(1440, num(draft.transport_dispatch_delay_minutes, 120))
+    ),
     resource_spare_percent: {
       pig_iron: Math.max(0, Math.min(100, num(draft.resource_spare_percent.pig_iron, 10))),
       metal: Math.max(0, Math.min(100, num(draft.resource_spare_percent.metal, 10))),
@@ -306,6 +322,7 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
       const res = await apiCommand({
         command: "ai_planner_run",
         params: payload,
+        refresh: Boolean(apiOnline && dashboard?.health?.in_game),
       });
       setDraftDirty(false);
       await fetchAiState({ silent: true });
@@ -443,6 +460,19 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
     null
   );
   const medianRtSec = safeFiniteNumber(telemetry.median_round_trip_seconds, null);
+  const inProgBuilds = Array.isArray(aiData?.in_progress?.buildings)
+    ? aiData!.in_progress!.buildings.length
+    : Math.max(0, Math.round(safeFiniteNumber(summary.in_progress_buildings_count, 0) ?? 0));
+  const inProgRes = Array.isArray(aiData?.in_progress?.research)
+    ? aiData!.in_progress!.research.length
+    : Math.max(0, Math.round(safeFiniteNumber(summary.in_progress_research_count, 0) ?? 0));
+  const inProgTotal = inProgBuilds + inProgRes;
+  const dispatchDelayMin = Math.round(
+    safeFiniteNumber(
+      summary.transport_dispatch_delay_minutes ?? draft.transport_dispatch_delay_minutes,
+      120
+    ) ?? 120
+  );
 
   return (
     <div className="ag-tab-split" id="ag-pane-ai-planner" hidden={hidden}>
@@ -644,7 +674,7 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
               {`${stepsCompleted} / ${stepsTotal}`}
             </strong>
             <span className="ag-kpi-sub tabular">
-              {summary.time ? `Reached in ${summary.time}` : `Horizon ${rewardWeeks}w`}
+              {`${summary.time ? `Reached in ${summary.time}` : `Horizon ${rewardWeeks}w`}${inProgTotal > 0 ? ` · ${inProgTotal} live` : ""} · +${dispatchDelayMin}m dispatch`}
             </span>
           </div>
           <div className="ag-kpi-cell">
@@ -839,7 +869,12 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                           </span>
                         </td>
                         <td className="tabular">
-                          {s.start || formatDurationSecondsCompact(s.start_sec)}
+                          <div>{s.start || formatDurationSecondsCompact(s.start_sec)}</div>
+                          {s.needs_transport ? (
+                            <div className="action-sub">
+                              {`Ship at ${s.transport_request_text || formatDurationSecondsCompact(s.transport_request_at_sec)}`}
+                            </div>
+                          ) : null}
                         </td>
                         <td className="col-right tabular">
                           {s.duration_text || formatDurationSecondsCompact(s.duration_sec)}
@@ -1044,6 +1079,28 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                     onChange={(e) => {
                       setDraftDirty(true);
                       setDraft((prev) => ({ ...prev, weekly_discount: e.target.value }));
+                    }}
+                  />
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={AI_PLANNER_PARAM_DOCS.transport_dispatch_delay_minutes}
+                  htmlFor="ai-param-transport_dispatch_delay_minutes"
+                  layout="inline"
+                >
+                  <input
+                    type="number"
+                    id="ai-param-transport_dispatch_delay_minutes"
+                    min={0}
+                    max={1440}
+                    step={5}
+                    value={draft.transport_dispatch_delay_minutes}
+                    onChange={(e) => {
+                      setDraftDirty(true);
+                      setDraft((prev) => ({
+                        ...prev,
+                        transport_dispatch_delay_minutes: e.target.value,
+                      }));
                     }}
                   />
                 </ActionGraphParamRow>

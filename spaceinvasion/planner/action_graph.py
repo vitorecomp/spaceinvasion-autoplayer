@@ -1718,6 +1718,13 @@ def build_ai_planner_graph(
         else:
             lane_id = "lane:global"
 
+        raw_tr_sources = step.get("transport_sources")
+        tr_sources = (
+            [dict(src) for src in raw_tr_sources if isinstance(src, Mapping)]
+            if isinstance(raw_tr_sources, Sequence)
+            and not isinstance(raw_tr_sources, (str, bytes))
+            else []
+        )
         all_steps.append(
             {
                 "seq": seq_num,
@@ -1740,6 +1747,13 @@ def build_ai_planner_graph(
                 "missing": missing_d,
                 "completed": is_completed,
                 "lane_id": lane_id,
+                "needs_transport": bool(step.get("needs_transport", False)),
+                "transport_request_at_sec": _clean_optional_float(step.get("transport_request_at_sec")),
+                "transport_request_text": _clean_str(step.get("transport_request_text")),
+                "transport_lead_sec": _clean_float(step.get("transport_lead_sec"), 0.0),
+                "transport_travel_sec": _clean_float(step.get("transport_travel_sec"), 0.0),
+                "transport_dispatch_delay_sec": _clean_float(step.get("transport_dispatch_delay_sec"), 0.0),
+                "transport_sources": tr_sources,
             }
         )
 
@@ -1855,8 +1869,16 @@ def build_ai_planner_graph(
         dur_txt = _format_eta_short(st["duration_sec"]) if st["duration_sec"] > 0.5 else "Instant"
         tot_eta = "Done" if st["completed"] else _format_eta_short(st["finish_sec"])
         bneck = _dominant_cost_resource(st["cost"], st["missing"]) if has_missing else None
+        ship_suffix = ""
+        if not st["completed"] and st["needs_transport"]:
+            req_txt = st["transport_request_text"] or (
+                _format_eta_short(st["transport_request_at_sec"])
+                if st["transport_request_at_sec"] is not None
+                else ""
+            )
+            ship_suffix = f" · Ship at {req_txt}" if req_txt else " · Transport needed"
         reason_txt = (
-            f"Week {st['week']} · Step #{st['seq']} · Start {wait_eta} · Build {dur_txt}"
+            f"Week {st['week']} · Step #{st['seq']} · Start {wait_eta} · Build {dur_txt}{ship_suffix}"
             if not st["completed"]
             else f"Week {st['week']} · Step #{st['seq']} · Completed in live state"
         )
@@ -1894,6 +1916,13 @@ def build_ai_planner_graph(
                 "total_seconds": st["finish_sec"],
                 "total_eta": tot_eta,
                 "eta_bottleneck": bneck,
+                "needs_transport": st["needs_transport"],
+                "transport_request_at_sec": st["transport_request_at_sec"],
+                "transport_request_text": st["transport_request_text"],
+                "transport_lead_sec": st["transport_lead_sec"],
+                "transport_travel_sec": st["transport_travel_sec"],
+                "transport_dispatch_delay_sec": st["transport_dispatch_delay_sec"],
+                "transport_sources": st["transport_sources"],
                 "bid": bid,
                 "rkey": rkey,
                 "unit_reqs": unit_reqs,
@@ -2201,6 +2230,13 @@ def build_ai_planner_graph(
                 "total_seconds": m["total_seconds"],
                 "total_eta": m["total_eta"],
                 "eta_bottleneck": m["eta_bottleneck"],
+                "needs_transport": m["needs_transport"],
+                "transport_request_at_sec": m["transport_request_at_sec"],
+                "transport_request_text": m["transport_request_text"],
+                "transport_lead_sec": m["transport_lead_sec"],
+                "transport_travel_sec": m["transport_travel_sec"],
+                "transport_dispatch_delay_sec": m["transport_dispatch_delay_sec"],
+                "transport_sources": m["transport_sources"],
                 "in_degree": len(incoming[idx]),
                 "out_degree": len(outgoing[idx]),
             }

@@ -299,6 +299,13 @@ export interface AiPlannerStepItem {
   target_level?: number;
   cost?: ResourceBundle;
   status?: string;
+  needs_transport?: boolean;
+  transport_request_at_sec?: number | null;
+  transport_request_text?: string;
+  transport_travel_sec?: number;
+  transport_dispatch_delay_sec?: number;
+  transport_lead_sec?: number;
+  transport_sources?: Array<Record<string, any>>;
   [key: string]: any;
 }
 
@@ -309,6 +316,8 @@ export interface AiPlannerGetPayload {
   meta_parameters?: Record<string, any> | null;
   weekly_breakdown?: Array<Record<string, any>>;
   attack_telemetry?: Record<string, any> | null;
+  in_progress?: Record<string, any> | null;
+  transport_matrix?: Record<string, any> | null;
   graph?: Record<string, any> | null;
   steps_page?: {
     items?: AiPlannerStepItem[];

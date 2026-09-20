@@ -1504,13 +1504,20 @@ def plan_interplanet_transports(
     miner_spec = _safe_strategy_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
     fuel_reserve = max(500, _safe_strategy_int(getattr(cfg, "fleet_save_fuel_reserve_spice", 500), 500))
 
-    # Normalize optional AI-Planner priority resource needs (`planet_id -> Resources`)
+    # Normalize optional AI-Planner priority resource needs (`planet_id -> Resources | Mapping`)
     norm_prio_needs: dict[int, Resources] = {}
+    norm_prio_meta: dict[int, dict[str, Any]] = {}
     if isinstance(priority_resource_need, Mapping):
         for raw_pid, raw_need in priority_resource_need.items():
             pid_k = _safe_strategy_int(raw_pid, 0)
             if pid_k <= 0:
                 continue
+            meta_entry: dict[str, Any] = {
+                "label": "",
+                "need_by_sec": 0.0,
+                "lead_sec": 0.0,
+                "storage_cap_ratio": 0.85,
+            }
             if isinstance(raw_need, Resources):
                 r_obj = Resources(
                     pig_iron=max(0, _safe_strategy_int(raw_need.pig_iron, 0)),
@@ -1520,10 +1527,19 @@ def plan_interplanet_transports(
                 )
             elif isinstance(raw_need, Mapping):
                 r_obj = _resources_from_dict(dict(raw_need))
+                meta_entry["label"] = _safe_strategy_str(raw_need.get("label"))
+                meta_entry["need_by_sec"] = max(0.0, game_data.safe_finite_float(raw_need.get("need_by_sec"), 0.0))
+                meta_entry["lead_sec"] = max(0.0, game_data.safe_finite_float(raw_need.get("lead_sec"), 0.0))
+                raw_cap = raw_need.get("storage_cap_ratio")
+                if raw_cap is not None:
+                    meta_entry["storage_cap_ratio"] = min(
+                        0.98, max(0.85, game_data.safe_finite_float(raw_cap, 0.85))
+                    )
             else:
                 continue
             if not r_obj.is_zero():
                 norm_prio_needs[pid_k] = r_obj
+                norm_prio_meta[pid_k] = meta_entry
 
     # Skip destinations that already have an outbound Transport flight inbound
     inbound_transport_coords: set[str] = set()
@@ -1550,13 +1566,15 @@ def plan_interplanet_transports(
             buf[3] += max(0, _safe_strategy_int(act.cost.spice, 0))
 
     # Compute per-colony resource demands: AI-Planner priority targets + P1/P2 missing shortfalls + young-colony bootstrap
-    demands: list[tuple[int, PlanetState, Resources, str]] = []
+    demands: list[tuple[int, float, PlanetState, Resources, str, float]] = []
     for dest in normal_planets:
         norm_dest = _fleet.normalize_coords(dest.coords)
         if not norm_dest or norm_dest in inbound_transport_coords:
             continue
         need_vals = [0, 0, 0, 0]
         urgency = 9
+        need_by_sec = 0.0
+        cap_ratio = 0.85
         need_label = ""
         for act in existing_plan:
             if act.planet_id != dest.planet_id:
@@ -1576,15 +1594,20 @@ def plan_interplanet_transports(
 
         prio_need = norm_prio_needs.get(dest.planet_id)
         if prio_need is not None:
+            prio_meta = norm_prio_meta.get(dest.planet_id) or {}
             urgency = -1
+            need_by_sec = float(prio_meta.get("need_by_sec", 0.0))
+            cap_ratio = float(prio_meta.get("storage_cap_ratio", 0.85))
             need_vals[0] = max(need_vals[0], prio_need.pig_iron)
             need_vals[1] = max(need_vals[1], prio_need.metal)
             need_vals[2] = max(need_vals[2], prio_need.kryptonite)
             need_vals[3] = max(need_vals[3], prio_need.spice)
+            prio_lbl = _safe_strategy_str(prio_meta.get("label"))
+            base_lbl = prio_lbl or need_label
             need_label = (
-                f"AI-Planner: {need_label}"
-                if need_label and not need_label.lower().startswith("ai-planner")
-                else (need_label or "AI-Planner target upgrade")
+                f"AI-Planner: {base_lbl}"
+                if base_lbl and not base_lbl.lower().startswith("ai-planner")
+                else (base_lbl or "AI-Planner target upgrade")
             )
 
         total_on_dest = (
@@ -1611,6 +1634,7 @@ def plan_interplanet_transports(
         demands.append(
             (
                 urgency,
+                need_by_sec,
                 dest,
                 Resources(
                     pig_iron=need_vals[0],
@@ -1619,12 +1643,19 @@ def plan_interplanet_transports(
                     spice=need_vals[3],
                 ),
                 need_label or "colony supply",
+                cap_ratio,
             )
         )
 
     if not demands:
         return []
-    demands.sort(key=lambda item: (item[0], -(item[2].pig_iron + item[2].metal + item[2].kryptonite + item[2].spice)))
+    demands.sort(
+        key=lambda item: (
+            item[0],
+            item[1],
+            -(item[3].pig_iron + item[3].metal + item[3].kryptonite + item[3].spice),
+        )
+    )
 
     # Track remaining donor ships and surplus resources across shipments in this tick
     donor_ships_rem: dict[int, dict[str, int]] = {}
@@ -1679,12 +1710,12 @@ def plan_interplanet_transports(
 
     planet_by_id = {p.planet_id: p for p in normal_planets}
     out_transports: list[PlannedAction] = []
-    for urgency, dest, need_res, need_label in demands:
+    for urgency, _need_by_sec, dest, need_res, need_label, cap_ratio in demands:
         dest_free = Resources(
-            pig_iron=max(0, int(dest.storage.pig_iron * 0.85) - max(0, dest.resources.pig_iron)) if dest.storage.pig_iron > 0 else need_res.pig_iron,
-            metal=max(0, int(dest.storage.metal * 0.85) - max(0, dest.resources.metal)) if dest.storage.metal > 0 else need_res.metal,
-            kryptonite=max(0, int(dest.storage.kryptonite * 0.85) - max(0, dest.resources.kryptonite)) if dest.storage.kryptonite > 0 else need_res.kryptonite,
-            spice=max(0, int(dest.storage.spice * 0.85) - max(0, dest.resources.spice)) if dest.storage.spice > 0 else need_res.spice,
+            pig_iron=max(0, int(dest.storage.pig_iron * cap_ratio) - max(0, dest.resources.pig_iron)) if dest.storage.pig_iron > 0 else need_res.pig_iron,
+            metal=max(0, int(dest.storage.metal * cap_ratio) - max(0, dest.resources.metal)) if dest.storage.metal > 0 else need_res.metal,
+            kryptonite=max(0, int(dest.storage.kryptonite * cap_ratio) - max(0, dest.resources.kryptonite)) if dest.storage.kryptonite > 0 else need_res.kryptonite,
+            spice=max(0, int(dest.storage.spice * cap_ratio) - max(0, dest.resources.spice)) if dest.storage.spice > 0 else need_res.spice,
         )
         need_tot = need_res.pig_iron + need_res.metal + need_res.kryptonite + need_res.spice
         best_cand: Optional[tuple[float, int, PlanetState, Resources, dict[str, int], float]] = None
@@ -1739,6 +1770,7 @@ def plan_interplanet_transports(
 
         norm_dest = _fleet.normalize_coords(dest.coords)
         ship_desc = ", ".join(f"{q}x {k}" for k, q in chosen_ships.items())
+        ow_txt = _fleet.format_flight_duration(flight_s / 2.0)
         dur_txt = _fleet.format_flight_duration(flight_s)
         rph_txt = game_data.fmt_compact_int(round(rph), grouped=True)
         parts_r: list[str] = []
@@ -1764,7 +1796,7 @@ def plan_interplanet_transports(
                 missing=Resources(),
                 reason=(
                     f"Supply {dest.name} [{norm_dest}] ({res_summary} · {game_data.fmt_compact_int(cargo_tot, grouped=True)} res / "
-                    f"{dur_txt}, {rph_txt} res/h via {ship_desc}) for {need_label}"
+                    f"1-way {ow_txt} · RT {dur_txt}, {rph_txt} res/h via {ship_desc}) for {need_label}"
                 ),
                 executable_now=True,
             )

@@ -25,8 +25,11 @@ import numpy as np
 
 from spaceinvasion.combat.fleet import (
     SHIP_SLUG_BY_KEY,
+    _flight_distance_units,
     _parse_coords_distance,
+    estimate_fleet_flight_seconds,
     normalize_coords,
+    ship_effective_speed,
 )
 from spaceinvasion.combat.ranking import attach_action_etas
 from spaceinvasion.core import game_data
@@ -94,6 +97,7 @@ DEFAULT_AI_PLANNER_PARAMS: dict[str, Any] = {
     "ga_elite_count": 2,
     "ga_random_seed": 20261117,
     "pad_generic_colonies": False,
+    "transport_dispatch_delay_minutes": 120.0,
 }
 
 PATH_GENE_RANGES: dict[str, tuple[float, float]] = {
@@ -126,10 +130,15 @@ _UPPER_AI_PARAM_ALIASES: dict[str, str] = {
     "PATH_GA_MUTATION_RATE": "ga_mutation_rate",
     "PATH_GA_ELITE_COUNT": "ga_elite_count",
     "PATH_GA_RANDOM_SEED": "ga_random_seed",
+    "PATH_TRANSPORT_DISPATCH_DELAY_MINUTES": "transport_dispatch_delay_minutes",
+    "fleet_dispatch_delay_minutes": "transport_dispatch_delay_minutes",
 }
 
 _COORDS_RE = re.compile(r"^\d{1,2}:\d{1,3}:\d{1,2}$", re.ASCII)
+_EMBEDDED_COORDS_RE = re.compile(r"(\d{1,2}:\d{1,3}:\d{1,2})", re.ASCII)
 _TIMER_RE = re.compile(r"(\d+):(\d{2}):(\d{2})", re.ASCII)
+_DAYS_TIMER_RE = re.compile(r"(?:(\d+)\s*d\s*)?(\d+):(\d{2}):(\d{2})", re.IGNORECASE | re.ASCII)
+_SHORT_TIMER_RE = re.compile(r"^\s*(\d+):(\d{2})\s*$", re.ASCII)
 _LEVEL_RE = re.compile(r"\(\s*(?:Level|Lvl|L)?\s*(\d+)\s*\)", re.IGNORECASE | re.ASCII)
 
 
@@ -505,6 +514,391 @@ def _match_live_planet(
     return None
 
 
+def estimate_interplanet_transport_seconds(
+    origin_coords: str,
+    target_coords: str,
+    *,
+    origin_ships: Mapping[str, Any] | None = None,
+    empire_ships: Mapping[str, Any] | None = None,
+    researches: Mapping[str, Any] | None = None,
+    fallback_distance_units: float = 1175.0,
+) -> tuple[float, float, str]:
+    """Return `(one_way_seconds, distance_units, representative_hull)` between two colonies.
+
+    Uses the SpaceInvasion Classic RETRO-calibrated flight duration formula from
+    `spaceinvasion.combat.fleet` (`10 + 4765 * dist / eff_speed`) and chooses the
+    realistic transport hull stationed on the donor (falling back to empire hulls,
+    then `s2` Large transport).
+    """
+    orig = str(origin_coords or "").strip()
+    dest = str(target_coords or "").strip()
+    if orig and dest and normalize_coords(orig) == normalize_coords(dest):
+        return 0.0, 0.0, "local"
+
+    def _pick_hull(pool: Mapping[str, Any] | None) -> Optional[str]:
+        if not isinstance(pool, Mapping):
+            return None
+        s3 = max(0, game_data.safe_int(pool.get("s3"), 0))
+        s2 = max(0, game_data.safe_int(pool.get("s2"), 0))
+        s1 = max(0, game_data.safe_int(pool.get("s1"), 0))
+        if s3 > 0 and s2 == 0 and s1 == 0:
+            return "s3"
+        if s2 > 0 and s1 == 0:
+            return "s2"
+        if s1 > 0:
+            # Large transports (25k cargo) dominate when carrying >= 80% of capacity;
+            # otherwise mixed fleets travel at Small transport (`s1`) speed.
+            if s2 * 25_000 >= max(1, int((s2 * 25_000 + s1 * 5_000) * 0.80)):
+                return "s2"
+            return "s1"
+        if s2 > 0:
+            return "s2"
+        if s3 > 0:
+            return "s3"
+        return None
+
+    hull = _pick_hull(origin_ships) or _pick_hull(empire_ships) or "s2"
+    if _is_valid_coords(orig) and _is_valid_coords(dest):
+        dist = float(_flight_distance_units(orig, dest))
+        one_way = float(
+            estimate_fleet_flight_seconds(
+                orig,
+                dest,
+                {hull: 1},
+                researches=researches,
+                round_trip=False,
+            )
+        )
+        return round(max(1.0, one_way), 2), round(dist, 2), hull
+
+    # Empty colony slot (`EMPTY:nn`): estimate using representative inter-system distance
+    dist = max(100.0, float(fallback_distance_units))
+    eff_speed = max(100.0, float(ship_effective_speed(hull, researches)))
+    one_way = 10.0 + (4765.0 * dist) / max(1.0, eff_speed)
+    return round(max(1.0, one_way), 2), round(dist, 2), hull
+
+
+def _parse_queue_remaining_seconds(
+    job: Any,
+    *,
+    state_ts: float = 0.0,
+    fallback_seconds: float = 0.0,
+) -> float:
+    """Resolve remaining seconds on a `QueueJob` from numeric remaining, finish_ts, text, or fallback."""
+    rem_raw = getattr(job, "remaining_seconds", None)
+    if rem_raw is not None:
+        rem_f = game_data.safe_finite_float(rem_raw, -1.0)
+        if rem_f > 0.0:
+            return float(rem_f)
+    fin_raw = getattr(job, "finish_ts", None)
+    if fin_raw is not None and state_ts > 0.0:
+        fin_f = game_data.safe_finite_float(fin_raw, 0.0)
+        if fin_f > state_ts:
+            return float(fin_f - state_ts)
+    rem_txt = str(getattr(job, "remaining_text", "") or "").strip()
+    if rem_txt:
+        m_full = _DAYS_TIMER_RE.search(rem_txt)
+        if m_full:
+            days = int(m_full.group(1) or 0)
+            hrs = int(m_full.group(2) or 0)
+            mins = int(m_full.group(3) or 0)
+            secs = int(m_full.group(4) or 0)
+            total = days * 86400.0 + hrs * 3600.0 + mins * 60.0 + secs
+            if total > 0.0:
+                return float(total)
+        m_short = _SHORT_TIMER_RE.match(rem_txt)
+        if m_short:
+            total = int(m_short.group(1)) * 60.0 + int(m_short.group(2))
+            if total > 0.0:
+                return float(total)
+    return max(0.0, float(fallback_seconds))
+
+
+def _extract_live_in_progress_state(
+    state: GameState,
+    problem_planets: Sequence[Mapping[str, Any]],
+    *,
+    speedup: float,
+    research_now: Mapping[str, int],
+    base_hours_fn: Callable[[str, int], float],
+    lab_planet_index: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Extract live in-progress buildings, research, and incoming friendly fleet cargo from `state`."""
+    state_ts = max(0.0, game_data.safe_finite_float(getattr(state, "timestamp", 0.0), 0.0))
+    idx_by_pid: dict[int, int] = {}
+    idx_by_coords: dict[str, int] = {}
+    for entry in problem_planets:
+        p_idx = int(entry["index"])
+        pid = int(entry["planet_id"])
+        if pid > 0:
+            idx_by_pid[pid] = p_idx
+        c = str(entry.get("coords") or "").strip()
+        if c and not c.startswith("EMPTY:"):
+            idx_by_coords[c] = p_idx
+            idx_by_coords[normalize_coords(c)] = p_idx
+
+    active_p = state.active_planet()
+    active_p_idx: Optional[int] = idx_by_pid.get(int(active_p.planet_id)) if active_p is not None else None
+
+    live_planets_by_pid: dict[int, PlanetState] = {
+        int(p.planet_id): p for p in (state.planets or ()) if int(p.planet_id) > 0
+    }
+
+    # 1. In-progress buildings (deduplicated by (planet_index, bkey, level_to))
+    builds_map: dict[tuple[int, str, int], dict[str, Any]] = {}
+    for job in state.active_queues or ():
+        if str(getattr(job, "category", "") or "").strip().lower() != "building":
+            continue
+        origin = str(getattr(job, "origin_coords", "") or "").strip()
+        p_idx = (
+            idx_by_coords.get(origin)
+            if origin
+            else None
+        )
+        if p_idx is None and origin:
+            p_idx = idx_by_coords.get(normalize_coords(origin))
+        if p_idx is None:
+            p_idx = active_p_idx
+        if p_idx is None:
+            continue
+        p_entry = problem_planets[p_idx]
+        bid = game_data.safe_optional_int(getattr(job, "building_id", None), None)
+        if bid is None:
+            clean = re.sub(r"\(.*?\)", "", str(getattr(job, "name", "") or ""))
+            clean = _TIMER_RE.sub("", clean).strip().lower()
+            bid = BUILDING_ID_BY_NAME.get(clean)
+        if bid is None or bid not in game_data.BUILDING_BY_ID:
+            continue
+        bkey = f"b{bid}"
+        built = int(p_entry["levels"].get(bkey, 0))
+        tgt_lvl = game_data.safe_optional_int(getattr(job, "target_level", None), None)
+        if tgt_lvl is None or tgt_lvl <= built:
+            m_lvl = _LEVEL_RE.search(str(getattr(job, "name", "") or ""))
+            tgt_lvl = max(built + 1, int(m_lvl.group(1))) if m_lvl else (built + 1)
+        if tgt_lvl <= built:
+            continue
+        div = building_time_divisor(
+            int(p_entry["levels"].get("b7", 0)),
+            int(p_entry["levels"].get("b17", 0)),
+            speedup,
+        )
+        fallback_sec = max(1.0, (base_hours_fn(bkey, tgt_lvl) / max(1e-9, div)) * 3600.0)
+        rem_sec = _parse_queue_remaining_seconds(job, state_ts=state_ts, fallback_seconds=fallback_sec)
+        if rem_sec <= 0.0:
+            rem_sec = 1.0
+        dedup_k = (p_idx, bkey, int(tgt_lvl))
+        prev = builds_map.get(dedup_k)
+        if prev is None or rem_sec > float(prev["remaining_seconds"]):
+            builds_map[dedup_k] = {
+                "kind": "build",
+                "planet": p_idx,
+                "planet_id": int(p_entry["planet_id"]),
+                "planet_coords": str(p_entry["coords"]),
+                "planet_name": str(p_entry["name"]),
+                "key": bkey,
+                "name": str(game_data.BUILDING_BY_ID[bid]["name"]),
+                "level_from": int(tgt_lvl - 1),
+                "level_to": int(tgt_lvl),
+                "queue": p_idx,
+                "remaining_seconds": round(rem_sec, 2),
+                "remaining_hours": rem_sec / 3600.0,
+                "remaining_text": fmt_path_time(rem_sec / 3600.0),
+            }
+
+    # Also capture active building offers not yet mirrored into `state.active_queues`
+    for p_entry in problem_planets:
+        p_idx = int(p_entry["index"])
+        live_p = live_planets_by_pid.get(int(p_entry["planet_id"]))
+        if live_p is None:
+            continue
+        for off in live_p.building_offers or ():
+            st = str(getattr(off, "status_text", "") or "").lower()
+            if not any(tok in st for tok in ("in progress", "active building", "constructing", "under construction")):
+                continue
+            bid = game_data.safe_optional_int(getattr(off, "building_id", None), None)
+            if bid is None or bid not in game_data.BUILDING_BY_ID:
+                continue
+            bkey = f"b{bid}"
+            built = int(p_entry["levels"].get(bkey, 0))
+            tgt_lvl = max(built + 1, game_data.safe_int(getattr(off, "target_level", built + 1), built + 1))
+            dedup_k = (p_idx, bkey, int(tgt_lvl))
+            if dedup_k in builds_map:
+                continue
+            div = building_time_divisor(
+                int(p_entry["levels"].get("b7", 0)),
+                int(p_entry["levels"].get("b17", 0)),
+                speedup,
+            )
+            fallback_sec = max(1.0, (base_hours_fn(bkey, tgt_lvl) / max(1e-9, div)) * 3600.0)
+            builds_map[dedup_k] = {
+                "kind": "build",
+                "planet": p_idx,
+                "planet_id": int(p_entry["planet_id"]),
+                "planet_coords": str(p_entry["coords"]),
+                "planet_name": str(p_entry["name"]),
+                "key": bkey,
+                "name": str(game_data.BUILDING_BY_ID[bid]["name"]),
+                "level_from": int(tgt_lvl - 1),
+                "level_to": int(tgt_lvl),
+                "queue": p_idx,
+                "remaining_seconds": round(fallback_sec, 2),
+                "remaining_hours": fallback_sec / 3600.0,
+                "remaining_text": fmt_path_time(fallback_sec / 3600.0),
+            }
+
+    in_progress_builds = sorted(
+        builds_map.values(),
+        key=lambda row: (int(row["planet"]), float(row["remaining_seconds"]), int(row["level_to"])),
+    )
+
+    # 2. In-progress research
+    name_to_rkey = {
+        game_data.normalize_unit_key(str(info["name"])): rkey for rkey, info in research_catalog()
+    }
+    lab_b8 = (
+        int(problem_planets[lab_planet_index]["levels"].get("b8", 0))
+        if 0 <= lab_planet_index < len(problem_planets)
+        else 0
+    )
+    res_div = research_time_divisor(lab_b8, speedup)
+    research_map: dict[tuple[str, int], dict[str, Any]] = {}
+    for job in state.active_queues or ():
+        if str(getattr(job, "category", "") or "").strip().lower() != "research":
+            continue
+        raw_name = str(getattr(job, "name", "") or "")
+        clean = re.sub(r"\(.*?\)", "", raw_name)
+        clean = _TIMER_RE.sub("", clean)
+        clean = re.sub(r"\b(?:level|lvl|l)\s*\d+\b", "", clean, flags=re.IGNORECASE).strip()
+        rkey = name_to_rkey.get(game_data.normalize_unit_key(clean))
+        if not rkey or rkey not in game_data.RESEARCH_BY_ID:
+            continue
+        cur = max(0, int(research_now.get(rkey, 0)))
+        tgt = game_data.safe_optional_int(getattr(job, "target_level", None), None)
+        if tgt is None or tgt <= cur:
+            m_lvl = _LEVEL_RE.search(raw_name)
+            tgt = max(cur + 1, int(m_lvl.group(1))) if m_lvl else (cur + 1)
+        if tgt <= cur:
+            continue
+        fallback_sec = max(1.0, (base_hours_fn(rkey, tgt) / max(1e-9, res_div)) * 3600.0)
+        rem_sec = _parse_queue_remaining_seconds(job, state_ts=state_ts, fallback_seconds=fallback_sec)
+        if rem_sec <= 0.0:
+            rem_sec = 1.0
+        dedup_k = (rkey, int(tgt))
+        prev = research_map.get(dedup_k)
+        if prev is None or rem_sec > float(prev["remaining_seconds"]):
+            research_map[dedup_k] = {
+                "kind": "research",
+                "planet": -1,
+                "planet_id": 0,
+                "planet_coords": "account",
+                "planet_name": "Account",
+                "key": rkey,
+                "name": str(game_data.RESEARCH_BY_ID[rkey]["name"]),
+                "level_from": int(tgt - 1),
+                "level_to": int(tgt),
+                "queue": len(problem_planets),
+                "remaining_seconds": round(rem_sec, 2),
+                "remaining_hours": rem_sec / 3600.0,
+                "remaining_text": fmt_path_time(rem_sec / 3600.0),
+            }
+
+    for roff in state.research_offers or ():
+        if not getattr(roff, "active", False):
+            continue
+        rkey = str(getattr(roff, "research_key", "") or "").strip()
+        if not rkey or rkey not in game_data.RESEARCH_BY_ID:
+            continue
+        cur = max(0, int(research_now.get(rkey, 0)))
+        tgt = max(cur + 1, game_data.safe_int(getattr(roff, "target_level", cur + 1), cur + 1))
+        dedup_k = (rkey, int(tgt))
+        if dedup_k in research_map:
+            continue
+        fallback_sec = max(1.0, (base_hours_fn(rkey, tgt) / max(1e-9, res_div)) * 3600.0)
+        research_map[dedup_k] = {
+            "kind": "research",
+            "planet": -1,
+            "planet_id": 0,
+            "planet_coords": "account",
+            "planet_name": "Account",
+            "key": rkey,
+            "name": str(game_data.RESEARCH_BY_ID[rkey]["name"]),
+            "level_from": int(tgt - 1),
+            "level_to": int(tgt),
+            "queue": len(problem_planets),
+            "remaining_seconds": round(fallback_sec, 2),
+            "remaining_hours": fallback_sec / 3600.0,
+            "remaining_text": fmt_path_time(fallback_sec / 3600.0),
+        }
+
+    in_progress_research = sorted(
+        research_map.values(),
+        key=lambda row: (float(row["remaining_seconds"]), str(row["key"]), int(row["level_to"])),
+    )
+
+    # 3. Live in-flight friendly cargo arrivals (outbound Transport/Station + returning fleets carrying cargo)
+    in_flight_arrivals: list[dict[str, Any]] = []
+    for job in state.active_queues or ():
+        if str(getattr(job, "category", "") or "").strip().lower() != "fleet":
+            continue
+        if bool(getattr(job, "hostile", False)):
+            continue
+        raw_cargo = getattr(job, "cargo", None)
+        if raw_cargo is None:
+            continue
+        if isinstance(raw_cargo, Mapping):
+            cargo_tuple = tuple(
+                max(0.0, game_data.safe_finite_float(raw_cargo.get(r), 0.0))
+                for r in RESOURCE_KEYS
+            )
+        else:
+            cargo_tuple = tuple(
+                max(0.0, game_data.safe_finite_float(getattr(raw_cargo, r, 0.0), 0.0))
+                for r in RESOURCE_KEYS
+            )
+        if sum(cargo_tuple) <= 0.0:
+            continue
+        q_name = str(getattr(job, "name", "") or "")
+        q_det = str(getattr(job, "detail", "") or "")
+        is_returning = ("return" in q_det.lower()) or ("↩" in q_name)
+        dest_idx: Optional[int] = None
+        if is_returning:
+            orig = str(getattr(job, "origin_coords", "") or "").strip()
+            if orig:
+                dest_idx = idx_by_coords.get(orig)
+                if dest_idx is None:
+                    dest_idx = idx_by_coords.get(normalize_coords(orig))
+        elif any(tok in q_name.lower() or tok in q_det.lower() for tok in ("transport", "station")):
+            m_dst = _EMBEDDED_COORDS_RE.search(q_name) or _EMBEDDED_COORDS_RE.search(q_det)
+            if m_dst:
+                raw_dst = m_dst.group(1)
+                dest_idx = idx_by_coords.get(raw_dst)
+                if dest_idx is None:
+                    dest_idx = idx_by_coords.get(normalize_coords(raw_dst))
+        if dest_idx is None:
+            continue
+        rem_sec = _parse_queue_remaining_seconds(job, state_ts=state_ts, fallback_seconds=60.0)
+        if rem_sec <= 0.0:
+            rem_sec = 1.0
+        p_entry = problem_planets[dest_idx]
+        in_flight_arrivals.append(
+            {
+                "planet": dest_idx,
+                "planet_id": int(p_entry["planet_id"]),
+                "planet_coords": str(p_entry["coords"]),
+                "planet_name": str(p_entry["name"]),
+                "mission": q_name,
+                "returning": bool(is_returning),
+                "remaining_seconds": round(rem_sec, 2),
+                "remaining_hours": rem_sec / 3600.0,
+                "remaining_text": fmt_path_time(rem_sec / 3600.0),
+                "cargo": {r: int(round(cargo_tuple[pos])) for pos, r in enumerate(RESOURCE_KEYS)},
+                "cargo_tuple": cargo_tuple,
+            }
+        )
+    in_flight_arrivals.sort(key=lambda row: (float(row["remaining_seconds"]), int(row["planet"])))
+    return in_progress_builds, in_progress_research, in_flight_arrivals
+
+
 def build_path_problem(
     state: GameState,
     target_config: Mapping[str, Any],
@@ -512,7 +906,13 @@ def build_path_problem(
     pad_generic_colonies: bool = False,
     colony_founding_hours: float = 0.0,
 ) -> dict[str, Any]:
-    """Build the causal step problem from live `state` to `target_config` (ZERO demolition steps)."""
+    """Build the causal step problem from live `state` to `target_config` (ZERO demolition steps).
+
+    Always starts strictly from the current live state of every owned colony
+    (live per-colony resources, live built levels, live researches, live ships,
+    active in-progress construction/research queues, and in-flight incoming cargo)
+    and precomputes pairwise planet distance and one-way transport travel times.
+    """
     if not isinstance(target_config, Mapping) or target_config.get("schema_version") != 1:
         found = target_config.get("schema_version") if isinstance(target_config, Mapping) else type(target_config).__name__
         raise ValueError(f"target_config must be a schema_version=1 dict, got {found!r}")
@@ -535,8 +935,62 @@ def build_path_problem(
         for key in research_now
     }
 
+    def _planet_entry_from_live(
+        live_planet: PlanetState,
+        raw_entry: Mapping[str, Any] | None,
+        index: int,
+    ) -> dict[str, Any]:
+        levels = {
+            str(k): max(0, int(v or 0))
+            for k, v in (live_planet.buildings or {}).items()
+            if max(0, int(v or 0)) > 0
+        }
+        stationed_s9 = max(0, int((live_planet.ships or {}).get("s9", 0) or 0))
+        transport_ships = {
+            sk: max(0, int((live_planet.ships or {}).get(sk, 0) or 0))
+            for sk in ("s1", "s2", "s3")
+            if max(0, int((live_planet.ships or {}).get(sk, 0) or 0)) > 0
+        }
+        res_tuple = tuple(
+            max(0.0, float(getattr(live_planet.resources, r, 0) or 0)) for r in RESOURCE_KEYS
+        )
+        raw_target = _extract_target_buildings(raw_entry) if raw_entry is not None else {}
+        # HARD REQUIREMENT: never demolish — target level on every building is >= live built level
+        target_levels = dict(raw_target)
+        for bk, blvl in levels.items():
+            if blvl > target_levels.get(bk, 0):
+                target_levels[bk] = blvl
+        slot_idx = (
+            game_data.safe_int(raw_entry.get("slot", raw_entry.get("slot_index")), index + 1)
+            if raw_entry is not None
+            else (index + 1)
+        )
+        return {
+            "index": index,
+            "slot_index": slot_idx,
+            "planet_id": int(live_planet.planet_id),
+            "coords": str(live_planet.coords),
+            "name": str(live_planet.name or live_planet.coords),
+            "planet_status": "colonized",
+            "is_placeholder": False,
+            "temperature_c": int(live_planet.temperature),
+            "fields_max": max(int(live_planet.fields_max), sum(levels.values())),
+            "founded": True,
+            "is_central_planet": bool(raw_entry.get("is_central_planet", False)) if raw_entry is not None else False,
+            "pays_for_research": bool(raw_entry.get("pays_for_research", False)) if raw_entry is not None else False,
+            "levels": levels,
+            "target_levels": target_levels,
+            "solar_cells": stationed_s9,
+            "resources": res_tuple,
+            "ships": transport_ships,
+            "saved_production": dict(raw_entry.get("production") or {}) if raw_entry is not None else {},
+            "missing_ships": {},
+        }
+
     problem_planets: list[dict[str, Any]] = []
     used_live_ids: set[int] = set()
+    deferred_placeholders: list[Mapping[str, Any]] = []
+
     for raw_entry in raw_planets:
         if not isinstance(raw_entry, Mapping):
             continue
@@ -545,64 +999,85 @@ def build_path_problem(
             or str(raw_entry.get("planet_status") or "") == "empty_colony_slot"
             or game_data.safe_int(raw_entry.get("planet_id"), 0) < 0
         )
-        live_planet = None if is_placeholder_entry else _match_live_planet(raw_entry, owned_normal, used_live_ids)
-        if live_planet is None and is_placeholder_entry and not pad_generic_colonies:
+        if is_placeholder_entry:
+            deferred_placeholders.append(raw_entry)
             continue
+        live_planet = _match_live_planet(raw_entry, owned_normal, used_live_ids)
         if live_planet is not None:
             used_live_ids.add(int(live_planet.planet_id))
-            levels = {
-                str(k): max(0, int(v or 0))
-                for k, v in (live_planet.buildings or {}).items()
-                if max(0, int(v or 0)) > 0
-            }
-            stationed_s9 = max(0, int((live_planet.ships or {}).get("s9", 0) or 0))
-            pid = int(live_planet.planet_id)
-            p_coords = str(live_planet.coords)
-            p_name = str(live_planet.name or live_planet.coords)
-            temp_c = int(live_planet.temperature)
-            fields_max = max(int(live_planet.fields_max), sum(levels.values()))
-            founded = True
+            problem_planets.append(_planet_entry_from_live(live_planet, raw_entry, len(problem_planets)))
         else:
             if not pad_generic_colonies and owned_normal:
                 continue
-            levels = {}
-            stationed_s9 = 0
-            pid = game_data.safe_int(raw_entry.get("planet_id"), -(len(problem_planets) + 1))
-            p_coords = str(raw_entry.get("coords") or f"EMPTY:{len(problem_planets) + 1:02d}")
-            p_name = str(raw_entry.get("name") or f"Empty Colony Slot {len(problem_planets) + 1}")
-            temp_c = game_data.safe_int(raw_entry.get("temperature", raw_entry.get("temperature_c")), 0)
-            fields_max = max(1, game_data.safe_int(raw_entry.get("fields_max"), 300))
-            founded = False
+            raw_target = _extract_target_buildings(raw_entry)
+            slot_idx = game_data.safe_int(raw_entry.get("slot", raw_entry.get("slot_index")), len(problem_planets) + 1)
+            problem_planets.append(
+                {
+                    "index": len(problem_planets),
+                    "slot_index": slot_idx,
+                    "planet_id": game_data.safe_int(raw_entry.get("planet_id"), -(len(problem_planets) + 1)),
+                    "coords": str(raw_entry.get("coords") or f"EMPTY:{len(problem_planets) + 1:02d}"),
+                    "name": str(raw_entry.get("name") or f"Empty Colony Slot {len(problem_planets) + 1}"),
+                    "planet_status": "empty_colony_slot",
+                    "is_placeholder": True,
+                    "temperature_c": game_data.safe_int(raw_entry.get("temperature", raw_entry.get("temperature_c")), 0),
+                    "fields_max": max(1, game_data.safe_int(raw_entry.get("fields_max"), 300)),
+                    "founded": False,
+                    "is_central_planet": bool(raw_entry.get("is_central_planet", False)),
+                    "pays_for_research": bool(raw_entry.get("pays_for_research", False)),
+                    "levels": {},
+                    "target_levels": dict(raw_target),
+                    "solar_cells": 0,
+                    "resources": (0.0, 0.0, 0.0, 0.0),
+                    "ships": {},
+                    "saved_production": dict(raw_entry.get("production") or {}),
+                    "missing_ships": {},
+                }
+            )
 
-        raw_target = _extract_target_buildings(raw_entry)
-        # HARD REQUIREMENT: never demolish — target level on every building is >= live built level
-        target_levels = dict(raw_target)
-        for bk, blvl in levels.items():
-            if blvl > target_levels.get(bk, 0):
-                target_levels[bk] = blvl
+    # Bind any newly founded live colonies (e.g., colonized after `target_config` was generated)
+    # onto unused placeholder templates first, or append them directly so reruns always start from
+    # the real empire state.
+    unmatched_live = [p for p in owned_normal if int(p.planet_id) not in used_live_ids]
+    placeholder_cursor = 0
+    for live_planet in unmatched_live:
+        template_entry: Optional[Mapping[str, Any]] = None
+        if placeholder_cursor < len(deferred_placeholders):
+            template_entry = deferred_placeholders[placeholder_cursor]
+            placeholder_cursor += 1
+        used_live_ids.add(int(live_planet.planet_id))
+        problem_planets.append(_planet_entry_from_live(live_planet, template_entry, len(problem_planets)))
 
-        slot_idx = game_data.safe_int(raw_entry.get("slot", raw_entry.get("slot_index")), len(problem_planets) + 1)
-        problem_planets.append(
-            {
-                "index": len(problem_planets),
-                "slot_index": slot_idx,
-                "planet_id": pid,
-                "coords": p_coords,
-                "name": p_name,
-                "planet_status": "colonized" if founded else "empty_colony_slot",
-                "is_placeholder": not founded,
-                "temperature_c": temp_c,
-                "fields_max": fields_max,
-                "founded": founded,
-                "is_central_planet": bool(raw_entry.get("is_central_planet", False)),
-                "pays_for_research": bool(raw_entry.get("pays_for_research", False)),
-                "levels": levels,
-                "target_levels": target_levels,
-                "solar_cells": stationed_s9,
-                "saved_production": dict(raw_entry.get("production") or {}),
-                "missing_ships": {},
-            }
-        )
+    # Append remaining empty colony placeholders only when `pad_generic_colonies` is enabled
+    if pad_generic_colonies or not problem_planets:
+        for raw_entry in deferred_placeholders[placeholder_cursor:]:
+            if not pad_generic_colonies and owned_normal:
+                continue
+            raw_target = _extract_target_buildings(raw_entry)
+            slot_idx = game_data.safe_int(raw_entry.get("slot", raw_entry.get("slot_index")), len(problem_planets) + 1)
+            problem_planets.append(
+                {
+                    "index": len(problem_planets),
+                    "slot_index": slot_idx,
+                    "planet_id": game_data.safe_int(raw_entry.get("planet_id"), -(len(problem_planets) + 1)),
+                    "coords": str(raw_entry.get("coords") or f"EMPTY:{len(problem_planets) + 1:02d}"),
+                    "name": str(raw_entry.get("name") or f"Empty Colony Slot {len(problem_planets) + 1}"),
+                    "planet_status": "empty_colony_slot",
+                    "is_placeholder": True,
+                    "temperature_c": game_data.safe_int(raw_entry.get("temperature", raw_entry.get("temperature_c")), 0),
+                    "fields_max": max(1, game_data.safe_int(raw_entry.get("fields_max"), 300)),
+                    "founded": False,
+                    "is_central_planet": bool(raw_entry.get("is_central_planet", False)),
+                    "pays_for_research": bool(raw_entry.get("pays_for_research", False)),
+                    "levels": {},
+                    "target_levels": dict(raw_target),
+                    "solar_cells": 0,
+                    "resources": (0.0, 0.0, 0.0, 0.0),
+                    "ships": {},
+                    "saved_production": dict(raw_entry.get("production") or {}),
+                    "missing_ships": {},
+                }
+            )
 
     if not problem_planets:
         raise ValueError("No matching planets between GameState and target_config")
@@ -625,6 +1100,40 @@ def build_path_problem(
             top_level = max(int(info.get("max_table_level") or len(levels_map)), level)
             base_times[key] = build_monotonic_base_times(levels_map, top_level)
         return float(base_times[key].get(level, 0.0)) / 3600.0
+
+    # Extract live in-progress buildings, research, and in-flight incoming friendly cargo
+    in_progress_builds, in_progress_research, in_flight_arrivals = _extract_live_in_progress_state(
+        state,
+        problem_planets,
+        speedup=speedup,
+        research_now=research_now,
+        base_hours_fn=base_hours,
+        lab_planet_index=lab_planet,
+    )
+
+    # Raise target floors to cover already-in-progress upgrades (already paid & running)
+    in_progress_b_max: dict[tuple[int, str], int] = {}
+    in_progress_b_count: dict[int, int] = {}
+    for job in in_progress_builds:
+        p_idx = int(job["planet"])
+        bkey = str(job["key"])
+        lvl_to = int(job["level_to"])
+        in_progress_b_max[(p_idx, bkey)] = max(in_progress_b_max.get((p_idx, bkey), 0), lvl_to)
+        in_progress_b_count[p_idx] = in_progress_b_count.get(p_idx, 0) + 1
+        if lvl_to > problem_planets[p_idx]["target_levels"].get(bkey, 0):
+            problem_planets[p_idx]["target_levels"][bkey] = lvl_to
+    for p_idx, cnt in in_progress_b_count.items():
+        used_plus_prog = sum(problem_planets[p_idx]["levels"].values()) + cnt
+        if used_plus_prog > problem_planets[p_idx]["fields_max"]:
+            problem_planets[p_idx]["fields_max"] = used_plus_prog
+
+    in_progress_r_max: dict[str, int] = {}
+    for job in in_progress_research:
+        rkey = str(job["key"])
+        lvl_to = int(job["level_to"])
+        in_progress_r_max[rkey] = max(in_progress_r_max.get(rkey, 0), lvl_to)
+        if lvl_to > research_target.get(rkey, 0):
+            research_target[rkey] = lvl_to
 
     def cost_tuple(raw_cost: Any, count: int = 1) -> tuple[float, float, float, float]:
         cost = full_cost(raw_cost)
@@ -650,8 +1159,10 @@ def build_path_problem(
             key = f"b{building_id}"
             name = str(game_data.BUILDING_BY_ID[building_id]["name"])
             built = planet["levels"].get(key, 0)
+            in_prog_lvl = in_progress_b_max.get((index, key), 0)
+            start_after = max(built, in_prog_lvl)
             wanted = planet["target_levels"].get(key, 0)
-            for level in range(built + 1, wanted + 1):
+            for level in range(start_after + 1, wanted + 1):
                 add_step(
                     kind="build",
                     planet=index,
@@ -668,7 +1179,8 @@ def build_path_problem(
                 )
 
     for key, info in research_catalog():
-        for level in range(research_now[key] + 1, research_target[key] + 1):
+        start_after = max(research_now[key], in_progress_r_max.get(key, 0))
+        for level in range(start_after + 1, research_target[key] + 1):
             if lab_planet < 0:
                 raise ValueError(
                     f"{info['name']} {level} is planned, but no planet in target_config has a Research lab (b8)"
@@ -706,7 +1218,7 @@ def build_path_problem(
                 chain=("colonize", planet["index"], "s8"),
             )
 
-    # Validate reachability of prerequisites & warehouses (auto-raising warehouse target only if live state grew past stale config)
+    # Validate reachability of prerequisites & warehouses
     for step in steps:
         label = f"{step['name']} {step['level_to']}" + (
             f" on {problem_planets[step['planet']]['coords']}" if step["planet"] >= 0 else ""
@@ -732,10 +1244,69 @@ def build_path_problem(
                 )
 
     # HARD REQUIREMENT: sum live planet resources across owned planets into start_stock
+    # while keeping exact per-colony stock on each entry (any non-normal/unmatched planet's
+    # landed resources are placed on `central_planet` so sum(planet.resources) == start_stock).
     stock = [0.0, 0.0, 0.0, 0.0]
+    extra_stock = [0.0, 0.0, 0.0, 0.0]
     for planet in state.planets or ():
+        is_bound = int(planet.planet_id) in used_live_ids
         for pos, resource in enumerate(RESOURCE_KEYS):
-            stock[pos] += max(0.0, float(getattr(planet.resources, resource, 0) or 0))
+            amt = max(0.0, float(getattr(planet.resources, resource, 0) or 0))
+            stock[pos] += amt
+            if not is_bound:
+                extra_stock[pos] += amt
+    if any(v > 0.0 for v in extra_stock):
+        cp_res = problem_planets[central_planet]["resources"]
+        problem_planets[central_planet]["resources"] = tuple(
+            float(cp_res[pos]) + extra_stock[pos] for pos in range(4)
+        )
+
+    # Precompute pairwise planet distance & one-way transport travel-time matrices
+    empire_transport_ships: dict[str, int] = {"s1": 0, "s2": 0, "s3": 0}
+    for p in owned_normal:
+        for sk in ("s1", "s2", "s3"):
+            empire_transport_ships[sk] += max(0, int((p.ships or {}).get(sk, 0) or 0))
+
+    # Median inter-colony distance for placeholder fallback
+    real_dists: list[float] = []
+    for i in range(planet_count):
+        ci = str(problem_planets[i]["coords"])
+        if not _is_valid_coords(ci):
+            continue
+        for j in range(i + 1, planet_count):
+            cj = str(problem_planets[j]["coords"])
+            if _is_valid_coords(cj):
+                real_dists.append(float(_flight_distance_units(ci, cj)))
+    fallback_dist = float(np.median(np.asarray(real_dists, dtype=np.float64))) if real_dists else 1175.0
+
+    travel_seconds: list[list[float]] = [[0.0] * planet_count for _ in range(planet_count)]
+    travel_hours: list[list[float]] = [[0.0] * planet_count for _ in range(planet_count)]
+    distance_units: list[list[float]] = [[0.0] * planet_count for _ in range(planet_count)]
+    transport_hull_by_planet: list[str] = ["s2"] * planet_count
+    off_diag_secs: list[float] = []
+    for i in range(planet_count):
+        src_ships = problem_planets[i].get("ships") or {}
+        src_coords = str(problem_planets[i]["coords"])
+        for j in range(planet_count):
+            if i == j:
+                continue
+            dst_coords = str(problem_planets[j]["coords"])
+            ow_sec, dist_u, hull = estimate_interplanet_transport_seconds(
+                src_coords,
+                dst_coords,
+                origin_ships=src_ships,
+                empire_ships=empire_transport_ships,
+                researches=research_now,
+                fallback_distance_units=fallback_dist,
+            )
+            travel_seconds[i][j] = ow_sec
+            travel_hours[i][j] = ow_sec / 3600.0
+            distance_units[i][j] = dist_u
+            transport_hull_by_planet[i] = hull
+            off_diag_secs.append(ow_sec)
+
+    avg_travel_sec = float(np.mean(np.asarray(off_diag_secs, dtype=np.float64))) if off_diag_secs else 0.0
+    max_travel_sec = float(max(off_diag_secs)) if off_diag_secs else 0.0
 
     return {
         "speedup_factor": speedup,
@@ -746,11 +1317,28 @@ def build_path_problem(
         "central_planet": central_planet,
         "start_stock": tuple(stock),
         "steps": steps,
+        "in_progress_builds": in_progress_builds,
+        "in_progress_research": in_progress_research,
+        "in_flight_arrivals": in_flight_arrivals,
+        "empire_transport_ships": empire_transport_ships,
+        "fallback_distance_units": fallback_dist,
+        "travel_seconds": travel_seconds,
+        "travel_hours": travel_hours,
+        "distance_units": distance_units,
+        "transport_hull_by_planet": transport_hull_by_planet,
+        "avg_transport_travel_seconds": round(avg_travel_sec, 2),
+        "max_transport_travel_seconds": round(max_travel_sec, 2),
+        "live_snapshot_ts": max(0.0, game_data.safe_finite_float(getattr(state, "timestamp", 0.0), 0.0)),
+        "started_from_live_state": True,
     }
 
 
 class EmpirePathSimulator:
-    """Event-driven W-week empire rollout simulator matching `full_planner.ipynb` §11.4."""
+    """Event-driven W-week empire rollout simulator matching `full_planner.ipynb` §11.4,
+    extended with per-colony resources, non-instantaneous coordinate-based inter-planet
+    transports, Fleet Command dispatch delay, early pre-shipping, and live in-progress
+    building/research/cargo queues.
+    """
 
     def __init__(
         self,
@@ -762,6 +1350,8 @@ class EmpirePathSimulator:
         spare_percent: Mapping[str, float] | None = None,
         reward_weeks: int = 26,
         weekly_discount: float = 0.90,
+        transport_dispatch_delay_minutes: float = 120.0,
+        model_transport_travel: bool = True,
     ) -> None:
         if int(reward_weeks) < 1:
             raise ValueError(f"reward_weeks must be at least 1, got {reward_weeks!r}")
@@ -770,6 +1360,10 @@ class EmpirePathSimulator:
         if fleet_command_center_level is not None and int(fleet_command_center_level) < 0:
             raise ValueError(
                 f"fleet_command_center_level must be >= 0 or None, got {fleet_command_center_level!r}"
+            )
+        if float(transport_dispatch_delay_minutes) < 0.0:
+            raise ValueError(
+                f"transport_dispatch_delay_minutes must be >= 0, got {transport_dispatch_delay_minutes!r}"
             )
         if spare_percent is not None:
             if set(spare_percent) != set(RESOURCE_KEYS):
@@ -787,6 +1381,8 @@ class EmpirePathSimulator:
         )
         self.reward_weeks = int(reward_weeks)
         self.weekly_discount = float(weekly_discount)
+        self.transport_dispatch_delay_minutes = min(1440.0, max(0.0, float(transport_dispatch_delay_minutes)))
+        self.dispatch_delay_hours = self.transport_dispatch_delay_minutes / 60.0
         self.horizon_hours = PATH_HOURS_PER_WEEK * self.reward_weeks
         self.week_weights = tuple(self.weekly_discount**week for week in range(self.reward_weeks))
         suffix = [0.0] * (self.reward_weeks + 1)
@@ -823,6 +1419,25 @@ class EmpirePathSimulator:
         self.queue_count = 2 * self.planet_count + 1
         self.temperature = [int(planet["temperature_c"]) for planet in self.planets]
         self.fields_max = [int(planet["fields_max"]) for planet in self.planets]
+
+        self.model_transport_travel_requested = bool(model_transport_travel)
+        self.model_transport_travel = bool(model_transport_travel) and self.planet_count >= 2
+        self.initial_jobs: tuple[dict[str, Any], ...] = tuple(
+            list(problem.get("in_progress_builds") or ()) + list(problem.get("in_progress_research") or ())
+        )
+        self.initial_arrivals: tuple[dict[str, Any], ...] = tuple(problem.get("in_flight_arrivals") or ())
+        self._empire_transport_ships: dict[str, int] = dict(problem.get("empire_transport_ships") or {})
+        self._fallback_distance_units: float = float(problem.get("fallback_distance_units", 1175.0))
+        self._base_travel_hours: list[list[float]] = self._compute_travel_hours_matrix(
+            problem.get("research_levels") or {},
+            precomputed=problem.get("travel_hours"),
+        )
+        self.travel_hours: list[list[float]] = [list(row) for row in self._base_travel_hours]
+        self.lead_hours: list[list[float]] = [[0.0] * self.planet_count for _ in range(self.planet_count)]
+        self.donors_by_dst: list[list[int]] = [[] for _ in range(self.planet_count)]
+        self.min_lead_hours_by_dst: list[float] = [0.0] * self.planet_count
+        self.max_lead_hours_by_dst: list[float] = [0.0] * self.planet_count
+        self._sync_lead_matrix()
 
         self.kind = [step["kind"] for step in self.steps]
         self.step_planet = [int(step["planet"]) for step in self.steps]
@@ -1066,26 +1681,431 @@ class EmpirePathSimulator:
         attack = self.gross_attack_of(self.fleet_slots)
         self.attack_now = attack
         keep = self.keep
+        k0, k1, k2, k3 = keep[0], keep[1], keep[2], keep[3]
+        a0, a1, a2, a3 = attack[0], attack[1], attack[2], attack[3]
         self.supply = (
-            keep[0] * (mined + attack[0]),
-            keep[1] * (metal + attack[1]),
-            keep[2] * (kry + attack[2]),
-            keep[3] * (spice + attack[3]),
+            k0 * (mined + a0),
+            k1 * (metal + a1),
+            k2 * (kry + a2),
+            k3 * (spice + a3),
         )
         self.supply_version += 1
         self.furnace_metal = metal
         self.rate_off = (
-            keep[0] * (mined + attack[0]),
-            keep[1] * attack[1],
-            keep[2] * (kry + attack[2]),
-            keep[3] * (spice + attack[3]),
+            k0 * (mined + a0),
+            k1 * a1,
+            k2 * (kry + a2),
+            k3 * (spice + a3),
         )
         self.rate_on = (
-            keep[0] * (left + attack[0]),
-            keep[1] * (metal + attack[1]),
-            keep[2] * (kry + attack[2]),
-            keep[3] * (spice + attack[3]),
+            k0 * (left + a0),
+            k1 * (metal + a1),
+            k2 * (kry + a2),
+            k3 * (spice + a3),
         )
+        # Precompute per-planet net rates (both smelting OFF and ON) for O(1) lookup in hot loops.
+        fixed = self.fleet_command_center_level
+        inv_slots = (1.0 / float(self.fleet_slots)) if self.fleet_slots > 0 else 0.0
+        p_off: list[tuple[float, float, float, float]] = []
+        p_on: list[tuple[float, float, float, float]] = []
+        for planet in range(self.planet_count):
+            if not self.founded[planet]:
+                p_off.append((0.0, 0.0, 0.0, 0.0))
+                p_on.append((0.0, 0.0, 0.0, 0.0))
+                continue
+            out = self.output[planet]
+            slots_p = 1 + (self.levels[planet].get("b10", 0) if fixed is None else fixed)
+            share = slots_p * inv_slots
+            sa0 = share * a0
+            sa1 = share * a1
+            rk = k2 * (out[3] + share * a2)
+            rs = k3 * (out[4] + share * a3)
+            p_off.append((k0 * (out[0] + sa0), k1 * sa1, rk, rs))
+            p_on.append((k0 * (out[1] + sa0), k1 * (out[2] + sa1), rk, rs))
+        self.planet_rate_off = p_off
+        self.planet_rate_on = p_on
+
+    def _compute_travel_hours_matrix(
+        self,
+        research_levels: Mapping[str, Any],
+        *,
+        precomputed: Any = None,
+    ) -> list[list[float]]:
+        count = self.planet_count
+        if (
+            isinstance(precomputed, Sequence)
+            and len(precomputed) == count
+            and all(isinstance(row, Sequence) and len(row) == count for row in precomputed)
+        ):
+            return [[max(0.0, float(val)) if i != j else 0.0 for j, val in enumerate(row)] for i, row in enumerate(precomputed)]
+        mat: list[list[float]] = [[0.0] * count for _ in range(count)]
+        for i in range(count):
+            src_ships = self.planets[i].get("ships") or {}
+            src_coords = str(self.planets[i].get("coords") or "")
+            for j in range(count):
+                if i == j:
+                    continue
+                dst_coords = str(self.planets[j].get("coords") or "")
+                ow_sec, _, _ = estimate_interplanet_transport_seconds(
+                    src_coords,
+                    dst_coords,
+                    origin_ships=src_ships,
+                    empire_ships=self._empire_transport_ships,
+                    researches=research_levels,
+                    fallback_distance_units=self._fallback_distance_units,
+                )
+                mat[i][j] = ow_sec / 3600.0
+        return mat
+
+    def _sync_lead_matrix(self) -> None:
+        count = self.planet_count
+        delay = self.dispatch_delay_hours
+        self.lead_hours = [
+            [0.0 if i == j else (delay + self.travel_hours[i][j]) for j in range(count)]
+            for i in range(count)
+        ]
+        self.donors_by_dst = []
+        self.min_lead_hours_by_dst = []
+        self.max_lead_hours_by_dst = []
+        for dst in range(count):
+            donors = sorted(
+                (src for src in range(count) if src != dst),
+                key=lambda src: (self.lead_hours[src][dst], self.travel_hours[src][dst], src),
+            )
+            self.donors_by_dst.append(donors)
+            if donors:
+                self.min_lead_hours_by_dst.append(self.lead_hours[donors[0]][dst])
+                self.max_lead_hours_by_dst.append(self.lead_hours[donors[-1]][dst])
+            else:
+                self.min_lead_hours_by_dst.append(0.0)
+                self.max_lead_hours_by_dst.append(0.0)
+
+    def _rebuild_transport_matrix(self, research_levels: Mapping[str, Any]) -> None:
+        self.travel_hours = self._compute_travel_hours_matrix(research_levels, precomputed=None)
+        self._sync_lead_matrix()
+
+    def _planet_net_rates(self, planet: int, *, smelting: Optional[bool] = None) -> tuple[float, float, float, float]:
+        if planet < 0 or planet >= self.planet_count:
+            return (0.0, 0.0, 0.0, 0.0)
+        smelt = self.smelting if smelting is None else bool(smelting)
+        return self.planet_rate_on[planet] if smelt else self.planet_rate_off[planet]
+
+    def _enqueue_transport_batch(
+        self,
+        dst: int,
+        cargo: tuple[float, float, float, float],
+        *,
+        sources: Sequence[str],
+        max_travel_hr: float,
+        max_lead_hr: float,
+        step: int,
+        is_early: bool,
+    ) -> None:
+        arrival = self.clock + max_lead_hr
+        self._transit_seq += 1
+        heapq.heappush(self.transit_heap, (arrival, self._transit_seq, dst, cargo, step))
+        in_dst = self.in_transit_to[dst]
+        tot_tr = self.total_in_transit
+        res_tr = self.resources_transported
+        in_dst[0] += cargo[0]
+        in_dst[1] += cargo[1]
+        in_dst[2] += cargo[2]
+        in_dst[3] += cargo[3]
+        tot_tr[0] += cargo[0]
+        tot_tr[1] += cargo[1]
+        tot_tr[2] += cargo[2]
+        tot_tr[3] += cargo[3]
+        res_tr[0] += cargo[0]
+        res_tr[1] += cargo[1]
+        res_tr[2] += cargo[2]
+        res_tr[3] += cargo[3]
+        n_flights = max(1, len(sources))
+        self.transports_dispatched += n_flights
+        if is_early:
+            self.early_transports_dispatched += n_flights
+        if step >= 0:
+            self.planet_earmark_step[dst] = step
+            info = self.step_transport_info.get(step)
+            if info is None:
+                self.step_transport_info[step] = {
+                    "earliest_request_hr": self.clock,
+                    "latest_arrival_hr": arrival,
+                    "max_travel_hr": max_travel_hr,
+                    "max_lead_hr": max_lead_hr,
+                    "sources": list(sources),
+                    "total_shipped": [cargo[0], cargo[1], cargo[2], cargo[3]],
+                }
+            else:
+                if self.clock < float(info["earliest_request_hr"]):
+                    info["earliest_request_hr"] = self.clock
+                if arrival > float(info["latest_arrival_hr"]):
+                    info["latest_arrival_hr"] = arrival
+                if max_travel_hr > float(info["max_travel_hr"]):
+                    info["max_travel_hr"] = max_travel_hr
+                if max_lead_hr > float(info["max_lead_hr"]):
+                    info["max_lead_hr"] = max_lead_hr
+                src_list = info["sources"]
+                for sc in sources:
+                    if sc not in src_list:
+                        src_list.append(sc)
+                tot_sh = info["total_shipped"]
+                tot_sh[0] += cargo[0]
+                tot_sh[1] += cargo[1]
+                tot_sh[2] += cargo[2]
+                tot_sh[3] += cargo[3]
+
+    def _enqueue_transport(
+        self,
+        src: int,
+        dst: int,
+        cargo: tuple[float, float, float, float],
+        *,
+        step: int,
+        is_early: bool,
+    ) -> None:
+        self._enqueue_transport_batch(
+            dst,
+            cargo,
+            sources=(str(self.planets[src]["coords"]),),
+            max_travel_hr=self.travel_hours[src][dst],
+            max_lead_hr=self.lead_hours[src][dst],
+            step=step,
+            is_early=is_early,
+        )
+
+    def _dispatch_transports_for_step(
+        self,
+        step: int,
+        *,
+        free_in: float = 0.0,
+        protect_reserved: bool = False,
+    ) -> bool:
+        if not self.model_transport_travel:
+            return False
+        dst = self.pay_planet[step]
+        earmarks = self.planet_earmark_step
+        started = self.started
+        if protect_reserved:
+            ek_dst = earmarks[dst]
+            if ek_dst >= 0:
+                if started[ek_dst]:
+                    earmarks[dst] = -1
+                elif ek_dst != step:
+                    # Another unstarted step is already earmarked on `dst`; avoid piling competing waves.
+                    return False
+
+        existing = self.step_transport_info.get(step)
+        existing_rem = 0.0
+        if existing is not None:
+            existing_rem = float(existing["latest_arrival_hr"]) - self.clock
+            if existing_rem > 1e-6 and protect_reserved:
+                # Secondary wave already in transit for this step; wait for arrival.
+                return False
+
+        c0, c1, c2, c3 = self.cost[step]
+        f0, f1, f2, f3 = self.cost_floor[step]
+        t0, t1, t2, t3 = c0 - f0, c1 - f1, c2 - f2, c3 - f3
+        ps_dst = self.planet_stock[dst]
+        in_dst = self.in_transit_to[dst]
+        h0 = ps_dst[0] + in_dst[0]
+        h1 = ps_dst[1] + in_dst[1]
+        h2 = ps_dst[2] + in_dst[2]
+        h3 = ps_dst[3] + in_dst[3]
+        if h0 >= f0 and h1 >= f1 and h2 >= f2 and h3 >= f3:
+            return False
+
+        need_metal_smelt = h1 < f1
+        lr0, lr1, lr2, lr3 = self.planet_rate_on[dst] if (need_metal_smelt or self.smelting) else self.planet_rate_off[dst]
+        if lr0 < 0.0:
+            lr0 = 0.0
+        if lr1 < 0.0:
+            lr1 = 0.0
+        if lr2 < 0.0:
+            lr2 = 0.0
+        if lr3 < 0.0:
+            lr3 = 0.0
+
+        check_wait = free_in if free_in > existing_rem else existing_rem
+        if check_wait > 0.0:
+            if (
+                h0 + lr0 * check_wait >= f0
+                and h1 + lr1 * check_wait >= f1
+                and h2 + lr2 * check_wait >= f2
+                and h3 + lr3 * check_wait >= f3
+            ):
+                return False
+
+        res_dst = -1
+        gs0 = gs1 = gs2 = gs3 = PATH_NEVER
+        if protect_reserved and self.reserved >= 0:
+            res_dst = self.pay_planet[self.reserved]
+            rc0, rc1, rc2, rc3 = self.cost[self.reserved]
+            in_res = self.in_transit_to[res_dst]
+            st = self.stock
+            gs0 = max(0.0, (st[0] + in_res[0]) - rc0)
+            gs1 = max(0.0, (st[1] + in_res[1]) - rc1)
+            gs2 = max(0.0, (st[2] + in_res[2]) - rc2)
+            gs3 = max(0.0, (st[3] + in_res[3]) - rc3)
+            if gs0 + gs1 + gs2 + gs3 <= 1e-6:
+                return False
+
+        elig_donors: list[tuple[int, float, float, float, float, float]] = []
+        lead_mat = self.lead_hours
+        p_stocks = self.planet_stock
+        costs_all = self.cost
+        clock = self.clock
+        earliest_future_req = PATH_NEVER
+        for src in self.donors_by_dst[dst]:
+            if protect_reserved and src == res_dst:
+                continue
+            ps = p_stocks[src]
+            a0, a1, a2, a3 = ps[0], ps[1], ps[2], ps[3]
+            if protect_reserved:
+                ek_src = earmarks[src]
+                if ek_src >= 0:
+                    if started[ek_src]:
+                        earmarks[src] = -1
+                    else:
+                        ec0, ec1, ec2, ec3 = costs_all[ek_src]
+                        a0 = a0 - ec0 if a0 > ec0 else 0.0
+                        a1 = a1 - ec1 if a1 > ec1 else 0.0
+                        a2 = a2 - ec2 if a2 > ec2 else 0.0
+                        a3 = a3 - ec3 if a3 > ec3 else 0.0
+            if a0 + a1 + a2 + a3 <= 1e-6:
+                continue
+            lead = lead_mat[src][dst]
+            if free_in > lead + 1e-6:
+                req_at = clock + free_in - lead
+                if req_at > clock + 1e-6 and req_at < earliest_future_req:
+                    earliest_future_req = req_at
+                continue
+            elig_donors.append((src, lead, a0, a1, a2, a3))
+
+        if earliest_future_req < self.early_dispatch_at:
+            self.early_dispatch_at = earliest_future_req
+
+        if not elig_donors:
+            return False
+
+        pa0 = pa1 = pa2 = pa3 = 0.0
+        chosen_idx = -1
+        rq0 = rq1 = rq2 = rq3 = 0.0
+        for idx, (_src, lead, a0, a1, a2, a3) in enumerate(elig_donors):
+            pa0 += a0
+            pa1 += a1
+            pa2 += a2
+            pa3 += a3
+            if protect_reserved:
+                if pa0 > gs0:
+                    pa0 = gs0
+                if pa1 > gs1:
+                    pa1 = gs1
+                if pa2 > gs2:
+                    pa2 = gs2
+                if pa3 > gs3:
+                    pa3 = gs3
+            eff_wait = free_in if free_in > lead else lead
+            r0 = c0 - (h0 + lr0 * eff_wait)
+            r1 = c1 - (h1 + lr1 * eff_wait)
+            r2 = c2 - (h2 + lr2 * eff_wait)
+            r3 = c3 - (h3 + lr3 * eff_wait)
+            if r0 < 0.0:
+                r0 = 0.0
+            if r1 < 0.0:
+                r1 = 0.0
+            if r2 < 0.0:
+                r2 = 0.0
+            if r3 < 0.0:
+                r3 = 0.0
+            if r0 <= t0 and r1 <= t1 and r2 <= t2 and r3 <= t3:
+                # Local production on `dst` will reach `cost` before donor `idx` can arrive.
+                return False
+            if pa0 + t0 >= r0 and pa1 + t1 >= r1 and pa2 + t2 >= r2 and pa3 + t3 >= r3:
+                chosen_idx = idx
+                rq0, rq1, rq2, rq3 = r0, r1, r2, r3
+                break
+
+        if chosen_idx < 0:
+            return False
+
+        b0 = b1 = b2 = b3 = 0.0
+        used_sources: list[str] = []
+        max_lead_used = 0.0
+        max_travel_used = 0.0
+        st = self.stock
+        travel_mat = self.travel_hours
+        planets_meta = self.planets
+        for d_src, d_lead, a0, a1, a2, a3 in elig_donors[: chosen_idx + 1]:
+            s0 = s1 = s2 = s3 = 0.0
+            ps = p_stocks[d_src]
+            if rq0 > 1e-9:
+                cap = a0 if (not protect_reserved or a0 <= gs0) else gs0
+                take = rq0 if rq0 <= cap else cap
+                if take > 1e-9:
+                    s0 = take
+                    rq0 = rq0 - take if rq0 > take else 0.0
+                    ps[0] = ps[0] - take if ps[0] > take else 0.0
+                    st[0] = st[0] - take if st[0] > take else 0.0
+                    if protect_reserved:
+                        gs0 = gs0 - take if gs0 > take else 0.0
+            if rq1 > 1e-9:
+                cap = a1 if (not protect_reserved or a1 <= gs1) else gs1
+                take = rq1 if rq1 <= cap else cap
+                if take > 1e-9:
+                    s1 = take
+                    rq1 = rq1 - take if rq1 > take else 0.0
+                    ps[1] = ps[1] - take if ps[1] > take else 0.0
+                    st[1] = st[1] - take if st[1] > take else 0.0
+                    if protect_reserved:
+                        gs1 = gs1 - take if gs1 > take else 0.0
+            if rq2 > 1e-9:
+                cap = a2 if (not protect_reserved or a2 <= gs2) else gs2
+                take = rq2 if rq2 <= cap else cap
+                if take > 1e-9:
+                    s2 = take
+                    rq2 = rq2 - take if rq2 > take else 0.0
+                    ps[2] = ps[2] - take if ps[2] > take else 0.0
+                    st[2] = st[2] - take if st[2] > take else 0.0
+                    if protect_reserved:
+                        gs2 = gs2 - take if gs2 > take else 0.0
+            if rq3 > 1e-9:
+                cap = a3 if (not protect_reserved or a3 <= gs3) else gs3
+                take = rq3 if rq3 <= cap else cap
+                if take > 1e-9:
+                    s3 = take
+                    rq3 = rq3 - take if rq3 > take else 0.0
+                    ps[3] = ps[3] - take if ps[3] > take else 0.0
+                    st[3] = st[3] - take if st[3] > take else 0.0
+                    if protect_reserved:
+                        gs3 = gs3 - take if gs3 > take else 0.0
+            if s0 + s1 + s2 + s3 > 1e-9:
+                b0 += s0
+                b1 += s1
+                b2 += s2
+                b3 += s3
+                used_sources.append(str(planets_meta[d_src]["coords"]))
+                if d_lead > max_lead_used:
+                    max_lead_used = d_lead
+                tr_hr = travel_mat[d_src][dst]
+                if tr_hr > max_travel_used:
+                    max_travel_used = tr_hr
+                if not protect_reserved and earmarks[d_src] >= 0:
+                    # #1 reserved drew from an earmarked colony; release that colony's old earmark.
+                    earmarks[d_src] = -1
+
+        if b0 + b1 + b2 + b3 <= 1e-9 or not used_sources:
+            return False
+
+        self._enqueue_transport_batch(
+            dst,
+            (b0, b1, b2, b3),
+            sources=used_sources,
+            max_travel_hr=max_travel_used,
+            max_lead_hr=max_lead_used,
+            step=step,
+            is_early=(free_in > 0.0),
+        )
+        return True
 
     def lower_bounds(self) -> list[tuple[str, float]]:
         self._load_start()
@@ -1126,12 +2146,13 @@ class EmpirePathSimulator:
             ceiling[2] += flows["b3"][2] if "b3" in flows else 0.0
             ceiling[3] += flows["b4"][3] if "b4" in flows else 0.0
         keep = self.keep
-        metal_missing = max(0.0, self.need[1] - self.stock[1])
+        avail = [self.stock[p] + self.total_in_transit[p] for p in range(4)]
+        metal_missing = max(0.0, self.need[1] - avail[1])
         missing = (
-            max(0.0, self.need[0] - self.stock[0] + 2.0 * metal_missing),
+            max(0.0, self.need[0] - avail[0] + 2.0 * metal_missing),
             metal_missing,
-            max(0.0, self.need[2] - self.stock[2]),
-            max(0.0, self.need[3] - self.stock[3]),
+            max(0.0, self.need[2] - avail[2]),
+            max(0.0, self.need[3] - avail[3]),
         )
         smelt_extra = max(0.0, 2.0 * (keep[1] - keep[0]) * ceiling[1])
         supply = (
@@ -1153,7 +2174,7 @@ class EmpirePathSimulator:
         limit = self.horizon_hours if horizon_hours is None else float(horizon_hours)
         self._reset(strategy, limit_hours=limit)
         events = 0
-        event_limit = 80 * len(self.steps) + 10_000
+        event_limit = 160 * len(self.steps) + 20_000
         status = "reached"
         while True:
             if self.clock < limit:
@@ -1164,28 +2185,42 @@ class EmpirePathSimulator:
             if self.clock >= limit:
                 status = "horizon"
                 break
-            until_done = self.heap[0][0] - self.clock if self.heap else PATH_NEVER
+            until_done = max(0.0, self.heap[0][0] - self.clock) if self.heap else PATH_NEVER
+            until_transit = max(0.0, self.transit_heap[0][0] - self.clock) if self.transit_heap else PATH_NEVER
             until_stock = self._hours_to_stock_event()
+            until_early = (
+                max(1e-9, self.early_dispatch_at - self.clock)
+                if (self.model_transport_travel and self.unstarted > 0 and self.early_dispatch_at < PATH_NEVER)
+                else PATH_NEVER
+            )
             until_review = PATH_NEVER
-            if self.unstarted > 0 and (self.heap or until_stock < PATH_NEVER) and self.review_at < PATH_NEVER:
+            if (
+                self.unstarted > 0
+                and (self.heap or self.transit_heap or until_stock < PATH_NEVER)
+                and self.review_at < PATH_NEVER
+            ):
                 until_review = max(1e-9, self.review_at - self.clock)
-            elapsed = min(until_done, until_stock, until_review)
+            elapsed = min(until_done, until_transit, until_stock, until_early, until_review)
             if elapsed == PATH_NEVER:
                 if self.reserved < 0 and limit < PATH_NEVER:
-                    self._advance(max(0.0, limit - self.clock), ends_a_step=False)
+                    self._advance(max(0.0, limit - self.clock), ends_a_step=False, ends_a_transit=False)
                     status = "reached" if (self.unstarted == 0 and not self.heap) else "horizon"
                 else:
                     status = "stuck"
                 break
             until_limit = limit - self.clock
             if until_limit < elapsed:
-                self._advance(max(0.0, until_limit), ends_a_step=False)
+                self._advance(max(0.0, until_limit), ends_a_step=False, ends_a_transit=False)
                 status = "reached" if (self.unstarted == 0 and not self.heap) else "horizon"
                 break
             events += 1
             if events > event_limit:
                 raise RuntimeError(f"Path simulation did not finish within {event_limit} events")
-            self._advance(max(0.0, elapsed), ends_a_step=elapsed == until_done)
+            self._advance(
+                max(0.0, elapsed),
+                ends_a_step=(elapsed == until_done and bool(self.heap)),
+                ends_a_transit=(elapsed == until_transit and bool(self.transit_heap)),
+            )
 
         if self.clock < self.horizon_hours:
             self._accrue_weekly(self.clock, self.horizon_hours - self.clock)
@@ -1216,6 +2251,7 @@ class EmpirePathSimulator:
             "events": events,
             "reviews": self.reviews,
             "final_stock": tuple(self.stock),
+            "final_planet_stock": [tuple(row) for row in self.planet_stock],
             "final_levels": [dict(levels) for levels in self.levels],
             "final_research": dict(self.research),
             "final_solar": list(self.solar),
@@ -1228,6 +2264,20 @@ class EmpirePathSimulator:
             "weekly_spice_eq": weekly_spice_eq,
             "discounted_reward": discounted_reward,
             "total_spice_eq_produced": float(sum(weekly_spice_eq)),
+            "transports_dispatched": int(self.transports_dispatched),
+            "early_transports_dispatched": int(self.early_transports_dispatched),
+            "resources_transported": tuple(self.resources_transported),
+            "step_transport_info": {
+                k: {
+                    "earliest_request_hr": float(v["earliest_request_hr"]),
+                    "latest_arrival_hr": float(v["latest_arrival_hr"]),
+                    "max_travel_hr": float(v["max_travel_hr"]),
+                    "max_lead_hr": float(v["max_lead_hr"]),
+                    "sources": list(v["sources"]),
+                    "total_shipped": tuple(v["total_shipped"]),
+                }
+                for k, v in self.step_transport_info.items()
+            },
         }
 
     def _reset(self, strategy: Any, *, limit_hours: Optional[float] = None) -> None:
@@ -1241,6 +2291,24 @@ class EmpirePathSimulator:
         count = self.planet_count
         self.clock = 0.0
         self.stock = [float(amount) for amount in self.problem["start_stock"]]
+        if all("resources" in planet for planet in self.planets):
+            self.planet_stock = [
+                [max(0.0, float(val)) for val in planet["resources"]] for planet in self.planets
+            ]
+        else:
+            self.planet_stock = [[0.0, 0.0, 0.0, 0.0] for _ in range(count)]
+            if count > 0:
+                self.planet_stock[self.central_planet] = list(self.stock)
+        if count > 0:
+            # Ensure exact initial sum consistency between `planet_stock` and `self.stock`
+            for pos in range(4):
+                ps_sum = sum(self.planet_stock[p][pos] for p in range(count))
+                diff = self.stock[pos] - ps_sum
+                if diff > 1e-6:
+                    self.planet_stock[self.central_planet][pos] += diff
+                elif self.model_transport_travel:
+                    self.stock[pos] = ps_sum
+
         self.levels = [dict(planet["levels"]) for planet in self.planets]
         self.research = dict(self.problem["research_levels"])
         self.solar = [int(planet["solar_cells"]) for planet in self.planets]
@@ -1249,7 +2317,64 @@ class EmpirePathSimulator:
         self.next_step = [0] * len(self.chain_steps)
         self.queue_step = [-1] * self.queue_count
         self.queue_end = [0.0] * self.queue_count
+        self.queue_initial_count = [0] * self.queue_count
         self.heap: list[tuple[float, int]] = []
+        self.transit_heap: list[tuple[float, int, int, tuple[float, float, float, float], int]] = []
+        self._transit_seq = 0
+        self.in_transit_to: list[list[float]] = [[0.0, 0.0, 0.0, 0.0] for _ in range(count)]
+        self.total_in_transit: list[float] = [0.0, 0.0, 0.0, 0.0]
+        self.early_dispatch_at = PATH_NEVER
+        self.step_transport_info: dict[int, dict[str, Any]] = {}
+        self.planet_earmark_step: list[int] = [-1] * count
+        self.transports_dispatched = 0
+        self.early_transports_dispatched = 0
+        self.resources_transported = [0.0, 0.0, 0.0, 0.0]
+
+        # Reset transport travel/lead matrix to starting research levels
+        self.travel_hours = [list(row) for row in self._base_travel_hours]
+        self._sync_lead_matrix()
+
+        # Pre-load live in-flight incoming friendly cargo arrivals
+        for arrival in self.initial_arrivals:
+            dst = int(arrival["planet"])
+            if not (0 <= dst < count):
+                continue
+            rem_hr = max(
+                1e-6,
+                float(arrival.get("remaining_hours", float(arrival.get("remaining_seconds", 60.0)) / 3600.0)),
+            )
+            cargo_raw = arrival.get("cargo_tuple")
+            if cargo_raw is None and isinstance(arrival.get("cargo"), Mapping):
+                cargo_raw = tuple(max(0.0, float(arrival["cargo"].get(r, 0.0))) for r in RESOURCE_KEYS)
+            if not cargo_raw:
+                continue
+            cargo = (float(cargo_raw[0]), float(cargo_raw[1]), float(cargo_raw[2]), float(cargo_raw[3]))
+            if cargo[0] + cargo[1] + cargo[2] + cargo[3] <= 0.0:
+                continue
+            self._transit_seq += 1
+            heapq.heappush(self.transit_heap, (rem_hr, self._transit_seq, dst, cargo, -1))
+            for pos in range(4):
+                self.in_transit_to[dst][pos] += cargo[pos]
+                self.total_in_transit[pos] += cargo[pos]
+
+        # Pre-load live in-progress buildings & research (already paid; occupy queues until completion)
+        for job_idx, job in enumerate(self.initial_jobs):
+            q = int(job["queue"])
+            rem_hr = max(
+                1e-6,
+                float(job.get("remaining_hours", float(job.get("remaining_seconds", 60.0)) / 3600.0)),
+            )
+            neg_id = -(2 + job_idx)
+            heapq.heappush(self.heap, (rem_hr, neg_id))
+            if 0 <= q < self.queue_count:
+                self.queue_initial_count[q] += 1
+                self.queue_step[q] = neg_id
+                self.queue_end[q] = max(self.queue_end[q], rem_hr)
+            if str(job.get("kind") or "") == "build":
+                p_idx = int(job["planet"])
+                if 0 <= p_idx < count:
+                    self.fields_used[p_idx] += 1
+
         self.started = [False] * len(self.steps)
         self.order: list[int] = []
         self.start: list[Optional[float]] = [None] * len(self.steps)
@@ -1334,7 +2459,7 @@ class EmpirePathSimulator:
         count = self.planet_count
         least = [0.0] * self.queue_count
         for queue in range(self.queue_count):
-            if self.queue_step[queue] >= 0:
+            if self.queue_step[queue] != -1:
                 least[queue] = max(0.0, self.queue_end[queue] - self.clock)
         slow = list(least)
         for planet in range(count):
@@ -1355,21 +2480,29 @@ class EmpirePathSimulator:
         return least, slow
 
     def missing_resources(self) -> tuple[float, float, float, float]:
-        metal = max(0.0, self.need[1] - self.stock[1])
+        s0 = self.stock[0] + self.total_in_transit[0]
+        s1 = self.stock[1] + self.total_in_transit[1]
+        s2 = self.stock[2] + self.total_in_transit[2]
+        s3 = self.stock[3] + self.total_in_transit[3]
+        metal = max(0.0, self.need[1] - s1)
         return (
-            max(0.0, self.need[0] + 2.0 * metal - self.stock[0]),
+            max(0.0, self.need[0] + 2.0 * metal - s0),
             metal,
-            max(0.0, self.need[2] - self.stock[2]),
-            max(0.0, self.need[3] - self.stock[3]),
+            max(0.0, self.need[2] - s2),
+            max(0.0, self.need[3] - s3),
         )
 
     def horizon_missing_resources(self) -> tuple[float, float, float, float]:
-        metal = max(0.0, self.horizon_need[1] - self.stock[1])
+        s0 = self.stock[0] + self.total_in_transit[0]
+        s1 = self.stock[1] + self.total_in_transit[1]
+        s2 = self.stock[2] + self.total_in_transit[2]
+        s3 = self.stock[3] + self.total_in_transit[3]
+        metal = max(0.0, self.horizon_need[1] - s1)
         return (
-            max(0.0, self.horizon_need[0] + 2.0 * metal - self.stock[0]),
+            max(0.0, self.horizon_need[0] + 2.0 * metal - s0),
             metal,
-            max(0.0, self.horizon_need[2] - self.stock[2]),
-            max(0.0, self.horizon_need[3] - self.stock[3]),
+            max(0.0, self.horizon_need[2] - s2),
+            max(0.0, self.horizon_need[3] - s3),
         )
 
     def _accrue_weekly(self, start_hour: float, elapsed: float) -> None:
@@ -1467,19 +2600,92 @@ class EmpirePathSimulator:
         if self.reserved < 0:
             return PATH_NEVER
         cost, floor = self.cost[self.reserved], self.cost_floor[self.reserved]
-        if self.smelting:
-            rate = self.rate_on[1]
-            return (cost[1] - self.stock[1]) / rate if rate > 0.0 else PATH_NEVER
-        wait = 0.0
-        for position in (0, 2, 3):
-            if self.stock[position] < floor[position]:
-                rate = self.rate_off[position]
+        if not self.model_transport_travel:
+            if self.smelting:
+                rate = self.rate_on[1]
+                return (cost[1] - self.stock[1]) / rate if rate > 0.0 else PATH_NEVER
+            wait = 0.0
+            for position in (0, 2, 3):
+                if self.stock[position] < floor[position]:
+                    rate = self.rate_off[position]
+                    if rate <= 0.0:
+                        return PATH_NEVER
+                    wait = max(wait, (cost[position] - self.stock[position]) / rate)
+            return wait
+
+        dst = self.pay_planet[self.reserved]
+        have_or_inbound = [self.planet_stock[dst][pos] + self.in_transit_to[dst][pos] for pos in range(4)]
+        if all(have_or_inbound[pos] >= floor[pos] for pos in range(4)):
+            # Full cost is already landed or in transit to `dst`; `until_transit` handles arrival.
+            return PATH_NEVER
+
+        local_rates = self._planet_net_rates(dst, smelting=self.smelting)
+        max_lead = self.max_lead_hours_by_dst[dst]
+        min_lead = self.min_lead_hours_by_dst[dst]
+
+        # 1. Time until empire-wide supply triggers donor dispatch (accounting for `dst`'s local output over flight)
+        dispatch_wait = 0.0
+        dispatch_possible = True
+        positions = (1,) if self.smelting else (0, 2, 3)
+        rates = self.rate_on if self.smelting else self.rate_off
+        for pos in positions:
+            if have_or_inbound[pos] >= floor[pos]:
+                continue
+            eff_avail = self.stock[pos] + self.in_transit_to[dst][pos] + max(0.0, local_rates[pos]) * max_lead
+            if eff_avail < floor[pos]:
+                rate = rates[pos]
                 if rate <= 0.0:
+                    dispatch_possible = False
+                    break
+                dispatch_wait = max(dispatch_wait, (cost[pos] - eff_avail) / rate)
+
+        if dispatch_possible and dispatch_wait > 1e-12:
+            # Also check if `dst`'s own local production finishes sooner than waiting to dispatch + fly
+            local_wait = self._local_finish_wait_hours(dst, self.reserved, local_rates)
+            return min(dispatch_wait, local_wait)
+
+        # 2. Either dispatch condition is already satisfied locally (dst beats donor flight) or waiting on dst local production
+        local_wait = self._local_finish_wait_hours(dst, self.reserved, local_rates)
+        if local_wait < PATH_NEVER and local_wait > 1e-12:
+            return local_wait
+
+        # 3. Fallback when `max_lead` satisfied `eff_avail` via a distant donor's lead projection,
+        #    while actual closest donor still needs slightly more stock to trigger dispatch.
+        if dispatch_possible and min_lead < max_lead:
+            alt_wait = 0.0
+            for pos in positions:
+                if have_or_inbound[pos] >= floor[pos]:
+                    continue
+                eff_min = self.stock[pos] + self.in_transit_to[dst][pos] + max(0.0, local_rates[pos]) * min_lead
+                if eff_min < floor[pos]:
+                    rate = rates[pos]
+                    if rate <= 0.0:
+                        return PATH_NEVER
+                    alt_wait = max(alt_wait, (cost[pos] - eff_min) / rate)
+            if alt_wait > 1e-12:
+                return alt_wait
+
+        return PATH_NEVER
+
+    def _local_finish_wait_hours(
+        self,
+        dst: int,
+        step: int,
+        local_rates: tuple[float, float, float, float],
+    ) -> float:
+        cost, floor = self.cost[step], self.cost_floor[step]
+        have_or_inbound = [self.planet_stock[dst][pos] + self.in_transit_to[dst][pos] for pos in range(4)]
+        positions = (1,) if self.smelting else (0, 2, 3)
+        wait = 0.0
+        for pos in positions:
+            if have_or_inbound[pos] < floor[pos]:
+                lr = local_rates[pos]
+                if lr <= 0.0:
                     return PATH_NEVER
-                wait = max(wait, (cost[position] - self.stock[position]) / rate)
+                wait = max(wait, (cost[pos] - have_or_inbound[pos]) / lr)
         return wait
 
-    def _advance(self, elapsed: float, *, ends_a_step: bool) -> None:
+    def _advance(self, elapsed: float, *, ends_a_step: bool, ends_a_transit: bool = False) -> None:
         if elapsed > 0.0:
             self._accrue_weekly(self.clock, elapsed)
             rates = self.rate_on if self.smelting else self.rate_off
@@ -1490,16 +2696,82 @@ class EmpirePathSimulator:
                 if keep[position] > 0.0:
                     gross_rate = rates[position] / keep[position]
                     self.spare_diverted[position] += (1.0 - keep[position]) * gross_rate * elapsed
-            for position in range(4):
-                self.stock[position] += rates[position] * elapsed
+
+            if self.model_transport_travel:
+                p_rates = self.planet_rate_on if self.smelting else self.planet_rate_off
+                spice_deficit = 0.0
+                for planet in range(self.planet_count):
+                    if not self.founded[planet]:
+                        continue
+                    pr0, pr1, pr2, pr3 = p_rates[planet]
+                    p_stock = self.planet_stock[planet]
+                    v0 = p_stock[0] + pr0 * elapsed
+                    v1 = p_stock[1] + pr1 * elapsed
+                    v2 = p_stock[2] + pr2 * elapsed
+                    p_stock[0] = v0 if v0 > 0.0 else 0.0
+                    p_stock[1] = v1 if v1 > 0.0 else 0.0
+                    p_stock[2] = v2 if v2 > 0.0 else 0.0
+                    dp3 = pr3 * elapsed
+                    if dp3 >= 0.0:
+                        p_stock[3] += dp3
+                    else:
+                        burn = -dp3
+                        if p_stock[3] >= burn:
+                            p_stock[3] -= burn
+                        else:
+                            spice_deficit += burn - p_stock[3]
+                            p_stock[3] = 0.0
+                # Conserve empire Spice across colonies when a Fusion-powered warm colony burns Spice
+                if spice_deficit > 1e-9:
+                    total_spice = sum(self.planet_stock[p][3] for p in range(self.planet_count))
+                    if total_spice > 1e-9:
+                        ratio = min(1.0, spice_deficit / total_spice)
+                        scale = 1.0 - ratio
+                        for p in range(self.planet_count):
+                            self.planet_stock[p][3] = max(0.0, self.planet_stock[p][3] * scale)
+                    else:
+                        for p in range(self.planet_count):
+                            self.planet_stock[p][3] = 0.0
+                s0 = s1 = s2 = s3 = 0.0
+                for p in range(self.planet_count):
+                    ps = self.planet_stock[p]
+                    s0 += ps[0]
+                    s1 += ps[1]
+                    s2 += ps[2]
+                    s3 += ps[3]
+                self.stock[0] = s0
+                self.stock[1] = s1
+                self.stock[2] = s2
+                self.stock[3] = s3
+            else:
+                for position in range(4):
+                    self.stock[position] += rates[position] * elapsed
+
             if self.smelting:
                 self.metal_smelted += self.furnace_metal * elapsed
                 if self.smelting_spans and self.smelting_spans[-1][1] == self.clock:
                     self.smelting_spans[-1][1] = self.clock + elapsed
                 else:
                     self.smelting_spans.append([self.clock, self.clock + elapsed])
-        self.clock = self.heap[0][0] if ends_a_step else self.clock + elapsed
-        while self.heap and self.heap[0][0] <= self.clock:
+
+        if ends_a_step and self.heap:
+            self.clock = self.heap[0][0]
+        elif ends_a_transit and self.transit_heap:
+            self.clock = self.transit_heap[0][0]
+        else:
+            self.clock += elapsed
+
+        # Deliver all arrived inter-planet / live in-flight cargo
+        while self.transit_heap and self.transit_heap[0][0] <= self.clock + 1e-12:
+            _arr_hr, _seq_id, dst, cargo, _for_step = heapq.heappop(self.transit_heap)
+            for pos in range(4):
+                self.in_transit_to[dst][pos] = max(0.0, self.in_transit_to[dst][pos] - cargo[pos])
+                self.total_in_transit[pos] = max(0.0, self.total_in_transit[pos] - cargo[pos])
+                if self.model_transport_travel:
+                    self.planet_stock[dst][pos] += cargo[pos]
+                self.stock[pos] += cargo[pos]
+
+        while self.heap and self.heap[0][0] <= self.clock + 1e-12:
             self._complete(heapq.heappop(self.heap)[1])
         if self.completions_since_review >= self.review_every or self.clock >= self.review_at:
             self._review()
@@ -1517,13 +2789,18 @@ class EmpirePathSimulator:
 
     def _start(self, step: int) -> None:
         cost = self.cost[step]
+        dst = self.pay_planet[step]
         for position in range(4):
+            if self.model_transport_travel:
+                self.planet_stock[dst][position] = max(0.0, self.planet_stock[dst][position] - cost[position])
             self.stock[position] = max(0.0, self.stock[position] - cost[position])
             self.need[position] -= cost[position]
             if self.in_horizon[step]:
                 self.horizon_need[position] = max(0.0, self.horizon_need[position] - cost[position])
         hours = self.duration(step)
         self.started[step] = True
+        if self.planet_earmark_step[dst] == step:
+            self.planet_earmark_step[dst] = -1
         self.order.append(step)
         self.start[step] = self.clock
         self.end[step] = self.clock + hours
@@ -1540,7 +2817,48 @@ class EmpirePathSimulator:
         if planet < 0:
             self.dirty.add(self.research_queue)
 
+    def _complete_initial_job(self, job_idx: int) -> None:
+        job = self.initial_jobs[job_idx]
+        q = int(job["queue"])
+        if 0 <= q < self.queue_count:
+            self.queue_initial_count[q] = max(0, self.queue_initial_count[q] - 1)
+            if self.queue_initial_count[q] == 0:
+                self.queue_step[q] = -1
+                self.queue_end[q] = 0.0
+        self.completions_since_review += 1
+        if str(job.get("kind") or "") == "research":
+            rkey = str(job["key"])
+            self.research[rkey] = max(self.research.get(rkey, 0), int(job["level_to"]))
+            self.dirty.add(self.research_queue)
+            self.dirty.update(self.research_dependents.get(rkey, ()))
+            if rkey in ("r1", "r2"):
+                for other in range(self.planet_count):
+                    self._refresh_planet(other)
+                self._refresh_rates()
+                self.dirty.update(range(self.planet_count))
+            if rkey in ("r4", "r5") and self.model_transport_travel:
+                self._rebuild_transport_matrix(self.research)
+            return
+
+        planet = int(job["planet"])
+        bkey = str(job["key"])
+        self.levels[planet][bkey] = max(self.levels[planet].get(bkey, 0), int(job["level_to"]))
+        if bkey in PATH_FLOW_BUILDING_KEYS:
+            self._refresh_planet(planet)
+            if self.founded[planet]:
+                self._refresh_rates()
+        elif bkey == "b10" and self.founded[planet] and self.fleet_command_center_level is None:
+            self._refresh_rates()
+        self.dirty.add(planet)
+        if planet == self.lab_planet:
+            self.dirty.add(self.research_queue)
+        if planet == self.central_planet:
+            self.dirty.update(other for other in range(self.planet_count) if not self.founded[other])
+
     def _complete(self, step: int) -> None:
+        if step < 0:
+            self._complete_initial_job((-step) - 2)
+            return
         kind, planet, key = self.kind[step], self.step_planet[step], self.key[step]
         if self.queue[step] >= 0:
             self.queue_step[self.queue[step]] = -1
@@ -1554,6 +2872,8 @@ class EmpirePathSimulator:
                     self._refresh_planet(other)
                 self._refresh_rates()
                 self.dirty.update(range(self.planet_count))
+            if key in ("r4", "r5") and self.model_transport_travel:
+                self._rebuild_transport_matrix(self.research)
             return
         if kind == "colonize":
             self.founded[planet] = True
@@ -1593,10 +2913,11 @@ class EmpirePathSimulator:
         return horizon
 
     def _decide(self) -> None:
+        self.early_dispatch_at = PATH_NEVER
         for _ in range(self.queue_count + 2):
             if not self._start_proposals(self.strategy.proposals(self, forced=False)):
                 break
-        if self.reserved < 0 and not self.heap and self.unstarted > 0:
+        if self.reserved < 0 and not self.heap and not self.transit_heap and self.unstarted > 0:
             allow_forced = (
                 self.clock == 0.0
                 or self.run_limit_hours == PATH_NEVER
@@ -1613,18 +2934,48 @@ class EmpirePathSimulator:
         started_any = False
         stock = self.stock
         patience = self.strategy.patience
+        use_travel = self.model_transport_travel
+        busy_candidates: list[tuple[int, float]] = []
+        free_wait_candidates: list[int] = []
+        seen_busy_queues: set[int] = set()
+        seen_free_wait_queues: set[int] = set()
+        eff_stock = (
+            [stock[p] + self.total_in_transit[p] for p in range(4)]
+            if use_travel
+            else stock
+        )
+
         for _priority, step in proposals:
             queue = self.queue[step]
-            if self.started[step] or (queue >= 0 and self.queue_step[queue] >= 0):
+            if self.started[step]:
+                continue
+            if queue >= 0 and self.queue_step[queue] != -1:
+                if (
+                    use_travel
+                    and queue not in seen_busy_queues
+                    and self.is_next_of_its_chain(step)
+                    and not self.blockers(step)
+                ):
+                    seen_busy_queues.add(queue)
+                    busy_candidates.append((step, max(0.0, self.queue_end[queue] - self.clock)))
                 continue
             floor = self.cost_floor[step]
-            if stock[0] >= floor[0] and stock[1] >= floor[1] and stock[2] >= floor[2] and stock[3] >= floor[3]:
+            pay_stock = self.planet_stock[self.pay_planet[step]] if use_travel else stock
+            if (
+                pay_stock[0] >= floor[0]
+                and pay_stock[1] >= floor[1]
+                and pay_stock[2] >= floor[2]
+                and pay_stock[3] >= floor[3]
+            ):
                 if reserved >= 0:
                     hours = self.duration(step)
                     if queue >= 0 and queue == self.queue[reserved] and hours > limit:
                         continue
                     cost = self.cost[step]
-                    delayed = self.wait_hours([stock[position] - cost[position] for position in range(4)], reserved)
+                    delayed = self.wait_hours(
+                        [eff_stock[position] - cost[position] for position in range(4)],
+                        reserved,
+                    )
                     if delayed > limit + patience * hours + 1e-9 * limit + 1e-9:
                         continue
                     if not self.is_next_of_its_chain(step) or self.blockers(step):
@@ -1634,11 +2985,87 @@ class EmpirePathSimulator:
                     continue
                 self._start(step)
                 started_any = True
+                if use_travel:
+                    eff_stock = [stock[p] + self.total_in_transit[p] for p in range(4)]
             elif reserved < 0 and self.is_next_of_its_chain(step) and not self.blockers(step):
                 reserved = step
-                limit = self.wait_hours(stock, step)
+                limit = self.wait_hours(eff_stock, step)
+            elif (
+                use_travel
+                and reserved >= 0
+                and queue >= 0
+                and queue != self.queue[reserved]
+                and queue not in seen_free_wait_queues
+                and self.is_next_of_its_chain(step)
+                and not self.blockers(step)
+            ):
+                seen_free_wait_queues.add(queue)
+                free_wait_candidates.append(step)
+
         self.reserved = reserved
-        self.smelting = reserved >= 0 and stock[1] < self.cost_floor[reserved][1]
+        if not use_travel:
+            self.smelting = reserved >= 0 and stock[1] < self.cost_floor[reserved][1]
+            return started_any
+
+        # Coordinate-aware inter-planet transport scheduling:
+        # 1. Dispatch for #1 reserved step first (never starved by lower-priority early dispatches).
+        if reserved >= 0:
+            self._dispatch_transports_for_step(reserved, free_in=0.0, protect_reserved=False)
+        # 2. Early pre-ship for busy queues entering their `dispatch_delay + travel_time` window.
+        res_queue = self.queue[reserved] if reserved >= 0 else -1
+        for cand_step, free_in in busy_candidates:
+            if reserved >= 0:
+                c_hours = self.duration(cand_step)
+                if self.queue[cand_step] == res_queue and c_hours > limit:
+                    continue
+                c_cost = self.cost[cand_step]
+                delayed = self.wait_hours(
+                    (
+                        eff_stock[0] - c_cost[0],
+                        eff_stock[1] - c_cost[1],
+                        eff_stock[2] - c_cost[2],
+                        eff_stock[3] - c_cost[3],
+                    ),
+                    reserved,
+                )
+                if delayed > limit + patience * c_hours + 1e-9 * limit + 1e-9:
+                    continue
+            self._dispatch_transports_for_step(cand_step, free_in=free_in, protect_reserved=True)
+        # 3. Also supply secondary free queues using genuine surplus above `reserved`
+        #    (only when the step actually passes the patience gate so cargo cannot ping-pong).
+        for cand_step in free_wait_candidates:
+            if reserved >= 0:
+                c_hours = self.duration(cand_step)
+                if self.queue[cand_step] == res_queue and c_hours > limit:
+                    continue
+                c_cost = self.cost[cand_step]
+                delayed = self.wait_hours(
+                    (
+                        eff_stock[0] - c_cost[0],
+                        eff_stock[1] - c_cost[1],
+                        eff_stock[2] - c_cost[2],
+                        eff_stock[3] - c_cost[3],
+                    ),
+                    reserved,
+                )
+                if delayed > limit + patience * c_hours + 1e-9 * limit + 1e-9:
+                    continue
+            self._dispatch_transports_for_step(cand_step, free_in=0.0, protect_reserved=True)
+
+        if reserved >= 0:
+            res_dst = self.pay_planet[reserved]
+            res_floor_m = self.cost_floor[reserved][1]
+            dst_metal = self.planet_stock[res_dst][1] + self.in_transit_to[res_dst][1]
+            if dst_metal >= res_floor_m:
+                self.smelting = False
+            elif stock[1] + self.in_transit_to[res_dst][1] < res_floor_m:
+                self.smelting = True
+            else:
+                # Donor metal exists elsewhere, yet dispatch was skipped because `res_dst`'s own
+                # blast furnace can finish smelting faster than donor flight; keep smelting ON.
+                self.smelting = self.output[res_dst][2] > 0.0
+        else:
+            self.smelting = False
         return started_any
 
 
@@ -2308,6 +3735,10 @@ def _normalize_ai_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]
     merged["ga_elite_count"] = max(1, min(int(merged["ga_elite_count"]), merged["ga_population_size"] - 1))
     merged["ga_random_seed"] = int(merged["ga_random_seed"])
     merged["pad_generic_colonies"] = bool(merged["pad_generic_colonies"])
+    merged["transport_dispatch_delay_minutes"] = min(
+        1440.0,
+        max(0.0, game_data.safe_finite_float(merged.get("transport_dispatch_delay_minutes"), 120.0)),
+    )
     return merged
 
 
@@ -2344,6 +3775,10 @@ def _build_factor_levels(simulator: EmpirePathSimulator, run: Mapping[str, Any])
     started_building_max: dict[str, int] = {
         key: max((planet["levels"].get(key, 0) for planet in simulator.planets), default=0) for key in building_keys
     }
+    for job in simulator.initial_jobs:
+        if str(job.get("kind") or "") == "build" and str(job.get("key") or "") in started_building_max:
+            jk = str(job["key"])
+            started_building_max[jk] = max(started_building_max[jk], int(job["level_to"]))
     for step in run["order"]:
         if simulator.kind[step] == "build" and simulator.key[step] in started_building_max:
             started_building_max[simulator.key[step]] = max(
@@ -2382,6 +3817,10 @@ def _build_factor_levels(simulator: EmpirePathSimulator, run: Mapping[str, Any])
     started_research: dict[str, int] = {
         key: int(simulator.problem["research_levels"].get(key, 0)) for key in research_keys
     }
+    for job in simulator.initial_jobs:
+        if str(job.get("kind") or "") == "research" and str(job.get("key") or "") in started_research:
+            jk = str(job["key"])
+            started_research[jk] = max(started_research[jk], int(job["level_to"]))
     for step in run["order"]:
         if simulator.kind[step] == "research" and simulator.key[step] in started_research:
             started_research[simulator.key[step]] = max(started_research[simulator.key[step]], simulator.level_to[step])
@@ -2462,6 +3901,8 @@ def run_ai_planner(
         spare_percent=cfg["resource_spare_percent"],
         reward_weeks=cfg["reward_weeks"],
         weekly_discount=cfg["weekly_discount"],
+        transport_dispatch_delay_minutes=cfg["transport_dispatch_delay_minutes"],
+        model_transport_travel=True,
     )
 
     if progress_cb is not None:
@@ -2630,6 +4071,8 @@ def run_ai_planner(
     }
 
     # Sequential steps output strictly using kind in {"BUILD", "RESEARCH", "COLONIZE_PREVIEW"}
+    step_tr_map = best_run.get("step_transport_info") if isinstance(best_run.get("step_transport_info"), Mapping) else {}
+    dispatch_delay_sec = round(simulator.dispatch_delay_hours * 3600.0, 2)
     steps_out: list[dict[str, Any]] = []
     for seq, step_id in enumerate(best_run["order"], start=1):
         details = simulator.steps[step_id]
@@ -2660,6 +4103,22 @@ def run_ai_planner(
             p_name = "Account"
 
         cost_map = {r: int(round(details["cost"][pos])) for pos, r in enumerate(RESOURCE_KEYS)}
+        tr_info = step_tr_map.get(step_id)
+        needs_transport = isinstance(tr_info, Mapping)
+        if needs_transport:
+            req_hr = max(0.0, float(tr_info.get("earliest_request_hr", start_hr)))
+            tr_req_sec: Optional[float] = round(req_hr * 3600.0, 2)
+            tr_req_txt: Optional[str] = "now" if req_hr <= 1e-6 else fmt_path_time(req_hr)
+            tr_travel_sec = round(max(0.0, float(tr_info.get("max_travel_hr", 0.0))) * 3600.0, 2)
+            tr_lead_sec = round(max(0.0, float(tr_info.get("max_lead_hr", 0.0))) * 3600.0, 2)
+            tr_sources = [str(x) for x in (tr_info.get("sources") or ())]
+        else:
+            tr_req_sec = None
+            tr_req_txt = None
+            tr_travel_sec = 0.0
+            tr_lead_sec = 0.0
+            tr_sources = []
+
         steps_out.append(
             {
                 "seq": seq,
@@ -2680,6 +4139,13 @@ def run_ai_planner(
                 "target_level": int(details["level_to"]),
                 "cost": cost_map,
                 "cost_spice_eq": round(float(details["cost_spice_eq"]), 2),
+                "needs_transport": needs_transport,
+                "transport_request_at_sec": tr_req_sec,
+                "transport_request_text": tr_req_txt,
+                "transport_travel_sec": tr_travel_sec,
+                "transport_dispatch_delay_sec": dispatch_delay_sec if needs_transport else 0.0,
+                "transport_lead_sec": tr_lead_sec,
+                "transport_sources": tr_sources,
             }
         )
 
@@ -2724,6 +4190,44 @@ def run_ai_planner(
 
     disc_reward = float(best_run["discounted_reward"])
     total_net_sp = float(best_run["total_spice_eq_produced"])
+
+    in_prog_buildings_out = [dict(row) for row in (problem.get("in_progress_builds") or ())]
+    in_prog_research_out = [dict(row) for row in (problem.get("in_progress_research") or ())]
+    in_flight_arrivals_out = [
+        {k: v for k, v in row.items() if k != "cargo_tuple"}
+        for row in (problem.get("in_flight_arrivals") or ())
+    ]
+
+    travel_sec_mat = problem.get("travel_seconds") or ()
+    dist_mat = problem.get("distance_units") or ()
+    hull_list = problem.get("transport_hull_by_planet") or ()
+    transport_pairs: list[dict[str, Any]] = []
+    for i in range(simulator.planet_count):
+        if not simulator.planets[i]["founded"]:
+            continue
+        for j in range(simulator.planet_count):
+            if i == j or not simulator.planets[j]["founded"]:
+                continue
+            ow_s = float(travel_sec_mat[i][j]) if i < len(travel_sec_mat) and j < len(travel_sec_mat[i]) else 0.0
+            du = float(dist_mat[i][j]) if i < len(dist_mat) and j < len(dist_mat[i]) else 0.0
+            hull_i = str(hull_list[i]) if i < len(hull_list) else "s2"
+            transport_pairs.append(
+                {
+                    "origin_coords": str(simulator.planets[i]["coords"]),
+                    "target_coords": str(simulator.planets[j]["coords"]),
+                    "distance_units": round(du, 2),
+                    "one_way_seconds": round(ow_s, 2),
+                    "lead_seconds": round(ow_s + dispatch_delay_sec, 2),
+                    "hull": hull_i,
+                }
+            )
+    transport_matrix_out = {
+        "dispatch_delay_minutes": round(simulator.transport_dispatch_delay_minutes, 2),
+        "dispatch_delay_seconds": dispatch_delay_sec,
+        "avg_one_way_seconds": round(float(problem.get("avg_transport_travel_seconds", 0.0)), 2),
+        "max_one_way_seconds": round(float(problem.get("max_transport_travel_seconds", 0.0)), 2),
+        "pairs": transport_pairs,
+    }
 
     summary = {
         "strategy": best_strategy.name,
@@ -2773,6 +4277,16 @@ def run_ai_planner(
         "metal_smelted": int(round(best_run["metal_smelted"])),
         "loot_counted": {r: int(round(loot_collected[pos])) for pos, r in enumerate(RESOURCE_KEYS)},
         "loot_share_of_cost_spent": round(loot_val / cost_val, 4) if cost_val > 0.0 else 0.0,
+        "transport_dispatch_delay_minutes": round(simulator.transport_dispatch_delay_minutes, 2),
+        "transports_dispatched": int(best_run.get("transports_dispatched", 0)),
+        "early_transports_dispatched": int(best_run.get("early_transports_dispatched", 0)),
+        "avg_transport_travel_seconds": round(float(problem.get("avg_transport_travel_seconds", 0.0)), 2),
+        "max_transport_travel_seconds": round(float(problem.get("max_transport_travel_seconds", 0.0)), 2),
+        "in_progress_buildings_count": int(len(in_prog_buildings_out)),
+        "in_progress_research_count": int(len(in_prog_research_out)),
+        "in_flight_arrivals_count": int(len(in_flight_arrivals_out)),
+        "started_from_live_state": True,
+        "live_snapshot_ts": float(problem.get("live_snapshot_ts", 0.0)),
         "elapsed_ms": elapsed_ms,
     }
 
@@ -2785,6 +4299,12 @@ def run_ai_planner(
             "attack_telemetry": enriched_telemetry,
             "summary": summary,
             "search": search_summary,
+            "in_progress": {
+                "buildings": in_prog_buildings_out,
+                "research": in_prog_research_out,
+                "fleet_arrivals": in_flight_arrivals_out,
+            },
+            "transport_matrix": transport_matrix_out,
             "weekly_breakdown": weekly_breakdown,
             "factor_levels": factor_levels,
             "steps": steps_out,
@@ -3234,6 +4754,414 @@ def reconcile_live_ai_actions(
     if actions:
         actions = attach_action_etas(state, actions)
     return actions, field_conflicts
+
+
+def compute_early_transport_needs(
+    state: GameState,
+    plan_result: Mapping[str, Any],
+    ai_actions: Sequence[PlannedAction] = (),
+    *,
+    config: Optional[StrategyConfig] = None,
+) -> dict[int, dict[str, Any]]:
+    """Compute distance- & dispatch-delay-aware live transport needs for AI-Planner steps.
+
+    Combines:
+    - **Rule A (Immediate stalled steps)**: Waiting `ai_actions` (`not executable_now`)
+      with missing resources, minus live incoming friendly cargo.
+    - **Rule B (Early pre-ship behind active in-progress builds/research)**: Upcoming
+      planned steps (including same-chain next levels like `b1 L16` behind active
+      `b1 L15`, or prereq-unlocked steps like `b17 L1` behind active `b7 L10`) whose
+      active queue finishes within `transport_dispatch_delay + one_way_travel_time`,
+      subtracting local stock, live incoming cargo, and projected local production
+      over the remaining queue time.
+    - **Rule C (Early pre-ship behind an immediately-launching step)**: If a colony
+      has an `executable_now=True` step in `ai_actions` whose build duration is within
+      the lead window, pre-ships resources for the subsequent planned step minus the
+      immediate step's cost.
+    """
+    del config
+    if not isinstance(plan_result, Mapping):
+        return {}
+    steps = plan_result.get("steps")
+    if not isinstance(steps, Sequence) or not steps:
+        return {}
+
+    normal_planets = [p for p in (state.planets or ()) if normalize_planet_type(p) == "normal"]
+    if len(normal_planets) < 2:
+        return {}
+
+    meta = plan_result.get("meta_parameters") if isinstance(plan_result.get("meta_parameters"), Mapping) else {}
+    dispatch_delay_min = min(
+        1440.0,
+        max(0.0, game_data.safe_finite_float(meta.get("transport_dispatch_delay_minutes"), 120.0)),
+    )
+    dispatch_delay_sec = dispatch_delay_min * 60.0
+
+    planets_by_id: dict[int, PlanetState] = {}
+    planets_by_coords: dict[str, PlanetState] = {}
+    empire_ships: dict[str, int] = {"s1": 0, "s2": 0, "s3": 0}
+    for p in normal_planets:
+        pid = int(p.planet_id)
+        planets_by_id[pid] = p
+        c = str(p.coords or "").strip()
+        if c:
+            planets_by_coords[c] = p
+            planets_by_coords[normalize_coords(c)] = p
+        for sk in ("s1", "s2", "s3"):
+            empire_ships[sk] += max(0, int((p.ships or {}).get(sk, 0) or 0))
+
+    # Build lightweight planet entries for unified in-progress / arrival extraction
+    speedup = _safe_speedup(state, {})
+    research_now = {
+        key: max(0, int((state.researches or {}).get(key, 0) or 0)) for key, _ in research_catalog()
+    }
+    mini_planets: list[dict[str, Any]] = []
+    for idx, p in enumerate(normal_planets):
+        mini_planets.append(
+            {
+                "index": idx,
+                "planet_id": int(p.planet_id),
+                "coords": str(p.coords),
+                "name": str(p.name or p.coords),
+                "levels": {str(k): max(0, int(v or 0)) for k, v in (p.buildings or {}).items() if max(0, int(v or 0)) > 0},
+            }
+        )
+    lab_idx = -1
+    if normal_planets:
+        best_lab_idx = max(
+            range(len(normal_planets)),
+            key=lambda i: (
+                normal_planets[i].building_level(8),
+                1 if (state.active_planet_id is not None and normal_planets[i].planet_id == state.active_planet_id) else 0,
+            ),
+        )
+        if normal_planets[best_lab_idx].building_level(8) >= 1:
+            lab_idx = best_lab_idx
+
+    base_times_cache: dict[str, dict[int, float]] = {}
+
+    def _base_hours(key: str, level: int) -> float:
+        if key not in base_times_cache:
+            info = game_data.BUILDING_BY_ID[int(key[1:])] if key.startswith("b") else game_data.RESEARCH_BY_ID[key]
+            levels_map = info.get("levels") or {}
+            top_level = max(int(info.get("max_table_level") or len(levels_map)), level)
+            base_times_cache[key] = build_monotonic_base_times(levels_map, top_level)
+        return float(base_times_cache[key].get(level, 0.0)) / 3600.0
+
+    in_prog_builds, in_prog_research, in_flight_arrivals = _extract_live_in_progress_state(
+        state,
+        mini_planets,
+        speedup=speedup,
+        research_now=research_now,
+        base_hours_fn=_base_hours,
+        lab_planet_index=lab_idx,
+    )
+
+    inbound_cargo_by_pid: dict[int, list[float]] = {}
+    for arr in in_flight_arrivals:
+        pid = int(arr["planet_id"])
+        buf = inbound_cargo_by_pid.setdefault(pid, [0.0, 0.0, 0.0, 0.0])
+        ct = arr.get("cargo_tuple") or (0.0, 0.0, 0.0, 0.0)
+        for pos in range(4):
+            buf[pos] += float(ct[pos])
+
+    queue_rem_by_pid: dict[int, float] = {}
+    eff_buildings_by_pid: dict[int, dict[str, int]] = {
+        int(p.planet_id): {
+            str(k): max(0, int(v or 0))
+            for k, v in (p.buildings or {}).items()
+            if max(0, int(v or 0)) > 0
+        }
+        for p in normal_planets
+    }
+    for job in in_prog_builds:
+        pid = int(job["planet_id"])
+        bkey = str(job["key"])
+        lvl = int(job["level_to"])
+        rem_s = max(0.0, float(job["remaining_seconds"]))
+        queue_rem_by_pid[pid] = max(queue_rem_by_pid.get(pid, 0.0), rem_s)
+        pmap = eff_buildings_by_pid.setdefault(pid, {})
+        pmap[bkey] = max(pmap.get(bkey, 0), lvl)
+
+    research_rem_sec = 0.0
+    eff_researches = dict(research_now)
+    for job in in_prog_research:
+        rkey = str(job["key"])
+        lvl = int(job["level_to"])
+        rem_s = max(0.0, float(job["remaining_seconds"]))
+        research_rem_sec = max(research_rem_sec, rem_s)
+        eff_researches[rkey] = max(eff_researches.get(rkey, 0), lvl)
+
+    def _best_donor_travel_sec(dest_planet: PlanetState) -> float:
+        ship_donors = [
+            p
+            for p in normal_planets
+            if p.planet_id != dest_planet.planet_id
+            and sum(max(0, int((p.ships or {}).get(sk, 0) or 0)) for sk in ("s1", "s2", "s3")) > 0
+        ]
+        pool = ship_donors if ship_donors else [p for p in normal_planets if p.planet_id != dest_planet.planet_id]
+        best_s = PATH_NEVER
+        for src in pool:
+            ow_s, _, _ = estimate_interplanet_transport_seconds(
+                str(src.coords),
+                str(dest_planet.coords),
+                origin_ships=src.ships,
+                empire_ships=empire_ships,
+                researches=state.researches,
+            )
+            if ow_s < best_s:
+                best_s = ow_s
+        return 0.0 if not math.isfinite(best_s) else float(best_s)
+
+    def _planet_hourly_rates(p: PlanetState) -> tuple[float, float, float, float]:
+        rates_obj = getattr(p, "rates", None)
+        if rates_obj is not None:
+            net = getattr(rates_obj, "net_per_hour", None)
+            if net is not None:
+                vals = (
+                    max(0.0, float(getattr(net, "pig_iron", 0) or 0)),
+                    max(0.0, float(getattr(net, "metal", 0) or 0)),
+                    max(0.0, float(getattr(net, "kryptonite", 0) or 0)),
+                    max(0.0, float(getattr(net, "spice", 0) or 0)),
+                )
+                if sum(vals) > 0.0:
+                    return vals
+        ctx = {
+            "speedup_factor": speedup,
+            "planet_temperature_c": int(p.temperature),
+            "r1_mining_tech": research_now.get("r1", 0),
+            "r2_energy_tech": research_now.get("r2", 0),
+        }
+        totals = [0.0] * len(PRODUCTION_FLOW_KEYS)
+        for bk in PATH_FLOW_BUILDING_KEYS:
+            lvl = max(0, int((p.buildings or {}).get(bk, 0) or 0))
+            if lvl > 0:
+                for pos, fv in enumerate(building_level_flows(bk, lvl, ctx)):
+                    totals[pos] += fv
+        s9 = max(0, int((p.ships or {}).get("s9", 0) or 0))
+        if s9 > 0:
+            totals[6] += s9 * solar_cell_energy_per_unit(int(p.temperature)) * technology_multiplier("r2", research_now.get("r2", 0))
+        out = planet_hourly_output(totals)
+        return (max(0.0, out[1]), max(0.0, out[2]), max(0.0, out[3]), max(0.0, out[4]))
+
+    def _storage_cap_ratio_for(p: PlanetState, cost_vals: Sequence[float]) -> float:
+        ratio = 0.85
+        for pos, r in enumerate(RESOURCE_KEYS):
+            cap = max(0, int(getattr(p.storage, r, 0) or 0))
+            if cap > 0 and cost_vals[pos] > cap * 0.85 and cost_vals[pos] <= cap:
+                ratio = max(ratio, min(0.98, (cost_vals[pos] / float(cap)) + 0.02))
+        return round(ratio, 4)
+
+    needs: dict[int, dict[str, Any]] = {}
+    exec_cost_by_pid: dict[int, list[float]] = {}
+    exec_dur_by_pid: dict[int, float] = {}
+    exec_res_dur = 0.0
+
+    # Rule A: Immediate stalled/waiting AI-Planner actions + track immediately-launching step costs/durations
+    for act in ai_actions:
+        if act.kind not in ("BUILD", "WAIT_RESOURCES", "RESEARCH"):
+            continue
+        pid = int(act.planet_id)
+        p = planets_by_id.get(pid)
+        if p is None:
+            continue
+        if act.executable_now:
+            buf = exec_cost_by_pid.setdefault(pid, [0.0, 0.0, 0.0, 0.0])
+            for pos, r in enumerate(RESOURCE_KEYS):
+                buf[pos] += max(0.0, float(getattr(act.cost, r, 0) or 0))
+            if act.kind == "BUILD" and act.target_id is not None and act.target_level:
+                bkey = f"b{int(act.target_id)}"
+                eff_buildings_by_pid.setdefault(pid, {})[bkey] = max(
+                    eff_buildings_by_pid.get(pid, {}).get(bkey, 0), int(act.target_level)
+                )
+                div = building_time_divisor(p.building_level(7), p.building_level(17), speedup)
+                dur_s = (_base_hours(bkey, int(act.target_level)) / max(1e-9, div)) * 3600.0
+                exec_dur_by_pid[pid] = max(exec_dur_by_pid.get(pid, 0.0), dur_s)
+            elif act.kind == "RESEARCH" and act.target_id is not None and act.target_level:
+                rkey = f"r{int(act.target_id)}"
+                eff_researches[rkey] = max(eff_researches.get(rkey, 0), int(act.target_level))
+                div = research_time_divisor(p.building_level(8), speedup)
+                dur_s = (_base_hours(rkey, int(act.target_level)) / max(1e-9, div)) * 3600.0
+                exec_res_dur = max(exec_res_dur, dur_s)
+            continue
+
+        if act.missing.is_zero():
+            continue
+        inb = inbound_cargo_by_pid.get(pid, [0.0, 0.0, 0.0, 0.0])
+        gap = [
+            max(0, int(math.ceil(max(0.0, float(getattr(act.missing, r, 0) or 0) - inb[pos]))))
+            for pos, r in enumerate(RESOURCE_KEYS)
+        ]
+        if sum(gap) <= 0:
+            continue
+        lead_s = dispatch_delay_sec + _best_donor_travel_sec(p)
+        cost_vals = [float(getattr(act.cost, r, 0) or 0) for r in RESOURCE_KEYS]
+        cap_ratio = _storage_cap_ratio_for(p, cost_vals)
+        prev = needs.get(pid)
+        if prev is None:
+            needs[pid] = {
+                "pig_iron": gap[0],
+                "metal": gap[1],
+                "kryptonite": gap[2],
+                "spice": gap[3],
+                "label": f"{act.target_name} L{act.target_level}" if act.target_level else str(act.target_name),
+                "need_by_sec": 0.0,
+                "lead_sec": round(lead_s, 1),
+                "storage_cap_ratio": cap_ratio,
+            }
+        else:
+            for pos, r in enumerate(RESOURCE_KEYS):
+                prev[r] = max(int(prev[r]), gap[pos])
+            prev["storage_cap_ratio"] = max(float(prev["storage_cap_ratio"]), cap_ratio)
+
+    # Rule B & C: Early pre-ship for the next planned BUILD / RESEARCH behind active or launching queues
+    early_checked_planets: set[int] = set(needs.keys())
+    early_checked_research = False
+    lab_planet = normal_planets[lab_idx] if 0 <= lab_idx < len(normal_planets) else None
+
+    for step in steps:
+        if not isinstance(step, Mapping):
+            continue
+        kind = str(step.get("kind") or "").strip().upper()
+        entity_key = str(step.get("entity_key") or "").strip()
+        target_level = game_data.safe_int(step.get("target_level"), 0)
+        seq = game_data.safe_int(step.get("seq"), 0)
+        if not entity_key or target_level <= 0:
+            continue
+
+        if kind == "BUILD":
+            step_pid = game_data.safe_optional_int(step.get("planet_id"), None)
+            step_coords = str(step.get("planet_coords") or "").strip()
+            p = planets_by_id.get(step_pid) if step_pid is not None else None
+            if p is None and step_coords:
+                p = planets_by_coords.get(step_coords) or planets_by_coords.get(normalize_coords(step_coords))
+            if p is None:
+                continue
+            pid = int(p.planet_id)
+            if pid in early_checked_planets:
+                continue
+            if not (entity_key.startswith("b") and entity_key[1:].isdigit()):
+                continue
+            bid = int(entity_key[1:])
+            b_info = game_data.BUILDING_BY_ID.get(bid)
+            if not b_info:
+                continue
+            eff_b = eff_buildings_by_pid.get(pid, {})
+            cur_eff = eff_b.get(entity_key, 0)
+            if cur_eff >= target_level:
+                continue
+            if target_level != cur_eff + 1:
+                continue
+            if game_data.missing_prerequisites("buildings", bid, buildings=eff_b, researches=eff_researches):
+                continue
+            if p.fields_max > 0 and p.fields_used >= p.fields_max:
+                early_checked_planets.add(pid)
+                continue
+
+            rem_s = max(queue_rem_by_pid.get(pid, 0.0), exec_dur_by_pid.get(pid, 0.0))
+            if rem_s <= 0.0:
+                continue
+            lead_s = dispatch_delay_sec + _best_donor_travel_sec(p)
+            early_checked_planets.add(pid)
+            if rem_s > lead_s + 1e-6:
+                continue
+
+            cost_dict = full_cost(game_data.building_cost(bid, target_level))
+            cost_vals = [float(cost_dict[r]) for r in RESOURCE_KEYS]
+            if bid not in (11, 12, 13, 14) and any(
+                int(getattr(p.storage, r, 0) or 0) > 0 and cost_vals[pos] > int(getattr(p.storage, r, 0) or 0)
+                for pos, r in enumerate(RESOURCE_KEYS)
+            ):
+                continue
+
+            spent = exec_cost_by_pid.get(pid, [0.0, 0.0, 0.0, 0.0])
+            inb = inbound_cargo_by_pid.get(pid, [0.0, 0.0, 0.0, 0.0])
+            rates_p = _planet_hourly_rates(p)
+            rem_hr = rem_s / 3600.0
+            gap = []
+            for pos, r in enumerate(RESOURCE_KEYS):
+                local_after = max(0.0, float(getattr(p.resources, r, 0) or 0) - spent[pos])
+                proj = local_after + inb[pos] + rates_p[pos] * rem_hr
+                gap.append(max(0, int(math.ceil(cost_vals[pos] - proj))))
+            if sum(gap) <= 0:
+                continue
+            b_name = str(step.get("entity_name") or b_info["name"])
+            needs[pid] = {
+                "pig_iron": gap[0],
+                "metal": gap[1],
+                "kryptonite": gap[2],
+                "spice": gap[3],
+                "label": (
+                    f"early pre-ship #{seq}: {b_name} L{target_level} "
+                    f"(queue free in {fmt_path_time(rem_hr)}, lead {fmt_path_time(lead_s / 3600.0)})"
+                ),
+                "need_by_sec": round(rem_s, 1),
+                "lead_sec": round(lead_s, 1),
+                "storage_cap_ratio": _storage_cap_ratio_for(p, cost_vals),
+            }
+
+        elif kind == "RESEARCH":
+            if early_checked_research or lab_planet is None:
+                continue
+            r_info = game_data.RESEARCH_BY_ID.get(entity_key)
+            if not r_info:
+                continue
+            cur_eff = eff_researches.get(entity_key, 0)
+            if cur_eff >= target_level:
+                continue
+            if target_level != cur_eff + 1:
+                continue
+            lab_pid = int(lab_planet.planet_id)
+            if game_data.missing_prerequisites(
+                "research", entity_key, buildings=eff_buildings_by_pid.get(lab_pid, {}), researches=eff_researches
+            ):
+                continue
+
+            rem_s = max(research_rem_sec, exec_res_dur)
+            if rem_s <= 0.0:
+                continue
+            lead_s = dispatch_delay_sec + _best_donor_travel_sec(lab_planet)
+            early_checked_research = True
+            if rem_s > lead_s + 1e-6:
+                continue
+
+            raw_c = ((r_info.get("levels") or {}).get(target_level) or {}).get("cost") or {}
+            cost_dict = full_cost(raw_c)
+            cost_vals = [float(cost_dict[r]) for r in RESOURCE_KEYS]
+            spent = exec_cost_by_pid.get(lab_pid, [0.0, 0.0, 0.0, 0.0])
+            inb = inbound_cargo_by_pid.get(lab_pid, [0.0, 0.0, 0.0, 0.0])
+            rates_lab = _planet_hourly_rates(lab_planet)
+            rem_hr = rem_s / 3600.0
+            gap = []
+            for pos, r in enumerate(RESOURCE_KEYS):
+                local_after = max(0.0, float(getattr(lab_planet.resources, r, 0) or 0) - spent[pos])
+                proj = local_after + inb[pos] + rates_lab[pos] * rem_hr
+                gap.append(max(0, int(math.ceil(cost_vals[pos] - proj))))
+            if sum(gap) <= 0:
+                continue
+            r_name = str(step.get("entity_name") or r_info["name"])
+            cap_ratio = _storage_cap_ratio_for(lab_planet, cost_vals)
+            prev = needs.get(lab_pid)
+            if prev is None:
+                needs[lab_pid] = {
+                    "pig_iron": gap[0],
+                    "metal": gap[1],
+                    "kryptonite": gap[2],
+                    "spice": gap[3],
+                    "label": (
+                        f"early pre-ship #{seq}: {r_name} L{target_level} "
+                        f"(lab free in {fmt_path_time(rem_hr)}, lead {fmt_path_time(lead_s / 3600.0)})"
+                    ),
+                    "need_by_sec": round(rem_s, 1),
+                    "lead_sec": round(lead_s, 1),
+                    "storage_cap_ratio": cap_ratio,
+                }
+            else:
+                for pos, r in enumerate(RESOURCE_KEYS):
+                    prev[r] = max(int(prev[r]), gap[pos])
+                prev["storage_cap_ratio"] = max(float(prev["storage_cap_ratio"]), cap_ratio)
+
+    return needs
 
 
 # ---------------------------------------------------------------------------

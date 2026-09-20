@@ -10059,6 +10059,7 @@
   const DEFAULT_AI_PLANNER_DRAFT = {
     reward_weeks: "26",
     weekly_discount: "0.9",
+    transport_dispatch_delay_minutes: "120",
     resource_spare_percent: {
       pig_iron: "10",
       metal: "10",
@@ -14926,6 +14927,12 @@
       boundsLabel: "default: 0.90 · 0.05–1.00",
       description: "Exponential time-preference multiplier applied to week w output as γ^(w−1) in discounted_reward. Lower values (e.g. 0.75–0.85) strongly favor immediate early-week income growth; 1.00 weights every week in the W-week window equally. Accepts floats from 0.05 to 1.00."
     },
+    transport_dispatch_delay_minutes: {
+      title: "Fleet Dispatch Delay (min)",
+      paramKey: "transport_dispatch_delay_minutes",
+      boundsLabel: "default: 120 · 0–1440 min",
+      description: "Minutes of Fleet Command dispatch lead time added on top of real inter-planet coordinate travel time (one-way flight using each colony's transport hulls and engine tech) when scheduling cross-planet resource transfers. AI-Planner requests transports early by dispatch delay plus travel time so cargo lands before a colony build or research queue finishes. Accepts 0 to 1440 minutes."
+    },
     fleet_command_center_level: {
       title: "Fleet Base (b10) Level Override",
       paramKey: "fleet_command_center_level",
@@ -15149,6 +15156,18 @@
       weekly_discount: String(
         safeFiniteNumber(get("weekly_discount", "PATH_WEEKLY_DISCOUNT", 0.9), 0.9) ?? 0.9
       ),
+      transport_dispatch_delay_minutes: String(
+        Math.max(
+          0,
+          Math.min(
+            1440,
+            safeFiniteNumber(
+              get("transport_dispatch_delay_minutes", "PATH_TRANSPORT_DISPATCH_DELAY_MINUTES", 120),
+              120
+            ) ?? 120
+          )
+        )
+      ),
       resource_spare_percent: spare,
       fleet_command_center_level: b10Raw !== null && b10Raw !== void 0 && String(b10Raw).trim() !== "" ? String(Math.round(safeFiniteNumber(b10Raw, 0) ?? 0)) : "",
       attacks_per_day: apdRaw !== null && apdRaw !== void 0 && String(apdRaw).trim() !== "" ? String(safeFiniteNumber(apdRaw, 0) ?? 0) : "",
@@ -15178,6 +15197,10 @@
     return {
       reward_weeks: Math.max(1, Math.min(104, intNum(draft.reward_weeks, 26, 1))),
       weekly_discount: Math.max(0.05, Math.min(1, num(draft.weekly_discount, 0.9))),
+      transport_dispatch_delay_minutes: Math.max(
+        0,
+        Math.min(1440, num(draft.transport_dispatch_delay_minutes, 120))
+      ),
       resource_spare_percent: {
         pig_iron: Math.max(0, Math.min(100, num(draft.resource_spare_percent.pig_iron, 10))),
         metal: Math.max(0, Math.min(100, num(draft.resource_spare_percent.metal, 10))),
@@ -15197,7 +15220,7 @@
     };
   }
   const AiPlannerTab = ({ hidden = false }) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
     const {
       dashboard,
       setDashboard,
@@ -15344,18 +15367,19 @@
     );
     const weekSort = useTableSort(weeklyRows, weekSortCols);
     const onRunAiPlanner = async () => {
-      var _a2;
+      var _a2, _b2;
       setIsSubmitting(true);
       try {
         const payload = buildAiParamsPayload(draft);
         showFeedback("Running AI-Planner W-week NPV sequence search...", "ok");
         const res = await apiCommand2({
           command: "ai_planner_run",
-          params: payload
+          params: payload,
+          refresh: Boolean(apiOnline && ((_a2 = dashboard == null ? void 0 : dashboard.health) == null ? void 0 : _a2.in_game))
         });
         setDraftDirty(false);
         await fetchAiState({ silent: true });
-        const st = String(((_a2 = res.job) == null ? void 0 : _a2.status) || "completed").toLowerCase();
+        const st = String(((_b2 = res.job) == null ? void 0 : _b2.status) || "completed").toLowerCase();
         showFeedback(
           st === "running" ? "AI-Planner search running in background..." : "AI-Planner W-week path computed.",
           "ok"
@@ -15475,6 +15499,15 @@
       null
     );
     const medianRtSec = safeFiniteNumber(telemetry.median_round_trip_seconds, null);
+    const inProgBuilds = Array.isArray((_g = aiData == null ? void 0 : aiData.in_progress) == null ? void 0 : _g.buildings) ? aiData.in_progress.buildings.length : Math.max(0, Math.round(safeFiniteNumber(summary.in_progress_buildings_count, 0) ?? 0));
+    const inProgRes = Array.isArray((_h = aiData == null ? void 0 : aiData.in_progress) == null ? void 0 : _h.research) ? aiData.in_progress.research.length : Math.max(0, Math.round(safeFiniteNumber(summary.in_progress_research_count, 0) ?? 0));
+    const inProgTotal = inProgBuilds + inProgRes;
+    const dispatchDelayMin = Math.round(
+      safeFiniteNumber(
+        summary.transport_dispatch_delay_minutes ?? draft.transport_dispatch_delay_minutes,
+        120
+      ) ?? 120
+    );
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-tab-split", id: "ag-pane-ai-planner", hidden, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window ag-main-window", id: "ag-ai-main-window", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
@@ -15514,7 +15547,7 @@
                   className: `tab-btn${subView === "steps" ? " active" : ""}`,
                   id: "ai-subtab-steps",
                   onClick: () => setSubView("steps"),
-                  children: `Path (${((_g = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _g.total) ?? rawSteps.length})`
+                  children: `Path (${((_i = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _i.total) ?? rawSteps.length})`
                 }
               ),
               /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -15645,7 +15678,7 @@
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Progress (Completed / Horizon)" }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-kpi-val tabular", id: "ai-kpi-progress", children: `${stepsCompleted} / ${stepsTotal}` }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", children: summary.time ? `Reached in ${summary.time}` : `Horizon ${rewardWeeks}w` })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", children: `${summary.time ? `Reached in ${summary.time}` : `Horizon ${rewardWeeks}w`}${inProgTotal > 0 ? ` · ${inProgTotal} live` : ""} · +${dispatchDelayMin}m dispatch` })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-kpi-cell", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-label", children: "Fleet Slots & Median Loot/h" }),
@@ -15752,7 +15785,7 @@
                 }
               }
             ) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", children: `${((_h = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _h.total) ?? stepSort.sortedRows.length} total actions` })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", children: `${((_j = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _j.total) ?? stepSort.sortedRows.length} total actions` })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "ag-ai-steps-table", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
@@ -15828,7 +15861,10 @@
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `W${wkNum}` }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: s.planet_coords ? `${s.planet_name || "Colony"} [${s.planet_coords}]` : "Account" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-title", children: `${s.kind || "BUILD"} · ${s.entity_name || s.entity_key || "Step"}${s.target_level != null ? ` → L${s.target_level}` : ""}` }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: s.start || formatDurationSecondsCompact(s.start_sec) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "tabular", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: s.start || formatDurationSecondsCompact(s.start_sec) }),
+                  s.needs_transport ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-sub", children: `Ship at ${s.transport_request_text || formatDurationSecondsCompact(s.transport_request_at_sec)}` }) : null
+                ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: s.duration_text || formatDurationSecondsCompact(s.duration_sec) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `eta-pill tabular${stStr === "COMPLETED" ? "" : " is-wait"}`, children: stStr }) })
               ] }, `${seqNum}-${s.entity_key || idx}`);
@@ -15840,7 +15876,7 @@
               idPrefix: "ag-ai-steps",
               totalItems: Math.max(
                 stepSort.sortedRows.length,
-                Math.round(safeFiniteNumber((_i = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _i.total, 0) ?? 0)
+                Math.round(safeFiniteNumber((_k = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _k.total, 0) ?? 0)
               ),
               page: stepsPage,
               pageSize: stepsPageSize,
@@ -16027,6 +16063,32 @@
                             onChange: (e) => {
                               setDraftDirty(true);
                               setDraft((prev) => ({ ...prev, weekly_discount: e.target.value }));
+                            }
+                          }
+                        )
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      ActionGraphParamRow,
+                      {
+                        doc: AI_PLANNER_PARAM_DOCS.transport_dispatch_delay_minutes,
+                        htmlFor: "ai-param-transport_dispatch_delay_minutes",
+                        layout: "inline",
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "input",
+                          {
+                            type: "number",
+                            id: "ai-param-transport_dispatch_delay_minutes",
+                            min: 0,
+                            max: 1440,
+                            step: 5,
+                            value: draft.transport_dispatch_delay_minutes,
+                            onChange: (e) => {
+                              setDraftDirty(true);
+                              setDraft((prev) => ({
+                                ...prev,
+                                transport_dispatch_delay_minutes: e.target.value
+                              }));
                             }
                           }
                         )

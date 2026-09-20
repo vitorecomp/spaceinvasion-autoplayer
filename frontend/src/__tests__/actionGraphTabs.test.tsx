@@ -693,15 +693,29 @@ describe("ActionGraph 4-Tab Workspace", () => {
     expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("optimized_building_max_levels.b2");
     expect(document.getElementById("ag-co-control-panel")?.textContent).toContain("mine and shipyard specializations remain emergent");
 
-    // Tab 3: AI-Planner (16 parameters across Horizon & Spare % + Weights & GA)
+    // Tab 3: AI-Planner (17 parameters across Horizon & Spare % + Weights & GA)
     fireEvent.click(document.getElementById("ag-tab-btn-ai-planner")!);
     await waitFor(() => {
       expect(document.getElementById("ag-ai-control-panel")).not.toBeNull();
     });
-    assertPanelHasDetailedDocs("ag-ai-control-panel", 16);
+    assertPanelHasDetailedDocs("ag-ai-control-panel", 17);
     expect(document.getElementById("ag-ai-control-panel")?.textContent).toContain("weekly_discount");
+    expect(document.getElementById("ag-ai-control-panel")?.textContent).toContain("transport_dispatch_delay_minutes");
     expect(document.getElementById("ag-ai-control-panel")?.textContent).toContain("resource_spare_percent.spice");
     expect(document.getElementById("ag-ai-control-panel")?.textContent).toContain("scarcity_focus");
+
+    // Verify Fleet Dispatch Delay defaults to 120 minutes, edits cleanly, and submits with live refresh
+    const delayInput = document.getElementById("ai-param-transport_dispatch_delay_minutes") as HTMLInputElement;
+    expect(delayInput).not.toBeNull();
+    expect(delayInput.value).toBe("120");
+    fireEvent.change(delayInput, { target: { value: "45" } });
+    fireEvent.click(document.getElementById("btn-ai-run")!);
+    await waitFor(() => {
+      const runCmd = postedCommands.find((c) => c.command === "ai_planner_run");
+      expect(runCmd).toBeDefined();
+      expect(runCmd?.params?.transport_dispatch_delay_minutes).toBe(45);
+      expect(runCmd?.refresh).toBe(true);
+    });
 
     // Tab 4: Fleet / Attack Planner (51+ parameters across Combat, Logistics, Scanner, Shipyard & Tech)
     fireEvent.click(document.getElementById("ag-tab-btn-fleet-planner")!);

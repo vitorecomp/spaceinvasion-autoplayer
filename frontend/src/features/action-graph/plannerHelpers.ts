@@ -263,6 +263,7 @@ export const DEFAULT_CONFIG_OPTIMIZER_DRAFT: ConfigOptimizerDraft = {
 export interface AiPlannerDraft {
   reward_weeks: string;
   weekly_discount: string;
+  transport_dispatch_delay_minutes: string;
   resource_spare_percent: {
     pig_iron: string;
     metal: string;
@@ -284,6 +285,7 @@ export interface AiPlannerDraft {
 export const DEFAULT_AI_PLANNER_DRAFT: AiPlannerDraft = {
   reward_weeks: "26",
   weekly_discount: "0.9",
+  transport_dispatch_delay_minutes: "120",
   resource_spare_percent: {
     pig_iron: "10",
     metal: "10",

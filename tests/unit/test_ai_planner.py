@@ -131,6 +131,7 @@ class AiPlannerUnitTests(unittest.TestCase):
         d = ap.DEFAULT_AI_PLANNER_PARAMS
         self.assertEqual(d["reward_weeks"], 26)
         self.assertEqual(d["weekly_discount"], 0.90)
+        self.assertEqual(d["transport_dispatch_delay_minutes"], 120.0)
         self.assertEqual(
             d["resource_spare_percent"],
             {"pig_iron": 10.0, "metal": 10.0, "kryptonite": 10.0, "spice": 10.0},
@@ -853,6 +854,8 @@ class AiPlannerUnitTests(unittest.TestCase):
             spare_percent=spare,
             reward_weeks=6,
             weekly_discount=0.90,
+            transport_dispatch_delay_minutes=0.0,
+            model_transport_travel=False,
         )
         nb_sim = ns["EmpirePathSimulator"](
             problem,
@@ -877,6 +880,487 @@ class AiPlannerUnitTests(unittest.TestCase):
             self.assertTrue(
                 np.allclose(our_run["weekly_spice_eq"], nb_run["weekly_spice_eq"], rtol=1e-9, atol=1e-6)
             )
+
+    def test_interplanet_distance_and_travel_time_delay_cross_planet_steps(self) -> None:
+        t_same, d_same, _ = ap.estimate_interplanet_transport_seconds("02:380:01", "02:380:04", researches={"r4": 4, "r5": 4})
+        t_adj, d_adj, _ = ap.estimate_interplanet_transport_seconds("02:380:01", "02:381:01", researches={"r4": 4, "r5": 4})
+        t_far, d_far, _ = ap.estimate_interplanet_transport_seconds("02:380:01", "05:100:01", researches={"r4": 4, "r5": 4})
+        self.assertGreater(t_same, 0.0)
+        self.assertLess(d_same, d_adj)
+        self.assertLess(d_adj, d_far)
+        self.assertLess(t_same, t_adj)
+        self.assertLess(t_adj, t_far)
+
+        # Donor has abundant stock; recipient has 0 stock and needs b1 L5 funded via cross-planet transport.
+        def _run_with_dest_coords(dest_coords: str) -> dict[str, object]:
+            donor = _make_planet(
+                101,
+                "02:380:01",
+                "Donor",
+                buildings={"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 12, "b7": 4, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+                resources=Resources(250_000, 150_000, 150_000, 80_000),
+            )
+            dest = _make_planet(
+                102,
+                dest_coords,
+                "RemoteColony",
+                buildings={"b1": 4, "b2": 0, "b3": 0, "b4": 0, "b5": 8, "b7": 2, "b11": 6, "b12": 6, "b13": 6, "b14": 6},
+                resources=Resources(0, 0, 0, 0),
+            )
+            state = GameState(
+                universe_id=31,
+                user_id=1,
+                nickname="TransportDist",
+                timestamp=1_700_000_000.0,
+                planets=(donor, dest),
+                active_planet_id=101,
+                researches={"r1": 2, "r2": 4, "r4": 2, "r5": 2},
+                speedup_factor=5.0,
+            )
+            target = _sample_target_config(
+                [
+                    _target_planet_entry(
+                        1,
+                        101,
+                        "02:380:01",
+                        "Donor",
+                        {"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 12, "b7": 4, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+                        is_central=True,
+                        pays_for_research=True,
+                    ),
+                    _target_planet_entry(
+                        2,
+                        102,
+                        dest_coords,
+                        "RemoteColony",
+                        {"b1": 5, "b5": 8, "b7": 2, "b11": 6, "b12": 6, "b13": 6, "b14": 6},
+                    ),
+                ],
+                planned_research={"r1": 2, "r2": 4},
+            )
+            return ap.run_ai_planner(
+                state,
+                target,
+                params={
+                    "reward_weeks": 2,
+                    "ga_generations": 0,
+                    "transport_dispatch_delay_minutes": 0.0,
+                },
+            )
+
+        near_plan = _run_with_dest_coords("02:380:04")
+        far_plan = _run_with_dest_coords("06:100:08")
+        near_step = near_plan["steps"][0]
+        far_step = far_plan["steps"][0]
+        self.assertTrue(near_step["needs_transport"])
+        self.assertTrue(far_step["needs_transport"])
+        self.assertGreater(near_step["transport_travel_sec"], 0.0)
+        self.assertGreater(far_step["transport_travel_sec"], near_step["transport_travel_sec"])
+        self.assertGreater(far_step["start_sec"], near_step["start_sec"])
+        self.assertEqual(near_step["transport_request_at_sec"], 0.0)
+        self.assertEqual(far_step["transport_request_at_sec"], 0.0)
+        self.assertIn("transport_matrix", far_plan)
+        self.assertGreater(
+            far_plan["transport_matrix"]["max_one_way_seconds"],
+            near_plan["transport_matrix"]["max_one_way_seconds"],
+        )
+
+    def test_transport_dispatch_delay_minutes_shifts_start_and_request_timing(self) -> None:
+        donor = _make_planet(
+            101,
+            "02:380:01",
+            "Donor",
+            buildings={"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 12, "b7": 4, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+            resources=Resources(250_000, 150_000, 150_000, 80_000),
+        )
+        dest = _make_planet(
+            102,
+            "02:381:05",
+            "Recipient",
+            buildings={"b1": 4, "b2": 0, "b3": 0, "b4": 0, "b5": 8, "b7": 2, "b11": 6, "b12": 6, "b13": 6, "b14": 6},
+            resources=Resources(0, 0, 0, 0),
+        )
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="DelayTest",
+            timestamp=1_700_000_000.0,
+            planets=(donor, dest),
+            active_planet_id=101,
+            researches={"r1": 2, "r2": 4, "r4": 2, "r5": 2},
+            speedup_factor=5.0,
+        )
+        target = _sample_target_config(
+            [
+                _target_planet_entry(
+                    1,
+                    101,
+                    "02:380:01",
+                    "Donor",
+                    {"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 12, "b7": 4, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+                    is_central=True,
+                    pays_for_research=True,
+                ),
+                _target_planet_entry(
+                    2,
+                    102,
+                    "02:381:05",
+                    "Recipient",
+                    {"b1": 5, "b5": 8, "b7": 2, "b11": 6, "b12": 6, "b13": 6, "b14": 6},
+                ),
+            ],
+            planned_research={"r1": 2, "r2": 4},
+        )
+        p0 = ap.run_ai_planner(state, target, params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 0})
+        p120 = ap.run_ai_planner(state, target, params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 120})
+        p300 = ap.run_ai_planner(state, target, params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 300})
+
+        s0, s120, s300 = p0["steps"][0], p120["steps"][0], p300["steps"][0]
+        self.assertEqual(p120["meta_parameters"]["transport_dispatch_delay_minutes"], 120.0)
+        self.assertAlmostEqual(s120["transport_dispatch_delay_sec"], 7200.0, places=1)
+        self.assertAlmostEqual(s300["transport_dispatch_delay_sec"], 18000.0, places=1)
+        # Because dest produces almost nothing, extra dispatch delay shifts start_sec directly
+        self.assertAlmostEqual(s120["start_sec"] - s0["start_sec"], 7200.0, delta=30.0)
+        self.assertAlmostEqual(s300["start_sec"] - s120["start_sec"], 10800.0, delta=30.0)
+        self.assertEqual(s120["transport_request_at_sec"], 0.0)
+
+    def test_in_progress_builds_and_research_accounted_and_not_duplicated(self) -> None:
+        # Donor has rich resources; Recipient currently has b1 L15 in progress (finishes in 10800s = 3h),
+        # and r1 L3 is currently researching (finishes in 5400s = 1.5h).
+        donor = _make_planet(
+            101,
+            "02:380:01",
+            "Donor",
+            buildings={"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 14, "b7": 6, "b8": 8, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+            resources=Resources(500_000, 300_000, 300_000, 150_000),
+        )
+        dest = _make_planet(
+            102,
+            "02:380:04",
+            "Builder",
+            buildings={"b1": 14, "b2": 0, "b3": 0, "b4": 0, "b5": 16, "b7": 6, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+            resources=Resources(0, 0, 0, 0),
+        )
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="InProgress",
+            timestamp=1_700_000_000.0,
+            planets=(donor, dest),
+            active_planet_id=101,
+            researches={"r1": 2, "r2": 6, "r4": 4, "r5": 4},
+            active_queues=(
+                QueueJob(
+                    category="building",
+                    name="Pig iron mine (Level 15)",
+                    building_id=1,
+                    target_level=15,
+                    origin_coords="02:380:04",
+                    remaining_seconds=10_800,
+                    remaining_text="03:00:00",
+                ),
+                QueueJob(
+                    category="research",
+                    name="Mining technology (Level 3)",
+                    target_level=3,
+                    remaining_seconds=5_400,
+                    remaining_text="01:30:00",
+                ),
+            ),
+            speedup_factor=5.0,
+        )
+        target = _sample_target_config(
+            [
+                _target_planet_entry(
+                    1,
+                    101,
+                    "02:380:01",
+                    "Donor",
+                    {"b1": 10, "b2": 6, "b3": 8, "b4": 6, "b5": 14, "b7": 6, "b8": 8, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+                    is_central=True,
+                    pays_for_research=True,
+                ),
+                _target_planet_entry(
+                    2,
+                    102,
+                    "02:380:04",
+                    "Builder",
+                    {"b1": 16, "b5": 16, "b7": 6, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+                ),
+            ],
+            planned_research={"r1": 4, "r2": 6},
+        )
+        plan = ap.run_ai_planner(
+            state,
+            target,
+            params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 120.0},
+        )
+        self.assertEqual(plan["summary"]["in_progress_buildings_count"], 1)
+        self.assertEqual(plan["summary"]["in_progress_research_count"], 1)
+        self.assertEqual(len(plan["in_progress"]["buildings"]), 1)
+        self.assertEqual(len(plan["in_progress"]["research"]), 1)
+
+        # Neither b1 L15 nor r1 L3 may be duplicated in new steps!
+        step_pairs = {(s["kind"], s["entity_key"], s["target_level"]) for s in plan["steps"]}
+        self.assertNotIn(("BUILD", "b1", 15), step_pairs)
+        self.assertNotIn(("RESEARCH", "r1", 3), step_pairs)
+        self.assertIn(("BUILD", "b1", 16), step_pairs)
+        self.assertIn(("RESEARCH", "r1", 4), step_pairs)
+
+        b1_16 = next(s for s in plan["steps"] if s["entity_key"] == "b1" and s["target_level"] == 16)
+        r1_4 = next(s for s in plan["steps"] if s["entity_key"] == "r1" and s["target_level"] == 4)
+        # Queue occupancy respected: b1 L16 cannot start before 10800s; r1 L4 cannot start before 5400s.
+        self.assertGreaterEqual(b1_16["start_sec"], 10_799.0)
+        self.assertGreaterEqual(r1_4["start_sec"], 5_399.0)
+        # Early dispatch overlap: transport for b1 L16 is dispatched BEFORE b1 L15 finishes so b1 L16 starts right at ~10800s!
+        self.assertTrue(b1_16["needs_transport"])
+        self.assertLess(b1_16["transport_request_at_sec"], 10_800.0)
+        self.assertAlmostEqual(b1_16["start_sec"], 10_800.0, delta=60.0)
+
+    def test_in_flight_incoming_cargo_and_returning_fleet_credit_recipient(self) -> None:
+        # Donor has 0 stock, Recipient has 0 stock, but an inbound Transport arrives in 1800s with full cost of b1 L5!
+        cost_b1_5 = ap.full_cost(game_data.building_cost(1, 5))
+        donor = _make_planet(
+            101,
+            "02:380:01",
+            "Donor",
+            buildings={"b1": 1, "b5": 4, "b7": 2, "b8": 2, "b11": 4, "b12": 4, "b13": 4, "b14": 4},
+            resources=Resources(0, 0, 0, 0),
+        )
+        dest = _make_planet(
+            102,
+            "02:380:04",
+            "Dest",
+            buildings={"b1": 4, "b5": 8, "b7": 2, "b11": 6, "b12": 6, "b13": 6, "b14": 6},
+            resources=Resources(0, 0, 0, 0),
+        )
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="CargoTest",
+            timestamp=1_700_000_000.0,
+            planets=(donor, dest),
+            active_planet_id=101,
+            researches={"r1": 1, "r2": 2},
+            active_queues=(
+                QueueJob(
+                    category="fleet",
+                    name="Transport -> 02:380:04",
+                    origin_coords="02:380:01",
+                    remaining_seconds=1800,
+                    cargo=Resources(
+                        pig_iron=int(cost_b1_5["pig_iron"]) + 500,
+                        metal=int(cost_b1_5["metal"]) + 500,
+                        kryptonite=int(cost_b1_5["kryptonite"]) + 500,
+                        spice=int(cost_b1_5["spice"]) + 500,
+                    ),
+                ),
+            ),
+            speedup_factor=5.0,
+        )
+        target = _sample_target_config(
+            [
+                _target_planet_entry(1, 101, "02:380:01", "Donor", {"b1": 1, "b5": 4, "b7": 2, "b8": 2, "b11": 4, "b12": 4, "b13": 4, "b14": 4}, is_central=True, pays_for_research=True),
+                _target_planet_entry(2, 102, "02:380:04", "Dest", {"b1": 5, "b5": 8, "b7": 2, "b11": 6, "b12": 6, "b13": 6, "b14": 6}),
+            ],
+            planned_research={"r1": 1, "r2": 2},
+        )
+        plan = ap.run_ai_planner(state, target, params={"reward_weeks": 1, "ga_generations": 0, "transport_dispatch_delay_minutes": 120.0})
+        self.assertEqual(plan["summary"]["in_flight_arrivals_count"], 1)
+        b1_5 = plan["steps"][0]
+        self.assertEqual(b1_5["entity_key"], "b1")
+        self.assertEqual(b1_5["target_level"], 5)
+        # Starts right when the live in-flight transport lands (~1800s), without waiting for a new 120m dispatch!
+        self.assertAlmostEqual(b1_5["start_sec"], 1800.0, delta=60.0)
+        self.assertFalse(b1_5["needs_transport"])
+
+        # Returning fleet carrying cargo back to origin_coords="02:380:04" also credits Dest at ~900s!
+        ret_state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="ReturnCargo",
+            timestamp=1_700_000_000.0,
+            planets=(donor, dest),
+            active_planet_id=101,
+            researches={"r1": 1, "r2": 2},
+            active_queues=(
+                QueueJob(
+                    category="fleet",
+                    name="↩ Attack 02:381:09",
+                    detail="Returning",
+                    origin_coords="02:380:04",
+                    remaining_seconds=900,
+                    cargo=Resources(
+                        pig_iron=int(cost_b1_5["pig_iron"]) + 500,
+                        metal=int(cost_b1_5["metal"]) + 500,
+                        kryptonite=int(cost_b1_5["kryptonite"]) + 500,
+                        spice=int(cost_b1_5["spice"]) + 500,
+                    ),
+                ),
+            ),
+            speedup_factor=5.0,
+        )
+        ret_plan = ap.run_ai_planner(ret_state, target, params={"reward_weeks": 1, "ga_generations": 0, "transport_dispatch_delay_minutes": 120.0})
+        self.assertEqual(ret_plan["summary"]["in_flight_arrivals_count"], 1)
+        self.assertAlmostEqual(ret_plan["steps"][0]["start_sec"], 900.0, delta=60.0)
+        self.assertFalse(ret_plan["steps"][0]["needs_transport"])
+
+    def test_rerunning_ai_planner_always_starts_from_updated_live_colony_state(self) -> None:
+        base_target = _sample_target_config(
+            [
+                _target_planet_entry(
+                    1,
+                    101,
+                    "02:380:01",
+                    "Homeworld",
+                    {"b1": 7, "b3": 5, "b5": 10, "b7": 3, "b8": 3, "b11": 4, "b12": 4, "b13": 4, "b14": 4},
+                    is_central=True,
+                    pays_for_research=True,
+                ),
+                _target_planet_entry(
+                    2,
+                    -1,
+                    "EMPTY:01",
+                    "Empty Slot 2",
+                    {"b1": 4, "b5": 6, "b11": 2, "b12": 2, "b13": 2, "b14": 2},
+                    is_placeholder=True,
+                ),
+            ],
+            planned_research={"r1": 2, "r2": 4},
+        )
+        # Run 1: Homeworld at b1=4, b3=3
+        s1 = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Rerun",
+            timestamp=1_700_000_000.0,
+            planets=(
+                _make_planet(
+                    101,
+                    "02:380:01",
+                    "Homeworld",
+                    buildings={"b1": 4, "b3": 3, "b5": 10, "b7": 3, "b8": 3, "b11": 4, "b12": 4, "b13": 4, "b14": 4},
+                    resources=Resources(50_000, 30_000, 30_000, 10_000),
+                ),
+            ),
+            active_planet_id=101,
+            researches={"r1": 1, "r2": 4},
+            speedup_factor=5.0,
+        )
+        run1 = ap.run_ai_planner(s1, base_target, params={"reward_weeks": 2, "ga_generations": 0})
+        r1_keys = {(s["planet_id"], s["entity_key"], s["target_level"]) for s in run1["steps"]}
+        self.assertIn((101, "b1", 5), r1_keys)
+        self.assertIn((101, "b1", 6), r1_keys)
+
+        # Run 2: Colony progressed (b1=6 built, b1 L7 in progress) + newly founded colony 102 added!
+        s2 = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Rerun",
+            timestamp=1_700_003_600.0,
+            planets=(
+                _make_planet(
+                    101,
+                    "02:380:01",
+                    "Homeworld",
+                    buildings={"b1": 6, "b3": 5, "b5": 10, "b7": 3, "b8": 3, "b11": 4, "b12": 4, "b13": 4, "b14": 4},
+                    resources=Resources(80_000, 40_000, 40_000, 15_000),
+                ),
+                _make_planet(
+                    102,
+                    "02:380:09",
+                    "NewColony",
+                    buildings={"b1": 1, "b5": 4, "b11": 2, "b12": 2, "b13": 2, "b14": 2},
+                    resources=Resources(10_000, 5_000, 5_000, 2_000),
+                ),
+            ),
+            active_planet_id=101,
+            researches={"r1": 2, "r2": 4},
+            active_queues=(
+                QueueJob(
+                    category="building",
+                    name="Pig iron mine (Level 7)",
+                    building_id=1,
+                    target_level=7,
+                    origin_coords="02:380:01",
+                    remaining_seconds=1200,
+                ),
+            ),
+            speedup_factor=5.0,
+        )
+        run2 = ap.run_ai_planner(s2, base_target, params={"reward_weeks": 2, "ga_generations": 0})
+        r2_keys = {(s["planet_id"], s["entity_key"], s["target_level"]) for s in run2["steps"]}
+        # Already built & in-progress Homeworld levels are gone; newly founded colony 102 is automatically bound and planned!
+        self.assertNotIn((101, "b1", 5), r2_keys)
+        self.assertNotIn((101, "b1", 6), r2_keys)
+        self.assertNotIn((101, "b1", 7), r2_keys)
+        self.assertIn((102, "b1", 2), r2_keys)
+        self.assertFalse(any(s["kind"] == "COLONIZE_PREVIEW" for s in run2["steps"]))
+
+    def test_compute_early_transport_needs_preships_within_lead_window_only(self) -> None:
+        donor = _make_planet(
+            101,
+            "02:380:01",
+            "Donor",
+            buildings={"b1": 15, "b2": 10, "b3": 12, "b4": 10, "b5": 18, "b7": 8, "b8": 8},
+            resources=Resources(500_000, 400_000, 400_000, 150_000),
+        )
+        # Dest currently builds b1 L15 (finishing in 1800s) and needs b1 L16 next (cost > local stock + 0.5h output).
+        dest_soon = _make_planet(
+            102,
+            "02:380:04",
+            "DestSoon",
+            buildings={"b1": 14, "b2": 0, "b3": 0, "b4": 0, "b5": 18, "b7": 10, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+            resources=Resources(0, 0, 0, 0),
+        )
+        # DestFar builds b1 L15 finishing in 50_000s (~13.9h) -> well outside 120m dispatch + ~30m travel lead window!
+        dest_late = _make_planet(
+            103,
+            "02:380:05",
+            "DestLate",
+            buildings={"b1": 14, "b2": 0, "b3": 0, "b4": 0, "b5": 18, "b7": 10, "b11": 10, "b12": 10, "b13": 10, "b14": 10},
+            resources=Resources(0, 0, 0, 0),
+        )
+        # DestPrereq builds b7 L12 finishing in 1200s (with r2=10) -> unlocks b17 L1 next!
+        dest_prereq = _make_planet(
+            104,
+            "02:380:06",
+            "DestPrereq",
+            buildings={"b1": 6, "b5": 16, "b7": 11, "b11": 12, "b12": 12, "b13": 12, "b14": 12},
+            resources=Resources(0, 0, 0, 0),
+            storage=Resources(2_000_000, 2_000_000, 2_000_000, 2_000_000),
+        )
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="EarlyNeed",
+            timestamp=1_700_000_000.0,
+            planets=(donor, dest_soon, dest_late, dest_prereq),
+            active_planet_id=101,
+            researches={"r1": 2, "r2": 10, "r4": 4, "r5": 4},
+            active_queues=(
+                QueueJob(category="building", name="Pig iron mine (Level 15)", building_id=1, target_level=15, origin_coords="02:380:04", remaining_seconds=1800),
+                QueueJob(category="building", name="Pig iron mine (Level 15)", building_id=1, target_level=15, origin_coords="02:380:05", remaining_seconds=50_000),
+                QueueJob(category="building", name="Development center (Level 12)", building_id=7, target_level=12, origin_coords="02:380:06", remaining_seconds=1200),
+            ),
+            speedup_factor=5.0,
+        )
+        plan_res = {
+            "meta_parameters": {"transport_dispatch_delay_minutes": 120.0},
+            "steps": [
+                {"seq": 1, "kind": "BUILD", "planet_id": 102, "planet_coords": "02:380:04", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 16},
+                {"seq": 2, "kind": "BUILD", "planet_id": 103, "planet_coords": "02:380:05", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 16},
+                {"seq": 3, "kind": "BUILD", "planet_id": 104, "planet_coords": "02:380:06", "entity_key": "b17", "entity_name": "Microsystem accelerator", "target_level": 1},
+            ],
+        }
+        needs = ap.compute_early_transport_needs(state, plan_res, ())
+        self.assertIn(102, needs)
+        self.assertGreater(needs[102]["pig_iron"], 0)
+        self.assertIn("early pre-ship", needs[102]["label"])
+        self.assertEqual(needs[102]["need_by_sec"], 1800.0)
+        self.assertNotIn(103, needs)  # 50000s > dispatch + travel lead -> no premature shipment!
+        self.assertIn(104, needs)  # b7 L10 finishing unlocks b17 L1 -> early pre-ship triggered!
+        self.assertGreater(needs[104]["metal"], 0)
 
 
 if __name__ == "__main__":

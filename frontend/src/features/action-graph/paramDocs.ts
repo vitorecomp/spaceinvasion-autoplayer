@@ -318,6 +318,13 @@ export const AI_PLANNER_PARAM_DOCS: Record<string, ActionGraphParamDoc> = {
     description:
       "Exponential time-preference multiplier applied to week w output as γ^(w−1) in discounted_reward. Lower values (e.g. 0.75–0.85) strongly favor immediate early-week income growth; 1.00 weights every week in the W-week window equally. Accepts floats from 0.05 to 1.00.",
   },
+  transport_dispatch_delay_minutes: {
+    title: "Fleet Dispatch Delay (min)",
+    paramKey: "transport_dispatch_delay_minutes",
+    boundsLabel: "default: 120 · 0–1440 min",
+    description:
+      "Minutes of Fleet Command dispatch lead time added on top of real inter-planet coordinate travel time (one-way flight using each colony's transport hulls and engine tech) when scheduling cross-planet resource transfers. AI-Planner requests transports early by dispatch delay plus travel time so cargo lands before a colony build or research queue finishes. Accepts 0 to 1440 minutes.",
+  },
   fleet_command_center_level: {
     title: "Fleet Base (b10) Level Override",
     paramKey: "fleet_command_center_level",
