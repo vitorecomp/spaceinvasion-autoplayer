@@ -5,7 +5,12 @@ import {
   resourcesTotal,
   type SortColumnMap,
 } from "../../hooks/useTableSort";
-import type { PlannedActionData, QueueJobData } from "../../types/api";
+import type {
+  PlanetData,
+  PlannedActionData,
+  QueueJobData,
+  ResourceBundle,
+} from "../../types/api";
 import {
   bottleneckTag,
   finiteNum,
@@ -154,8 +159,89 @@ export function dashboardQueueDomainForJob(
 ): "building" | "fleet" | "research" {
   const cat = String(job?.category || "").toLowerCase();
   if (cat === "research") return "research";
-  if (cat === "fleet" || cat === "shipyard" || cat === "defense") return "fleet";
+  if (cat === "fleet" || cat === "ship" || cat === "shipyard" || cat === "defense") return "fleet";
   return "building";
+}
+
+export function normalizeCoordKey(raw?: string | null): string {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  const m = s.match(/(\d{1,2})\s*:\s*(\d{1,3})\s*:\s*(\d{1,2})/);
+  if (!m) return s;
+  return `${Number(m[1])}:${Number(m[2])}:${Number(m[3])}`;
+}
+
+export function queueJobMatchesPlanet(
+  job: QueueJobData,
+  planet: PlanetData,
+  activePlanetId: number | null | undefined,
+  fallbackToActivePlanet: boolean
+): boolean {
+  const jPid = job.planet_id != null ? Number(job.planet_id) : NaN;
+  if (Number.isFinite(jPid) && jPid > 0) {
+    return jPid === Number(planet.planet_id);
+  }
+  const jCoords = normalizeCoordKey(job.origin_coords || job.planet_coords);
+  if (jCoords) {
+    const pCoords = normalizeCoordKey(planet.coords);
+    return Boolean(pCoords) && jCoords === pCoords;
+  }
+  if (fallbackToActivePlanet && activePlanetId != null) {
+    return Number(planet.planet_id) === Number(activePlanetId);
+  }
+  return false;
+}
+
+export function isActiveBuildingJob(
+  job: QueueJobData | null | undefined,
+  nowEpochSec?: number | null
+): boolean {
+  if (!job) return false;
+  if (String(job.category || "").toLowerCase() !== "building") return false;
+  const finTs = finiteNum(job.finish_ts, null);
+  const remSec = finiteNum(job.remaining_seconds, null);
+  const effNow = nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : null;
+  if (finTs !== null && finTs > 0 && effNow !== null) {
+    return finTs > effNow;
+  }
+  if (remSec !== null) {
+    return remSec > 0;
+  }
+  return true;
+}
+
+export function isPlanetConstructing(
+  planet: PlanetData,
+  activeQueues: QueueJobData[] | null | undefined,
+  activePlanetId: number | null | undefined,
+  nowEpochSec?: number | null
+): boolean {
+  if (!Array.isArray(activeQueues) || activeQueues.length === 0) return false;
+  return activeQueues.some(
+    (job) =>
+      isActiveBuildingJob(job, nowEpochSec) &&
+      queueJobMatchesPlanet(job, planet, activePlanetId, true)
+  );
+}
+
+const FLIGHT_MISSION_RE =
+  /\b(attack|recycle|transport|transfer|spy|espionage|colonize|escape|save|station|expedition|flight)\b/i;
+
+export function isOngoingFleetFlight(job: QueueJobData | null | undefined): boolean {
+  if (!job) return false;
+  const cat = String(job.category || "").toLowerCase();
+  if (cat === "fleet") return true;
+  if (
+    cat === "building" ||
+    cat === "research" ||
+    cat === "ship" ||
+    cat === "shipyard" ||
+    cat === "defense" ||
+    cat === "milestone"
+  ) {
+    return false;
+  }
+  return FLIGHT_MISSION_RE.test(`${String(job.name || "")} ${String(job.detail || "")}`);
 }
 
 export function cleanQueueJobTitle(job: QueueJobData | null | undefined): string {
@@ -588,50 +674,158 @@ export const PlanActionRow: React.FC<PlanActionRowProps> = ({
   );
 };
 
+export type QueueJobCargoVariant = "expected" | "delivered" | "loot" | "harvest" | "cargo";
+
 export interface QueueJobCargoDisplay {
-  label: "Loot" | "Harvest" | "Cargo";
+  label: "EXPECTED" | "DELIVERED" | "Loot" | "Harvest" | "Cargo";
+  variant: QueueJobCargoVariant;
   inline: string;
   total: number;
   multiRes: boolean;
   isEmpty: boolean;
+  delivered: boolean;
+}
+
+function summarizeResourceBundle(bundle: ResourceBundle | null | undefined): {
+  hasObject: boolean;
+  pig: number;
+  met: number;
+  kry: number;
+  spi: number;
+  total: number;
+  nonZeroCount: number;
+} {
+  if (!bundle || typeof bundle !== "object") {
+    return { hasObject: false, pig: 0, met: 0, kry: 0, spi: 0, total: 0, nonZeroCount: 0 };
+  }
+  const pig = Math.max(0, Math.round(finiteNum(bundle.pig_iron, 0)));
+  const met = Math.max(0, Math.round(finiteNum(bundle.metal, 0)));
+  const kry = Math.max(0, Math.round(finiteNum(bundle.kryptonite, 0)));
+  const spi = Math.max(0, Math.round(finiteNum(bundle.spice, 0)));
+  const total = pig + met + kry + spi;
+  const nonZeroCount = [pig, met, kry, spi].filter((v) => v > 0).length;
+  return { hasObject: true, pig, met, kry, spi, total, nonZeroCount };
 }
 
 export function formatQueueJobCargo(
   job: QueueJobData | null | undefined
 ): QueueJobCargoDisplay | null {
-  const cargo = job?.cargo;
-  if (!cargo || typeof cargo !== "object") return null;
-  const pig = Math.max(0, Math.round(finiteNum(cargo.pig_iron, 0)));
-  const met = Math.max(0, Math.round(finiteNum(cargo.metal, 0)));
-  const kry = Math.max(0, Math.round(finiteNum(cargo.kryptonite, 0)));
-  const spi = Math.max(0, Math.round(finiteNum(cargo.spice, 0)));
-  const total = pig + met + kry + spi;
-  const nonZeroCount = [pig, met, kry, spi].filter((v) => v > 0).length;
+  if (!job) return null;
 
-  const nameLow = String(job?.name || "").toLowerCase();
-  const detLow = String(job?.detail || "").toLowerCase();
-  const isReturning = detLow.includes("returning") || nameLow.includes("↩");
+  const nameLow = String(job.name || "").toLowerCase();
+  const detLow = String(job.detail || "").toLowerCase();
+  const isReturning =
+    Boolean(job.returning) || detLow.includes("returning") || nameLow.includes("↩");
   const isAttack = nameLow.includes("attack");
   const isRecycle = nameLow.includes("recycle");
+  const isTransport =
+    !isAttack &&
+    !isRecycle &&
+    (nameLow.includes("transport") || nameLow.includes("transfer"));
+  const isDelivered = Boolean(job.delivered) || (isReturning && isTransport);
+
+  const cargoSummary = summarizeResourceBundle(job.cargo);
+  const expectedSummary = summarizeResourceBundle(job.expected_cargo);
+  const deliveredSummary = summarizeResourceBundle(job.delivered_cargo);
+
+  // 1. Returning transport after delivery -> DELIVERED flag + delivered amounts
+  if (isDelivered) {
+    if (deliveredSummary.total > 0) {
+      return {
+        label: "DELIVERED",
+        variant: "delivered",
+        inline: formatResourcesInline({
+          pig_iron: deliveredSummary.pig,
+          metal: deliveredSummary.met,
+          kryptonite: deliveredSummary.kry,
+          spice: deliveredSummary.spi,
+        }),
+        total: deliveredSummary.total,
+        multiRes: deliveredSummary.nonZeroCount > 1,
+        isEmpty: false,
+        delivered: true,
+      };
+    }
+    return {
+      label: "DELIVERED",
+      variant: "delivered",
+      inline: "Cargo unloaded",
+      total: 0,
+      multiRes: false,
+      isEmpty: false,
+      delivered: true,
+    };
+  }
+
+  // 2. Outbound Attack / Recycle / Transport -> EXPECTED flag + expected resources
+  if (!isReturning && (isAttack || isRecycle || isTransport)) {
+    const expSource =
+      expectedSummary.total > 0
+        ? expectedSummary
+        : isTransport && cargoSummary.total > 0
+          ? cargoSummary
+          : expectedSummary;
+    if (expSource.total > 0) {
+      return {
+        label: "EXPECTED",
+        variant: "expected",
+        inline: formatResourcesInline({
+          pig_iron: expSource.pig,
+          metal: expSource.met,
+          kryptonite: expSource.kry,
+          spice: expSource.spi,
+        }),
+        total: expSource.total,
+        multiRes: expSource.nonZeroCount > 1,
+        isEmpty: false,
+        delivered: false,
+      };
+    }
+    if (expectedSummary.hasObject) {
+      return {
+        label: "EXPECTED",
+        variant: "expected",
+        inline: "0 (none)",
+        total: 0,
+        multiRes: false,
+        isEmpty: true,
+        delivered: false,
+      };
+    }
+  }
+
+  // 3. Returning Attack (Loot) / Recycle (Harvest) or generic cargo
+  if (!cargoSummary.hasObject) return null;
   const label: "Loot" | "Harvest" | "Cargo" =
     isReturning && isAttack ? "Loot" : isReturning && isRecycle ? "Harvest" : "Cargo";
+  const variant: QueueJobCargoVariant =
+    label === "Loot" ? "loot" : label === "Harvest" ? "harvest" : "cargo";
 
-  if (total > 0) {
+  if (cargoSummary.total > 0) {
     return {
       label,
-      inline: formatResourcesInline({ pig_iron: pig, metal: met, kryptonite: kry, spice: spi }),
-      total,
-      multiRes: nonZeroCount > 1,
+      variant,
+      inline: formatResourcesInline({
+        pig_iron: cargoSummary.pig,
+        metal: cargoSummary.met,
+        kryptonite: cargoSummary.kry,
+        spice: cargoSummary.spi,
+      }),
+      total: cargoSummary.total,
+      multiRes: cargoSummary.nonZeroCount > 1,
       isEmpty: false,
+      delivered: false,
     };
   }
   if (isReturning && (isAttack || isRecycle)) {
     return {
       label,
+      variant,
       inline: "0 (empty)",
       total: 0,
       multiRes: false,
       isEmpty: true,
+      delivered: false,
     };
   }
   return null;
@@ -662,10 +856,12 @@ export const ActiveExecJobRow: React.FC<ActiveExecJobRowProps> = ({ job, nowEpoc
 
   const finDisplay = finTs !== null && finTs > 0 ? fmtClockTime(finTs, effNowSec) : "In progress";
   const detLow = String(job?.detail || "").toLowerCase();
+  const isReturning =
+    Boolean(job?.returning) || detLow.includes("returning") || String(job?.name || "").includes("↩");
   let liveLabel = "Executing";
   if (slot > 1) {
     liveLabel = `Queued #${slot}`;
-  } else if (detLow.includes("returning")) {
+  } else if (isReturning) {
     liveLabel = "Returning";
   } else if (detLow.includes("outbound") || detLow.includes("flight")) {
     liveLabel = "In flight";
@@ -685,7 +881,9 @@ export const ActiveExecJobRow: React.FC<ActiveExecJobRowProps> = ({ job, nowEpoc
         <span className="action-sub">{detailText}</span>
         {cargoInfo ? (
           <div
-            className={`exec-cargo-line tabular${cargoInfo.isEmpty ? " is-empty" : ""}`}
+            className={`exec-cargo-line is-${cargoInfo.variant} tabular${cargoInfo.isEmpty ? " is-empty" : ""}`}
+            data-cargo-variant={cargoInfo.variant}
+            data-delivered={cargoInfo.delivered ? "true" : undefined}
             title={`${cargoInfo.label}: ${cargoInfo.inline}${cargoInfo.total > 0 ? ` (${fmtInt(cargoInfo.total)} total)` : ""}`}
           >
             <span className="exec-cargo-tag">{cargoInfo.label}</span>{" "}

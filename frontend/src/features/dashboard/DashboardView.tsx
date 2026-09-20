@@ -9,7 +9,12 @@ import {
   useTableSort,
   type SortColumnMap,
 } from "../../hooks/useTableSort";
-import type { PlanetData, PlannedActionData, QueueJobData } from "../../types/api";
+import type {
+  BuildingResourceRequestItem,
+  PlanetData,
+  PlannedActionData,
+  QueueJobData,
+} from "../../types/api";
 import {
   finiteNum,
   fmtClockTime,
@@ -25,37 +30,11 @@ import {
   dashboardQueueDomainForAction,
   dashboardQueueDomainForJob,
   formatQueueJobCargo,
+  isPlanetConstructing,
+  normalizeCoordKey,
+  queueJobMatchesPlanet,
 } from "../operations/planActions";
 import { DashboardQueueCard } from "./DashboardQueueCard";
-
-function normalizeCoordKey(raw?: string | null): string {
-  const s = String(raw || "").trim();
-  if (!s) return "";
-  const m = s.match(/(\d{1,2})\s*:\s*(\d{1,3})\s*:\s*(\d{1,2})/);
-  if (!m) return s;
-  return `${Number(m[1])}:${Number(m[2])}:${Number(m[3])}`;
-}
-
-function queueJobMatchesPlanet(
-  job: QueueJobData,
-  planet: PlanetData,
-  activePlanetId: number | null | undefined,
-  fallbackToActivePlanet: boolean
-): boolean {
-  const jPid = job.planet_id != null ? Number(job.planet_id) : NaN;
-  if (Number.isFinite(jPid) && jPid > 0) {
-    return jPid === Number(planet.planet_id);
-  }
-  const jCoords = normalizeCoordKey(job.origin_coords || job.planet_coords);
-  if (jCoords) {
-    const pCoords = normalizeCoordKey(planet.coords);
-    return Boolean(pCoords) && jCoords === pCoords;
-  }
-  if (fallbackToActivePlanet && activePlanetId != null) {
-    return Number(planet.planet_id) === Number(activePlanetId);
-  }
-  return false;
-}
 
 interface ResourceTrackSpec {
   idKey: "pig" | "metal" | "kryp" | "spice";
@@ -179,6 +158,23 @@ export const DashboardView: React.FC = () => {
   const planets = useMemo(() => gs?.planets || [], [gs?.planets]);
   const chosenId = activePlanet?.planet_id;
 
+  const activeQueues = useMemo(
+    () => (Array.isArray(gs?.active_queues) ? gs!.active_queues! : []),
+    [gs]
+  );
+  const effNowSec =
+    nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : Math.floor(Date.now() / 1000);
+
+  const constructingPlanetIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const p of planets) {
+      if (isPlanetConstructing(p, activeQueues, gs?.active_planet_id, effNowSec)) {
+        ids.add(Number(p.planet_id));
+      }
+    }
+    return ids;
+  }, [activeQueues, effNowSec, gs?.active_planet_id, planets]);
+
   const colonySortCols = useMemo<
     SortColumnMap<PlanetData, "coords" | "colony" | "state" | "fields">
   >(
@@ -186,6 +182,7 @@ export const DashboardView: React.FC = () => {
       coords: (p) => coordsSortKey(p.coords),
       colony: (p) => String(p.name || "Colony"),
       state: (p) => {
+        if (constructingPlanetIds.has(Number(p.planet_id))) return "BUILDING";
         const isActive = p.planet_id === chosenId;
         const pigStor = finiteNum(p.storage?.pig_iron, 0);
         const pigAmt = finiteNum(p.resources?.pig_iron, 0);
@@ -194,7 +191,7 @@ export const DashboardView: React.FC = () => {
         const nearFull =
           (pigStor > 0 && pigAmt / pigStor >= 0.85) ||
           (spiStor > 0 && spiAmt / spiStor >= 0.85);
-        return nearFull ? "NEAR-CAP" : isActive ? "ONLINE" : "READY";
+        return nearFull ? "NEAR-CAP" : isActive ? "ONLINE" : "IDLE";
       },
       fields: {
         accessor: (p) => {
@@ -206,7 +203,7 @@ export const DashboardView: React.FC = () => {
         defaultDirection: "desc",
       },
     }),
-    [chosenId]
+    [chosenId, constructingPlanetIds]
   );
 
   const colonySort = useTableSort(planets, colonySortCols);
@@ -410,14 +407,7 @@ export const DashboardView: React.FC = () => {
       : `Ready to claim: ${tut.reward_text || "Step reward"}`
     : "Loading tutorial steps...";
 
-  // Active queues summary strip + 3 domain buckets
-  const activeQueues = useMemo(
-    () => (Array.isArray(gs?.active_queues) ? gs!.active_queues! : []),
-    [gs]
-  );
-  const effNowSec =
-    nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : Math.floor(Date.now() / 1000);
-
+  // Active queues 3 domain buckets
   const { execBuildingJobs, execFleetJobs, execResearchJobs } = useMemo(() => {
     const bld: QueueJobData[] = [];
     const flt: QueueJobData[] = [];
@@ -492,6 +482,104 @@ export const DashboardView: React.FC = () => {
     return { buildingActions: bld, fleetActions: flt, researchActions: res };
   }, [allPlanActions, scopedDashPlanet]);
 
+  const allBuildingResourceRequests = useMemo<BuildingResourceRequestItem[]>(() => {
+    if (Array.isArray(dashboard?.building_resource_requests)) {
+      return dashboard!.building_resource_requests!;
+    }
+    const derived: BuildingResourceRequestItem[] = [];
+    const planetById = new Map<number, PlanetData>();
+    const planetByCoords = new Map<string, PlanetData>();
+    for (const p of planets) {
+      planetById.set(Number(p.planet_id), p);
+      const ck = normalizeCoordKey(p.coords);
+      if (ck) planetByCoords.set(ck, p);
+    }
+
+    for (const job of execFleetJobs) {
+      const nameLow = String(job.name || "").toLowerCase();
+      const detLow = String(job.detail || "").toLowerCase();
+      const isReturning =
+        Boolean(job.returning) || detLow.includes("returning") || nameLow.includes("↩");
+      const isAttack = nameLow.includes("attack");
+      const isRecycle = nameLow.includes("recycle");
+      const isTransport =
+        !isAttack &&
+        !isRecycle &&
+        (nameLow.includes("transport") || nameLow.includes("transfer"));
+      if (!isTransport || isReturning || job.delivered) continue;
+      const bundle = job.expected_cargo || job.cargo;
+      if (!bundle) continue;
+      const pig = Math.max(0, Math.round(finiteNum(bundle.pig_iron, 0)));
+      const met = Math.max(0, Math.round(finiteNum(bundle.metal, 0)));
+      const kry = Math.max(0, Math.round(finiteNum(bundle.kryptonite, 0)));
+      const spi = Math.max(0, Math.round(finiteNum(bundle.spice, 0)));
+      if (pig + met + kry + spi <= 0) continue;
+      const mCoords = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(String(job.name || ""));
+      const destCoords = mCoords ? mCoords[1] : "";
+      const destPlanet = destCoords ? planetByCoords.get(normalizeCoordKey(destCoords)) : undefined;
+      derived.push({
+        id: `flight-${job.origin_coords || ""}-${destCoords || job.name || derived.length}`,
+        planet_id: destPlanet?.planet_id ?? null,
+        planet_coords: destPlanet?.coords || destCoords,
+        planet_name: destPlanet?.name,
+        label: cleanQueueJobTitle(job),
+        status: "in_flight",
+        resources: { pig_iron: pig, metal: met, kryptonite: kry, spice: spi },
+        source_coords: job.origin_coords || job.planet_coords,
+        eta_seconds: finiteNum(job.remaining_seconds, null),
+        finish_ts: finiteNum(job.finish_ts, null),
+        reason: job.detail,
+      });
+    }
+
+    for (const act of allPlanActions) {
+      if (String(act.kind || "").toUpperCase() !== "TRANSPORT") continue;
+      const bundle = act.cost;
+      if (!bundle) continue;
+      const pig = Math.max(0, Math.round(finiteNum(bundle.pig_iron, 0)));
+      const met = Math.max(0, Math.round(finiteNum(bundle.metal, 0)));
+      const kry = Math.max(0, Math.round(finiteNum(bundle.kryptonite, 0)));
+      const spi = Math.max(0, Math.round(finiteNum(bundle.spice, 0)));
+      if (pig + met + kry + spi <= 0) continue;
+      const mCoords = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(String(act.target_name || ""));
+      const destCoords = mCoords ? mCoords[1] : "";
+      const destPlanet =
+        (act.target_id != null ? planetById.get(Number(act.target_id)) : undefined) ||
+        (destCoords ? planetByCoords.get(normalizeCoordKey(destCoords)) : undefined);
+      const srcPlanet = act.planet_id != null ? planetById.get(Number(act.planet_id)) : undefined;
+      derived.push({
+        id: `plan-tr-${act.planet_id ?? 0}-${destPlanet?.planet_id ?? destCoords}-${derived.length}`,
+        planet_id: destPlanet?.planet_id ?? (act.target_id ?? null),
+        planet_coords: destPlanet?.coords || destCoords,
+        planet_name: destPlanet?.name,
+        label: act.target_name || "Resource transport",
+        status: "planned",
+        resources: { pig_iron: pig, metal: met, kryptonite: kry, spice: spi },
+        source_planet_id: act.planet_id ?? null,
+        source_coords: act.planet_coords || srcPlanet?.coords,
+        source_name: srcPlanet?.name,
+        eta_seconds: finiteNum(act.total_seconds ?? act.wait_seconds, null),
+        reason: act.reason,
+      });
+    }
+
+    return derived;
+  }, [allPlanActions, dashboard?.building_resource_requests, execFleetJobs, planets]);
+
+  const scopedBuildingResourceRequests = useMemo(() => {
+    if (!scopedDashPlanet) return allBuildingResourceRequests;
+    const scopePid = Number(scopedDashPlanet.planet_id);
+    const scopeCoordKey = normalizeCoordKey(scopedDashPlanet.coords);
+    return allBuildingResourceRequests.filter((req) => {
+      const rPid = req.planet_id != null ? Number(req.planet_id) : NaN;
+      if (Number.isFinite(rPid) && rPid > 0) {
+        return rPid === scopePid;
+      }
+      const rCoordKey = normalizeCoordKey(req.planet_coords);
+      return Boolean(scopeCoordKey) && rCoordKey === scopeCoordKey;
+    });
+  }, [allBuildingResourceRequests, scopedDashPlanet]);
+
   const cfgMode = String(
     dashboard?.config?.planner_mode ||
       dashboard?.planner_mode ||
@@ -539,10 +627,9 @@ export const DashboardView: React.FC = () => {
 
   const handleGotoResearch = useCallback(() => {
     flushSync(() => {
-      setUiPref("bldCategory", "research");
-      setActivePage("buildings");
+      setActivePage("research");
     });
-  }, [setActivePage, setUiPref]);
+  }, [setActivePage]);
 
   const handleDispatch = useCallback(
     async (action: PlannedActionData, dryRun: boolean) => {
@@ -789,6 +876,7 @@ export const DashboardView: React.FC = () => {
                   ) : (
                     colonySort.sortedRows.map((p) => {
                       const isActive = p.planet_id === chosenId;
+                      const isConstructing = constructingPlanetIds.has(Number(p.planet_id));
                       const pigStor = finiteNum(p.storage?.pig_iron, 0);
                       const pigAmt = finiteNum(p.resources?.pig_iron, 0);
                       const spiStor = finiteNum(p.storage?.spice, 0);
@@ -796,14 +884,28 @@ export const DashboardView: React.FC = () => {
                       const nearFull =
                         (pigStor > 0 && pigAmt / pigStor >= 0.85) ||
                         (spiStor > 0 && spiAmt / spiStor >= 0.85);
-                      const statusWord = nearFull ? "NEAR-CAP" : isActive ? "ONLINE" : "READY";
+                      const statusWord = isConstructing
+                        ? "BUILDING"
+                        : nearFull
+                          ? "NEAR-CAP"
+                          : isActive
+                            ? "ONLINE"
+                            : "IDLE";
+                      const statusClass = isConstructing
+                        ? "status-word is-constructing"
+                        : nearFull
+                          ? "status-word is-warn"
+                          : isActive
+                            ? "status-word is-active-idle"
+                            : "status-word is-idle";
                       const fUsed = finiteNum(p.fields_used, null);
                       const fMax = finiteNum(p.fields_max, null);
 
                       return (
                         <tr
                           key={p.planet_id}
-                          className={`clickable-row${isActive ? " is-active" : ""}`}
+                          className={`clickable-row${isActive ? " is-active" : ""}${isConstructing ? " is-constructing" : ""}`}
+                          data-constructing={isConstructing ? "true" : "false"}
                           onClick={() => {
                             setSelectedPlanetId(p.planet_id);
                             if (planets.length > 1) {
@@ -814,9 +916,7 @@ export const DashboardView: React.FC = () => {
                           <td className="tabular">{p.coords || "--"}</td>
                           <td>{p.name || "Colony"}</td>
                           <td>
-                            <span className={`status-word${nearFull ? " is-warn" : ""}`}>
-                              {statusWord}
-                            </span>
+                            <span className={statusClass}>{statusWord}</span>
                           </td>
                           <td className="col-right tabular">
                             {`${fUsed === null ? "—" : fUsed}/${fMax === null ? "—" : fMax}`}
@@ -879,8 +979,8 @@ export const DashboardView: React.FC = () => {
       <GaNnScannerHud />
 
       {/* Lower Row Toolbar */}
-      <div className="dash-queues-toolbar" aria-label="Planned queues overview and navigation">
-        <div className="window-title-group">
+      <div className="dash-queues-toolbar" aria-label="Planned queues overview and planet scope">
+        <div className="dash-queues-toolbar-meta">
           <span
             className={`module-meta tabular mode-badge${isAiPlanner ? " is-ga" : ""}`}
             id="dash-planner-mode-badge"
@@ -895,75 +995,58 @@ export const DashboardView: React.FC = () => {
             {`${pinnedCount} PINNED`}
           </span>
           {planets.length > 1 ? (
-            <div
-              className="filter-chips dash-planet-scope-chips"
-              role="group"
-              aria-label="Filter building and fleet queues by planet"
-            >
-              <button
-                type="button"
-                className={`chip-btn tabular${activeDashScope === "all" ? " active" : ""}`}
-                data-dash-planet-scope="all"
-                onClick={() => setUiPref("dashQueuePlanetScope", "all")}
-              >
-                {`All Planets (${planets.length})`}
-              </button>
-              {planets.map((p) => {
-                const pidKey = String(p.planet_id);
-                const stats = planetQueueStats.get(p.planet_id) || { total: 0, ready: 0 };
-                return (
-                  <button
-                    key={pidKey}
-                    type="button"
-                    className={`chip-btn tabular${activeDashScope === pidKey ? " active" : ""}${stats.ready > 0 ? " has-ready" : ""}`}
-                    data-dash-planet-scope={pidKey}
-                    title={`${p.name || "Colony"} [${p.coords}] — ${stats.ready} ready / ${stats.total} queued`}
-                    onClick={() => {
-                      setUiPref("dashQueuePlanetScope", pidKey);
-                      setSelectedPlanetId(p.planet_id);
-                    }}
-                  >
-                    {stats.ready > 0
-                      ? `${p.coords || p.name} · ${stats.ready} ready`
-                      : `${p.coords || p.name} (${stats.total})`}
-                  </button>
-                );
-              })}
-            </div>
+            <span className="module-meta tabular" id="dash-builders-summary-badge">
+              {`${constructingPlanetIds.size}/${planets.length} BUILDING`}
+            </span>
           ) : null}
         </div>
-        <div className="inline-actions">
-          {planets.length > 1 ? (
+        {planets.length > 1 ? (
+          <div
+            className="filter-chips dash-planet-scope-chips"
+            role="group"
+            aria-label="Filter building and fleet queues by planet"
+          >
             <button
               type="button"
-              className="btn btn-secondary btn-sm"
-              id="btn-dash-parallel-queues"
-              onClick={() => {
-                setUiPref("opsQueueLayout", "parallel");
-                setUiPref("opsPlanetScope", activeDashScope);
-                setActivePage("operations");
-              }}
+              className={`chip-btn planet-scope-chip tabular${activeDashScope === "all" ? " active" : ""}`}
+              data-dash-planet-scope="all"
+              title={`Show all ${planets.length} colonies (${constructingPlanetIds.size} currently constructing)`}
+              onClick={() => setUiPref("dashQueuePlanetScope", "all")}
             >
-              Parallel by Planet →
+              <span className="planet-chip-top">All Planets</span>
+              <span className="planet-chip-sub">
+                {`${planets.length} colonies · ${constructingPlanetIds.size} bldg`}
+              </span>
             </button>
-          ) : null}
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            data-goto-page="action-graph"
-            onClick={() => setActivePage("action-graph")}
-          >
-            Action Graph →
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            data-goto-page="operations"
-            onClick={() => setActivePage("operations")}
-          >
-            Full Queue →
-          </button>
-        </div>
+            {planets.map((p) => {
+              const pidKey = String(p.planet_id);
+              const stats = planetQueueStats.get(p.planet_id) || { total: 0, ready: 0 };
+              const isConstructing = constructingPlanetIds.has(Number(p.planet_id));
+              const planetLabel = p.name || "Colony";
+              return (
+                <button
+                  key={pidKey}
+                  type="button"
+                  className={`chip-btn planet-scope-chip tabular${activeDashScope === pidKey ? " active" : ""}${isConstructing ? " is-constructing" : ""}`}
+                  data-dash-planet-scope={pidKey}
+                  data-constructing={isConstructing ? "true" : "false"}
+                  title={`${planetLabel} [${p.coords}] — ${isConstructing ? "Building in progress" : "Builder idle"} · ${stats.ready} ready / ${stats.total} queued`}
+                  onClick={() => {
+                    setUiPref("dashQueuePlanetScope", pidKey);
+                    setSelectedPlanetId(p.planet_id);
+                  }}
+                >
+                  <span className="planet-chip-top">{p.coords || planetLabel}</span>
+                  <span className="planet-chip-sub">
+                    {isConstructing
+                      ? `${planetLabel} · Building`
+                      : `${planetLabel} (${stats.total})`}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
       </div>
 
       {/* Lower Row: 3 Side-by-Side Queues (Building, Fleet, Research) */}
@@ -976,7 +1059,7 @@ export const DashboardView: React.FC = () => {
             planets.length > 1
               ? scopedDashPlanet
                 ? scopedDashPlanet.coords || scopedDashPlanet.name
-                : `PARALLEL · ${planets.length} PLANETS`
+                : `ALL · ${planets.length} PLANETS`
               : undefined
           }
           countId="dash-bld-q-count"
@@ -990,6 +1073,7 @@ export const DashboardView: React.FC = () => {
           planTbodyId="dash-plan-tbody"
           execJobs={scopedExecBuildingJobs}
           plannedActions={buildingActions}
+          resourceRequests={scopedBuildingResourceRequests}
           maxRows={dashQueueMaxRows}
           emptyText={
             dashboard
@@ -1051,6 +1135,7 @@ export const DashboardView: React.FC = () => {
           onAddQueueClick={() => openComposerWithKind("RESEARCH")}
           gotoLabel="Research →"
           gotoBtnId="btn-dash-goto-research"
+          gotoPageAttr="research"
           onGotoClick={handleGotoResearch}
           execTbodyId="dash-exec-research-tbody"
           planTbodyId="dash-plan-research-tbody"

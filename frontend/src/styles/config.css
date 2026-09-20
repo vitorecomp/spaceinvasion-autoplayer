@@ -167,3 +167,35 @@
   height: 16px;
   accent-color: var(--mint);
 }
+
+.config-item.config-item-mode {
+  grid-template-columns: minmax(0, 1fr) 336px;
+}
+
+.config-mode-stack {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.config-mode-stack .stack-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 6px 8px;
+  text-align: center;
+  border-bottom: 0;
+  border-right: 1px solid var(--line-dim);
+  white-space: nowrap;
+}
+
+.config-mode-stack .stack-item:last-child {
+  border-right: 0;
+}
+
+#view-config .window-bar .inline-actions .btn-sm {
+  min-height: 32px;
+}

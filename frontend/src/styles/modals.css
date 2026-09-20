@@ -368,7 +368,8 @@
     gap: 22px;
   }
 
-  .config-item {
+  .config-item,
+  .config-item.config-item-mode {
     grid-template-columns: 1fr;
     align-items: stretch;
     gap: 10px;
@@ -418,6 +419,11 @@
 
   .window-bar {
     flex-wrap: wrap;
+  }
+
+  .ruler-colony-select {
+    min-width: 132px;
+    max-width: 184px;
   }
 
   .tutorial-banner,

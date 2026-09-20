@@ -13,6 +13,8 @@ import { HelpAlertModal } from "../components/modals/HelpAlertModal";
 import { NotificationCenterModal } from "../components/modals/NotificationCenterModal";
 import { FeedbackBanner } from "../components/layout/FeedbackBanner";
 import { AppHeader } from "../components/layout/AppHeader";
+import { AppSidebar } from "../components/layout/AppSidebar";
+import { renamePlanet } from "../api/httpClient";
 
 const MOCK_DASHBOARD: DashboardPayload = {
   ok: true,
@@ -380,7 +382,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
     expect(scrollEl.classList.contains("is-dragging")).toBe(false);
   });
 
-  it("renders DashboardView 3 queues, OperationsView, BuildingsView universe_research tab, and LogsView", async () => {
+  it("renders DashboardView 3 queues, OperationsView, BuildingsView, and LogsView", async () => {
     const { container } = render(
       <SeedProvider page="dashboard">
         <DashboardView />
@@ -397,14 +399,8 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
     expect(container.querySelector("#dash-queue-card-fleet")).not.toBeNull();
     expect(container.querySelector("#dash-queue-card-research")).not.toBeNull();
     expect(container.querySelector("#plan-tbody")?.textContent).toContain("Pig iron mine");
+    expect(container.querySelector("#view-buildings")?.textContent).toContain("Pig iron mine");
     expect(container.querySelector("#logs-pre")?.textContent).toContain("Commander tick OK");
-
-    const uniTab = container.querySelector('[data-bcat="universe_research"]')!;
-    expect(uniTab).not.toBeNull();
-    fireEvent.click(uniTab);
-    await waitFor(() => {
-      expect(container.querySelector("#view-buildings")?.textContent).toContain("StarLord");
-    });
   });
 
   it("renders notification ID badge (NTF-XXXX) and Copy ID buttons in HelpAlertModal and NotificationCenterModal", async () => {
@@ -481,7 +477,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
     });
   });
 
-  it("supports per-planet parallel queue filtering and scoped resources on Dashboard and Parallel by Planet layout on Operations", async () => {
+  it("supports per-planet queue filtering, full-width equal planet chips, and removed Parallel/Full Queue buttons on Dashboard and Operations", async () => {
     const multiPlanetDash = {
       ...MOCK_DASHBOARD,
       planet_economies: {
@@ -640,30 +636,33 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
       expect(dashRender.container.querySelector("#val-pig")?.textContent).toBe("27,900");
       expect(dashRender.container.querySelector("#rate-pig")?.textContent).toBe("+1,550/h");
     });
+    // Dashboard lower toolbar removes Parallel by Planet, Action Graph, and Full Queue shortcut buttons
+    const dashToolbar = dashRender.container.querySelector(".dash-queues-toolbar")!;
+    expect(dashToolbar.querySelector("#btn-dash-parallel-queues")).toBeNull();
+    expect(dashToolbar.querySelector('[data-goto-page="action-graph"]')).toBeNull();
+    expect(dashToolbar.querySelector('[data-goto-page="operations"]')).toBeNull();
+    expect(dashToolbar.querySelectorAll(".dash-planet-scope-chips .planet-scope-chip").length).toBe(3);
     dashRender.unmount();
 
-    // 2) Operations Parallel by Planet layout splits planets into independent side-by-side cards
+    // 2) Operations removes Unified Table / Parallel by Planet toggle buttons, keeps unified table + full-width planet chips
     const opsRender = render(
       <MultiSeed page="operations">
         <OperationsView />
       </MultiSeed>
     );
     await waitFor(() => {
-      expect(opsRender.container.querySelector('[data-ops-layout="parallel"]')).not.toBeNull();
+      expect(opsRender.container.querySelector('[data-ops-planet="12453"]')).not.toBeNull();
     });
-    // Default layout keeps unified #ops-plan-table intact
+    expect(opsRender.container.querySelector('[data-ops-layout="parallel"]')).toBeNull();
+    expect(opsRender.container.querySelector('[data-ops-layout="table"]')).toBeNull();
     expect(opsRender.container.querySelector("#ops-plan-table")).not.toBeNull();
-    fireEvent.click(opsRender.container.querySelector('[data-ops-layout="parallel"]')!);
+    expect(opsRender.container.querySelectorAll(".ops-planet-scope-chips .planet-scope-chip").length).toBe(3);
+
+    fireEvent.click(opsRender.container.querySelector('[data-ops-planet="12453"]')!);
     await waitFor(() => {
-      expect(opsRender.container.querySelector('[data-planet-lane="12476"]')?.textContent).toContain(
-        "Pig iron mine"
-      );
-      expect(opsRender.container.querySelector('[data-planet-lane="12453"]')?.textContent).toContain(
-        "Kryptonite mine"
-      );
-      expect(
-        opsRender.container.querySelector('[data-planet-lane="global-research"]')?.textContent
-      ).toContain("Mining technology");
+      const planBody = opsRender.container.querySelector("#plan-tbody")?.textContent || "";
+      expect(planBody).toContain("Kryptonite mine");
+      expect(planBody).not.toContain("Pig iron mine");
     });
   });
 
@@ -791,7 +790,7 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
       reason: `Build on ${p.coords}`,
       executable_now: true,
     }));
-    const multiFleetDash: DashboardData = {
+    const multiFleetDash: DashboardPayload = {
       ...MOCK_DASHBOARD,
       state: {
         ...MOCK_DASHBOARD.state!,
@@ -884,5 +883,510 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
       expect(fleetTxt).toContain("8,200 Met");
       expect(fleetTxt).toContain("(20.7k)");
     });
+  });
+
+  it("highlights planet chips and colony status green ONLY when currently constructing a building", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const dash: DashboardPayload = {
+      ...MOCK_DASHBOARD,
+      state: {
+        ...MOCK_DASHBOARD.state!,
+        active_planet_id: 12476,
+        planets: [
+          ...MOCK_DASHBOARD.state!.planets!,
+          {
+            planet_id: 12453,
+            name: "Forge Alpha",
+            coords: "02:379:05",
+            planet_type: "normal",
+            temperature: 28,
+            fields_used: 12,
+            fields_max: 315,
+            resources: { pig_iron: 2900, metal: 900, kryptonite: 950, spice: 500 },
+            storage: { pig_iron: 100000, metal: 100000, kryptonite: 100000, spice: 100000 },
+            energy: { produced: 120, used: 41 },
+          },
+          {
+            planet_id: 12499,
+            name: "Spice Outpost",
+            coords: "02:381:09",
+            planet_type: "normal",
+            temperature: 15,
+            fields_used: 10,
+            fields_max: 300,
+            resources: { pig_iron: 5000, metal: 1000, kryptonite: 500, spice: 200 },
+            storage: { pig_iron: 100000, metal: 100000, kryptonite: 100000, spice: 100000 },
+            energy: { produced: 100, used: 30 },
+          },
+        ],
+        active_queues: [
+          {
+            category: "building",
+            name: "Kryptonite mine",
+            target_level: 6,
+            planet_id: 12453,
+            origin_coords: "02:379:05",
+            remaining_text: "00:12:00",
+            remaining_seconds: 720,
+            finish_ts: nowSec + 720,
+          },
+          {
+            category: "fleet",
+            name: "Attack [02:390:04]",
+            detail: "Outbound · 15 Small fighter",
+            origin_coords: "02:381:09",
+            remaining_text: "00:10:00",
+            remaining_seconds: 600,
+            finish_ts: nowSec + 600,
+          },
+          {
+            category: "research",
+            name: "Mining technology",
+            target_level: 9,
+            remaining_text: "00:25:00",
+            remaining_seconds: 1500,
+            finish_ts: nowSec + 1500,
+          },
+        ],
+      },
+      // Planet 12476 and 12499 both have executable_now: true actions, yet must NOT turn green!
+      plan: [
+        ...MOCK_DASHBOARD.plan!,
+        {
+          priority: "P1",
+          kind: "BUILD",
+          planet_id: 12499,
+          planet_coords: "02:381:09",
+          target_id: 4,
+          target_name: "Spice mine",
+          target_level: 5,
+          cost: { pig_iron: 500 },
+          missing: {},
+          executable_now: true,
+        },
+      ],
+    };
+
+    const Seed: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+      const Inner: React.FC = () => {
+        const { setDashboard, setActivePage } = useConsole();
+        useEffect(() => {
+          setDashboard(dash);
+          setActivePage("dashboard");
+        }, [setActivePage, setDashboard]);
+        return null;
+      };
+      return (
+        <ConsoleProvider disableInitialFetch>
+          <Inner />
+          {children}
+        </ConsoleProvider>
+      );
+    };
+
+    const { container } = render(
+      <Seed>
+        <DashboardView />
+        <OperationsView />
+      </Seed>
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-dash-planet-scope="12453"]')).not.toBeNull();
+    });
+
+    // Dashboard planet chips: ONLY 12453 is green (.is-constructing); idle planets with ready actions are NOT green
+    const dashHome = container.querySelector('[data-dash-planet-scope="12476"]')!;
+    const dashForge = container.querySelector('[data-dash-planet-scope="12453"]')!;
+    const dashOutpost = container.querySelector('[data-dash-planet-scope="12499"]')!;
+    expect(dashForge.classList.contains("is-constructing")).toBe(true);
+    expect(dashForge.getAttribute("data-constructing")).toBe("true");
+    expect(dashHome.classList.contains("is-constructing")).toBe(false);
+    expect(dashHome.classList.contains("has-ready")).toBe(false);
+    expect(dashOutpost.classList.contains("is-constructing")).toBe(false);
+    expect(dashOutpost.classList.contains("has-ready")).toBe(false);
+
+    // Operations planet chips match the exact same rule
+    const opsHome = container.querySelector('[data-ops-planet="12476"]')!;
+    const opsForge = container.querySelector('[data-ops-planet="12453"]')!;
+    const opsOutpost = container.querySelector('[data-ops-planet="12499"]')!;
+    expect(opsForge.classList.contains("is-constructing")).toBe(true);
+    expect(opsHome.classList.contains("is-constructing")).toBe(false);
+    expect(opsHome.classList.contains("has-ready")).toBe(false);
+    expect(opsOutpost.classList.contains("is-constructing")).toBe(false);
+
+    // Empire Colonies table: ONLY constructing colony gets BUILDING + .is-constructing
+    const colonyRows = Array.from(container.querySelectorAll("#colony-tbody tr"));
+    const forgeRow = colonyRows.find((r) => r.textContent?.includes("Forge Alpha"))!;
+    const homeRow = colonyRows.find((r) => r.textContent?.includes("02:380:12"))!;
+    expect(forgeRow.querySelector(".status-word")?.textContent).toBe("BUILDING");
+    expect(forgeRow.querySelector(".status-word")?.classList.contains("is-constructing")).toBe(true);
+    expect(homeRow.querySelector(".status-word")?.textContent).toBe("ONLINE");
+    expect(homeRow.querySelector(".status-word")?.classList.contains("is-constructing")).toBe(false);
+  });
+
+  it("displays Building Queue resource requests scoped by planet and EXPECTED / DELIVERED badges for ongoing flights", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const dash: DashboardPayload = {
+      ...MOCK_DASHBOARD,
+      state: {
+        ...MOCK_DASHBOARD.state!,
+        active_planet_id: 12476,
+        planets: [
+          ...MOCK_DASHBOARD.state!.planets!,
+          {
+            planet_id: 12453,
+            name: "Colony Beta",
+            coords: "02:379:05",
+            planet_type: "normal",
+            temperature: 28,
+            fields_used: 12,
+            fields_max: 315,
+            resources: { pig_iron: 2900, metal: 900, kryptonite: 950, spice: 500 },
+            storage: { pig_iron: 100000, metal: 100000, kryptonite: 100000, spice: 100000 },
+            energy: { produced: 120, used: 41 },
+          },
+        ],
+        active_queues: [
+          {
+            category: "fleet",
+            name: "Attack [02:390:04] Spacia",
+            detail: "Outbound · 20 Small fighter",
+            origin_coords: "02:380:12",
+            returning: false,
+            remaining_text: "00:18:00",
+            remaining_seconds: 1080,
+            finish_ts: nowSec + 1080,
+            expected_cargo: { pig_iron: 14000, metal: 6500, kryptonite: 2000, spice: 500 },
+          },
+          {
+            category: "fleet",
+            name: "Recycle [02:379:01] Debris",
+            detail: "Outbound · 10 Recycler",
+            origin_coords: "02:380:12",
+            returning: false,
+            remaining_text: "00:22:00",
+            remaining_seconds: 1320,
+            finish_ts: nowSec + 1320,
+            expected_cargo: { pig_iron: 9000, metal: 4500, kryptonite: 0, spice: 0 },
+          },
+          {
+            category: "fleet",
+            name: "Transport [02:379:05] Colony Beta",
+            detail: "Outbound · 5 Large transport",
+            origin_coords: "02:380:12",
+            returning: false,
+            remaining_text: "00:08:00",
+            remaining_seconds: 480,
+            finish_ts: nowSec + 480,
+            expected_cargo: { pig_iron: 12000, metal: 8000, kryptonite: 0, spice: 0 },
+          },
+          {
+            category: "fleet",
+            name: "Transport ↩ [02:379:05] Colony Beta",
+            detail: "Returning · 5 Large transport",
+            origin_coords: "02:380:12",
+            returning: true,
+            delivered: true,
+            remaining_text: "00:05:00",
+            remaining_seconds: 300,
+            finish_ts: nowSec + 300,
+            delivered_cargo: { pig_iron: 11000, metal: 7500, kryptonite: 1200, spice: 0 },
+          },
+          {
+            category: "fleet",
+            name: "Transport ↩ [02:380:12] Colony",
+            detail: "Returning · 2 Small transport",
+            origin_coords: "02:379:05",
+            returning: true,
+            delivered: true,
+            remaining_text: "00:04:00",
+            remaining_seconds: 240,
+            finish_ts: nowSec + 240,
+            delivered_cargo: null,
+          },
+        ],
+      },
+      building_resource_requests: [
+        {
+          id: "req-1",
+          planet_id: 12453,
+          planet_coords: "02:379:05",
+          planet_name: "Colony Beta",
+          target_building: "Development center",
+          target_level: 10,
+          status: "in_flight",
+          resources: { pig_iron: 12000, metal: 8000, kryptonite: 0, spice: 0 },
+          source_planet_id: 12476,
+          source_coords: "02:380:12",
+          source_name: "Colony",
+          eta_seconds: 480,
+          finish_ts: nowSec + 480,
+        },
+        {
+          id: "req-2",
+          planet_id: 12476,
+          planet_coords: "02:380:12",
+          planet_name: "Colony",
+          target_building: "Fusion plant",
+          target_level: 11,
+          status: "requested",
+          resources: { pig_iron: 5000, metal: 0, kryptonite: 3200, spice: 400 },
+          reason: "Waiting for donor colony surplus",
+        },
+      ],
+    };
+
+    const Seed: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+      const Inner: React.FC = () => {
+        const { setDashboard, setActivePage } = useConsole();
+        useEffect(() => {
+          setDashboard(dash);
+          setActivePage("dashboard");
+        }, [setActivePage, setDashboard]);
+        return null;
+      };
+      return (
+        <ConsoleProvider disableInitialFetch>
+          <Inner />
+          {children}
+        </ConsoleProvider>
+      );
+    };
+
+    const { container } = render(
+      <Seed>
+        <DashboardView />
+      </Seed>
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("#dash-building-resource-requests")).not.toBeNull();
+    });
+
+    // Building Queue resource requests show both requests under All Planets
+    expect(container.querySelector("#dash-bld-req-count")?.textContent).toBe("2 REQ");
+    const reqBox = container.querySelector("#dash-building-resource-requests")!;
+    expect(reqBox.textContent).toContain("IN FLIGHT");
+    expect(reqBox.textContent).toContain("Development center → L10");
+    expect(reqBox.textContent).toContain("[02:380:12] → [02:379:05]");
+    expect(reqBox.textContent).toContain("12,000 Pig");
+    expect(reqBox.textContent).toContain("8,000 Met");
+    expect(reqBox.textContent).toContain("REQUESTED");
+    expect(reqBox.textContent).toContain("Fusion plant → L11");
+    expect(reqBox.textContent).toContain("3,200 Kryp");
+
+    // Scope to Colony Beta (12453) -> only Colony Beta's request remains
+    fireEvent.click(container.querySelector('[data-dash-planet-scope="12453"]')!);
+    await waitFor(() => {
+      expect(container.querySelector("#dash-bld-req-count")?.textContent).toBe("1 REQ");
+      const scopedText = container.querySelector("#dash-building-resource-requests")?.textContent || "";
+      expect(scopedText).toContain("Development center → L10");
+      expect(scopedText).not.toContain("Fusion plant → L11");
+    });
+
+    // Switch back to All Planets to inspect all 5 ongoing fleet flights
+    fireEvent.click(container.querySelector('[data-dash-planet-scope="all"]')!);
+    await waitFor(() => {
+      expect(container.querySelectorAll("#dash-exec-fleet-tbody tr").length).toBe(5);
+    });
+    const fleetRows = Array.from(container.querySelectorAll("#dash-exec-fleet-tbody tr"));
+    const attackRow = fleetRows.find((r) => r.textContent?.includes("02:390:04"))!;
+    const recycleRow = fleetRows.find((r) => r.textContent?.includes("02:379:01"))!;
+    const outTrRow = fleetRows.find(
+      (r) => r.textContent?.includes("Transport [02:379:05]") && !r.textContent?.includes("↩")
+    )!;
+    const delivRow = fleetRows.find((r) => r.textContent?.includes("Transport ↩ [02:379:05]"))!;
+    const delivNullRow = fleetRows.find((r) => r.textContent?.includes("Transport ↩ [02:380:12]"))!;
+
+    expect(attackRow.querySelector('[data-cargo-variant="expected"]')?.textContent).toContain("EXPECTED");
+    expect(attackRow.textContent).toContain("14,000 Pig");
+    expect(attackRow.textContent).toContain("6,500 Met");
+    expect(recycleRow.querySelector('[data-cargo-variant="expected"]')?.textContent).toContain("EXPECTED");
+    expect(recycleRow.textContent).toContain("9,000 Pig");
+    expect(outTrRow.querySelector('[data-cargo-variant="expected"]')?.textContent).toContain("EXPECTED");
+    expect(outTrRow.textContent).toContain("12,000 Pig");
+
+    expect(delivRow.querySelector('[data-cargo-variant="delivered"]')?.getAttribute("data-delivered")).toBe("true");
+    expect(delivRow.textContent).toContain("DELIVERED");
+    expect(delivRow.textContent).toContain("11,000 Pig");
+    expect(delivRow.textContent).toContain("7,500 Met");
+    expect(delivRow.textContent).toContain("1,200 Kryp");
+
+    expect(delivNullRow.querySelector('[data-cargo-variant="delivered"]')?.textContent).toContain("DELIVERED");
+    expect(delivNullRow.textContent).toContain("Cargo unloaded");
+
+    // Active queues strip also surfaces EXPECTED and DELIVERED
+    const stripText = container.querySelector("#active-queues-list")?.textContent || "";
+    expect(stripText).toContain("EXPECTED:");
+    expect(stripText).toContain("DELIVERED:");
+  });
+
+  it("moves Active Colony selector to AppHeader, Execution Mode to ConfigView, wires Research & Fleet Build / Fleet Control nav, and supports renamePlanet API", async () => {
+    const customDash: DashboardPayload = {
+      ...MOCK_DASHBOARD,
+      state: {
+        ...MOCK_DASHBOARD.state!,
+        planets: [
+          {
+            ...MOCK_DASHBOARD.state!.planets![0],
+            name: "Citadel Prime",
+            game_name: "Colony",
+            custom_name: "Citadel Prime",
+          },
+          {
+            planet_id: 12453,
+            name: "Forge Nine",
+            coords: "02:379:05",
+            planet_type: "normal",
+            temperature: 14,
+            fields_used: 20,
+            fields_max: 310,
+          },
+        ],
+        active_queues: [
+          {
+            category: "fleet",
+            name: "Attack [02:390:04]",
+            detail: "Outbound · 10 Small fighter",
+            origin_coords: "02:380:12",
+            remaining_seconds: 400,
+          },
+          {
+            category: "fleet",
+            name: "Transport [02:379:05]",
+            detail: "Outbound · 4 Large transport",
+            origin_coords: "02:380:12",
+            remaining_seconds: 200,
+          },
+        ],
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, opts?: RequestInit) => {
+        if (String(url).startsWith("/dashboard")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(customDash),
+          };
+        }
+        const body = opts?.body ? JSON.parse(String(opts.body)) : {};
+        postedCommands.push(body);
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ ok: true }),
+        };
+      })
+    );
+
+    const ShellSeed: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+      const Inner: React.FC = () => {
+        const { setDashboard, setActivePage } = useConsole();
+        useEffect(() => {
+          setDashboard(customDash);
+          setActivePage("dashboard");
+        }, [setActivePage, setDashboard]);
+        return null;
+      };
+      return (
+        <ConsoleProvider disableInitialFetch>
+          <Inner />
+          {children}
+        </ConsoleProvider>
+      );
+    };
+
+    const { container } = render(
+      <ShellSeed>
+        <AppSidebar />
+        <AppHeader />
+        <DashboardView />
+        <ConfigView />
+      </ShellSeed>
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("header.hud-ruler #planet-select")).not.toBeNull();
+    });
+
+    // 1. Active Colony selector is in AppHeader, NOT AppSidebar, and reflects custom planet name
+    const sidebar = container.querySelector("#app-sidebar")!;
+    const header = container.querySelector("header.hud-ruler")!;
+    expect(sidebar.querySelector("#planet-select")).toBeNull();
+    const planetSelect = header.querySelector("#planet-select") as HTMLSelectElement;
+    expect(planetSelect.textContent).toContain("02:380:12 Citadel Prime");
+    expect(planetSelect.textContent).toContain("02:379:05 Forge Nine");
+    fireEvent.change(planetSelect, { target: { value: "12453" } });
+    await waitFor(() => {
+      expect(header.querySelector("#planet-specs")?.textContent).toContain("TEMP 14°C");
+      expect(header.querySelector("#planet-specs")?.textContent).toContain("20/310");
+    });
+
+    // 2. Execution Mode is in ConfigView, NOT AppSidebar, and sends bot_control on click
+    expect(sidebar.querySelector("#mode-group-label")).toBeNull();
+    expect(sidebar.querySelector('[data-mode="dry-run"]')).toBeNull();
+    const configView = container.querySelector("#view-config")!;
+    expect(configView.querySelector("#mode-group-label")?.textContent).toBe("Execution Mode");
+    const dryRunBtn = configView.querySelector('[data-mode="dry-run"]') as HTMLButtonElement;
+    expect(dryRunBtn).not.toBeNull();
+    fireEvent.click(dryRunBtn);
+    await waitFor(() => {
+      expect(
+        postedCommands.some((c) => c.command === "bot_control" && c.mode_override === "dry-run")
+      ).toBe(true);
+      // FeedbackBanner renders at the bottom of AppSidebar and shows the live feedback message
+      const sidebarBanner = sidebar.querySelector("#feedback-banner") as HTMLElement | null;
+      expect(sidebarBanner).not.toBeNull();
+      expect(sidebarBanner?.hidden).toBe(false);
+      expect(sidebarBanner?.textContent).toContain("Loop mode set to dry-run.");
+    });
+
+    // 3. Sidebar navigation has Research & ETAs, Fleet Build, and Fleet Control with live counts
+    const resNav = sidebar.querySelector('[data-page="research"]')!;
+    const buildNav = sidebar.querySelector('[data-page="combat"]')!;
+    const fltCtrlNav = sidebar.querySelector('[data-page="fleet-control"]')!;
+    expect(resNav.textContent).toContain("Research & ETAs");
+    expect(sidebar.querySelector("#nav-res-badge")?.textContent).toBe("15");
+    expect(buildNav.textContent).toContain("Fleet Build");
+    expect(buildNav.textContent).not.toContain("Combat & Fleet");
+    expect(fltCtrlNav.textContent).toContain("Fleet Control");
+    expect(sidebar.querySelector("#nav-flt-ctrl-badge")?.textContent).toBe("2");
+
+    // 4. Header titles update for research, combat (Fleet Build), and fleet-control (Fleet Control)
+    fireEvent.click(buildNav);
+    await waitFor(() => {
+      expect(header.querySelector("#hud-page-title")?.textContent).toBe(
+        "FLEET BUILD // SHIPYARD & SIM"
+      );
+    });
+    fireEvent.click(fltCtrlNav);
+    await waitFor(() => {
+      expect(header.querySelector("#hud-page-title")?.textContent).toBe(
+        "FLEET CONTROL // CURRENT FLIGHTS"
+      );
+    });
+
+    // 5. Dashboard Research Queue jump button navigates directly to top-level "research" page
+    fireEvent.click(sidebar.querySelector('[data-page="dashboard"]')!);
+    await waitFor(() => {
+      expect(header.querySelector("#hud-page-title")?.textContent).toBe("DASHBOARD // OVERVIEW");
+    });
+    fireEvent.click(container.querySelector("#btn-dash-goto-research")!);
+    await waitFor(() => {
+      expect(header.querySelector("#hud-page-title")?.textContent).toBe(
+        "RESEARCH // LEVEL ETAS"
+      );
+    });
+
+    // 6. renamePlanet helper dispatches rename_planet command with exact payload
+    await renamePlanet(12476, "Citadel Prime");
+    expect(
+      postedCommands.some(
+        (c) => c.command === "rename_planet" && c.planet_id === 12476 && c.name === "Citadel Prime"
+      )
+    ).toBe(true);
   });
 });

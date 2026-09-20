@@ -37,11 +37,29 @@
 .dash-queues-toolbar {
   flex: 0 0 auto;
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 2px 0 0;
+}
+
+.dash-queues-toolbar-meta {
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  padding: 2px 2px 0;
+}
+
+#dash-builders-summary-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--radius);
 }
 
 .dash-lower-grid {
@@ -108,13 +126,280 @@
   border-radius: var(--radius);
 }
 
-.dash-planet-scope-chips {
-  margin-left: 4px;
+.dash-req-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--cyan);
+  background-color: rgba(50, 232, 255, 0.1);
+  border: 1px solid rgba(50, 232, 255, 0.38);
+  border-radius: var(--radius);
 }
 
-.chip-btn.has-ready:not(.active) {
+.dash-planet-scope-chips,
+.ops-planet-scope-chips {
+  width: 100%;
+  margin-left: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+  gap: 6px;
+  align-items: stretch;
+}
+
+.planet-scope-chip {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 10px;
+  text-align: center;
+  line-height: 1.2;
+  overflow: hidden;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.planet-chip-top {
+  max-width: 100%;
+  font-size: 0.84rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.planet-chip-sub {
+  max-width: 100%;
+  font-size: 0.74rem;
+  font-weight: 500;
+  opacity: 0.84;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Planet buttons turn green ONLY when a building is currently under construction */
+.chip-btn.is-constructing {
   border-color: var(--mint);
+  background: rgba(22, 236, 152, 0.12);
   color: var(--mint);
+}
+
+.chip-btn.is-constructing:hover {
+  background: rgba(22, 236, 152, 0.2);
+}
+
+.chip-btn.is-constructing.active {
+  background: var(--mint);
+  border-color: var(--mint);
+  color: var(--mint-ink);
+}
+
+.chip-btn.is-constructing.active .planet-chip-sub {
+  opacity: 0.92;
+}
+
+/* Empire Colonies table: green status ONLY when building is under construction */
+#colony-tbody .status-word.is-constructing {
+  color: var(--mint);
+}
+
+#colony-tbody .status-word.is-active-idle {
+  color: var(--ink);
+}
+
+#colony-tbody .status-word.is-idle {
+  color: var(--ink-muted);
+}
+
+#colony-tbody .status-word.is-warn {
+  color: var(--red);
+}
+
+#colony-tbody tr.is-constructing td:first-child {
+  box-shadow: inset 3px 0 0 var(--mint);
+}
+
+/* Operations View aligned toolbar */
+.ops-filter-toolbar {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.ops-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ops-toolbar-row .filter-chips,
+.ops-toolbar-row .inline-actions {
+  align-items: center;
+}
+
+/* Dashboard Building Queue Resource Requests */
+.dash-res-requests {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  background: var(--bg-panel-alt);
+  border-bottom: 1px solid var(--line-mid);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dash-res-requests-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+
+.dash-res-requests-meta {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.dash-res-requests-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 156px;
+  overflow-y: auto;
+}
+
+.dash-res-req-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+  padding: 5px 8px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-dim);
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.dash-res-req-row.is-in-flight {
+  border-color: rgba(22, 236, 152, 0.35);
+}
+
+.dash-res-req-main {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dash-req-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.dash-req-status.is-in-flight {
+  background: rgba(22, 236, 152, 0.14);
+  border: 1px solid rgba(22, 236, 152, 0.42);
+  color: var(--mint);
+}
+
+.dash-req-status.is-planned {
+  background: rgba(50, 232, 255, 0.12);
+  border: 1px solid rgba(50, 232, 255, 0.38);
+  color: var(--cyan);
+}
+
+.dash-req-status.is-requested {
+  background: var(--amber-surface);
+  border: 1px solid rgba(245, 174, 48, 0.45);
+  color: var(--amber);
+}
+
+.dash-req-target {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.dash-req-route {
+  font-size: 0.76rem;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.dash-res-req-values {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.dash-req-amounts {
+  color: var(--ivory);
+  font-weight: 600;
+}
+
+.dash-req-eta {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--cyan);
+}
+
+/* Ongoing flight EXPECTED & Transport DELIVERED cargo flags */
+.exec-cargo-line.is-expected {
+  color: var(--cyan);
+}
+
+.exec-cargo-line.is-expected .exec-cargo-tag {
+  background: rgba(50, 232, 255, 0.14);
+  border-color: rgba(50, 232, 255, 0.42);
+  color: var(--cyan);
+}
+
+.exec-cargo-line.is-delivered {
+  color: var(--mint);
+}
+
+.exec-cargo-line.is-delivered .exec-cargo-tag {
+  background: rgba(22, 236, 152, 0.16);
+  border-color: rgba(22, 236, 152, 0.48);
+  color: var(--mint);
+}
+
+.exec-cargo-line.is-empty {
+  color: var(--text-muted, #8b9bb4);
+}
+
+.exec-cargo-line.is-empty .exec-cargo-tag {
+  background: rgba(148, 163, 184, 0.1);
+  border-color: rgba(148, 163, 184, 0.25);
+  color: var(--text-muted, #8b9bb4);
 }
 
 .ops-parallel-grid {

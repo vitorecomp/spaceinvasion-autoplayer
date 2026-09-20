@@ -1,3 +1,7 @@
+import type { RenamePlanetResponse } from "../types/api";
+
+export type { RenamePlanetResponse };
+
 export interface ApiError extends Error {
   status?: number;
   rateLimited?: boolean;
@@ -176,4 +180,19 @@ export async function apiCommand<T = Record<string, any>>(
     bridgeCallbacks.onNotifications?.(data.notifications);
   }
   return data as T;
+}
+
+export async function renamePlanet(
+  planetId: number,
+  name: string,
+  opts?: { timeoutMs?: number }
+): Promise<RenamePlanetResponse> {
+  return apiCommand<RenamePlanetResponse>(
+    {
+      command: "rename_planet",
+      planet_id: planetId,
+      name,
+    },
+    opts
+  );
 }

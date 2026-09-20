@@ -55,6 +55,8 @@ export const ConfigView: React.FC = () => {
     dashboard,
     setDashboard,
     activePage,
+    uiPrefs,
+    setUiPref,
     configHydrationTick,
     setConfigDirty,
     setConfigSaving,
@@ -65,6 +67,21 @@ export const ConfigView: React.FC = () => {
     loadDashboard,
     showFeedback,
   } = useConsole();
+
+  const botCtrl = dashboard?.bot_control || {};
+  const modeVal = uiPrefs.modeOverride || botCtrl.mode_override || "auto";
+
+  const onModeChange = async (mode: string) => {
+    const val = mode === "auto" ? null : mode;
+    try {
+      await apiCommand({ command: "bot_control", mode_override: val });
+      setUiPref("modeOverride", mode);
+      await loadDashboard({ refresh: false, force: true });
+      showFeedback(`Loop mode set to ${mode}.`, "ok");
+    } catch (err: any) {
+      showFeedback(`Mode update failed: ${err.message}`, feedbackKindForError(err));
+    }
+  };
 
   const [formValues, setFormValues] = useState<Record<string, any>>(() =>
     buildFormStateFromConfig(dashboard?.config)
@@ -392,6 +409,59 @@ export const ConfigView: React.FC = () => {
         </div>
 
         <div className="config-body">
+          <section className="config-group" aria-labelledby="cfg-grp-runtime">
+            <div className="config-group-head">
+              <h3 id="cfg-grp-runtime">Runtime &amp; Autopilot Execution</h3>
+              <p className="config-group-sub">
+                Override how the Commander loop executes ticks against Chrome without restarting the stack or editing config.yaml.
+              </p>
+            </div>
+            <div className="config-list">
+              <div className="config-item config-item-mode">
+                <div className="config-item-info">
+                  <div className="config-item-head">
+                    <label className="config-item-label" id="mode-group-label">
+                      Execution Mode
+                    </label>
+                    <code className="config-item-key tabular">mode_override</code>
+                    <span className="config-item-bounds tabular">auto | live | dry-run</span>
+                  </div>
+                  <p className="config-item-desc">
+                    Controls whether the Commander autopilot dispatches live game clicks or runs in simulation: CLI Default inherits launcher flags, Force Live executes real actions, and Force Dry-Run simulates every tick safely.
+                  </p>
+                </div>
+                <div className="config-item-control">
+                  <div
+                    className="mode-stack config-mode-stack"
+                    role="radiogroup"
+                    aria-labelledby="mode-group-label"
+                  >
+                    {[
+                      { key: "auto", label: "CLI Default" },
+                      { key: "live", label: "Force Live" },
+                      { key: "dry-run", label: "Force Dry-Run" },
+                    ].map((m) => {
+                      const isAct = modeVal === m.key;
+                      return (
+                        <button
+                          key={m.key}
+                          type="button"
+                          className={`stack-item${isAct ? " active" : ""}`}
+                          role="radio"
+                          aria-checked={isAct ? "true" : "false"}
+                          data-mode={m.key}
+                          onClick={() => onModeChange(m.key)}
+                        >
+                          {m.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
           {CONFIG_GROUPS.map((group) => (
             <section
               key={group.id}

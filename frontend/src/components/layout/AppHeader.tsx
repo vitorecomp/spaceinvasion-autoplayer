@@ -36,6 +36,7 @@ export const AppHeader: React.FC = () => {
     activePage,
     setActivePage,
     activePlanet,
+    setSelectedPlanetId,
     buildingsEtaData,
     notifications,
     notifCenterOpen,
@@ -52,6 +53,7 @@ export const AppHeader: React.FC = () => {
   const [scanToggling, setScanToggling] = React.useState(false);
 
   const gs = dashboard?.state || {};
+  const planets = Array.isArray(gs.planets) ? gs.planets : [];
   const universeText = dashboard
     ? `U${gs.universe_id || 31} · ${gs.nickname || "COMMANDER"}`
     : "U31 · COMMANDER";
@@ -207,6 +209,29 @@ export const AppHeader: React.FC = () => {
           <span className="ruler-node tabular" id="hud-clock">
             {clockText}
           </span>
+          <span className="ruler-sep" aria-hidden="true" />
+          <div className="ruler-colony-selector">
+            <label className="ruler-colony-label tabular" htmlFor="planet-select">
+              COLONY
+            </label>
+            <select
+              id="planet-select"
+              className="ruler-colony-select tabular"
+              aria-label="Active planet"
+              value={activePlanet ? String(activePlanet.planet_id) : ""}
+              onChange={(e) => setSelectedPlanetId(Number(e.target.value))}
+            >
+              {planets.length === 0 ? (
+                <option value="">Loading...</option>
+              ) : (
+                planets.map((p) => (
+                  <option key={p.planet_id} value={String(p.planet_id)}>
+                    {p.coords} {p.name}
+                  </option>
+                ))
+              )}
+            </select>
+          </div>
           <span className="ruler-sep" aria-hidden="true" />
           <span className="ruler-node tabular" id="planet-specs">
             {specsText}

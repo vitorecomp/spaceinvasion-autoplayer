@@ -11,6 +11,7 @@ import {
   actionPayloadFor,
   buildPinPayloadFromAction,
   dashboardQueueDomainForAction,
+  isPlanetConstructing,
 } from "./planActions";
 
 const NAV_JUMP_TARGETS = [
@@ -26,7 +27,6 @@ export const OperationsView: React.FC = () => {
     dashboard,
     activePage,
     setActivePage,
-    setSelectedPlanetId,
     nowEpochSec,
     showFeedback,
     apiCommand,
@@ -37,6 +37,22 @@ export const OperationsView: React.FC = () => {
   } = useConsole();
 
   const planets = useMemo(() => dashboard?.state?.planets || [], [dashboard?.state?.planets]);
+  const activeQueues = useMemo(
+    () => (Array.isArray(dashboard?.state?.active_queues) ? dashboard!.state!.active_queues! : []),
+    [dashboard?.state?.active_queues]
+  );
+  const effNowSec =
+    nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : Math.floor(Date.now() / 1000);
+  const constructingPlanetIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const p of planets) {
+      if (isPlanetConstructing(p, activeQueues, dashboard?.state?.active_planet_id, effNowSec)) {
+        ids.add(Number(p.planet_id));
+      }
+    }
+    return ids;
+  }, [activeQueues, dashboard?.state?.active_planet_id, effNowSec, planets]);
+
   const queueFilter = uiPrefs.queueFilter || "all";
   const rawPlanetScope = String(uiPrefs.opsPlanetScope || "all");
   const scopedPlanet = useMemo(
@@ -47,8 +63,6 @@ export const OperationsView: React.FC = () => {
     [planets, rawPlanetScope]
   );
   const opsPlanetScope = scopedPlanet ? String(scopedPlanet.planet_id) : "all";
-  const opsQueueLayout: "table" | "parallel" =
-    planets.length > 1 && uiPrefs.opsQueueLayout === "parallel" ? "parallel" : "table";
 
   const allActions = useMemo(() => dashboard?.plan || [], [dashboard?.plan]);
 
@@ -96,23 +110,6 @@ export const OperationsView: React.FC = () => {
     const pid = Number(scopedPlanet.planet_id);
     return filterMatchedActions.filter((a) => Number(a.planet_id) === pid);
   }, [filterMatchedActions, scopedPlanet]);
-
-  const parallelLanes = useMemo(() => {
-    const visiblePlanets = scopedPlanet ? [scopedPlanet] : planets;
-    const planetLanes = visiblePlanets.map((planet) => {
-      const actions = filterMatchedActions.filter(
-        (a) =>
-          Number(a.planet_id) === Number(planet.planet_id) &&
-          dashboardQueueDomainForAction(a) !== "research"
-      );
-      const readyCount = actions.filter((a) => Boolean(a.executable_now)).length;
-      return { planet, actions, readyCount };
-    });
-    const researchActions = filterMatchedActions.filter(
-      (a) => dashboardQueueDomainForAction(a) === "research"
-    );
-    return { planetLanes, researchActions };
-  }, [filterMatchedActions, planets, scopedPlanet]);
 
   const actionSort = useTableSort(filteredActions, PLAN_ACTION_SORT_COLUMNS);
 
@@ -225,251 +222,117 @@ export const OperationsView: React.FC = () => {
             </span>
           </div>
 
-          <div className="filter-toolbar">
-            <div className="filter-chips" role="group" aria-label="Queue filters">
-              <button
-                type="button"
-                className={`chip-btn${queueFilter === "all" ? " active" : ""}`}
-                data-filter="all"
-                onClick={() => setUiPref("queueFilter", "all")}
-              >
-                All Planned
-              </button>
-              <button
-                type="button"
-                className={`chip-btn${queueFilter === "ready" ? " active" : ""}`}
-                data-filter="ready"
-                onClick={() => setUiPref("queueFilter", "ready")}
-              >
-                Executable Only
-              </button>
-              <button
-                type="button"
-                className={`chip-btn${queueFilter === "manual" ? " active" : ""}`}
-                data-filter="manual"
-                id="chip-filter-manual"
-                onClick={() => setUiPref("queueFilter", "manual")}
-              >
-                {`Pinned Only (${pinnedCount})`}
-              </button>
+          <div className="filter-toolbar ops-filter-toolbar">
+            <div className="ops-toolbar-row">
+              <div className="filter-chips" role="group" aria-label="Queue filters">
+                <button
+                  type="button"
+                  className={`chip-btn${queueFilter === "all" ? " active" : ""}`}
+                  data-filter="all"
+                  onClick={() => setUiPref("queueFilter", "all")}
+                >
+                  All Planned
+                </button>
+                <button
+                  type="button"
+                  className={`chip-btn${queueFilter === "ready" ? " active" : ""}`}
+                  data-filter="ready"
+                  onClick={() => setUiPref("queueFilter", "ready")}
+                >
+                  Executable Only
+                </button>
+                <button
+                  type="button"
+                  className={`chip-btn${queueFilter === "manual" ? " active" : ""}`}
+                  data-filter="manual"
+                  id="chip-filter-manual"
+                  onClick={() => setUiPref("queueFilter", "manual")}
+                >
+                  {`Pinned Only (${pinnedCount})`}
+                </button>
+              </div>
+
+              <div className="inline-actions nav-matrix-inline">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm btn-danger-ghost"
+                  id="btn-mq-clear"
+                  hidden={pinnedCount === 0}
+                  onClick={handleClearQueue}
+                >
+                  {pinnedCount > 0 ? `Clear Pinned (${pinnedCount})` : "Clear Pinned"}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  data-goto-page="action-graph"
+                  onClick={() => setActivePage("action-graph")}
+                >
+                  Action Graph →
+                </button>
+                {NAV_JUMP_TARGETS.map((item) => (
+                  <button
+                    key={item.action}
+                    type="button"
+                    className="btn btn-secondary btn-sm nav-jump"
+                    data-action={item.action}
+                    onClick={() => handleNavJump(item.action)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {planets.length > 1 ? (
-              <div className="filter-chips" role="group" aria-label="Planet queue scope">
+              <div
+                className="filter-chips ops-planet-scope-chips"
+                role="group"
+                aria-label="Planet queue scope"
+              >
                 <button
                   type="button"
-                  className={`chip-btn tabular${opsPlanetScope === "all" ? " active" : ""}`}
+                  className={`chip-btn planet-scope-chip tabular${opsPlanetScope === "all" ? " active" : ""}`}
                   data-ops-planet="all"
+                  title={`Show all ${planets.length} colonies (${constructingPlanetIds.size} currently constructing)`}
                   onClick={() => setUiPref("opsPlanetScope", "all")}
                 >
-                  {`All Planets (${planets.length})`}
+                  <span className="planet-chip-top">All Planets</span>
+                  <span className="planet-chip-sub">
+                    {`${planets.length} colonies · ${constructingPlanetIds.size} bldg`}
+                  </span>
                 </button>
                 {planets.map((p) => {
                   const pidKey = String(p.planet_id);
                   const st = planetCounts.get(p.planet_id) || { total: 0, ready: 0 };
+                  const isConstructing = constructingPlanetIds.has(Number(p.planet_id));
+                  const planetLabel = p.name || "Colony";
                   return (
                     <button
                       key={pidKey}
                       type="button"
-                      className={`chip-btn tabular${opsPlanetScope === pidKey ? " active" : ""}${st.ready > 0 ? " has-ready" : ""}`}
+                      className={`chip-btn planet-scope-chip tabular${opsPlanetScope === pidKey ? " active" : ""}${isConstructing ? " is-constructing" : ""}`}
                       data-ops-planet={pidKey}
+                      data-constructing={isConstructing ? "true" : "false"}
+                      title={`${planetLabel} [${p.coords}] — ${isConstructing ? "Building in progress" : "Builder idle"} · ${st.ready} ready / ${st.total} queued`}
                       onClick={() => setUiPref("opsPlanetScope", pidKey)}
                     >
-                      {st.ready > 0
-                        ? `${p.coords || p.name} · ${st.ready} ready`
-                        : `${p.coords || p.name} (${st.total})`}
+                      <span className="planet-chip-top">{p.coords || planetLabel}</span>
+                      <span className="planet-chip-sub">
+                        {isConstructing
+                          ? `${planetLabel} · Building`
+                          : `${planetLabel} (${st.total})`}
+                      </span>
                     </button>
                   );
                 })}
               </div>
             ) : null}
-
-            {planets.length > 1 ? (
-              <div className="filter-chips" role="group" aria-label="Queue layout mode">
-                <button
-                  type="button"
-                  className={`chip-btn${opsQueueLayout === "table" ? " active" : ""}`}
-                  data-ops-layout="table"
-                  onClick={() => setUiPref("opsQueueLayout", "table")}
-                >
-                  Unified Table
-                </button>
-                <button
-                  type="button"
-                  className={`chip-btn${opsQueueLayout === "parallel" ? " active" : ""}`}
-                  data-ops-layout="parallel"
-                  onClick={() => setUiPref("opsQueueLayout", "parallel")}
-                >
-                  Parallel by Planet
-                </button>
-              </div>
-            ) : null}
-
-            <div className="inline-actions nav-matrix-inline">
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm btn-danger-ghost"
-                id="btn-mq-clear"
-                hidden={pinnedCount === 0}
-                onClick={handleClearQueue}
-              >
-                {pinnedCount > 0 ? `Clear Pinned (${pinnedCount})` : "Clear Pinned"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                data-goto-page="action-graph"
-                onClick={() => setActivePage("action-graph")}
-              >
-                Action Graph →
-              </button>
-              {NAV_JUMP_TARGETS.map((item) => (
-                <button
-                  key={item.action}
-                  type="button"
-                  className="btn btn-secondary btn-sm nav-jump"
-                  data-action={item.action}
-                  onClick={() => handleNavJump(item.action)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
           </div>
         </div>
 
         <ManualQueueComposer />
 
-        {opsQueueLayout === "parallel" ? (
-          <div className="ops-parallel-grid" id="ops-parallel-grid">
-            {parallelLanes.planetLanes.map(({ planet, actions, readyCount }) => {
-              const isActiveP =
-                dashboard?.state?.active_planet_id != null &&
-                Number(planet.planet_id) === Number(dashboard.state.active_planet_id);
-              return (
-                <article
-                  key={`lane-${planet.planet_id}`}
-                  className="hud-window ops-planet-lane-card"
-                  data-planet-lane={String(planet.planet_id)}
-                >
-                  <div className="window-bar window-bar-wrap">
-                    <div className="window-title-group">
-                      <span className="module-code tabular">{planet.coords || "PLN"}</span>
-                      <h3>{planet.name || "Colony"}</h3>
-                      <span className="module-meta tabular dash-q-count">
-                        {`${readyCount}/${actions.length}`}
-                      </span>
-                      <span className="module-meta tabular dash-q-scope">
-                        {`${planet.fields_used ?? "—"}/${planet.fields_max ?? "—"} F${isActiveP ? " · ACTIVE" : " · PARALLEL"}`}
-                      </span>
-                    </div>
-                    <div className="inline-actions">
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => {
-                          setSelectedPlanetId(planet.planet_id);
-                          const mqPlanet = document.getElementById("mq-planet") as HTMLSelectElement | null;
-                          if (mqPlanet) {
-                            mqPlanet.value = String(planet.planet_id);
-                            mqPlanet.dispatchEvent(new Event("change", { bubbles: true }));
-                          }
-                          document.getElementById("mq-target")?.focus();
-                        }}
-                      >
-                        + Queue Here
-                      </button>
-                    </div>
-                  </div>
-                  <div className="table-wrap table-scroll">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Prio</th>
-                          <th>Action</th>
-                          <th>Missing / Cost</th>
-                          <th className="col-right">Wait ETA</th>
-                          <th className="col-right">Total ETA / Finish</th>
-                          <th className="col-right">Ops</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {actions.length === 0 ? (
-                          <tr>
-                            <td colSpan={6} className="empty-cell">
-                              No matching planet actions.
-                            </td>
-                          </tr>
-                        ) : (
-                          actions.map((act, idx) => (
-                            <PlanActionRow
-                              key={`lane-${planet.planet_id}-${act.manual_queue_id ?? "auto"}-${act.kind}-${act.target_id ?? act.target_name}-${idx}`}
-                              action={act}
-                              compact={true}
-                              nowEpochSec={nowEpochSec}
-                              onDispatch={handleDispatch}
-                              onUpdateQueue={handleUpdateQueue}
-                              onCancelQueue={handleCancelQueue}
-                              onPinQueue={handlePinQueue}
-                            />
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </article>
-              );
-            })}
-
-            {parallelLanes.researchActions.length > 0 ? (
-              <article
-                className="hud-window ops-planet-lane-card ops-global-research-card"
-                data-planet-lane="global-research"
-              >
-                <div className="window-bar window-bar-wrap">
-                  <div className="window-title-group">
-                    <span className="module-code tabular">RES</span>
-                    <h3>Global Research Queue</h3>
-                    <span className="module-meta tabular dash-q-count">
-                      {String(parallelLanes.researchActions.length)}
-                    </span>
-                    <span className="module-meta tabular dash-q-scope">
-                      GLOBAL · 1 SHARED SLOT
-                    </span>
-                  </div>
-                </div>
-                <div className="table-wrap table-scroll">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Prio</th>
-                        <th>Action</th>
-                        <th>Missing / Cost</th>
-                        <th className="col-right">Wait ETA</th>
-                        <th className="col-right">Total ETA / Finish</th>
-                        <th className="col-right">Ops</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {parallelLanes.researchActions.map((act, idx) => (
-                        <PlanActionRow
-                          key={`lane-res-${act.manual_queue_id ?? "auto"}-${act.target_id ?? act.target_name}-${idx}`}
-                          action={act}
-                          compact={true}
-                          nowEpochSec={nowEpochSec}
-                          onDispatch={handleDispatch}
-                          onUpdateQueue={handleUpdateQueue}
-                          onCancelQueue={handleCancelQueue}
-                          onPinQueue={handlePinQueue}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </article>
-            ) : null}
-          </div>
-        ) : (
         <div className="table-wrap table-scroll">
           <table id="ops-plan-table">
             <thead>
@@ -545,7 +408,6 @@ export const OperationsView: React.FC = () => {
             </tbody>
           </table>
         </div>
-        )}
       </article>
     </section>
   );

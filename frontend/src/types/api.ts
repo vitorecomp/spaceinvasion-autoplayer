@@ -1,7 +1,9 @@
 export type PageKey =
   | "dashboard"
   | "buildings"
+  | "research"
   | "combat"
+  | "fleet-control"
   | "sectors"
   | "espionage"
   | "colonies"
@@ -16,7 +18,9 @@ export type PageKey =
 export const PAGE_TITLES: Record<PageKey, string> = {
   dashboard: "DASHBOARD // OVERVIEW",
   buildings: "BUILDINGS // LEVEL ETAS",
-  combat: "COMBAT & FLEET // 1:1 SIM",
+  research: "RESEARCH // LEVEL ETAS",
+  combat: "FLEET BUILD // SHIPYARD & SIM",
+  "fleet-control": "FLEET CONTROL // CURRENT FLIGHTS",
   sectors: "GALAXY // SCANNED SECTORS",
   espionage: "ESPIONAGE // INTEL & ARCHIVE",
   colonies: "COLONIES // 300+ GRADING",
@@ -40,6 +44,8 @@ export interface ResourceBundle {
 export interface PlanetData {
   planet_id: number;
   name?: string;
+  game_name?: string;
+  custom_name?: string;
   coords?: string;
   planet_type?: string;
   temperature?: number | null;
@@ -75,7 +81,106 @@ export interface QueueJobData {
   planet_coords?: string;
   origin_coords?: string;
   detail?: string;
+  returning?: boolean;
   cargo?: ResourceBundle | null;
+  expected_cargo?: ResourceBundle | null;
+  delivered_cargo?: ResourceBundle | null;
+  delivered?: boolean;
+  [key: string]: any;
+}
+
+export interface BuildingResourceRequestItem {
+  id?: string;
+  planet_id?: number | null;
+  planet_coords?: string;
+  planet_name?: string;
+  target_building?: string;
+  target_level?: number | null;
+  building_id?: number | null;
+  label?: string;
+  status?: "requested" | "planned" | "in_flight" | string;
+  resources?: ResourceBundle | null;
+  pig_iron?: number;
+  metal?: number;
+  kryptonite?: number;
+  spice?: number;
+  source_planet_id?: number | null;
+  source_coords?: string;
+  source_name?: string;
+  eta_seconds?: number | null;
+  finish_ts?: number | null;
+  reason?: string;
+  [key: string]: any;
+}
+
+export interface RenamePlanetResponse {
+  ok?: boolean;
+  command?: string;
+  planet_id?: number;
+  name?: string;
+  game_name?: string;
+  cleared?: boolean;
+  custom_planet_names?: Record<string, string>;
+  planet?: {
+    planet_id?: number;
+    coords?: string;
+    name?: string;
+    game_name?: string;
+    custom_name?: string;
+    [key: string]: any;
+  };
+  message?: string;
+  [key: string]: any;
+}
+
+export interface HourlyProductionPoint {
+  minute_bucket: number;
+  recorded_at?: number;
+  pig_iron_per_hour: number;
+  metal_per_hour: number;
+  kryptonite_per_hour: number;
+  spice_per_hour: number;
+  total_per_hour: number;
+  speq_per_hour: number;
+  planet_count?: number;
+  active_builders?: number;
+  [key: string]: any;
+}
+
+export interface LootRecycleBucket {
+  hour_bucket: number;
+  stolen_pig_iron: number;
+  stolen_metal: number;
+  stolen_kryptonite: number;
+  stolen_spice: number;
+  stolen_total: number;
+  recycled_pig_iron: number;
+  recycled_metal: number;
+  recycled_kryptonite: number;
+  recycled_spice: number;
+  recycled_total: number;
+  total?: number;
+  attack_count?: number;
+  recycle_count?: number;
+  updated_at?: number;
+  [key: string]: any;
+}
+
+export interface LootRecycleSummary {
+  total_stolen: number;
+  total_recycled: number;
+  grand_total: number;
+  attack_count?: number;
+  recycle_count?: number;
+  window_hours?: number;
+  stolen_pig_iron?: number;
+  stolen_metal?: number;
+  stolen_kryptonite?: number;
+  stolen_spice?: number;
+  recycled_pig_iron?: number;
+  recycled_metal?: number;
+  recycled_kryptonite?: number;
+  recycled_spice?: number;
   [key: string]: any;
 }
 
@@ -274,6 +379,7 @@ export interface ConfigOptimizerGetPayload {
   runs?: Array<Record<string, any>>;
   reserved_floors?: Record<string, Record<string, number>>;
   planet_specializations?: Record<string, string>;
+  custom_planet_names?: Record<string, string>;
   specialization_options?: string[];
   default_params?: Record<string, any>;
   colonies_owned?: number;
@@ -631,6 +737,12 @@ export interface DashboardPayload {
   };
   config?: StrategyConfigData;
   plan?: PlannedActionData[];
+  building_resource_requests?: BuildingResourceRequestItem[];
+  custom_planet_names?: Record<string, string>;
+  hourly_production_history?: HourlyProductionPoint[];
+  current_hourly_production?: HourlyProductionPoint | null;
+  loot_recycle_history?: LootRecycleBucket[];
+  loot_recycle_summary?: LootRecycleSummary | null;
   manual_queue?: Array<Record<string, any>>;
   buildings_eta?: Record<string, any> | null;
   planet_economies?: Record<string, Record<string, any>> | null;

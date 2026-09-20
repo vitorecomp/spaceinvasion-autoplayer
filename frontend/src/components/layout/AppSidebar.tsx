@@ -1,7 +1,9 @@
 import React from "react";
 import { feedbackKindForError, safeFiniteNumber } from "../../api/httpClient";
 import { useConsole } from "../../context/ConsoleContext";
+import { isOngoingFleetFlight } from "../../features/operations/planActions";
 import { PageKey } from "../../types/api";
+import { FeedbackBanner } from "./FeedbackBanner";
 
 export const AppSidebar: React.FC = () => {
   const {
@@ -10,8 +12,6 @@ export const AppSidebar: React.FC = () => {
     reconnectAttempts,
     activePage,
     setActivePage,
-    activePlanet,
-    setSelectedPlanetId,
     uiPrefs,
     setUiPref,
     sectorsData,
@@ -28,7 +28,6 @@ export const AppSidebar: React.FC = () => {
 
   const health = dashboard?.health || {};
   const gs = dashboard?.state || {};
-  const planets = Array.isArray(gs.planets) ? gs.planets : [];
   const port = health.debug_port ? "8787" : (typeof window !== "undefined" && window.location.port) || "8787";
 
   const apiPipClass = apiOnline ? "status-pip online" : "status-pip offline";
@@ -222,18 +221,6 @@ export const AppSidebar: React.FC = () => {
     }
   };
 
-  const onModeChange = async (mode: string) => {
-    const val = mode === "auto" ? null : mode;
-    try {
-      await apiCommand({ command: "bot_control", mode_override: val });
-      setUiPref("modeOverride", mode);
-      await loadDashboard({ refresh: false, force: true });
-      showFeedback(`Loop mode set to ${mode}.`, "ok");
-    } catch (err: any) {
-      showFeedback(`Mode update failed: ${err.message}`, feedbackKindForError(err));
-    }
-  };
-
   const onTickNow = async () => {
     const useAi =
       String(
@@ -257,10 +244,21 @@ export const AppSidebar: React.FC = () => {
     }
   };
 
+  const resCount =
+    Array.isArray(dashboard?.buildings_eta?.researches) &&
+    dashboard.buildings_eta.researches.length > 0
+      ? dashboard.buildings_eta.researches.length
+      : 15;
+  const activeFlightCount = Array.isArray(gs.active_queues)
+    ? gs.active_queues.filter((q) => isOngoingFleetFlight(q)).length
+    : 0;
+
   const navItems: Array<{ page: PageKey; code: string; title: string; badgeId?: string; badgeText?: string; badgeExtraCls?: string }> = [
     { page: "dashboard", code: "DSH", title: "Dashboard" },
     { page: "buildings", code: "BLD", title: "Buildings & ETAs", badgeId: "nav-bld-badge", badgeText: "21" },
-    { page: "combat", code: "CMB", title: "Combat & Fleet", badgeId: "nav-cmb-badge", badgeText: "1:1" },
+    { page: "research", code: "RES", title: "Research & ETAs", badgeId: "nav-res-badge", badgeText: String(resCount) },
+    { page: "combat", code: "CMB", title: "Fleet Build", badgeId: "nav-cmb-badge", badgeText: "1:1" },
+    { page: "fleet-control", code: "FLT", title: "Fleet Control", badgeId: "nav-flt-ctrl-badge", badgeText: String(activeFlightCount) },
     { page: "sectors", code: "SEC", title: "Scanned Sectors", badgeId: "nav-sec-badge", badgeText: String(secCnt) },
     { page: "espionage", code: "SPY", title: "Espionage Intel", badgeId: "nav-spy-badge", badgeText: String(spyCnt) },
     { page: "colonies", code: "COL", title: "Possible Colonies", badgeId: "nav-col-badge", badgeText: String(colCnt) },
@@ -356,28 +354,6 @@ export const AppSidebar: React.FC = () => {
           })}
         </nav>
 
-        <section className="sidebar-section" aria-label="Colony selector">
-          <div className="control-field">
-            <label htmlFor="planet-select">Active Colony</label>
-            <select
-              id="planet-select"
-              aria-label="Active planet"
-              value={activePlanet ? String(activePlanet.planet_id) : ""}
-              onChange={(e) => setSelectedPlanetId(Number(e.target.value))}
-            >
-              {planets.length === 0 ? (
-                <option value="">Loading...</option>
-              ) : (
-                planets.map((p) => (
-                  <option key={p.planet_id} value={String(p.planet_id)}>
-                    {p.coords} {p.name}
-                  </option>
-                ))
-              )}
-            </select>
-          </div>
-        </section>
-
         <section className="sidebar-section sidebar-autopilot" aria-label="Commander autopilot">
           <div className="autopilot-status">
             <span className={runBadgeCls} id="loop-run-badge">
@@ -386,32 +362,6 @@ export const AppSidebar: React.FC = () => {
             <span className="budget-readout tabular" id="val-budget">
               {budgetText}
             </span>
-          </div>
-
-          <div className="control-field">
-            <label id="mode-group-label">Execution Mode</label>
-            <div className="mode-stack" role="radiogroup" aria-labelledby="mode-group-label">
-              {[
-                { key: "auto", label: "CLI Default" },
-                { key: "live", label: "Force Live" },
-                { key: "dry-run", label: "Force Dry-Run" },
-              ].map((m) => {
-                const isAct = modeVal === m.key;
-                return (
-                  <button
-                    key={m.key}
-                    type="button"
-                    className={`stack-item${isAct ? " active" : ""}`}
-                    role="radio"
-                    aria-checked={isAct ? "true" : "false"}
-                    data-mode={m.key}
-                    onClick={() => onModeChange(m.key)}
-                  >
-                    {m.label}
-                  </button>
-                );
-              })}
-            </div>
           </div>
 
           <div className="stack-actions">
@@ -440,9 +390,12 @@ export const AppSidebar: React.FC = () => {
           </div>
         </section>
 
-        <div className="sidebar-foot tabular">
-          <span>WIN // VIEWS</span>
-          <span>API :8787</span>
+        <div className="sidebar-bottom">
+          <FeedbackBanner />
+          <div className="sidebar-foot tabular">
+            <span>WIN // VIEWS</span>
+            <span>API :8787</span>
+          </div>
         </div>
       </div>
     </aside>
