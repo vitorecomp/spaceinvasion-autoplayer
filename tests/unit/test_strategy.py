@@ -4276,6 +4276,129 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(_plan_fleet_research_actions(st, replace(cfg, allow_fleet_research=False)), [])
         self.assertEqual(_plan_fleet_research_actions(st, replace(cfg, allow_research=False)), [])
 
+    def test_per_planet_building_queues_do_not_block_other_colonies_in_strategy_and_manual_queue(self) -> None:
+        from spaceinvasion.planner.strategy import (
+            _count_planet_building_queues,
+            _queued_building_counts,
+            merge_manual_queue_actions,
+        )
+
+        now_ts = 1_700_010_000.0
+        home_offers = (
+            BuildingOffer(
+                building_id=PIG_IRON_MINE,
+                name="Pig iron mine",
+                current_level=5,
+                target_level=6,
+                cost=Resources(600, 0, 200, 0),
+                can_build=True,
+                status_text="Build level 6",
+                build_href="href_b1_home",
+            ),
+        )
+        home = PlanetState(
+            planet_id=101,
+            name="Home",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=25,
+            fields_used=30,
+            fields_max=230,
+            resources=Resources(50_000, 20_000, 20_000, 10_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(500, 200),
+            buildings={"b1": 5, "b2": 3, "b3": 4, "b4": 2, "b5": 10},
+            building_offers=home_offers,
+        )
+        colony = PlanetState(
+            planet_id=102,
+            name="BusyColony",
+            coords="02:380:13",
+            planet_type="normal",
+            temperature=10,
+            fields_used=30,
+            fields_max=250,
+            resources=Resources(50_000, 20_000, 20_000, 10_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(500, 200),
+            buildings={"b1": 5, "b2": 3, "b3": 4, "b4": 2, "b5": 10},
+        )
+        # 5 active jobs on colony (fills 5-slot queue) + 1 expired job on home (must be ignored).
+        queues = tuple(
+            QueueJob(
+                category="building",
+                name=f"Pig iron mine (Level {6 + i})",
+                building_id=PIG_IRON_MINE,
+                target_level=6 + i,
+                origin_coords="02:380:13",
+                finish_ts=now_ts + 600.0 * (i + 1),
+            )
+            for i in range(5)
+        ) + (
+            QueueJob(
+                category="building",
+                name="Fusion plant (Level 10)",
+                building_id=FUSION_PLANT,
+                target_level=10,
+                origin_coords="02:380:12",
+                finish_ts=now_ts - 10.0,
+            ),
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="MultiQueue",
+            timestamp=now_ts,
+            planets=(home, colony),
+            active_planet_id=101,
+            active_queues=queues,
+            speedup_factor=5.0,
+        )
+
+        self.assertEqual(_count_planet_building_queues(st, home, is_active_planet=True), 0)
+        self.assertEqual(_count_planet_building_queues(st, colony, is_active_planet=False), 5)
+        self.assertEqual(_queued_building_counts(st, home, is_active_planet=True), {})
+        self.assertEqual(_queued_building_counts(st, colony, is_active_planet=False), {PIG_IRON_MINE: 5})
+
+        cfg = StrategyConfig(allow_multi_planet=True)
+        acts = plan_actions(st, config=cfg)
+        home_builds = [a for a in acts if a.planet_id == 101 and a.kind == "BUILD" and a.executable_now]
+        colony_exec = [a for a in acts if a.planet_id == 102 and a.kind == "BUILD" and a.executable_now]
+        colony_waits = [a for a in acts if a.planet_id == 102 and "build queue full" in (a.reason or "").lower()]
+        self.assertTrue(home_builds, "Active planet should NOT be blocked by remote colony's 5 queued buildings")
+        self.assertFalse(colony_exec, "Remote colony with 5 queued buildings should be queue_full")
+        self.assertTrue(colony_waits)
+
+        # Manual queue obeys per-planet queue capacity independently as well.
+        mq = [
+            {
+                "id": 1,
+                "kind": "BUILD",
+                "planet_id": 101,
+                "planet_coords": "02:380:12",
+                "target_id": PIG_IRON_MINE,
+                "target_name": "Pig iron mine",
+                "target_level": 6,
+                "status": "pending",
+            },
+            {
+                "id": 2,
+                "kind": "BUILD",
+                "planet_id": 102,
+                "planet_coords": "02:380:13",
+                "target_id": KRYPTONITE_MINE,
+                "target_name": "Kryptonite mine",
+                "target_level": 5,
+                "status": "pending",
+            },
+        ]
+        merged, _ = merge_manual_queue_actions(st, acts, mq, config=cfg)
+        mq_home = next(a for a in merged if getattr(a, "manual_queue_id", None) == 1)
+        mq_col = next(a for a in merged if getattr(a, "manual_queue_id", None) == 2)
+        self.assertTrue(mq_home.executable_now)
+        self.assertFalse(mq_col.executable_now)
+        self.assertIn("build queue full", mq_col.reason.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

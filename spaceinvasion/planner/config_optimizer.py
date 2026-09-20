@@ -147,9 +147,12 @@ DEFAULT_CONFIG_OPTIMIZER_PARAMS: dict[str, Any] = {
     "empty_colony_fields": 300,
     "reserved_floors_by_planet": {},
     "planet_specializations": {},
+    "planet_names": {},
     "preserve_previous_specializations": True,
     "specialization_switch_threshold_pct": 0.5,
 }
+
+MAX_PLANET_NAME_LENGTH = 48
 
 _UPPER_PARAM_ALIASES: dict[str, str] = {
     "TARGET_SHIP_KEY": "target_ship_key",
@@ -173,6 +176,9 @@ _UPPER_PARAM_ALIASES: dict[str, str] = {
     "GA_ELITE_COUNT": "ga_elite_count",
     "GA_RANDOM_SEED": "ga_random_seed",
     "PLANET_SPECIALIZATIONS": "planet_specializations",
+    "PLANET_NAMES": "planet_names",
+    "CUSTOM_PLANET_NAMES": "planet_names",
+    "custom_planet_names": "planet_names",
     "PRESERVE_PREVIOUS_SPECIALIZATIONS": "preserve_previous_specializations",
     "SPECIALIZATION_SWITCH_THRESHOLD_PCT": "specialization_switch_threshold_pct",
 }
@@ -665,6 +671,32 @@ def normalize_planet_specializations_map(raw: Any) -> dict[str, str]:
     return out
 
 
+def normalize_planet_name(raw: Any) -> str:
+    """Sanitize a custom planet display name (control-char free, single-line, max 48 chars)."""
+    if raw is None or isinstance(raw, bool):
+        return ""
+    text = "".join(" " if ord(ch) < 32 or ord(ch) == 127 else ch for ch in str(raw))
+    cleaned = " ".join(text.split()).strip()
+    if not cleaned:
+        return ""
+    return cleaned[:MAX_PLANET_NAME_LENGTH].strip()
+
+
+def normalize_planet_names_map(raw: Any) -> dict[str, str]:
+    """Normalize `{planet_key: custom_name}` dropping empty keys or blank names."""
+    if not isinstance(raw, Mapping):
+        return {}
+    out: dict[str, str] = {}
+    for pk_raw, name_raw in raw.items():
+        pk = str(pk_raw).strip()
+        if not pk:
+            continue
+        cleaned = normalize_planet_name(name_raw)
+        if cleaned:
+            out[pk] = cleaned
+    return out
+
+
 def _normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
     merged: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG_OPTIMIZER_PARAMS)
     if isinstance(raw_params, Mapping):
@@ -694,6 +726,10 @@ def _normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
                 }
             elif key == "planet_specializations" and isinstance(raw_val, Mapping):
                 merged[key] = normalize_planet_specializations_map(raw_val)
+            elif key == "planet_names" and isinstance(raw_val, Mapping):
+                # Merge cleanly so custom_planet_names + planet_names both apply (later explicit keys win)
+                existing_names = merged.get("planet_names") if isinstance(merged.get("planet_names"), dict) else {}
+                merged[key] = {**existing_names, **normalize_planet_names_map(raw_val)}
             elif key == "hill_climb_step_sizes" and isinstance(raw_val, (list, tuple)):
                 steps = [max(1, int(x)) for x in raw_val]
                 merged[key] = steps if steps else [1, 2, 4, 8]
@@ -719,6 +755,7 @@ def _normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
     merged["max_planets"] = max(1, int(merged["max_planets"]))
     merged["empty_colony_fields"] = max(1, int(merged["empty_colony_fields"]))
     merged["planet_specializations"] = normalize_planet_specializations_map(merged.get("planet_specializations"))
+    merged["planet_names"] = normalize_planet_names_map(merged.get("planet_names"))
     merged["preserve_previous_specializations"] = bool(merged.get("preserve_previous_specializations", True))
     try:
         raw_thresh = float(merged.get("specialization_switch_threshold_pct", 0.5))
@@ -809,6 +846,58 @@ def _resolve_planet_specialization(
             if spec != "auto":
                 return spec
     return "auto"
+
+
+def _resolve_planet_display_name(
+    planet: PlanetState,
+    slot_index: int,
+    planet_names: Mapping[str, str] | None,
+) -> tuple[str, str]:
+    """Resolve `(display_name, game_name)` from `planet_names` override + `PlanetState`.
+
+    Lookup priority for explicit overrides: `planet_id` > exact `coords` >
+    normalized `coords` > `slot:<n>`. Falls back cleanly to `planet.name` and
+    raw in-game `planet.game_name` (or `planet.coords`).
+    """
+    raw_coords = str(planet.coords or "").strip()
+    state_name = normalize_planet_name(getattr(planet, "name", None))
+    state_game_name = normalize_planet_name(getattr(planet, "game_name", None)) or state_name or raw_coords
+
+    override_name = ""
+    if planet_names:
+        pid = int(planet.planet_id)
+        pid_str = str(pid) if pid > 0 else ""
+        norm_coords = (
+            normalize_coords(raw_coords)
+            if raw_coords and not raw_coords.startswith("EMPTY:")
+            else raw_coords
+        )
+        slot_key = f"slot:{int(slot_index)}"
+        if pid_str and pid_str in planet_names:
+            override_name = normalize_planet_name(planet_names[pid_str])
+        if not override_name and raw_coords and raw_coords in planet_names:
+            override_name = normalize_planet_name(planet_names[raw_coords])
+        if not override_name:
+            slot_fallback = ""
+            for lookup_key, raw_name in planet_names.items():
+                lk = str(lookup_key).strip()
+                if not lk:
+                    continue
+                if ":" in lk and not lk.startswith("EMPTY:") and not lk.lower().startswith("slot:"):
+                    if norm_coords and normalize_coords(lk) == norm_coords:
+                        cand = normalize_planet_name(raw_name)
+                        if cand:
+                            override_name = cand
+                            break
+                elif lk.lower() == slot_key and not slot_fallback:
+                    cand = normalize_planet_name(raw_name)
+                    if cand:
+                        slot_fallback = cand
+            if not override_name and slot_fallback:
+                override_name = slot_fallback
+
+    display_name = override_name or state_name or state_game_name or raw_coords
+    return display_name, state_game_name
 
 
 def check_optimizer_settings(
@@ -914,6 +1003,8 @@ def build_planet_plan(
     reserved_floors: Mapping[str, int],
     central_min_warehouse_level: Optional[int] = None,
     specialization: str = "auto",
+    display_name: Optional[str] = None,
+    game_name: Optional[str] = None,
 ) -> dict[str, Any]:
     """Fixed part, hard built/reserved floors, specialization lock, and search range of one planet."""
     all_keys = (*misc_levels, *optimized_max_levels)
@@ -989,12 +1080,25 @@ def build_planet_plan(
     )
     fixed_fields = sum(fixed_levels.values())
     fields_max = max(int(planet.fields_max), sum(built.values()))
+    resolved_game_name = (
+        normalize_planet_name(game_name)
+        or normalize_planet_name(getattr(planet, "game_name", None))
+        or normalize_planet_name(getattr(planet, "name", None))
+        or str(planet.coords)
+    )
+    resolved_name = (
+        normalize_planet_name(display_name)
+        or normalize_planet_name(getattr(planet, "name", None))
+        or resolved_game_name
+        or str(planet.coords)
+    )
     return {
         "slot_index": int(slot_index),
         "slot": int(slot_index),
         "planet_id": int(planet.planet_id),
         "coords": str(planet.coords),
-        "name": str(planet.name or planet.coords),
+        "name": resolved_name,
+        "game_name": resolved_game_name,
         "planet_status": "empty_colony_slot" if is_placeholder else "colonized",
         "is_placeholder": bool(is_placeholder),
         "temperature_c": int(planet.temperature),
@@ -1040,6 +1144,7 @@ def build_planet_plans(
     research_costs: list[tuple[str, dict[str, Any]]],
     reserved_floors_by_planet: Mapping[str, Mapping[str, int]],
     planet_specializations: Mapping[str, str] | None = None,
+    planet_names: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build per-planet plans for every normal planet in the roster."""
     plans: list[dict[str, Any]] = []
@@ -1050,6 +1155,9 @@ def build_planet_plans(
         slot_misc = {**misc_levels, **misc_levels_by_slot.get(slot_index, {})}
         reserved = {} if is_placeholder else _resolve_planet_reserved_floors(planet, reserved_floors_by_planet)
         locked_spec = _resolve_planet_specialization(planet, slot_index, planet_specializations)
+        resolved_name, resolved_game_name = _resolve_planet_display_name(
+            planet, slot_index, None if is_placeholder else planet_names
+        )
         plans.append(
             build_planet_plan(
                 slot_index=slot_index,
@@ -1063,6 +1171,8 @@ def build_planet_plans(
                     central_min_warehouse_level if slot_index == central_planet_slot else None
                 ),
                 specialization=locked_spec,
+                display_name=resolved_name,
+                game_name=resolved_game_name,
             )
         )
     if not plans:
@@ -1131,7 +1241,16 @@ class EmpireProductionModel:
         self.optimized_keys = tuple(optimized_keys)
         self.target_ship_key = target_ship_key
         self.building_index = {key: index for index, key in enumerate(self.optimized_keys)}
-        self.planet_names = [f"{plan['coords']} (slot {plan['slot_index']})" for plan in planet_plans]
+        self.planet_names = [
+            (
+                f"{plan['name']} [{plan['coords']}] (slot {plan['slot_index']})"
+                if plan.get("name")
+                and str(plan["name"]).strip()
+                and str(plan["name"]).strip() != str(plan["coords"]).strip()
+                else f"{plan['coords']} (slot {plan['slot_index']})"
+            )
+            for plan in planet_plans
+        ]
         self.min_levels = np.array(
             [[plan["min_levels"][key] for key in self.optimized_keys] for plan in planet_plans],
             dtype=np.int64,
@@ -2220,6 +2339,7 @@ def run_config_optimizer(
     *,
     universe_research_max: Mapping[str, int] | None = None,
     params: Mapping[str, Any] | None = None,
+    planet_names: Mapping[str, str] | None = None,
     previous_result: Mapping[str, Any] | None = None,
     progress_cb: Callable[[str, float], None] | None = None,
 ) -> dict[str, Any]:
@@ -2227,6 +2347,8 @@ def run_config_optimizer(
 
     Always enforces every owned planet's built building levels (`planet.buildings`),
     `reserved_floors_by_planet`, and any explicit `planet_specializations` locks.
+    Preserves custom planet display names from `state.planets` and optional
+    `planet_names` / `params["planet_names"]` / `params["custom_planet_names"]`.
     When `previous_result` is supplied and `preserve_previous_specializations` is enabled,
     warm-starts and compares a sticky role-preserving plan against the fresh global search
     using `specialization_switch_threshold_pct` and sunk-cost tie-breaking.
@@ -2236,6 +2358,11 @@ def run_config_optimizer(
         progress_cb("preparing", 0.02)
 
     cfg = _normalize_params(params)
+    if isinstance(planet_names, Mapping) and planet_names:
+        cfg["planet_names"] = {
+            **cfg["planet_names"],
+            **normalize_planet_names_map(planet_names),
+        }
     misc_by_slot_int: dict[int, dict[str, int]] = {}
     for slot_k, bmap in cfg["misc_building_levels_by_slot"].items():
         slot_i = game_data.safe_optional_int(slot_k, None)
@@ -2307,6 +2434,7 @@ def run_config_optimizer(
         research_costs=research_upgrade_costs(own_researches, planned_research_levels),
         reserved_floors_by_planet=cfg["reserved_floors_by_planet"],
         planet_specializations=cfg["planet_specializations"],
+        planet_names=cfg["planet_names"],
     )
     planet_contexts = [
         {
@@ -2530,6 +2658,7 @@ def run_config_optimizer(
                 "planet_id": int(plan["planet_id"]),
                 "coords": str(plan["coords"]),
                 "name": str(plan["name"]),
+                "game_name": str(plan.get("game_name") or plan["name"]),
                 "is_placeholder": bool(plan["is_placeholder"]),
                 "planet_status": str(plan["planet_status"]),
                 "is_central_planet": bool(plan["is_central_planet"]),
@@ -2611,6 +2740,16 @@ def run_config_optimizer(
         "levels_changed_by_polish": int(np.abs(best_levels - ga_levels).sum()),
     }
 
+    central_rec = (
+        planet_records[best_model.central_planet]
+        if 0 <= best_model.central_planet < len(planet_records)
+        else None
+    )
+    resolved_planet_names = {
+        str(rec["planet_id"]): str(rec["name"])
+        for rec in planet_records
+        if int(rec["planet_id"]) > 0
+    }
     summary = {
         "target_ship_key": best_model.target_ship_key,
         "target_ship": str(ship_info["name"]),
@@ -2621,6 +2760,8 @@ def run_config_optimizer(
         "hours_per_month": float(best_model.hours_per_month),
         "planets": int(len(planet_records)),
         "central_planet": best_model.planet_names[best_model.central_planet] if best_model.central_planet >= 0 else "",
+        "central_planet_name": str(central_rec["name"]) if central_rec is not None else "",
+        "central_planet_coords": str(central_rec["coords"]) if central_rec is not None else "",
         "fields_used": total_fields_used,
         "fields_free": total_fields_free,
         "warehouse_fields": total_warehouse_fields,
@@ -2663,6 +2804,7 @@ def run_config_optimizer(
             },
             "planned_research_levels": planned_research_levels,
             "planned_research_rows": planned_research_rows,
+            "planet_names": resolved_planet_names,
             "summary": summary,
             "search": search_summary,
             "limits": limits_records,

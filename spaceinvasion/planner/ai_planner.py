@@ -50,12 +50,14 @@ from spaceinvasion.planner.config_optimizer import (
     TECH_GRAPH,
     WAREHOUSE_KEYS,
     _json_ready,
+    _resolve_planet_display_name,
     _safe_speedup,
     build_monotonic_base_times,
     building_level_flows,
     building_time_divisor,
     fmt_duration,
     full_cost,
+    normalize_planet_names_map,
     research_catalog,
     research_time_divisor,
     shipyard_time_divisor,
@@ -614,6 +616,80 @@ def _parse_queue_remaining_seconds(
     return max(0.0, float(fallback_seconds))
 
 
+_ACTIVE_CONSTRUCTION_TOKENS: tuple[str, ...] = (
+    "in progress",
+    "in construction",
+    "active building",
+    "constructing",
+    "under construction",
+)
+
+
+def _is_active_construction_status(status_text: Any) -> bool:
+    st = str(status_text or "").lower()
+    return any(tok in st for tok in _ACTIVE_CONSTRUCTION_TOKENS)
+
+
+def _is_queue_job_expired(job: Any, state_ts: float) -> bool:
+    raw_fin = getattr(job, "finish_ts", None)
+    if raw_fin is None or state_ts <= 0.0:
+        return False
+    fin_ts = game_data.safe_finite_float(raw_fin, 0.0)
+    return fin_ts > 0.0 and fin_ts <= state_ts
+
+
+def _extract_building_job_id_and_level(job: Any, fallback_level: int = 0) -> tuple[Optional[int], Optional[int]]:
+    bid = game_data.safe_optional_int(getattr(job, "building_id", None), None)
+    if bid is None:
+        clean = re.sub(r"\(.*?\)", "", str(getattr(job, "name", "") or ""))
+        clean = _TIMER_RE.sub("", clean).strip().lower()
+        bid = BUILDING_ID_BY_NAME.get(clean)
+    tgt_lvl = game_data.safe_optional_int(getattr(job, "target_level", None), None)
+    if tgt_lvl is None or tgt_lvl <= 0:
+        m_lvl = _LEVEL_RE.search(str(getattr(job, "name", "") or ""))
+        if m_lvl:
+            tgt_lvl = int(m_lvl.group(1))
+        elif fallback_level > 0:
+            tgt_lvl = fallback_level
+    return bid, tgt_lvl
+
+
+def _resolve_untagged_building_job_planet(
+    bid: Optional[int],
+    tgt_lvl: Optional[int],
+    planets: Sequence[PlanetState],
+    active_p: Optional[PlanetState],
+) -> Optional[PlanetState]:
+    """Safely attribute a legacy `QueueJob(category='building', origin_coords='')` without falsely blocking `active_p`."""
+    if active_p is None:
+        return None
+    active_offers = active_p.building_offers or ()
+    if any(_is_active_construction_status(getattr(off, "status_text", "")) for off in active_offers):
+        return active_p
+    if active_offers and bid is not None and tgt_lvl is not None and active_p.building_level(bid) + 1 != tgt_lvl:
+        offer_matches = [
+            p
+            for p in planets
+            if p.planet_id != active_p.planet_id
+            and any(
+                game_data.safe_optional_int(getattr(off, "building_id", None), None) == bid
+                and _is_active_construction_status(getattr(off, "status_text", ""))
+                for off in (p.building_offers or ())
+            )
+        ]
+        if len(offer_matches) == 1:
+            return offer_matches[0]
+        level_matches = [
+            p
+            for p in planets
+            if p.planet_id != active_p.planet_id and p.building_level(bid) + 1 == tgt_lvl
+        ]
+        if len(level_matches) == 1:
+            return level_matches[0]
+        return None
+    return active_p
+
+
 def _extract_live_in_progress_state(
     state: GameState,
     problem_planets: Sequence[Mapping[str, Any]],
@@ -638,10 +714,10 @@ def _extract_live_in_progress_state(
             idx_by_coords[normalize_coords(c)] = p_idx
 
     active_p = state.active_planet()
-    active_p_idx: Optional[int] = idx_by_pid.get(int(active_p.planet_id)) if active_p is not None else None
+    all_live_planets = list(state.planets or ())
 
     live_planets_by_pid: dict[int, PlanetState] = {
-        int(p.planet_id): p for p in (state.planets or ()) if int(p.planet_id) > 0
+        int(p.planet_id): p for p in all_live_planets if int(p.planet_id) > 0
     }
 
     # 1. In-progress buildings (deduplicated by (planet_index, bkey, level_to))
@@ -649,6 +725,9 @@ def _extract_live_in_progress_state(
     for job in state.active_queues or ():
         if str(getattr(job, "category", "") or "").strip().lower() != "building":
             continue
+        if _is_queue_job_expired(job, state_ts):
+            continue
+        bid, parsed_tgt = _extract_building_job_id_and_level(job)
         origin = str(getattr(job, "origin_coords", "") or "").strip()
         p_idx = (
             idx_by_coords.get(origin)
@@ -657,21 +736,18 @@ def _extract_live_in_progress_state(
         )
         if p_idx is None and origin:
             p_idx = idx_by_coords.get(normalize_coords(origin))
-        if p_idx is None:
-            p_idx = active_p_idx
+        if p_idx is None and not origin:
+            matched_p = _resolve_untagged_building_job_planet(bid, parsed_tgt, all_live_planets, active_p)
+            if matched_p is not None:
+                p_idx = idx_by_pid.get(int(matched_p.planet_id))
         if p_idx is None:
             continue
         p_entry = problem_planets[p_idx]
-        bid = game_data.safe_optional_int(getattr(job, "building_id", None), None)
-        if bid is None:
-            clean = re.sub(r"\(.*?\)", "", str(getattr(job, "name", "") or ""))
-            clean = _TIMER_RE.sub("", clean).strip().lower()
-            bid = BUILDING_ID_BY_NAME.get(clean)
         if bid is None or bid not in game_data.BUILDING_BY_ID:
             continue
         bkey = f"b{bid}"
         built = int(p_entry["levels"].get(bkey, 0))
-        tgt_lvl = game_data.safe_optional_int(getattr(job, "target_level", None), None)
+        tgt_lvl = parsed_tgt
         if tgt_lvl is None or tgt_lvl <= built:
             m_lvl = _LEVEL_RE.search(str(getattr(job, "name", "") or ""))
             tgt_lvl = max(built + 1, int(m_lvl.group(1))) if m_lvl else (built + 1)
@@ -712,8 +788,7 @@ def _extract_live_in_progress_state(
         if live_p is None:
             continue
         for off in live_p.building_offers or ():
-            st = str(getattr(off, "status_text", "") or "").lower()
-            if not any(tok in st for tok in ("in progress", "active building", "constructing", "under construction")):
+            if not _is_active_construction_status(getattr(off, "status_text", "")):
                 continue
             bid = game_data.safe_optional_int(getattr(off, "building_id", None), None)
             if bid is None or bid not in game_data.BUILDING_BY_ID:
@@ -905,6 +980,7 @@ def build_path_problem(
     *,
     pad_generic_colonies: bool = False,
     colony_founding_hours: float = 0.0,
+    planet_names: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the causal step problem from live `state` to `target_config` (ZERO demolition steps).
 
@@ -919,6 +995,16 @@ def build_path_problem(
     raw_planets = target_config.get("planets")
     if not isinstance(raw_planets, Sequence) or not raw_planets:
         raise ValueError("target_config['planets'] must be a non-empty sequence")
+
+    merged_planet_names: dict[str, str] = {}
+    tc_meta = target_config.get("meta_parameters")
+    if isinstance(tc_meta, Mapping):
+        merged_planet_names.update(normalize_planet_names_map(tc_meta.get("planet_names")))
+        merged_planet_names.update(normalize_planet_names_map(tc_meta.get("custom_planet_names")))
+    merged_planet_names.update(normalize_planet_names_map(target_config.get("planet_names")))
+    merged_planet_names.update(normalize_planet_names_map(target_config.get("custom_planet_names")))
+    if isinstance(planet_names, Mapping):
+        merged_planet_names.update(normalize_planet_names_map(planet_names))
 
     speedup = _safe_speedup(
         state,
@@ -965,12 +1051,16 @@ def build_path_problem(
             if raw_entry is not None
             else (index + 1)
         )
+        resolved_name, resolved_game_name = _resolve_planet_display_name(
+            live_planet, slot_idx, merged_planet_names or None
+        )
         return {
             "index": index,
             "slot_index": slot_idx,
             "planet_id": int(live_planet.planet_id),
             "coords": str(live_planet.coords),
-            "name": str(live_planet.name or live_planet.coords),
+            "name": resolved_name,
+            "game_name": resolved_game_name,
             "planet_status": "colonized",
             "is_placeholder": False,
             "temperature_c": int(live_planet.temperature),
@@ -3855,11 +3945,16 @@ def run_ai_planner(
         progress_cb("preparing", 0.04)
 
     cfg = _normalize_ai_params(params)
+    param_planet_names: dict[str, str] = {}
+    if isinstance(params, Mapping):
+        param_planet_names.update(normalize_planet_names_map(params.get("custom_planet_names")))
+        param_planet_names.update(normalize_planet_names_map(params.get("planet_names")))
     problem = build_path_problem(
         state,
         target_config,
         pad_generic_colonies=cfg["pad_generic_colonies"],
         colony_founding_hours=float(cfg.get("colony_founding_hours", 0.0)),
+        planet_names=param_planet_names or None,
     )
 
     telemetry = dict(attack_telemetry) if isinstance(attack_telemetry, Mapping) else compute_attack_telemetry([], None, state=state)
@@ -4326,6 +4421,7 @@ def _resolve_in_flight_buildings(state: GameState) -> tuple[dict[int, dict[str, 
     """Return `(in_flight_target_levels[planet_id][bkey], active_job_count[planet_id])`."""
     in_flight: dict[int, dict[str, int]] = {}
     counts: dict[int, int] = {}
+    state_ts = max(0.0, game_data.safe_finite_float(getattr(state, "timestamp", 0.0), 0.0))
     planets = list(state.planets or ())
     by_coords: dict[str, PlanetState] = {}
     for p in planets:
@@ -4338,24 +4434,22 @@ def _resolve_in_flight_buildings(state: GameState) -> tuple[dict[int, dict[str, 
     for job in state.active_queues or ():
         if getattr(job, "category", "") != "building":
             continue
+        if _is_queue_job_expired(job, state_ts):
+            continue
+        bid, parsed_tgt = _extract_building_job_id_and_level(job)
         origin = str(getattr(job, "origin_coords", "") or "").strip()
         target_planet = by_coords.get(origin) or (by_coords.get(normalize_coords(origin)) if origin else None)
-        if target_planet is None:
-            target_planet = active_p
+        if target_planet is None and not origin:
+            target_planet = _resolve_untagged_building_job_planet(bid, parsed_tgt, planets, active_p)
         if target_planet is None:
             continue
         pid = int(target_planet.planet_id)
         counts[pid] = counts.get(pid, 0) + 1
 
-        bid = game_data.safe_optional_int(getattr(job, "building_id", None), None)
-        if bid is None:
-            clean = re.sub(r"\(.*?\)", "", str(getattr(job, "name", "") or ""))
-            clean = _TIMER_RE.sub("", clean).strip().lower()
-            bid = BUILDING_ID_BY_NAME.get(clean)
         if bid is None:
             continue
         cur_lvl = target_planet.building_level(bid)
-        tgt_lvl = game_data.safe_optional_int(getattr(job, "target_level", None), None)
+        tgt_lvl = parsed_tgt
         if tgt_lvl is None or tgt_lvl <= cur_lvl:
             m = _LEVEL_RE.search(str(getattr(job, "name", "") or ""))
             tgt_lvl = max(cur_lvl + 1, int(m.group(1))) if m else (cur_lvl + 1)
@@ -4367,8 +4461,7 @@ def _resolve_in_flight_buildings(state: GameState) -> tuple[dict[int, dict[str, 
     for p in planets:
         pid = int(p.planet_id)
         for off in p.building_offers or ():
-            st = str(getattr(off, "status_text", "") or "").lower()
-            if any(tok in st for tok in ("in progress", "active building", "constructing", "under construction")):
+            if _is_active_construction_status(getattr(off, "status_text", "")):
                 bid = game_data.safe_optional_int(getattr(off, "building_id", None), None)
                 if bid is None:
                     continue
@@ -4519,6 +4612,7 @@ def reconcile_live_ai_actions(
     in_flight_buildings, planet_queue_counts = _resolve_in_flight_buildings(state)
     in_flight_research, research_queue_busy = _resolve_in_flight_research(state)
     max_build_slots = max(1, game_data.safe_int(getattr(config, "max_build_queue_slots", 1), 1))
+    allow_multi_planet = bool(getattr(config, "allow_multi_planet", True))
 
     research_offers_by_key: dict[str, ResearchOffer] = {}
     for roff in state.research_offers or ():
@@ -4640,33 +4734,48 @@ def reconcile_live_ai_actions(
 
             queue_full = planet_queue_counts.get(pid, 0) >= max_build_slots
             is_remote = state.active_planet_id is not None and pid != int(state.active_planet_id)
+            allow_planet = (not is_remote) or allow_multi_planet
             offer = offers_by_id.get(bid)
             reason = f"AI-Planner #{seq}: build {b_name} L{target_level}"
 
             if offer is not None and game_data.safe_int(offer.target_level, target_level) == target_level:
                 cost = offer.cost
                 missing = planet.resources.missing(cost)
-                stale_remote_ok = is_remote and _is_stale_remote_resource_wait(offer) and not cost.is_zero()
+                stale_resource_ok = _is_stale_remote_resource_wait(offer) and not cost.is_zero()
                 can_exec = (
-                    (not queue_full)
-                    and (bool(offer.can_build) or stale_remote_ok)
+                    allow_planet
+                    and (not queue_full)
+                    and (bool(offer.can_build) or stale_resource_ok)
                     and planet.resources.can_afford(cost)
                 )
                 href = (str(offer.build_href) or None) if (can_exec and offer.can_build) else None
-                out_reason = f"{reason} (build queue full)" if queue_full else reason
+                if not allow_planet:
+                    out_reason = f"{reason} (multi-planet disabled)"
+                elif queue_full:
+                    out_reason = f"{reason} (build queue full)"
+                else:
+                    out_reason = reason
             else:
                 cost = wiki_cost
                 missing = planet.resources.missing(cost)
+                can_live_verify = (
+                    is_remote
+                    or (not offers_by_id)
+                    or (offer is not None and game_data.safe_int(offer.target_level, 0) < target_level)
+                )
                 can_exec = (
-                    (not queue_full)
-                    and is_remote
+                    allow_planet
+                    and (not queue_full)
+                    and can_live_verify
                     and (not cost.is_zero())
                     and planet.resources.can_afford(cost)
                 )
                 href = None
-                if queue_full:
+                if not allow_planet:
+                    out_reason = f"{reason} (multi-planet disabled)"
+                elif queue_full:
                     out_reason = f"{reason} (build queue full)"
-                elif not is_remote and not can_exec:
+                elif not can_live_verify and not can_exec:
                     out_reason = f"{reason} (building card not currently visible)"
                 else:
                     out_reason = reason

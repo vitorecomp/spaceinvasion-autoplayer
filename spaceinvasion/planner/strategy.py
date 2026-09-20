@@ -460,14 +460,76 @@ def _make_build_action(
     )
 
 
-def _queued_building_counts(state: GameState) -> dict[int, int]:
-    """Count active/queued construction jobs per building ID."""
+def _is_building_queue_job_active(job: Any, state: GameState) -> bool:
+    """Return True when `job` is a non-expired `category == 'building'` queue entry."""
+    if getattr(job, "category", "") != "building":
+        return False
+    raw_fin = getattr(job, "finish_ts", None)
+    raw_st = getattr(state, "timestamp", None)
+    fin_ts = game_data.safe_finite_float(raw_fin, 0.0) if raw_fin is not None else 0.0
+    st_ts = game_data.safe_finite_float(raw_st, 0.0) if raw_st is not None else 0.0
+    if fin_ts > 0.0 and st_ts > 0.0 and fin_ts <= st_ts:
+        return False
+    return True
+
+
+def _building_job_matches_planet(
+    job: Any,
+    state: GameState,
+    planet: Optional[PlanetState],
+    *,
+    is_active_planet: bool,
+) -> bool:
+    """Match a building `QueueJob` to `planet` using `origin_coords` (legacy empty falls back to active only)."""
+    if not _is_building_queue_job_active(job, state):
+        return False
+    if planet is None:
+        return bool(is_active_planet)
+    origin = _safe_strategy_str(getattr(job, "origin_coords", "")).strip()
+    if origin:
+        p_coords = _safe_strategy_str(getattr(planet, "coords", "")).strip()
+        if not p_coords:
+            return False
+        return _normalize_manual_coords(origin) == _normalize_manual_coords(p_coords)
+    return bool(is_active_planet)
+
+
+def _count_planet_building_queues(
+    state: GameState,
+    planet: Optional[PlanetState],
+    *,
+    is_active_planet: bool,
+) -> int:
+    """Count active building queue jobs belonging strictly to `planet`."""
+    return sum(
+        1
+        for job in (getattr(state, "active_queues", ()) or ())
+        if _building_job_matches_planet(job, state, planet, is_active_planet=is_active_planet)
+    )
+
+
+def _queued_building_counts(
+    state: GameState,
+    planet: Optional[PlanetState] = None,
+    *,
+    is_active_planet: Optional[bool] = None,
+) -> dict[int, int]:
+    """Count active/queued construction jobs per building ID for a specific planet (defaults to active)."""
+    target_p = planet if planet is not None else state.active_planet()
+    if is_active_planet is None:
+        active_p = state.active_planet()
+        is_act = target_p is None or active_p is None or target_p.planet_id == active_p.planet_id
+    else:
+        is_act = bool(is_active_planet)
     counts: dict[int, int] = {}
-    for job in state.active_queues:
-        if job.category == "building" and job.building_id is not None:
-            bid = game_data.safe_optional_int(job.building_id, None)
-            if bid is not None:
-                counts[bid] = counts.get(bid, 0) + 1
+    for job in (getattr(state, "active_queues", ()) or ()):
+        if job.building_id is None:
+            continue
+        if not _building_job_matches_planet(job, state, target_p, is_active_planet=is_act):
+            continue
+        bid = game_data.safe_optional_int(job.building_id, None)
+        if bid is not None:
+            counts[bid] = counts.get(bid, 0) + 1
     return counts
 
 
@@ -546,11 +608,10 @@ def _effective_building_levels_and_energy(
     }
     projected_net = _safe_strategy_int(getattr(planet.energy, "net", 0), 0)
 
-    if not is_active_planet:
-        return eff_map, projected_net
-
     for job in state.active_queues:
-        if job.category != "building" or job.building_id is None:
+        if job.building_id is None:
+            continue
+        if not _building_job_matches_planet(job, state, planet, is_active_planet=is_active_planet):
             continue
         bid = game_data.safe_optional_int(job.building_id, None)
         if bid is None:
@@ -1198,7 +1259,7 @@ def _plan_tutorial_fleet_milestones(
         candidates_all = [active]
     non_raid_candidates = [p for p in candidates_all if _norm_planet_type(p) != "raid"]
     active_coords_s = _safe_strategy_str(active.coords)
-    queued_b_cnt = sum(1 for q in state.active_queues if q.category == "building")
+    queued_b_cnt = _count_planet_building_queues(state, active, is_active_planet=True)
     active_queue_full = queued_b_cnt >= _max_build_slots(active, state)
     research_queue_busy = any(q.category == "research" for q in state.active_queues) or any(
         o.active for o in state.research_offers
@@ -5469,11 +5530,10 @@ def _plan_blast_furnace_throttle(
                 is_active_planet=is_active,
             )
             projected_net_if_resumed = projected_net - resume_energy_cost
-            queued_counts = _queued_building_counts(state) if is_active else {}
+            queued_counts = _queued_building_counts(state, planet, is_active_planet=is_active)
             queue_full = (
-                sum(queued_counts.values()) >= _max_build_slots(planet, state)
-                if is_active
-                else False
+                _count_planet_building_queues(state, planet, is_active_planet=is_active)
+                >= _max_build_slots(planet, state)
             )
             allow_remote = cfg.allow_multi_planet and not is_active
 
@@ -6210,8 +6270,8 @@ def _build_pre_throttle_plan(
                     )
                 )
 
-    queued_counts = _queued_building_counts(state)
-    total_b_queued = sum(queued_counts.values())
+    queued_counts = _queued_building_counts(state, active, is_active_planet=True)
+    total_b_queued = _count_planet_building_queues(state, active, is_active_planet=True)
     active_queue_full = total_b_queued >= _max_build_slots(active, state)
     research_offers = _research_offer_map(state)
     research_queue_busy = (
@@ -6261,7 +6321,10 @@ def _build_pre_throttle_plan(
             planet,
             is_active_planet=is_active,
         )
-        queue_full = active_queue_full if is_active else False
+        queue_full = (
+            _count_planet_building_queues(state, planet, is_active_planet=is_active)
+            >= _max_build_slots(planet, state)
+        )
         allow_remote = cfg.allow_multi_planet and not is_active
 
         # P1: Negative energy guard per planet (Solar cells on Asteroids ONLY; Fusion plant on normal planets)
@@ -6388,17 +6451,14 @@ def _build_pre_throttle_plan(
                     for t in state.tutorial.tasks
                 )
             )
-            b6_in_queue = bool(
-                is_active
-                and any(
-                    q.category == "building"
-                    and (
-                        game_data.safe_optional_int(q.building_id, None) == THERMOSOLAR_PLANT
-                        or "thermosolar" in _safe_strategy_str(q.name).lower()
-                        or "thermal" in _safe_strategy_str(q.name).lower()
-                    )
-                    for q in state.active_queues
+            b6_in_queue = any(
+                _building_job_matches_planet(q, state, planet, is_active_planet=is_active)
+                and (
+                    game_data.safe_optional_int(q.building_id, None) == THERMOSOLAR_PLANT
+                    or "thermosolar" in _safe_strategy_str(q.name).lower()
+                    or "thermal" in _safe_strategy_str(q.name).lower()
                 )
+                for q in state.active_queues
             )
             if cur_b6 > 0 and not tut_needs_b6 and not b6_in_queue:
                 r2_lvl = max(0, _safe_strategy_int((state.researches or {}).get("r2", 0), 0))
@@ -6527,8 +6587,11 @@ def _build_pre_throttle_plan(
                     tut_planet,
                     is_active_planet=False,
                 )
-                t_q_counts = {}
-                t_q_full = False
+                t_q_counts = _queued_building_counts(state, tut_planet, is_active_planet=False)
+                t_q_full = (
+                    _count_planet_building_queues(state, tut_planet, is_active_planet=False)
+                    >= _max_build_slots(tut_planet, state)
+                )
                 t_r_offers = {}
             tutorial_actions = _plan_tutorial_actions(
                 state,
@@ -6560,6 +6623,14 @@ def _build_pre_throttle_plan(
                 planet,
                 is_active_planet=is_active,
             )
+            planet_q_full = (
+                active_queue_full
+                if is_active
+                else (
+                    _count_planet_building_queues(state, planet, is_active_planet=False)
+                    >= _max_build_slots(planet, state)
+                )
+            )
             mines, extra_builds, adv = _plan_economy_for_planet(
                 state,
                 planet,
@@ -6568,7 +6639,7 @@ def _build_pre_throttle_plan(
                 _ship_offer_map(planet),
                 eff_b,
                 proj_net,
-                active_queue_full if is_active else False,
+                planet_q_full,
                 research_queue_busy,
                 cfg.allow_multi_planet and not is_active,
                 cfg,
@@ -6905,9 +6976,6 @@ def merge_manual_queue_actions(
     planets_by_id = {p.planet_id: p for p in state.planets}
     planets_by_coords = {_normalize_manual_coords(p.coords): p for p in state.planets if p.coords}
 
-    b_queued_active = sum(
-        1 for q in (getattr(state, "active_queues", ()) or ()) if getattr(q, "category", "") == "building"
-    )
     r_queued_total = sum(
         1 for q in (getattr(state, "active_queues", ()) or ()) if getattr(q, "category", "") == "research"
     )
@@ -6945,7 +7013,9 @@ def merge_manual_queue_actions(
         is_active_planet = planet.planet_id == active_p.planet_id
         is_astro = _norm_planet_type(planet) == "asteroid"
         b_cap = 1 if is_astro else (6 if has_cmd else 5)
-        b_queue_full = is_active_planet and b_queued_active >= b_cap
+        b_queue_full = (
+            _count_planet_building_queues(state, planet, is_active_planet=is_active_planet) >= b_cap
+        )
         r_queue_full = r_queued_total >= 1
 
         note_s = _safe_strategy_str(item.get("note")).strip()

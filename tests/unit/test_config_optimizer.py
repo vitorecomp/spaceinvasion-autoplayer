@@ -114,6 +114,7 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
         self.assertEqual(d["empty_colony_fields"], 300)
         self.assertEqual(d["reserved_floors_by_planet"], {})
         self.assertEqual(d["planet_specializations"], {})
+        self.assertEqual(d["planet_names"], {})
         self.assertTrue(d["preserve_previous_specializations"])
         self.assertEqual(d["specialization_switch_threshold_pct"], 0.5)
         all_bkeys = set(d["misc_building_levels"]) | set(d["optimized_building_max_levels"])
@@ -718,6 +719,100 @@ class ConfigOptimizerUnitTests(unittest.TestCase):
         self.assertFalse(res_adapted["summary"]["sticky_plan_applied"])
         self.assertGreater(res_adapted["summary"]["roles_changed_count"], 0)
         self.assertGreater(res_adapted["summary"]["ships_per_month"], 1.0)
+
+    def test_custom_planet_names_preserved_from_state_params_and_exports(self) -> None:
+        # Helper sanitization: whitespace, control chars, length cap (48), non-string/bool guards.
+        self.assertEqual(co.normalize_planet_name("  Iron\t\nForge\x00\x07  "), "Iron Forge")
+        self.assertEqual(co.normalize_planet_name(True), "")
+        self.assertEqual(co.normalize_planet_name("   "), "")
+        long_name = "A" * 80
+        self.assertEqual(len(co.normalize_planet_name(long_name)), co.MAX_PLANET_NAME_LENGTH)
+
+        p1 = _make_planet(101, "02:380:12", "Homeworld", temperature=25, fields_max=260, buildings={"b1": 8, "b5": 10})
+        p2 = _make_planet(102, "02:381:05", "Colony 2", temperature=-10, fields_max=280, buildings={"b3": 8, "b5": 10})
+        p3 = _make_planet(103, "02:382:09", "Colony 3", temperature=-45, fields_max=280, buildings={"b4": 8, "b5": 10})
+
+        # Precedence check: planet_id > exact coords > normalized coords > slot:<n> (regardless of dict order).
+        disp_norm, game_norm = co._resolve_planet_display_name(
+            p2,
+            2,
+            {"slot:2": "SlotFallback", "2:381:5": "NormalizedCoordWins"},
+        )
+        self.assertEqual(disp_norm, "NormalizedCoordWins")
+        self.assertEqual(game_norm, "Colony 2")
+
+        disp_pid, _ = co._resolve_planet_display_name(
+            p3,
+            3,
+            {"slot:3": "SlotName", "02:382:09": "ExactCoordName", "103": "PidWins"},
+        )
+        self.assertEqual(disp_pid, "PidWins")
+
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Renamer",
+            timestamp=1_700_000_000.0,
+            planets=(p1, p2, p3),
+            active_planet_id=101,
+            researches={"r1": 6, "r2": 6, "r6": 6, "r15": 1},
+            speedup_factor=5.0,
+        )
+        res = co.run_config_optimizer(
+            state,
+            universe_research_max={"r1": 8, "r2": 8, "r6": 8, "r15": 1},
+            params=_fast_params(
+                custom_planet_names={
+                    "slot:2": "Fallback Slot 2",
+                    "2:381:5": "Krypt\nForge",
+                    "02:382:09": "Coord Overridden",
+                },
+                planet_names={
+                    "103": "  Ice Shipyard  ",
+                },
+            ),
+            planet_names={"101": "Titan Capital"},
+        )
+
+        by_pid = {p["planet_id"]: p for p in res["planets"]}
+        self.assertEqual(by_pid[101]["name"], "Titan Capital")
+        self.assertEqual(by_pid[101]["game_name"], "Homeworld")
+        self.assertEqual(by_pid[102]["name"], "Krypt Forge")
+        self.assertEqual(by_pid[102]["game_name"], "Colony 2")
+        self.assertEqual(by_pid[103]["name"], "Ice Shipyard")
+        self.assertEqual(by_pid[103]["game_name"], "Colony 3")
+
+        self.assertEqual(
+            res["planet_names"],
+            {"101": "Titan Capital", "102": "Krypt Forge", "103": "Ice Shipyard"},
+        )
+        self.assertEqual(res["summary"]["central_planet_name"], "Titan Capital")
+        self.assertEqual(res["summary"]["central_planet_coords"], "02:380:12")
+        self.assertIn("Titan Capital", res["summary"]["central_planet"])
+
+        # Strict JSON export preserves custom planet names cleanly.
+        exported = json.loads(co.export_config_optimizer_json(res))
+        self.assertEqual(exported["planet_names"]["101"], "Titan Capital")
+        self.assertEqual(exported["planets"][1]["name"], "Krypt Forge")
+        self.assertEqual(exported["planets"][1]["game_name"], "Colony 2")
+        self.assertEqual(exported["summary"]["central_planet_name"], "Titan Capital")
+
+        # Downstream AI-Planner inherits custom names from target_config cleanly.
+        from spaceinvasion.planner import ai_planner as ap
+
+        ai_plan = ap.run_ai_planner(
+            state,
+            res,
+            params={"reward_weeks": 2, "ga_generations": 0},
+        )
+        step_names_by_pid = {
+            int(s["planet_id"]): s["planet_name"]
+            for s in ai_plan["steps"]
+            if s.get("kind") == "BUILD" and int(s.get("planet_id") or 0) > 0
+        }
+        self.assertTrue(step_names_by_pid)
+        for pid_k, pname in step_names_by_pid.items():
+            self.assertEqual(pname, res["planet_names"][str(pid_k)])
 
 
 if __name__ == "__main__":

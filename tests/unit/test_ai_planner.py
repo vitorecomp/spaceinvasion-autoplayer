@@ -1362,6 +1362,382 @@ class AiPlannerUnitTests(unittest.TestCase):
         self.assertIn(104, needs)  # b7 L10 finishing unlocks b17 L1 -> early pre-ship triggered!
         self.assertGreater(needs[104]["metal"], 0)
 
+    def test_parallel_multi_planet_reconcile_emits_ready_builds_for_all_idle_colonies(self) -> None:
+        now_ts = 1_700_005_000.0
+        # p1 (active): empty building_offers=() from fast poll, rich stock -> must STILL emit executable BUILD!
+        p1 = _make_planet(
+            101,
+            "02:380:01",
+            "ActiveEmptyOffers",
+            buildings={"b1": 5, "b3": 4, "b5": 10},
+            resources=Resources(50_000, 20_000, 20_000, 10_000),
+            building_offers=(),
+        )
+        # p2 (remote): stale cached offer can_build=False ("Not enough resources"), live stock now affordable -> BUILD!
+        p2 = _make_planet(
+            102,
+            "02:380:02",
+            "RemoteStaleOffer",
+            buildings={"b1": 5, "b3": 4, "b5": 10},
+            resources=Resources(50_000, 20_000, 20_000, 10_000),
+            building_offers=(
+                BuildingOffer(
+                    building_id=1,
+                    name="Pig iron mine",
+                    current_level=5,
+                    target_level=6,
+                    cost=Resources(600, 0, 200, 0),
+                    can_build=False,
+                    status_text="Not enough resources",
+                    build_href=None,
+                ),
+            ),
+        )
+        # p3 (remote): outdated cached offer target_level=5 while live b1 is already 5 and next step is L6 -> BUILD!
+        p3 = _make_planet(
+            103,
+            "02:380:03",
+            "RemoteOutdatedOffer",
+            buildings={"b1": 5, "b3": 4, "b5": 10},
+            resources=Resources(50_000, 20_000, 20_000, 10_000),
+            building_offers=(
+                BuildingOffer(
+                    building_id=1,
+                    name="Pig iron mine",
+                    current_level=4,
+                    target_level=5,
+                    cost=Resources(300, 0, 100, 0),
+                    can_build=True,
+                    status_text="Build level 5",
+                    build_href="href_old",
+                ),
+            ),
+        )
+        # p4 (remote): has an EXPIRED building QueueJob (finish_ts <= state.timestamp) -> idle -> BUILD!
+        p4 = _make_planet(
+            104,
+            "02:380:04",
+            "RemoteExpiredJob",
+            buildings={"b1": 5, "b3": 4, "b5": 10},
+            resources=Resources(50_000, 20_000, 20_000, 10_000),
+        )
+        # p5 (remote): actively constructing b3 L10 (future finish_ts) -> queue full -> WAIT_RESOURCES!
+        p5 = _make_planet(
+            105,
+            "02:380:05",
+            "RemoteBusy",
+            buildings={"b1": 5, "b3": 9, "b5": 10},
+            resources=Resources(50_000, 20_000, 20_000, 10_000),
+        )
+        # p6 (remote): genuinely short on resources -> WAIT_RESOURCES!
+        p6 = _make_planet(
+            106,
+            "02:380:06",
+            "RemotePoor",
+            buildings={"b1": 5, "b3": 4, "b5": 10},
+            resources=Resources(5, 0, 5, 0),
+        )
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Parallel",
+            timestamp=now_ts,
+            planets=(p1, p2, p3, p4, p5, p6),
+            active_planet_id=101,
+            researches={"r1": 4, "r2": 4},
+            active_queues=(
+                QueueJob(
+                    category="building",
+                    name="Pig iron mine (Level 5)",
+                    building_id=1,
+                    target_level=5,
+                    origin_coords="02:380:04",
+                    finish_ts=now_ts - 30.0,
+                ),
+                QueueJob(
+                    category="building",
+                    name="Kryptonite mine (Level 10)",
+                    building_id=3,
+                    target_level=10,
+                    origin_coords="02:380:05",
+                    finish_ts=now_ts + 600.0,
+                ),
+            ),
+            speedup_factor=5.0,
+        )
+        plan_result = {
+            "steps": [
+                {"seq": 1, "kind": "BUILD", "planet_id": 106, "planet_coords": "02:380:06", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {"seq": 2, "kind": "BUILD", "planet_id": 105, "planet_coords": "02:380:05", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {"seq": 3, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:01", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {"seq": 4, "kind": "BUILD", "planet_id": 102, "planet_coords": "02:380:02", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {"seq": 5, "kind": "BUILD", "planet_id": 103, "planet_coords": "02:380:03", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {"seq": 6, "kind": "BUILD", "planet_id": 104, "planet_coords": "02:380:04", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+            ]
+        }
+
+        actions, conflicts = ap.reconcile_live_ai_actions(
+            state, plan_result, StrategyConfig(allow_multi_planet=True)
+        )
+        self.assertEqual(conflicts, [])
+        by_pid = {a.planet_id: a for a in actions}
+        # All 4 idle affordable colonies (p1 active + p2/p3/p4 remote) emit BUILD executable_now=True in parallel!
+        for ready_pid in (101, 102, 103, 104):
+            self.assertEqual(by_pid[ready_pid].kind, "BUILD", f"planet {ready_pid} should emit BUILD")
+            self.assertTrue(by_pid[ready_pid].executable_now, f"planet {ready_pid} should be executable_now")
+        # Busy p5 and poor p6 emit WAIT_RESOURCES without blocking p1..p4.
+        self.assertEqual(by_pid[105].kind, "WAIT_RESOURCES")
+        self.assertFalse(by_pid[105].executable_now)
+        self.assertIn("build queue full", by_pid[105].reason)
+        self.assertEqual(by_pid[106].kind, "WAIT_RESOURCES")
+        self.assertFalse(by_pid[106].executable_now)
+
+        # allow_multi_planet=False restricts execution to active planet only.
+        single_acts, _ = ap.reconcile_live_ai_actions(
+            state, plan_result, StrategyConfig(allow_multi_planet=False)
+        )
+        single_by_pid = {a.planet_id: a for a in single_acts}
+        self.assertEqual(single_by_pid[101].kind, "BUILD")
+        self.assertTrue(single_by_pid[101].executable_now)
+        for remote_pid in (102, 103, 104):
+            self.assertEqual(single_by_pid[remote_pid].kind, "WAIT_RESOURCES")
+            self.assertFalse(single_by_pid[remote_pid].executable_now)
+            self.assertIn("multi-planet disabled", single_by_pid[remote_pid].reason)
+
+        # Active planet with stale "Not enough resources" offer AND a legacy untagged QueueJob from p5 (b3 L10):
+        # active planet has b3=4 (4+1 != 10) and zero construction offers -> must NOT be falsely blocked!
+        p1_stale = _make_planet(
+            101,
+            "02:380:01",
+            "ActiveStale",
+            buildings={"b1": 5, "b3": 4, "b5": 10},
+            resources=Resources(50_000, 20_000, 20_000, 10_000),
+            building_offers=(
+                BuildingOffer(
+                    building_id=1,
+                    name="Pig iron mine",
+                    current_level=5,
+                    target_level=6,
+                    cost=Resources(600, 0, 200, 0),
+                    can_build=False,
+                    status_text="Not enough resources",
+                    build_href=None,
+                ),
+            ),
+        )
+        st_untagged = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Untagged",
+            timestamp=now_ts,
+            planets=(p1_stale, p5),
+            active_planet_id=101,
+            active_queues=(
+                QueueJob(
+                    category="building",
+                    name="Kryptonite mine (Level 10)",
+                    building_id=3,
+                    target_level=10,
+                    origin_coords="",
+                    finish_ts=now_ts + 600.0,
+                ),
+            ),
+            speedup_factor=5.0,
+        )
+        acts_untagged, _ = ap.reconcile_live_ai_actions(
+            st_untagged, plan_result, StrategyConfig(allow_multi_planet=True)
+        )
+        ut_by_pid = {a.planet_id: a for a in acts_untagged}
+        self.assertEqual(ut_by_pid[101].kind, "BUILD")
+        self.assertTrue(ut_by_pid[101].executable_now)
+        self.assertEqual(ut_by_pid[105].kind, "WAIT_RESOURCES")
+        self.assertIn("build queue full", ut_by_pid[105].reason)
+
+        # "In construction" status_text (emitted by live DOM parser) is detected as active construction.
+        p1_building = _make_planet(
+            101,
+            "02:380:01",
+            "ActiveConstructing",
+            buildings={"b1": 5, "b3": 4, "b5": 10},
+            resources=Resources(50_000, 20_000, 20_000, 10_000),
+            building_offers=(
+                BuildingOffer(
+                    building_id=1,
+                    name="Pig iron mine",
+                    current_level=5,
+                    target_level=6,
+                    cost=Resources(600, 0, 200, 0),
+                    can_build=False,
+                    status_text="In construction",
+                    build_href=None,
+                ),
+            ),
+        )
+        st_constr = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Constr",
+            timestamp=now_ts,
+            planets=(p1_building, p2),
+            active_planet_id=101,
+            speedup_factor=5.0,
+        )
+        plan_constr = {
+            "steps": [
+                {"seq": 1, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:01", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {"seq": 2, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:01", "entity_key": "b3", "entity_name": "Kryptonite mine", "target_level": 5},
+                {"seq": 3, "kind": "BUILD", "planet_id": 102, "planet_coords": "02:380:02", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+            ]
+        }
+        acts_constr, _ = ap.reconcile_live_ai_actions(
+            st_constr, plan_constr, StrategyConfig(allow_multi_planet=True)
+        )
+        constr_by_pid = {a.planet_id: a for a in acts_constr}
+        # p1 skips in-flight b1 L6, queues b3 L5 as WAIT_RESOURCES (build queue full), while p2 STILL builds!
+        self.assertEqual(constr_by_pid[101].target_id, 3)
+        self.assertEqual(constr_by_pid[101].kind, "WAIT_RESOURCES")
+        self.assertIn("build queue full", constr_by_pid[101].reason)
+        self.assertEqual(constr_by_pid[102].kind, "BUILD")
+        self.assertTrue(constr_by_pid[102].executable_now)
+
+    def test_commander_tick_executes_parallel_ai_builds_across_colonies_despite_failures_and_cap(self) -> None:
+        import importlib.util
+
+        cmd_path = REPO_ROOT / "bin" / "commander.py"
+        spec = importlib.util.spec_from_file_location("commander_parallel_test_mod", cmd_path)
+        assert spec is not None and spec.loader is not None
+        commander_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(commander_mod)
+
+        planets = tuple(
+            _make_planet(
+                100 + i,
+                f"02:380:0{i}",
+                f"Colony-{i}",
+                buildings={"b1": 5, "b5": 10},
+                resources=Resources(50_000, 20_000, 20_000, 10_000),
+            )
+            for i in range(1, 5)
+        )
+        base_state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="CommanderParallel",
+            timestamp=1_700_005_000.0,
+            planets=planets,
+            active_planet_id=101,
+            speedup_factor=5.0,
+        )
+
+        class _FakeParallelApi:
+            def __init__(self, *, trigger_captcha: bool = False) -> None:
+                self.state = base_state
+                self.built: set[int] = set()
+                self.dispatched: list[tuple[str, int]] = []
+                self.trigger_captcha = trigger_captcha
+
+            def get_state(self, include_buildings: bool = True) -> GameState:
+                return self.state
+
+            def send_command(self, payload: dict[str, object]) -> dict[str, object]:
+                cmd = str(payload.get("command") or "")
+                if cmd == "plan":
+                    # Intentionally put SPY & non-emergency THROTTLE ahead of BUILD to verify commander prioritization.
+                    plan_actions_raw = [
+                        {
+                            "priority": "P1",
+                            "kind": "SPY",
+                            "planet_id": 101,
+                            "planet_coords": "02:380:01",
+                            "target_id": None,
+                            "target_name": "02:380:09",
+                            "target_level": 1,
+                            "reason": "Auto-spy inactive target",
+                            "executable_now": True,
+                        },
+                        {
+                            "priority": "P1",
+                            "kind": "THROTTLE_BUILDING",
+                            "planet_id": 101,
+                            "planet_coords": "02:380:01",
+                            "target_id": 2,
+                            "target_name": "Blast furnace",
+                            "target_level": 0,
+                            "reason": "Pause blast furnace to save pig iron",
+                            "executable_now": True,
+                        },
+                    ]
+                    for pid in (101, 102, 103, 104):
+                        if pid in self.built:
+                            continue
+                        plan_actions_raw.append(
+                            {
+                                "priority": "P1",
+                                "kind": "BUILD",
+                                "planet_id": pid,
+                                "planet_coords": f"02:380:0{pid - 100}",
+                                "target_id": 1,
+                                "target_name": "Pig iron mine",
+                                "target_level": 6,
+                                "reason": f"AI-Planner #{pid - 100}: build Pig iron mine L6",
+                                "executable_now": True,
+                            }
+                        )
+                    return {
+                        "ok": True,
+                        "effective_planner_mode": "ai_planner",
+                        "actions": plan_actions_raw,
+                    }
+
+                pid = int(payload.get("planet_id") or 0)
+                self.dispatched.append((cmd, pid))
+                if self.trigger_captcha:
+                    return {
+                        "ok": True,
+                        "executed": False,
+                        "captcha_gate": True,
+                        "paused": True,
+                        "message": "CAPTCHA detected",
+                    }
+                if cmd == "build" and pid == 102:
+                    # Simulate non-fatal failure WITHOUT state payload: must NOT abort remaining colonies!
+                    return {
+                        "ok": True,
+                        "executed": False,
+                        "message": "Stale offer on planet 102",
+                    }
+                if cmd == "build":
+                    self.built.add(pid)
+                return {
+                    "ok": True,
+                    "executed": True,
+                    "message": f"Executed {cmd} on {pid}",
+                }
+
+        cfg = StrategyConfig(planner_mode="ai_planner", max_planets=4, allow_multi_planet=True)
+        fake_api = _FakeParallelApi()
+        _st, _act, _res, _nxt, outcomes = commander_mod.run_commander_tick(
+            fake_api,
+            live=True,
+            max_actions=2,
+            config=cfg,
+        )
+        # 1. All 4 planets' BUILD commands run BEFORE SPY / non-emergency THROTTLE!
+        self.assertEqual(fake_api.dispatched[:4], [("build", 101), ("build", 102), ("build", 103), ("build", 104)])
+        # 2. Failure on 102 did NOT abort the tick, and distinct-planet overflow built 101, 103, 104 despite max_actions=2!
+        self.assertEqual(fake_api.built, {101, 103, 104})
+        self.assertEqual(len(outcomes), 4)
+
+        # 3. CAPTCHA / pause gate stops the batch immediately with zero further commands.
+        captcha_api = _FakeParallelApi(trigger_captcha=True)
+        commander_mod.run_commander_tick(
+            captcha_api,
+            live=True,
+            max_actions=5,
+            config=cfg,
+        )
+        self.assertEqual(captcha_api.dispatched, [("build", 101)])
+
 
 if __name__ == "__main__":
     unittest.main()

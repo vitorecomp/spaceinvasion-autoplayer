@@ -64,7 +64,12 @@ from spaceinvasion.core.state import (  # noqa: E402
     is_asteroid_planet,
     normalize_planet_type,
 )
-from spaceinvasion.planner.strategy import PlannedAction, merge_manual_queue_actions, plan_actions  # noqa: E402
+from spaceinvasion.planner.strategy import (  # noqa: E402
+    PlannedAction,
+    _count_planet_building_queues,
+    merge_manual_queue_actions,
+    plan_actions,
+)
 
 WATCH_PATHS = (
     Path(__file__).resolve(),
@@ -670,7 +675,7 @@ def run_commander_tick(
         # Refresh buildings immediately ONLY if resources now cover an affordable wait item
         # not blocked by a full build queue or un-unlocked/future card.
         active_p = state.active_planet()
-        b_queued = sum(1 for q in state.active_queues if q.category == "building")
+        b_queued = _count_planet_building_queues(state, active_p, is_active_planet=True)
         is_astro = active_p is not None and is_asteroid_planet(active_p)
         raw_cmd = (state.specs or {}).get("construction_commander", 0)
         has_cmd = game_data.safe_int(raw_cmd, 0) > 0
@@ -707,34 +712,92 @@ def run_commander_tick(
     for alert in [a for a in actions if a.priority == "P0"]:
         print(f"[CMD][P0 ALERT] {redact_sensitive(_safe_cmd_str(alert.reason))}")
 
-    acted = 0
-    attempted_keys: set[tuple[str, int, Optional[int], Optional[int], str]] = set()
-    while acted < max_actions:
-        ready = next(
-            (
+    def _action_dedup_key(act: PlannedAction) -> tuple[str, int, Optional[int], Optional[int], str]:
+        return (
+            act.kind,
+            _safe_cmd_int(act.planet_id, 0),
+            _safe_cmd_opt_int(act.target_id),
+            _safe_cmd_opt_int(act.target_level),
+            _safe_cmd_str(act.target_name),
+        )
+
+    def _pick_next_ready_action(
+        cur_actions: Sequence[PlannedAction],
+        attempted: set[tuple[str, int, Optional[int], Optional[int], str]],
+        built_pids: set[int],
+        *,
+        only_parallel_builds: bool = False,
+    ) -> Optional[PlannedAction]:
+        candidates = [
+            a
+            for a in cur_actions
+            if a.executable_now and _action_dedup_key(a) not in attempted
+        ]
+        if only_parallel_builds:
+            candidates = [
                 a
-                for a in actions
-                if a.executable_now
-                and (
-                    a.kind,
-                    _safe_cmd_int(a.planet_id, 0),
-                    _safe_cmd_opt_int(a.target_id),
-                    _safe_cmd_opt_int(a.target_level),
-                    _safe_cmd_str(a.target_name),
-                )
-                not in attempted_keys
-            ),
-            None,
+                for a in candidates
+                if a.kind == "BUILD"
+                and _safe_cmd_int(a.planet_id, 0) > 0
+                and _safe_cmd_int(a.planet_id, 0) not in built_pids
+            ]
+        if not candidates:
+            return None
+        if not is_ai_planner or only_parallel_builds:
+            return candidates[0]
+
+        prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+        def _ai_tick_rank(act: PlannedAction) -> tuple[int, int, int, int]:
+            pr = prio_rank.get(str(act.priority or "").upper(), 9)
+            if pr == 0:
+                return (0, 0 if act.kind == "ALERT_HOSTILE" else 1, 0, 0)
+            is_manual = 0 if getattr(act, "manual_queue_id", None) is not None else 1
+            if pr == 1:
+                if act.kind == "THROTTLE_BUILDING":
+                    rsn_l = _safe_cmd_str(act.reason).lower()
+                    if "negative energy" in rsn_l or "metal storage full" in rsn_l:
+                        return (1, 0, 0, 0)
+                    return (1, is_manual, 4, 0)
+                if act.kind == "BUILD":
+                    pid_v = _safe_cmd_int(act.planet_id, 0)
+                    return (1, is_manual, 1, 1 if pid_v in built_pids else 0)
+                if act.kind == "RESEARCH":
+                    return (1, is_manual, 1, 1)
+                if act.kind == "TRANSPORT":
+                    return (1, is_manual, 2, 0)
+                if act.kind == "SPY":
+                    return (1, is_manual, 3, 0)
+                return (1, is_manual, 5, 0)
+            return (pr, is_manual, 0, 0)
+
+        return min(candidates, key=_ai_tick_rank)
+
+    acted = 0
+    failed_attempts = 0
+    max_failures = max(6, max_actions * 2)
+    attempted_keys: set[tuple[str, int, Optional[int], Optional[int], str]] = set()
+    built_planets: set[int] = set()
+    allow_parallel_build_overflow = bool(
+        live and max_actions > 1 and getattr(cfg, "allow_multi_planet", True)
+    )
+    parallel_build_cap = max_actions + max(0, len(state.planets or ()))
+    while True:
+        only_parallel_builds = acted >= max_actions
+        if only_parallel_builds:
+            if not allow_parallel_build_overflow or acted >= parallel_build_cap:
+                break
+        if failed_attempts >= max_failures:
+            break
+        ready = _pick_next_ready_action(
+            actions,
+            attempted_keys,
+            built_planets,
+            only_parallel_builds=only_parallel_builds,
         )
         if ready is None:
             break
-        act_key = (
-            ready.kind,
-            _safe_cmd_int(ready.planet_id, 0),
-            _safe_cmd_opt_int(ready.target_id),
-            _safe_cmd_opt_int(ready.target_level),
-            _safe_cmd_str(ready.target_name),
-        )
+        act_key = _action_dedup_key(ready)
         attempted_keys.add(act_key)
         actual_action = ready
         payload = _action_to_command_payload(ready, dry_run=not live)
@@ -748,10 +811,13 @@ def run_commander_tick(
             cur_mq = [x for x in res_dict["manual_queue"] if isinstance(x, Mapping)]
         actual_result = res_dict
         outcomes.append(res_dict)
-        acted += 1
         if not live:
+            acted += 1
+            break
+        if res_dict.get("captcha_gate") or res_dict.get("paused"):
             break
         if not res_dict.get("executed"):
+            failed_attempts += 1
             fail_msg_l = _safe_cmd_str(res_dict.get("message", "")).lower()
             if (
                 ready.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE")
@@ -768,13 +834,28 @@ def run_commander_tick(
                 state = game_state_from_dict(res_dict["state"])
                 actions = _compute_tick_actions(state, cur_mq)
                 continue
-            if ready.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "COLONIZE") or fail_msg_l.startswith("no-op:"):
-                continue
-            break
+            continue
+        acted += 1
         after_live = True
+        if ready.kind == "BUILD":
+            pid_built = _safe_cmd_int(ready.planet_id, 0)
+            if pid_built > 0:
+                built_planets.add(pid_built)
+        need_refresh_state = acted < max_actions or (
+            allow_parallel_build_overflow
+            and acted < parallel_build_cap
+            and any(
+                a.executable_now
+                and a.kind == "BUILD"
+                and _safe_cmd_int(a.planet_id, 0) > 0
+                and _safe_cmd_int(a.planet_id, 0) not in built_planets
+                and _action_dedup_key(a) not in attempted_keys
+                for a in actions
+            )
+        )
         if isinstance(res_dict.get("state"), Mapping):
             state = game_state_from_dict(res_dict["state"])
-        elif acted < max_actions:
+        elif need_refresh_state:
             state = api.get_state(include_buildings=False)
         actions = _compute_tick_actions(state, cur_mq)
 
