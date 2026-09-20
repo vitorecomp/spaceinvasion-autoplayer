@@ -1459,6 +1459,43 @@ def extract_galaxy_coords_from_html(
     return extract_galaxy_system_coords(html, url=url, default=default)
 
 
+def extract_galaxy_universe_bounds(html: str) -> tuple[Optional[int], Optional[int]]:
+    """Extract `(max_galaxies, max_system)` from 2D Galaxy `SI_TPL.galaxy` script metadata, if present."""
+    if not isinstance(html, str) or not html:
+        return None, None
+    scope = ""
+    tpl_idx = html.find("SI_TPL.galaxy")
+    if tpl_idx != -1:
+        end_idx = html.find("</script>", tpl_idx)
+        scope = html[tpl_idx:end_idx] if end_idx != -1 else html[tpl_idx : tpl_idx + 65536]
+    elif "maxGalaxies" in html or "maxSystem" in html:
+        scope = html
+    if not scope:
+        return None, None
+
+    max_gal: Optional[int] = None
+    max_sys: Optional[int] = None
+    m_gal = re.search(
+        r"""(?:^|[,{\s.;])["']?maxGalaxies["']?\s*[:=]\s*["']?(\d{1,2})["']?(?![0-9])""",
+        scope,
+        re.ASCII,
+    )
+    if m_gal:
+        g_val = int(m_gal.group(1))
+        if 1 <= g_val <= 50:
+            max_gal = g_val
+    m_sys = re.search(
+        r"""(?:^|[,{\s.;])["']?maxSystem["']?\s*[:=]\s*["']?(\d{1,4})["']?(?![0-9])""",
+        scope,
+        re.ASCII,
+    )
+    if m_sys:
+        s_val = int(m_sys.group(1))
+        if 1 <= s_val <= 1000:
+            max_sys = s_val
+    return max_gal, max_sys
+
+
 def _extract_action_href_from_el(el: Any) -> str:
     href = str(el.get("href") or "").strip()
     onclick = str(el.get("onclick") or "").strip()

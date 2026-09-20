@@ -2891,6 +2891,217 @@ class TestPageViewLimiterAndClient(unittest.TestCase):
         self.assertIn("Renderer timed out loading internalMessages", str(ctx_u.exception))
         self.assertNotIn("Stacktrace:", str(ctx_u.exception))
 
+    def test_step_galaxy_system_max_galaxies_wrap_widescreen_swing_and_real_arrow_click(self) -> None:
+        # 1. Live RETRO 8-galaxy wrap: browser on (1, 343) with maxG=8, maxS=400; requesting (9, 344)
+        #    normalizes 9 -> 1, records last_galaxy_max_galaxies=8, and clicks +1 system arrow (zero full reload).
+        state1 = {"g": 1, "s": 343, "sys_arrows": [], "gal_arrows": [], "nav_calls": [], "scripts": []}
+        drv1 = MagicMock()
+        drv1.page_source = (
+            '<html><body><textarea id="json-element">'
+            '{"position":{"galaxy":1,"system":343},"planets":{}}'
+            "</textarea></body></html>"
+        )
+
+        def _exec1(script: str, *args):
+            state1["scripts"].append(script)
+            if "typeof window.si.navigate === 'function'" in script:
+                return {"ok": True, "g": state1["g"], "s": state1["s"], "maxS": 400, "maxG": 8, "busy": False}
+            if "navigateSystem(1)" in script and "querySelectorAll" in script:
+                self.assertIn("g2w.nav(\\'sys\\',1)", script)
+                self.assertIn("parentElement", script)
+                delta = int(args[0])
+                state1["sys_arrows"].append(delta)
+                state1["s"] = ((state1["s"] - 1 + delta) % 400) + 1
+                drv1.page_source = (
+                    '<html><body><textarea id="json-element">'
+                    f'{{"position":{{"galaxy":{state1["g"]},"system":{state1["s"]}}},"planets":{{}}}}'
+                    "</textarea></body></html>"
+                )
+                return {"clicked": "dom"}
+            if "navigateGalaxy(1)" in script and "querySelectorAll" in script:
+                self.assertIn("g2w.nav(\\'gal\\',1)", script)
+                delta = int(args[0])
+                state1["gal_arrows"].append(delta)
+                state1["g"] = ((state1["g"] - 1 + delta) % 8) + 1
+                drv1.page_source = (
+                    '<html><body><textarea id="json-element">'
+                    f'{{"position":{{"galaxy":{state1["g"]},"system":{state1["s"]}}},"planets":{{}}}}'
+                    "</textarea></body></html>"
+                )
+                return {"clicked": "dom"}
+            if "window.si.navigate(targetG, targetS)" in script:
+                state1["nav_calls"].append((int(args[0]), int(args[1])))
+                state1["g"], state1["s"] = int(args[0]), int(args[1])
+                return None
+            if "resG:" in script:
+                return {
+                    "busy": False,
+                    "animating": False,
+                    "g": state1["g"],
+                    "s": state1["s"],
+                    "resG": state1["g"],
+                    "resS": state1["s"],
+                }
+            return None
+
+        drv1.execute_script.side_effect = _exec1
+        cli1 = GameBrowserClient(drv1, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        with patch.object(cli1, "_switch_frame"), patch("spaceinvasion.session.client.time.sleep"):
+            _h, g1, s1 = cli1.step_galaxy_system(galaxy=9, system=344, pace=False)
+            self.assertEqual((g1, s1), (1, 344))
+            self.assertEqual(cli1.last_galaxy_max_galaxies, 8)
+            self.assertEqual(cli1.last_galaxy_max_system, 400)
+            self.assertEqual(cli1.last_galaxy_nav_method, "arrow")
+            self.assertEqual(state1["sys_arrows"], [1])
+            self.assertEqual(state1["nav_calls"], [])
+
+            # 2. Same-system adjacent galaxy (1:344 -> 2:344) clicks the galaxy arrow button
+            _h2, g2, s2 = cli1.step_galaxy_system(galaxy=2, system=344, pace=False)
+            self.assertEqual((g2, s2), (2, 344))
+            self.assertEqual(cli1.last_galaxy_nav_method, "arrow")
+            self.assertEqual(state1["gal_arrows"], [1])
+            self.assertEqual(state1["nav_calls"], [])
+
+        # 3. Widescreen g2w 420ms swing() animation: idle & unchanged for >0.30s before si.navigate fires
+        #    must NOT prematurely bail at 0.30s and must complete via arrow!
+        clock_ticks = [100.0, 100.15, 100.35, 100.55, 100.70, 100.80]
+        tick_idx = [0]
+
+        def _fake_mono() -> float:
+            val = clock_ticks[min(tick_idx[0], len(clock_ticks) - 1)]
+            tick_idx[0] += 1
+            return val
+
+        poll_n = [0]
+        drv_w = MagicMock()
+        drv_w.page_source = (
+            '<html><body><textarea id="json-element">'
+            '{"position":{"galaxy":2,"system":381},"planets":{}}'
+            "</textarea></body></html>"
+        )
+
+        def _exec_w(script: str, *args):
+            if "typeof window.si.navigate === 'function'" in script:
+                return {"ok": True, "g": 2, "s": 380, "maxS": 400, "maxG": 8, "busy": False}
+            if "navigateSystem(1)" in script and "querySelectorAll" in script:
+                return {"clicked": "dom"}
+            if "resG:" in script:
+                poll_n[0] += 1
+                if poll_n[0] <= 2:
+                    # 0.15s & 0.35s: still in 420ms g2w swing animation (not busy yet, coords still 2:380)
+                    return {"busy": False, "animating": True, "g": 2, "s": 380, "resG": 2, "resS": 380}
+                if poll_n[0] == 3:
+                    # 0.55s: swing ended, XHR in flight
+                    return {"busy": True, "animating": False, "g": 2, "s": 381, "resG": 2, "resS": 380}
+                return {"busy": False, "animating": False, "g": 2, "s": 381, "resG": 2, "resS": 381}
+            if "window.si.navigate(targetG, targetS)" in script:
+                raise AssertionError("Widescreen swing should not fall back to si.navigate!")
+            return None
+
+        drv_w.execute_script.side_effect = _exec_w
+        cli_w = GameBrowserClient(drv_w, min_nav_delay=(0.0, 0.0), timeout=4.0)
+        with (
+            patch.object(cli_w, "_switch_frame"),
+            patch("spaceinvasion.session.client.time.sleep"),
+            patch("spaceinvasion.session.client.time.monotonic", side_effect=_fake_mono),
+        ):
+            _hw, gw, sw = cli_w.step_galaxy_system(galaxy=2, system=381, pace=False)
+        self.assertEqual((gw, sw), (2, 381))
+        self.assertEqual(cli_w.last_galaxy_nav_method, "arrow")
+
+        # 4. Trusted Selenium element click + ElementClickInterceptedException JS fallback
+        el_ok = _FakeElement(tag="img", attrs={"onclick": "si.navigateSystem(1);"})
+        el_int = _FakeElement(tag="span", attrs={"onclick": "g2w.nav('sys',1)"}, intercept_click=True)
+        drv_el = MagicMock()
+        js_clicks: list[Any] = []
+
+        def _exec_el(script: str, *args):
+            if "arguments[0].click();" in script:
+                js_clicks.append(args[0])
+                return None
+            return None
+
+        drv_el.execute_script.side_effect = _exec_el
+        cli_el = GameBrowserClient(drv_el, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        self.assertEqual(
+            cli_el._finalize_galaxy_arrow_click({"clicked": "element", "el": el_ok}, fallback_js="return false;", step_dir=1),
+            "dom",
+        )
+        self.assertEqual(el_ok.clicks, 1)
+        self.assertEqual(js_clicks, [])
+
+        self.assertEqual(
+            cli_el._finalize_galaxy_arrow_click({"clicked": "element", "el": el_int}, fallback_js="return false;", step_dir=1),
+            "dom",
+        )
+        self.assertEqual(js_clicks, [el_int])
+
+    def test_open_galaxy_2d_skips_form_submit_and_ajax_ready_ignores_planet_list_dropdown(self) -> None:
+        # Live RETRO 2D Galaxy HTML has NO <form> tags, a static hidden #planet-list dropdown, and
+        # SI_TPL.galaxy with nested json:{...} before maxSystem:400,maxGalaxies:8.
+        live_2d_html = (
+            '<html><body>'
+            '<div id="planet-list" style="display:none;"><table><tr><td>Own Home</td></tr></table></div>'
+            '<div id="galaxy-container"><div class="planet-hit" data-planet="1"></div></div>'
+            '<textarea id="json-element">{"position":{"galaxy":1,"system":344},"planets":{}}</textarea>'
+            '<script>SI_TPL.galaxy={galaxy:1,sun:344,json:{"b":{"k":"x"},"header":{"universe":{"id":31}}},ts:1,maxSystem:400,maxGalaxies:8};</script>'
+            "</body></html>"
+        )
+        ajax_scripts: list[str] = []
+        drv = MagicMock()
+        drv.page_source = live_2d_html
+
+        def _exec(script: str, *args):
+            if "galaxy-container" in script or "planet-list" in script:
+                ajax_scripts.append(script)
+                return True
+            if "window.si.maxGalaxies" in script and "maxG:" in script:
+                return {"ok": True, "maxG": 8, "maxS": 400}
+            if "location.href" in script:
+                return "https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&g=9&s=344"
+            return None
+
+        drv.execute_script.side_effect = _exec
+        cli = GameBrowserClient(drv, min_nav_delay=(0.0, 0.0), timeout=2.0)
+        with (
+            patch.object(cli, "_switch_frame"),
+            patch.object(cli, "_resolve_sid_query", return_value="sid=abc123"),
+            patch.object(cli, "_build_internal_url", return_value="https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&sid=abc123&g=9&s=344"),
+            patch.object(cli, "_open_frame_url_with_retry", return_value=live_2d_html),
+            patch.object(cli, "_submit_galaxy_coords_form", side_effect=AssertionError("Must not call _submit_galaxy_coords_form on 2D Galaxy")),
+        ):
+            _html, ag, asys = cli.open_galaxy_with_coords(galaxy=9, system=344)
+
+        self.assertEqual((ag, asys), (1, 344))
+        self.assertEqual(cli.last_galaxy_max_galaxies, 8)
+        self.assertEqual(cli.last_galaxy_max_system, 400)
+        self.assertTrue(ajax_scripts)
+        self.assertNotIn("planet-list", ajax_scripts[0])
+        self.assertIn("galaxy-container", ajax_scripts[0])
+
+        # Also verify mismatch on 2D Galaxy (e.g. p_galaxy() landed on 1:344 when 1:345 wanted)
+        # steps via step_galaxy_system(_allow_full_load=False) instead of _submit_galaxy_coords_form!
+        stepped_args: list[dict[str, Any]] = []
+
+        def _fake_step(**kw):
+            stepped_args.append(kw)
+            return live_2d_html, kw["galaxy"], kw["system"]
+
+        with (
+            patch.object(cli, "_switch_frame"),
+            patch.object(cli, "_resolve_sid_query", return_value="sid=abc123"),
+            patch.object(cli, "_build_internal_url", return_value="https://spaceinvasion.bitmeup.com/indexInternal.es?action=internalGalaxy&sid=abc123&g=1&s=345"),
+            patch.object(cli, "_open_frame_url_with_retry", return_value=live_2d_html),
+            patch.object(cli, "step_galaxy_system", side_effect=_fake_step),
+            patch.object(cli, "_submit_galaxy_coords_form", side_effect=AssertionError("Must not call _submit_galaxy_coords_form on 2D Galaxy")),
+        ):
+            _html2, ag2, asys2 = cli.open_galaxy_with_coords(galaxy=1, system=345)
+        self.assertEqual((ag2, asys2), (1, 345))
+        self.assertEqual(len(stepped_args), 1)
+        self.assertEqual(stepped_args[0]["galaxy"], 1)
+        self.assertEqual(stepped_args[0]["system"], 345)
+        self.assertFalse(stepped_args[0]["_allow_full_load"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,8 +8,10 @@ import tempfile
 import unittest
 
 from spaceinvasion.combat.fleet import (
+    ARROW_NAV_MAX_DISTANCE,
     GalaxySlot,
     SpyReport,
+    extract_galaxy_universe_bounds,
     galaxy_sector_distance,
     order_sectors_for_smooth_walk,
     score_galaxy_scan_sectors,
@@ -945,6 +947,57 @@ class TestSmartGalaxyScanTwoPhaseEngine(unittest.TestCase):
             current_cursor=(2, 333),
         )
         self.assertEqual([w["system"] for w in walk_bwd], [332, 331, 330, 329])
+
+    def test_extract_galaxy_universe_bounds_and_8_galaxy_retro_targeted_refresh_smooth_walk(self) -> None:
+        # 1. Nested json:{...} inside SI_TPL.galaxy precedes maxSystem:400,maxGalaxies:8 on live RETRO
+        retro_html = (
+            '<html><body><script>'
+            'SI_TPL.galaxy={sid:"REDACTED",galaxy:2,sun:380,'
+            'json:{"b":{"k":"YwxQ","v":"tok"},"header":{"si":"classic","universe":{"id":31}}},'
+            'ts:1795046773.5,maxSystem:400,maxGalaxies:8,universeFlightSpeed:1};'
+            '</script></body></html>'
+        )
+        self.assertEqual(extract_galaxy_universe_bounds(retro_html), (8, 400))
+        self.assertEqual(extract_galaxy_universe_bounds("<html><table><tr><td>1</td></tr></table></html>"), (None, None))
+
+        # 2. When all 8 real galaxies (3200 systems) are explored (even with a stale phantom 09:341 row),
+        #    limiting galaxies to 1..8 cleanly flips to targeted_refresh with arrow-friendly (< 5) steps.
+        now = 1_750_000_000.0
+        scanned_8g: dict[str, float] = {}
+        # Simulate chronological sweeps: G1 oldest (stale), G8 newest
+        for g in range(1, 9):
+            for s in range(1, 401):
+                scanned_8g[f"{g:02d}:{s:03d}"] = now - ((9 - g) * 7200.0 + (401 - s) * 2.0)
+        scanned_8g["09:341"] = now - 60.0  # stale phantom row outside 1..8
+
+        batch = select_smart_galaxy_scan_batch(
+            own_coords=["02:380:12"],
+            galaxies=list(range(1, 9)),
+            scanned_systems=scanned_8g,
+            batch_size=100,
+            explore_first=True,
+            current_cursor=(2, 380),
+            now_ts=now,
+        )
+        self.assertEqual(batch["phase"], "targeted_refresh")
+        self.assertEqual(batch["explored_systems"], 3200)
+        self.assertEqual(batch["total_systems"], 3200)
+        self.assertEqual(batch["unscanned_systems"], 0)
+        self.assertEqual(batch["coverage_pct"], 100.0)
+        sel = batch["selected_sectors"]
+        self.assertEqual(len(sel), 100)
+        self.assertTrue(all(1 <= int(it["galaxy"]) <= 8 for it in sel))
+        # Count arrow-eligible consecutive steps (< ARROW_NAV_MAX_DISTANCE within same galaxy)
+        arrow_transitions = 0
+        for prev_it, cur_it in zip(sel, sel[1:]):
+            if int(prev_it["galaxy"]) == int(cur_it["galaxy"]):
+                d = min(
+                    (int(cur_it["system"]) - int(prev_it["system"])) % 400,
+                    (int(prev_it["system"]) - int(cur_it["system"])) % 400,
+                )
+                if 1 <= d < ARROW_NAV_MAX_DISTANCE:
+                    arrow_transitions += 1
+        self.assertGreaterEqual(arrow_transitions, 90)
 
 
 if __name__ == "__main__":
