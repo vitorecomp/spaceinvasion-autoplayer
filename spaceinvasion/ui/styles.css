@@ -1881,15 +1881,16 @@ tbody tr.is-manual-queued:hover {
   min-height: 240px;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
 }
 
 .dash-queue-card {
   min-width: 0;
+  min-height: 0;
 }
 
 .dash-queue-card .table-scroll {
-  max-height: 460px;
   overflow-y: auto;
   overflow-x: auto;
 }
@@ -4282,10 +4283,16 @@ tbody tr.is-manual-queued:hover {
   .dash-lower-grid {
     flex: 0 0 auto;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: auto;
   }
 
   #dash-queue-card-building {
     grid-column: 1 / -1;
+  }
+
+  .dash-queue-card .table-scroll {
+    flex: 1 1 auto;
+    max-height: 520px;
   }
 }
 
@@ -4349,7 +4356,15 @@ tbody tr.is-manual-queued:hover {
     flex: 0 0 auto;
     min-height: 0;
     height: auto;
+    max-height: none;
     overflow-x: auto;
+    overflow-y: visible;
+  }
+
+  .dash-queue-card .table-scroll,
+  .ops-planet-lane-card .table-scroll {
+    flex: 0 0 auto;
+    max-height: none;
     overflow-y: visible;
   }
 

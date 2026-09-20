@@ -2817,6 +2817,13 @@ return {
                     css_txt,
                     r"\.dash-lower-grid\s*\{[^}]*grid-template-columns\s*:\s*repeat\(\s*3\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\s*\)",
                 )
+                self.assertRegex(
+                    css_txt,
+                    r"\.dash-lower-grid\s*\{[^}]*grid-template-rows\s*:\s*minmax\(\s*0\s*,\s*1fr\s*\)",
+                )
+                m_base_dq = re.search(r"\.dash-queue-card\s+\.table-scroll\s*\{([^}]*)\}", css_txt)
+                self.assertIsNotNone(m_base_dq)
+                self.assertNotIn("max-height", m_base_dq.group(1))
 
                 scenario_js = r"""
 await __waitUntil(() => state.dashboard !== null && Array.isArray(state.dashboard.plan));
