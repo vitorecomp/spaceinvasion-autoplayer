@@ -3957,6 +3957,229 @@ class TestActionExecutor(unittest.TestCase):
         f_spi.send_keys.assert_not_called()
         launch_retro.click.assert_called_once()
 
+    def test_recycle_succeeds_when_step2_shows_unrelated_attackzone_or_bash_notices(self) -> None:
+        """Regression test for NTF-0072: RECYCLE must not abort on Attack/Spy AZ or bash notices."""
+        from dataclasses import replace as dc_replace
+        from spaceinvasion.session import executor as ex_mod
+
+        base_st, _ = _make_state_and_action()
+        p_rec = dc_replace(
+            base_st.planets[0],
+            planet_id=208,
+            coords="02:380:08",
+            ships={"s10": 5, "s11": 8},
+            resources=Resources(50_000, 30_000, 20_000, 20_000),
+        )
+        st = dc_replace(base_st, planets=(p_rec,), active_planet_id=208)
+
+        step1_html = (
+            '<html><body><form name="fleet" action="indexInternal.es?action=internalSendFleet" method="POST">'
+            '<input type="text" name="ship_10" value="0"/>'
+            '<input type="text" name="ship_11" value="0"/>'
+            '<input type="text" name="gal" value="2"/>'
+            '<input type="text" name="sun" value="87"/>'
+            '<input type="text" name="pla" value="7"/>'
+            '<input type="submit" value="Continue"/></form></body></html>'
+        )
+        step2_az_with_recycle_html = (
+            '<html><body>'
+            '<div>Attack (forbidden): out of your attackzone range</div>'
+            '<div>Spy (forbidden): out of your attackzone range</div>'
+            '<div>Transport (forbidden): player outside alliance</div>'
+            '<form id="fleet" action="indexInternal.es?action=internalSendFleetFinish" method="POST">'
+            '<label><input name="todo" type="radio" value="RECYCLE"/> Recycle</label>'
+            '<label><input name="todo" type="radio" value="SAVE"/> Escape flight</label>'
+            '<input id="goButton" class="fleet-start-button" type="button" value="LAUNCH"/>'
+            '</form></body></html>'
+        )
+
+        def _mk_el(attrs: dict[str, str] | None = None) -> MagicMock:
+            a = dict(attrs or {})
+            el = MagicMock()
+            el._val = a.get("value", "")
+
+            def _sk(v: str) -> None:
+                el._val = v
+
+            el.send_keys.side_effect = _sk
+            el.get_attribute.side_effect = lambda k: el._val if k == "value" else a.get(k)
+            el.is_selected.return_value = False
+            return el
+
+        # _extract_mission_forbidden_reason must ignore AZ banners for RECYCLE
+        self.assertIsNone(ex_mod._extract_mission_forbidden_reason(step2_az_with_recycle_html, "RECYCLE"))
+        self.assertIn("attackzone", (ex_mod._extract_mission_forbidden_reason(step2_az_with_recycle_html, "ATTACK") or "").lower())
+
+        # 1. RECYCLE succeeds on Step 2 with Attack/Spy out-of-attackzone notices + RECYCLE radio
+        r_rec = _mk_el({"name": "todo", "value": "RECYCLE"})
+        r_save = _mk_el({"name": "todo", "value": "SAVE"})
+        s11_el = _mk_el({"name": "ship_11", "value": "0"})
+        cont_el = _mk_el({"type": "submit"})
+        launch_el = _mk_el({"id": "goButton"})
+        drv = MagicMock()
+        drv.find_elements.side_effect = lambda by, sel: (
+            {"ship_11": [s11_el]}.get(sel, []) if by == "name" else [r_rec, r_save]
+        )
+        drv.find_element.side_effect = lambda by, sel: (
+            {"gal": _mk_el(), "sun": _mk_el(), "pla": _mk_el()}[sel]
+            if by == "name"
+            else (launch_el if "goButton" in str(sel) else cont_el)
+        )
+        drv.page_source = step2_az_with_recycle_html
+        cli = MagicMock(spec=GameBrowserClient)
+        cli.driver = drv
+        cli.navigate_menu.return_value = step1_html
+        cli._wait_frame_ready.side_effect = [step2_az_with_recycle_html, "<html><body>Fleet dispatched!</body></html>"]
+        cli.read_planets_overview.return_value = st
+
+        ex = ActionExecutor(dry_run=False, allow_raids=True, action_delay_range=(0.0, 0.0))
+        rec_act = PlannedAction(
+            priority="P2",
+            kind="RECYCLE",
+            planet_id=208,
+            planet_coords="02:380:08",
+            target_id=11,
+            target_level=2,
+            target_name="Rubble -> 02:087:07",
+            reason="Harvest live rubble at out-of-AZ planet",
+            executable_now=True,
+        )
+        res_ok = ex.execute_action(cli, st, rec_act)
+        self.assertTrue(res_ok.executed, res_ok.message)
+        self.assertIsNone(res_ok.target_cooldown_seconds)
+        self.assertTrue(res_ok.clear_target_debris)
+        r_rec.click.assert_called_once()
+        launch_el.click.assert_called_once()
+
+        # 2. RECYCLE succeeds on Step 2 with bash protection notice on Attack + RECYCLE radio
+        step2_bash_rec_html = (
+            '<html><body>'
+            '<div>Attack (forbidden): Player was attacked too often by you (bash protection)</div>'
+            '<form id="fleet" action="indexInternal.es?action=internalSendFleetFinish" method="POST">'
+            '<label><input name="todo" type="radio" value="RECYCLE"/> Recycle</label>'
+            '<label><input name="todo" type="radio" value="SAVE"/> Escape flight</label>'
+            '<input id="goButton" type="button" value="LAUNCH"/>'
+            '</form></body></html>'
+        )
+        r_rec2 = _mk_el({"name": "todo", "value": "RECYCLE"})
+        launch2 = _mk_el({"id": "goButton"})
+        drv2 = MagicMock()
+        drv2.find_elements.side_effect = lambda by, sel: (
+            {"ship_11": [_mk_el({"name": "ship_11"})]}.get(sel, []) if by == "name" else [r_rec2, _mk_el({"name": "todo", "value": "SAVE"})]
+        )
+        drv2.find_element.side_effect = lambda by, sel: (
+            {"gal": _mk_el(), "sun": _mk_el(), "pla": _mk_el()}[sel]
+            if by == "name"
+            else (launch2 if "goButton" in str(sel) else _mk_el())
+        )
+        drv2.page_source = step2_bash_rec_html
+        cli2 = MagicMock(spec=GameBrowserClient)
+        cli2.driver = drv2
+        cli2.navigate_menu.return_value = step1_html
+        cli2._wait_frame_ready.side_effect = [step2_bash_rec_html, "<html><body>Fleet dispatched!</body></html>"]
+        cli2.read_planets_overview.return_value = st
+        res_bash_rec = ex.execute_action(cli2, st, rec_act)
+        self.assertTrue(res_bash_rec.executed, res_bash_rec.message)
+        r_rec2.click.assert_called_once()
+        launch2.click.assert_called_once()
+
+        # 3. RECYCLE when Step 2 omits RECYCLE radio (only SAVE rendered alongside AZ notice)
+        #    -> clears stale debris cleanly without blaming attackzone!
+        step2_no_rec_radio_html = (
+            '<html><body>'
+            '<div>Attack (forbidden): out of your attackzone range</div>'
+            '<form id="fleet" action="indexInternal.es?action=internalSendFleetFinish" method="POST">'
+            '<label><input name="todo" type="radio" value="SAVE"/> Escape flight</label>'
+            '<input id="goButton" type="button" value="LAUNCH"/>'
+            '</form></body></html>'
+        )
+        drv3 = MagicMock()
+        drv3.find_elements.side_effect = lambda by, sel: (
+            {"ship_11": [_mk_el({"name": "ship_11"})]}.get(sel, []) if by == "name" else [_mk_el({"name": "todo", "value": "SAVE"})]
+        )
+        drv3.find_element.side_effect = lambda by, sel: (
+            {"gal": _mk_el(), "sun": _mk_el(), "pla": _mk_el()}[sel] if by == "name" else _mk_el()
+        )
+        drv3.page_source = step2_no_rec_radio_html
+        cli3 = MagicMock(spec=GameBrowserClient)
+        cli3.driver = drv3
+        cli3.navigate_menu.return_value = step1_html
+        cli3._wait_frame_ready.return_value = step2_no_rec_radio_html
+        cli3.read_planets_overview.return_value = st
+        res_no_radio = ex.execute_action(cli3, st, rec_act)
+        self.assertFalse(res_no_radio.executed)
+        self.assertFalse(res_no_radio.validated)
+        self.assertTrue(res_no_radio.clear_target_debris)
+        self.assertEqual(res_no_radio.target_cooldown_seconds, 1800.0)
+        self.assertIn("available radios: SAVE", res_no_radio.message)
+        self.assertNotIn("attackzone", res_no_radio.message.lower())
+
+        # 4. RECYCLE staying on Step 2 after LAUNCH with unrelated AZ banner reports Step 2 remain, not AZ rejection
+        r_rec4 = _mk_el({"name": "todo", "value": "RECYCLE"})
+        launch4 = _mk_el({"id": "goButton"})
+        drv4 = MagicMock()
+        drv4.find_elements.side_effect = lambda by, sel: (
+            {"ship_11": [_mk_el({"name": "ship_11"})]}.get(sel, []) if by == "name" else [r_rec4, _mk_el({"name": "todo", "value": "SAVE"})]
+        )
+        drv4.find_element.side_effect = lambda by, sel: (
+            {"gal": _mk_el(), "sun": _mk_el(), "pla": _mk_el()}[sel]
+            if by == "name"
+            else (launch4 if "goButton" in str(sel) else _mk_el())
+        )
+        drv4.page_source = step2_az_with_recycle_html
+        cli4 = MagicMock(spec=GameBrowserClient)
+        cli4.driver = drv4
+        cli4.navigate_menu.return_value = step1_html
+        cli4._wait_frame_ready.side_effect = [step2_az_with_recycle_html, step2_az_with_recycle_html]
+        cli4.read_planets_overview.return_value = st
+        res_stayed = ex.execute_action(cli4, st, rec_act)
+        self.assertFalse(res_stayed.executed)
+        self.assertIn("remained on internalSendFleet", res_stayed.message)
+        self.assertNotIn("attackzone", res_stayed.message.lower())
+
+        # 5. SPY succeeds on Step 2 when only Attack is bash-blocked and SPY radio is available
+        step2_bash_spy_html = (
+            '<html><body>'
+            '<div>Attack (forbidden): Player was attacked too often by you (bash protection)</div>'
+            '<form id="fleet" action="indexInternal.es?action=internalSendFleetFinish" method="POST">'
+            '<label><input name="todo" type="radio" value="SPY"/> Spy</label>'
+            '<label><input name="todo" type="radio" value="SAVE"/> Escape flight</label>'
+            '<input id="goButton" type="button" value="LAUNCH"/>'
+            '</form></body></html>'
+        )
+        r_spy5 = _mk_el({"name": "todo", "value": "SPY"})
+        launch5 = _mk_el({"id": "goButton"})
+        drv5 = MagicMock()
+        drv5.find_elements.side_effect = lambda by, sel: (
+            {"ship_10": [_mk_el({"name": "ship_10"})]}.get(sel, []) if by == "name" else [r_spy5, _mk_el({"name": "todo", "value": "SAVE"})]
+        )
+        drv5.find_element.side_effect = lambda by, sel: (
+            {"gal": _mk_el(), "sun": _mk_el(), "pla": _mk_el()}[sel]
+            if by == "name"
+            else (launch5 if "goButton" in str(sel) else _mk_el())
+        )
+        drv5.page_source = step2_bash_spy_html
+        cli5 = MagicMock(spec=GameBrowserClient)
+        cli5.driver = drv5
+        cli5.navigate_menu.return_value = step1_html
+        cli5._wait_frame_ready.side_effect = [step2_bash_spy_html, "<html><body>Fleet dispatched!</body></html>"]
+        cli5.read_planets_overview.return_value = st
+        spy_act = PlannedAction(
+            priority="P2",
+            kind="SPY",
+            planet_id=208,
+            planet_coords="02:380:08",
+            target_id=10,
+            target_level=1,
+            target_name="02:087:07",
+            reason="Scout bash-protected planet",
+            executable_now=True,
+        )
+        res_spy_ok = ex.execute_action(cli5, st, spy_act)
+        self.assertTrue(res_spy_ok.executed, res_spy_ok.message)
+        r_spy5.click.assert_called_once()
+        launch5.click.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

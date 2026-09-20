@@ -983,6 +983,25 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertIsNone(parse_send_fleet_mission_block(benign_inactive_html, "ATTACK"))
         self.assertIsNone(parse_send_fleet_mission_block(benign_inactive_html, "SPY"))
         self.assertIsNone(parse_send_fleet_mission_block(benign_inactive_html, "RECYCLE"))
+        trn_blk = parse_send_fleet_mission_block(benign_inactive_html, "TRANSPORT")
+        self.assertIsNotNone(trn_blk)
+        assert trn_blk is not None
+        self.assertIn("target is inactive", trn_blk[0].lower())
+
+        # Out-of-AZ Attack/Spy banners must NOT block RECYCLE
+        az_recycle_html = """
+        <html><body>
+          <div>Attack (forbidden): out of your attackzone range</div>
+          <div>Spy (forbidden): out of your attackzone range</div>
+          <form id="fleet" action="indexInternal.es?action=internalSendFleetFinish">
+            <input name="todo" type="radio" value="RECYCLE" /> Recycle
+            <input name="todo" type="radio" value="SAVE" /> Escape flight
+          </form>
+        </body></html>
+        """
+        self.assertIsNone(parse_send_fleet_mission_block(az_recycle_html, "RECYCLE"))
+        self.assertIsNotNone(parse_send_fleet_mission_block(az_recycle_html, "ATTACK"))
+        self.assertIsNotNone(parse_send_fleet_mission_block(az_recycle_html, "SPY"))
 
         # Server-enforced block overrides is_spacia / is_inactive until blocked_until_ts expires
         bt = BashTracker()

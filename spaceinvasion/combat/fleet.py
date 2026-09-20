@@ -609,6 +609,10 @@ _MISSION_FORBIDDEN_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b(?:(?:Station(?:ing)?|Deploy(?:ment)?)\s*\(\s*forbidden\s*\)|Stationier(?:en|ung)\s*\(\s*verboten\s*\))\s*:\s*([^<\r\n]+)",
         re.IGNORECASE,
     ),
+    "TRANSPORT": re.compile(
+        r"\b(?:Transport\s*\(\s*forbidden\s*\)|Transport(?:ieren)?\s*\(\s*verboten\s*\))\s*:\s*([^<\r\n]+)",
+        re.IGNORECASE,
+    ),
 }
 
 

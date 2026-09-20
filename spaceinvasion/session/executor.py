@@ -2108,10 +2108,15 @@ class ActionExecutor:
     def _extract_mission_forbidden_reason(cls, html: str, mission_kind: str = "ATTACK") -> Optional[str]:
         if not html:
             return None
-        parsed_blk = parse_send_fleet_mission_block(html, mission_kind)
+        mk = game_data.safe_key(mission_kind).strip().upper()
+        parsed_blk = parse_send_fleet_mission_block(html, mk)
         if parsed_blk is not None:
             return parsed_blk[0]
         srv_err = cls._extract_fleet_server_error(html)
+        if mk not in ("ATTACK", "SPY"):
+            if srv_err and not cls._is_unattackable_target_html(srv_err):
+                return srv_err
+            return None
         if srv_err and cls._is_unattackable_target_html(srv_err):
             return srv_err
         soup = BeautifulSoup(html, "html.parser")
@@ -2531,11 +2536,18 @@ class ActionExecutor:
                 validation_error=blk_reason,
             )
         step1_err = self._extract_fleet_server_error(send_html)
-        if step1_err and (
-            send_soup.select_one('input[type="radio"]') is None
-            or self._is_unattackable_target_html(step1_err)
-        ):
-            is_prot_err = self._is_unattackable_target_html(step1_err)
+        is_step1_prot_err = bool(step1_err and self._is_unattackable_target_html(step1_err))
+        # On valid Step 2 pages (mission radios present), Attack/Spy AZ, vacation, newbie, and bash
+        # notices (e.g. `Attack (forbidden): out of your attackzone range`) only restrict hostile
+        # ATTACK/SPY missions — never abort RECYCLE/ESCAPE/TRANSPORT/STATION/COLONIZE (or SPY on a
+        # bash-only Attack notice) when the requested mission radio can still be selected on Step 2.
+        hostile_prot_blocks_step2 = bool(
+            is_step1_prot_err
+            and mission_kind in ("ATTACK", "SPY")
+            and not (mission_kind == "SPY" and "bash" in str(step1_err or "").lower())
+        )
+        if step1_err and (not has_any_step2_radio or hostile_prot_blocks_step2):
+            is_prot_err = is_step1_prot_err
             append_crash_debug_log(
                 component="executor._dispatch_fleet_mission",
                 event="step1_rejected",
@@ -2651,6 +2663,30 @@ class ActionExecutor:
                             validated=False,
                             validation_error=blk_msg,
                         )
+                    if mission_kind == "RECYCLE" and radios:
+                        avail_vals_r: list[str] = []
+                        for r_el in send_soup.select('input[type="radio"]'):
+                            r_nm = str(r_el.get("name") or "").strip().lower()
+                            r_vl = str(r_el.get("value") or "").strip()
+                            if r_vl and not any(tok in r_nm for tok in ("procent", "percent", "speed", "route", "geschwindigkeit")):
+                                if r_vl not in avail_vals_r:
+                                    avail_vals_r.append(r_vl)
+                        if avail_vals_r:
+                            rec_blk_msg = (
+                                f"Recycle mission unavailable on internalSendFleet "
+                                f"(available radios: {', '.join(avail_vals_r[:6])})"
+                            )
+                            return ExecutionResult(
+                                executed=False,
+                                dry_run=False,
+                                action=action,
+                                message=f"Aborted: {rec_blk_msg}.",
+                                target_cooldown_seconds=1800.0,
+                                target_block_reason=rec_blk_msg,
+                                clear_target_debris=True,
+                                validated=False,
+                                validation_error=rec_blk_msg,
+                            )
                     return ExecutionResult(
                         executed=False,
                         dry_run=False,
@@ -2772,8 +2808,19 @@ class ActionExecutor:
                 validated=False,
                 validation_error=blk_reason,
             )
+        confirm_soup = BeautifulSoup(confirm_html or "", "html.parser")
+        remained_on_step2 = (
+            confirm_soup.select_one('form[action*="internalSendFleetFinish"] input[type="radio"][name="todo"]')
+            is not None
+        )
         server_err = self._extract_fleet_server_error(confirm_html)
-        if server_err:
+        if server_err and not (
+            remained_on_step2
+            and (
+                (mission_kind not in ("ATTACK", "SPY") and self._is_unattackable_target_html(server_err))
+                or (mission_kind == "SPY" and "bash" in server_err.lower())
+            )
+        ):
             is_prot_err2 = self._is_unattackable_target_html(server_err)
             append_crash_debug_log(
                 component="executor._dispatch_fleet_mission",
@@ -2796,8 +2843,7 @@ class ActionExecutor:
                 validated=False,
                 validation_error=server_err,
             )
-        confirm_soup = BeautifulSoup(confirm_html or "", "html.parser")
-        if confirm_soup.select_one('form[action*="internalSendFleetFinish"] input[type="radio"][name="todo"]') is not None:
+        if remained_on_step2:
             return ExecutionResult(
                 executed=False,
                 dry_run=False,
