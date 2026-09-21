@@ -162,7 +162,7 @@ export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
     showFeedback("Refreshing live Shipyard offers from Chrome...", "ok");
     const ok = await refreshCombatForSelectedPlanet({ refresh: true });
     if (ok) {
-      showFeedback("Shipyard & Combat state refreshed.", "ok");
+      showFeedback("Fleet Build & Shipyard state refreshed.", "ok");
     }
   };
 
@@ -221,7 +221,7 @@ export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
     <section
       id="view-combat"
       className="page-view"
-      aria-label="Combat simulator and fleet overview"
+      aria-label="Fleet Build — shipyard, defense construction, escape flight, and 1:1 combat simulator"
       hidden={isHidden}
     >
       <div className="combat-top-cards">
@@ -257,7 +257,7 @@ export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
           </span>
         </div>
         <div className="kpi-card">
-          <span className="kpi-label tabular">Combat Navigation</span>
+          <span className="kpi-label tabular">Fleet Build Navigation</span>
           <div className="combat-jumps">
             <button
               type="button"
@@ -304,14 +304,14 @@ export const CombatView: React.FC<CombatViewProps> = ({ hidden }) => {
       </div>
 
       <div className="combat-main-grid">
-        {/* Left Column: Stationed Fleet, Defenses & Escape Flight */}
+        {/* Left Column: Fleet Build — Shipyard, Defenses & Escape Flight */}
         <article className="hud-window">
           <div className="window-bar">
             <div className="window-title-group">
-              <span className="module-code tabular">FLT</span>
-              <h2>Stationed Fleet, Defenses &amp; Escape Flight</h2>
+              <span className="module-code tabular">SHP</span>
+              <h2>Fleet Build — Shipyard, Defenses &amp; Escape Flight</h2>
             </div>
-            <div className="tab-group" role="tablist" aria-label="Fleet subtabs">
+            <div className="tab-group" role="tablist" aria-label="Fleet Build subtabs">
               <button
                 type="button"
                 className={`tab-btn${subTab === "ships" ? " active" : ""}`}
