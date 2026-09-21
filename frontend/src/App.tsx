@@ -3,13 +3,13 @@ import "./utils/formatters";
 import { ConsoleProvider } from "./context/ConsoleContext";
 import { AppHeader } from "./components/layout/AppHeader";
 import { AppSidebar } from "./components/layout/AppSidebar";
-import { FeedbackBanner } from "./components/layout/FeedbackBanner";
 import { HelpAlertModal } from "./components/modals/HelpAlertModal";
 import { NotificationCenterModal } from "./components/modals/NotificationCenterModal";
 import { DashboardView } from "./features/dashboard";
 import { OperationsView } from "./features/operations";
 import { ActionGraphView } from "./features/action-graph";
 import { BuildingsView } from "./features/buildings";
+import { ResearchView } from "./features/research";
 import { CombatView } from "./features/combat";
 import { SectorsView } from "./features/sectors";
 import { EspionageView } from "./features/espionage";
@@ -32,12 +32,12 @@ export const App: React.FC<AppProps> = ({ disableInitialFetch = false }) => {
           <AppSidebar />
           <div className="main-column">
             <AppHeader />
-            <FeedbackBanner />
             <main className="view-stage" id="view-stage">
               <DashboardView />
               <OperationsView />
               <ActionGraphView />
               <BuildingsView />
+              <ResearchView />
               <CombatView />
               <SectorsView />
               <EspionageView />

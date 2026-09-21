@@ -1,11 +1,10 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
 import { SortableTh } from "../../components/SortableTh";
 import { useConsole } from "../../context/ConsoleContext";
 import {
   durationToSeconds,
   resourcesTotal,
-  timestampSortKey,
   useTableSort,
   type SortColumnMap,
 } from "../../hooks/useTableSort";
@@ -14,7 +13,6 @@ import {
   clampPct,
   finiteNum,
   fmtInt,
-  fmtShortDateTime,
   formatResourcesInline,
   getSelectedBlastFurnacePct,
 } from "../../utils/formatters";
@@ -28,9 +26,9 @@ const BUILDING_CATEGORY_TABS = [
   { id: "storage", bcat: "storage", label: "Storage" },
   { id: "special", bcat: "special", label: "Special" },
   { id: "defense", bcat: "defense", label: "Defense" },
-  { id: "research", bcat: "research", label: "Research r1–15" },
-  { id: "universe_research", bcat: "universe_research", label: "Universe Max Research" },
 ] as const;
+
+const VALID_BUILDING_CATEGORIES = new Set<string>(BUILDING_CATEGORY_TABS.map((t) => t.id));
 
 export const BuildingsView: React.FC = () => {
   const {
@@ -49,8 +47,6 @@ export const BuildingsView: React.FC = () => {
     toggleBlastFurnaceRate,
     enqueueManualCommand,
   } = useConsole();
-
-  const [syncingUniverseMax, setSyncingUniverseMax] = useState(false);
 
   const etaData = useMemo(() => {
     if (
@@ -71,17 +67,18 @@ export const BuildingsView: React.FC = () => {
   }, [activePlanet, combatData, dashboard?.combat]);
 
   const rawCategory = uiPrefs.bldCategory || "all";
-  const bldCategory = rawCategory === "buildings" ? "all" : rawCategory;
-  const isUniverseResearchTab = bldCategory === "universe_research";
-  const isResearchTab = bldCategory === "research";
+  const normalizedCategory = rawCategory === "buildings" ? "all" : rawCategory;
+  const bldCategory = VALID_BUILDING_CATEGORIES.has(normalizedCategory)
+    ? normalizedCategory
+    : "all";
   const isDefenseTab = bldCategory === "defense";
 
   const p = etaData?.planet || {};
   const econ = etaData?.planet_economy || {};
   const bldDiv = finiteNum(p.building_time_divisor, 1);
   const planetMetaText = etaData
-    ? `[${p.coords || "--"}] · Dev L${finiteNum(p.dev_center_level, 0)} · Lab L${finiteNum(p.research_lab_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${bldDiv}`
-    : "[--] · Dev L0 · Lab L0 · x1";
+    ? `[${p.coords || "--"}] · Dev L${finiteNum(p.dev_center_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${bldDiv}`
+    : "[--] · Dev L0 · Micro L0 · Div x1";
 
   const econBfPct = finiteNum(econ.blast_furnace_pct, null);
   const bfPct =
@@ -121,9 +118,6 @@ export const BuildingsView: React.FC = () => {
 
   const visibleRows = useMemo(() => {
     if (!etaData) return [];
-    if (isResearchTab) {
-      return Array.isArray(etaData.researches) ? etaData.researches : [];
-    }
     if (isDefenseTab) {
       return defenseRows;
     }
@@ -132,13 +126,12 @@ export const BuildingsView: React.FC = () => {
       return allBlds;
     }
     return allBlds.filter((b: any) => b?.category === bldCategory);
-  }, [bldCategory, defenseRows, etaData, isDefenseTab, isResearchTab]);
+  }, [bldCategory, defenseRows, etaData, isDefenseTab]);
 
   const allInspectableRows = useMemo(() => {
     if (!etaData) return [];
     return [
       ...(Array.isArray(etaData.buildings) ? etaData.buildings : []),
-      ...(Array.isArray(etaData.researches) ? etaData.researches : []),
       ...defenseRows.filter((d) => d.is_defense_turret),
     ];
   }, [defenseRows, etaData]);
@@ -150,12 +143,6 @@ export const BuildingsView: React.FC = () => {
     if (hit) return hit;
     return visibleRows[0] || allInspectableRows[0] || null;
   }, [allInspectableRows, etaData, selectedUnitKey, visibleRows]);
-
-  const universeMaxRows: Array<Record<string, any>> = useMemo(
-    () =>
-      Array.isArray(dashboard?.universe_research_max) ? dashboard!.universe_research_max! : [],
-    [dashboard?.universe_research_max]
-  );
 
   const unitSortCols = useMemo<
     SortColumnMap<
@@ -197,62 +184,7 @@ export const BuildingsView: React.FC = () => {
     []
   );
 
-  const uniMaxSortCols = useMemo<
-    SortColumnMap<
-      Record<string, any>,
-      "research" | "ownLevel" | "uniMax" | "gap" | "spiedMax" | "holder" | "catalogCap" | "updated"
-    >
-  >(
-    () => ({
-      research: (r) => String(r.name || r.slug || r.key || ""),
-      ownLevel: {
-        accessor: (r) => Math.max(0, Math.round(finiteNum(r.own_level, 0))),
-        defaultDirection: "desc",
-      },
-      uniMax: {
-        accessor: (r) => {
-          const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
-          return Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
-        },
-        defaultDirection: "desc",
-      },
-      gap: {
-        accessor: (r) => {
-          const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
-          const uni = Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
-          return Math.max(0, finiteNum(r.gap_to_max, uni - own));
-        },
-        defaultDirection: "desc",
-      },
-      spiedMax: {
-        accessor: (r) => Math.max(0, Math.round(finiteNum(r.spied_max_level, 0))),
-        defaultDirection: "desc",
-      },
-      holder: (r) => {
-        const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
-        const uni = Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
-        if (r.holder) {
-          return `${r.holder}${r.holder_coords ? ` [${r.holder_coords}]` : ""}`;
-        }
-        return uni > 0 && own >= uni ? "You" : null;
-      },
-      catalogCap: {
-        accessor: (r) => {
-          const cap = finiteNum(r.catalog_max_level, null);
-          return cap !== null && cap > 0 ? cap : null;
-        },
-        defaultDirection: "desc",
-      },
-      updated: {
-        accessor: (r) => timestampSortKey(r.updated_ts),
-        defaultDirection: "desc",
-      },
-    }),
-    []
-  );
-
   const unitSort = useTableSort(visibleRows, unitSortCols);
-  const uniMaxSort = useTableSort(universeMaxRows, uniMaxSortCols);
 
   const handleSyncEconomy = useCallback(async () => {
     try {
@@ -265,41 +197,16 @@ export const BuildingsView: React.FC = () => {
     }
   }, [apiCommand, loadDashboard, refreshBuildingsEtaForSelectedPlanet, showFeedback]);
 
-  const handleRefreshUniverseResearch = useCallback(async () => {
-    setSyncingUniverseMax(true);
-    try {
-      showFeedback("Refreshing Universe Max Research levels...", "ok");
-      const res = await apiCommand({ command: "universe_research_max", sync: true });
-      showFeedback(
-        res.message || "Universe Max Research table refreshed and saved to SQLite.",
-        "ok"
-      );
-      await loadDashboard({ refresh: false, force: true });
-    } catch (err: any) {
-      showFeedback(`Universe research sync failed: ${err.message}`, feedbackKindForError(err));
-    } finally {
-      setSyncingUniverseMax(false);
-    }
-  }, [apiCommand, loadDashboard, showFeedback]);
-
   const handleRowLiveBuild = useCallback(
-    async (ev: React.MouseEvent, row: Record<string, any>, rowIsRes: boolean) => {
+    async (ev: React.MouseEvent, row: Record<string, any>) => {
       ev.stopPropagation();
-      const cmd = rowIsRes
-        ? {
-            command: "research",
-            research_id: row.research_id,
-            planet_id: p.planet_id,
-            dry_run: false,
-          }
-        : {
-            command: "build",
-            building_id: row.building_id,
-            planet_id: p.planet_id,
-            dry_run: false,
-          };
       try {
-        const res = await apiCommand(cmd);
+        const res = await apiCommand({
+          command: "build",
+          building_id: row.building_id,
+          planet_id: p.planet_id,
+          dry_run: false,
+        });
         showFeedback(res.message || "Queued.", "ok");
         await loadDashboard({ refresh: false, force: true });
       } catch (err: any) {
@@ -310,13 +217,13 @@ export const BuildingsView: React.FC = () => {
   );
 
   const handleRowPinQueue = useCallback(
-    (ev: React.MouseEvent, row: Record<string, any>, rowIsRes: boolean) => {
+    (ev: React.MouseEvent, row: Record<string, any>) => {
       ev.stopPropagation();
-      const unitId = rowIsRes ? row.research_id : row.building_id;
+      const unitId = row.building_id;
       const nextLvl = finiteNum(row.next_level ?? row.target_level, null);
       if (unitId == null || nextLvl === null || nextLvl <= 0) return;
       void enqueueManualCommand({
-        kind: rowIsRes ? "RESEARCH" : "BUILD",
+        kind: "BUILD",
         priority: "P1",
         position: "top",
         planet_id: p.planet_id || 0,
@@ -361,7 +268,7 @@ export const BuildingsView: React.FC = () => {
         <div className="window-bar window-bar-wrap">
           <div className="window-title-group">
             <span className="module-code tabular">BLD</span>
-            <h2>Buildings &amp; Research — Level Reach Estimates</h2>
+            <h2>Buildings — Level Reach Estimates</h2>
             <span className="module-meta tabular" id="bld-planet-meta">
               {planetMetaText}
             </span>
@@ -435,8 +342,7 @@ export const BuildingsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Standard Buildings / Research / Defense Split Workspace */}
-        <div className="split-workspace" hidden={isUniverseResearchTab}>
+        <div className="split-workspace">
           <div className="table-wrap table-scroll">
             <table id="bld-table">
               <thead>
@@ -526,12 +432,9 @@ export const BuildingsView: React.FC = () => {
                         : "";
                     const reachEtaText = row.reach_eta ?? "—";
                     const rowWaitH = finiteNum(row.wait_hours, 0);
-                    const rowIsRes = rowKey.startsWith("r") || isResearchTab;
                     const isTurret = Boolean(row.is_defense_turret);
-                    const canExec = isTurret
-                      ? false
-                      : Boolean(rowIsRes ? row.can_research_live : row.can_build_live);
-                    const unitId = rowIsRes ? row.research_id : row.building_id;
+                    const canExec = isTurret ? false : Boolean(row.can_build_live);
+                    const unitId = row.building_id;
                     const nextLvl = finiteNum(row.next_level ?? row.target_level, null);
                     const safeName = String(row.name || "Unit").replace(/>/g, "→");
 
@@ -600,9 +503,9 @@ export const BuildingsView: React.FC = () => {
                               <button
                                 type="button"
                                 className="btn btn-primary btn-sm"
-                                onClick={(ev) => handleRowLiveBuild(ev, row, rowIsRes)}
+                                onClick={(ev) => handleRowLiveBuild(ev, row)}
                               >
-                                {rowIsRes ? "Research" : "Build"}
+                                Build
                               </button>
                             ) : Array.isArray(row.unmet_prerequisites) &&
                               row.unmet_prerequisites.length > 0 ? (
@@ -615,13 +518,13 @@ export const BuildingsView: React.FC = () => {
                                 className="btn btn-secondary btn-sm"
                                 title={`Add ${safeName} L${nextLvl} to P1 priority queue`}
                                 aria-label={`Add ${safeName} L${nextLvl} to P1 priority queue`}
-                                onClick={(ev) => handleRowPinQueue(ev, row, rowIsRes)}
+                                onClick={(ev) => handleRowPinQueue(ev, row)}
                               >
                                 + Queue
                               </button>
                             ) : null}
 
-                            {!rowIsRes && !isTurret && row.building_id === 6 && curLvl > 0 ? (
+                            {!isTurret && row.building_id === 6 && curLvl > 0 ? (
                               <button
                                 type="button"
                                 className="btn btn-secondary btn-sm btn-danger-ghost"
@@ -641,153 +544,12 @@ export const BuildingsView: React.FC = () => {
             </table>
           </div>
 
-          <BuildingInspector etaData={etaData} selectedRow={selectedRow} bfPct={bfPct} />
-        </div>
-
-        {/* Universe Max Research Levels Tab (#16 + #18) */}
-        <div className="intel-pane" id="bld-pane-universe-research" hidden={!isUniverseResearchTab}>
-          <div className="window-bar window-bar-wrap">
-            <div className="window-title-group">
-              <span className="module-code tabular">UNV</span>
-              <h3>Universe Max Research Levels</h3>
-              <span className="module-meta tabular">
-                {`${universeMaxRows.length} TECHNOLOGIES`}
-              </span>
-            </div>
-            <div className="inline-actions">
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                id="btn-bld-refresh-universe-research"
-                disabled={syncingUniverseMax}
-                onClick={handleRefreshUniverseResearch}
-              >
-                {syncingUniverseMax ? "Syncing..." : "Refresh Max Research"}
-              </button>
-            </div>
-          </div>
-
-          <div className="table-wrap table-scroll">
-            <table id="bld-universe-research-table">
-              <thead>
-                <tr>
-                  <SortableTh
-                    label="Research"
-                    sortKey="research"
-                    activeKey={uniMaxSort.sortKey}
-                    direction={uniMaxSort.sortDirection}
-                    onSort={uniMaxSort.requestSort}
-                  />
-                  <SortableTh
-                    label="Your Level"
-                    sortKey="ownLevel"
-                    activeKey={uniMaxSort.sortKey}
-                    direction={uniMaxSort.sortDirection}
-                    onSort={uniMaxSort.requestSort}
-                    align="right"
-                  />
-                  <SortableTh
-                    label="Universe Max"
-                    sortKey="uniMax"
-                    activeKey={uniMaxSort.sortKey}
-                    direction={uniMaxSort.sortDirection}
-                    onSort={uniMaxSort.requestSort}
-                    align="right"
-                  />
-                  <SortableTh
-                    label="Delta / Gap"
-                    sortKey="gap"
-                    activeKey={uniMaxSort.sortKey}
-                    direction={uniMaxSort.sortDirection}
-                    onSort={uniMaxSort.requestSort}
-                    align="right"
-                  />
-                  <SortableTh
-                    label="Spied Max"
-                    sortKey="spiedMax"
-                    activeKey={uniMaxSort.sortKey}
-                    direction={uniMaxSort.sortDirection}
-                    onSort={uniMaxSort.requestSort}
-                    align="right"
-                  />
-                  <SortableTh
-                    label="Record Holder"
-                    sortKey="holder"
-                    activeKey={uniMaxSort.sortKey}
-                    direction={uniMaxSort.sortDirection}
-                    onSort={uniMaxSort.requestSort}
-                  />
-                  <SortableTh
-                    label="Catalog Cap"
-                    sortKey="catalogCap"
-                    activeKey={uniMaxSort.sortKey}
-                    direction={uniMaxSort.sortDirection}
-                    onSort={uniMaxSort.requestSort}
-                    align="right"
-                  />
-                  <SortableTh
-                    label="Updated"
-                    sortKey="updated"
-                    activeKey={uniMaxSort.sortKey}
-                    direction={uniMaxSort.sortDirection}
-                    onSort={uniMaxSort.requestSort}
-                    align="right"
-                  />
-                </tr>
-              </thead>
-              <tbody id="bld-universe-research-tbody">
-                {uniMaxSort.sortedRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="empty-cell">
-                      Click Refresh Max Research to compute and persist universe research records.
-                    </td>
-                  </tr>
-                ) : (
-                  uniMaxSort.sortedRows.map((r, idx) => {
-                    const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
-                    const uniMax = Math.max(ownLvl, Math.round(finiteNum(r.universe_max_level, ownLvl)));
-                    const spiedMax = Math.max(0, Math.round(finiteNum(r.spied_max_level, 0)));
-                    const catCap = finiteNum(r.catalog_max_level, null);
-                    const gap = Math.max(0, finiteNum(r.gap_to_max, uniMax - ownLvl));
-                    const isLeader = uniMax > 0 && ownLvl >= uniMax;
-                    const holderStr = r.holder
-                      ? `${r.holder}${r.holder_coords ? ` [${r.holder_coords}]` : ""}`
-                      : isLeader
-                        ? "You"
-                        : "—";
-
-                    return (
-                      <tr key={r.key || r.slug || idx}>
-                        <td>
-                          <div className="action-title">
-                            {r.name || r.slug || "Research"}
-                            {r.key ? (
-                              <span className="action-sub tabular">{` (${r.key})`}</span>
-                            ) : null}
-                          </div>
-                        </td>
-                        <td className="col-right tabular">{`L${ownLvl}`}</td>
-                        <td className="col-right tabular">
-                          <span className={`eta-pill${isLeader ? "" : gap > 0 ? " is-wait" : ""}`}>
-                            {`L${uniMax}`}
-                          </span>
-                        </td>
-                        <td className="col-right tabular">
-                          {isLeader ? "Leader (0)" : gap > 0 ? `-${gap} Lvl` : "0"}
-                        </td>
-                        <td className="col-right tabular">{`L${spiedMax}`}</td>
-                        <td>{holderStr}</td>
-                        <td className="col-right tabular">
-                          {catCap !== null && catCap > 0 ? `L${Math.round(catCap)}` : "—"}
-                        </td>
-                        <td className="col-right tabular">{fmtShortDateTime(r.updated_ts)}</td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+          <BuildingInspector
+            etaData={etaData}
+            selectedRow={selectedRow}
+            bfPct={bfPct}
+            mode="buildings"
+          />
         </div>
       </article>
     </section>
