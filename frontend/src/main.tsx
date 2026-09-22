@@ -16,9 +16,13 @@ function mountConsoleApp(): void {
     rootEl.replaceChildren();
   }
   const root = createRoot(rootEl);
-  flushSync(() => {
-    root.render(<App />);
-  });
+  try {
+    flushSync(() => {
+      root.render(<App />);
+    });
+  } finally {
+    document.documentElement.classList.remove("si-hydrating");
+  }
 }
 
 if (typeof document !== "undefined") {

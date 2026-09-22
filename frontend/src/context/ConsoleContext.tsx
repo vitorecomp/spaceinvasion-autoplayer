@@ -7,10 +7,9 @@ import React, {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { flushSync } from "react-dom";
-
-const useClientSyncEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 import {
   apiCommand as rawApiCommand,
   apiGet as rawApiGet,
@@ -21,73 +20,40 @@ import {
   safeFiniteNumber,
 } from "../api/httpClient";
 import {
+  ConsoleStore,
+  ConsoleStoreState,
+  DEFAULT_UI_PREFS,
+  UiPrefs,
+  consoleStore,
+  createConsoleStore,
+  flushConsoleStore,
+  getConsoleStorePersistenceForTests,
+  normalizePageKey,
+  registerConsoleStoreResetHook,
+  rehydrateConsoleStore,
+  resetConsoleStore,
+} from "../store/consoleStore";
+import {
   ActionGraphTabKey,
   DashboardPayload,
   FeedbackKind,
   FeedbackState,
   NotificationsState,
-  PAGE_TITLES,
   PageKey,
   PlanetData,
   PlannerJobsStatusPayload,
 } from "../types/api";
 
-const SESSION_STATE_KEY = "si_console_ui_state";
-const VALID_AG_TABS: readonly ActionGraphTabKey[] = [
-  "heuristics",
-  "config-optimizer",
-  "ai-planner",
-  "fleet-planner",
-];
-
-export interface UiPrefs {
-  modeOverride: "auto" | "live" | "dry-run" | string;
-  bldCategory: string;
-  selectedUnitKey: string;
-  combatSubTab: "ships" | "defense" | "targets" | "escape" | string;
-  queueFilter: string;
-  dashQueuePlanetScope: string;
-  opsPlanetScope: string;
-  opsQueueLayout: "table" | "parallel";
-  activeLogSource: "commander" | "game_api" | "sqlite" | string;
-  agActiveTab: ActionGraphTabKey;
-  agEdgeFilter: "all" | "deps";
-  agParamTab: "core" | "scope";
-  sectorFilter: string;
-  sectorGalaxy: number;
-  espTab: "targets" | "reports";
-  colonyFilter: string;
-  atkTab: "battles" | "blocks";
-  recTab: "harvests" | "debris" | "emails";
-  emailCatFilter: string;
-  notifFilter: "active" | "unread" | "all";
-  sidebarOpen: boolean;
-  [key: string]: any;
-}
-
-const DEFAULT_UI_PREFS: UiPrefs = {
-  modeOverride: "auto",
-  bldCategory: "all",
-  selectedUnitKey: "b1",
-  combatSubTab: "ships",
-  queueFilter: "all",
-  dashQueuePlanetScope: "all",
-  opsPlanetScope: "all",
-  opsQueueLayout: "table",
-  activeLogSource: "commander",
-  agActiveTab: "heuristics",
-  agEdgeFilter: "all",
-  agParamTab: "core",
-  sectorFilter: "all",
-  sectorGalaxy: 0,
-  espTab: "targets",
-  colonyFilter: "all",
-  atkTab: "battles",
-  recTab: "harvests",
-  emailCatFilter: "all",
-  notifFilter: "active",
-  sidebarOpen: false,
+export type { UiPrefs };
+export {
+  DEFAULT_UI_PREFS,
+  consoleStore,
+  flushConsoleStore,
+  rehydrateConsoleStore,
+  resetConsoleStore,
 };
+
+const useClientSyncEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 export interface LegacyWindowState {
   dashboard: DashboardPayload | null;
@@ -96,6 +62,8 @@ export interface LegacyWindowState {
   activePage: PageKey;
   bldCategory: string;
   selectedUnitKey: string;
+  resTab: string;
+  selectedResearchKey: string;
   buildingsEtaData: Record<string, any> | null;
   combatData: Record<string, any> | null;
   combatSubTab: string;
@@ -138,6 +106,9 @@ export interface LegacyWindowState {
   notifications: NotificationsState;
   notifFilter: string;
   activeHelpNotifId: number | null;
+  uiPrefs?: UiPrefs;
+  lastHydratedAt?: number | null;
+  isHydratedFromCache?: boolean;
   [key: string]: any;
 }
 
@@ -149,6 +120,8 @@ function createInitialLegacyWindowState(): LegacyWindowState {
     activePage: "dashboard",
     bldCategory: "all",
     selectedUnitKey: "b1",
+    resTab: "all",
+    selectedResearchKey: "r1",
     buildingsEtaData: null,
     combatData: null,
     combatSubTab: "ships",
@@ -190,6 +163,9 @@ function createInitialLegacyWindowState(): LegacyWindowState {
     notifications: { unread_count: 0, items: [] },
     notifFilter: "active",
     activeHelpNotifId: null,
+    uiPrefs: { ...DEFAULT_UI_PREFS },
+    lastHydratedAt: null,
+    isHydratedFromCache: false,
   };
   Object.defineProperty(st, "gaCalcRunning", {
     enumerable: true,
@@ -206,9 +182,78 @@ function createInitialLegacyWindowState(): LegacyWindowState {
 
 const sharedLegacyState: LegacyWindowState = createInitialLegacyWindowState();
 
+function syncLegacyStateFromSnapshot(snap: ConsoleStoreState): void {
+  sharedLegacyState.dashboard = snap.dashboard;
+  sharedLegacyState.apiOnline = snap.apiOnline;
+  sharedLegacyState.activePage = snap.activePage;
+  sharedLegacyState.selectedPlanetId = snap.selectedPlanetId;
+  sharedLegacyState.uiPrefs = snap.uiPrefs;
+  sharedLegacyState.modeOverride = snap.uiPrefs.modeOverride;
+  sharedLegacyState.bldCategory = snap.uiPrefs.bldCategory;
+  sharedLegacyState.selectedUnitKey = snap.uiPrefs.selectedUnitKey;
+  sharedLegacyState.resTab = snap.uiPrefs.resTab;
+  sharedLegacyState.selectedResearchKey = snap.uiPrefs.selectedResearchKey;
+  sharedLegacyState.combatSubTab = snap.uiPrefs.combatSubTab;
+  sharedLegacyState.queueFilter = snap.uiPrefs.queueFilter;
+  sharedLegacyState.activeLogSource = snap.uiPrefs.activeLogSource;
+  sharedLegacyState.agActiveTab = snap.uiPrefs.agActiveTab;
+  sharedLegacyState.agEdgeFilter = snap.uiPrefs.agEdgeFilter;
+  sharedLegacyState.agParamTab = snap.uiPrefs.agParamTab;
+  sharedLegacyState.sectorFilter = snap.uiPrefs.sectorFilter;
+  sharedLegacyState.sectorGalaxy = snap.uiPrefs.sectorGalaxy;
+  sharedLegacyState.espTab = snap.uiPrefs.espTab;
+  sharedLegacyState.colonyFilter = snap.uiPrefs.colonyFilter;
+  sharedLegacyState.atkTab = snap.uiPrefs.atkTab;
+  sharedLegacyState.recTab = snap.uiPrefs.recTab;
+  sharedLegacyState.emailCatFilter = snap.uiPrefs.emailCatFilter;
+  sharedLegacyState.notifFilter = snap.uiPrefs.notifFilter;
+  sharedLegacyState.buildingsEtaData = snap.buildingsEtaData;
+  sharedLegacyState.combatData = snap.combatData;
+  sharedLegacyState.sectorsData = snap.sectorsData;
+  sharedLegacyState.espData = snap.espData;
+  sharedLegacyState.colonyData = snap.colonyData;
+  sharedLegacyState.atkData = snap.atkData;
+  sharedLegacyState.recData = snap.recData;
+  sharedLegacyState.actionGraphData = snap.actionGraphData;
+  sharedLegacyState.plannerJobsStatus = snap.plannerJobsStatus;
+  sharedLegacyState.lastOptimizerSummary = snap.lastOptimizerSummary;
+  sharedLegacyState.notifications = snap.notifications;
+  sharedLegacyState.lastHydratedAt = snap.lastHydratedAt;
+  sharedLegacyState.isHydratedFromCache = snap.isHydratedFromCache;
+}
+
+function resetTransientLegacyFlags(): void {
+  sharedLegacyState.simPopulatedOnce = false;
+  sharedLegacyState.reconnectAttempts = 0;
+  sharedLegacyState.configDirty = false;
+  sharedLegacyState.configSaving = 0;
+  sharedLegacyState.gaCalcCount = 0;
+  sharedLegacyState.inFlightVersionCheck = false;
+  sharedLegacyState.inFlightDashboard = false;
+  sharedLegacyState.inFlightDashboardCount = 0;
+  sharedLegacyState.dashboardSeq = 0;
+  sharedLegacyState.agSimDirty = false;
+  sharedLegacyState.agSimRunning = 0;
+  sharedLegacyState.agSimSeq = 0;
+  sharedLegacyState.agSelectedNodeId = null;
+  sharedLegacyState.agSuppressNodeClick = false;
+  sharedLegacyState.activeHelpNotifId = null;
+}
+
+// Synchronize initial browser snapshot & bind reset/rehydrate hooks onto sharedLegacyState
+if (typeof window !== "undefined") {
+  syncLegacyStateFromSnapshot(consoleStore.getSnapshot());
+}
+
+registerConsoleStoreResetHook((snap) => {
+  resetTransientLegacyFlags();
+  syncLegacyStateFromSnapshot(snap);
+});
+
 if (typeof globalThis !== "undefined") {
   const g = globalThis as any;
   g.state = sharedLegacyState;
+  g.__SI_STATE__ = sharedLegacyState;
   g.el = (id: string) => (typeof document !== "undefined" ? document.getElementById(id) : null);
   g.apiGet = rawApiGet;
   g.apiCommand = rawApiCommand;
@@ -216,6 +261,7 @@ if (typeof globalThis !== "undefined") {
   g.feedbackKindForError = feedbackKindForError;
   if (typeof window !== "undefined") {
     (window as any).state = sharedLegacyState;
+    (window as any).__SI_STATE__ = sharedLegacyState;
     (window as any).el = g.el;
   }
 }
@@ -230,7 +276,9 @@ export function selectActivePlanet(
   return gs.planets.find((p) => p.planet_id === targetId) || gs.planets[0] || null;
 }
 
-export function buildClientFallbackActionGraph(dash: DashboardPayload | null | undefined): Record<string, any> {
+export function buildClientFallbackActionGraph(
+  dash: DashboardPayload | null | undefined
+): Record<string, any> {
   const cfg = dash?.config || {};
   const rawMode = String(
     dash?.effective_planner_mode || cfg.planner_mode || dash?.planner_mode || "priority"
@@ -383,7 +431,8 @@ export function buildClientFallbackActionGraph(dash: DashboardPayload | null | u
       blocked_count: nodes.filter((n) => n.status === "blocked_gate").length,
       queued_count: nodes.filter((n) => n.status === "queued").length,
       max_layer: Math.max(0, nodes.length - 1),
-      critical_path_eta: nodes.length > 0 ? String(nodes[nodes.length - 1].total_eta || "Ready") : "Ready",
+      critical_path_eta:
+        nodes.length > 0 ? String(nodes[nodes.length - 1].total_eta || "Ready") : "Ready",
       primary_bottleneck: null,
       by_priority: { P0: 0, P1: 0, P2: nodes.length, P3: 0 },
       by_edge_type: {},
@@ -404,6 +453,8 @@ export interface ConsoleContextValue {
   apiOnline: boolean;
   reconnectAttempts: number;
   chromeOnline: boolean;
+  isHydratedFromCache?: boolean;
+  lastHydratedAt?: number | null;
   activePage: PageKey;
   setActivePage: (page: PageKey | string) => void;
   selectedPlanetId: number | null;
@@ -492,93 +543,78 @@ export interface ConsoleContextValue {
 
 const ConsoleContext = createContext<ConsoleContextValue | null>(null);
 
-function readInitialPersistedState(): {
-  activePage: PageKey;
-  selectedPlanetId: number | null;
-  prefs: UiPrefs;
-} {
-  let activePage: PageKey = "dashboard";
-  let selectedPlanetId: number | null = null;
-  const prefs: UiPrefs = { ...DEFAULT_UI_PREFS };
-
-  if (typeof window === "undefined") {
-    return { activePage, selectedPlanetId, prefs };
-  }
-
-  try {
-    const raw = sessionStorage.getItem(SESSION_STATE_KEY);
-    if (raw) {
-      const saved = JSON.parse(raw);
-      if (saved && typeof saved === "object" && !Array.isArray(saved)) {
-        const savedPid = safeFiniteNumber(saved.selectedPlanetId, null);
-        if (savedPid !== null) selectedPlanetId = savedPid;
-        if (saved.bldCategory) prefs.bldCategory = String(saved.bldCategory);
-        if (saved.selectedUnitKey) prefs.selectedUnitKey = String(saved.selectedUnitKey);
-        if (saved.combatSubTab) prefs.combatSubTab = String(saved.combatSubTab);
-        if (saved.queueFilter) prefs.queueFilter = String(saved.queueFilter);
-        if (saved.activeLogSource) prefs.activeLogSource = String(saved.activeLogSource);
-        if (VALID_AG_TABS.includes(saved.agActiveTab)) {
-          prefs.agActiveTab = saved.agActiveTab;
-        }
-        if (saved.agEdgeFilter === "all" || saved.agEdgeFilter === "deps") {
-          prefs.agEdgeFilter = saved.agEdgeFilter;
-        }
-        if (saved.agParamTab === "core" || saved.agParamTab === "scope") {
-          prefs.agParamTab = saved.agParamTab;
-        }
-        if (saved.activePage && PAGE_TITLES[saved.activePage as PageKey]) {
-          activePage = saved.activePage as PageKey;
-        }
-      }
-    }
-  } catch {
-    // Ignore storage restrictions
-  }
-
-  const rawHash = (window.location.hash || "").replace(/^#/, "");
-  const normHash = rawHash === "graph" ? "action-graph" : rawHash;
-  if (normHash && PAGE_TITLES[normHash as PageKey]) {
-    activePage = normHash as PageKey;
-  }
-
-  return { activePage, selectedPlanetId, prefs };
-}
-
 export interface ConsoleProviderProps {
   children: React.ReactNode;
   disableInitialFetch?: boolean;
+  enablePersistence?: boolean;
 }
 
 export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   children,
   disableInitialFetch = false,
+  enablePersistence,
 }) => {
-  const initial = useMemo(() => readInitialPersistedState(), []);
+  const shouldPersist =
+    enablePersistence !== undefined
+      ? enablePersistence
+      : !disableInitialFetch || getConsoleStorePersistenceForTests();
 
-  const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
-  const [apiOnline, setApiOnlineState] = useState<boolean>(false);
-  const [reconnectAttempts, setReconnectAttempts] = useState<number>(0);
-  const [activePage, setActivePageState] = useState<PageKey>(initial.activePage);
-  const [selectedPlanetId, setSelectedPlanetIdState] = useState<number | null>(
-    initial.selectedPlanetId
+  // Select persistent browser singleton (synchronously hydrated before first render!)
+  // or a clean isolated ephemeral store when disableInitialFetch={true} (SSR & unit tests).
+  const activeStore: ConsoleStore = useMemo(() => {
+    if (shouldPersist) {
+      const hydrated = consoleStore.hydrateIfNeeded();
+      if (typeof window !== "undefined") {
+        syncLegacyStateFromSnapshot(hydrated);
+      }
+      return consoleStore;
+    }
+    const isolated = createConsoleStore({
+      persist: false,
+      hydrateOnInit: false,
+      bindUnloadEvents: false,
+    });
+    if (typeof window !== "undefined") {
+      resetTransientLegacyFlags();
+      syncLegacyStateFromSnapshot(isolated.getSnapshot());
+    }
+    return isolated;
+  }, [shouldPersist]);
+
+  const snap = useSyncExternalStore(
+    activeStore.subscribe,
+    activeStore.getSnapshot,
+    activeStore.getServerSnapshot
   );
+
+  const {
+    dashboard,
+    apiOnline,
+    activePage,
+    selectedPlanetId,
+    uiPrefs,
+    buildingsEtaData,
+    combatData,
+    sectorsData,
+    espData,
+    colonyData,
+    atkData,
+    recData,
+    actionGraphData,
+    plannerJobsStatus,
+    lastOptimizerSummary,
+    notifications,
+    lastHydratedAt,
+    isHydratedFromCache,
+  } = snap;
+
+  // Ephemeral UI-only state (timers, transient modals, in-flight dirty flags)
+  const [reconnectAttempts, setReconnectAttempts] = useState<number>(0);
   const [nowEpochSec, setNowEpochSec] = useState<number>(() =>
     typeof window === "undefined" ? 0 : Math.floor(Date.now() / 1000)
   );
   const [gaCalcCount, setGaCalcCount] = useState<number>(0);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
-  const [uiPrefs, setUiPrefs] = useState<UiPrefs>(initial.prefs);
-
-  const [buildingsEtaData, setBuildingsEtaDataState] = useState<Record<string, any> | null>(null);
-  const [combatData, setCombatDataState] = useState<Record<string, any> | null>(null);
-  const [sectorsData, setSectorsDataState] = useState<Record<string, any> | null>(null);
-  const [espData, setEspDataState] = useState<Record<string, any> | null>(null);
-  const [colonyData, setColonyDataState] = useState<Record<string, any> | null>(null);
-  const [atkData, setAtkDataState] = useState<Record<string, any> | null>(null);
-  const [recData, setRecDataState] = useState<Record<string, any> | null>(null);
-  const [actionGraphData, setActionGraphDataState] = useState<Record<string, any> | null>(null);
-  const [plannerJobsStatus, setPlannerJobsStatusState] =
-    useState<PlannerJobsStatusPayload | null>(null);
 
   const [agSimDirty, setAgSimDirtyState] = useState<boolean>(false);
   const [agSimRunning, setAgSimRunning] = useState<number>(0);
@@ -586,14 +622,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   const [configSaving, setConfigSaving] = useState<number>(0);
   const [configHydrationTick, setConfigHydrationTick] = useState<number>(0);
   const [agHydrationTick, setAgHydrationTick] = useState<number>(0);
-  const [lastOptimizerSummary, setLastOptimizerSummaryState] = useState<Record<string, any> | null>(
-    null
-  );
 
-  const [notifications, setNotifications] = useState<NotificationsState>({
-    unread_count: 0,
-    items: [],
-  });
   const [notifCenterOpen, setNotifCenterOpen] = useState<boolean>(false);
   const [activeHelpNotif, setActiveHelpNotif] = useState<Record<string, any> | null>(null);
 
@@ -618,69 +647,37 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   const inFlightColoniesCountRef = useRef<number>(0);
   const sectorPreviewRef = useRef<SectorQueuePreviewOverrides | null>(null);
 
-  // Keep sharedLegacyState synchronized at all times for existing E2E & Node tests
-  sharedLegacyState.dashboard = dashboard;
-  sharedLegacyState.apiOnline = apiOnline;
-  sharedLegacyState.reconnectAttempts = reconnectAttempts;
-  sharedLegacyState.activePage = activePage;
-  sharedLegacyState.selectedPlanetId = selectedPlanetId;
-  sharedLegacyState.modeOverride = uiPrefs.modeOverride;
-  sharedLegacyState.bldCategory = uiPrefs.bldCategory;
-  sharedLegacyState.selectedUnitKey = uiPrefs.selectedUnitKey;
-  sharedLegacyState.combatSubTab = uiPrefs.combatSubTab;
-  sharedLegacyState.queueFilter = uiPrefs.queueFilter;
-  sharedLegacyState.activeLogSource = uiPrefs.activeLogSource;
-  sharedLegacyState.agActiveTab = uiPrefs.agActiveTab;
-  sharedLegacyState.agEdgeFilter = uiPrefs.agEdgeFilter;
-  sharedLegacyState.agParamTab = uiPrefs.agParamTab;
-  sharedLegacyState.sectorFilter = uiPrefs.sectorFilter;
-  sharedLegacyState.sectorGalaxy = uiPrefs.sectorGalaxy;
-  sharedLegacyState.espTab = uiPrefs.espTab;
-  sharedLegacyState.colonyFilter = uiPrefs.colonyFilter;
-  sharedLegacyState.atkTab = uiPrefs.atkTab;
-  sharedLegacyState.recTab = uiPrefs.recTab;
-  sharedLegacyState.emailCatFilter = uiPrefs.emailCatFilter;
-  sharedLegacyState.notifFilter = uiPrefs.notifFilter;
-  sharedLegacyState.buildingsEtaData = buildingsEtaData;
-  sharedLegacyState.combatData = combatData;
-  sharedLegacyState.sectorsData = sectorsData;
-  sharedLegacyState.espData = espData;
-  sharedLegacyState.colonyData = colonyData;
-  sharedLegacyState.atkData = atkData;
-  sharedLegacyState.recData = recData;
-  sharedLegacyState.actionGraphData = actionGraphData;
-  sharedLegacyState.plannerJobsStatus = plannerJobsStatus;
-  sharedLegacyState.agSimDirty = agSimDirty;
-  sharedLegacyState.agSimRunning = agSimRunning;
-  sharedLegacyState.gaCalcCount = gaCalcCount;
-  sharedLegacyState.lastOptimizerSummary = lastOptimizerSummary;
-  sharedLegacyState.notifications = notifications;
-  sharedLegacyState.activeHelpNotifId = activeHelpNotif ? safeFiniteNumber(activeHelpNotif.id, null) : null;
+  // Keep sharedLegacyState (window.state & window.__SI_STATE__) synchronized at all times
+  if (typeof window !== "undefined") {
+    syncLegacyStateFromSnapshot(snap);
+    sharedLegacyState.reconnectAttempts = reconnectAttempts;
+    sharedLegacyState.agSimDirty = agSimDirty;
+    sharedLegacyState.agSimRunning = agSimRunning;
+    sharedLegacyState.gaCalcCount = gaCalcCount;
+    sharedLegacyState.activeHelpNotifId = activeHelpNotif
+      ? safeFiniteNumber(activeHelpNotif.id, null)
+      : null;
+  }
 
-  const persistUiPrefs = useCallback(
-    (nextPage: PageKey, nextPid: number | null, nextPrefs: UiPrefs) => {
-      if (typeof window === "undefined") return;
-      try {
-        sessionStorage.setItem(
-          SESSION_STATE_KEY,
-          JSON.stringify({
-            activePage: nextPage,
-            selectedPlanetId: nextPid,
-            bldCategory: nextPrefs.bldCategory,
-            selectedUnitKey: nextPrefs.selectedUnitKey,
-            combatSubTab: nextPrefs.combatSubTab,
-            queueFilter: nextPrefs.queueFilter,
-            activeLogSource: nextPrefs.activeLogSource,
-            agActiveTab: nextPrefs.agActiveTab,
-            agEdgeFilter: nextPrefs.agEdgeFilter,
-            agParamTab: nextPrefs.agParamTab,
-          })
-        );
-      } catch {
-        // Ignore storage restrictions
+  // Flush any pending debounced store write when a persistent provider unmounts
+  useEffect(() => {
+    return () => {
+      if (feedbackTimerRef.current) {
+        clearTimeout(feedbackTimerRef.current);
+        feedbackTimerRef.current = null;
       }
+      if (shouldPersist) {
+        activeStore.flushPersistence(false);
+      }
+    };
+  }, [activeStore, shouldPersist]);
+
+  const setDashboard = useCallback(
+    (next: React.SetStateAction<DashboardPayload | null>) => {
+      activeStore.setDashboard(next);
+      sharedLegacyState.dashboard = activeStore.getSnapshot().dashboard;
     },
-    []
+    [activeStore]
   );
 
   const showFeedback = useCallback(
@@ -719,7 +716,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
     (online: boolean, note = "") => {
       const wasOnline = sharedLegacyState.apiOnline;
       sharedLegacyState.apiOnline = online;
-      setApiOnlineState(online);
+      activeStore.setApiOnline(online);
       const port = sharedLegacyState.dashboard?.health?.debug_port
         ? "8787"
         : (typeof window !== "undefined" && window.location.port) || "8787";
@@ -740,7 +737,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         );
       }
     },
-    [showFeedback]
+    [activeStore, showFeedback]
   );
 
   const syncNotificationsPayload = useCallback(
@@ -750,7 +747,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       const unreadCnt = Math.max(0, Math.round(safeFiniteNumber(notifPayload.unread_count, 0) ?? 0));
       const next: NotificationsState = { unread_count: unreadCnt, items };
       sharedLegacyState.notifications = next;
-      setNotifications(next);
+      activeStore.setNotifications(next);
 
       const newestUnread = items.find(
         (n: any) => n && n.status === "unread" && (safeFiniteNumber(n.id, 0) ?? 0) > 0
@@ -767,7 +764,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         setActiveHelpNotif(null);
       }
     },
-    []
+    [activeStore]
   );
 
   useClientSyncEffect(() => {
@@ -807,70 +804,101 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
     setAgSimDirtyState(flag);
   }, []);
 
-  const setBuildingsEtaData = useCallback((data: Record<string, any> | null) => {
-    sharedLegacyState.buildingsEtaData = data;
-    setBuildingsEtaDataState(data);
-  }, []);
+  const setBuildingsEtaData = useCallback(
+    (data: Record<string, any> | null) => {
+      sharedLegacyState.buildingsEtaData = data;
+      activeStore.setBuildingsEtaData(data);
+    },
+    [activeStore]
+  );
 
-  const setCombatData = useCallback((data: Record<string, any> | null) => {
-    sharedLegacyState.combatData = data;
-    setCombatDataState(data);
-  }, []);
+  const setCombatData = useCallback(
+    (data: Record<string, any> | null) => {
+      sharedLegacyState.combatData = data;
+      activeStore.setCombatData(data);
+    },
+    [activeStore]
+  );
 
-  const setSectorsData = useCallback((data: Record<string, any> | null) => {
-    sharedLegacyState.sectorsData = data;
-    setSectorsDataState(data);
-  }, []);
+  const setSectorsData = useCallback(
+    (data: Record<string, any> | null) => {
+      sharedLegacyState.sectorsData = data;
+      activeStore.setSectorsData(data);
+    },
+    [activeStore]
+  );
 
-  const setEspData = useCallback((data: Record<string, any> | null) => {
-    sharedLegacyState.espData = data;
-    setEspDataState(data);
-  }, []);
+  const setEspData = useCallback(
+    (data: Record<string, any> | null) => {
+      sharedLegacyState.espData = data;
+      activeStore.setEspData(data);
+    },
+    [activeStore]
+  );
 
-  const setColonyData = useCallback((data: Record<string, any> | null) => {
-    sharedLegacyState.colonyData = data;
-    setColonyDataState(data);
-  }, []);
+  const setColonyData = useCallback(
+    (data: Record<string, any> | null) => {
+      sharedLegacyState.colonyData = data;
+      activeStore.setColonyData(data);
+    },
+    [activeStore]
+  );
 
-  const setAtkData = useCallback((data: Record<string, any> | null) => {
-    sharedLegacyState.atkData = data;
-    setAtkDataState(data);
-  }, []);
+  const setAtkData = useCallback(
+    (data: Record<string, any> | null) => {
+      sharedLegacyState.atkData = data;
+      activeStore.setAtkData(data);
+    },
+    [activeStore]
+  );
 
-  const setRecData = useCallback((data: Record<string, any> | null) => {
-    sharedLegacyState.recData = data;
-    setRecDataState(data);
-  }, []);
+  const setRecData = useCallback(
+    (data: Record<string, any> | null) => {
+      sharedLegacyState.recData = data;
+      activeStore.setRecData(data);
+    },
+    [activeStore]
+  );
 
-  const setActionGraphData = useCallback((data: Record<string, any> | null) => {
-    sharedLegacyState.actionGraphData = data;
-    setActionGraphDataState(data);
-  }, []);
+  const setActionGraphData = useCallback(
+    (data: Record<string, any> | null) => {
+      sharedLegacyState.actionGraphData = data;
+      activeStore.setActionGraphData(data);
+    },
+    [activeStore]
+  );
 
-  const setPlannerJobsStatus = useCallback((status: PlannerJobsStatusPayload | null) => {
-    sharedLegacyState.plannerJobsStatus = status;
-    setPlannerJobsStatusState(status);
-  }, []);
+  const setPlannerJobsStatus = useCallback(
+    (status: PlannerJobsStatusPayload | null) => {
+      sharedLegacyState.plannerJobsStatus = status;
+      activeStore.setPlannerJobsStatus(status);
+    },
+    [activeStore]
+  );
 
-  const refreshPlannerJobsStatus = useCallback(async (): Promise<PlannerJobsStatusPayload | null> => {
-    try {
-      const res = await rawApiCommand<PlannerJobsStatusPayload>({
-        command: "planner_jobs_status",
-      });
-      if (res && typeof res === "object") {
-        setPlannerJobsStatus(res);
-        return res;
+  const refreshPlannerJobsStatus =
+    useCallback(async (): Promise<PlannerJobsStatusPayload | null> => {
+      try {
+        const res = await rawApiCommand<PlannerJobsStatusPayload>({
+          command: "planner_jobs_status",
+        });
+        if (res && typeof res === "object") {
+          setPlannerJobsStatus(res);
+          return res;
+        }
+      } catch {
+        // Tolerate older servers or offline fallback
       }
-    } catch {
-      // Tolerate older servers or offline fallback
-    }
-    return null;
-  }, [setPlannerJobsStatus]);
+      return null;
+    }, [setPlannerJobsStatus]);
 
-  const setLastOptimizerSummary = useCallback((summary: Record<string, any> | null) => {
-    sharedLegacyState.lastOptimizerSummary = summary;
-    setLastOptimizerSummaryState(summary);
-  }, []);
+  const setLastOptimizerSummary = useCallback(
+    (summary: Record<string, any> | null) => {
+      sharedLegacyState.lastOptimizerSummary = summary;
+      activeStore.setLastOptimizerSummary(summary);
+    },
+    [activeStore]
+  );
 
   const bumpDashboardSeq = useCallback(() => {
     sharedLegacyState.dashboardSeq += 1;
@@ -899,11 +927,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         return false;
       }
       if (codeChanged || bootChanged) {
-        persistUiPrefs(
-          sharedLegacyState.activePage,
-          sharedLegacyState.selectedPlanetId,
-          uiPrefsRef.current
-        );
+        activeStore.flushPersistence(true);
         showFeedback(
           codeChanged
             ? "UI update detected — hot-reloading console..."
@@ -927,25 +951,31 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       }
       return false;
     },
-    [persistUiPrefs, showFeedback]
+    [activeStore, showFeedback]
   );
 
-  const refreshBuildingsEtaForSelectedPlanet = useCallback(async (forceRefresh = false) => {
-    const planet = selectActivePlanet(sharedLegacyState.dashboard, sharedLegacyState.selectedPlanetId);
-    if (!planet) return;
-    try {
-      const res = await rawApiCommand({
-        command: "buildings_eta",
-        planet_id: planet.planet_id,
-        refresh: forceRefresh,
-      });
-      if (res.buildings_eta) {
-        setBuildingsEtaData(res.buildings_eta);
+  const refreshBuildingsEtaForSelectedPlanet = useCallback(
+    async (forceRefresh = false) => {
+      const planet = selectActivePlanet(
+        sharedLegacyState.dashboard,
+        sharedLegacyState.selectedPlanetId
+      );
+      if (!planet) return;
+      try {
+        const res = await rawApiCommand({
+          command: "buildings_eta",
+          planet_id: planet.planet_id,
+          refresh: forceRefresh,
+        });
+        if (res.buildings_eta) {
+          setBuildingsEtaData(res.buildings_eta);
+        }
+      } catch {
+        // Non-fatal during offline fallback — keep cached buildingsEtaData intact
       }
-    } catch {
-      // Non-fatal during offline fallback
-    }
-  }, [setBuildingsEtaData]);
+    },
+    [setBuildingsEtaData]
+  );
 
   const refreshCombatForSelectedPlanet = useCallback(
     async ({ refresh = false }: { refresh?: boolean } = {}): Promise<boolean> => {
@@ -1045,7 +1075,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   const refreshEspionageView = useCallback(async () => {
     try {
       const data = await rawApiCommand({ command: "espionage_intel", limit: 200 });
-      setEspData(data);
+      if (data && typeof data === "object") {
+        setEspData(data);
+      }
     } catch (err: any) {
       showFeedback(`Espionage data load failed: ${err.message}`, feedbackKindForError(err));
     }
@@ -1061,7 +1093,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       try {
         const data = await rawApiCommand({ command: "colony_candidates", limit: 1000 });
         if (reqSeq !== coloniesReqSeqRef.current) return;
-        setColonyData(data);
+        if (data && typeof data === "object") {
+          setColonyData(data);
+        }
       } catch (err: any) {
         if (reqSeq !== coloniesReqSeqRef.current) return;
         showFeedback(`Colony grading load failed: ${err.message}`, feedbackKindForError(err));
@@ -1075,7 +1109,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   const refreshAttacksView = useCallback(async () => {
     try {
       const data = await rawApiCommand({ command: "attack_results", limit: 200 });
-      setAtkData(data);
+      if (data && typeof data === "object") {
+        setAtkData(data);
+      }
     } catch (err: any) {
       showFeedback(`Attack results load failed: ${err.message}`, feedbackKindForError(err));
     }
@@ -1090,7 +1126,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
           category: cat,
           limit: 200,
         });
-        setRecData(data);
+        if (data && typeof data === "object") {
+          setRecData(data);
+        }
       } catch (err: any) {
         showFeedback(`Recycler and email load failed: ${err.message}`, feedbackKindForError(err));
       }
@@ -1132,43 +1170,60 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
               }
             : dash;
 
-        sharedLegacyState.dashboard = nextDash;
-        setDashboard(nextDash);
-
-        if (nextDash.optimizer_summary) {
-          setLastOptimizerSummary(nextDash.optimizer_summary);
-        }
         const incomingJobsStatus =
           nextDash.planner_jobs_status && typeof nextDash.planner_jobs_status === "object"
             ? nextDash.planner_jobs_status
             : nextDash.planner_status && typeof nextDash.planner_status === "object"
               ? nextDash.planner_status
               : null;
-        if (incomingJobsStatus) {
-          setPlannerJobsStatus(incomingJobsStatus);
-        }
 
         const modeVal = nextDash.bot_control?.mode_override || "auto";
-        setUiPrefs((prev) =>
-          prev.modeOverride === modeVal ? prev : { ...prev, modeOverride: modeVal }
-        );
+        const shouldPatchActionGraph =
+          !sharedLegacyState.agSimDirty &&
+          sharedLegacyState.agSimRunning === 0 &&
+          sharedLegacyState.configSaving === 0;
+        const nextActionGraph = shouldPatchActionGraph
+          ? nextDash.action_graph || buildClientFallbackActionGraph(nextDash)
+          : null;
 
-        if (nextDash.buildings_eta) {
-          if (
-            !sharedLegacyState.selectedPlanetId ||
-            sharedLegacyState.selectedPlanetId === nextDash.buildings_eta.planet?.planet_id
-          ) {
-            setBuildingsEtaData(nextDash.buildings_eta);
-          }
-        }
-        if (nextDash.combat) {
-          if (
-            !sharedLegacyState.selectedPlanetId ||
-            sharedLegacyState.selectedPlanetId === nextDash.combat.planet_id
-          ) {
-            setCombatData(nextDash.combat);
-          }
-        }
+        // Patch store smoothly in-place (stale-while-revalidate: never null out cached tabs)
+        const updatedSnap = activeStore.setState(
+          (prev) => {
+            const nextPrefs =
+              prev.uiPrefs.modeOverride === modeVal
+                ? prev.uiPrefs
+                : { ...prev.uiPrefs, modeOverride: modeVal };
+
+            const nextBuildingsEta =
+              nextDash.buildings_eta &&
+              (!sharedLegacyState.selectedPlanetId ||
+                sharedLegacyState.selectedPlanetId === nextDash.buildings_eta.planet?.planet_id)
+                ? nextDash.buildings_eta
+                : prev.buildingsEtaData;
+
+            const nextCombat =
+              nextDash.combat &&
+              (!sharedLegacyState.selectedPlanetId ||
+                sharedLegacyState.selectedPlanetId === nextDash.combat.planet_id)
+                ? nextDash.combat
+                : prev.combatData;
+
+            return {
+              ...prev,
+              dashboard: nextDash,
+              uiPrefs: nextPrefs,
+              lastOptimizerSummary: nextDash.optimizer_summary || prev.lastOptimizerSummary,
+              plannerJobsStatus: incomingJobsStatus || prev.plannerJobsStatus,
+              buildingsEtaData: nextBuildingsEta,
+              combatData: nextCombat,
+              actionGraphData: shouldPatchActionGraph ? nextActionGraph : prev.actionGraphData,
+              lastHydratedAt: Date.now(),
+            };
+          },
+          { persist: true }
+        );
+        syncLegacyStateFromSnapshot(updatedSnap);
+
         if (nextDash.notifications && typeof nextDash.notifications === "object") {
           syncNotificationsPayload(nextDash.notifications);
         }
@@ -1184,6 +1239,22 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
           refreshAttacksView();
         } else if (curPage === "recyclers") {
           refreshRecyclersView();
+        } else if (curPage === "buildings" || (curPage as string) === "research") {
+          if (
+            !nextDash.buildings_eta ||
+            (sharedLegacyState.selectedPlanetId &&
+              sharedLegacyState.selectedPlanetId !== nextDash.buildings_eta.planet?.planet_id)
+          ) {
+            refreshBuildingsEtaForSelectedPlanet(false);
+          }
+        } else if (curPage === "combat") {
+          if (
+            !nextDash.combat ||
+            (sharedLegacyState.selectedPlanetId &&
+              sharedLegacyState.selectedPlanetId !== nextDash.combat.planet_id)
+          ) {
+            refreshCombatForSelectedPlanet({ refresh: false });
+          }
         }
 
         if (!sharedLegacyState.configDirty && sharedLegacyState.configSaving === 0) {
@@ -1192,13 +1263,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
           setConfigHydrationTick((t) => t + 1);
         }
 
-        if (
-          !sharedLegacyState.agSimDirty &&
-          sharedLegacyState.agSimRunning === 0 &&
-          sharedLegacyState.configSaving === 0
-        ) {
-          const ag = nextDash.action_graph || buildClientFallbackActionGraph(nextDash);
-          setActionGraphData(ag);
+        if (shouldPatchActionGraph) {
           setAgHydrationTick((t) => t + 1);
         }
 
@@ -1222,18 +1287,16 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       }
     },
     [
+      activeStore,
       applyVersionSnapshot,
       refreshAttacksView,
+      refreshBuildingsEtaForSelectedPlanet,
       refreshColoniesView,
+      refreshCombatForSelectedPlanet,
       refreshEspionageView,
       refreshRecyclersView,
       refreshSectorsView,
-      setActionGraphData,
       setApiStatus,
-      setBuildingsEtaData,
-      setCombatData,
-      setLastOptimizerSummary,
-      setPlannerJobsStatus,
       showFeedback,
       syncNotificationsPayload,
     ]
@@ -1260,28 +1323,43 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
 
   const setActivePage = useCallback(
     (rawKey: PageKey | string) => {
-      const normKey = rawKey === "graph" ? "action-graph" : rawKey;
-      const target: PageKey = PAGE_TITLES[normKey as PageKey]
-        ? (normKey as PageKey)
-        : "dashboard";
-      sharedLegacyState.activePage = target;
-      setActivePageState(target);
-      if (target === "dashboard" || target === "operations") {
+      const target = normalizePageKey(rawKey);
+      const nextSnap = activeStore.setState(
+        (prev) => {
+          const nextPrefs = prev.uiPrefs.sidebarOpen
+            ? { ...prev.uiPrefs, sidebarOpen: false }
+            : prev.uiPrefs;
+          if (prev.activePage === target && nextPrefs === prev.uiPrefs) {
+            return prev;
+          }
+          return {
+            ...prev,
+            activePage: target,
+            uiPrefs: nextPrefs,
+          };
+        },
+        { persist: true }
+      );
+      syncLegacyStateFromSnapshot(nextSnap);
+      if (
+        target === "dashboard" ||
+        target === "operations" ||
+        (target as string) === "fleet-control"
+      ) {
         setNowEpochSec(Math.floor(Date.now() / 1000));
       }
-      setUiPrefs((prev) => {
-        const next = prev.sidebarOpen ? { ...prev, sidebarOpen: false } : prev;
-        persistUiPrefs(target, sharedLegacyState.selectedPlanetId, next);
-        return next;
-      });
-      if (typeof window !== "undefined" && window.location.hash !== `#${target}`) {
+      if (shouldPersist && typeof window !== "undefined" && window.location.hash !== `#${target}`) {
         window.history.replaceState(null, "", `#${target}`);
       }
 
-      if (target === "buildings") {
+      if (target === "buildings" || (target as string) === "research") {
         refreshBuildingsEtaForSelectedPlanet();
       } else if (target === "combat") {
         refreshCombatForSelectedPlanet({ refresh: false });
+      } else if ((target as string) === "fleet-control") {
+        if (!disableInitialFetch) {
+          loadDashboard({ refresh: false, preserveConfig: true });
+        }
       } else if (target === "sectors") {
         refreshSectorsView();
       } else if (target === "espionage") {
@@ -1303,7 +1381,9 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       }
     },
     [
-      persistUiPrefs,
+      activeStore,
+      disableInitialFetch,
+      loadDashboard,
       refreshAttacksView,
       refreshBuildingsEtaForSelectedPlanet,
       refreshColoniesView,
@@ -1312,6 +1392,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       refreshRecyclersView,
       refreshSectorsView,
       setActionGraphData,
+      shouldPersist,
     ]
   );
 
@@ -1320,8 +1401,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       const pid = planetId == null ? null : safeFiniteNumber(planetId, null);
       sharedLegacyState.selectedPlanetId = pid;
       sharedLegacyState.simPopulatedOnce = false;
-      setSelectedPlanetIdState(pid);
-      persistUiPrefs(sharedLegacyState.activePage, pid, uiPrefsRef.current);
+      activeStore.setSelectedPlanetId(pid);
       if (sharedLegacyState.dashboard) {
         refreshBuildingsEtaForSelectedPlanet();
         if (sharedLegacyState.activePage === "combat") {
@@ -1334,7 +1414,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       }
     },
     [
-      persistUiPrefs,
+      activeStore,
       refreshBuildingsEtaForSelectedPlanet,
       refreshColoniesView,
       refreshCombatForSelectedPlanet,
@@ -1347,13 +1427,10 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       if (key in sharedLegacyState) {
         (sharedLegacyState as any)[key] = value;
       }
-      setUiPrefs((prev) => {
-        const next = { ...prev, [key]: value };
-        persistUiPrefs(sharedLegacyState.activePage, sharedLegacyState.selectedPlanetId, next);
-        return next;
-      });
+      activeStore.setUiPref(key, value);
+      sharedLegacyState.uiPrefs = activeStore.getSnapshot().uiPrefs;
     },
-    [persistUiPrefs]
+    [activeStore]
   );
 
   const refreshNotificationCenter = useCallback(
@@ -1366,20 +1443,18 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
           limit: 60,
         });
         if (Array.isArray(res?.items)) {
-          setNotifications({
-            unread_count: Math.max(0, Math.round(safeFiniteNumber(res.unread_count, 0) ?? 0)),
-            items: res.items,
-          });
-          sharedLegacyState.notifications = {
+          const next: NotificationsState = {
             unread_count: Math.max(0, Math.round(safeFiniteNumber(res.unread_count, 0) ?? 0)),
             items: res.items,
           };
+          sharedLegacyState.notifications = next;
+          activeStore.setNotifications(next);
         }
       } catch {
         // Offline fallback keeps cached items
       }
     },
-    []
+    [activeStore]
   );
 
   const openNotificationCenter = useCallback(async () => {
@@ -1532,12 +1607,16 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
     };
     g.renderTelemetry = applySyntheticDash;
     g.renderBuildingsView = applySyntheticDash;
+    g.renderResearchView = applySyntheticDash;
     g.renderGaNnHud = applySyntheticDash;
     g.renderRanking = applySyntheticDash;
   }, [
+    beginGaCalc,
+    endGaCalc,
     loadDashboard,
     setActivePage,
     setBuildingsEtaData,
+    setDashboard,
     setLastOptimizerSummary,
     showFeedback,
   ]);
@@ -1552,7 +1631,12 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
     const tickTimer = setInterval(() => {
       if (document.visibilityState !== "visible") return;
       const curPage = sharedLegacyState.activePage;
-      if (curPage === "dashboard" || curPage === "operations" || notifCenterOpenRef.current) {
+      if (
+        curPage === "dashboard" ||
+        curPage === "operations" ||
+        (curPage as string) === "fleet-control" ||
+        notifCenterOpenRef.current
+      ) {
         setNowEpochSec(Math.floor(Date.now() / 1000));
       }
     }, 1000);
@@ -1632,6 +1716,8 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       apiOnline,
       reconnectAttempts,
       chromeOnline,
+      isHydratedFromCache,
+      lastHydratedAt,
       activePage,
       setActivePage,
       selectedPlanetId,
@@ -1730,6 +1816,8 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       feedback,
       gaCalcCount,
       gaCalculating,
+      isHydratedFromCache,
+      lastHydratedAt,
       lastOptimizerSummary,
       loadDashboard,
       notifCenterOpen,
@@ -1758,6 +1846,7 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
       setColonyData,
       setCombatData,
       setConfigDirty,
+      setDashboard,
       setEspData,
       setLastOptimizerSummary,
       setPlannerJobsStatus,

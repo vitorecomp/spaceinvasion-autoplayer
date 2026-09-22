@@ -35,6 +35,8 @@ async function prerender() {
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link id="ui-stylesheet" rel="stylesheet" href="/styles.css" />
+  <style>html.si-hydrating #root{visibility:hidden}</style>
+  <script>try{if(localStorage.getItem('si_console_store_v1')){document.documentElement.classList.add('si-hydrating');setTimeout(function(){document.documentElement.classList.remove('si-hydrating');},350);}}catch(e){}</script>
 </head>
 <body>
   <div id="root">${ssrHtml}</div>
