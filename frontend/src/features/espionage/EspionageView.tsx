@@ -1,6 +1,8 @@
-import React, { useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
+import { LoadingIndicator } from "../../components/LoadingIndicator";
 import { SortableTh } from "../../components/SortableTh";
+import { TablePagination, useTablePagination } from "../../components/TablePagination";
 import { useConsole } from "../../context/ConsoleContext";
 import {
   coordsSortKey,
@@ -128,9 +130,21 @@ export function formatEspionageDistance(
   };
 }
 
+type TargetFilterKey = "all" | "spied" | "spacia" | "inactive" | "debris";
+
+const TARGET_FILTERS: ReadonlyArray<{ key: TargetFilterKey; label: string }> = [
+  { key: "all", label: "All Targets" },
+  { key: "spied", label: "Spied Intel" },
+  { key: "spacia", label: "Spacia" },
+  { key: "inactive", label: "Inactive" },
+  { key: "debris", label: "Has Debris" },
+];
+
 export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
   const {
     dashboard,
+    apiOnline,
+    reconnectAttempts,
     activePage,
     setActivePage,
     activePlanet,
@@ -147,16 +161,95 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
   const isHidden = hidden ?? activePage !== "espionage";
   const espTab = uiPrefs.espTab === "reports" ? "reports" : "targets";
 
+  const [espSearch, setEspSearch] = useState<string>("");
+  const [targetFilter, setTargetFilter] = useState<TargetFilterKey>("all");
+  const [loadingCount, setLoadingCount] = useState<number>(0);
+  const [loadingLabel, setLoadingLabel] = useState<string | null>(null);
+  const mountedRef = useRef<boolean>(true);
+  const activeReqCountRef = useRef<number>(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const runTrackedRequest = useCallback(async (label: string, fn: () => Promise<unknown>) => {
+    activeReqCountRef.current += 1;
+    if (mountedRef.current) {
+      setLoadingCount(activeReqCountRef.current);
+      setLoadingLabel(label);
+    }
+    try {
+      await fn();
+    } finally {
+      activeReqCountRef.current = Math.max(0, activeReqCountRef.current - 1);
+      if (mountedRef.current) {
+        setLoadingCount(activeReqCountRef.current);
+        if (activeReqCountRef.current === 0) {
+          setLoadingLabel(null);
+        }
+      }
+    }
+  }, []);
+
+  const isInitialLoading = espData === null;
+  const isRefreshing = loadingCount > 0;
+  const showLoading = isInitialLoading || isRefreshing;
+
   const sum = espData?.summary || {};
   const originCoords = String(
     espData?.origin_coords || activePlanet?.coords || dashboard?.state?.planets?.[0]?.coords || ""
   ).trim();
-  const targets: Array<Record<string, any>> = Array.isArray(espData?.targets)
-    ? espData!.targets
-    : [];
-  const reports: Array<Record<string, any>> = Array.isArray(espData?.reports)
-    ? espData!.reports
-    : [];
+  const targets: Array<Record<string, any>> = useMemo(
+    () => (Array.isArray(espData?.targets) ? espData!.targets : []),
+    [espData]
+  );
+  const reports: Array<Record<string, any>> = useMemo(
+    () => (Array.isArray(espData?.reports) ? espData!.reports : []),
+    [espData]
+  );
+
+  const filteredTargets = useMemo(() => {
+    const needle = espSearch.trim().toLowerCase();
+    return targets.filter((t) => {
+      const isSpacia = Boolean(t.is_spacia);
+      const isInact = Boolean(t.is_inactive) || String(t.status_color || "") === "yellow";
+      if (targetFilter === "spied" && !t.has_spy_intel) return false;
+      if (targetFilter === "spacia" && !isSpacia) return false;
+      if (targetFilter === "inactive" && !isInact) return false;
+      if (targetFilter === "debris" && !t.has_debris) return false;
+      if (!needle) return true;
+      const hay = [
+        t.coords,
+        t.target_coords,
+        t.planet_name,
+        t.owner,
+        t.status_color,
+        isSpacia ? "spacia" : "",
+        isInact ? "inactive" : "",
+        t.has_debris ? "debris" : "",
+        t.dug_in ? "dug-in" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [targets, targetFilter, espSearch]);
+
+  const filteredReports = useMemo(() => {
+    const needle = espSearch.trim().toLowerCase();
+    if (!needle) return reports;
+    return reports.filter((r) => {
+      const hay = [r.coords, r.target_coords, r.planet_name, r.owner, r.msg_date_text]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [reports, espSearch]);
 
   const targetSortCols = useMemo<
     SortColumnMap<
@@ -254,8 +347,23 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
     [originCoords]
   );
 
-  const targetSort = useTableSort(targets, targetSortCols);
-  const reportSort = useTableSort(reports, reportSortCols);
+  const targetSort = useTableSort(filteredTargets, targetSortCols);
+  const reportSort = useTableSort(filteredReports, reportSortCols);
+
+  const targetPagination = useTablePagination(
+    targetSort.sortedRows,
+    `${espTab}|${targetFilter}|${espSearch}|${targetSort.sortKey ?? ""}|${targetSort.sortDirection ?? ""}`,
+    25
+  );
+  const reportPagination = useTablePagination(
+    reportSort.sortedRows,
+    `${espTab}|${espSearch}|${reportSort.sortKey ?? ""}|${reportSort.sortDirection ?? ""}`,
+    25
+  );
+
+  const activeTabHasRows =
+    espTab === "reports" ? reports.length > 0 : targets.length > 0;
+  const usePanelLoading = isInitialLoading || (isRefreshing && !activeTabHasRows);
 
   const bestSpEq = targets.reduce(
     (acc, t) => Math.max(acc, finiteNum(t?.spice_eq, 0)),
@@ -283,6 +391,16 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
       ? "Targeted Refresh"
       : "Exploratory";
 
+  const handleRefreshEspionage = () => {
+    void runTrackedRequest("Loading espionage intel...", () => refreshEspionageView());
+  };
+
+  const handleSyncInbox = () => {
+    void runTrackedRequest("Syncing inbox folders & espionage intel...", () =>
+      syncAllInboxFolders()
+    );
+  };
+
   const handleSpyTarget = async (coords: string) => {
     try {
       showFeedback(`Dispatching spy probe to ${coords}...`, "ok");
@@ -297,7 +415,7 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
         res.message || `Spy probe sent to ${coords}.`,
         res.executed ? "ok" : "warn"
       );
-      await refreshEspionageView();
+      await runTrackedRequest("Refreshing espionage intel...", () => refreshEspionageView());
     } catch (err: any) {
       showFeedback(`Spy failed: ${err.message}`, feedbackKindForError(err));
     }
@@ -331,8 +449,10 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
         res.message || `Attack processed for ${coords}.`,
         res.executed ? "ok" : "warn"
       );
-      await loadDashboard({ refresh: false, force: true });
-      await refreshEspionageView();
+      await runTrackedRequest("Refreshing espionage intel...", async () => {
+        await loadDashboard({ refresh: false, force: true });
+        await refreshEspionageView();
+      });
     } catch (err: any) {
       showFeedback(`Attack failed: ${err.message}`, feedbackKindForError(err));
     }
@@ -394,7 +514,9 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
               className="btn btn-primary btn-sm"
               id="btn-esp-sync"
               data-testid="btn-sync-espionage"
-              onClick={syncAllInboxFolders}
+              disabled={isRefreshing}
+              aria-busy={isRefreshing}
+              onClick={handleSyncInbox}
             >
               Sync All Folders
             </button>
@@ -402,7 +524,9 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
               type="button"
               className="btn btn-secondary btn-sm"
               id="btn-esp-refresh"
-              onClick={refreshEspionageView}
+              disabled={isRefreshing}
+              aria-busy={isRefreshing}
+              onClick={handleRefreshEspionage}
             >
               Refresh DB
             </button>
@@ -425,8 +549,16 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
             <h2>Espionage Intelligence &amp; Spy Report Archive</h2>
             <span className="module-meta tabular" id="esp-meta-count">
               {espData
-                ? `${targets.length} TARGETS · ${reports.length} REPORTS${originCoords ? ` · FROM ${originCoords}` : ""}`
-                : "0 TARGETS"}
+                ? `${
+                    filteredTargets.length !== targets.length
+                      ? `${filteredTargets.length}/${targets.length}`
+                      : String(targets.length)
+                  } TARGETS · ${
+                    filteredReports.length !== reports.length
+                      ? `${filteredReports.length}/${reports.length}`
+                      : String(reports.length)
+                  } REPORTS${originCoords ? ` · FROM ${originCoords}` : ""}`
+                : "LOADING..."}
             </span>
             <span
               className="gal-cov-inline tabular"
@@ -442,27 +574,73 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
                 : "GAL --% · UNI --%"}
             </span>
           </div>
-          <div className="tab-group" role="tablist" aria-label="Espionage subtabs">
-            <button
-              type="button"
-              className={`tab-btn${espTab === "targets" ? " active" : ""}`}
-              data-esp-tab="targets"
-              onClick={() => setUiPref("espTab", "targets")}
-            >
-              Spied Targets
-            </button>
-            <button
-              type="button"
-              className={`tab-btn${espTab === "reports" ? " active" : ""}`}
-              data-esp-tab="reports"
-              onClick={() => setUiPref("espTab", "reports")}
-            >
-              Historical Spy Reports
-            </button>
+          <div className="filter-toolbar">
+            <input
+              type="search"
+              id="esp-search"
+              className="table-search-input"
+              placeholder="Search coords / player / status..."
+              aria-label="Search espionage targets and reports"
+              value={espSearch}
+              onChange={(e) => setEspSearch(e.target.value)}
+            />
+            <div className="tab-group" role="tablist" aria-label="Espionage subtabs">
+              <button
+                type="button"
+                className={`tab-btn${espTab === "targets" ? " active" : ""}`}
+                data-esp-tab="targets"
+                onClick={() => setUiPref("espTab", "targets")}
+              >
+                Spied Targets
+              </button>
+              <button
+                type="button"
+                className={`tab-btn${espTab === "reports" ? " active" : ""}`}
+                data-esp-tab="reports"
+                onClick={() => setUiPref("espTab", "reports")}
+              >
+                Historical Spy Reports
+              </button>
+            </div>
           </div>
         </div>
 
-        <div className="intel-pane" id="esp-pane-targets" hidden={espTab !== "targets"}>
+        <div className="intel-stage">
+          {showLoading ? (
+            <LoadingIndicator
+              id="esp-loading-indicator"
+              variant={usePanelLoading ? "panel" : "inline"}
+              message={loadingLabel || "Loading espionage intel..."}
+              detail={
+                !apiOnline && reconnectAttempts > 0
+                  ? "Waiting for Game API connection..."
+                  : usePanelLoading
+                    ? "Fetching spied targets and historical spy archive from SQLite"
+                    : "Refreshing espionage targets and spy reports"
+              }
+            />
+          ) : null}
+
+          <div
+            className="intel-pane"
+            id="esp-pane-targets"
+            hidden={usePanelLoading || espTab !== "targets"}
+          >
+          <div className="intel-filter-bar">
+            <div className="filter-chips" role="group" aria-label="Espionage target filters">
+              {TARGET_FILTERS.map((f) => (
+                <button
+                  key={f.key}
+                  type="button"
+                  className={`chip-btn${targetFilter === f.key ? " active" : ""}`}
+                  data-esp-filter={f.key}
+                  onClick={() => setTargetFilter(f.key)}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="table-wrap table-scroll">
             <table>
               <thead>
@@ -530,14 +708,16 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
                 </tr>
               </thead>
               <tbody id="esp-targets-tbody">
-                {targetSort.sortedRows.length === 0 ? (
+                {targetPagination.pagedRows.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="empty-cell">
-                      No espionage targets recorded yet. Run Scan Galaxy or Sync All Folders.
+                      {targets.length > 0
+                        ? "No espionage targets match the active filter or search query."
+                        : "No espionage targets recorded yet. Run Scan Galaxy or Sync All Folders."}
                     </td>
                   </tr>
                 ) : (
-                  targetSort.sortedRows.map((t, idx) => {
+                  targetPagination.pagedRows.map((t, idx) => {
                     const coords = String(t.coords || t.target_coords || "—");
                     const dist = formatEspionageDistance(t, originCoords, coords);
                     const isSpacia = Boolean(t.is_spacia);
@@ -622,9 +802,22 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            idPrefix="esp-targets"
+            totalItems={targetPagination.totalItems}
+            page={targetPagination.page}
+            pageSize={targetPagination.pageSize}
+            itemLabel="targets"
+            onPageChange={targetPagination.setPage}
+            onPageSizeChange={targetPagination.setPageSize}
+          />
         </div>
 
-        <div className="intel-pane" id="esp-pane-reports" hidden={espTab !== "reports"}>
+        <div
+          className="intel-pane"
+          id="esp-pane-reports"
+          hidden={usePanelLoading || espTab !== "reports"}
+        >
           <div className="table-wrap table-scroll">
             <table>
               <thead>
@@ -690,14 +883,16 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
                 </tr>
               </thead>
               <tbody id="esp-reports-tbody">
-                {reportSort.sortedRows.length === 0 ? (
+                {reportPagination.pagedRows.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="empty-cell">
-                      No historical spy reports stored yet.
+                      {reports.length > 0
+                        ? "No historical spy reports match the active search query."
+                        : "No historical spy reports stored yet."}
                     </td>
                   </tr>
                 ) : (
-                  reportSort.sortedRows.map((r, idx) => {
+                  reportPagination.pagedRows.map((r, idx) => {
                     const rCoords = String(r.coords || r.target_coords || "—");
                     const rDist = formatEspionageDistance(r, originCoords, rCoords);
                     const uf = finiteNum(r.uninhabited_fields, null);
@@ -740,6 +935,16 @@ export const EspionageView: React.FC<EspionageViewProps> = ({ hidden }) => {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            idPrefix="esp-reports"
+            totalItems={reportPagination.totalItems}
+            page={reportPagination.page}
+            pageSize={reportPagination.pageSize}
+            itemLabel="reports"
+            onPageChange={reportPagination.setPage}
+            onPageSizeChange={reportPagination.setPageSize}
+          />
+        </div>
         </div>
       </article>
     </section>

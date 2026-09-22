@@ -1343,4 +1343,664 @@ describe("Combat, Intel & Ranking React Feature Modules", () => {
       expect(container.querySelector("#sec-all-page-indicator")?.textContent).toBe("Page 1 / 1");
     });
   });
+
+  it("paginates EspionageView targets and historical reports, sorts full dataset first, and resets page on filter/search", async () => {
+    const manyTargets = Array.from({ length: 60 }, (_, idx) => ({
+      coords: `02:${String(101 + idx).padStart(3, "0")}:04`,
+      planet_name: idx === 45 ? "MegaVault" : `TargetPlanet-${idx + 1}`,
+      owner: idx % 2 === 0 ? "Spacia" : `Player-${idx + 1}`,
+      is_spacia: idx % 2 === 0,
+      is_inactive: idx % 2 === 1,
+      has_debris: idx % 5 === 0,
+      has_spy_intel: true,
+      resources: { pig_iron: (idx + 1) * 1000, metal: 500, kryptonite: 0, spice: 0 },
+      spice_eq: (idx + 1) * 1000,
+      fleet: {},
+      defense: {},
+    }));
+    const manyReports = Array.from({ length: 32 }, (_, idx) => ({
+      id: idx + 1,
+      ts: 1700000000 + idx * 120,
+      coords: `02:${String(201 + idx).padStart(3, "0")}:06`,
+      planet_name: `ReportPlanet-${idx + 1}`,
+      owner: `Owner-${idx + 1}`,
+      resources: { pig_iron: (idx + 1) * 500 },
+      spice_eq: (idx + 1) * 500,
+      buildings: { b1: 10 },
+      researches: { r1: 4 },
+      fleet: {},
+      defense: {},
+    }));
+
+    const { container } = render(
+      <Harness
+        page="espionage"
+        espSeed={{
+          origin_coords: "02:380:12",
+          summary: { spied_targets: 60, total_targets: 60, total_reports: 32, spacia_count: 30 },
+          targets: manyTargets,
+          reports: manyReports,
+        }}
+      >
+        <EspionageView hidden={false} />
+      </Harness>
+    );
+
+    // Default page size 25 -> Page 1 / 3
+    await waitFor(() => {
+      expect(container.querySelectorAll("#esp-targets-tbody tr").length).toBe(25);
+    });
+    expect(container.querySelector("#esp-targets-page-summary")?.textContent).toBe(
+      "Showing 1–25 of 60 targets"
+    );
+    expect(container.querySelector("#esp-targets-page-indicator")?.textContent).toBe("Page 1 / 3");
+    expect(container.querySelector("#esp-targets-tbody")?.textContent).toContain("02:101:04");
+    expect(container.querySelector("#esp-targets-tbody")?.textContent).not.toContain("02:126:04");
+
+    // Next / Prev navigation
+    fireEvent.click(container.querySelector("#esp-targets-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#esp-targets-page-indicator")?.textContent).toBe("Page 2 / 3");
+      expect(container.querySelector("#esp-targets-page-summary")?.textContent).toBe(
+        "Showing 26–50 of 60 targets"
+      );
+      expect(container.querySelector("#esp-targets-tbody")?.textContent).toContain("02:126:04");
+    });
+    fireEvent.click(container.querySelector("#esp-targets-page-prev")!);
+    await waitFor(() => {
+      expect(container.querySelector("#esp-targets-page-indicator")?.textContent).toBe("Page 1 / 3");
+      expect(container.querySelector("#esp-targets-tbody")?.textContent).toContain("02:101:04");
+    });
+
+    // Navigate to page 2, then sort by Loot SpEq (desc) -> sorts full 60 rows first AND resets to page 1
+    fireEvent.click(container.querySelector("#esp-targets-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#esp-targets-page-indicator")?.textContent).toBe("Page 2 / 3");
+    });
+    const lootBtn = Array.from(container.querySelectorAll("#esp-pane-targets th button")).find(
+      (b) => b.textContent?.trim() === "Loot SpEq"
+    ) as HTMLButtonElement;
+    fireEvent.click(lootBtn);
+    await waitFor(() => {
+      expect(container.querySelector("#esp-targets-page-indicator")?.textContent).toBe("Page 1 / 3");
+      const firstRowCoords = container
+        .querySelector("#esp-targets-tbody tr:first-child td:first-child")
+        ?.textContent?.trim();
+      expect(firstRowCoords).toBe("02:160:04");
+    });
+
+    // Navigate to page 2, then filter chip (Spacia -> 30 rows) resets to Page 1 / 2
+    fireEvent.click(container.querySelector("#esp-targets-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#esp-targets-page-indicator")?.textContent).toBe("Page 2 / 3");
+    });
+    fireEvent.click(container.querySelector('[data-esp-filter="spacia"]')!);
+    await waitFor(() => {
+      expect(container.querySelector("#esp-targets-page-indicator")?.textContent).toBe("Page 1 / 2");
+      expect(container.querySelector("#esp-targets-page-summary")?.textContent).toBe(
+        "Showing 1–25 of 30 targets"
+      );
+    });
+
+    // Change page size to 50 -> resets to Page 1 / 1 with all 30 Spacia targets
+    fireEvent.change(container.querySelector("#esp-targets-page-size")!, {
+      target: { value: "50" },
+    });
+    await waitFor(() => {
+      expect(container.querySelector("#esp-targets-page-indicator")?.textContent).toBe("Page 1 / 1");
+      expect(container.querySelectorAll("#esp-targets-tbody tr").length).toBe(30);
+    });
+
+    // Reset filter to All, jump to Page 2, then quick search resets to Page 1
+    fireEvent.click(container.querySelector('[data-esp-filter="all"]')!);
+    await waitFor(() => {
+      expect(container.querySelector("#esp-targets-page-indicator")?.textContent).toBe("Page 1 / 2");
+    });
+    fireEvent.click(container.querySelector("#esp-targets-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#esp-targets-page-indicator")?.textContent).toBe("Page 2 / 2");
+    });
+    fireEvent.change(container.querySelector("#esp-search")!, { target: { value: "MegaVault" } });
+    await waitFor(() => {
+      expect(container.querySelector("#esp-targets-page-indicator")?.textContent).toBe("Page 1 / 1");
+      expect(container.querySelectorAll("#esp-targets-tbody tr").length).toBe(1);
+      expect(container.querySelector("#esp-targets-tbody")?.textContent).toContain("02:146:04");
+    });
+
+    // Clear search & verify Historical Spy Reports tab pagination (32 reports -> 25 + 7)
+    fireEvent.change(container.querySelector("#esp-search")!, { target: { value: "" } });
+    fireEvent.click(container.querySelector('[data-esp-tab="reports"]')!);
+    await waitFor(() => {
+      expect(container.querySelectorAll("#esp-reports-tbody tr").length).toBe(25);
+      expect(container.querySelector("#esp-reports-page-summary")?.textContent).toBe(
+        "Showing 1–25 of 32 reports"
+      );
+    });
+    fireEvent.click(container.querySelector("#esp-reports-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#esp-reports-page-indicator")?.textContent).toBe("Page 2 / 2");
+      expect(container.querySelectorAll("#esp-reports-tbody tr").length).toBe(7);
+    });
+  });
+
+  it("paginates AttacksView battle reports and bash blocks and resets page on filter/search/sort", async () => {
+    const manyBattles = Array.from({ length: 58 }, (_, idx) => ({
+      id: idx + 1,
+      ts: 1700001000 + idx * 60,
+      coords: `02:${String(101 + idx).padStart(3, "0")}:02`,
+      defender_name: idx === 50 ? "BossDefender" : `Defender-${idx + 1}`,
+      outcome: idx % 3 === 0 ? "win" : idx % 3 === 1 ? "loss" : "draw",
+      rounds: (idx % 6) + 1,
+      loot: { pig_iron: (idx + 1) * 500, spice_eq: (idx + 1) * 500 },
+      attacker_losses: { spice_eq: 100 },
+      defender_losses: { spice_eq: 200 },
+      debris: idx % 4 === 0 ? { pig_iron: 5000, metal: 2000 } : { pig_iron: 0, metal: 0 },
+    }));
+    const manyBlocks = Array.from({ length: 30 }, (_, idx) => ({
+      coords: `03:${String(101 + idx).padStart(3, "0")}:09`,
+      owner: `BlockedOwner-${idx + 1}`,
+      bash_hits: 3,
+      active_block: idx < 18,
+      remaining_seconds: idx < 18 ? 3600 + idx * 60 : 0,
+      block_reason: "3/24h bash protection",
+    }));
+
+    const { container } = render(
+      <Harness
+        page="attacks"
+        atkSeed={{
+          summary: { total_battles: 58, wins: 20, losses: 19, draws: 19, active_blocks_count: 18 },
+          raid_stats: { total_24h: 12 },
+          battles: manyBattles,
+          blocked_targets: manyBlocks,
+        }}
+      >
+        <AttacksView hidden={false} />
+      </Harness>
+    );
+
+    await waitFor(() => {
+      expect(container.querySelectorAll("#atk-battles-tbody tr").length).toBe(25);
+    });
+    expect(container.querySelector("#atk-battles-page-summary")?.textContent).toBe(
+      "Showing 1–25 of 58 reports"
+    );
+    expect(container.querySelector("#atk-battles-page-indicator")?.textContent).toBe("Page 1 / 3");
+
+    // Next & Prev navigation
+    fireEvent.click(container.querySelector("#atk-battles-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#atk-battles-page-indicator")?.textContent).toBe("Page 2 / 3");
+      expect(container.querySelector("#atk-battles-tbody")?.textContent).toContain("02:126:02");
+    });
+
+    // Sort by Plundered Loot desc -> sorts full 58 reports first and resets to page 1 (02:158:02 at top)
+    const lootBtn = Array.from(container.querySelectorAll("#atk-pane-battles th button")).find(
+      (b) => b.textContent?.trim() === "Plundered Loot"
+    ) as HTMLButtonElement;
+    fireEvent.click(lootBtn);
+    await waitFor(() => {
+      expect(container.querySelector("#atk-battles-page-indicator")?.textContent).toBe("Page 1 / 3");
+      expect(container.querySelector("#atk-battles-tbody tr:first-child")?.textContent).toContain(
+        "02:158:02"
+      );
+    });
+
+    // Go to Page 2 then filter by Wins -> resets to Page 1 / 1 (20 wins)
+    fireEvent.click(container.querySelector("#atk-battles-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#atk-battles-page-indicator")?.textContent).toBe("Page 2 / 3");
+    });
+    fireEvent.click(container.querySelector('[data-atk-outcome="win"]')!);
+    await waitFor(() => {
+      expect(container.querySelector("#atk-battles-page-indicator")?.textContent).toBe("Page 1 / 1");
+      expect(container.querySelectorAll("#atk-battles-tbody tr").length).toBe(20);
+    });
+
+    // Search resets cleanly and finds BossDefender on All Outcomes
+    fireEvent.click(container.querySelector('[data-atk-outcome="all"]')!);
+    fireEvent.change(container.querySelector("#atk-search")!, { target: { value: "BossDefender" } });
+    await waitFor(() => {
+      expect(container.querySelectorAll("#atk-battles-tbody tr").length).toBe(1);
+      expect(container.querySelector("#atk-battles-tbody")?.textContent).toContain("02:151:02");
+    });
+
+    // Blocks subtab paginates 30 -> 25 + 5 and preserves Spy action button
+    fireEvent.change(container.querySelector("#atk-search")!, { target: { value: "" } });
+    fireEvent.click(container.querySelector('[data-atk-tab="blocks"]')!);
+    await waitFor(() => {
+      expect(container.querySelectorAll("#atk-blocks-tbody tr").length).toBe(25);
+      expect(container.querySelector("#atk-blocks-page-indicator")?.textContent).toBe("Page 1 / 2");
+    });
+    fireEvent.click(container.querySelector("#atk-blocks-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#atk-blocks-page-indicator")?.textContent).toBe("Page 2 / 2");
+      expect(container.querySelectorAll("#atk-blocks-tbody tr").length).toBe(5);
+    });
+    fireEvent.click(container.querySelector('[data-atk-block-filter="active"]')!);
+    await waitFor(() => {
+      expect(container.querySelector("#atk-blocks-page-indicator")?.textContent).toBe("Page 1 / 1");
+      expect(container.querySelectorAll("#atk-blocks-tbody tr").length).toBe(18);
+    });
+  });
+
+  it("paginates RecyclersView harvests, debris, and emails and resets page on filter/search/category", async () => {
+    const manyRecycles = Array.from({ length: 55 }, (_, idx) => ({
+      id: idx + 1,
+      ts: 1700002000 + idx * 60,
+      coords: `02:${String(101 + idx).padStart(3, "0")}:05`,
+      recycler_count: 4,
+      cargo_capacity: 80000,
+      harvested_pig_iron: (idx + 1) * 1000,
+      harvested_metal: (idx + 1) * 500,
+      spice_eq: (idx + 1) * 1200,
+    }));
+    const manyDebris = Array.from({ length: 28 }, (_, idx) => ({
+      coords: `02:${String(201 + idx).padStart(3, "0")}:07`,
+      planet_name: `DebrisSite-${idx + 1}`,
+      owner: idx === 26 ? "SpecialPirate" : `Owner-${idx + 1}`,
+      last_scanned_ts: 1700003000 + idx * 60,
+    }));
+    const manyEmails = Array.from({ length: 34 }, (_, idx) => ({
+      msg_uid: `uid:${idx + 1}`,
+      ts: 1700004000 + idx * 60,
+      folder_type: "fleet",
+      category: idx % 2 === 0 ? "fleet_return" : "general",
+      sender: "System",
+      subject: `Notice #${idx + 1}`,
+      coords: `02:${String(301 + idx).padStart(3, "0")}:12`,
+      body_text: `Fleet notice payload #${idx + 1}`,
+    }));
+
+    const { container } = render(
+      <Harness
+        page="recyclers"
+        recSeed={{
+          summary: {
+            total_runs: 55,
+            recyclers_owned: 10,
+            total_spice_eq: 500000,
+            active_debris_count: 28,
+            other_email_count: 34,
+          },
+          recycles: manyRecycles,
+          debris_targets: manyDebris,
+          other_emails: manyEmails,
+        }}
+      >
+        <RecyclersView hidden={false} />
+      </Harness>
+    );
+
+    // Harvests tab: 55 rows -> Page 1 / 3 (25 rows)
+    await waitFor(() => {
+      expect(container.querySelectorAll("#rec-harvests-tbody tr").length).toBe(25);
+    });
+    expect(container.querySelector("#rec-harvests-page-summary")?.textContent).toBe(
+      "Showing 1–25 of 55 harvests"
+    );
+    expect(container.querySelector("#rec-harvests-page-indicator")?.textContent).toBe("Page 1 / 3");
+    fireEvent.click(container.querySelector("#rec-harvests-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#rec-harvests-page-indicator")?.textContent).toBe("Page 2 / 3");
+      expect(container.querySelector("#rec-harvests-tbody")?.textContent).toContain("02:126:05");
+    });
+
+    // Sort Harvest SpEq desc -> sorts full 55 rows first (02:155:05 rises to Page 1) and resets to Page 1
+    const spEqBtn = Array.from(container.querySelectorAll("#rec-pane-harvests th button")).find(
+      (b) => b.textContent?.trim() === "Harvest SpEq"
+    ) as HTMLButtonElement;
+    fireEvent.click(spEqBtn);
+    await waitFor(() => {
+      expect(container.querySelector("#rec-harvests-page-indicator")?.textContent).toBe("Page 1 / 3");
+      expect(container.querySelector("#rec-harvests-tbody tr:first-child")?.textContent).toContain(
+        "02:155:05"
+      );
+    });
+
+    // Debris tab: 28 rows -> 25 on Page 1, 3 on Page 2; search resets to Page 1 and preserves Recycle action
+    fireEvent.click(container.querySelector('[data-rec-tab="debris"]')!);
+    await waitFor(() => {
+      expect(container.querySelectorAll("#rec-debris-tbody tr").length).toBe(25);
+      expect(container.querySelector("#rec-debris-page-indicator")?.textContent).toBe("Page 1 / 2");
+    });
+    fireEvent.click(container.querySelector("#rec-debris-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#rec-debris-page-indicator")?.textContent).toBe("Page 2 / 2");
+      expect(container.querySelectorAll("#rec-debris-tbody tr").length).toBe(3);
+    });
+    fireEvent.change(container.querySelector("#rec-search")!, { target: { value: "SpecialPirate" } });
+    await waitFor(() => {
+      expect(container.querySelector("#rec-debris-page-indicator")?.textContent).toBe("Page 1 / 1");
+      expect(container.querySelectorAll("#rec-debris-tbody tr").length).toBe(1);
+      expect(container.querySelector("#rec-debris-tbody")?.textContent).toContain("02:227:07");
+    });
+
+    // Emails tab: 34 rows -> 25 + 9; navigating to Page 2 then clicking category chip resets to Page 1
+    fireEvent.change(container.querySelector("#rec-search")!, { target: { value: "" } });
+    fireEvent.click(container.querySelector('[data-rec-tab="emails"]')!);
+    await waitFor(() => {
+      expect(container.querySelectorAll("#rec-emails-tbody tr").length).toBe(25);
+      expect(container.querySelector("#rec-emails-page-indicator")?.textContent).toBe("Page 1 / 2");
+    });
+    fireEvent.click(container.querySelector("#rec-emails-page-next")!);
+    await waitFor(() => {
+      expect(container.querySelector("#rec-emails-page-indicator")?.textContent).toBe("Page 2 / 2");
+      expect(container.querySelectorAll("#rec-emails-tbody tr").length).toBe(9);
+    });
+    fireEvent.click(container.querySelector('[data-email-cat="fleet_return"]')!);
+    await waitFor(() => {
+      expect(container.querySelector("#rec-emails-page-indicator")?.textContent).toBe("Page 1 / 1");
+    });
+  });
+
+  it("shows pure-CSS animated loading messages on Espionage, Attacks, and Recyclers during initial load and active refresh without adding any SVG", async () => {
+    // 1. Initial load state (before dashboard or view data has populated)
+    const initialRender = render(
+      <ConsoleProvider disableInitialFetch>
+        <EspionageView hidden={false} />
+        <AttacksView hidden={false} />
+        <RecyclersView hidden={false} />
+      </ConsoleProvider>
+    );
+
+    const espLoader = initialRender.container.querySelector("#esp-loading-indicator");
+    const atkLoader = initialRender.container.querySelector("#atk-loading-indicator");
+    const recLoader = initialRender.container.querySelector("#rec-loading-indicator");
+
+    expect(espLoader).not.toBeNull();
+    expect(atkLoader).not.toBeNull();
+    expect(recLoader).not.toBeNull();
+
+    expect(espLoader?.getAttribute("role")).toBe("status");
+    expect(espLoader?.getAttribute("aria-live")).toBe("polite");
+    expect(espLoader?.getAttribute("data-loading-variant")).toBe("panel");
+    expect(espLoader?.textContent).toContain("Loading espionage intel...");
+    expect(espLoader?.querySelector(".intel-loading-spinner")).not.toBeNull();
+    expect(espLoader?.querySelectorAll(".intel-loading-dot").length).toBe(3);
+
+    expect(atkLoader?.getAttribute("role")).toBe("status");
+    expect(atkLoader?.getAttribute("aria-live")).toBe("polite");
+    expect(atkLoader?.getAttribute("data-loading-variant")).toBe("panel");
+    expect(atkLoader?.textContent).toContain("Loading attack results...");
+
+    expect(recLoader?.getAttribute("role")).toBe("status");
+    expect(recLoader?.getAttribute("aria-live")).toBe("polite");
+    expect(recLoader?.getAttribute("data-loading-variant")).toBe("panel");
+    expect(recLoader?.textContent).toContain("Loading recycler reports...");
+
+    // Strict zero-SVG invariant across all 3 views & loading indicators
+    expect(initialRender.container.querySelectorAll("svg").length).toBe(0);
+
+    initialRender.unmount();
+
+    // 2. Active manual Refresh DB requests show sleek inline banner while keeping existing rows visible
+    let resolveEsp!: () => void;
+    let resolveAtk!: () => void;
+    let resolveRec!: () => void;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opts?: RequestInit) => {
+        if (String(url).startsWith("/dashboard")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(SAMPLE_DASHBOARD),
+          });
+        }
+        const body = opts?.body ? JSON.parse(String(opts.body)) : {};
+        if (body.command === "espionage_intel") {
+          return new Promise((resolve) => {
+            resolveEsp = () =>
+              resolve({
+                ok: true,
+                status: 200,
+                text: async () =>
+                  JSON.stringify({
+                    ok: true,
+                    origin_coords: "02:380:12",
+                    summary: { total_targets: 1, spied_targets: 1, total_reports: 0 },
+                    targets: [{ coords: "02:383:02", planet_name: "RefreshedTarget", owner: "Spacia", is_spacia: true, has_spy_intel: true, spice_eq: 12000 }],
+                    reports: [],
+                  }),
+              });
+          });
+        }
+        if (body.command === "attack_results") {
+          return new Promise((resolve) => {
+            resolveAtk = () =>
+              resolve({
+                ok: true,
+                status: 200,
+                text: async () =>
+                  JSON.stringify({
+                    ok: true,
+                    summary: { total_battles: 1, wins: 1 },
+                    raid_stats: { total_24h: 1 },
+                    battles: [{ id: 2, coords: "02:384:02", defender_name: "RefreshedDef", outcome: "win", rounds: 1 }],
+                    blocked_targets: [],
+                  }),
+              });
+          });
+        }
+        if (body.command === "recycler_results") {
+          return new Promise((resolve) => {
+            resolveRec = () =>
+              resolve({
+                ok: true,
+                status: 200,
+                text: async () =>
+                  JSON.stringify({
+                    ok: true,
+                    summary: { total_runs: 1 },
+                    recycles: [{ id: 2, coords: "02:385:05", harvested_pig_iron: 5000, harvested_metal: 2000, spice_eq: 4000 }],
+                    debris_targets: [],
+                    other_emails: [],
+                  }),
+              });
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ ok: true }),
+        });
+      })
+    );
+
+    const { container } = render(
+      <Harness
+        page="espionage"
+        espSeed={{
+          origin_coords: "02:380:12",
+          summary: { total_targets: 1, spied_targets: 1 },
+          targets: [{ coords: "02:381:01", planet_name: "ExistingTarget", owner: "Alpha", has_spy_intel: true, spice_eq: 5000 }],
+          reports: [],
+        }}
+        atkSeed={{
+          summary: { total_battles: 1, wins: 1 },
+          raid_stats: { total_24h: 1 },
+          battles: [{ id: 1, coords: "02:382:01", defender_name: "ExistingDef", outcome: "win", rounds: 1 }],
+          blocked_targets: [],
+        }}
+        recSeed={{
+          summary: { total_runs: 1 },
+          recycles: [{ id: 1, coords: "02:383:01", harvested_pig_iron: 1000, harvested_metal: 500, spice_eq: 900 }],
+          debris_targets: [],
+          other_emails: [],
+        }}
+      >
+        <EspionageView hidden={false} />
+        <AttacksView hidden={false} />
+        <RecyclersView hidden={false} />
+      </Harness>
+    );
+
+    // Seeded data loaded -> no loading indicators shown initially
+    await waitFor(() => {
+      expect(container.querySelector("#esp-targets-tbody")?.textContent).toContain("ExistingTarget");
+      expect(container.querySelector("#atk-battles-tbody")?.textContent).toContain("ExistingDef");
+      expect(container.querySelector("#rec-harvests-tbody")?.textContent).toContain("02:383:01");
+    });
+    expect(container.querySelector("#esp-loading-indicator")).toBeNull();
+    expect(container.querySelector("#atk-loading-indicator")).toBeNull();
+    expect(container.querySelector("#rec-loading-indicator")).toBeNull();
+
+    // Trigger Refresh DB on all 3 views -> non-layout-shifting inline overlay banners inside .intel-stage
+    fireEvent.click(container.querySelector("#btn-esp-refresh")!);
+    fireEvent.click(container.querySelector("#btn-atk-refresh")!);
+    fireEvent.click(container.querySelector("#btn-rec-refresh")!);
+
+    await waitFor(() => {
+      expect(container.querySelector("#esp-loading-indicator")?.getAttribute("data-loading-variant")).toBe("inline");
+      expect(container.querySelector("#atk-loading-indicator")?.getAttribute("data-loading-variant")).toBe("inline");
+      expect(container.querySelector("#rec-loading-indicator")?.getAttribute("data-loading-variant")).toBe("inline");
+    });
+    expect(container.querySelector("#esp-loading-indicator")?.closest(".intel-stage")).not.toBeNull();
+    expect(container.querySelector("#atk-loading-indicator")?.closest(".intel-stage")).not.toBeNull();
+    expect(container.querySelector("#rec-loading-indicator")?.closest(".intel-stage")).not.toBeNull();
+    expect(container.querySelector("#esp-targets-tbody")?.textContent).toContain("ExistingTarget");
+    expect(container.querySelector("#atk-battles-tbody")?.textContent).toContain("ExistingDef");
+    expect(container.querySelector("#rec-harvests-tbody")?.textContent).toContain("02:383:01");
+    expect(container.querySelectorAll("svg").length).toBe(0);
+
+    // Resolve deferred fetches -> loaders clear and refreshed rows render
+    resolveEsp();
+    resolveAtk();
+    resolveRec();
+
+    await waitFor(() => {
+      expect(container.querySelector("#esp-loading-indicator")).toBeNull();
+      expect(container.querySelector("#atk-loading-indicator")).toBeNull();
+      expect(container.querySelector("#rec-loading-indicator")).toBeNull();
+      expect(container.querySelector("#esp-targets-tbody")?.textContent).toContain("RefreshedTarget");
+      expect(container.querySelector("#atk-battles-tbody")?.textContent).toContain("RefreshedDef");
+      expect(container.querySelector("#rec-harvests-tbody")?.textContent).toContain("02:385:05");
+    });
+
+    // 3. Empty-table manual refresh uses full panel loader (no stale rows to preserve)
+    //    AND shrinking dataset clamps current page back within valid bounds.
+    let resolveEmptyEsp!: () => void;
+    let espCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opts?: RequestInit) => {
+        if (String(url).startsWith("/dashboard")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(SAMPLE_DASHBOARD),
+          });
+        }
+        const body = opts?.body ? JSON.parse(String(opts.body)) : {};
+        if (body.command === "espionage_intel") {
+          espCalls += 1;
+          if (espCalls === 1) {
+            return new Promise((resolve) => {
+              resolveEmptyEsp = () =>
+                resolve({
+                  ok: true,
+                  status: 200,
+                  text: async () =>
+                    JSON.stringify({
+                      ok: true,
+                      origin_coords: "02:380:12",
+                      summary: { total_targets: 30, spied_targets: 30, total_reports: 0 },
+                      targets: Array.from({ length: 30 }, (_, idx) => ({
+                        coords: `02:${String(101 + idx).padStart(3, "0")}:04`,
+                        planet_name: `Target-${idx + 1}`,
+                        owner: "Spacia",
+                        is_spacia: true,
+                        has_spy_intel: true,
+                        spice_eq: 1000,
+                      })),
+                      reports: [],
+                    }),
+                });
+            });
+          }
+          // Second refresh shrinks total rows from 30 -> 5 so Page 2 must clamp to Page 1 / 1
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                ok: true,
+                origin_coords: "02:380:12",
+                summary: { total_targets: 5, spied_targets: 5, total_reports: 0 },
+                targets: Array.from({ length: 5 }, (_, idx) => ({
+                  coords: `02:${String(201 + idx).padStart(3, "0")}:04`,
+                  planet_name: `ShrunkTarget-${idx + 1}`,
+                  owner: "Spacia",
+                  is_spacia: true,
+                  has_spy_intel: true,
+                  spice_eq: 2000,
+                })),
+                reports: [],
+              }),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ ok: true }),
+        });
+      })
+    );
+
+    const emptyRefreshRender = render(
+      <Harness
+        page="espionage"
+        espSeed={{
+          origin_coords: "02:380:12",
+          summary: { total_targets: 0, spied_targets: 0, total_reports: 0 },
+          targets: [],
+          reports: [],
+        }}
+      >
+        <EspionageView hidden={false} />
+      </Harness>
+    );
+
+    await waitFor(() => {
+      expect(emptyRefreshRender.container.querySelector("#esp-loading-indicator")).toBeNull();
+    });
+    fireEvent.click(emptyRefreshRender.container.querySelector("#btn-esp-refresh")!);
+    await waitFor(() => {
+      expect(
+        emptyRefreshRender.container
+          .querySelector("#esp-loading-indicator")
+          ?.getAttribute("data-loading-variant")
+      ).toBe("panel");
+    });
+
+    resolveEmptyEsp();
+    await waitFor(() => {
+      expect(
+        emptyRefreshRender.container.querySelector("#esp-targets-page-indicator")?.textContent
+      ).toBe("Page 1 / 2");
+    });
+
+    // Advance to Page 2, then trigger Refresh DB returning only 5 rows -> clamps to Page 1 / 1
+    fireEvent.click(emptyRefreshRender.container.querySelector("#esp-targets-page-next")!);
+    await waitFor(() => {
+      expect(
+        emptyRefreshRender.container.querySelector("#esp-targets-page-indicator")?.textContent
+      ).toBe("Page 2 / 2");
+    });
+    fireEvent.click(emptyRefreshRender.container.querySelector("#btn-esp-refresh")!);
+    await waitFor(() => {
+      expect(
+        emptyRefreshRender.container.querySelector("#esp-targets-page-indicator")?.textContent
+      ).toBe("Page 1 / 1");
+      expect(
+        emptyRefreshRender.container.querySelectorAll("#esp-targets-tbody tr").length
+      ).toBe(5);
+      expect(
+        emptyRefreshRender.container.querySelector("#esp-targets-tbody")?.textContent
+      ).toContain("ShrunkTarget-1");
+    });
+    emptyRefreshRender.unmount();
+  });
 });

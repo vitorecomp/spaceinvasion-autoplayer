@@ -1,6 +1,8 @@
-import React, { useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { feedbackKindForError } from "../../api/httpClient";
+import { LoadingIndicator } from "../../components/LoadingIndicator";
 import { SortableTh } from "../../components/SortableTh";
+import { TablePagination, useTablePagination } from "../../components/TablePagination";
 import { useConsole } from "../../context/ConsoleContext";
 import {
   coordsSortKey,
@@ -20,8 +22,27 @@ export interface AttacksViewProps {
   hidden?: boolean;
 }
 
+type BattleOutcomeFilter = "all" | "win" | "loss" | "draw" | "debris";
+type BlockStatusFilter = "all" | "active" | "cleared";
+
+const BATTLE_OUTCOME_FILTERS: ReadonlyArray<{ key: BattleOutcomeFilter; label: string }> = [
+  { key: "all", label: "All Outcomes" },
+  { key: "win", label: "Wins" },
+  { key: "loss", label: "Losses" },
+  { key: "draw", label: "Draws" },
+  { key: "debris", label: "Debris Created" },
+];
+
+const BLOCK_STATUS_FILTERS: ReadonlyArray<{ key: BlockStatusFilter; label: string }> = [
+  { key: "all", label: "All Blocks" },
+  { key: "active", label: "Active Cooldown" },
+  { key: "cleared", label: "Cleared" },
+];
+
 export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
   const {
+    apiOnline,
+    reconnectAttempts,
     activePage,
     activePlanet,
     atkData,
@@ -36,15 +57,92 @@ export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
   const isHidden = hidden ?? activePage !== "attacks";
   const atkTab = uiPrefs.atkTab === "blocks" ? "blocks" : "battles";
 
+  const [atkSearch, setAtkSearch] = useState<string>("");
+  const [outcomeFilter, setOutcomeFilter] = useState<BattleOutcomeFilter>("all");
+  const [blockFilter, setBlockFilter] = useState<BlockStatusFilter>("all");
+  const [loadingCount, setLoadingCount] = useState<number>(0);
+  const [loadingLabel, setLoadingLabel] = useState<string | null>(null);
+  const mountedRef = useRef<boolean>(true);
+  const activeReqCountRef = useRef<number>(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const runTrackedRequest = useCallback(async (label: string, fn: () => Promise<unknown>) => {
+    activeReqCountRef.current += 1;
+    if (mountedRef.current) {
+      setLoadingCount(activeReqCountRef.current);
+      setLoadingLabel(label);
+    }
+    try {
+      await fn();
+    } finally {
+      activeReqCountRef.current = Math.max(0, activeReqCountRef.current - 1);
+      if (mountedRef.current) {
+        setLoadingCount(activeReqCountRef.current);
+        if (activeReqCountRef.current === 0) {
+          setLoadingLabel(null);
+        }
+      }
+    }
+  }, []);
+
+  const isInitialLoading = atkData === null;
+  const isRefreshing = loadingCount > 0;
+  const showLoading = isInitialLoading || isRefreshing;
+
   const sum = atkData?.summary || {};
   const rStats = atkData?.raid_stats || {};
-  const battles: Array<Record<string, any>> = Array.isArray(atkData?.battles)
-    ? atkData!.battles
-    : [];
-  const blocks: Array<Record<string, any>> = Array.isArray(atkData?.blocked_targets)
-    ? atkData!.blocked_targets
-    : [];
+  const battles: Array<Record<string, any>> = useMemo(
+    () => (Array.isArray(atkData?.battles) ? atkData!.battles : []),
+    [atkData]
+  );
+  const blocks: Array<Record<string, any>> = useMemo(
+    () => (Array.isArray(atkData?.blocked_targets) ? atkData!.blocked_targets : []),
+    [atkData]
+  );
   const raids24 = Math.round(finiteNum(rStats.total_24h, 0));
+
+  const filteredBattles = useMemo(() => {
+    const needle = atkSearch.trim().toLowerCase();
+    return battles.filter((b) => {
+      const outVal = String(b.outcome || "draw").toLowerCase();
+      if (outcomeFilter === "win" && outVal !== "win") return false;
+      if (outcomeFilter === "loss" && outVal !== "loss") return false;
+      if (outcomeFilter === "draw" && outVal !== "draw") return false;
+      if (
+        outcomeFilter === "debris" &&
+        finiteNum(b.debris?.pig_iron, 0) + finiteNum(b.debris?.metal, 0) <= 0
+      ) {
+        return false;
+      }
+      if (!needle) return true;
+      const hay = [b.coords, b.defender_name, b.subject, outVal, b.msg_date_text]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [battles, outcomeFilter, atkSearch]);
+
+  const filteredBlocks = useMemo(() => {
+    const needle = atkSearch.trim().toLowerCase();
+    return blocks.filter((bt) => {
+      const isActive = Boolean(bt.active_block);
+      if (blockFilter === "active" && !isActive) return false;
+      if (blockFilter === "cleared" && isActive) return false;
+      if (!needle) return true;
+      const hay = [bt.coords, bt.planet_name, bt.owner, bt.block_reason]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [blocks, blockFilter, atkSearch]);
 
   const battleSortCols = useMemo<
     SortColumnMap<
@@ -104,8 +202,31 @@ export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
     []
   );
 
-  const battleSort = useTableSort(battles, battleSortCols);
-  const blockSort = useTableSort(blocks, blockSortCols);
+  const battleSort = useTableSort(filteredBattles, battleSortCols);
+  const blockSort = useTableSort(filteredBlocks, blockSortCols);
+
+  const battlePagination = useTablePagination(
+    battleSort.sortedRows,
+    `${atkTab}|${outcomeFilter}|${atkSearch}|${battleSort.sortKey ?? ""}|${battleSort.sortDirection ?? ""}`,
+    25
+  );
+  const blockPagination = useTablePagination(
+    blockSort.sortedRows,
+    `${atkTab}|${blockFilter}|${atkSearch}|${blockSort.sortKey ?? ""}|${blockSort.sortDirection ?? ""}`,
+    25
+  );
+
+  const activeTabHasRows =
+    atkTab === "blocks" ? blocks.length > 0 : battles.length > 0;
+  const usePanelLoading = isInitialLoading || (isRefreshing && !activeTabHasRows);
+
+  const handleRefreshAttacks = () => {
+    void runTrackedRequest("Loading attack results...", () => refreshAttacksView());
+  };
+
+  const handleSyncInbox = () => {
+    void runTrackedRequest("Syncing inbox folders & attack results...", () => syncAllInboxFolders());
+  };
 
   const handleSpyBlockTarget = async (coords: string) => {
     try {
@@ -169,7 +290,9 @@ export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
               type="button"
               className="btn btn-primary btn-sm"
               id="btn-atk-sync"
-              onClick={syncAllInboxFolders}
+              disabled={isRefreshing}
+              aria-busy={isRefreshing}
+              onClick={handleSyncInbox}
             >
               Sync All Folders
             </button>
@@ -177,7 +300,9 @@ export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
               type="button"
               className="btn btn-secondary btn-sm"
               id="btn-atk-refresh"
-              onClick={refreshAttacksView}
+              disabled={isRefreshing}
+              aria-busy={isRefreshing}
+              onClick={handleRefreshAttacks}
             >
               Refresh DB
             </button>
@@ -192,31 +317,85 @@ export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
             <h2>Combat Reports, Plunder &amp; Bash Timeouts</h2>
             <span className="module-meta tabular" id="atk-meta-count">
               {atkData
-                ? `${battles.length} REPORTS · ${blocks.length} BLOCKS`
-                : "0 REPORTS"}
+                ? `${
+                    filteredBattles.length !== battles.length
+                      ? `${filteredBattles.length}/${battles.length}`
+                      : String(battles.length)
+                  } REPORTS · ${
+                    filteredBlocks.length !== blocks.length
+                      ? `${filteredBlocks.length}/${blocks.length}`
+                      : String(blocks.length)
+                  } BLOCKS`
+                : "LOADING..."}
             </span>
           </div>
-          <div className="tab-group" role="tablist" aria-label="Attack view subtabs">
-            <button
-              type="button"
-              className={`tab-btn${atkTab === "battles" ? " active" : ""}`}
-              data-atk-tab="battles"
-              onClick={() => setUiPref("atkTab", "battles")}
-            >
-              Battle Reports
-            </button>
-            <button
-              type="button"
-              className={`tab-btn${atkTab === "blocks" ? " active" : ""}`}
-              data-atk-tab="blocks"
-              onClick={() => setUiPref("atkTab", "blocks")}
-            >
-              Bash &amp; Server Blocks
-            </button>
+          <div className="filter-toolbar">
+            <input
+              type="search"
+              id="atk-search"
+              className="table-search-input"
+              placeholder="Search coords / defender / reason..."
+              aria-label="Search battle reports and blocks"
+              value={atkSearch}
+              onChange={(e) => setAtkSearch(e.target.value)}
+            />
+            <div className="tab-group" role="tablist" aria-label="Attack view subtabs">
+              <button
+                type="button"
+                className={`tab-btn${atkTab === "battles" ? " active" : ""}`}
+                data-atk-tab="battles"
+                onClick={() => setUiPref("atkTab", "battles")}
+              >
+                Battle Reports
+              </button>
+              <button
+                type="button"
+                className={`tab-btn${atkTab === "blocks" ? " active" : ""}`}
+                data-atk-tab="blocks"
+                onClick={() => setUiPref("atkTab", "blocks")}
+              >
+                Bash &amp; Server Blocks
+              </button>
+            </div>
           </div>
         </div>
 
-        <div className="intel-pane" id="atk-pane-battles" hidden={atkTab !== "battles"}>
+        <div className="intel-stage">
+          {showLoading ? (
+            <LoadingIndicator
+              id="atk-loading-indicator"
+              variant={usePanelLoading ? "panel" : "inline"}
+              message={loadingLabel || "Loading attack results..."}
+              detail={
+                !apiOnline && reconnectAttempts > 0
+                  ? "Waiting for Game API connection..."
+                  : usePanelLoading
+                    ? "Fetching archived battle reports and bash cooldown records from SQLite"
+                    : "Refreshing battle reports and bash protection status"
+              }
+            />
+          ) : null}
+
+          <div
+            className="intel-pane"
+            id="atk-pane-battles"
+            hidden={usePanelLoading || atkTab !== "battles"}
+          >
+          <div className="intel-filter-bar">
+            <div className="filter-chips" role="group" aria-label="Battle outcome filters">
+              {BATTLE_OUTCOME_FILTERS.map((f) => (
+                <button
+                  key={f.key}
+                  type="button"
+                  className={`chip-btn${outcomeFilter === f.key ? " active" : ""}`}
+                  data-atk-outcome={f.key}
+                  onClick={() => setOutcomeFilter(f.key)}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="table-wrap table-scroll">
             <table>
               <thead>
@@ -281,14 +460,16 @@ export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
                 </tr>
               </thead>
               <tbody id="atk-battles-tbody">
-                {battleSort.sortedRows.length === 0 ? (
+                {battlePagination.pagedRows.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="empty-cell">
-                      Click Sync All Folders to archive in-game battle reports.
+                      {battles.length > 0
+                        ? "No battle reports match the active filter or search query."
+                        : "Click Sync All Folders to archive in-game battle reports."}
                     </td>
                   </tr>
                 ) : (
-                  battleSort.sortedRows.map((b, idx) => {
+                  battlePagination.pagedRows.map((b, idx) => {
                     const outVal = String(b.outcome || "draw").toLowerCase();
                     const outCls =
                       outVal === "win" ? "is-win" : outVal === "loss" ? "is-loss" : "is-draw";
@@ -333,9 +514,37 @@ export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            idPrefix="atk-battles"
+            totalItems={battlePagination.totalItems}
+            page={battlePagination.page}
+            pageSize={battlePagination.pageSize}
+            itemLabel="reports"
+            onPageChange={battlePagination.setPage}
+            onPageSizeChange={battlePagination.setPageSize}
+          />
         </div>
 
-        <div className="intel-pane" id="atk-pane-blocks" hidden={atkTab !== "blocks"}>
+        <div
+          className="intel-pane"
+          id="atk-pane-blocks"
+          hidden={usePanelLoading || atkTab !== "blocks"}
+        >
+          <div className="intel-filter-bar">
+            <div className="filter-chips" role="group" aria-label="Block status filters">
+              {BLOCK_STATUS_FILTERS.map((f) => (
+                <button
+                  key={f.key}
+                  type="button"
+                  className={`chip-btn${blockFilter === f.key ? " active" : ""}`}
+                  data-atk-block-filter={f.key}
+                  onClick={() => setBlockFilter(f.key)}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="table-wrap table-scroll">
             <table>
               <thead>
@@ -381,14 +590,16 @@ export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
                 </tr>
               </thead>
               <tbody id="atk-blocks-tbody">
-                {blockSort.sortedRows.length === 0 ? (
+                {blockPagination.pagedRows.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="empty-cell">
-                      No active bash protection or server blocks recorded.
+                      {blocks.length > 0
+                        ? "No bash or server blocks match the active filter or search query."
+                        : "No active bash protection or server blocks recorded."}
                     </td>
                   </tr>
                 ) : (
-                  blockSort.sortedRows.map((bt, idx) => {
+                  blockPagination.pagedRows.map((bt, idx) => {
                     const coords = String(bt.coords || "—");
                     return (
                       <tr key={`${coords}-${idx}`}>
@@ -421,6 +632,16 @@ export const AttacksView: React.FC<AttacksViewProps> = ({ hidden }) => {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            idPrefix="atk-blocks"
+            totalItems={blockPagination.totalItems}
+            page={blockPagination.page}
+            pageSize={blockPagination.pageSize}
+            itemLabel="blocks"
+            onPageChange={blockPagination.setPage}
+            onPageSizeChange={blockPagination.setPageSize}
+          />
+        </div>
         </div>
       </article>
     </section>
