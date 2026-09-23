@@ -409,9 +409,9 @@ export const ConfigView: React.FC = () => {
         </div>
 
         <div className="config-body">
-          <section className="config-group" aria-labelledby="cfg-grp-runtime">
+          <section className="config-group" aria-labelledby="cfg-grp-execution-mode">
             <div className="config-group-head">
-              <h3 id="cfg-grp-runtime">Runtime &amp; Autopilot Execution</h3>
+              <h3 id="cfg-grp-execution-mode">Runtime &amp; Autopilot Execution</h3>
               <p className="config-group-sub">
                 Override how the Commander loop executes ticks against Chrome without restarting the stack or editing config.yaml.
               </p>

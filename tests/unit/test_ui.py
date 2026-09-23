@@ -563,8 +563,27 @@ class TestOperatorControlUi(unittest.TestCase):
                 "cmb-targets-tab",
                 "cmb-pane-targets",
                 "cmb-targets-tbody",
+                "view-research",
+                "view-fleet-control",
+                "cfg-grp-execution-mode",
             ):
                 self.assertIn(req_id, parser.ids)
+
+            # Zero duplicate element IDs across SSR HTML
+            all_ids = re.findall(r'\bid="([^"]+)"', html_txt)
+            dup_ids = {k: all_ids.count(k) for k in set(all_ids) if all_ids.count(k) > 1}
+            self.assertEqual(dup_ids, {}, f"Duplicate HTML IDs detected: {dup_ids}")
+            self.assertEqual(html_txt.count('id="feedback-banner"'), 1)
+            self.assertIn("si-hydrating", html_txt)
+            m_sidebar = re.search(r"<aside\b[^>]*>.*?</aside>", html_txt, flags=re.IGNORECASE | re.DOTALL)
+            self.assertIsNotNone(m_sidebar)
+            assert m_sidebar is not None
+            self.assertIn('id="feedback-banner"', m_sidebar.group(0))
+            self.assertNotIn('id="planet-select"', m_sidebar.group(0))
+            m_header = re.search(r"<header\b[^>]*>.*?</header>", html_txt, flags=re.IGNORECASE | re.DOTALL)
+            self.assertIsNotNone(m_header)
+            assert m_header is not None
+            self.assertIn('id="planet-select"', m_header.group(0))
 
             # Single-SVG invariant: only rnk-chart + gann-radial-svg across the entire HTML
             svgs = re.findall(r"<svg\b[^>]*>.*?</svg>", html_txt, flags=re.IGNORECASE | re.DOTALL)
@@ -2836,10 +2855,11 @@ const bldCount = Number(el("dash-bld-q-count").textContent);
 const fltCount = Number(el("dash-fleet-q-count").textContent);
 const resCount = Number(el("dash-research-q-count").textContent);
 
-// Click "Research ->" button on Research Queue card -> jumps to Buildings view filtered to research
+// Click "Research ->" button on Research Queue card -> jumps to dedicated Research view
 el("btn-dash-goto-research").click();
+const onResearchView = !el("view-research").hidden;
 const onBldView = !el("view-buildings").hidden;
-const catAfterJump = state.bldCategory;
+const activePageAfterJump = state.activePage;
 
 // Click "+ Queue" on Fleet Queue card -> jumps to Operations with BUILD_SHIP selected
 el("btn-dash-add-fleet-queue").click();
@@ -2854,8 +2874,9 @@ return {
   bldCount,
   fltCount,
   resCount,
+  onResearchView,
   onBldView,
-  catAfterJump,
+  activePageAfterJump,
   mqKindAfterFleetJump,
 };
 """
@@ -2878,8 +2899,9 @@ return {
                 self.assertNotIn("Spice mine", sc["fltTxt"])
                 self.assertIn("Mining technology", sc["resTxt"])
                 self.assertNotIn("Spice mine", sc["resTxt"])
-                self.assertTrue(sc["onBldView"])
-                self.assertEqual(sc["catAfterJump"], "research")
+                self.assertTrue(sc["onResearchView"])
+                self.assertFalse(sc["onBldView"])
+                self.assertEqual(sc["activePageAfterJump"], "research")
                 self.assertEqual(sc["mqKindAfterFleetJump"], "BUILD_SHIP")
             finally:
                 server.shutdown()

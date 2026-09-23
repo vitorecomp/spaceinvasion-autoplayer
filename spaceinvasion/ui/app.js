@@ -7411,7 +7411,9 @@
   const PAGE_TITLES = {
     dashboard: "DASHBOARD // OVERVIEW",
     buildings: "BUILDINGS // LEVEL ETAS",
-    combat: "COMBAT & FLEET // 1:1 SIM",
+    research: "RESEARCH // LEVEL ETAS",
+    combat: "FLEET BUILD // SHIPYARD & SIM",
+    "fleet-control": "FLEET CONTROL // CURRENT FLIGHTS",
     sectors: "GALAXY // SCANNED SECTORS",
     espionage: "ESPIONAGE // INTEL & ARCHIVE",
     colonies: "COLONIES // 300+ GRADING",
@@ -7423,18 +7425,23 @@
     config: "STRATEGY // CONFIG BUCKETS",
     logs: "TERMINAL // LIVE LOGS"
   };
-  const useClientSyncEffect$2 = typeof window !== "undefined" ? reactExports.useLayoutEffect : reactExports.useEffect;
-  const SESSION_STATE_KEY = "si_console_ui_state";
+  const CONSOLE_STORE_STORAGE_KEY = "si_console_store_v1";
+  const LEGACY_SESSION_STATE_KEY = "si_console_ui_state";
+  const CONSOLE_STORE_SCHEMA_VERSION = 1;
+  const PERSIST_DEBOUNCE_MS = 120;
+  const SOFT_MAX_PERSIST_CHARS = 18e5;
   const VALID_AG_TABS$1 = [
     "heuristics",
     "config-optimizer",
     "ai-planner",
     "fleet-planner"
   ];
-  const DEFAULT_UI_PREFS = {
+  const DEFAULT_UI_PREFS = Object.freeze({
     modeOverride: "auto",
     bldCategory: "all",
     selectedUnitKey: "b1",
+    resTab: "all",
+    selectedResearchKey: "r1",
     combatSubTab: "ships",
     queueFilter: "all",
     dashQueuePlanetScope: "all",
@@ -7453,7 +7460,814 @@
     emailCatFilter: "all",
     notifFilter: "active",
     sidebarOpen: false
-  };
+  });
+  const EMPTY_NOTIFICATIONS = Object.freeze({
+    unread_count: 0,
+    items: Object.freeze([])
+  });
+  function createDefaultConsoleStoreState() {
+    return {
+      activePage: "dashboard",
+      selectedPlanetId: null,
+      uiPrefs: { ...DEFAULT_UI_PREFS },
+      dashboard: null,
+      buildingsEtaData: null,
+      combatData: null,
+      actionGraphData: null,
+      plannerJobsStatus: null,
+      sectorsData: null,
+      espData: null,
+      colonyData: null,
+      atkData: null,
+      recData: null,
+      lastOptimizerSummary: null,
+      notifications: { unread_count: 0, items: [] },
+      apiOnline: false,
+      lastHydratedAt: null,
+      isHydratedFromCache: false
+    };
+  }
+  const SERVER_CONSOLE_SNAPSHOT = Object.freeze({
+    activePage: "dashboard",
+    selectedPlanetId: null,
+    uiPrefs: DEFAULT_UI_PREFS,
+    dashboard: null,
+    buildingsEtaData: null,
+    combatData: null,
+    actionGraphData: null,
+    plannerJobsStatus: null,
+    sectorsData: null,
+    espData: null,
+    colonyData: null,
+    atkData: null,
+    recData: null,
+    lastOptimizerSummary: null,
+    notifications: EMPTY_NOTIFICATIONS,
+    apiOnline: false,
+    lastHydratedAt: null,
+    isHydratedFromCache: false
+  });
+  function isSupportedPageKey(key) {
+    if (typeof key !== "string" || !key) return false;
+    return Boolean(
+      PAGE_TITLES[key] || key === "research" || key === "fleet-control"
+    );
+  }
+  function normalizePageKey(rawKey) {
+    const str = typeof rawKey === "string" ? rawKey.trim() : "";
+    const norm = str === "graph" ? "action-graph" : str;
+    return isSupportedPageKey(norm) ? norm : "dashboard";
+  }
+  function sanitizePersistedBldCategory(raw) {
+    const val = typeof raw === "string" ? raw.trim() : "";
+    if (!val || val === "research" || val === "universe_research") {
+      return "all";
+    }
+    return val;
+  }
+  function isPlainObject(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value));
+  }
+  function isQuotaExceededError(err) {
+    if (!err || typeof err !== "object") return false;
+    const e = err;
+    if (e.name === "QuotaExceededError" || e.name === "NS_ERROR_DOM_QUOTA_REACHED" || e.code === 22 || e.code === 1014) {
+      return true;
+    }
+    const msg = String(e.message || "").toLowerCase();
+    return msg.includes("quota") || msg.includes("exceeded") || msg.includes("storage full");
+  }
+  function sanitizeUiPrefs(raw) {
+    const prefs = { ...DEFAULT_UI_PREFS };
+    if (!isPlainObject(raw)) return prefs;
+    for (const [k, v] of Object.entries(raw)) {
+      if (v !== void 0) {
+        prefs[k] = v;
+      }
+    }
+    prefs.modeOverride = typeof raw.modeOverride === "string" && raw.modeOverride ? raw.modeOverride : DEFAULT_UI_PREFS.modeOverride;
+    prefs.bldCategory = sanitizePersistedBldCategory(raw.bldCategory);
+    prefs.selectedUnitKey = typeof raw.selectedUnitKey === "string" && raw.selectedUnitKey ? raw.selectedUnitKey : DEFAULT_UI_PREFS.selectedUnitKey;
+    prefs.resTab = typeof raw.resTab === "string" && raw.resTab ? raw.resTab : DEFAULT_UI_PREFS.resTab;
+    prefs.selectedResearchKey = typeof raw.selectedResearchKey === "string" && raw.selectedResearchKey ? raw.selectedResearchKey : DEFAULT_UI_PREFS.selectedResearchKey;
+    prefs.combatSubTab = typeof raw.combatSubTab === "string" && raw.combatSubTab ? raw.combatSubTab : DEFAULT_UI_PREFS.combatSubTab;
+    prefs.queueFilter = typeof raw.queueFilter === "string" && raw.queueFilter ? raw.queueFilter : DEFAULT_UI_PREFS.queueFilter;
+    prefs.dashQueuePlanetScope = typeof raw.dashQueuePlanetScope === "string" && raw.dashQueuePlanetScope ? raw.dashQueuePlanetScope : DEFAULT_UI_PREFS.dashQueuePlanetScope;
+    prefs.opsPlanetScope = typeof raw.opsPlanetScope === "string" && raw.opsPlanetScope ? raw.opsPlanetScope : DEFAULT_UI_PREFS.opsPlanetScope;
+    prefs.opsQueueLayout = raw.opsQueueLayout === "parallel" || raw.opsQueueLayout === "table" ? raw.opsQueueLayout : DEFAULT_UI_PREFS.opsQueueLayout;
+    prefs.activeLogSource = typeof raw.activeLogSource === "string" && raw.activeLogSource ? raw.activeLogSource : DEFAULT_UI_PREFS.activeLogSource;
+    prefs.agActiveTab = VALID_AG_TABS$1.includes(raw.agActiveTab) ? raw.agActiveTab : DEFAULT_UI_PREFS.agActiveTab;
+    prefs.agEdgeFilter = raw.agEdgeFilter === "deps" || raw.agEdgeFilter === "all" ? raw.agEdgeFilter : DEFAULT_UI_PREFS.agEdgeFilter;
+    prefs.agParamTab = raw.agParamTab === "scope" || raw.agParamTab === "core" ? raw.agParamTab : DEFAULT_UI_PREFS.agParamTab;
+    prefs.sectorFilter = typeof raw.sectorFilter === "string" && raw.sectorFilter ? raw.sectorFilter : DEFAULT_UI_PREFS.sectorFilter;
+    prefs.sectorGalaxy = Math.max(
+      0,
+      Math.round(safeFiniteNumber(raw.sectorGalaxy, DEFAULT_UI_PREFS.sectorGalaxy) ?? 0)
+    );
+    prefs.espTab = raw.espTab === "reports" || raw.espTab === "targets" ? raw.espTab : DEFAULT_UI_PREFS.espTab;
+    prefs.colonyFilter = typeof raw.colonyFilter === "string" && raw.colonyFilter ? raw.colonyFilter : DEFAULT_UI_PREFS.colonyFilter;
+    prefs.atkTab = raw.atkTab === "blocks" || raw.atkTab === "battles" ? raw.atkTab : DEFAULT_UI_PREFS.atkTab;
+    prefs.recTab = raw.recTab === "debris" || raw.recTab === "emails" || raw.recTab === "harvests" ? raw.recTab : DEFAULT_UI_PREFS.recTab;
+    prefs.emailCatFilter = typeof raw.emailCatFilter === "string" && raw.emailCatFilter ? raw.emailCatFilter : DEFAULT_UI_PREFS.emailCatFilter;
+    prefs.notifFilter = raw.notifFilter === "unread" || raw.notifFilter === "all" || raw.notifFilter === "active" ? raw.notifFilter : DEFAULT_UI_PREFS.notifFilter;
+    prefs.sidebarOpen = false;
+    return prefs;
+  }
+  function sanitizeNotifications(raw) {
+    if (!isPlainObject(raw)) {
+      return { unread_count: 0, items: [] };
+    }
+    const items = Array.isArray(raw.items) ? raw.items : [];
+    const unreadCount = Math.max(0, Math.round(safeFiniteNumber(raw.unread_count, 0) ?? 0));
+    return { unread_count: unreadCount, items };
+  }
+  function trimLogValue(val, maxChars, maxEntries) {
+    if (typeof val === "string") {
+      return val.length > maxChars ? val.slice(-maxChars) : val;
+    }
+    if (Array.isArray(val)) {
+      return val.length > maxEntries ? val.slice(-maxEntries) : val;
+    }
+    return val;
+  }
+  function compactDashboard(dash, tier, hasSeparateActionGraph, hasSeparateCombat) {
+    if (!dash || !isPlainObject(dash)) return null;
+    if (tier <= 0) {
+      return dash;
+    }
+    if (tier === 1) {
+      const next = { ...dash };
+      if (isPlainObject(next.logs)) {
+        const trimmedLogs = {};
+        for (const [k, v] of Object.entries(next.logs)) {
+          trimmedLogs[k] = trimLogValue(v, 16e3, 150);
+        }
+        next.logs = trimmedLogs;
+      }
+      if (hasSeparateActionGraph && "action_graph" in next) {
+        delete next.action_graph;
+      }
+      return next;
+    }
+    if (tier === 2) {
+      const next = { ...dash };
+      if ("logs" in next) {
+        next.logs = {};
+      }
+      if (hasSeparateActionGraph && "action_graph" in next) {
+        delete next.action_graph;
+      }
+      if (hasSeparateCombat && "combat" in next) {
+        delete next.combat;
+      }
+      if (Array.isArray(next.plan) && next.plan.length > 80) {
+        next.plan = next.plan.slice(0, 80);
+      }
+      if (isPlainObject(next.db_summary)) {
+        const dbCopy = { ...next.db_summary };
+        for (const [k, v] of Object.entries(dbCopy)) {
+          if (Array.isArray(v) && v.length > 80) {
+            dbCopy[k] = v.slice(0, 80);
+          }
+        }
+        next.db_summary = dbCopy;
+      }
+      return next;
+    }
+    const minimal = {
+      ok: dash.ok,
+      code_version: dash.code_version,
+      css_version: dash.css_version,
+      server_boot_id: dash.server_boot_id,
+      planner_mode: dash.planner_mode,
+      effective_planner_mode: dash.effective_planner_mode,
+      fallback_reason: dash.fallback_reason,
+      colonies_owned: dash.colonies_owned,
+      max_planets: dash.max_planets,
+      live_ai_unlocked: dash.live_ai_unlocked,
+      health: dash.health,
+      bot_control: dash.bot_control,
+      state: dash.state,
+      config: dash.config,
+      plan: Array.isArray(dash.plan) ? dash.plan.slice(0, 40) : dash.plan,
+      manual_queue: Array.isArray(dash.manual_queue) ? dash.manual_queue.slice(0, 40) : dash.manual_queue,
+      galaxy_sweep: dash.galaxy_sweep,
+      planet_economies: dash.planet_economies,
+      optimizer_summary: dash.optimizer_summary
+    };
+    if (dash.current_hourly_production !== void 0) {
+      minimal.current_hourly_production = dash.current_hourly_production;
+    }
+    if (dash.loot_recycle_summary !== void 0) {
+      minimal.loot_recycle_summary = dash.loot_recycle_summary;
+    }
+    return minimal;
+  }
+  function compactArrayRecord(data, arrayLimits, trimEmailBody = false) {
+    if (!data || !isPlainObject(data)) return null;
+    let mutated = false;
+    const copy = { ...data };
+    for (const [key, limit] of Object.entries(arrayLimits)) {
+      const val = copy[key];
+      if (Array.isArray(val)) {
+        let arr = val;
+        if (arr.length > limit) {
+          arr = arr.slice(0, limit);
+          mutated = true;
+        }
+        if (trimEmailBody && key === "emails") {
+          arr = arr.map((item) => {
+            if (isPlainObject(item) && typeof item.body === "string" && item.body.length > 2e3) {
+              mutated = true;
+              return { ...item, body: item.body.slice(0, 2e3) };
+            }
+            return item;
+          });
+        }
+        copy[key] = arr;
+      }
+    }
+    return mutated ? copy : data;
+  }
+  function buildPersistedPayload(state, tier) {
+    const persistedPrefs = { ...state.uiPrefs, sidebarOpen: false };
+    const base = {
+      v: CONSOLE_STORE_SCHEMA_VERSION,
+      savedAt: Date.now(),
+      activePage: state.activePage,
+      selectedPlanetId: state.selectedPlanetId,
+      uiPrefs: persistedPrefs,
+      apiOnline: state.apiOnline,
+      lastHydratedAt: state.lastHydratedAt
+    };
+    if (tier === 4) {
+      return base;
+    }
+    if (tier === 3) {
+      return {
+        ...base,
+        dashboard: compactDashboard(state.dashboard, 3, false, false),
+        notifications: {
+          unread_count: state.notifications.unread_count,
+          items: state.notifications.items.slice(0, 10)
+        },
+        plannerJobsStatus: state.plannerJobsStatus,
+        lastOptimizerSummary: state.lastOptimizerSummary
+      };
+    }
+    if (tier === 2) {
+      const page = state.activePage;
+      return {
+        ...base,
+        dashboard: compactDashboard(
+          state.dashboard,
+          2,
+          Boolean(state.actionGraphData),
+          Boolean(state.combatData)
+        ),
+        buildingsEtaData: page === "buildings" || page === "research" ? state.buildingsEtaData : null,
+        combatData: page === "combat" ? state.combatData : null,
+        actionGraphData: page === "action-graph" ? compactArrayRecord(state.actionGraphData, { nodes: 150, edges: 220 }) : null,
+        plannerJobsStatus: state.plannerJobsStatus,
+        sectorsData: page === "sectors" ? compactArrayRecord(state.sectorsData, { sectors: 150, scan_queue: 80 }) : null,
+        espData: page === "espionage" ? compactArrayRecord(state.espData, { targets: 80, reports: 60 }) : null,
+        colonyData: page === "colonies" ? compactArrayRecord(state.colonyData, { candidates: 100, colony_attempts: 60 }) : null,
+        atkData: page === "attacks" ? compactArrayRecord(state.atkData, { battles: 60, blocks: 60, reports: 60, items: 60 }) : null,
+        recData: page === "recyclers" ? compactArrayRecord(
+          state.recData,
+          { harvests: 60, debris: 60, emails: 60, items: 60 },
+          true
+        ) : null,
+        lastOptimizerSummary: state.lastOptimizerSummary,
+        notifications: {
+          unread_count: state.notifications.unread_count,
+          items: state.notifications.items.slice(0, 20)
+        }
+      };
+    }
+    if (tier === 1) {
+      return {
+        ...base,
+        dashboard: compactDashboard(
+          state.dashboard,
+          1,
+          Boolean(state.actionGraphData),
+          Boolean(state.combatData)
+        ),
+        buildingsEtaData: state.buildingsEtaData,
+        combatData: state.combatData,
+        actionGraphData: compactArrayRecord(state.actionGraphData, { nodes: 250, edges: 400 }),
+        plannerJobsStatus: state.plannerJobsStatus,
+        sectorsData: compactArrayRecord(state.sectorsData, { sectors: 500, scan_queue: 180 }),
+        espData: compactArrayRecord(state.espData, { targets: 150, reports: 150 }),
+        colonyData: compactArrayRecord(state.colonyData, { candidates: 250, colony_attempts: 120 }),
+        atkData: compactArrayRecord(state.atkData, {
+          battles: 150,
+          blocks: 150,
+          reports: 150,
+          items: 150
+        }),
+        recData: compactArrayRecord(
+          state.recData,
+          { harvests: 150, debris: 150, emails: 150, items: 150 },
+          true
+        ),
+        lastOptimizerSummary: state.lastOptimizerSummary,
+        notifications: {
+          unread_count: state.notifications.unread_count,
+          items: state.notifications.items.slice(0, 40)
+        }
+      };
+    }
+    return {
+      ...base,
+      dashboard: state.dashboard,
+      buildingsEtaData: state.buildingsEtaData,
+      combatData: state.combatData,
+      actionGraphData: state.actionGraphData,
+      plannerJobsStatus: state.plannerJobsStatus,
+      sectorsData: state.sectorsData,
+      espData: state.espData,
+      colonyData: state.colonyData,
+      atkData: state.atkData,
+      recData: state.recData,
+      lastOptimizerSummary: state.lastOptimizerSummary,
+      notifications: state.notifications
+    };
+  }
+  function safeGetStorage(kind) {
+    if (typeof window === "undefined") return null;
+    try {
+      return kind === "local" ? window.localStorage : window.sessionStorage;
+    } catch {
+      return null;
+    }
+  }
+  function readPersistedConsoleState(storageKey = CONSOLE_STORE_STORAGE_KEY, legacyKey = LEGACY_SESSION_STATE_KEY) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    const next = createDefaultConsoleStoreState();
+    if (typeof window === "undefined") {
+      return next;
+    }
+    let loadedFromStoreKey = false;
+    const local = safeGetStorage("local");
+    const session = safeGetStorage("session");
+    for (const storage of [local, session]) {
+      if (!storage) continue;
+      try {
+        const raw = storage.getItem(storageKey);
+        if (!raw) continue;
+        const saved = JSON.parse(raw);
+        if (!isPlainObject(saved)) continue;
+        if (saved.activePage !== void 0) {
+          next.activePage = normalizePageKey(saved.activePage);
+        }
+        const savedPid = safeFiniteNumber(saved.selectedPlanetId, null);
+        if (savedPid !== null) {
+          next.selectedPlanetId = savedPid;
+        }
+        next.uiPrefs = sanitizeUiPrefs(saved.uiPrefs);
+        if (isPlainObject(saved.dashboard)) {
+          next.dashboard = saved.dashboard;
+        }
+        if (isPlainObject(saved.buildingsEtaData)) {
+          next.buildingsEtaData = saved.buildingsEtaData;
+        } else if (isPlainObject((_a = next.dashboard) == null ? void 0 : _a.buildings_eta) && (!next.selectedPlanetId || next.selectedPlanetId === ((_d = (_c = (_b = next.dashboard) == null ? void 0 : _b.buildings_eta) == null ? void 0 : _c.planet) == null ? void 0 : _d.planet_id))) {
+          next.buildingsEtaData = next.dashboard.buildings_eta;
+        }
+        if (isPlainObject(saved.combatData)) {
+          next.combatData = saved.combatData;
+        } else if (isPlainObject((_e = next.dashboard) == null ? void 0 : _e.combat) && (!next.selectedPlanetId || next.selectedPlanetId === ((_g = (_f = next.dashboard) == null ? void 0 : _f.combat) == null ? void 0 : _g.planet_id))) {
+          next.combatData = next.dashboard.combat;
+        }
+        if (isPlainObject(saved.actionGraphData)) {
+          next.actionGraphData = saved.actionGraphData;
+        } else if (isPlainObject((_h = next.dashboard) == null ? void 0 : _h.action_graph)) {
+          next.actionGraphData = next.dashboard.action_graph;
+        }
+        if (isPlainObject(saved.plannerJobsStatus)) {
+          next.plannerJobsStatus = saved.plannerJobsStatus;
+        } else if (isPlainObject((_i = next.dashboard) == null ? void 0 : _i.planner_jobs_status)) {
+          next.plannerJobsStatus = next.dashboard.planner_jobs_status;
+        } else if (isPlainObject((_j = next.dashboard) == null ? void 0 : _j.planner_status)) {
+          next.plannerJobsStatus = next.dashboard.planner_status;
+        }
+        if (isPlainObject(saved.sectorsData)) next.sectorsData = saved.sectorsData;
+        if (isPlainObject(saved.espData)) next.espData = saved.espData;
+        if (isPlainObject(saved.colonyData)) next.colonyData = saved.colonyData;
+        if (isPlainObject(saved.atkData)) next.atkData = saved.atkData;
+        if (isPlainObject(saved.recData)) next.recData = saved.recData;
+        if (isPlainObject(saved.lastOptimizerSummary)) {
+          next.lastOptimizerSummary = saved.lastOptimizerSummary;
+        } else if (isPlainObject((_k = next.dashboard) == null ? void 0 : _k.optimizer_summary)) {
+          next.lastOptimizerSummary = next.dashboard.optimizer_summary;
+        }
+        next.notifications = sanitizeNotifications(saved.notifications);
+        next.apiOnline = Boolean(saved.apiOnline);
+        next.lastHydratedAt = safeFiniteNumber(saved.lastHydratedAt, null) ?? safeFiniteNumber(saved.savedAt, null);
+        const hasCachedData = Boolean(
+          next.dashboard || next.buildingsEtaData || next.combatData || next.actionGraphData || next.plannerJobsStatus || next.sectorsData || next.espData || next.colonyData || next.atkData || next.recData || next.notifications.items.length > 0
+        );
+        next.isHydratedFromCache = hasCachedData;
+        loadedFromStoreKey = true;
+        break;
+      } catch {
+      }
+    }
+    if (!loadedFromStoreKey && session) {
+      try {
+        const legacyRaw = session.getItem(legacyKey);
+        if (legacyRaw) {
+          const legacy = JSON.parse(legacyRaw);
+          if (isPlainObject(legacy)) {
+            const savedPid = safeFiniteNumber(legacy.selectedPlanetId, null);
+            if (savedPid !== null) next.selectedPlanetId = savedPid;
+            next.uiPrefs = sanitizeUiPrefs(legacy);
+            if (legacy.activePage !== void 0) {
+              next.activePage = normalizePageKey(legacy.activePage);
+            }
+          }
+        }
+      } catch {
+      }
+    }
+    try {
+      const rawHash = (window.location.hash || "").replace(/^#/, "");
+      const normHash = rawHash === "graph" ? "action-graph" : rawHash;
+      if (isSupportedPageKey(normHash)) {
+        next.activePage = normHash;
+      }
+    } catch {
+    }
+    return next;
+  }
+  function persistConsoleStateToStorage(state, opts) {
+    if (typeof window === "undefined") {
+      return { ok: false, storage: "memory", tier: -1 };
+    }
+    const storageKey = opts == null ? void 0 : opts.storageKey;
+    const maxChars = (opts == null ? void 0 : opts.maxChars) ?? SOFT_MAX_PERSIST_CHARS;
+    const tiers = [0, 1, 2, 3, 4];
+    const local = safeGetStorage("local");
+    if (local) {
+      for (const tier of tiers) {
+        let json;
+        try {
+          json = JSON.stringify(buildPersistedPayload(state, tier));
+        } catch {
+          continue;
+        }
+        if (tier < 4 && json.length > maxChars) {
+          continue;
+        }
+        try {
+          local.setItem(storageKey, json);
+          return { ok: true, storage: "local", tier };
+        } catch (err) {
+          if (isQuotaExceededError(err)) {
+            continue;
+          }
+          break;
+        }
+      }
+    }
+    const session = safeGetStorage("session");
+    if (session) {
+      const fallbackTiers = [2, 3, 4];
+      for (const tier of fallbackTiers) {
+        let json;
+        try {
+          json = JSON.stringify(buildPersistedPayload(state, tier));
+        } catch {
+          continue;
+        }
+        if (tier < 4 && json.length > maxChars) {
+          continue;
+        }
+        try {
+          session.setItem(storageKey, json);
+          return { ok: true, storage: "session", tier };
+        } catch (err) {
+          if (isQuotaExceededError(err)) {
+            continue;
+          }
+          break;
+        }
+      }
+    }
+    return { ok: false, storage: "memory", tier: -1 };
+  }
+  function createConsoleStore(options = {}) {
+    const persistEnabled = options.persist ?? false;
+    const debounceMs = options.debounceMs ?? PERSIST_DEBOUNCE_MS;
+    const maxPersistChars = options.maxPersistChars ?? SOFT_MAX_PERSIST_CHARS;
+    const storageKey = options.storageKey || CONSOLE_STORE_STORAGE_KEY;
+    const legacyKey = options.legacyKey || LEGACY_SESSION_STATE_KEY;
+    const listeners = /* @__PURE__ */ new Set();
+    let snapshot = createDefaultConsoleStoreState();
+    let needsHydration = Boolean(persistEnabled);
+    let pendingPersist = false;
+    let persistTimer = null;
+    let unloadBound = false;
+    const emit = () => {
+      listeners.forEach((listener) => {
+        listener();
+      });
+    };
+    const clearPersistTimer = () => {
+      if (persistTimer !== null) {
+        clearTimeout(persistTimer);
+        persistTimer = null;
+      }
+    };
+    const flushPersistence = (force = false) => {
+      clearPersistTimer();
+      if (!persistEnabled || typeof window === "undefined") {
+        pendingPersist = false;
+        return false;
+      }
+      if (!pendingPersist && !force) {
+        return false;
+      }
+      pendingPersist = false;
+      const res = persistConsoleStateToStorage(snapshot, {
+        storageKey,
+        maxChars: maxPersistChars
+      });
+      return res.ok;
+    };
+    const schedulePersist = () => {
+      if (!persistEnabled || typeof window === "undefined") return;
+      pendingPersist = true;
+      clearPersistTimer();
+      if (debounceMs <= 0) {
+        flushPersistence(true);
+        return;
+      }
+      persistTimer = setTimeout(() => {
+        persistTimer = null;
+        flushPersistence(false);
+      }, debounceMs);
+    };
+    const onUnload = () => {
+      flushPersistence(false);
+    };
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        flushPersistence(false);
+      }
+    };
+    const bindUnload = () => {
+      if (!persistEnabled || unloadBound || typeof window === "undefined") return;
+      unloadBound = true;
+      window.addEventListener("pagehide", onUnload);
+      window.addEventListener("beforeunload", onUnload);
+      if (typeof document !== "undefined") {
+        document.addEventListener("visibilitychange", onVisibilityChange);
+      }
+    };
+    const unbindUnload = () => {
+      if (!unloadBound || typeof window === "undefined") return;
+      unloadBound = false;
+      window.removeEventListener("pagehide", onUnload);
+      window.removeEventListener("beforeunload", onUnload);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
+    };
+    const hydrateSilent = () => {
+      needsHydration = false;
+      if (!persistEnabled || typeof window === "undefined") {
+        return snapshot;
+      }
+      snapshot = readPersistedConsoleState(storageKey, legacyKey);
+      return snapshot;
+    };
+    if (options.hydrateOnInit && persistEnabled && typeof window !== "undefined") {
+      hydrateSilent();
+    }
+    if (options.bindUnloadEvents && persistEnabled && typeof window !== "undefined") {
+      bindUnload();
+    }
+    const hydrateIfNeeded = () => {
+      if (!needsHydration) return snapshot;
+      return hydrateSilent();
+    };
+    const rehydrateFromStorage = () => {
+      const prev = snapshot;
+      hydrateSilent();
+      if (snapshot !== prev) {
+        emit();
+      }
+      return snapshot;
+    };
+    const setState = (updater, opts) => {
+      const prev = snapshot;
+      let next;
+      if (typeof updater === "function") {
+        next = updater(prev);
+      } else {
+        let changed = false;
+        for (const key of Object.keys(updater)) {
+          if (!Object.is(prev[key], updater[key])) {
+            changed = true;
+            break;
+          }
+        }
+        if (!changed && !(opts == null ? void 0 : opts.touchHydratedAt)) {
+          return prev;
+        }
+        next = {
+          ...prev,
+          ...updater
+        };
+      }
+      if (opts == null ? void 0 : opts.touchHydratedAt) {
+        const now = Date.now();
+        if (next === prev) {
+          next = { ...prev, lastHydratedAt: now };
+        } else {
+          next = { ...next, lastHydratedAt: now };
+        }
+      }
+      if (Object.is(next, prev)) {
+        return prev;
+      }
+      snapshot = next;
+      needsHydration = false;
+      if ((opts == null ? void 0 : opts.persist) !== false) {
+        schedulePersist();
+      }
+      emit();
+      return snapshot;
+    };
+    const setDashboard = (next) => {
+      setState(
+        (prev) => {
+          const resolved = typeof next === "function" ? next(prev.dashboard) : next;
+          if (Object.is(prev.dashboard, resolved)) return prev;
+          return {
+            ...prev,
+            dashboard: resolved,
+            lastHydratedAt: resolved ? Date.now() : prev.lastHydratedAt
+          };
+        },
+        { persist: true }
+      );
+    };
+    const setActivePage = (rawKey) => {
+      const target = normalizePageKey(rawKey);
+      setState({ activePage: target }, { persist: true });
+      return target;
+    };
+    const setSelectedPlanetId = (planetId) => {
+      const pid = planetId == null ? null : safeFiniteNumber(planetId, null);
+      setState({ selectedPlanetId: pid }, { persist: true });
+    };
+    const setUiPref = (key, value) => {
+      setState(
+        (prev) => {
+          if (Object.is(prev.uiPrefs[key], value)) return prev;
+          return {
+            ...prev,
+            uiPrefs: {
+              ...prev.uiPrefs,
+              [key]: value
+            }
+          };
+        },
+        { persist: key !== "sidebarOpen" }
+      );
+    };
+    const setUiPrefs = (next) => {
+      setState(
+        (prev) => {
+          const resolved = typeof next === "function" ? next(prev.uiPrefs) : next;
+          if (Object.is(prev.uiPrefs, resolved)) return prev;
+          return { ...prev, uiPrefs: resolved };
+        },
+        { persist: true }
+      );
+    };
+    const setBuildingsEtaData = (data) => {
+      setState({ buildingsEtaData: data }, { persist: true, touchHydratedAt: Boolean(data) });
+    };
+    const setCombatData = (data) => {
+      setState({ combatData: data }, { persist: true, touchHydratedAt: Boolean(data) });
+    };
+    const setActionGraphData = (data) => {
+      setState({ actionGraphData: data }, { persist: true, touchHydratedAt: Boolean(data) });
+    };
+    const setPlannerJobsStatus = (status) => {
+      setState({ plannerJobsStatus: status }, { persist: true, touchHydratedAt: Boolean(status) });
+    };
+    const setSectorsData = (data) => {
+      setState({ sectorsData: data }, { persist: true, touchHydratedAt: Boolean(data) });
+    };
+    const setEspData = (data) => {
+      setState({ espData: data }, { persist: true, touchHydratedAt: Boolean(data) });
+    };
+    const setColonyData = (data) => {
+      setState({ colonyData: data }, { persist: true, touchHydratedAt: Boolean(data) });
+    };
+    const setAtkData = (data) => {
+      setState({ atkData: data }, { persist: true, touchHydratedAt: Boolean(data) });
+    };
+    const setRecData = (data) => {
+      setState({ recData: data }, { persist: true, touchHydratedAt: Boolean(data) });
+    };
+    const setLastOptimizerSummary = (summary) => {
+      setState(
+        { lastOptimizerSummary: summary },
+        { persist: true, touchHydratedAt: Boolean(summary) }
+      );
+    };
+    const setNotifications = (notifications) => {
+      setState(
+        { notifications },
+        { persist: true, touchHydratedAt: notifications.items.length > 0 }
+      );
+    };
+    const setApiOnline = (online) => {
+      setState({ apiOnline: Boolean(online) }, { persist: true });
+    };
+    const reset = (opts) => {
+      var _a, _b, _c;
+      clearPersistTimer();
+      pendingPersist = false;
+      if ((opts == null ? void 0 : opts.clearStorage) && typeof window !== "undefined") {
+        try {
+          (_a = window.localStorage) == null ? void 0 : _a.removeItem(storageKey);
+        } catch {
+        }
+        try {
+          (_b = window.sessionStorage) == null ? void 0 : _b.removeItem(storageKey);
+          (_c = window.sessionStorage) == null ? void 0 : _c.removeItem(legacyKey);
+        } catch {
+        }
+      }
+      snapshot = createDefaultConsoleStoreState();
+      needsHydration = Boolean(persistEnabled);
+      emit();
+    };
+    const destroy = () => {
+      clearPersistTimer();
+      pendingPersist = false;
+      unbindUnload();
+      listeners.clear();
+    };
+    return {
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+      getSnapshot: () => snapshot,
+      getServerSnapshot: () => SERVER_CONSOLE_SNAPSHOT,
+      hydrateIfNeeded,
+      rehydrateFromStorage,
+      setState,
+      setDashboard,
+      setActivePage,
+      setSelectedPlanetId,
+      setUiPref,
+      setUiPrefs,
+      setBuildingsEtaData,
+      setCombatData,
+      setActionGraphData,
+      setPlannerJobsStatus,
+      setSectorsData,
+      setEspData,
+      setColonyData,
+      setAtkData,
+      setRecData,
+      setLastOptimizerSummary,
+      setNotifications,
+      setApiOnline,
+      flushPersistence,
+      hasPendingPersist: () => pendingPersist,
+      reset,
+      destroy
+    };
+  }
+  let allowPersistWhenInitialFetchDisabled = false;
+  const resetHooks = /* @__PURE__ */ new Set();
+  function getConsoleStorePersistenceForTests() {
+    return allowPersistWhenInitialFetchDisabled;
+  }
+  function registerConsoleStoreResetHook(hook) {
+    resetHooks.add(hook);
+    return () => {
+      resetHooks.delete(hook);
+    };
+  }
+  const consoleStore = createConsoleStore({
+    persist: true,
+    hydrateOnInit: true,
+    bindUnloadEvents: true
+  });
+  const useClientSyncEffect$2 = typeof window !== "undefined" ? reactExports.useLayoutEffect : reactExports.useEffect;
   function createInitialLegacyWindowState() {
     const st = {
       dashboard: null,
@@ -7462,6 +8276,8 @@
       activePage: "dashboard",
       bldCategory: "all",
       selectedUnitKey: "b1",
+      resTab: "all",
+      selectedResearchKey: "r1",
       buildingsEtaData: null,
       combatData: null,
       combatSubTab: "ships",
@@ -7502,7 +8318,10 @@
       recData: null,
       notifications: { unread_count: 0, items: [] },
       notifFilter: "active",
-      activeHelpNotifId: null
+      activeHelpNotifId: null,
+      uiPrefs: { ...DEFAULT_UI_PREFS },
+      lastHydratedAt: null,
+      isHydratedFromCache: false
     };
     Object.defineProperty(st, "gaCalcRunning", {
       enumerable: true,
@@ -7517,9 +8336,73 @@
     return st;
   }
   const sharedLegacyState = createInitialLegacyWindowState();
+  function syncLegacyStateFromSnapshot(snap) {
+    sharedLegacyState.dashboard = snap.dashboard;
+    sharedLegacyState.apiOnline = snap.apiOnline;
+    sharedLegacyState.activePage = snap.activePage;
+    sharedLegacyState.selectedPlanetId = snap.selectedPlanetId;
+    sharedLegacyState.uiPrefs = snap.uiPrefs;
+    sharedLegacyState.modeOverride = snap.uiPrefs.modeOverride;
+    sharedLegacyState.bldCategory = snap.uiPrefs.bldCategory;
+    sharedLegacyState.selectedUnitKey = snap.uiPrefs.selectedUnitKey;
+    sharedLegacyState.resTab = snap.uiPrefs.resTab;
+    sharedLegacyState.selectedResearchKey = snap.uiPrefs.selectedResearchKey;
+    sharedLegacyState.combatSubTab = snap.uiPrefs.combatSubTab;
+    sharedLegacyState.queueFilter = snap.uiPrefs.queueFilter;
+    sharedLegacyState.activeLogSource = snap.uiPrefs.activeLogSource;
+    sharedLegacyState.agActiveTab = snap.uiPrefs.agActiveTab;
+    sharedLegacyState.agEdgeFilter = snap.uiPrefs.agEdgeFilter;
+    sharedLegacyState.agParamTab = snap.uiPrefs.agParamTab;
+    sharedLegacyState.sectorFilter = snap.uiPrefs.sectorFilter;
+    sharedLegacyState.sectorGalaxy = snap.uiPrefs.sectorGalaxy;
+    sharedLegacyState.espTab = snap.uiPrefs.espTab;
+    sharedLegacyState.colonyFilter = snap.uiPrefs.colonyFilter;
+    sharedLegacyState.atkTab = snap.uiPrefs.atkTab;
+    sharedLegacyState.recTab = snap.uiPrefs.recTab;
+    sharedLegacyState.emailCatFilter = snap.uiPrefs.emailCatFilter;
+    sharedLegacyState.notifFilter = snap.uiPrefs.notifFilter;
+    sharedLegacyState.buildingsEtaData = snap.buildingsEtaData;
+    sharedLegacyState.combatData = snap.combatData;
+    sharedLegacyState.sectorsData = snap.sectorsData;
+    sharedLegacyState.espData = snap.espData;
+    sharedLegacyState.colonyData = snap.colonyData;
+    sharedLegacyState.atkData = snap.atkData;
+    sharedLegacyState.recData = snap.recData;
+    sharedLegacyState.actionGraphData = snap.actionGraphData;
+    sharedLegacyState.plannerJobsStatus = snap.plannerJobsStatus;
+    sharedLegacyState.lastOptimizerSummary = snap.lastOptimizerSummary;
+    sharedLegacyState.notifications = snap.notifications;
+    sharedLegacyState.lastHydratedAt = snap.lastHydratedAt;
+    sharedLegacyState.isHydratedFromCache = snap.isHydratedFromCache;
+  }
+  function resetTransientLegacyFlags() {
+    sharedLegacyState.simPopulatedOnce = false;
+    sharedLegacyState.reconnectAttempts = 0;
+    sharedLegacyState.configDirty = false;
+    sharedLegacyState.configSaving = 0;
+    sharedLegacyState.gaCalcCount = 0;
+    sharedLegacyState.inFlightVersionCheck = false;
+    sharedLegacyState.inFlightDashboard = false;
+    sharedLegacyState.inFlightDashboardCount = 0;
+    sharedLegacyState.dashboardSeq = 0;
+    sharedLegacyState.agSimDirty = false;
+    sharedLegacyState.agSimRunning = 0;
+    sharedLegacyState.agSimSeq = 0;
+    sharedLegacyState.agSelectedNodeId = null;
+    sharedLegacyState.agSuppressNodeClick = false;
+    sharedLegacyState.activeHelpNotifId = null;
+  }
+  if (typeof window !== "undefined") {
+    syncLegacyStateFromSnapshot(consoleStore.getSnapshot());
+  }
+  registerConsoleStoreResetHook((snap) => {
+    resetTransientLegacyFlags();
+    syncLegacyStateFromSnapshot(snap);
+  });
   if (typeof globalThis !== "undefined") {
     const g = globalThis;
     g.state = sharedLegacyState;
+    g.__SI_STATE__ = sharedLegacyState;
     g.el = (id) => typeof document !== "undefined" ? document.getElementById(id) : null;
     g.apiGet = apiGet;
     g.apiCommand = apiCommand;
@@ -7527,6 +8410,7 @@
     g.feedbackKindForError = feedbackKindForError;
     if (typeof window !== "undefined") {
       window.state = sharedLegacyState;
+      window.__SI_STATE__ = sharedLegacyState;
       window.el = g.el;
     }
   }
@@ -7681,89 +8565,69 @@
     };
   }
   const ConsoleContext = reactExports.createContext(null);
-  function readInitialPersistedState() {
-    let activePage = "dashboard";
-    let selectedPlanetId = null;
-    const prefs = { ...DEFAULT_UI_PREFS };
-    if (typeof window === "undefined") {
-      return { activePage, selectedPlanetId, prefs };
-    }
-    try {
-      const raw = sessionStorage.getItem(SESSION_STATE_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw);
-        if (saved && typeof saved === "object" && !Array.isArray(saved)) {
-          const savedPid = safeFiniteNumber(saved.selectedPlanetId, null);
-          if (savedPid !== null) selectedPlanetId = savedPid;
-          if (saved.bldCategory) prefs.bldCategory = String(saved.bldCategory);
-          if (saved.selectedUnitKey) prefs.selectedUnitKey = String(saved.selectedUnitKey);
-          if (saved.combatSubTab) prefs.combatSubTab = String(saved.combatSubTab);
-          if (saved.queueFilter) prefs.queueFilter = String(saved.queueFilter);
-          if (saved.activeLogSource) prefs.activeLogSource = String(saved.activeLogSource);
-          if (VALID_AG_TABS$1.includes(saved.agActiveTab)) {
-            prefs.agActiveTab = saved.agActiveTab;
-          }
-          if (saved.agEdgeFilter === "all" || saved.agEdgeFilter === "deps") {
-            prefs.agEdgeFilter = saved.agEdgeFilter;
-          }
-          if (saved.agParamTab === "core" || saved.agParamTab === "scope") {
-            prefs.agParamTab = saved.agParamTab;
-          }
-          if (saved.activePage && PAGE_TITLES[saved.activePage]) {
-            activePage = saved.activePage;
-          }
-        }
-      }
-    } catch {
-    }
-    const rawHash = (window.location.hash || "").replace(/^#/, "");
-    const normHash = rawHash === "graph" ? "action-graph" : rawHash;
-    if (normHash && PAGE_TITLES[normHash]) {
-      activePage = normHash;
-    }
-    return { activePage, selectedPlanetId, prefs };
-  }
   const ConsoleProvider = ({
     children,
-    disableInitialFetch = false
+    disableInitialFetch = false,
+    enablePersistence
   }) => {
     var _a;
-    const initial = reactExports.useMemo(() => readInitialPersistedState(), []);
-    const [dashboard, setDashboard] = reactExports.useState(null);
-    const [apiOnline, setApiOnlineState] = reactExports.useState(false);
-    const [reconnectAttempts, setReconnectAttempts] = reactExports.useState(0);
-    const [activePage, setActivePageState] = reactExports.useState(initial.activePage);
-    const [selectedPlanetId, setSelectedPlanetIdState] = reactExports.useState(
-      initial.selectedPlanetId
+    const shouldPersist = enablePersistence !== void 0 ? enablePersistence : !disableInitialFetch || getConsoleStorePersistenceForTests();
+    const activeStore = reactExports.useMemo(() => {
+      if (shouldPersist) {
+        const hydrated = consoleStore.hydrateIfNeeded();
+        if (typeof window !== "undefined") {
+          syncLegacyStateFromSnapshot(hydrated);
+        }
+        return consoleStore;
+      }
+      const isolated = createConsoleStore({
+        persist: false,
+        hydrateOnInit: false,
+        bindUnloadEvents: false
+      });
+      if (typeof window !== "undefined") {
+        resetTransientLegacyFlags();
+        syncLegacyStateFromSnapshot(isolated.getSnapshot());
+      }
+      return isolated;
+    }, [shouldPersist]);
+    const snap = reactExports.useSyncExternalStore(
+      activeStore.subscribe,
+      activeStore.getSnapshot,
+      activeStore.getServerSnapshot
     );
+    const {
+      dashboard,
+      apiOnline,
+      activePage,
+      selectedPlanetId,
+      uiPrefs,
+      buildingsEtaData,
+      combatData,
+      sectorsData,
+      espData,
+      colonyData,
+      atkData,
+      recData,
+      actionGraphData,
+      plannerJobsStatus,
+      lastOptimizerSummary,
+      notifications,
+      lastHydratedAt,
+      isHydratedFromCache
+    } = snap;
+    const [reconnectAttempts, setReconnectAttempts] = reactExports.useState(0);
     const [nowEpochSec, setNowEpochSec] = reactExports.useState(
       () => typeof window === "undefined" ? 0 : Math.floor(Date.now() / 1e3)
     );
     const [gaCalcCount, setGaCalcCount] = reactExports.useState(0);
     const [feedback, setFeedback] = reactExports.useState(null);
-    const [uiPrefs, setUiPrefs] = reactExports.useState(initial.prefs);
-    const [buildingsEtaData, setBuildingsEtaDataState] = reactExports.useState(null);
-    const [combatData, setCombatDataState] = reactExports.useState(null);
-    const [sectorsData, setSectorsDataState] = reactExports.useState(null);
-    const [espData, setEspDataState] = reactExports.useState(null);
-    const [colonyData, setColonyDataState] = reactExports.useState(null);
-    const [atkData, setAtkDataState] = reactExports.useState(null);
-    const [recData, setRecDataState] = reactExports.useState(null);
-    const [actionGraphData, setActionGraphDataState] = reactExports.useState(null);
-    const [plannerJobsStatus, setPlannerJobsStatusState] = reactExports.useState(null);
     const [agSimDirty, setAgSimDirtyState] = reactExports.useState(false);
     const [agSimRunning, setAgSimRunning] = reactExports.useState(0);
     const [configDirty, setConfigDirtyState] = reactExports.useState(false);
     const [configSaving, setConfigSaving] = reactExports.useState(0);
     const [configHydrationTick, setConfigHydrationTick] = reactExports.useState(0);
     const [agHydrationTick, setAgHydrationTick] = reactExports.useState(0);
-    const [lastOptimizerSummary, setLastOptimizerSummaryState] = reactExports.useState(
-      null
-    );
-    const [notifications, setNotifications] = reactExports.useState({
-      unread_count: 0,
-      items: []
-    });
     const [notifCenterOpen, setNotifCenterOpen] = reactExports.useState(false);
     const [activeHelpNotif, setActiveHelpNotif] = reactExports.useState(null);
     const feedbackTimerRef = reactExports.useRef(null);
@@ -7782,66 +8646,31 @@
     const coloniesReqSeqRef = reactExports.useRef(0);
     const inFlightColoniesCountRef = reactExports.useRef(0);
     const sectorPreviewRef = reactExports.useRef(null);
-    sharedLegacyState.dashboard = dashboard;
-    sharedLegacyState.apiOnline = apiOnline;
-    sharedLegacyState.reconnectAttempts = reconnectAttempts;
-    sharedLegacyState.activePage = activePage;
-    sharedLegacyState.selectedPlanetId = selectedPlanetId;
-    sharedLegacyState.modeOverride = uiPrefs.modeOverride;
-    sharedLegacyState.bldCategory = uiPrefs.bldCategory;
-    sharedLegacyState.selectedUnitKey = uiPrefs.selectedUnitKey;
-    sharedLegacyState.combatSubTab = uiPrefs.combatSubTab;
-    sharedLegacyState.queueFilter = uiPrefs.queueFilter;
-    sharedLegacyState.activeLogSource = uiPrefs.activeLogSource;
-    sharedLegacyState.agActiveTab = uiPrefs.agActiveTab;
-    sharedLegacyState.agEdgeFilter = uiPrefs.agEdgeFilter;
-    sharedLegacyState.agParamTab = uiPrefs.agParamTab;
-    sharedLegacyState.sectorFilter = uiPrefs.sectorFilter;
-    sharedLegacyState.sectorGalaxy = uiPrefs.sectorGalaxy;
-    sharedLegacyState.espTab = uiPrefs.espTab;
-    sharedLegacyState.colonyFilter = uiPrefs.colonyFilter;
-    sharedLegacyState.atkTab = uiPrefs.atkTab;
-    sharedLegacyState.recTab = uiPrefs.recTab;
-    sharedLegacyState.emailCatFilter = uiPrefs.emailCatFilter;
-    sharedLegacyState.notifFilter = uiPrefs.notifFilter;
-    sharedLegacyState.buildingsEtaData = buildingsEtaData;
-    sharedLegacyState.combatData = combatData;
-    sharedLegacyState.sectorsData = sectorsData;
-    sharedLegacyState.espData = espData;
-    sharedLegacyState.colonyData = colonyData;
-    sharedLegacyState.atkData = atkData;
-    sharedLegacyState.recData = recData;
-    sharedLegacyState.actionGraphData = actionGraphData;
-    sharedLegacyState.plannerJobsStatus = plannerJobsStatus;
-    sharedLegacyState.agSimDirty = agSimDirty;
-    sharedLegacyState.agSimRunning = agSimRunning;
-    sharedLegacyState.gaCalcCount = gaCalcCount;
-    sharedLegacyState.lastOptimizerSummary = lastOptimizerSummary;
-    sharedLegacyState.notifications = notifications;
-    sharedLegacyState.activeHelpNotifId = activeHelpNotif ? safeFiniteNumber(activeHelpNotif.id, null) : null;
-    const persistUiPrefs = reactExports.useCallback(
-      (nextPage, nextPid, nextPrefs) => {
-        if (typeof window === "undefined") return;
-        try {
-          sessionStorage.setItem(
-            SESSION_STATE_KEY,
-            JSON.stringify({
-              activePage: nextPage,
-              selectedPlanetId: nextPid,
-              bldCategory: nextPrefs.bldCategory,
-              selectedUnitKey: nextPrefs.selectedUnitKey,
-              combatSubTab: nextPrefs.combatSubTab,
-              queueFilter: nextPrefs.queueFilter,
-              activeLogSource: nextPrefs.activeLogSource,
-              agActiveTab: nextPrefs.agActiveTab,
-              agEdgeFilter: nextPrefs.agEdgeFilter,
-              agParamTab: nextPrefs.agParamTab
-            })
-          );
-        } catch {
+    if (typeof window !== "undefined") {
+      syncLegacyStateFromSnapshot(snap);
+      sharedLegacyState.reconnectAttempts = reconnectAttempts;
+      sharedLegacyState.agSimDirty = agSimDirty;
+      sharedLegacyState.agSimRunning = agSimRunning;
+      sharedLegacyState.gaCalcCount = gaCalcCount;
+      sharedLegacyState.activeHelpNotifId = activeHelpNotif ? safeFiniteNumber(activeHelpNotif.id, null) : null;
+    }
+    reactExports.useEffect(() => {
+      return () => {
+        if (feedbackTimerRef.current) {
+          clearTimeout(feedbackTimerRef.current);
+          feedbackTimerRef.current = null;
         }
+        if (shouldPersist) {
+          activeStore.flushPersistence(false);
+        }
+      };
+    }, [activeStore, shouldPersist]);
+    const setDashboard = reactExports.useCallback(
+      (next) => {
+        activeStore.setDashboard(next);
+        sharedLegacyState.dashboard = activeStore.getSnapshot().dashboard;
       },
-      []
+      [activeStore]
     );
     const showFeedback = reactExports.useCallback(
       (message, kind = "ok", opts = {}) => {
@@ -7879,7 +8708,7 @@
         var _a2, _b;
         const wasOnline = sharedLegacyState.apiOnline;
         sharedLegacyState.apiOnline = online;
-        setApiOnlineState(online);
+        activeStore.setApiOnline(online);
         const port = ((_b = (_a2 = sharedLegacyState.dashboard) == null ? void 0 : _a2.health) == null ? void 0 : _b.debug_port) ? "8787" : typeof window !== "undefined" && window.location.port || "8787";
         if (online) {
           const recovered = !wasOnline && sharedLegacyState.reconnectAttempts > 0;
@@ -7897,7 +8726,7 @@
           );
         }
       },
-      [showFeedback]
+      [activeStore, showFeedback]
     );
     const syncNotificationsPayload = reactExports.useCallback(
       (notifPayload) => {
@@ -7906,7 +8735,7 @@
         const unreadCnt = Math.max(0, Math.round(safeFiniteNumber(notifPayload.unread_count, 0) ?? 0));
         const next = { unread_count: unreadCnt, items };
         sharedLegacyState.notifications = next;
-        setNotifications(next);
+        activeStore.setNotifications(next);
         const newestUnread = items.find(
           (n) => n && n.status === "unread" && (safeFiniteNumber(n.id, 0) ?? 0) > 0
         );
@@ -7922,7 +8751,7 @@
           setActiveHelpNotif(null);
         }
       },
-      []
+      [activeStore]
     );
     useClientSyncEffect$2(() => {
       registerHttpBridgeCallbacks({
@@ -7956,42 +8785,69 @@
       sharedLegacyState.agSimDirty = flag;
       setAgSimDirtyState(flag);
     }, []);
-    const setBuildingsEtaData = reactExports.useCallback((data) => {
-      sharedLegacyState.buildingsEtaData = data;
-      setBuildingsEtaDataState(data);
-    }, []);
-    const setCombatData = reactExports.useCallback((data) => {
-      sharedLegacyState.combatData = data;
-      setCombatDataState(data);
-    }, []);
-    const setSectorsData = reactExports.useCallback((data) => {
-      sharedLegacyState.sectorsData = data;
-      setSectorsDataState(data);
-    }, []);
-    const setEspData = reactExports.useCallback((data) => {
-      sharedLegacyState.espData = data;
-      setEspDataState(data);
-    }, []);
-    const setColonyData = reactExports.useCallback((data) => {
-      sharedLegacyState.colonyData = data;
-      setColonyDataState(data);
-    }, []);
-    const setAtkData = reactExports.useCallback((data) => {
-      sharedLegacyState.atkData = data;
-      setAtkDataState(data);
-    }, []);
-    const setRecData = reactExports.useCallback((data) => {
-      sharedLegacyState.recData = data;
-      setRecDataState(data);
-    }, []);
-    const setActionGraphData = reactExports.useCallback((data) => {
-      sharedLegacyState.actionGraphData = data;
-      setActionGraphDataState(data);
-    }, []);
-    const setPlannerJobsStatus = reactExports.useCallback((status) => {
-      sharedLegacyState.plannerJobsStatus = status;
-      setPlannerJobsStatusState(status);
-    }, []);
+    const setBuildingsEtaData = reactExports.useCallback(
+      (data) => {
+        sharedLegacyState.buildingsEtaData = data;
+        activeStore.setBuildingsEtaData(data);
+      },
+      [activeStore]
+    );
+    const setCombatData = reactExports.useCallback(
+      (data) => {
+        sharedLegacyState.combatData = data;
+        activeStore.setCombatData(data);
+      },
+      [activeStore]
+    );
+    const setSectorsData = reactExports.useCallback(
+      (data) => {
+        sharedLegacyState.sectorsData = data;
+        activeStore.setSectorsData(data);
+      },
+      [activeStore]
+    );
+    const setEspData = reactExports.useCallback(
+      (data) => {
+        sharedLegacyState.espData = data;
+        activeStore.setEspData(data);
+      },
+      [activeStore]
+    );
+    const setColonyData = reactExports.useCallback(
+      (data) => {
+        sharedLegacyState.colonyData = data;
+        activeStore.setColonyData(data);
+      },
+      [activeStore]
+    );
+    const setAtkData = reactExports.useCallback(
+      (data) => {
+        sharedLegacyState.atkData = data;
+        activeStore.setAtkData(data);
+      },
+      [activeStore]
+    );
+    const setRecData = reactExports.useCallback(
+      (data) => {
+        sharedLegacyState.recData = data;
+        activeStore.setRecData(data);
+      },
+      [activeStore]
+    );
+    const setActionGraphData = reactExports.useCallback(
+      (data) => {
+        sharedLegacyState.actionGraphData = data;
+        activeStore.setActionGraphData(data);
+      },
+      [activeStore]
+    );
+    const setPlannerJobsStatus = reactExports.useCallback(
+      (status) => {
+        sharedLegacyState.plannerJobsStatus = status;
+        activeStore.setPlannerJobsStatus(status);
+      },
+      [activeStore]
+    );
     const refreshPlannerJobsStatus = reactExports.useCallback(async () => {
       try {
         const res = await apiCommand({
@@ -8005,10 +8861,13 @@
       }
       return null;
     }, [setPlannerJobsStatus]);
-    const setLastOptimizerSummary = reactExports.useCallback((summary) => {
-      sharedLegacyState.lastOptimizerSummary = summary;
-      setLastOptimizerSummaryState(summary);
-    }, []);
+    const setLastOptimizerSummary = reactExports.useCallback(
+      (summary) => {
+        sharedLegacyState.lastOptimizerSummary = summary;
+        activeStore.setLastOptimizerSummary(summary);
+      },
+      [activeStore]
+    );
     const bumpDashboardSeq = reactExports.useCallback(() => {
       sharedLegacyState.dashboardSeq += 1;
       return sharedLegacyState.dashboardSeq;
@@ -8034,11 +8893,7 @@
           return false;
         }
         if (codeChanged || bootChanged) {
-          persistUiPrefs(
-            sharedLegacyState.activePage,
-            sharedLegacyState.selectedPlanetId,
-            uiPrefsRef.current
-          );
+          activeStore.flushPersistence(true);
           showFeedback(
             codeChanged ? "UI update detected — hot-reloading console..." : "Game API restarted — hot-reloading console...",
             "ok"
@@ -8060,23 +8915,29 @@
         }
         return false;
       },
-      [persistUiPrefs, showFeedback]
+      [activeStore, showFeedback]
     );
-    const refreshBuildingsEtaForSelectedPlanet = reactExports.useCallback(async (forceRefresh = false) => {
-      const planet = selectActivePlanet(sharedLegacyState.dashboard, sharedLegacyState.selectedPlanetId);
-      if (!planet) return;
-      try {
-        const res = await apiCommand({
-          command: "buildings_eta",
-          planet_id: planet.planet_id,
-          refresh: forceRefresh
-        });
-        if (res.buildings_eta) {
-          setBuildingsEtaData(res.buildings_eta);
+    const refreshBuildingsEtaForSelectedPlanet = reactExports.useCallback(
+      async (forceRefresh = false) => {
+        const planet = selectActivePlanet(
+          sharedLegacyState.dashboard,
+          sharedLegacyState.selectedPlanetId
+        );
+        if (!planet) return;
+        try {
+          const res = await apiCommand({
+            command: "buildings_eta",
+            planet_id: planet.planet_id,
+            refresh: forceRefresh
+          });
+          if (res.buildings_eta) {
+            setBuildingsEtaData(res.buildings_eta);
+          }
+        } catch {
         }
-      } catch {
-      }
-    }, [setBuildingsEtaData]);
+      },
+      [setBuildingsEtaData]
+    );
     const refreshCombatForSelectedPlanet = reactExports.useCallback(
       async ({ refresh = false } = {}) => {
         const planet = selectActivePlanet(
@@ -8157,7 +9018,9 @@
     const refreshEspionageView = reactExports.useCallback(async () => {
       try {
         const data = await apiCommand({ command: "espionage_intel", limit: 200 });
-        setEspData(data);
+        if (data && typeof data === "object") {
+          setEspData(data);
+        }
       } catch (err) {
         showFeedback(`Espionage data load failed: ${err.message}`, feedbackKindForError(err));
       }
@@ -8172,7 +9035,9 @@
         try {
           const data = await apiCommand({ command: "colony_candidates", limit: 1e3 });
           if (reqSeq !== coloniesReqSeqRef.current) return;
-          setColonyData(data);
+          if (data && typeof data === "object") {
+            setColonyData(data);
+          }
         } catch (err) {
           if (reqSeq !== coloniesReqSeqRef.current) return;
           showFeedback(`Colony grading load failed: ${err.message}`, feedbackKindForError(err));
@@ -8185,7 +9050,9 @@
     const refreshAttacksView = reactExports.useCallback(async () => {
       try {
         const data = await apiCommand({ command: "attack_results", limit: 200 });
-        setAtkData(data);
+        if (data && typeof data === "object") {
+          setAtkData(data);
+        }
       } catch (err) {
         showFeedback(`Attack results load failed: ${err.message}`, feedbackKindForError(err));
       }
@@ -8199,7 +9066,9 @@
             category: cat,
             limit: 200
           });
-          setRecData(data);
+          if (data && typeof data === "object") {
+            setRecData(data);
+          }
         } catch (err) {
           showFeedback(`Recycler and email load failed: ${err.message}`, feedbackKindForError(err));
         }
@@ -8231,29 +9100,31 @@
             config: sharedLegacyState.dashboard.config,
             planner_mode: sharedLegacyState.dashboard.planner_mode || dash.planner_mode
           } : dash;
-          sharedLegacyState.dashboard = nextDash;
-          setDashboard(nextDash);
-          if (nextDash.optimizer_summary) {
-            setLastOptimizerSummary(nextDash.optimizer_summary);
-          }
           const incomingJobsStatus = nextDash.planner_jobs_status && typeof nextDash.planner_jobs_status === "object" ? nextDash.planner_jobs_status : nextDash.planner_status && typeof nextDash.planner_status === "object" ? nextDash.planner_status : null;
-          if (incomingJobsStatus) {
-            setPlannerJobsStatus(incomingJobsStatus);
-          }
           const modeVal = ((_b = nextDash.bot_control) == null ? void 0 : _b.mode_override) || "auto";
-          setUiPrefs(
-            (prev) => prev.modeOverride === modeVal ? prev : { ...prev, modeOverride: modeVal }
+          const shouldPatchActionGraph = !sharedLegacyState.agSimDirty && sharedLegacyState.agSimRunning === 0 && sharedLegacyState.configSaving === 0;
+          const nextActionGraph = shouldPatchActionGraph ? nextDash.action_graph || buildClientFallbackActionGraph(nextDash) : null;
+          const updatedSnap = activeStore.setState(
+            (prev) => {
+              var _a3;
+              const nextPrefs = prev.uiPrefs.modeOverride === modeVal ? prev.uiPrefs : { ...prev.uiPrefs, modeOverride: modeVal };
+              const nextBuildingsEta = nextDash.buildings_eta && (!sharedLegacyState.selectedPlanetId || sharedLegacyState.selectedPlanetId === ((_a3 = nextDash.buildings_eta.planet) == null ? void 0 : _a3.planet_id)) ? nextDash.buildings_eta : prev.buildingsEtaData;
+              const nextCombat = nextDash.combat && (!sharedLegacyState.selectedPlanetId || sharedLegacyState.selectedPlanetId === nextDash.combat.planet_id) ? nextDash.combat : prev.combatData;
+              return {
+                ...prev,
+                dashboard: nextDash,
+                uiPrefs: nextPrefs,
+                lastOptimizerSummary: nextDash.optimizer_summary || prev.lastOptimizerSummary,
+                plannerJobsStatus: incomingJobsStatus || prev.plannerJobsStatus,
+                buildingsEtaData: nextBuildingsEta,
+                combatData: nextCombat,
+                actionGraphData: shouldPatchActionGraph ? nextActionGraph : prev.actionGraphData,
+                lastHydratedAt: Date.now()
+              };
+            },
+            { persist: true }
           );
-          if (nextDash.buildings_eta) {
-            if (!sharedLegacyState.selectedPlanetId || sharedLegacyState.selectedPlanetId === ((_c = nextDash.buildings_eta.planet) == null ? void 0 : _c.planet_id)) {
-              setBuildingsEtaData(nextDash.buildings_eta);
-            }
-          }
-          if (nextDash.combat) {
-            if (!sharedLegacyState.selectedPlanetId || sharedLegacyState.selectedPlanetId === nextDash.combat.planet_id) {
-              setCombatData(nextDash.combat);
-            }
-          }
+          syncLegacyStateFromSnapshot(updatedSnap);
           if (nextDash.notifications && typeof nextDash.notifications === "object") {
             syncNotificationsPayload(nextDash.notifications);
           }
@@ -8268,15 +9139,21 @@
             refreshAttacksView();
           } else if (curPage === "recyclers") {
             refreshRecyclersView();
+          } else if (curPage === "buildings" || curPage === "research") {
+            if (!nextDash.buildings_eta || sharedLegacyState.selectedPlanetId && sharedLegacyState.selectedPlanetId !== ((_c = nextDash.buildings_eta.planet) == null ? void 0 : _c.planet_id)) {
+              refreshBuildingsEtaForSelectedPlanet(false);
+            }
+          } else if (curPage === "combat") {
+            if (!nextDash.combat || sharedLegacyState.selectedPlanetId && sharedLegacyState.selectedPlanetId !== nextDash.combat.planet_id) {
+              refreshCombatForSelectedPlanet({ refresh: false });
+            }
           }
           if (!sharedLegacyState.configDirty && sharedLegacyState.configSaving === 0) {
             sharedLegacyState.configDirty = false;
             setConfigDirtyState(false);
             setConfigHydrationTick((t) => t + 1);
           }
-          if (!sharedLegacyState.agSimDirty && sharedLegacyState.agSimRunning === 0 && sharedLegacyState.configSaving === 0) {
-            const ag = nextDash.action_graph || buildClientFallbackActionGraph(nextDash);
-            setActionGraphData(ag);
+          if (shouldPatchActionGraph) {
             setAgHydrationTick((t) => t + 1);
           }
           return true;
@@ -8299,18 +9176,16 @@
         }
       },
       [
+        activeStore,
         applyVersionSnapshot,
         refreshAttacksView,
+        refreshBuildingsEtaForSelectedPlanet,
         refreshColoniesView,
+        refreshCombatForSelectedPlanet,
         refreshEspionageView,
         refreshRecyclersView,
         refreshSectorsView,
-        setActionGraphData,
         setApiStatus,
-        setBuildingsEtaData,
-        setCombatData,
-        setLastOptimizerSummary,
-        setPlannerJobsStatus,
         showFeedback,
         syncNotificationsPayload
       ]
@@ -8336,25 +9211,36 @@
     const setActivePage = reactExports.useCallback(
       (rawKey) => {
         var _a2;
-        const normKey = rawKey === "graph" ? "action-graph" : rawKey;
-        const target = PAGE_TITLES[normKey] ? normKey : "dashboard";
-        sharedLegacyState.activePage = target;
-        setActivePageState(target);
-        if (target === "dashboard" || target === "operations") {
+        const target = normalizePageKey(rawKey);
+        const nextSnap = activeStore.setState(
+          (prev) => {
+            const nextPrefs = prev.uiPrefs.sidebarOpen ? { ...prev.uiPrefs, sidebarOpen: false } : prev.uiPrefs;
+            if (prev.activePage === target && nextPrefs === prev.uiPrefs) {
+              return prev;
+            }
+            return {
+              ...prev,
+              activePage: target,
+              uiPrefs: nextPrefs
+            };
+          },
+          { persist: true }
+        );
+        syncLegacyStateFromSnapshot(nextSnap);
+        if (target === "dashboard" || target === "operations" || target === "fleet-control") {
           setNowEpochSec(Math.floor(Date.now() / 1e3));
         }
-        setUiPrefs((prev) => {
-          const next = prev.sidebarOpen ? { ...prev, sidebarOpen: false } : prev;
-          persistUiPrefs(target, sharedLegacyState.selectedPlanetId, next);
-          return next;
-        });
-        if (typeof window !== "undefined" && window.location.hash !== `#${target}`) {
+        if (shouldPersist && typeof window !== "undefined" && window.location.hash !== `#${target}`) {
           window.history.replaceState(null, "", `#${target}`);
         }
-        if (target === "buildings") {
+        if (target === "buildings" || target === "research") {
           refreshBuildingsEtaForSelectedPlanet();
         } else if (target === "combat") {
           refreshCombatForSelectedPlanet({ refresh: false });
+        } else if (target === "fleet-control") {
+          if (!disableInitialFetch) {
+            loadDashboard({ refresh: false, preserveConfig: true });
+          }
         } else if (target === "sectors") {
           refreshSectorsView();
         } else if (target === "espionage") {
@@ -8376,7 +9262,9 @@
         }
       },
       [
-        persistUiPrefs,
+        activeStore,
+        disableInitialFetch,
+        loadDashboard,
         refreshAttacksView,
         refreshBuildingsEtaForSelectedPlanet,
         refreshColoniesView,
@@ -8384,7 +9272,8 @@
         refreshEspionageView,
         refreshRecyclersView,
         refreshSectorsView,
-        setActionGraphData
+        setActionGraphData,
+        shouldPersist
       ]
     );
     const setSelectedPlanetId = reactExports.useCallback(
@@ -8392,8 +9281,7 @@
         const pid = planetId == null ? null : safeFiniteNumber(planetId, null);
         sharedLegacyState.selectedPlanetId = pid;
         sharedLegacyState.simPopulatedOnce = false;
-        setSelectedPlanetIdState(pid);
-        persistUiPrefs(sharedLegacyState.activePage, pid, uiPrefsRef.current);
+        activeStore.setSelectedPlanetId(pid);
         if (sharedLegacyState.dashboard) {
           refreshBuildingsEtaForSelectedPlanet();
           if (sharedLegacyState.activePage === "combat") {
@@ -8406,7 +9294,7 @@
         }
       },
       [
-        persistUiPrefs,
+        activeStore,
         refreshBuildingsEtaForSelectedPlanet,
         refreshColoniesView,
         refreshCombatForSelectedPlanet,
@@ -8418,13 +9306,10 @@
         if (key in sharedLegacyState) {
           sharedLegacyState[key] = value2;
         }
-        setUiPrefs((prev) => {
-          const next = { ...prev, [key]: value2 };
-          persistUiPrefs(sharedLegacyState.activePage, sharedLegacyState.selectedPlanetId, next);
-          return next;
-        });
+        activeStore.setUiPref(key, value2);
+        sharedLegacyState.uiPrefs = activeStore.getSnapshot().uiPrefs;
       },
-      [persistUiPrefs]
+      [activeStore]
     );
     const refreshNotificationCenter = reactExports.useCallback(
       async (filterOverride) => {
@@ -8436,19 +9321,17 @@
             limit: 60
           });
           if (Array.isArray(res == null ? void 0 : res.items)) {
-            setNotifications({
-              unread_count: Math.max(0, Math.round(safeFiniteNumber(res.unread_count, 0) ?? 0)),
-              items: res.items
-            });
-            sharedLegacyState.notifications = {
+            const next = {
               unread_count: Math.max(0, Math.round(safeFiniteNumber(res.unread_count, 0) ?? 0)),
               items: res.items
             };
+            sharedLegacyState.notifications = next;
+            activeStore.setNotifications(next);
           }
         } catch {
         }
       },
-      []
+      [activeStore]
     );
     const openNotificationCenter = reactExports.useCallback(async () => {
       setNotifCenterOpen(true);
@@ -8590,12 +9473,16 @@
       };
       g.renderTelemetry = applySyntheticDash;
       g.renderBuildingsView = applySyntheticDash;
+      g.renderResearchView = applySyntheticDash;
       g.renderGaNnHud = applySyntheticDash;
       g.renderRanking = applySyntheticDash;
     }, [
+      beginGaCalc,
+      endGaCalc,
       loadDashboard,
       setActivePage,
       setBuildingsEtaData,
+      setDashboard,
       setLastOptimizerSummary,
       showFeedback
     ]);
@@ -8606,7 +9493,7 @@
       const tickTimer = setInterval(() => {
         if (document.visibilityState !== "visible") return;
         const curPage = sharedLegacyState.activePage;
-        if (curPage === "dashboard" || curPage === "operations" || notifCenterOpenRef.current) {
+        if (curPage === "dashboard" || curPage === "operations" || curPage === "fleet-control" || notifCenterOpenRef.current) {
           setNowEpochSec(Math.floor(Date.now() / 1e3));
         }
       }, 1e3);
@@ -8675,6 +9562,8 @@
         apiOnline,
         reconnectAttempts,
         chromeOnline,
+        isHydratedFromCache,
+        lastHydratedAt,
         activePage,
         setActivePage,
         selectedPlanetId,
@@ -8773,6 +9662,8 @@
         feedback,
         gaCalcCount,
         gaCalculating,
+        isHydratedFromCache,
+        lastHydratedAt,
         lastOptimizerSummary,
         loadDashboard,
         notifCenterOpen,
@@ -8801,6 +9692,7 @@
         setColonyData,
         setCombatData,
         setConfigDirty,
+        setDashboard,
         setEspData,
         setLastOptimizerSummary,
         setPlannerJobsStatus,
@@ -8848,6 +9740,7 @@
       activePage,
       setActivePage,
       activePlanet,
+      setSelectedPlanetId,
       buildingsEtaData,
       notifications,
       notifCenterOpen,
@@ -8863,6 +9756,7 @@
     } = useConsole();
     const [scanToggling, setScanToggling] = React.useState(false);
     const gs = (dashboard == null ? void 0 : dashboard.state) || {};
+    const planets = Array.isArray(gs.planets) ? gs.planets : [];
     const universeText = dashboard ? `U${gs.universe_id || 31} · ${gs.nickname || "COMMANDER"}` : "U31 · COMMANDER";
     const clockText = fmtClock(gs.timestamp);
     const tempVal = safeFiniteNumber(activePlanet == null ? void 0 : activePlanet.temperature, null);
@@ -8956,6 +9850,25 @@
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ruler-node tabular", id: "hud-universe", children: universeText }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ruler-sep", "aria-hidden": "true" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ruler-node tabular", id: "hud-clock", children: clockText }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ruler-sep", "aria-hidden": "true" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ruler-colony-selector", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("label", { className: "ruler-colony-label tabular", htmlFor: "planet-select", children: "COLONY" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "select",
+              {
+                id: "planet-select",
+                className: "ruler-colony-select tabular",
+                "aria-label": "Active planet",
+                value: activePlanet ? String(activePlanet.planet_id) : "",
+                onChange: (e) => setSelectedPlanetId(Number(e.target.value)),
+                children: planets.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "Loading..." }) : planets.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsxs("option", { value: String(p.planet_id), children: [
+                  p.coords,
+                  " ",
+                  p.name
+                ] }, p.planet_id))
+              }
+            )
+          ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ruler-sep", "aria-hidden": "true" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ruler-node tabular", id: "planet-specs", children: specsText })
         ] }),
@@ -9053,16 +9966,932 @@
       )
     ] });
   };
+  function isMissingSortValue(val) {
+    if (val === null || val === void 0) return true;
+    if (typeof val === "number") return !Number.isFinite(val);
+    if (typeof val === "string") return val.trim() === "";
+    return false;
+  }
+  function compareSortValues(a, b, direction) {
+    const aMiss = isMissingSortValue(a);
+    const bMiss = isMissingSortValue(b);
+    if (aMiss && bMiss) return 0;
+    if (aMiss) return 1;
+    if (bMiss) return -1;
+    let cmp = 0;
+    if (typeof a === "number" && typeof b === "number") {
+      cmp = a - b;
+    } else if (typeof a === "boolean" && typeof b === "boolean") {
+      cmp = Number(a) - Number(b);
+    } else {
+      cmp = String(a).localeCompare(String(b), void 0, {
+        numeric: true,
+        sensitivity: "base"
+      });
+    }
+    return direction === "asc" ? cmp : -cmp;
+  }
+  function resolveColumnSpec(config) {
+    if (!config) return null;
+    if (typeof config === "function") {
+      return { accessor: config, defaultDirection: "asc" };
+    }
+    return {
+      accessor: config.accessor,
+      defaultDirection: config.defaultDirection ?? "asc"
+    };
+  }
+  function useTableSort(rows, columns, options) {
+    const [sortState, setSortState] = reactExports.useState(() => ({
+      key: (options == null ? void 0 : options.initialKey) ?? null,
+      direction: (options == null ? void 0 : options.initialKey) ? options.initialDirection ?? "asc" : null
+    }));
+    const requestSort = reactExports.useCallback(
+      (key) => {
+        const spec = resolveColumnSpec(columns[key]);
+        const defaultDir = (spec == null ? void 0 : spec.defaultDirection) ?? "asc";
+        const flippedDir = defaultDir === "asc" ? "desc" : "asc";
+        setSortState((prev) => {
+          if (prev.key !== key) {
+            return { key, direction: defaultDir };
+          }
+          if (prev.direction === defaultDir) {
+            return { key, direction: flippedDir };
+          }
+          return { key: null, direction: null };
+        });
+      },
+      [columns]
+    );
+    const resetSort = reactExports.useCallback(() => {
+      setSortState({ key: null, direction: null });
+    }, []);
+    const sortedRows = reactExports.useMemo(() => {
+      const list = Array.isArray(rows) ? rows : [];
+      if (!sortState.key || !sortState.direction || list.length <= 1) {
+        return [...list];
+      }
+      const spec = resolveColumnSpec(columns[sortState.key]);
+      if (!spec) {
+        return [...list];
+      }
+      const dir = sortState.direction;
+      const decorated = list.map((row, idx) => ({
+        row,
+        idx,
+        val: spec.accessor(row)
+      }));
+      decorated.sort((a, b) => {
+        const cmp = compareSortValues(a.val, b.val, dir);
+        return cmp !== 0 ? cmp : a.idx - b.idx;
+      });
+      return decorated.map((item) => item.row);
+    }, [rows, columns, sortState.key, sortState.direction]);
+    return {
+      sortedRows,
+      sortKey: sortState.key,
+      sortDirection: sortState.direction,
+      requestSort,
+      resetSort
+    };
+  }
+  function coordsSortKey(raw) {
+    const txt = String(raw ?? "").trim();
+    const m = txt.match(/(\d{1,2})\s*:\s*(\d{1,3})(?:\s*:\s*(\d{1,2}))?/);
+    if (!m) return null;
+    const g = Number.parseInt(m[1], 10);
+    const s = Number.parseInt(m[2], 10);
+    const p = m[3] !== void 0 ? Number.parseInt(m[3], 10) : 0;
+    if (!Number.isFinite(g) || !Number.isFinite(s) || !Number.isFinite(p)) return null;
+    return g * 1e6 + s * 100 + p;
+  }
+  function prioritySortKey(raw) {
+    const txt = String(raw ?? "").trim().toUpperCase();
+    if (!txt) return null;
+    if (txt === "EXEC") return -2;
+    if (txt.startsWith("GAME")) return -1;
+    const m = txt.match(/^P(\d+)$/);
+    if (m) return Number.parseInt(m[1], 10);
+    return null;
+  }
+  const GRADE_RANK = {
+    "S+": 0,
+    S: 1,
+    "A+": 2,
+    A: 3,
+    "B+": 4,
+    B: 5,
+    "C+": 6,
+    C: 7,
+    D: 8,
+    F: 9
+  };
+  function gradeSortKey(raw) {
+    const txt = String(raw ?? "").trim().toUpperCase();
+    if (!txt || txt === "?" || txt === "—" || txt === "-") return null;
+    if (Object.prototype.hasOwnProperty.call(GRADE_RANK, txt)) {
+      return GRADE_RANK[txt];
+    }
+    return null;
+  }
+  function resourcesTotal(res) {
+    if (!res || typeof res !== "object") return null;
+    const obj = res;
+    const keys = ["pig_iron", "metal", "kryptonite", "spice"];
+    let found = false;
+    let total = 0;
+    for (const k of keys) {
+      const raw = obj[k];
+      if (raw === null || raw === void 0 || raw === "") continue;
+      const n = Number(raw);
+      if (Number.isFinite(n)) {
+        found = true;
+        total += n;
+      }
+    }
+    return found ? total : null;
+  }
+  function unitDictTotal(obj) {
+    if (!obj || typeof obj !== "object") return null;
+    let found = false;
+    let total = 0;
+    for (const val of Object.values(obj)) {
+      const n = Number(val);
+      if (Number.isFinite(n) && n > 0) {
+        found = true;
+        total += n;
+      }
+    }
+    return found ? total : null;
+  }
+  function durationToSeconds(raw) {
+    if (typeof raw === "number") {
+      return Number.isFinite(raw) ? raw : null;
+    }
+    const cleaned = String(raw ?? "").replace(/\([^)]*\)/g, "").trim().toLowerCase();
+    if (!cleaned || cleaned === "—" || cleaned === "-" || cleaned === "--" || cleaned === "blocked" || cleaned === "never" || cleaned === "n/a" || cleaned === "unknown") {
+      return null;
+    }
+    if (cleaned === "ready" || cleaned === "now" || cleaned === "instant" || cleaned === "cleared" || cleaned === "0" || cleaned === "0s") {
+      return 0;
+    }
+    const colonMatch = cleaned.match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/);
+    if (colonMatch) {
+      if (colonMatch[3] !== void 0) {
+        return Number(colonMatch[1]) * 3600 + Number(colonMatch[2]) * 60 + Number(colonMatch[3]);
+      }
+      return Number(colonMatch[1]) * 60 + Number(colonMatch[2]);
+    }
+    const tokenRe = /(\d+(?:\.\d+)?)\s*(w|d|h|m|s)\b/g;
+    let total = 0;
+    let matched = false;
+    let m;
+    while ((m = tokenRe.exec(cleaned)) !== null) {
+      matched = true;
+      const val = Number(m[1]);
+      const unit = m[2];
+      if (unit === "w") total += val * 7 * 86400;
+      else if (unit === "d") total += val * 86400;
+      else if (unit === "h") total += val * 3600;
+      else if (unit === "m") total += val * 60;
+      else if (unit === "s") total += val;
+    }
+    if (matched) return total;
+    const plainNum = Number(cleaned);
+    return Number.isFinite(plainNum) ? plainNum : null;
+  }
+  function timestampSortKey(ts, fallbackText) {
+    if (typeof ts === "number" && Number.isFinite(ts) && ts > 0) {
+      return ts;
+    }
+    if (typeof ts === "string" && ts.trim() !== "") {
+      const asNum = Number(ts.trim());
+      if (Number.isFinite(asNum) && asNum > 0) return asNum;
+      const parsed = Date.parse(ts.trim());
+      if (Number.isFinite(parsed)) return parsed / 1e3;
+    }
+    if (typeof fallbackText === "string" && fallbackText.trim() !== "") {
+      const parsed = Date.parse(fallbackText.trim());
+      if (Number.isFinite(parsed)) return parsed / 1e3;
+    }
+    return null;
+  }
+  const PLAN_ACTION_SORT_COLUMNS = {
+    priority: (act) => prioritySortKey(act.priority),
+    action: (act) => `${act.target_name || act.kind || ""}${act.target_level != null ? ` ${act.target_level}` : ""}`,
+    costMissing: (act) => resourcesTotal(act.cost) ?? resourcesTotal(act.missing),
+    waitEta: (act) => {
+      const rawWait = act.wait_eta !== void 0 && act.wait_eta !== null ? String(act.wait_eta).trim() : "";
+      if (rawWait === "—" || act.wait_hours === null) return null;
+      const wh = finiteNum(act.wait_hours, null);
+      if (wh !== null && (wh > 0 || act.executable_now || rawWait !== "")) {
+        return wh * 3600;
+      }
+      if (rawWait !== "") return durationToSeconds(rawWait);
+      return act.executable_now ? 0 : null;
+    },
+    totalEta: (act) => {
+      const rawWait = act.wait_eta !== void 0 && act.wait_eta !== null ? String(act.wait_eta).trim() : "";
+      const rawTotal = act.total_eta !== void 0 && act.total_eta !== null ? String(act.total_eta).trim() : "";
+      if (rawWait === "—" || rawTotal === "—" || act.wait_hours === null || act.total_hours === null) {
+        return null;
+      }
+      const ts = finiteNum(act.total_seconds, null);
+      if (ts !== null) return ts;
+      const th = finiteNum(act.total_hours, null);
+      if (th !== null) return th * 3600;
+      if (rawTotal !== "") return durationToSeconds(rawTotal);
+      if (act.duration_text) return durationToSeconds(act.duration_text);
+      return act.executable_now ? 0 : null;
+    },
+    reason: (act) => String(act.reason || "").trim() || null
+  };
+  const MQ_BUILDINGS_CATALOG = [
+    { id: 1, name: "Pig iron mine" },
+    { id: 2, name: "Blast furnace" },
+    { id: 3, name: "Kryptonite mine" },
+    { id: 4, name: "Spice mine" },
+    { id: 5, name: "Fusion plant" },
+    { id: 6, name: "Thermosolar plant" },
+    { id: 7, name: "Development center" },
+    { id: 8, name: "Research lab" },
+    { id: 9, name: "Weapons factory" },
+    { id: 10, name: "Fleet base" },
+    { id: 11, name: "Pig iron warehouse" },
+    { id: 12, name: "Metal warehouse" },
+    { id: 13, name: "Kryptonite warehouse" },
+    { id: 14, name: "Spice warehouse" },
+    { id: 15, name: "Particle cannon" },
+    { id: 16, name: "Particle shield" },
+    { id: 17, name: "Microsystem accelerator" },
+    { id: 18, name: "Teleporter" },
+    { id: 19, name: "Galaxy scanner" },
+    { id: 20, name: "Tunnel system" },
+    { id: 21, name: "Quantum Array" }
+  ];
+  const MQ_RESEARCH_CATALOG = [
+    { id: 1, name: "Mining technology" },
+    { id: 2, name: "Energy technology" },
+    { id: 3, name: "Engine research" },
+    { id: 4, name: "Rocket engine" },
+    { id: 5, name: "Diffusion engine" },
+    { id: 6, name: "Warp engine" },
+    { id: 7, name: "Spy technology" },
+    { id: 8, name: "Weapons technology" },
+    { id: 9, name: "Shield technology" },
+    { id: 10, name: "Defense systems" },
+    { id: 11, name: "Targeting systems" },
+    { id: 12, name: "Particle analyzer" },
+    { id: 13, name: "Graviton technology" },
+    { id: 14, name: "Teleportation" },
+    { id: 15, name: "Black hole research" }
+  ];
+  const MQ_SHIPS_CATALOG = [
+    { id: 1, name: "Small transport", key: "s1" },
+    { id: 2, name: "Large transport", key: "s2" },
+    { id: 3, name: "Transmitter", key: "s3" },
+    { id: 4, name: "Small fighter", key: "s4" },
+    { id: 5, name: "Warship", key: "s5" },
+    { id: 6, name: "Starcruiser", key: "s6" },
+    { id: 7, name: "Phoenix", key: "s7" },
+    { id: 8, name: "Colony ship", key: "s8" },
+    { id: 9, name: "Solar cells", key: "s9" },
+    { id: 10, name: "Spy probe", key: "s10" },
+    { id: 11, name: "Recycler", key: "s11" },
+    { id: 13, name: "Battleship", key: "s13" },
+    { id: 14, name: "Stealth bomber", key: "s14" },
+    { id: 15, name: "Destroyer", key: "s15" },
+    { id: 16, name: "Imperial starbase", key: "s16" }
+  ];
+  const DASH_FLEET_KINDS = /* @__PURE__ */ new Set([
+    "BUILD_SHIP",
+    "SHIP",
+    "BUILD_DEFENSE",
+    "DEFENSE",
+    "SPY",
+    "TRANSPORT",
+    "STATION",
+    "ATTACK",
+    "RECYCLE",
+    "COLONIZE",
+    "SCAN_GALAXY",
+    "ESCAPE_FLIGHT",
+    "ALERT_HOSTILE"
+  ]);
+  function dashboardQueueDomainForAction(act) {
+    const kind = String((act == null ? void 0 : act.kind) || "").toUpperCase();
+    if (kind === "RESEARCH") return "research";
+    if (DASH_FLEET_KINDS.has(kind)) return "fleet";
+    return "building";
+  }
+  function dashboardQueueDomainForJob(job) {
+    const cat = String((job == null ? void 0 : job.category) || "").toLowerCase();
+    if (cat === "research") return "research";
+    if (cat === "fleet" || cat === "ship" || cat === "shipyard" || cat === "defense") return "fleet";
+    return "building";
+  }
+  function normalizeCoordKey$1(raw) {
+    const s = String(raw || "").trim();
+    if (!s) return "";
+    const m = s.match(/(\d{1,2})\s*:\s*(\d{1,3})\s*:\s*(\d{1,2})/);
+    if (!m) return s;
+    return `${Number(m[1])}:${Number(m[2])}:${Number(m[3])}`;
+  }
+  function queueJobMatchesPlanet(job, planet, activePlanetId, fallbackToActivePlanet) {
+    const jPid = job.planet_id != null ? Number(job.planet_id) : NaN;
+    if (Number.isFinite(jPid) && jPid > 0) {
+      return jPid === Number(planet.planet_id);
+    }
+    const jCoords = normalizeCoordKey$1(job.origin_coords || job.planet_coords);
+    if (jCoords) {
+      const pCoords = normalizeCoordKey$1(planet.coords);
+      return Boolean(pCoords) && jCoords === pCoords;
+    }
+    if (fallbackToActivePlanet && activePlanetId != null) {
+      return Number(planet.planet_id) === Number(activePlanetId);
+    }
+    return false;
+  }
+  function isActiveBuildingJob(job, nowEpochSec) {
+    if (!job) return false;
+    if (String(job.category || "").toLowerCase() !== "building") return false;
+    const finTs = finiteNum(job.finish_ts, null);
+    const remSec = finiteNum(job.remaining_seconds, null);
+    const effNow = nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : null;
+    if (finTs !== null && finTs > 0 && effNow !== null) {
+      return finTs > effNow;
+    }
+    if (remSec !== null) {
+      return remSec > 0;
+    }
+    return true;
+  }
+  function isPlanetConstructing(planet, activeQueues, activePlanetId, nowEpochSec) {
+    if (!Array.isArray(activeQueues) || activeQueues.length === 0) return false;
+    return activeQueues.some(
+      (job) => isActiveBuildingJob(job, nowEpochSec) && queueJobMatchesPlanet(job, planet, activePlanetId, true)
+    );
+  }
+  const FLIGHT_MISSION_RE = /\b(attack|recycle|transport|transfer|spy|espionage|colonize|escape|save|station|expedition|flight)\b/i;
+  const NON_FLIGHT_DETAIL_PREFIXES = [
+    "shipyard",
+    "weapons factory",
+    "defense",
+    "defence",
+    "in construction",
+    "researching",
+    "constructing"
+  ];
+  function isOngoingFleetFlight$1(job) {
+    if (!job) return false;
+    const cat = String(job.category || "").toLowerCase();
+    const detailLow = String(job.detail || "").trim().toLowerCase();
+    if (NON_FLIGHT_DETAIL_PREFIXES.some((prefix) => detailLow.startsWith(prefix))) {
+      return false;
+    }
+    if (cat === "fleet") return true;
+    if (cat === "building" || cat === "research" || cat === "ship" || cat === "shipyard" || cat === "defense" || cat === "milestone") {
+      return false;
+    }
+    return FLIGHT_MISSION_RE.test(`${String(job.name || "")} ${String(job.detail || "")}`);
+  }
+  function cleanQueueJobTitle(job) {
+    const rawName = String((job == null ? void 0 : job.name) || "Active job").replace(/^(?:cancel|abort)\s+/i, "").replace(/\s*\(\s*Level\s+\d+\s*\)\s*$/i, "").trim();
+    const lvl = finiteNum(job == null ? void 0 : job.target_level, null);
+    if (lvl !== null && lvl > 0) {
+      return `${rawName} → L${lvl}`;
+    }
+    return rawName || "Active job";
+  }
+  function actionPayloadFor(action, dryRun) {
+    if (!action) return null;
+    if (action.kind === "CLAIM_TUTORIAL") {
+      return { command: "claim_tutorial", dry_run: dryRun };
+    }
+    if (action.kind === "BUILD" && action.target_id != null) {
+      return {
+        command: "build",
+        building_id: action.target_id,
+        planet_id: action.planet_id,
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "DEMOLISH_BUILDING" && action.target_id != null) {
+      return {
+        command: "demolish_building",
+        building_id: action.target_id,
+        planet_id: action.planet_id,
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "RESEARCH" && action.target_id != null) {
+      return {
+        command: "research",
+        research_id: action.target_id,
+        planet_id: action.planet_id,
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "BUILD_SHIP" && action.target_id != null) {
+      return {
+        command: "build_ship",
+        ship_id: action.target_id,
+        quantity: Math.max(1, Math.round(finiteNum(action.target_level, 1))),
+        planet_id: action.planet_id,
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "THROTTLE_BUILDING" && action.target_id != null) {
+      return {
+        command: "throttle_building",
+        building_id: action.target_id,
+        percentage: action.target_level == null ? 0 : finiteNum(action.target_level, 0),
+        planet_id: action.planet_id,
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "ESCAPE_FLIGHT") {
+      return { command: "fleetsave_plan", planet_id: action.planet_id };
+    }
+    if (action.kind === "SCAN_GALAXY") {
+      const m = /(\d{1,2}):(\d{1,3})/.exec(action.target_name || action.planet_coords || "");
+      return {
+        command: "scan_galaxy",
+        galaxy: m ? Number(m[1]) : void 0,
+        system: m ? Number(m[2]) : void 0,
+        planet_id: action.planet_id,
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "ATTACK") {
+      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
+      return {
+        command: "attack",
+        target_coords: m ? m[1] : action.target_name,
+        planet_id: action.planet_id,
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "SPY") {
+      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
+      return {
+        command: "spy",
+        target_coords: m ? m[1] : action.target_name,
+        quantity: Math.max(1, Math.round(finiteNum(action.target_level, 1))),
+        planet_id: action.planet_id,
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "RECYCLE") {
+      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
+      return {
+        command: "recycle",
+        target_coords: m ? m[1] : action.target_name,
+        quantity: Math.max(1, Math.round(finiteNum(action.target_level, 1))),
+        planet_id: action.planet_id,
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "TRANSPORT") {
+      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
+      const c = action.cost || {};
+      return {
+        command: "transport",
+        target_coords: m ? m[1] : action.target_name,
+        dest_planet_id: action.target_id ?? void 0,
+        planet_id: action.planet_id,
+        resources: {
+          pig_iron: Math.max(0, Math.round(finiteNum(c.pig_iron, 0))),
+          metal: Math.max(0, Math.round(finiteNum(c.metal, 0))),
+          kryptonite: Math.max(0, Math.round(finiteNum(c.kryptonite, 0))),
+          spice: Math.max(0, Math.round(finiteNum(c.spice, 0)))
+        },
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "STATION") {
+      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
+      return {
+        command: "station",
+        target_coords: m ? m[1] : action.target_name,
+        dest_planet_id: action.target_id ?? void 0,
+        planet_id: action.planet_id,
+        ships_spec: action.target_name || action.reason || "",
+        dry_run: dryRun
+      };
+    }
+    if (action.kind === "COLONIZE") {
+      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
+      return {
+        command: "colonize",
+        target_coords: m ? m[1] : action.target_name,
+        planet_id: action.planet_id,
+        dry_run: dryRun
+      };
+    }
+    return null;
+  }
+  function buildPinPayloadFromAction(act, priority = "P1") {
+    const normKind = act.kind === "WAIT_RESOURCES" ? "BUILD" : String(act.kind || "").toUpperCase();
+    const mCoords = /(\d{1,2}:\d{1,3}(?::\d{1,2})?)/.exec(act.target_name || "");
+    return {
+      kind: normKind,
+      priority,
+      position: "top",
+      planet_id: act.planet_id || 0,
+      target_id: act.target_id ?? void 0,
+      target_name: act.target_name || "",
+      target_coords: mCoords ? mCoords[1] : void 0,
+      target_level: act.target_level ?? void 0,
+      deduplicate_pending: true
+    };
+  }
+  const PlanActionRow = ({
+    action: act,
+    compact = false,
+    nowEpochSec,
+    onDispatch,
+    onUpdateQueue,
+    onCancelQueue,
+    onPinQueue
+  }) => {
+    const isManual = act.manual_queue_id != null && Number(act.manual_queue_id) > 0;
+    const qid = isManual ? Number(act.manual_queue_id) : 0;
+    const prioVal = String(act.priority || "?");
+    const prioSelectRef = reactExports.useRef(null);
+    const handledEventsRef = reactExports.useRef(/* @__PURE__ */ new WeakSet());
+    reactExports.useEffect(() => {
+      const sel = prioSelectRef.current;
+      if (!sel || !isManual || compact) return;
+      const onNativeChange = (ev) => {
+        if (handledEventsRef.current.has(ev)) return;
+        handledEventsRef.current.add(ev);
+        const nextVal = sel.value;
+        if (nextVal && nextVal !== prioVal) {
+          onUpdateQueue(qid, { priority: nextVal, move: "top" });
+        }
+      };
+      sel.addEventListener("change", onNativeChange);
+      return () => sel.removeEventListener("change", onNativeChange);
+    }, [compact, isManual, onUpdateQueue, prioVal, qid]);
+    let lvlStr = "";
+    if (act.kind === "THROTTLE_BUILDING" && act.target_level != null) {
+      lvlStr = ` (${act.target_level}%)`;
+    } else if (act.kind === "BUILD_SHIP" && act.target_level) {
+      lvlStr = ` x${act.target_level}`;
+    } else if (act.target_level != null) {
+      lvlStr = ` → L${act.target_level}`;
+    }
+    const costStr = formatResourcesInline(act.cost);
+    const missStr = formatResourcesInline(act.missing);
+    const hasRawWait = act.wait_eta !== void 0 && act.wait_eta !== null && String(act.wait_eta).trim() !== "";
+    const isBlocked = hasRawWait && String(act.wait_eta) === "—" || act.wait_hours === null || !hasRawWait && !act.executable_now && (act.wait_hours == null || !Number.isFinite(Number(act.wait_hours)) || Number(act.wait_hours) <= 0);
+    const waitHoursNum = act.wait_hours !== void 0 && act.wait_hours !== null && Number.isFinite(Number(act.wait_hours)) ? Number(act.wait_hours) : 0;
+    const waitEta = hasRawWait ? String(act.wait_eta) : isBlocked ? "—" : act.executable_now ? "Ready" : "—";
+    const bnTag = bottleneckTag(act.eta_bottleneck);
+    const isWaiting = !isBlocked && (waitHoursNum > 0 || waitEta !== "Ready" && waitEta !== "Instant" && waitEta !== "—");
+    const waitPillText = (isBlocked || isWaiting) && bnTag ? `${waitEta} (${bnTag})` : waitEta;
+    const hasRawTotal = act.total_eta !== void 0 && act.total_eta !== null && String(act.total_eta).trim() !== "";
+    const hasRawDur = act.duration_text !== void 0 && act.duration_text !== null && String(act.duration_text).trim() !== "";
+    const durText = hasRawDur ? String(act.duration_text) : "";
+    const totalBlocked = isBlocked || hasRawTotal && String(act.total_eta) === "—" || act.total_hours === null;
+    const totalEta = hasRawTotal ? String(act.total_eta) : totalBlocked ? "—" : durText || (act.executable_now ? "Ready" : "—");
+    const totSecNum = finiteNum(act.total_seconds, null);
+    const effNowSec = nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : Math.floor(Date.now() / 1e3);
+    const cmdTemplate = actionPayloadFor(act, false);
+    const canPin = Boolean(
+      actionPayloadFor(act.kind === "WAIT_RESOURCES" ? { ...act, kind: "BUILD" } : act, true)
+    );
+    const targetLabel = String(act.target_name || "command").replace(/>/g, "→");
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { className: isManual ? "is-manual-queued" : void 0, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "prio-cell-stack", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: `prio-tag prio-${prioVal}`, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "prio-dot" }),
+          prioVal
+        ] }),
+        isManual ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "mq-pin-badge tabular", children: [
+          "PIN #",
+          act.manual_queue_id
+        ] }) : null
+      ] }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-title", children: `${act.target_name || "Action"}${lvlStr}` }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-sub", children: `${act.kind || "ACTION"} · [${act.planet_coords || "—"}]` })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "tabular", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: costStr }),
+        missStr !== "0" && missStr !== "—" ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-sub", children: `Missing: ${missStr}` }) : null
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "span",
+        {
+          className: `eta-pill${isBlocked ? " is-blocked" : isWaiting ? " is-wait" : ""}`,
+          title: bnTag ? `Bottleneck: ${bnTag}` : void 0,
+          children: waitPillText
+        }
+      ) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "col-right tabular", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "span",
+          {
+            className: `eta-pill${totalBlocked ? " is-blocked" : isWaiting ? " is-wait" : ""}`,
+            children: totalEta
+          }
+        ),
+        compact && !totalBlocked && totSecNum !== null && totSecNum > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "finish-clock-sub tabular", children: `at ${fmtClockTime(effNowSec + totSecNum, effNowSec)}` }) : !compact && durText && durText !== totalEta ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-sub", children: durText === "Instant" ? "Instant" : `Dur: ${durText}` }) : null
+      ] }),
+      !compact ? /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: act.reason || "" }) : null,
+      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row-actions-wrap", children: [
+        cmdTemplate && act.executable_now ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              type: "button",
+              className: "btn btn-primary btn-sm",
+              onClick: () => onDispatch(act, false),
+              children: "Run"
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              type: "button",
+              className: "btn btn-secondary btn-sm",
+              onClick: () => onDispatch(act, true),
+              children: "Sim"
+            }
+          )
+        ] }) : !isManual ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: "Waiting" }) : null,
+        isManual ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+          !compact ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "select",
+              {
+                ref: prioSelectRef,
+                className: "mq-prio-select",
+                value: prioVal,
+                "aria-label": `Priority for ${targetLabel} (#${qid})`,
+                onChange: (e) => {
+                  handledEventsRef.current.add(e.nativeEvent);
+                  const nextVal = e.target.value;
+                  if (nextVal && nextVal !== prioVal) {
+                    onUpdateQueue(qid, { priority: nextVal, move: "top" });
+                  }
+                },
+                children: ["P0", "P1", "P2", "P3"].map((pOpt) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: pOpt, children: pOpt }, pOpt))
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-secondary btn-sm",
+                title: "Move to top of priority band",
+                "aria-label": `Move ${targetLabel} (#${qid}) to top of ${prioVal}`,
+                onClick: () => onUpdateQueue(qid, { move: "top" }),
+                children: "Top"
+              }
+            )
+          ] }) : null,
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              type: "button",
+              className: "btn btn-secondary btn-sm",
+              title: "Move up in queue",
+              "aria-label": `Move ${targetLabel} (#${qid}) up in queue`,
+              onClick: () => onUpdateQueue(qid, { move: "up" }),
+              children: "Up"
+            }
+          ),
+          !compact ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              type: "button",
+              className: "btn btn-secondary btn-sm",
+              title: "Move down in queue",
+              "aria-label": `Move ${targetLabel} (#${qid}) down in queue`,
+              onClick: () => onUpdateQueue(qid, { move: "down" }),
+              children: "Dn"
+            }
+          ) : null,
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              type: "button",
+              className: "btn btn-secondary btn-sm btn-danger-ghost",
+              title: "Remove from manual queue",
+              "aria-label": `Remove ${targetLabel} (#${qid}) from manual queue`,
+              onClick: () => onCancelQueue(qid),
+              children: "Drop"
+            }
+          )
+        ] }) : canPin ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "button",
+          {
+            type: "button",
+            className: "btn btn-secondary btn-sm",
+            title: "Pin and prioritize at top of P1 queue",
+            "aria-label": `Pin ${targetLabel} to P1 queue`,
+            onClick: () => onPinQueue(act, "P1"),
+            children: "Pin P1"
+          }
+        ) : null
+      ] }) })
+    ] });
+  };
+  function summarizeResourceBundle(bundle) {
+    if (!bundle || typeof bundle !== "object") {
+      return { hasObject: false, pig: 0, met: 0, kry: 0, spi: 0, total: 0, nonZeroCount: 0 };
+    }
+    const pig = Math.max(0, Math.round(finiteNum(bundle.pig_iron, 0)));
+    const met = Math.max(0, Math.round(finiteNum(bundle.metal, 0)));
+    const kry = Math.max(0, Math.round(finiteNum(bundle.kryptonite, 0)));
+    const spi = Math.max(0, Math.round(finiteNum(bundle.spice, 0)));
+    const total = pig + met + kry + spi;
+    const nonZeroCount = [pig, met, kry, spi].filter((v) => v > 0).length;
+    return { hasObject: true, pig, met, kry, spi, total, nonZeroCount };
+  }
+  function formatQueueJobCargo(job) {
+    if (!job) return null;
+    const nameLow = String(job.name || "").toLowerCase();
+    const detLow = String(job.detail || "").toLowerCase();
+    const isReturning = Boolean(job.returning) || detLow.includes("returning") || nameLow.includes("↩");
+    const isAttack = nameLow.includes("attack");
+    const isRecycle = nameLow.includes("recycle");
+    const isTransport = !isAttack && !isRecycle && (nameLow.includes("transport") || nameLow.includes("transfer"));
+    const isDelivered = Boolean(job.delivered) || isReturning && isTransport;
+    const cargoSummary = summarizeResourceBundle(job.cargo);
+    const expectedSummary = summarizeResourceBundle(job.expected_cargo);
+    const deliveredSummary = summarizeResourceBundle(job.delivered_cargo);
+    if (isDelivered) {
+      if (deliveredSummary.total > 0) {
+        return {
+          label: "DELIVERED",
+          variant: "delivered",
+          inline: formatResourcesInline({
+            pig_iron: deliveredSummary.pig,
+            metal: deliveredSummary.met,
+            kryptonite: deliveredSummary.kry,
+            spice: deliveredSummary.spi
+          }),
+          total: deliveredSummary.total,
+          multiRes: deliveredSummary.nonZeroCount > 1,
+          isEmpty: false,
+          delivered: true
+        };
+      }
+      return {
+        label: "DELIVERED",
+        variant: "delivered",
+        inline: "Cargo unloaded",
+        total: 0,
+        multiRes: false,
+        isEmpty: false,
+        delivered: true
+      };
+    }
+    if (!isReturning && (isAttack || isRecycle || isTransport)) {
+      const expSource = expectedSummary.total > 0 ? expectedSummary : isTransport && cargoSummary.total > 0 ? cargoSummary : expectedSummary;
+      if (expSource.total > 0) {
+        return {
+          label: "EXPECTED",
+          variant: "expected",
+          inline: formatResourcesInline({
+            pig_iron: expSource.pig,
+            metal: expSource.met,
+            kryptonite: expSource.kry,
+            spice: expSource.spi
+          }),
+          total: expSource.total,
+          multiRes: expSource.nonZeroCount > 1,
+          isEmpty: false,
+          delivered: false
+        };
+      }
+      if (expectedSummary.hasObject) {
+        return {
+          label: "EXPECTED",
+          variant: "expected",
+          inline: "0 (none)",
+          total: 0,
+          multiRes: false,
+          isEmpty: true,
+          delivered: false
+        };
+      }
+    }
+    if (!cargoSummary.hasObject) return null;
+    const label = isReturning && isAttack ? "Loot" : isReturning && isRecycle ? "Harvest" : "Cargo";
+    const variant = label === "Loot" ? "loot" : label === "Harvest" ? "harvest" : "cargo";
+    if (cargoSummary.total > 0) {
+      return {
+        label,
+        variant,
+        inline: formatResourcesInline({
+          pig_iron: cargoSummary.pig,
+          metal: cargoSummary.met,
+          kryptonite: cargoSummary.kry,
+          spice: cargoSummary.spi
+        }),
+        total: cargoSummary.total,
+        multiRes: cargoSummary.nonZeroCount > 1,
+        isEmpty: false,
+        delivered: false
+      };
+    }
+    if (isReturning && (isAttack || isRecycle)) {
+      return {
+        label,
+        variant,
+        inline: "0 (empty)",
+        total: 0,
+        multiRes: false,
+        isEmpty: true,
+        delivered: false
+      };
+    }
+    return null;
+  }
+  const ActiveExecJobRow = ({ job, nowEpochSec }) => {
+    const slot = Math.max(1, Math.trunc(finiteNum(job == null ? void 0 : job.queue_slot, 1)));
+    const detailText = String((job == null ? void 0 : job.detail) || "").trim() || (slot > 1 ? `In-game queue #${slot}` : "Executing now");
+    const cargoInfo = formatQueueJobCargo(job);
+    const finTs = finiteNum(job == null ? void 0 : job.finish_ts, null);
+    const effNowSec = nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : Math.floor(Date.now() / 1e3);
+    const remSec = finTs !== null && finTs > 0 ? Math.max(0, Math.round(finTs - effNowSec)) : finiteNum(job == null ? void 0 : job.remaining_seconds, null);
+    let remDisplay = String((job == null ? void 0 : job.remaining_text) || "").trim() || "Running";
+    if (finTs !== null && finTs > 0) {
+      remDisplay = remSec !== null && remSec > 0 ? fmtHms(remSec) : "Finishing...";
+    }
+    const finDisplay = finTs !== null && finTs > 0 ? fmtClockTime(finTs, effNowSec) : "In progress";
+    const detLow = String((job == null ? void 0 : job.detail) || "").toLowerCase();
+    const isReturning = Boolean(job == null ? void 0 : job.returning) || detLow.includes("returning") || String((job == null ? void 0 : job.name) || "").includes("↩");
+    let liveLabel = "Executing";
+    if (slot > 1) {
+      liveLabel = `Queued #${slot}`;
+    } else if (isReturning) {
+      liveLabel = "Returning";
+    } else if (detLow.includes("outbound") || detLow.includes("flight")) {
+      liveLabel = "In flight";
+    }
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { className: slot > 1 ? "dash-exec-row is-queued-slot" : "dash-exec-row", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: slot > 1 ? "prio-badge prio-game-q tabular" : "prio-badge prio-exec tabular", children: slot > 1 ? `GAME #${slot}` : "EXEC" }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-title", children: cleanQueueJobTitle(job) }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: detailText }),
+        cargoInfo ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+          "div",
+          {
+            className: `exec-cargo-line is-${cargoInfo.variant} tabular${cargoInfo.isEmpty ? " is-empty" : ""}`,
+            "data-cargo-variant": cargoInfo.variant,
+            "data-delivered": cargoInfo.delivered ? "true" : void 0,
+            title: `${cargoInfo.label}: ${cargoInfo.inline}${cargoInfo.total > 0 ? ` (${fmtInt(cargoInfo.total)} total)` : ""}`,
+            children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "exec-cargo-tag", children: cargoInfo.label }),
+              " ",
+              cargoInfo.inline,
+              cargoInfo.multiRes ? ` (${fmtCompact(cargoInfo.total)})` : ""
+            ]
+          }
+        ) : null
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "span",
+        {
+          className: "eta-pill is-exec-timer",
+          "data-finish-ts": finTs !== null && finTs > 0 ? String(finTs) : void 0,
+          children: remDisplay
+        }
+      ) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "eta-pill is-finish-at", children: finDisplay }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: slot > 1 ? "exec-live-label is-slot" : "exec-live-label", children: liveLabel }) })
+    ] });
+  };
+  const FeedbackBanner = () => {
+    const { feedback } = useConsole();
+    const isHidden = !feedback || feedback.hidden;
+    const cls = (feedback == null ? void 0 : feedback.kind) === "error" ? "is-error" : (feedback == null ? void 0 : feedback.kind) === "warn" ? "is-warn" : "is-ok";
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(
+      "div",
+      {
+        id: "feedback-banner",
+        className: `feedback-banner${feedback ? ` ${cls}` : ""}`,
+        role: "status",
+        "aria-live": "polite",
+        hidden: isHidden,
+        children: (feedback == null ? void 0 : feedback.message) || ""
+      }
+    );
+  };
   const AppSidebar = () => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
     const {
       dashboard,
       apiOnline,
       reconnectAttempts,
       activePage,
       setActivePage,
-      activePlanet,
-      setSelectedPlanetId,
       uiPrefs,
       setUiPref,
       sectorsData,
@@ -9078,7 +10907,6 @@
     } = useConsole();
     const health = (dashboard == null ? void 0 : dashboard.health) || {};
     const gs = (dashboard == null ? void 0 : dashboard.state) || {};
-    const planets = Array.isArray(gs.planets) ? gs.planets : [];
     const port = health.debug_port ? "8787" : typeof window !== "undefined" && window.location.port || "8787";
     const apiPipClass = apiOnline ? "status-pip online" : "status-pip offline";
     const apiStatusText = apiOnline ? `API :${port} ONLINE · HOT` : reconnectAttempts > 0 ? `API :${port} RECONNECTING (#${reconnectAttempts})` : "API :8787 CONNECTING...";
@@ -9216,17 +11044,6 @@
         showFeedback(`Pause update failed: ${err.message}`, feedbackKindForError(err));
       }
     };
-    const onModeChange = async (mode) => {
-      const val = mode === "auto" ? null : mode;
-      try {
-        await apiCommand2({ command: "bot_control", mode_override: val });
-        setUiPref("modeOverride", mode);
-        await loadDashboard({ refresh: false, force: true });
-        showFeedback(`Loop mode set to ${mode}.`, "ok");
-      } catch (err) {
-        showFeedback(`Mode update failed: ${err.message}`, feedbackKindForError(err));
-      }
-    };
     const onTickNow = async () => {
       var _a2, _b2;
       const useAi = String(
@@ -9245,10 +11062,14 @@
         if (useAi) endGaCalc();
       }
     };
+    const resCount = Array.isArray((_l = dashboard == null ? void 0 : dashboard.buildings_eta) == null ? void 0 : _l.researches) && dashboard.buildings_eta.researches.length > 0 ? dashboard.buildings_eta.researches.length : 15;
+    const activeFlightCount = Array.isArray(gs.active_queues) ? gs.active_queues.filter((q) => isOngoingFleetFlight$1(q)).length : 0;
     const navItems = [
       { page: "dashboard", code: "DSH", title: "Dashboard" },
       { page: "buildings", code: "BLD", title: "Buildings & ETAs", badgeId: "nav-bld-badge", badgeText: "21" },
-      { page: "combat", code: "CMB", title: "Combat & Fleet", badgeId: "nav-cmb-badge", badgeText: "1:1" },
+      { page: "research", code: "RES", title: "Research & ETAs", badgeId: "nav-res-badge", badgeText: String(resCount) },
+      { page: "combat", code: "CMB", title: "Fleet Build", badgeId: "nav-cmb-badge", badgeText: "1:1" },
+      { page: "fleet-control", code: "FLT", title: "Fleet Control", badgeId: "nav-flt-ctrl-badge", badgeText: String(activeFlightCount) },
       { page: "sectors", code: "SEC", title: "Scanned Sectors", badgeId: "nav-sec-badge", badgeText: String(secCnt) },
       { page: "espionage", code: "SPY", title: "Espionage Intel", badgeId: "nav-spy-badge", badgeText: String(spyCnt) },
       { page: "colonies", code: "COL", title: "Possible Colonies", badgeId: "nav-col-badge", badgeText: String(colCnt) },
@@ -9339,50 +11160,10 @@
                 );
               })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("section", { className: "sidebar-section", "aria-label": "Colony selector", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "planet-select", children: "Active Colony" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "select",
-                {
-                  id: "planet-select",
-                  "aria-label": "Active planet",
-                  value: activePlanet ? String(activePlanet.planet_id) : "",
-                  onChange: (e) => setSelectedPlanetId(Number(e.target.value)),
-                  children: planets.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "Loading..." }) : planets.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsxs("option", { value: String(p.planet_id), children: [
-                    p.coords,
-                    " ",
-                    p.name
-                  ] }, p.planet_id))
-                }
-              )
-            ] }) }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("section", { className: "sidebar-section sidebar-autopilot", "aria-label": "Commander autopilot", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "autopilot-status", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: runBadgeCls, id: "loop-run-badge", children: runBadgeText }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "budget-readout tabular", id: "val-budget", children: budgetText })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "control-field", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("label", { id: "mode-group-label", children: "Execution Mode" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mode-stack", role: "radiogroup", "aria-labelledby": "mode-group-label", children: [
-                  { key: "auto", label: "CLI Default" },
-                  { key: "live", label: "Force Live" },
-                  { key: "dry-run", label: "Force Dry-Run" }
-                ].map((m) => {
-                  const isAct = modeVal === m.key;
-                  return /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "button",
-                    {
-                      type: "button",
-                      className: `stack-item${isAct ? " active" : ""}`,
-                      role: "radio",
-                      "aria-checked": isAct ? "true" : "false",
-                      "data-mode": m.key,
-                      onClick: () => onModeChange(m.key),
-                      children: m.label
-                    },
-                    m.key
-                  );
-                }) })
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "stack-actions", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -9409,28 +11190,15 @@
                 )
               ] })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sidebar-foot tabular", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "WIN // VIEWS" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "API :8787" })
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sidebar-bottom", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(FeedbackBanner, {}),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sidebar-foot tabular", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "WIN // VIEWS" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "API :8787" })
+              ] })
             ] })
           ] })
         ]
-      }
-    );
-  };
-  const FeedbackBanner = () => {
-    const { feedback } = useConsole();
-    const isHidden = !feedback || feedback.hidden;
-    const cls = (feedback == null ? void 0 : feedback.kind) === "error" ? "is-error" : (feedback == null ? void 0 : feedback.kind) === "warn" ? "is-warn" : "is-ok";
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(
-      "div",
-      {
-        id: "feedback-banner",
-        className: `feedback-banner${feedback ? ` ${cls}` : ""}`,
-        role: "status",
-        "aria-live": "polite",
-        hidden: isHidden,
-        children: (feedback == null ? void 0 : feedback.message) || ""
       }
     );
   };
@@ -10221,8 +11989,279 @@
     if (k === "CLAIM_TUTORIAL") return "TUT";
     return k.slice(0, 4);
   }
+  function normalizeHourlyProdPoint(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const pig = Math.max(0, safeFiniteNumber(raw.pig_iron_per_hour ?? raw.pig_iron, 0) ?? 0);
+    const met = Math.max(0, safeFiniteNumber(raw.metal_per_hour ?? raw.metal, 0) ?? 0);
+    const kry = Math.max(0, safeFiniteNumber(raw.kryptonite_per_hour ?? raw.kryptonite, 0) ?? 0);
+    const spi = Math.max(0, safeFiniteNumber(raw.spice_per_hour ?? raw.spice, 0) ?? 0);
+    const sum = pig + met + kry + spi;
+    const total = Math.max(0, safeFiniteNumber(raw.total_per_hour, sum) ?? sum);
+    const speq = Math.max(0, safeFiniteNumber(raw.speq_per_hour, 0) ?? 0);
+    const minuteBucket = Math.round(
+      safeFiniteNumber(raw.minute_bucket ?? raw.recorded_at, 0) ?? 0
+    );
+    return { minuteBucket, pig, met, kry, spi, total, speq };
+  }
+  function countActiveBuildingPlanets(planets, activeQueues, activePlanetId) {
+    const normalPlanets = planets.filter(
+      (p) => String((p == null ? void 0 : p.planet_type) || "normal").toLowerCase() === "normal"
+    );
+    const scopedPlanets = normalPlanets.length > 0 ? normalPlanets : planets;
+    const knownPidSet = /* @__PURE__ */ new Set();
+    const coordsToPid = /* @__PURE__ */ new Map();
+    for (const pl of scopedPlanets) {
+      const pid = Math.round(safeFiniteNumber(pl == null ? void 0 : pl.planet_id, 0) ?? 0);
+      if (pid > 0) {
+        knownPidSet.add(pid);
+        const c = String((pl == null ? void 0 : pl.coords) || "").trim();
+        if (c) coordsToPid.set(c, pid);
+      }
+    }
+    const nowSec = Math.floor(Date.now() / 1e3);
+    const activeBuilderKeys = /* @__PURE__ */ new Set();
+    for (const job of activeQueues) {
+      if (!job || String(job.category || "").toLowerCase() !== "building") continue;
+      const finTs = safeFiniteNumber(job.finish_ts, null);
+      const remSec = safeFiniteNumber(job.remaining_seconds, null);
+      let isActive = false;
+      if (finTs !== null && finTs > 0) {
+        isActive = finTs > nowSec;
+      } else if (remSec !== null) {
+        isActive = remSec > 0;
+      } else {
+        const remTxt = String(job.remaining_text || "").trim().toLowerCase();
+        isActive = remTxt.length > 0 && remTxt !== "0s" && remTxt !== "done" && remTxt !== "finished";
+      }
+      if (!isActive) continue;
+      const jobPid = Math.round(safeFiniteNumber(job.planet_id, 0) ?? 0);
+      const jobCoords = String(job.origin_coords || job.planet_coords || "").trim();
+      if (jobPid > 0 && (knownPidSet.size === 0 || knownPidSet.has(jobPid))) {
+        activeBuilderKeys.add(`pid:${jobPid}`);
+      } else if (jobCoords && coordsToPid.has(jobCoords)) {
+        activeBuilderKeys.add(`pid:${coordsToPid.get(jobCoords)}`);
+      } else if (jobCoords && knownPidSet.size === 0) {
+        activeBuilderKeys.add(`coords:${jobCoords}`);
+      } else if (jobPid === 0 && !jobCoords) {
+        const fallbackPid = Math.round(safeFiniteNumber(activePlanetId, 0) ?? 0);
+        if (fallbackPid > 0 && (knownPidSet.size === 0 || knownPidSet.has(fallbackPid))) {
+          activeBuilderKeys.add(`pid:${fallbackPid}`);
+        }
+      }
+    }
+    const total = scopedPlanets.length;
+    const active = total > 0 ? Math.min(total, activeBuilderKeys.size) : activeBuilderKeys.size;
+    return { active, total };
+  }
+  function safeGetCanvas2dContext(canvas) {
+    if (!canvas || typeof canvas.getContext !== "function") return null;
+    const isJsdom = typeof navigator !== "undefined" && /jsdom/i.test(String(navigator.userAgent || ""));
+    if (isJsdom && !Object.prototype.hasOwnProperty.call(canvas, "getContext")) {
+      return null;
+    }
+    try {
+      return canvas.getContext("2d");
+    } catch {
+      return null;
+    }
+  }
+  function drawHourlyProductionLineChart(canvas, series) {
+    const ctx = safeGetCanvas2dContext(canvas);
+    if (!canvas || !ctx) return;
+    const rect = typeof canvas.getBoundingClientRect === "function" ? canvas.getBoundingClientRect() : { width: 220, height: 38 };
+    const cssW = Math.max(120, Math.round(rect.width || 220));
+    const cssH = Math.max(30, Math.round(rect.height || 38));
+    const dpr = Math.min(
+      2,
+      Math.max(1, typeof window !== "undefined" ? Number(window.devicePixelRatio || 1) : 1)
+    );
+    if (canvas.width !== cssW * dpr || canvas.height !== cssH * dpr) {
+      canvas.width = cssW * dpr;
+      canvas.height = cssH * dpr;
+    }
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = "#081012";
+    ctx.fillRect(0, 0, cssW, cssH);
+    ctx.strokeStyle = "#16262b";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, Math.round(cssH * 0.5) + 0.5);
+    ctx.lineTo(cssW, Math.round(cssH * 0.5) + 0.5);
+    ctx.stroke();
+    const padL = 4;
+    const padR = 6;
+    const padT = 5;
+    const padB = 5;
+    const plotW = Math.max(10, cssW - padL - padR);
+    const plotH = Math.max(8, cssH - padT - padB);
+    if (series.length === 0) {
+      ctx.strokeStyle = "#1f343a";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(padL, cssH - padB);
+      ctx.lineTo(cssW - padR, cssH - padB);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+    if (series.length === 1) {
+      const midY = padT + plotH * 0.5;
+      const grad = ctx.createLinearGradient(0, midY, 0, cssH - padB);
+      grad.addColorStop(0, "rgba(22, 236, 152, 0.24)");
+      grad.addColorStop(1, "rgba(22, 236, 152, 0.02)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(padL, midY, plotW, cssH - padB - midY);
+      ctx.strokeStyle = "#16ec98";
+      ctx.lineWidth = 1.75;
+      ctx.beginPath();
+      ctx.moveTo(padL, midY);
+      ctx.lineTo(cssW - padR, midY);
+      ctx.stroke();
+      ctx.fillStyle = "rgba(50, 232, 255, 0.35)";
+      ctx.beginPath();
+      ctx.arc(cssW - padR, midY, 4.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#32e8ff";
+      ctx.beginPath();
+      ctx.arc(cssW - padR, midY, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+    const values = series.map((pt) => pt.total);
+    let minVal = Math.min(...values);
+    let maxVal = Math.max(...values);
+    const span = maxVal - minVal;
+    const isFlat = span < 1e-6;
+    if (isFlat) {
+      minVal = Math.max(0, minVal - 1);
+      maxVal = maxVal + 1;
+    }
+    const coords = values.map((v, idx) => {
+      const x = padL + idx / Math.max(1, values.length - 1) * plotW;
+      const norm = isFlat ? 0.5 : (v - minVal) / (maxVal - minVal);
+      const y = padT + (1 - norm) * plotH;
+      return { x, y, v };
+    });
+    const areaGrad = ctx.createLinearGradient(0, padT, 0, cssH - padB);
+    areaGrad.addColorStop(0, "rgba(22, 236, 152, 0.30)");
+    areaGrad.addColorStop(0.7, "rgba(50, 232, 255, 0.08)");
+    areaGrad.addColorStop(1, "rgba(50, 232, 255, 0.01)");
+    ctx.beginPath();
+    ctx.moveTo(coords[0].x, cssH - padB);
+    for (const pt of coords) {
+      ctx.lineTo(pt.x, pt.y);
+    }
+    ctx.lineTo(coords[coords.length - 1].x, cssH - padB);
+    ctx.closePath();
+    ctx.fillStyle = areaGrad;
+    ctx.fill();
+    ctx.save();
+    ctx.strokeStyle = "#16ec98";
+    ctx.lineWidth = 1.75;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.shadowColor = "rgba(50, 232, 255, 0.45)";
+    ctx.shadowBlur = 4;
+    ctx.beginPath();
+    coords.forEach((pt, idx) => {
+      if (idx === 0) ctx.moveTo(pt.x, pt.y);
+      else ctx.lineTo(pt.x, pt.y);
+    });
+    ctx.stroke();
+    ctx.restore();
+    if (!isFlat) {
+      let peakIdx = 0;
+      for (let i = 1; i < coords.length; i += 1) {
+        if (coords[i].v > coords[peakIdx].v) peakIdx = i;
+      }
+      if (peakIdx < coords.length - 1) {
+        ctx.fillStyle = "#efb03b";
+        ctx.beginPath();
+        ctx.arc(coords[peakIdx].x, coords[peakIdx].y, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    const last = coords[coords.length - 1];
+    ctx.fillStyle = "rgba(50, 232, 255, 0.35)";
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#32e8ff";
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  function drawLootRecycleBarChart(canvas, buckets) {
+    const ctx = safeGetCanvas2dContext(canvas);
+    if (!canvas || !ctx) return;
+    const rect = typeof canvas.getBoundingClientRect === "function" ? canvas.getBoundingClientRect() : { width: 220, height: 38 };
+    const cssW = Math.max(120, Math.round(rect.width || 220));
+    const cssH = Math.max(30, Math.round(rect.height || 38));
+    const dpr = Math.min(
+      2,
+      Math.max(1, typeof window !== "undefined" ? Number(window.devicePixelRatio || 1) : 1)
+    );
+    if (canvas.width !== cssW * dpr || canvas.height !== cssH * dpr) {
+      canvas.width = cssW * dpr;
+      canvas.height = cssH * dpr;
+    }
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = "#081012";
+    ctx.fillRect(0, 0, cssW, cssH);
+    const padL = 4;
+    const padR = 4;
+    const padT = 4;
+    const padB = 4;
+    const plotW = Math.max(12, cssW - padL - padR);
+    const plotH = Math.max(8, cssH - padT - padB);
+    const baseY = cssH - padB;
+    ctx.strokeStyle = "#16262b";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padL, baseY + 0.5);
+    ctx.lineTo(cssW - padR, baseY + 0.5);
+    ctx.stroke();
+    const slice = buckets.length > 0 ? buckets.slice(-24) : [];
+    if (slice.length === 0) {
+      ctx.restore();
+      return;
+    }
+    const maxTotal = Math.max(1, ...slice.map((b) => b.total));
+    const count = slice.length;
+    const gap = count > 16 ? 1.5 : 2.5;
+    const barW = Math.max(2, (plotW - gap * Math.max(0, count - 1)) / count);
+    slice.forEach((bucket, idx) => {
+      const x = padL + idx * (barW + gap);
+      if (bucket.total <= 0) {
+        ctx.fillStyle = "#192a2f";
+        ctx.fillRect(x, baseY - 1.5, barW, 1.5);
+        return;
+      }
+      const totalH = Math.max(2, Math.min(plotH, bucket.total / maxTotal * plotH));
+      let stolenH = bucket.stolen > 0 ? Math.max(1.5, bucket.stolen / bucket.total * totalH) : 0;
+      let recycledH = bucket.recycled > 0 ? Math.max(1.5, totalH - stolenH) : 0;
+      if (stolenH + recycledH > plotH) {
+        const scale = plotH / (stolenH + recycledH);
+        stolenH *= scale;
+        recycledH *= scale;
+      }
+      if (stolenH > 0) {
+        ctx.fillStyle = "#efb03b";
+        ctx.fillRect(x, baseY - stolenH, barW, stolenH);
+      }
+      if (recycledH > 0) {
+        ctx.fillStyle = "#32e8ff";
+        ctx.fillRect(x, baseY - stolenH - recycledH, barW, recycledH);
+      }
+    });
+    ctx.restore();
+  }
   const GaNnScannerHud = () => {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e;
     const {
       dashboard,
       setDashboard,
@@ -10287,6 +12326,9 @@
     );
     const safeElapsed = elapsedMs !== null ? Math.max(0, Math.round(elapsedMs)) : null;
     const metaLineText = !isActiveHud ? "HEURISTIC STANDBY" : runningJob ? `${aiRunning ? "AI-PLANNER" : "CONFIG OPT"} ${Math.round(safeFiniteNumber(runningJob.progress_pct, 0) ?? 0)}%${safeElapsed !== null ? ` · ${safeElapsed}ms` : ""}` : isAiMode ? `COL ${gate.coloniesOwned}/${gate.maxPlanets} · W${Math.round(safeFiniteNumber(aiSum == null ? void 0 : aiSum.reward_weeks, 26) ?? 26)}${safeElapsed !== null ? ` · ${safeElapsed}ms` : ""}` : safeElapsed !== null ? `POP ${popSize} · ${nnBackend} · ${safeElapsed}ms` : `POP ${popSize} · ${nnBackend}`;
+    const isLegacyGaSummaryMode = isLegacyGa && hasLegacySum;
+    const prodCanvasRef = reactExports.useRef(null);
+    const lootCanvasRef = reactExports.useRef(null);
     const histLen = Array.isArray(rawSum.generation_history) ? rawSum.generation_history.length : null;
     const genDone = Math.max(
       0,
@@ -10294,35 +12336,146 @@
     );
     const genTarget = Math.max(genDone, cfgGens);
     const jobPct = clampPct((runningJob == null ? void 0 : runningJob.progress_pct) ?? 0);
-    const aiStepsCompleted = Math.max(
-      0,
-      Math.round(safeFiniteNumber((aiSum == null ? void 0 : aiSum.steps_completed) ?? (aiSum == null ? void 0 : aiSum.steps_started), 0) ?? 0)
-    );
     const rawAiStepsTotal = safeFiniteNumber(aiSum == null ? void 0 : aiSum.steps, null);
-    const aiStepsTotal = Math.max(
-      0,
-      Math.round(rawAiStepsTotal ?? 0)
-    );
-    const genPct = !isActiveHud ? 0 : runningJob ? jobPct : isAiMode && aiStepsTotal > 0 ? clampPct(aiStepsCompleted / aiStepsTotal * 100) : clampPct(genTarget > 0 ? genDone / genTarget * 100 : 0);
+    const aiStepsTotal = Math.max(0, Math.round(rawAiStepsTotal ?? 0));
+    const builderStats = reactExports.useMemo(() => {
+      var _a2, _b2, _c2, _d2;
+      const planets = Array.isArray((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.planets) ? dashboard.state.planets : [];
+      const activeQueues = Array.isArray((_b2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _b2.active_queues) ? dashboard.state.active_queues : [];
+      const counted = countActiveBuildingPlanets(
+        planets,
+        activeQueues,
+        (_c2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _c2.active_planet_id
+      );
+      const curProdObj = dashboard == null ? void 0 : dashboard.current_hourly_production;
+      const total = counted.total > 0 ? counted.total : Math.max(
+        0,
+        Math.round(
+          safeFiniteNumber((curProdObj == null ? void 0 : curProdObj.planet_count) ?? gate.coloniesOwned, 0) ?? 0
+        )
+      );
+      const hasActiveQueuesField = Array.isArray((_d2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _d2.active_queues);
+      const activeRaw = hasActiveQueuesField ? counted.active : Math.max(0, Math.round(safeFiniteNumber(curProdObj == null ? void 0 : curProdObj.active_builders, 0) ?? 0));
+      const active = total > 0 ? Math.min(total, activeRaw) : activeRaw;
+      return { active, total };
+    }, [
+      dashboard,
+      gate.coloniesOwned
+    ]);
+    const builderPct = builderStats.total > 0 ? clampPct(Math.round(builderStats.active / builderStats.total * 100)) : 0;
+    const genPct = !isActiveHud ? 0 : runningJob ? jobPct : isLegacyGaSummaryMode ? clampPct(genTarget > 0 ? genDone / genTarget * 100 : 0) : builderPct;
     const seedVal = safeFiniteNumber(rawSum.seed ?? ((_e = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _e.ga_seed), null);
     const seedTxt = seedVal !== null ? `Seed ${Math.round(seedVal)}` : "Auto seed";
-    const genSubText = !isActiveHud ? "Waiting for optimizer pass" : runningJob ? String(runningJob.phase || "Running background optimizer...") : isAiMode ? `Colonies ${gate.coloniesOwned}/${gate.maxPlanets} · ${gate.liveAiUnlocked ? "Live Unlocked" : "Unlock at 11/11"}` : gaCalculating ? "Evolving action sequences..." : `Horizon ${horizonSteps} steps · ${seedTxt}`;
-    const totalNetOutput = safeFiniteNumber(
-      (aiSum == null ? void 0 : aiSum.total_net_spice_eq) ?? (aiSum == null ? void 0 : aiSum.total_spice_eq),
-      null
-    );
-    const hourlyLoot = safeFiniteNumber(
-      ((_f = aiSum == null ? void 0 : aiSum.attack_telemetry) == null ? void 0 : _f.hourly_loot_spice_eq) ?? (aiSum == null ? void 0 : aiSum.hourly_loot_spice_eq),
-      null
-    );
+    const idleBuilders = Math.max(0, builderStats.total - builderStats.active);
+    const genSubText = !isActiveHud ? "Waiting for builder telemetry" : runningJob ? String(runningJob.phase || "Running background optimizer...") : isLegacyGaSummaryMode ? gaCalculating ? "Evolving action sequences..." : `Horizon ${horizonSteps} steps · ${seedTxt}` : `${builderStats.active}/${builderStats.total} building · ${idleBuilders} idle · ${gate.liveAiUnlocked ? "Live Unlocked" : "Preview"}`;
+    const hourlyProdData = reactExports.useMemo(() => {
+      var _a2;
+      const dashRec = dashboard;
+      const rawHist = Array.isArray(dashRec == null ? void 0 : dashRec.hourly_production_history) ? dashRec.hourly_production_history : [];
+      const series = [];
+      for (const item of rawHist) {
+        const pt = normalizeHourlyProdPoint(item);
+        if (pt) series.push(pt);
+      }
+      const curPoint = normalizeHourlyProdPoint(dashRec == null ? void 0 : dashRec.current_hourly_production);
+      if (curPoint) {
+        const last = series[series.length - 1];
+        if (!last) {
+          if (curPoint.total > 0 || curPoint.speq > 0) {
+            series.push(curPoint);
+          }
+        } else if (curPoint.minuteBucket > last.minuteBucket) {
+          series.push(curPoint);
+        } else if (curPoint.minuteBucket === last.minuteBucket && curPoint.total !== last.total) {
+          series[series.length - 1] = curPoint;
+        }
+      }
+      if (series.length === 0 && Array.isArray((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.planets)) {
+        let pig = 0;
+        let met = 0;
+        let kry = 0;
+        let spi = 0;
+        for (const pl of dashboard.state.planets) {
+          const rates = pl.production_per_hour || pl.production || pl.economy_rates;
+          if (!rates || typeof rates !== "object") continue;
+          pig += Math.max(0, safeFiniteNumber(rates.pig_iron_per_hour ?? rates.pig_iron, 0) ?? 0);
+          met += Math.max(0, safeFiniteNumber(rates.metal_per_hour ?? rates.metal, 0) ?? 0);
+          kry += Math.max(0, safeFiniteNumber(rates.kryptonite_per_hour ?? rates.kryptonite, 0) ?? 0);
+          spi += Math.max(0, safeFiniteNumber(rates.spice_per_hour ?? rates.spice, 0) ?? 0);
+        }
+        const total = pig + met + kry + spi;
+        if (total > 0) {
+          series.push({
+            minuteBucket: Math.floor(Date.now() / 6e4) * 60,
+            pig,
+            met,
+            kry,
+            spi,
+            total,
+            speq: 0
+          });
+        }
+      }
+      const latest = curPoint || (series.length > 0 ? series[series.length - 1] : { minuteBucket: 0, pig: 0, met: 0, kry: 0, spi: 0, total: 0, speq: 0 });
+      const maxTotal = series.reduce((m, pt) => Math.max(m, pt.total), latest.total);
+      const arcPct = latest.total <= 0 ? 0 : maxTotal > 0 ? clampPct(Math.max(18, Math.round(latest.total / maxTotal * 100))) : 100;
+      return { series, latest, arcPct };
+    }, [dashboard]);
     const nnEvals = Math.max(
       0,
       Math.round(safeFiniteNumber(rawSum.nn_evaluations ?? rawSum.neural_evals, 0) ?? 0)
     );
     const lossRaw = safeFiniteNumber(rawSum.nn_final_loss, null);
     const loss = lossRaw !== null ? Math.max(0, lossRaw) : null;
-    const nnPct = !isActiveHud ? 0 : isCalculating ? 72 : isAiMode && !hasLegacySum ? totalNetOutput !== null && totalNetOutput > 0 ? 78 : 0 : nnEvals > 0 ? clampPct(Math.max(14, Math.log10(nnEvals + 1) * 38)) : 0;
-    const nnSubText = !isActiveHud ? "Output --" : isAiMode && !hasLegacySum ? hourlyLoot !== null ? `Attack Loot ${fmtCompactLocal(hourlyLoot)}/h` : "Horizon Net Production" : loss !== null ? `MSE Loss ${loss.toFixed(4)} · ${nnBackend}` : `Backend ${nnBackend} · Horizon ${horizonSteps}`;
+    const nnPct = !isActiveHud ? 0 : isLegacyGaSummaryMode ? isCalculating ? 72 : nnEvals > 0 ? clampPct(Math.max(14, Math.log10(nnEvals + 1) * 38)) : 0 : hourlyProdData.arcPct;
+    const nnSubText = !isActiveHud ? "Waiting for production samples" : isLegacyGaSummaryMode ? loss !== null ? `MSE Loss ${loss.toFixed(4)} · ${nnBackend}` : `Backend ${nnBackend} · Horizon ${horizonSteps}` : hourlyProdData.latest.total > 0 ? `PI ${fmtCompactLocal(hourlyProdData.latest.pig)} · M ${fmtCompactLocal(hourlyProdData.latest.met)} · K ${fmtCompactLocal(hourlyProdData.latest.kry)} · S ${fmtCompactLocal(hourlyProdData.latest.spi)}${hourlyProdData.series.length >= 2 ? ` · ${hourlyProdData.series.length}m` : ""}` : "Waiting for hourly production samples";
+    const lootRecycleData = reactExports.useMemo(() => {
+      const dashRec = dashboard;
+      const rawBuckets = Array.isArray(dashRec == null ? void 0 : dashRec.loot_recycle_history) ? dashRec.loot_recycle_history : [];
+      const buckets = rawBuckets.filter((b) => b && typeof b === "object").map((b) => {
+        const stolen = Math.max(
+          0,
+          safeFiniteNumber(
+            b.stolen_total,
+            (safeFiniteNumber(b.stolen_pig_iron, 0) ?? 0) + (safeFiniteNumber(b.stolen_metal, 0) ?? 0) + (safeFiniteNumber(b.stolen_kryptonite, 0) ?? 0) + (safeFiniteNumber(b.stolen_spice, 0) ?? 0)
+          ) ?? 0
+        );
+        const recycled = Math.max(
+          0,
+          safeFiniteNumber(
+            b.recycled_total,
+            (safeFiniteNumber(b.recycled_pig_iron, 0) ?? 0) + (safeFiniteNumber(b.recycled_metal, 0) ?? 0) + (safeFiniteNumber(b.recycled_kryptonite, 0) ?? 0) + (safeFiniteNumber(b.recycled_spice, 0) ?? 0)
+          ) ?? 0
+        );
+        return {
+          hourBucket: Math.round(safeFiniteNumber(b.hour_bucket, 0) ?? 0),
+          stolen,
+          recycled,
+          total: stolen + recycled
+        };
+      });
+      const summaryObj = (dashRec == null ? void 0 : dashRec.loot_recycle_summary) && typeof dashRec.loot_recycle_summary === "object" ? dashRec.loot_recycle_summary : null;
+      const sumStolen = buckets.reduce((acc, b) => acc + b.stolen, 0);
+      const sumRecycled = buckets.reduce((acc, b) => acc + b.recycled, 0);
+      const totalStolen = Math.max(
+        0,
+        safeFiniteNumber(summaryObj == null ? void 0 : summaryObj.total_stolen, sumStolen) ?? sumStolen
+      );
+      const totalRecycled = Math.max(
+        0,
+        safeFiniteNumber(summaryObj == null ? void 0 : summaryObj.total_recycled, sumRecycled) ?? sumRecycled
+      );
+      const grandTotal = Math.max(
+        0,
+        safeFiniteNumber(summaryObj == null ? void 0 : summaryObj.grand_total, totalStolen + totalRecycled) ?? totalStolen + totalRecycled
+      );
+      const windowHours = Math.max(
+        1,
+        Math.round(safeFiniteNumber(summaryObj == null ? void 0 : summaryObj.window_hours, buckets.length || 24) ?? 24)
+      );
+      const arcPct = grandTotal <= 0 ? 0 : totalStolen > 0 ? clampPct(Math.max(15, Math.round(totalStolen / grandTotal * 100))) : 100;
+      return { buckets, totalStolen, totalRecycled, grandTotal, windowHours, arcPct };
+    }, [dashboard]);
     const baseFit = safeFiniteNumber(
       rawSum.baseline_fitness ?? rawSum.initial_best_fitness ?? (aiSum == null ? void 0 : aiSum.baseline_discounted_reward),
       null
@@ -10333,17 +12486,32 @@
     );
     const impText = isActiveHud ? fmtImprovementPct(rawSum.improvement_pct ?? (aiSum == null ? void 0 : aiSum.improvement_pct), baseFit, bestFit) : "--%";
     const rawImp = safeFiniteNumber(rawSum.improvement_pct ?? (aiSum == null ? void 0 : aiSum.improvement_pct), null);
-    const fitPct = !isActiveHud ? 0 : impText.startsWith(">") ? 100 : clampPct(
+    const fitPct = !isActiveHud ? 0 : isLegacyGaSummaryMode ? impText.startsWith(">") ? 100 : clampPct(
       rawImp !== null ? Math.max(0, Math.min(100, rawImp + 15)) : bestFit !== null && bestFit > 0 ? 35 : 0
-    );
-    const fitSubText = isActiveHud ? `Base ${fmtCompactLocal(baseFit)} · Best ${fmtCompactLocal(bestFit)}` : "Base -- · Best --";
+    ) : lootRecycleData.arcPct;
+    const fitSubText = !isActiveHud ? "Stolen 0 · Recycled 0 (24h)" : isLegacyGaSummaryMode ? `Base ${fmtCompactLocal(baseFit)} · Best ${fmtCompactLocal(bestFit)}` : `Stolen ${fmtCompactLocal(lootRecycleData.totalStolen)} · Recycled ${fmtCompactLocal(
+      lootRecycleData.totalRecycled
+    )} (${lootRecycleData.windowHours}h)`;
+    reactExports.useEffect(() => {
+      if (isLegacyGaSummaryMode) return;
+      const drawAll = () => {
+        drawHourlyProductionLineChart(prodCanvasRef.current, hourlyProdData.series);
+        drawLootRecycleBarChart(lootCanvasRef.current, lootRecycleData.buckets);
+      };
+      drawAll();
+      if (typeof ResizeObserver === "undefined") return;
+      const ro = new ResizeObserver(() => drawAll());
+      if (prodCanvasRef.current) ro.observe(prodCanvasRef.current);
+      if (lootCanvasRef.current) ro.observe(lootCanvasRef.current);
+      return () => ro.disconnect();
+    }, [hourlyProdData.series, isLegacyGaSummaryMode, lootRecycleData.buckets]);
     const chrom = Array.isArray(rawSum.best_chromosome) ? rawSum.best_chromosome : [];
     const planLen = Array.isArray(dashboard == null ? void 0 : dashboard.plan) ? dashboard.plan.length : 0;
     const gLen = Math.max(
       0,
       Math.round(
         safeFiniteNumber(
-          rawSum.genome_length ?? rawSum.actions_count ?? rawAiStepsTotal,
+          rawSum.genome_length ?? rawSum.actions_count ?? (isLegacyGaSummaryMode && chrom.length > 0 ? chrom.length : rawAiStepsTotal),
           chrom.length || planLen
         ) ?? 0
       )
@@ -10587,8 +12755,8 @@
                     }
                   ),
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "gann-metric-titles", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: anyJobRunning ? "Background Job" : isAiMode ? "Horizon Progress" : "Cycle Progress" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-gen-val", children: !isActiveHud ? "0 / --" : runningJob ? `${Math.round(jobPct)}%` : isAiMode && aiStepsTotal > 0 ? `${aiStepsCompleted} / ${aiStepsTotal}` : `${genDone} / ${genTarget}` })
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: anyJobRunning ? "Background Job" : isLegacyGaSummaryMode ? "Cycle Progress" : "Active Builders" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-gen-val", children: !isActiveHud ? "0 / 0" : runningJob ? `${Math.round(jobPct)}%` : isLegacyGaSummaryMode ? `${genDone} / ${genTarget}` : `${builderStats.active} / ${builderStats.total}` })
                   ] })
                 ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "meter-track", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -10613,16 +12781,26 @@
                     }
                   ),
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "gann-metric-titles", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: isAiMode && !hasLegacySum ? "Horizon Output" : "Search Eval Pass" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-nn-val", children: !isActiveHud ? "0 evals" : isAiMode && !hasLegacySum ? totalNetOutput !== null ? `${fmtCompactLocal(totalNetOutput)} SpEq` : "— SpEq" : `${fmtIntLocal(nnEvals)} evals` })
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: isLegacyGaSummaryMode ? "Search Eval Pass" : "Hourly Production" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-nn-val", children: !isActiveHud ? "0 /h" : isLegacyGaSummaryMode ? `${fmtIntLocal(nnEvals)} evals` : `${fmtCompactLocal(hourlyProdData.latest.total)} /h` })
                   ] })
                 ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "meter-track", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                isLegacyGaSummaryMode ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "meter-track", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
                   "div",
                   {
                     className: "meter-fill gann-bar-mint",
                     id: "gann-nn-bar",
                     style: { transform: `scaleX(${nnPct / 100})` }
+                  }
+                ) }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "gann-mini-chart-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "canvas",
+                  {
+                    ref: prodCanvasRef,
+                    id: "gann-prod-chart",
+                    className: "gann-mini-chart",
+                    width: 220,
+                    height: 38,
+                    "aria-label": "Empire hourly production per minute"
                   }
                 ) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-sub tabular", id: "gann-nn-sub", children: nnSubText })
@@ -10639,16 +12817,26 @@
                     }
                   ),
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "gann-metric-titles", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: "Reward Gain" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-fit-val", children: impText })
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-label", children: isLegacyGaSummaryMode ? "Reward Gain" : "Stolen & Recycled" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "gann-metric-val tabular", id: "gann-fit-val", children: !isActiveHud ? "0" : isLegacyGaSummaryMode ? impText : fmtCompactLocal(lootRecycleData.grandTotal) })
                   ] })
                 ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "meter-track", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                isLegacyGaSummaryMode ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "meter-track", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
                   "div",
                   {
                     className: "meter-fill gann-bar-gold",
                     id: "gann-fit-bar",
                     style: { transform: `scaleX(${fitPct / 100})` }
+                  }
+                ) }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "gann-mini-chart-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "canvas",
+                  {
+                    ref: lootCanvasRef,
+                    id: "gann-loot-chart",
+                    className: "gann-mini-chart",
+                    width: 220,
+                    height: 38,
+                    "aria-label": "Stolen and recycled resources per hour"
                   }
                 ) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "gann-metric-sub tabular", id: "gann-fit-sub", children: fitSubText })
@@ -10685,762 +12873,16 @@
       }
     );
   };
-  function isMissingSortValue(val) {
-    if (val === null || val === void 0) return true;
-    if (typeof val === "number") return !Number.isFinite(val);
-    if (typeof val === "string") return val.trim() === "";
-    return false;
+  function normalizeRequestStatus(raw) {
+    const s = String(raw || "").trim().toLowerCase();
+    if (s === "in_flight" || s === "inflight" || s === "in-flight" || s === "active") {
+      return { key: "in_flight", label: "IN FLIGHT" };
+    }
+    if (s === "planned" || s === "queued" || s === "scheduled") {
+      return { key: "planned", label: "PLANNED" };
+    }
+    return { key: "requested", label: "REQUESTED" };
   }
-  function compareSortValues(a, b, direction) {
-    const aMiss = isMissingSortValue(a);
-    const bMiss = isMissingSortValue(b);
-    if (aMiss && bMiss) return 0;
-    if (aMiss) return 1;
-    if (bMiss) return -1;
-    let cmp = 0;
-    if (typeof a === "number" && typeof b === "number") {
-      cmp = a - b;
-    } else if (typeof a === "boolean" && typeof b === "boolean") {
-      cmp = Number(a) - Number(b);
-    } else {
-      cmp = String(a).localeCompare(String(b), void 0, {
-        numeric: true,
-        sensitivity: "base"
-      });
-    }
-    return direction === "asc" ? cmp : -cmp;
-  }
-  function resolveColumnSpec(config) {
-    if (!config) return null;
-    if (typeof config === "function") {
-      return { accessor: config, defaultDirection: "asc" };
-    }
-    return {
-      accessor: config.accessor,
-      defaultDirection: config.defaultDirection ?? "asc"
-    };
-  }
-  function useTableSort(rows, columns, options) {
-    const [sortState, setSortState] = reactExports.useState(() => ({
-      key: null,
-      direction: null
-    }));
-    const requestSort = reactExports.useCallback(
-      (key) => {
-        const spec = resolveColumnSpec(columns[key]);
-        const defaultDir = (spec == null ? void 0 : spec.defaultDirection) ?? "asc";
-        const flippedDir = defaultDir === "asc" ? "desc" : "asc";
-        setSortState((prev) => {
-          if (prev.key !== key) {
-            return { key, direction: defaultDir };
-          }
-          if (prev.direction === defaultDir) {
-            return { key, direction: flippedDir };
-          }
-          return { key: null, direction: null };
-        });
-      },
-      [columns]
-    );
-    const resetSort = reactExports.useCallback(() => {
-      setSortState({ key: null, direction: null });
-    }, []);
-    const sortedRows = reactExports.useMemo(() => {
-      const list = Array.isArray(rows) ? rows : [];
-      if (!sortState.key || !sortState.direction || list.length <= 1) {
-        return [...list];
-      }
-      const spec = resolveColumnSpec(columns[sortState.key]);
-      if (!spec) {
-        return [...list];
-      }
-      const dir = sortState.direction;
-      const decorated = list.map((row, idx) => ({
-        row,
-        idx,
-        val: spec.accessor(row)
-      }));
-      decorated.sort((a, b) => {
-        const cmp = compareSortValues(a.val, b.val, dir);
-        return cmp !== 0 ? cmp : a.idx - b.idx;
-      });
-      return decorated.map((item) => item.row);
-    }, [rows, columns, sortState.key, sortState.direction]);
-    return {
-      sortedRows,
-      sortKey: sortState.key,
-      sortDirection: sortState.direction,
-      requestSort,
-      resetSort
-    };
-  }
-  function coordsSortKey(raw) {
-    const txt = String(raw ?? "").trim();
-    const m = txt.match(/(\d{1,2})\s*:\s*(\d{1,3})(?:\s*:\s*(\d{1,2}))?/);
-    if (!m) return null;
-    const g = Number.parseInt(m[1], 10);
-    const s = Number.parseInt(m[2], 10);
-    const p = m[3] !== void 0 ? Number.parseInt(m[3], 10) : 0;
-    if (!Number.isFinite(g) || !Number.isFinite(s) || !Number.isFinite(p)) return null;
-    return g * 1e6 + s * 100 + p;
-  }
-  function prioritySortKey(raw) {
-    const txt = String(raw ?? "").trim().toUpperCase();
-    if (!txt) return null;
-    if (txt === "EXEC") return -2;
-    if (txt.startsWith("GAME")) return -1;
-    const m = txt.match(/^P(\d+)$/);
-    if (m) return Number.parseInt(m[1], 10);
-    return null;
-  }
-  const GRADE_RANK = {
-    "S+": 0,
-    S: 1,
-    "A+": 2,
-    A: 3,
-    "B+": 4,
-    B: 5,
-    "C+": 6,
-    C: 7,
-    D: 8,
-    F: 9
-  };
-  function gradeSortKey(raw) {
-    const txt = String(raw ?? "").trim().toUpperCase();
-    if (!txt || txt === "?" || txt === "—" || txt === "-") return null;
-    if (Object.prototype.hasOwnProperty.call(GRADE_RANK, txt)) {
-      return GRADE_RANK[txt];
-    }
-    return null;
-  }
-  function resourcesTotal(res) {
-    if (!res || typeof res !== "object") return null;
-    const obj = res;
-    const keys = ["pig_iron", "metal", "kryptonite", "spice"];
-    let found = false;
-    let total = 0;
-    for (const k of keys) {
-      const raw = obj[k];
-      if (raw === null || raw === void 0 || raw === "") continue;
-      const n = Number(raw);
-      if (Number.isFinite(n)) {
-        found = true;
-        total += n;
-      }
-    }
-    return found ? total : null;
-  }
-  function unitDictTotal(obj) {
-    if (!obj || typeof obj !== "object") return null;
-    let found = false;
-    let total = 0;
-    for (const val of Object.values(obj)) {
-      const n = Number(val);
-      if (Number.isFinite(n) && n > 0) {
-        found = true;
-        total += n;
-      }
-    }
-    return found ? total : null;
-  }
-  function durationToSeconds(raw) {
-    if (typeof raw === "number") {
-      return Number.isFinite(raw) ? raw : null;
-    }
-    const cleaned = String(raw ?? "").replace(/\([^)]*\)/g, "").trim().toLowerCase();
-    if (!cleaned || cleaned === "—" || cleaned === "-" || cleaned === "--" || cleaned === "blocked" || cleaned === "never" || cleaned === "n/a" || cleaned === "unknown") {
-      return null;
-    }
-    if (cleaned === "ready" || cleaned === "now" || cleaned === "instant" || cleaned === "cleared" || cleaned === "0" || cleaned === "0s") {
-      return 0;
-    }
-    const colonMatch = cleaned.match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/);
-    if (colonMatch) {
-      if (colonMatch[3] !== void 0) {
-        return Number(colonMatch[1]) * 3600 + Number(colonMatch[2]) * 60 + Number(colonMatch[3]);
-      }
-      return Number(colonMatch[1]) * 60 + Number(colonMatch[2]);
-    }
-    const tokenRe = /(\d+(?:\.\d+)?)\s*(w|d|h|m|s)\b/g;
-    let total = 0;
-    let matched = false;
-    let m;
-    while ((m = tokenRe.exec(cleaned)) !== null) {
-      matched = true;
-      const val = Number(m[1]);
-      const unit = m[2];
-      if (unit === "w") total += val * 7 * 86400;
-      else if (unit === "d") total += val * 86400;
-      else if (unit === "h") total += val * 3600;
-      else if (unit === "m") total += val * 60;
-      else if (unit === "s") total += val;
-    }
-    if (matched) return total;
-    const plainNum = Number(cleaned);
-    return Number.isFinite(plainNum) ? plainNum : null;
-  }
-  function timestampSortKey(ts, fallbackText) {
-    if (typeof ts === "number" && Number.isFinite(ts) && ts > 0) {
-      return ts;
-    }
-    if (typeof ts === "string" && ts.trim() !== "") {
-      const asNum = Number(ts.trim());
-      if (Number.isFinite(asNum) && asNum > 0) return asNum;
-      const parsed = Date.parse(ts.trim());
-      if (Number.isFinite(parsed)) return parsed / 1e3;
-    }
-    if (typeof fallbackText === "string" && fallbackText.trim() !== "") {
-      const parsed = Date.parse(fallbackText.trim());
-      if (Number.isFinite(parsed)) return parsed / 1e3;
-    }
-    return null;
-  }
-  const PLAN_ACTION_SORT_COLUMNS = {
-    priority: (act) => prioritySortKey(act.priority),
-    action: (act) => `${act.target_name || act.kind || ""}${act.target_level != null ? ` ${act.target_level}` : ""}`,
-    costMissing: (act) => resourcesTotal(act.cost) ?? resourcesTotal(act.missing),
-    waitEta: (act) => {
-      const rawWait = act.wait_eta !== void 0 && act.wait_eta !== null ? String(act.wait_eta).trim() : "";
-      if (rawWait === "—" || act.wait_hours === null) return null;
-      const wh = finiteNum(act.wait_hours, null);
-      if (wh !== null && (wh > 0 || act.executable_now || rawWait !== "")) {
-        return wh * 3600;
-      }
-      if (rawWait !== "") return durationToSeconds(rawWait);
-      return act.executable_now ? 0 : null;
-    },
-    totalEta: (act) => {
-      const rawWait = act.wait_eta !== void 0 && act.wait_eta !== null ? String(act.wait_eta).trim() : "";
-      const rawTotal = act.total_eta !== void 0 && act.total_eta !== null ? String(act.total_eta).trim() : "";
-      if (rawWait === "—" || rawTotal === "—" || act.wait_hours === null || act.total_hours === null) {
-        return null;
-      }
-      const ts = finiteNum(act.total_seconds, null);
-      if (ts !== null) return ts;
-      const th = finiteNum(act.total_hours, null);
-      if (th !== null) return th * 3600;
-      if (rawTotal !== "") return durationToSeconds(rawTotal);
-      if (act.duration_text) return durationToSeconds(act.duration_text);
-      return act.executable_now ? 0 : null;
-    },
-    reason: (act) => String(act.reason || "").trim() || null
-  };
-  const MQ_BUILDINGS_CATALOG = [
-    { id: 1, name: "Pig iron mine" },
-    { id: 2, name: "Blast furnace" },
-    { id: 3, name: "Kryptonite mine" },
-    { id: 4, name: "Spice mine" },
-    { id: 5, name: "Fusion plant" },
-    { id: 6, name: "Thermosolar plant" },
-    { id: 7, name: "Development center" },
-    { id: 8, name: "Research lab" },
-    { id: 9, name: "Weapons factory" },
-    { id: 10, name: "Fleet base" },
-    { id: 11, name: "Pig iron warehouse" },
-    { id: 12, name: "Metal warehouse" },
-    { id: 13, name: "Kryptonite warehouse" },
-    { id: 14, name: "Spice warehouse" },
-    { id: 15, name: "Particle cannon" },
-    { id: 16, name: "Particle shield" },
-    { id: 17, name: "Microsystem accelerator" },
-    { id: 18, name: "Teleporter" },
-    { id: 19, name: "Galaxy scanner" },
-    { id: 20, name: "Tunnel system" },
-    { id: 21, name: "Quantum Array" }
-  ];
-  const MQ_RESEARCH_CATALOG = [
-    { id: 1, name: "Mining technology" },
-    { id: 2, name: "Energy technology" },
-    { id: 3, name: "Engine research" },
-    { id: 4, name: "Rocket engine" },
-    { id: 5, name: "Diffusion engine" },
-    { id: 6, name: "Warp engine" },
-    { id: 7, name: "Spy technology" },
-    { id: 8, name: "Weapons technology" },
-    { id: 9, name: "Shield technology" },
-    { id: 10, name: "Defense systems" },
-    { id: 11, name: "Targeting systems" },
-    { id: 12, name: "Particle analyzer" },
-    { id: 13, name: "Graviton technology" },
-    { id: 14, name: "Teleportation" },
-    { id: 15, name: "Black hole research" }
-  ];
-  const MQ_SHIPS_CATALOG = [
-    { id: 1, name: "Small transport", key: "s1" },
-    { id: 2, name: "Large transport", key: "s2" },
-    { id: 3, name: "Transmitter", key: "s3" },
-    { id: 4, name: "Small fighter", key: "s4" },
-    { id: 5, name: "Warship", key: "s5" },
-    { id: 6, name: "Starcruiser", key: "s6" },
-    { id: 7, name: "Phoenix", key: "s7" },
-    { id: 8, name: "Colony ship", key: "s8" },
-    { id: 9, name: "Solar cells", key: "s9" },
-    { id: 10, name: "Spy probe", key: "s10" },
-    { id: 11, name: "Recycler", key: "s11" },
-    { id: 13, name: "Battleship", key: "s13" },
-    { id: 14, name: "Stealth bomber", key: "s14" },
-    { id: 15, name: "Destroyer", key: "s15" },
-    { id: 16, name: "Imperial starbase", key: "s16" }
-  ];
-  const DASH_FLEET_KINDS = /* @__PURE__ */ new Set([
-    "BUILD_SHIP",
-    "SHIP",
-    "BUILD_DEFENSE",
-    "DEFENSE",
-    "SPY",
-    "TRANSPORT",
-    "STATION",
-    "ATTACK",
-    "RECYCLE",
-    "COLONIZE",
-    "SCAN_GALAXY",
-    "ESCAPE_FLIGHT",
-    "ALERT_HOSTILE"
-  ]);
-  function dashboardQueueDomainForAction(act) {
-    const kind = String((act == null ? void 0 : act.kind) || "").toUpperCase();
-    if (kind === "RESEARCH") return "research";
-    if (DASH_FLEET_KINDS.has(kind)) return "fleet";
-    return "building";
-  }
-  function dashboardQueueDomainForJob(job) {
-    const cat = String((job == null ? void 0 : job.category) || "").toLowerCase();
-    if (cat === "research") return "research";
-    if (cat === "fleet" || cat === "shipyard" || cat === "defense") return "fleet";
-    return "building";
-  }
-  function cleanQueueJobTitle(job) {
-    const rawName = String((job == null ? void 0 : job.name) || "Active job").replace(/^(?:cancel|abort)\s+/i, "").replace(/\s*\(\s*Level\s+\d+\s*\)\s*$/i, "").trim();
-    const lvl = finiteNum(job == null ? void 0 : job.target_level, null);
-    if (lvl !== null && lvl > 0) {
-      return `${rawName} → L${lvl}`;
-    }
-    return rawName || "Active job";
-  }
-  function actionPayloadFor(action, dryRun) {
-    if (!action) return null;
-    if (action.kind === "CLAIM_TUTORIAL") {
-      return { command: "claim_tutorial", dry_run: dryRun };
-    }
-    if (action.kind === "BUILD" && action.target_id != null) {
-      return {
-        command: "build",
-        building_id: action.target_id,
-        planet_id: action.planet_id,
-        dry_run: dryRun
-      };
-    }
-    if (action.kind === "DEMOLISH_BUILDING" && action.target_id != null) {
-      return {
-        command: "demolish_building",
-        building_id: action.target_id,
-        planet_id: action.planet_id,
-        dry_run: dryRun
-      };
-    }
-    if (action.kind === "RESEARCH" && action.target_id != null) {
-      return {
-        command: "research",
-        research_id: action.target_id,
-        planet_id: action.planet_id,
-        dry_run: dryRun
-      };
-    }
-    if (action.kind === "BUILD_SHIP" && action.target_id != null) {
-      return {
-        command: "build_ship",
-        ship_id: action.target_id,
-        quantity: Math.max(1, Math.round(finiteNum(action.target_level, 1))),
-        planet_id: action.planet_id,
-        dry_run: dryRun
-      };
-    }
-    if (action.kind === "THROTTLE_BUILDING" && action.target_id != null) {
-      return {
-        command: "throttle_building",
-        building_id: action.target_id,
-        percentage: action.target_level == null ? 0 : finiteNum(action.target_level, 0),
-        planet_id: action.planet_id,
-        dry_run: dryRun
-      };
-    }
-    if (action.kind === "ESCAPE_FLIGHT") {
-      return { command: "fleetsave_plan", planet_id: action.planet_id };
-    }
-    if (action.kind === "SCAN_GALAXY") {
-      const m = /(\d{1,2}):(\d{1,3})/.exec(action.target_name || action.planet_coords || "");
-      return {
-        command: "scan_galaxy",
-        galaxy: m ? Number(m[1]) : void 0,
-        system: m ? Number(m[2]) : void 0,
-        planet_id: action.planet_id,
-        dry_run: dryRun
-      };
-    }
-    if (action.kind === "ATTACK") {
-      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
-      return {
-        command: "attack",
-        target_coords: m ? m[1] : action.target_name,
-        planet_id: action.planet_id,
-        dry_run: dryRun
-      };
-    }
-    if (action.kind === "SPY") {
-      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
-      return {
-        command: "spy",
-        target_coords: m ? m[1] : action.target_name,
-        quantity: Math.max(1, Math.round(finiteNum(action.target_level, 1))),
-        planet_id: action.planet_id,
-        dry_run: dryRun
-      };
-    }
-    if (action.kind === "RECYCLE") {
-      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
-      return {
-        command: "recycle",
-        target_coords: m ? m[1] : action.target_name,
-        quantity: Math.max(1, Math.round(finiteNum(action.target_level, 1))),
-        planet_id: action.planet_id,
-        dry_run: dryRun
-      };
-    }
-    if (action.kind === "TRANSPORT") {
-      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
-      const c = action.cost || {};
-      return {
-        command: "transport",
-        target_coords: m ? m[1] : action.target_name,
-        dest_planet_id: action.target_id ?? void 0,
-        planet_id: action.planet_id,
-        resources: {
-          pig_iron: Math.max(0, Math.round(finiteNum(c.pig_iron, 0))),
-          metal: Math.max(0, Math.round(finiteNum(c.metal, 0))),
-          kryptonite: Math.max(0, Math.round(finiteNum(c.kryptonite, 0))),
-          spice: Math.max(0, Math.round(finiteNum(c.spice, 0)))
-        },
-        dry_run: dryRun
-      };
-    }
-    if (action.kind === "STATION") {
-      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
-      return {
-        command: "station",
-        target_coords: m ? m[1] : action.target_name,
-        dest_planet_id: action.target_id ?? void 0,
-        planet_id: action.planet_id,
-        ships_spec: action.target_name || action.reason || "",
-        dry_run: dryRun
-      };
-    }
-    if (action.kind === "COLONIZE") {
-      const m = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(action.target_name || "");
-      return {
-        command: "colonize",
-        target_coords: m ? m[1] : action.target_name,
-        planet_id: action.planet_id,
-        dry_run: dryRun
-      };
-    }
-    return null;
-  }
-  function buildPinPayloadFromAction(act, priority = "P1") {
-    const normKind = act.kind === "WAIT_RESOURCES" ? "BUILD" : String(act.kind || "").toUpperCase();
-    const mCoords = /(\d{1,2}:\d{1,3}(?::\d{1,2})?)/.exec(act.target_name || "");
-    return {
-      kind: normKind,
-      priority,
-      position: "top",
-      planet_id: act.planet_id || 0,
-      target_id: act.target_id ?? void 0,
-      target_name: act.target_name || "",
-      target_coords: mCoords ? mCoords[1] : void 0,
-      target_level: act.target_level ?? void 0,
-      deduplicate_pending: true
-    };
-  }
-  const PlanActionRow = ({
-    action: act,
-    compact = false,
-    nowEpochSec,
-    onDispatch,
-    onUpdateQueue,
-    onCancelQueue,
-    onPinQueue
-  }) => {
-    const isManual = act.manual_queue_id != null && Number(act.manual_queue_id) > 0;
-    const qid = isManual ? Number(act.manual_queue_id) : 0;
-    const prioVal = String(act.priority || "?");
-    const prioSelectRef = reactExports.useRef(null);
-    const handledEventsRef = reactExports.useRef(/* @__PURE__ */ new WeakSet());
-    reactExports.useEffect(() => {
-      const sel = prioSelectRef.current;
-      if (!sel || !isManual || compact) return;
-      const onNativeChange = (ev) => {
-        if (handledEventsRef.current.has(ev)) return;
-        handledEventsRef.current.add(ev);
-        const nextVal = sel.value;
-        if (nextVal && nextVal !== prioVal) {
-          onUpdateQueue(qid, { priority: nextVal, move: "top" });
-        }
-      };
-      sel.addEventListener("change", onNativeChange);
-      return () => sel.removeEventListener("change", onNativeChange);
-    }, [compact, isManual, onUpdateQueue, prioVal, qid]);
-    let lvlStr = "";
-    if (act.kind === "THROTTLE_BUILDING" && act.target_level != null) {
-      lvlStr = ` (${act.target_level}%)`;
-    } else if (act.kind === "BUILD_SHIP" && act.target_level) {
-      lvlStr = ` x${act.target_level}`;
-    } else if (act.target_level != null) {
-      lvlStr = ` → L${act.target_level}`;
-    }
-    const costStr = formatResourcesInline(act.cost);
-    const missStr = formatResourcesInline(act.missing);
-    const hasRawWait = act.wait_eta !== void 0 && act.wait_eta !== null && String(act.wait_eta).trim() !== "";
-    const isBlocked = hasRawWait && String(act.wait_eta) === "—" || act.wait_hours === null || !hasRawWait && !act.executable_now && (act.wait_hours == null || !Number.isFinite(Number(act.wait_hours)) || Number(act.wait_hours) <= 0);
-    const waitHoursNum = act.wait_hours !== void 0 && act.wait_hours !== null && Number.isFinite(Number(act.wait_hours)) ? Number(act.wait_hours) : 0;
-    const waitEta = hasRawWait ? String(act.wait_eta) : isBlocked ? "—" : act.executable_now ? "Ready" : "—";
-    const bnTag = bottleneckTag(act.eta_bottleneck);
-    const isWaiting = !isBlocked && (waitHoursNum > 0 || waitEta !== "Ready" && waitEta !== "Instant" && waitEta !== "—");
-    const waitPillText = (isBlocked || isWaiting) && bnTag ? `${waitEta} (${bnTag})` : waitEta;
-    const hasRawTotal = act.total_eta !== void 0 && act.total_eta !== null && String(act.total_eta).trim() !== "";
-    const hasRawDur = act.duration_text !== void 0 && act.duration_text !== null && String(act.duration_text).trim() !== "";
-    const durText = hasRawDur ? String(act.duration_text) : "";
-    const totalBlocked = isBlocked || hasRawTotal && String(act.total_eta) === "—" || act.total_hours === null;
-    const totalEta = hasRawTotal ? String(act.total_eta) : totalBlocked ? "—" : durText || (act.executable_now ? "Ready" : "—");
-    const totSecNum = finiteNum(act.total_seconds, null);
-    const effNowSec = nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : Math.floor(Date.now() / 1e3);
-    const cmdTemplate = actionPayloadFor(act, false);
-    const canPin = Boolean(
-      actionPayloadFor(act.kind === "WAIT_RESOURCES" ? { ...act, kind: "BUILD" } : act, true)
-    );
-    const targetLabel = String(act.target_name || "command").replace(/>/g, "→");
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { className: isManual ? "is-manual-queued" : void 0, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "prio-cell-stack", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: `prio-tag prio-${prioVal}`, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "prio-dot" }),
-          prioVal
-        ] }),
-        isManual ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "mq-pin-badge tabular", children: [
-          "PIN #",
-          act.manual_queue_id
-        ] }) : null
-      ] }) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-title", children: `${act.target_name || "Action"}${lvlStr}` }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-sub", children: `${act.kind || "ACTION"} · [${act.planet_coords || "—"}]` })
-      ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "tabular", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: costStr }),
-        missStr !== "0" && missStr !== "—" ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-sub", children: `Missing: ${missStr}` }) : null
-      ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-        "span",
-        {
-          className: `eta-pill${isBlocked ? " is-blocked" : isWaiting ? " is-wait" : ""}`,
-          title: bnTag ? `Bottleneck: ${bnTag}` : void 0,
-          children: waitPillText
-        }
-      ) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "col-right tabular", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "span",
-          {
-            className: `eta-pill${totalBlocked ? " is-blocked" : isWaiting ? " is-wait" : ""}`,
-            children: totalEta
-          }
-        ),
-        compact && !totalBlocked && totSecNum !== null && totSecNum > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "finish-clock-sub tabular", children: `at ${fmtClockTime(effNowSec + totSecNum, effNowSec)}` }) : !compact && durText && durText !== totalEta ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-sub", children: durText === "Instant" ? "Instant" : `Dur: ${durText}` }) : null
-      ] }),
-      !compact ? /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: act.reason || "" }) : null,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row-actions-wrap", children: [
-        cmdTemplate && act.executable_now ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              type: "button",
-              className: "btn btn-primary btn-sm",
-              onClick: () => onDispatch(act, false),
-              children: "Run"
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              type: "button",
-              className: "btn btn-secondary btn-sm",
-              onClick: () => onDispatch(act, true),
-              children: "Sim"
-            }
-          )
-        ] }) : !isManual ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: "Waiting" }) : null,
-        isManual ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-          !compact ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
-              "select",
-              {
-                ref: prioSelectRef,
-                className: "mq-prio-select",
-                value: prioVal,
-                "aria-label": `Priority for ${targetLabel} (#${qid})`,
-                onChange: (e) => {
-                  handledEventsRef.current.add(e.nativeEvent);
-                  const nextVal = e.target.value;
-                  if (nextVal && nextVal !== prioVal) {
-                    onUpdateQueue(qid, { priority: nextVal, move: "top" });
-                  }
-                },
-                children: ["P0", "P1", "P2", "P3"].map((pOpt) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: pOpt, children: pOpt }, pOpt))
-              }
-            ),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
-              "button",
-              {
-                type: "button",
-                className: "btn btn-secondary btn-sm",
-                title: "Move to top of priority band",
-                "aria-label": `Move ${targetLabel} (#${qid}) to top of ${prioVal}`,
-                onClick: () => onUpdateQueue(qid, { move: "top" }),
-                children: "Top"
-              }
-            )
-          ] }) : null,
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              type: "button",
-              className: "btn btn-secondary btn-sm",
-              title: "Move up in queue",
-              "aria-label": `Move ${targetLabel} (#${qid}) up in queue`,
-              onClick: () => onUpdateQueue(qid, { move: "up" }),
-              children: "Up"
-            }
-          ),
-          !compact ? /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              type: "button",
-              className: "btn btn-secondary btn-sm",
-              title: "Move down in queue",
-              "aria-label": `Move ${targetLabel} (#${qid}) down in queue`,
-              onClick: () => onUpdateQueue(qid, { move: "down" }),
-              children: "Dn"
-            }
-          ) : null,
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              type: "button",
-              className: "btn btn-secondary btn-sm btn-danger-ghost",
-              title: "Remove from manual queue",
-              "aria-label": `Remove ${targetLabel} (#${qid}) from manual queue`,
-              onClick: () => onCancelQueue(qid),
-              children: "Drop"
-            }
-          )
-        ] }) : canPin ? /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "button",
-          {
-            type: "button",
-            className: "btn btn-secondary btn-sm",
-            title: "Pin and prioritize at top of P1 queue",
-            "aria-label": `Pin ${targetLabel} to P1 queue`,
-            onClick: () => onPinQueue(act, "P1"),
-            children: "Pin P1"
-          }
-        ) : null
-      ] }) })
-    ] });
-  };
-  function formatQueueJobCargo(job) {
-    const cargo = job == null ? void 0 : job.cargo;
-    if (!cargo || typeof cargo !== "object") return null;
-    const pig = Math.max(0, Math.round(finiteNum(cargo.pig_iron, 0)));
-    const met = Math.max(0, Math.round(finiteNum(cargo.metal, 0)));
-    const kry = Math.max(0, Math.round(finiteNum(cargo.kryptonite, 0)));
-    const spi = Math.max(0, Math.round(finiteNum(cargo.spice, 0)));
-    const total = pig + met + kry + spi;
-    const nonZeroCount = [pig, met, kry, spi].filter((v) => v > 0).length;
-    const nameLow = String((job == null ? void 0 : job.name) || "").toLowerCase();
-    const detLow = String((job == null ? void 0 : job.detail) || "").toLowerCase();
-    const isReturning = detLow.includes("returning") || nameLow.includes("↩");
-    const isAttack = nameLow.includes("attack");
-    const isRecycle = nameLow.includes("recycle");
-    const label = isReturning && isAttack ? "Loot" : isReturning && isRecycle ? "Harvest" : "Cargo";
-    if (total > 0) {
-      return {
-        label,
-        inline: formatResourcesInline({ pig_iron: pig, metal: met, kryptonite: kry, spice: spi }),
-        total,
-        multiRes: nonZeroCount > 1,
-        isEmpty: false
-      };
-    }
-    if (isReturning && (isAttack || isRecycle)) {
-      return {
-        label,
-        inline: "0 (empty)",
-        total: 0,
-        multiRes: false,
-        isEmpty: true
-      };
-    }
-    return null;
-  }
-  const ActiveExecJobRow = ({ job, nowEpochSec }) => {
-    const slot = Math.max(1, Math.trunc(finiteNum(job == null ? void 0 : job.queue_slot, 1)));
-    const detailText = String((job == null ? void 0 : job.detail) || "").trim() || (slot > 1 ? `In-game queue #${slot}` : "Executing now");
-    const cargoInfo = formatQueueJobCargo(job);
-    const finTs = finiteNum(job == null ? void 0 : job.finish_ts, null);
-    const effNowSec = nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : Math.floor(Date.now() / 1e3);
-    const remSec = finTs !== null && finTs > 0 ? Math.max(0, Math.round(finTs - effNowSec)) : finiteNum(job == null ? void 0 : job.remaining_seconds, null);
-    let remDisplay = String((job == null ? void 0 : job.remaining_text) || "").trim() || "Running";
-    if (finTs !== null && finTs > 0) {
-      remDisplay = remSec !== null && remSec > 0 ? fmtHms(remSec) : "Finishing...";
-    }
-    const finDisplay = finTs !== null && finTs > 0 ? fmtClockTime(finTs, effNowSec) : "In progress";
-    const detLow = String((job == null ? void 0 : job.detail) || "").toLowerCase();
-    let liveLabel = "Executing";
-    if (slot > 1) {
-      liveLabel = `Queued #${slot}`;
-    } else if (detLow.includes("returning")) {
-      liveLabel = "Returning";
-    } else if (detLow.includes("outbound") || detLow.includes("flight")) {
-      liveLabel = "In flight";
-    }
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { className: slot > 1 ? "dash-exec-row is-queued-slot" : "dash-exec-row", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: slot > 1 ? "prio-badge prio-game-q tabular" : "prio-badge prio-exec tabular", children: slot > 1 ? `GAME #${slot}` : "EXEC" }) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-title", children: cleanQueueJobTitle(job) }) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: detailText }),
-        cargoInfo ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
-          "div",
-          {
-            className: `exec-cargo-line tabular${cargoInfo.isEmpty ? " is-empty" : ""}`,
-            title: `${cargoInfo.label}: ${cargoInfo.inline}${cargoInfo.total > 0 ? ` (${fmtInt(cargoInfo.total)} total)` : ""}`,
-            children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "exec-cargo-tag", children: cargoInfo.label }),
-              " ",
-              cargoInfo.inline,
-              cargoInfo.multiRes ? ` (${fmtCompact(cargoInfo.total)})` : ""
-            ]
-          }
-        ) : null
-      ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-        "span",
-        {
-          className: "eta-pill is-exec-timer",
-          "data-finish-ts": finTs !== null && finTs > 0 ? String(finTs) : void 0,
-          children: remDisplay
-        }
-      ) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "eta-pill is-finish-at", children: finDisplay }) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: slot > 1 ? "exec-live-label is-slot" : "exec-live-label", children: liveLabel }) })
-    ] });
-  };
   const DashboardQueueCard = ({
     cardId,
     moduleCode,
@@ -11458,6 +12900,7 @@
     planTbodyId,
     execJobs,
     plannedActions,
+    resourceRequests,
     maxRows,
     emptyText,
     nowEpochSec,
@@ -11467,6 +12910,7 @@
     onPinQueue
   }) => {
     const activeList = Array.isArray(execJobs) ? execJobs : [];
+    const reqList = Array.isArray(resourceRequests) ? resourceRequests : [];
     const totalCount = activeList.length + plannedActions.length;
     const planSort = useTableSort(plannedActions, PLAN_ACTION_SORT_COLUMNS);
     const visibleRows = maxRows != null && maxRows > 0 ? planSort.sortedRows.slice(0, maxRows) : planSort.sortedRows;
@@ -11476,6 +12920,7 @@
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: moduleCode }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: title }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-count", id: countId, children: String(totalCount) }),
+          reqList.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-req-count", id: "dash-bld-req-count", children: `${reqList.length} REQ` }) : null,
           scopeBadge ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-scope", children: scopeBadge }) : null
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
@@ -11503,6 +12948,57 @@
           )
         ] })
       ] }),
+      reqList.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "div",
+        {
+          className: "dash-res-requests",
+          id: "dash-building-resource-requests",
+          "aria-label": "Building queue resource requests",
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "dash-res-requests-head tabular", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "dash-res-requests-title", children: "RESOURCE REQUESTS" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "dash-res-requests-meta", children: `${reqList.length} ${reqList.length === 1 ? "request" : "requests"}` })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "dash-res-requests-list", children: reqList.map((req, idx) => {
+              const st = normalizeRequestStatus(req.status);
+              const resBundle = req.resources || {
+                pig_iron: req.pig_iron,
+                metal: req.metal,
+                kryptonite: req.kryptonite,
+                spice: req.spice
+              };
+              const resStr = formatResourcesInline(resBundle);
+              const targetTitle = req.target_building ? `${req.target_building}${req.target_level != null ? ` → L${req.target_level}` : ""}` : req.label || "Resource delivery";
+              const destLabel = req.planet_coords ? req.planet_name ? `[${req.planet_coords}] ${req.planet_name}` : `[${req.planet_coords}]` : req.planet_name || "";
+              const routeLabel = req.source_coords && req.planet_coords ? `[${req.source_coords}] → [${req.planet_coords}]` : destLabel ? `→ ${destLabel}` : "";
+              const finTs = finiteNum(req.finish_ts, null);
+              const etaSec = finTs !== null && finTs > 0 ? Math.max(0, Math.round(finTs - nowEpochSec)) : finiteNum(req.eta_seconds, null);
+              const etaText = etaSec !== null && etaSec > 0 ? fmtHms(Math.round(etaSec)) : finTs !== null && finTs > 0 ? "Arriving" : "";
+              const etaClockTitle = finTs !== null && finTs > 0 ? `ETA ${etaText} (at ${fmtClockTime(finTs, nowEpochSec)})` : req.reason || void 0;
+              return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "div",
+                {
+                  className: `dash-res-req-row is-${st.key.replace("_", "-")}`,
+                  "data-req-status": st.key,
+                  title: req.reason || etaClockTitle,
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "dash-res-req-main", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `dash-req-status is-${st.key.replace("_", "-")} tabular`, children: st.label }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "dash-req-target", children: targetTitle }),
+                      routeLabel ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "dash-req-route tabular", children: routeLabel }) : null
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "dash-res-req-values tabular", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "dash-req-amounts", children: resStr }),
+                      etaText ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "dash-req-eta", title: etaClockTitle, children: etaText }) : null
+                    ] })
+                  ]
+                },
+                req.id || `res-req-${idx}-${req.planet_id ?? req.planet_coords ?? idx}`
+              );
+            }) })
+          ]
+        }
+      ) : null,
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -11583,28 +13079,6 @@
       ] }) })
     ] });
   };
-  function normalizeCoordKey(raw) {
-    const s = String(raw || "").trim();
-    if (!s) return "";
-    const m = s.match(/(\d{1,2})\s*:\s*(\d{1,3})\s*:\s*(\d{1,2})/);
-    if (!m) return s;
-    return `${Number(m[1])}:${Number(m[2])}:${Number(m[3])}`;
-  }
-  function queueJobMatchesPlanet(job, planet, activePlanetId, fallbackToActivePlanet) {
-    const jPid = job.planet_id != null ? Number(job.planet_id) : NaN;
-    if (Number.isFinite(jPid) && jPid > 0) {
-      return jPid === Number(planet.planet_id);
-    }
-    const jCoords = normalizeCoordKey(job.origin_coords || job.planet_coords);
-    if (jCoords) {
-      const pCoords = normalizeCoordKey(planet.coords);
-      return Boolean(pCoords) && jCoords === pCoords;
-    }
-    if (fallbackToActivePlanet && activePlanetId != null) {
-      return Number(planet.planet_id) === Number(activePlanetId);
-    }
-    return false;
-  }
   const ResourceTrackRow = ({
     idKey,
     code,
@@ -11689,19 +13163,34 @@
     const gs = (dashboard == null ? void 0 : dashboard.state) || null;
     const planets = reactExports.useMemo(() => (gs == null ? void 0 : gs.planets) || [], [gs == null ? void 0 : gs.planets]);
     const chosenId = activePlanet == null ? void 0 : activePlanet.planet_id;
+    const activeQueues = reactExports.useMemo(
+      () => Array.isArray(gs == null ? void 0 : gs.active_queues) ? gs.active_queues : [],
+      [gs]
+    );
+    const effNowSec = nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : Math.floor(Date.now() / 1e3);
+    const constructingPlanetIds = reactExports.useMemo(() => {
+      const ids = /* @__PURE__ */ new Set();
+      for (const p of planets) {
+        if (isPlanetConstructing(p, activeQueues, gs == null ? void 0 : gs.active_planet_id, effNowSec)) {
+          ids.add(Number(p.planet_id));
+        }
+      }
+      return ids;
+    }, [activeQueues, effNowSec, gs == null ? void 0 : gs.active_planet_id, planets]);
     const colonySortCols = reactExports.useMemo(
       () => ({
         coords: (p) => coordsSortKey(p.coords),
         colony: (p) => String(p.name || "Colony"),
         state: (p) => {
           var _a2, _b2, _c2, _d2;
+          if (constructingPlanetIds.has(Number(p.planet_id))) return "BUILDING";
           const isActive = p.planet_id === chosenId;
           const pigStor = finiteNum((_a2 = p.storage) == null ? void 0 : _a2.pig_iron, 0);
           const pigAmt = finiteNum((_b2 = p.resources) == null ? void 0 : _b2.pig_iron, 0);
           const spiStor = finiteNum((_c2 = p.storage) == null ? void 0 : _c2.spice, 0);
           const spiAmt = finiteNum((_d2 = p.resources) == null ? void 0 : _d2.spice, 0);
           const nearFull = pigStor > 0 && pigAmt / pigStor >= 0.85 || spiStor > 0 && spiAmt / spiStor >= 0.85;
-          return nearFull ? "NEAR-CAP" : isActive ? "ONLINE" : "READY";
+          return nearFull ? "NEAR-CAP" : isActive ? "ONLINE" : "IDLE";
         },
         fields: {
           accessor: (p) => {
@@ -11713,7 +13202,7 @@
           defaultDirection: "desc"
         }
       }),
-      [chosenId]
+      [chosenId, constructingPlanetIds]
     );
     const colonySort = useTableSort(planets, colonySortCols);
     const rawDashScope = String(uiPrefs.dashQueuePlanetScope || "all");
@@ -11873,11 +13362,6 @@
       [tut]
     );
     const tutSummaryText = tut ? incompleteTasks.length > 0 ? incompleteTasks.map((t) => `${t.building_name || t.description} (${t.current}/${t.target})`).join(" · ") : `Ready to claim: ${tut.reward_text || "Step reward"}` : "Loading tutorial steps...";
-    const activeQueues = reactExports.useMemo(
-      () => Array.isArray(gs == null ? void 0 : gs.active_queues) ? gs.active_queues : [],
-      [gs]
-    );
-    const effNowSec = nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : Math.floor(Date.now() / 1e3);
     const { execBuildingJobs, execFleetJobs, execResearchJobs } = reactExports.useMemo(() => {
       const bld = [];
       const flt = [];
@@ -11945,6 +13429,93 @@
       }
       return { buildingActions: bld, fleetActions: flt, researchActions: res };
     }, [allPlanActions, scopedDashPlanet]);
+    const allBuildingResourceRequests = reactExports.useMemo(() => {
+      if (Array.isArray(dashboard == null ? void 0 : dashboard.building_resource_requests)) {
+        return dashboard.building_resource_requests;
+      }
+      const derived = [];
+      const planetById = /* @__PURE__ */ new Map();
+      const planetByCoords = /* @__PURE__ */ new Map();
+      for (const p of planets) {
+        planetById.set(Number(p.planet_id), p);
+        const ck = normalizeCoordKey$1(p.coords);
+        if (ck) planetByCoords.set(ck, p);
+      }
+      for (const job of execFleetJobs) {
+        const nameLow = String(job.name || "").toLowerCase();
+        const detLow = String(job.detail || "").toLowerCase();
+        const isReturning = Boolean(job.returning) || detLow.includes("returning") || nameLow.includes("↩");
+        const isAttack = nameLow.includes("attack");
+        const isRecycle = nameLow.includes("recycle");
+        const isTransport = !isAttack && !isRecycle && (nameLow.includes("transport") || nameLow.includes("transfer"));
+        if (!isTransport || isReturning || job.delivered) continue;
+        const bundle = job.expected_cargo || job.cargo;
+        if (!bundle) continue;
+        const pig = Math.max(0, Math.round(finiteNum(bundle.pig_iron, 0)));
+        const met = Math.max(0, Math.round(finiteNum(bundle.metal, 0)));
+        const kry = Math.max(0, Math.round(finiteNum(bundle.kryptonite, 0)));
+        const spi = Math.max(0, Math.round(finiteNum(bundle.spice, 0)));
+        if (pig + met + kry + spi <= 0) continue;
+        const mCoords = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(String(job.name || ""));
+        const destCoords = mCoords ? mCoords[1] : "";
+        const destPlanet = destCoords ? planetByCoords.get(normalizeCoordKey$1(destCoords)) : void 0;
+        derived.push({
+          id: `flight-${job.origin_coords || ""}-${destCoords || job.name || derived.length}`,
+          planet_id: (destPlanet == null ? void 0 : destPlanet.planet_id) ?? null,
+          planet_coords: (destPlanet == null ? void 0 : destPlanet.coords) || destCoords,
+          planet_name: destPlanet == null ? void 0 : destPlanet.name,
+          label: cleanQueueJobTitle(job),
+          status: "in_flight",
+          resources: { pig_iron: pig, metal: met, kryptonite: kry, spice: spi },
+          source_coords: job.origin_coords || job.planet_coords,
+          eta_seconds: finiteNum(job.remaining_seconds, null),
+          finish_ts: finiteNum(job.finish_ts, null),
+          reason: job.detail
+        });
+      }
+      for (const act of allPlanActions) {
+        if (String(act.kind || "").toUpperCase() !== "TRANSPORT") continue;
+        const bundle = act.cost;
+        if (!bundle) continue;
+        const pig = Math.max(0, Math.round(finiteNum(bundle.pig_iron, 0)));
+        const met = Math.max(0, Math.round(finiteNum(bundle.metal, 0)));
+        const kry = Math.max(0, Math.round(finiteNum(bundle.kryptonite, 0)));
+        const spi = Math.max(0, Math.round(finiteNum(bundle.spice, 0)));
+        if (pig + met + kry + spi <= 0) continue;
+        const mCoords = /(\d{1,2}:\d{1,3}:\d{1,2})/.exec(String(act.target_name || ""));
+        const destCoords = mCoords ? mCoords[1] : "";
+        const destPlanet = (act.target_id != null ? planetById.get(Number(act.target_id)) : void 0) || (destCoords ? planetByCoords.get(normalizeCoordKey$1(destCoords)) : void 0);
+        const srcPlanet = act.planet_id != null ? planetById.get(Number(act.planet_id)) : void 0;
+        derived.push({
+          id: `plan-tr-${act.planet_id ?? 0}-${(destPlanet == null ? void 0 : destPlanet.planet_id) ?? destCoords}-${derived.length}`,
+          planet_id: (destPlanet == null ? void 0 : destPlanet.planet_id) ?? (act.target_id ?? null),
+          planet_coords: (destPlanet == null ? void 0 : destPlanet.coords) || destCoords,
+          planet_name: destPlanet == null ? void 0 : destPlanet.name,
+          label: act.target_name || "Resource transport",
+          status: "planned",
+          resources: { pig_iron: pig, metal: met, kryptonite: kry, spice: spi },
+          source_planet_id: act.planet_id ?? null,
+          source_coords: act.planet_coords || (srcPlanet == null ? void 0 : srcPlanet.coords),
+          source_name: srcPlanet == null ? void 0 : srcPlanet.name,
+          eta_seconds: finiteNum(act.total_seconds ?? act.wait_seconds, null),
+          reason: act.reason
+        });
+      }
+      return derived;
+    }, [allPlanActions, dashboard == null ? void 0 : dashboard.building_resource_requests, execFleetJobs, planets]);
+    const scopedBuildingResourceRequests = reactExports.useMemo(() => {
+      if (!scopedDashPlanet) return allBuildingResourceRequests;
+      const scopePid = Number(scopedDashPlanet.planet_id);
+      const scopeCoordKey = normalizeCoordKey$1(scopedDashPlanet.coords);
+      return allBuildingResourceRequests.filter((req) => {
+        const rPid = req.planet_id != null ? Number(req.planet_id) : NaN;
+        if (Number.isFinite(rPid) && rPid > 0) {
+          return rPid === scopePid;
+        }
+        const rCoordKey = normalizeCoordKey$1(req.planet_coords);
+        return Boolean(scopeCoordKey) && rCoordKey === scopeCoordKey;
+      });
+    }, [allBuildingResourceRequests, scopedDashPlanet]);
     const cfgMode = String(
       ((_c = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _c.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || (dashboard == null ? void 0 : dashboard.effective_planner_mode) || "priority"
     ).toLowerCase();
@@ -11978,10 +13549,9 @@
     );
     const handleGotoResearch = reactExports.useCallback(() => {
       reactDomExports.flushSync(() => {
-        setUiPref("bldCategory", "research");
-        setActivePage("buildings");
+        setActivePage("research");
       });
-    }, [setActivePage, setUiPref]);
+    }, [setActivePage]);
     const handleDispatch = reactExports.useCallback(
       async (action, dryRun) => {
         const payload = actionPayloadFor(action, dryRun);
@@ -12209,18 +13779,21 @@
                   /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "colony-tbody", children: colonySort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 4, className: "empty-cell", children: dashboard ? "No colonies discovered." : "Waiting for snapshot..." }) }) : colonySort.sortedRows.map((p) => {
                     var _a2, _b2, _c2, _d2;
                     const isActive = p.planet_id === chosenId;
+                    const isConstructing = constructingPlanetIds.has(Number(p.planet_id));
                     const pigStor = finiteNum((_a2 = p.storage) == null ? void 0 : _a2.pig_iron, 0);
                     const pigAmt = finiteNum((_b2 = p.resources) == null ? void 0 : _b2.pig_iron, 0);
                     const spiStor = finiteNum((_c2 = p.storage) == null ? void 0 : _c2.spice, 0);
                     const spiAmt = finiteNum((_d2 = p.resources) == null ? void 0 : _d2.spice, 0);
                     const nearFull = pigStor > 0 && pigAmt / pigStor >= 0.85 || spiStor > 0 && spiAmt / spiStor >= 0.85;
-                    const statusWord = nearFull ? "NEAR-CAP" : isActive ? "ONLINE" : "READY";
+                    const statusWord = isConstructing ? "BUILDING" : nearFull ? "NEAR-CAP" : isActive ? "ONLINE" : "IDLE";
+                    const statusClass = isConstructing ? "status-word is-constructing" : nearFull ? "status-word is-warn" : isActive ? "status-word is-active-idle" : "status-word is-idle";
                     const fUsed = finiteNum(p.fields_used, null);
                     const fMax = finiteNum(p.fields_max, null);
                     return /* @__PURE__ */ jsxRuntimeExports.jsxs(
                       "tr",
                       {
-                        className: `clickable-row${isActive ? " is-active" : ""}`,
+                        className: `clickable-row${isActive ? " is-active" : ""}${isConstructing ? " is-constructing" : ""}`,
+                        "data-constructing": isConstructing ? "true" : "false",
                         onClick: () => {
                           setSelectedPlanetId(p.planet_id);
                           if (planets.length > 1) {
@@ -12230,7 +13803,7 @@
                         children: [
                           /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: p.coords || "--" }),
                           /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: p.name || "Colony" }),
-                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `status-word${nearFull ? " is-warn" : ""}`, children: statusWord }) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: statusClass, children: statusWord }) }),
                           /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `${fUsed === null ? "—" : fUsed}/${fMax === null ? "—" : fMax}` })
                         ]
                       },
@@ -12263,8 +13836,8 @@
             ] })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsx(GaNnScannerHud, {}),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "dash-queues-toolbar", "aria-label": "Planned queues overview and navigation", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "dash-queues-toolbar", "aria-label": "Planned queues overview and planet scope", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "dash-queues-toolbar-meta", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx(
                 "span",
                 {
@@ -12282,82 +13855,57 @@
                   children: `${pinnedCount} PINNED`
                 }
               ),
-              planets.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                "div",
-                {
-                  className: "filter-chips dash-planet-scope-chips",
-                  role: "group",
-                  "aria-label": "Filter building and fleet queues by planet",
-                  children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+              planets.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "dash-builders-summary-badge", children: `${constructingPlanetIds.size}/${planets.length} BUILDING` }) : null
+            ] }),
+            planets.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "div",
+              {
+                className: "filter-chips dash-planet-scope-chips",
+                role: "group",
+                "aria-label": "Filter building and fleet queues by planet",
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                    "button",
+                    {
+                      type: "button",
+                      className: `chip-btn planet-scope-chip tabular${activeDashScope === "all" ? " active" : ""}`,
+                      "data-dash-planet-scope": "all",
+                      title: `Show all ${planets.length} colonies (${constructingPlanetIds.size} currently constructing)`,
+                      onClick: () => setUiPref("dashQueuePlanetScope", "all"),
+                      children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "planet-chip-top", children: "All Planets" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "planet-chip-sub", children: `${planets.length} colonies · ${constructingPlanetIds.size} bldg` })
+                      ]
+                    }
+                  ),
+                  planets.map((p) => {
+                    const pidKey = String(p.planet_id);
+                    const stats = planetQueueStats.get(p.planet_id) || { total: 0, ready: 0 };
+                    const isConstructing = constructingPlanetIds.has(Number(p.planet_id));
+                    const planetLabel = p.name || "Colony";
+                    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
                       "button",
                       {
                         type: "button",
-                        className: `chip-btn tabular${activeDashScope === "all" ? " active" : ""}`,
-                        "data-dash-planet-scope": "all",
-                        onClick: () => setUiPref("dashQueuePlanetScope", "all"),
-                        children: `All Planets (${planets.length})`
-                      }
-                    ),
-                    planets.map((p) => {
-                      const pidKey = String(p.planet_id);
-                      const stats = planetQueueStats.get(p.planet_id) || { total: 0, ready: 0 };
-                      return /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        "button",
-                        {
-                          type: "button",
-                          className: `chip-btn tabular${activeDashScope === pidKey ? " active" : ""}${stats.ready > 0 ? " has-ready" : ""}`,
-                          "data-dash-planet-scope": pidKey,
-                          title: `${p.name || "Colony"} [${p.coords}] — ${stats.ready} ready / ${stats.total} queued`,
-                          onClick: () => {
-                            setUiPref("dashQueuePlanetScope", pidKey);
-                            setSelectedPlanetId(p.planet_id);
-                          },
-                          children: stats.ready > 0 ? `${p.coords || p.name} · ${stats.ready} ready` : `${p.coords || p.name} (${stats.total})`
+                        className: `chip-btn planet-scope-chip tabular${activeDashScope === pidKey ? " active" : ""}${isConstructing ? " is-constructing" : ""}`,
+                        "data-dash-planet-scope": pidKey,
+                        "data-constructing": isConstructing ? "true" : "false",
+                        title: `${planetLabel} [${p.coords}] — ${isConstructing ? "Building in progress" : "Builder idle"} · ${stats.ready} ready / ${stats.total} queued`,
+                        onClick: () => {
+                          setUiPref("dashQueuePlanetScope", pidKey);
+                          setSelectedPlanetId(p.planet_id);
                         },
-                        pidKey
-                      );
-                    })
-                  ]
-                }
-              ) : null
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
-              planets.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  type: "button",
-                  className: "btn btn-secondary btn-sm",
-                  id: "btn-dash-parallel-queues",
-                  onClick: () => {
-                    setUiPref("opsQueueLayout", "parallel");
-                    setUiPref("opsPlanetScope", activeDashScope);
-                    setActivePage("operations");
-                  },
-                  children: "Parallel by Planet →"
-                }
-              ) : null,
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  type: "button",
-                  className: "btn btn-secondary btn-sm",
-                  "data-goto-page": "action-graph",
-                  onClick: () => setActivePage("action-graph"),
-                  children: "Action Graph →"
-                }
-              ),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  type: "button",
-                  className: "btn btn-secondary btn-sm",
-                  "data-goto-page": "operations",
-                  onClick: () => setActivePage("operations"),
-                  children: "Full Queue →"
-                }
-              )
-            ] })
+                        children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "planet-chip-top", children: p.coords || planetLabel }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "planet-chip-sub", children: isConstructing ? `${planetLabel} · Building` : `${planetLabel} (${stats.total})` })
+                        ]
+                      },
+                      pidKey
+                    );
+                  })
+                ]
+              }
+            ) : null
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "dash-lower-grid", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -12366,7 +13914,7 @@
                 cardId: "dash-queue-card-building",
                 moduleCode: "NXQ",
                 title: "Building Queue",
-                scopeBadge: planets.length > 1 ? scopedDashPlanet ? scopedDashPlanet.coords || scopedDashPlanet.name : `PARALLEL · ${planets.length} PLANETS` : void 0,
+                scopeBadge: planets.length > 1 ? scopedDashPlanet ? scopedDashPlanet.coords || scopedDashPlanet.name : `ALL · ${planets.length} PLANETS` : void 0,
                 countId: "dash-bld-q-count",
                 addBtnId: "btn-dash-add-queue",
                 addBtnAriaLabel: "Queue building command",
@@ -12378,6 +13926,7 @@
                 planTbodyId: "dash-plan-tbody",
                 execJobs: scopedExecBuildingJobs,
                 plannedActions: buildingActions,
+                resourceRequests: scopedBuildingResourceRequests,
                 maxRows: dashQueueMaxRows,
                 emptyText: dashboard ? scopedDashPlanet ? `No queued building actions on ${scopedDashPlanet.coords || scopedDashPlanet.name}.` : "No queued building actions." : "Run Sync to populate building actions...",
                 nowEpochSec: effNowSec,
@@ -12427,6 +13976,7 @@
                 onAddQueueClick: () => openComposerWithKind("RESEARCH"),
                 gotoLabel: "Research →",
                 gotoBtnId: "btn-dash-goto-research",
+                gotoPageAttr: "research",
                 onGotoClick: handleGotoResearch,
                 execTbodyId: "dash-exec-research-tbody",
                 planTbodyId: "dash-plan-research-tbody",
@@ -12924,12 +14474,11 @@
     { label: "Galaxy", action: "internalGalaxy" }
   ];
   const OperationsView = () => {
-    var _a, _b;
+    var _a, _b, _c, _d;
     const {
       dashboard,
       activePage,
       setActivePage,
-      setSelectedPlanetId,
       nowEpochSec,
       showFeedback,
       apiCommand: apiCommand2,
@@ -12942,6 +14491,24 @@
       var _a2;
       return ((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.planets) || [];
     }, [(_a = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a.planets]);
+    const activeQueues = reactExports.useMemo(
+      () => {
+        var _a2;
+        return Array.isArray((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.active_queues) ? dashboard.state.active_queues : [];
+      },
+      [(_b = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _b.active_queues]
+    );
+    const effNowSec = nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : Math.floor(Date.now() / 1e3);
+    const constructingPlanetIds = reactExports.useMemo(() => {
+      var _a2;
+      const ids = /* @__PURE__ */ new Set();
+      for (const p of planets) {
+        if (isPlanetConstructing(p, activeQueues, (_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.active_planet_id, effNowSec)) {
+          ids.add(Number(p.planet_id));
+        }
+      }
+      return ids;
+    }, [activeQueues, (_c = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _c.active_planet_id, effNowSec, planets]);
     const queueFilter = uiPrefs.queueFilter || "all";
     const rawPlanetScope = String(uiPrefs.opsPlanetScope || "all");
     const scopedPlanet = reactExports.useMemo(
@@ -12949,7 +14516,6 @@
       [planets, rawPlanetScope]
     );
     const opsPlanetScope = scopedPlanet ? String(scopedPlanet.planet_id) : "all";
-    const opsQueueLayout = planets.length > 1 && uiPrefs.opsQueueLayout === "parallel" ? "parallel" : "table";
     const allActions = reactExports.useMemo(() => (dashboard == null ? void 0 : dashboard.plan) || [], [dashboard == null ? void 0 : dashboard.plan]);
     const manualList = reactExports.useMemo(() => {
       if (Array.isArray(dashboard == null ? void 0 : dashboard.manual_queue)) {
@@ -12991,23 +14557,9 @@
       const pid = Number(scopedPlanet.planet_id);
       return filterMatchedActions.filter((a) => Number(a.planet_id) === pid);
     }, [filterMatchedActions, scopedPlanet]);
-    const parallelLanes = reactExports.useMemo(() => {
-      const visiblePlanets = scopedPlanet ? [scopedPlanet] : planets;
-      const planetLanes = visiblePlanets.map((planet) => {
-        const actions = filterMatchedActions.filter(
-          (a) => Number(a.planet_id) === Number(planet.planet_id) && dashboardQueueDomainForAction(a) !== "research"
-        );
-        const readyCount = actions.filter((a) => Boolean(a.executable_now)).length;
-        return { planet, actions, readyCount };
-      });
-      const researchActions = filterMatchedActions.filter(
-        (a) => dashboardQueueDomainForAction(a) === "research"
-      );
-      return { planetLanes, researchActions };
-    }, [filterMatchedActions, planets, scopedPlanet]);
     const actionSort = useTableSort(filteredActions, PLAN_ACTION_SORT_COLUMNS);
     const cfgMode = String(
-      ((_b = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _b.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || (dashboard == null ? void 0 : dashboard.effective_planner_mode) || "priority"
+      ((_d = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _d.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode) || (dashboard == null ? void 0 : dashboard.effective_planner_mode) || "priority"
     ).toLowerCase();
     const isAiPlanner = cfgMode === "ai_planner" || cfgMode === "ga_nn";
     const modeLabel = isAiPlanner ? "MODE: AI-PLANNER" : "MODE: PRIORITY";
@@ -13102,229 +14654,126 @@
                 }
               )
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-toolbar", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-chips", role: "group", "aria-label": "Queue filters", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: `chip-btn${queueFilter === "all" ? " active" : ""}`,
-                    "data-filter": "all",
-                    onClick: () => setUiPref("queueFilter", "all"),
-                    children: "All Planned"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: `chip-btn${queueFilter === "ready" ? " active" : ""}`,
-                    "data-filter": "ready",
-                    onClick: () => setUiPref("queueFilter", "ready"),
-                    children: "Executable Only"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: `chip-btn${queueFilter === "manual" ? " active" : ""}`,
-                    "data-filter": "manual",
-                    id: "chip-filter-manual",
-                    onClick: () => setUiPref("queueFilter", "manual"),
-                    children: `Pinned Only (${pinnedCount})`
-                  }
-                )
-              ] }),
-              planets.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-chips", role: "group", "aria-label": "Planet queue scope", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: `chip-btn tabular${opsPlanetScope === "all" ? " active" : ""}`,
-                    "data-ops-planet": "all",
-                    onClick: () => setUiPref("opsPlanetScope", "all"),
-                    children: `All Planets (${planets.length})`
-                  }
-                ),
-                planets.map((p) => {
-                  const pidKey = String(p.planet_id);
-                  const st = planetCounts.get(p.planet_id) || { total: 0, ready: 0 };
-                  return /* @__PURE__ */ jsxRuntimeExports.jsx(
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-toolbar ops-filter-toolbar", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ops-toolbar-row", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-chips", role: "group", "aria-label": "Queue filters", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
                     "button",
                     {
                       type: "button",
-                      className: `chip-btn tabular${opsPlanetScope === pidKey ? " active" : ""}${st.ready > 0 ? " has-ready" : ""}`,
-                      "data-ops-planet": pidKey,
-                      onClick: () => setUiPref("opsPlanetScope", pidKey),
-                      children: st.ready > 0 ? `${p.coords || p.name} · ${st.ready} ready` : `${p.coords || p.name} (${st.total})`
+                      className: `chip-btn${queueFilter === "all" ? " active" : ""}`,
+                      "data-filter": "all",
+                      onClick: () => setUiPref("queueFilter", "all"),
+                      children: "All Planned"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: `chip-btn${queueFilter === "ready" ? " active" : ""}`,
+                      "data-filter": "ready",
+                      onClick: () => setUiPref("queueFilter", "ready"),
+                      children: "Executable Only"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: `chip-btn${queueFilter === "manual" ? " active" : ""}`,
+                      "data-filter": "manual",
+                      id: "chip-filter-manual",
+                      onClick: () => setUiPref("queueFilter", "manual"),
+                      children: `Pinned Only (${pinnedCount})`
+                    }
+                  )
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions nav-matrix-inline", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn btn-secondary btn-sm btn-danger-ghost",
+                      id: "btn-mq-clear",
+                      hidden: pinnedCount === 0,
+                      onClick: handleClearQueue,
+                      children: pinnedCount > 0 ? `Clear Pinned (${pinnedCount})` : "Clear Pinned"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn btn-secondary btn-sm",
+                      "data-goto-page": "action-graph",
+                      onClick: () => setActivePage("action-graph"),
+                      children: "Action Graph →"
+                    }
+                  ),
+                  NAV_JUMP_TARGETS.map((item) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn btn-secondary btn-sm nav-jump",
+                      "data-action": item.action,
+                      onClick: () => handleNavJump(item.action),
+                      children: item.label
                     },
-                    pidKey
-                  );
-                })
-              ] }) : null,
-              planets.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-chips", role: "group", "aria-label": "Queue layout mode", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: `chip-btn${opsQueueLayout === "table" ? " active" : ""}`,
-                    "data-ops-layout": "table",
-                    onClick: () => setUiPref("opsQueueLayout", "table"),
-                    children: "Unified Table"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: `chip-btn${opsQueueLayout === "parallel" ? " active" : ""}`,
-                    "data-ops-layout": "parallel",
-                    onClick: () => setUiPref("opsQueueLayout", "parallel"),
-                    children: "Parallel by Planet"
-                  }
-                )
-              ] }) : null,
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions nav-matrix-inline", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: "btn btn-secondary btn-sm btn-danger-ghost",
-                    id: "btn-mq-clear",
-                    hidden: pinnedCount === 0,
-                    onClick: handleClearQueue,
-                    children: pinnedCount > 0 ? `Clear Pinned (${pinnedCount})` : "Clear Pinned"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: "btn btn-secondary btn-sm",
-                    "data-goto-page": "action-graph",
-                    onClick: () => setActivePage("action-graph"),
-                    children: "Action Graph →"
-                  }
-                ),
-                NAV_JUMP_TARGETS.map((item) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: "btn btn-secondary btn-sm nav-jump",
-                    "data-action": item.action,
-                    onClick: () => handleNavJump(item.action),
-                    children: item.label
-                  },
-                  item.action
-                ))
-              ] })
-            ] })
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(ManualQueueComposer, {}),
-          opsQueueLayout === "parallel" ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ops-parallel-grid", id: "ops-parallel-grid", children: [
-            parallelLanes.planetLanes.map(({ planet, actions, readyCount }) => {
-              var _a2;
-              const isActiveP = ((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.active_planet_id) != null && Number(planet.planet_id) === Number(dashboard.state.active_planet_id);
-              return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                "article",
+                    item.action
+                  ))
+                ] })
+              ] }),
+              planets.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "div",
                 {
-                  className: "hud-window ops-planet-lane-card",
-                  "data-planet-lane": String(planet.planet_id),
+                  className: "filter-chips ops-planet-scope-chips",
+                  role: "group",
+                  "aria-label": "Planet queue scope",
                   children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: planet.coords || "PLN" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: planet.name || "Colony" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-count", children: `${readyCount}/${actions.length}` }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-scope", children: `${planet.fields_used ?? "—"}/${planet.fields_max ?? "—"} F${isActiveP ? " · ACTIVE" : " · PARALLEL"}` })
-                      ] }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inline-actions", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                      "button",
+                      {
+                        type: "button",
+                        className: `chip-btn planet-scope-chip tabular${opsPlanetScope === "all" ? " active" : ""}`,
+                        "data-ops-planet": "all",
+                        title: `Show all ${planets.length} colonies (${constructingPlanetIds.size} currently constructing)`,
+                        onClick: () => setUiPref("opsPlanetScope", "all"),
+                        children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "planet-chip-top", children: "All Planets" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "planet-chip-sub", children: `${planets.length} colonies · ${constructingPlanetIds.size} bldg` })
+                        ]
+                      }
+                    ),
+                    planets.map((p) => {
+                      const pidKey = String(p.planet_id);
+                      const st = planetCounts.get(p.planet_id) || { total: 0, ready: 0 };
+                      const isConstructing = constructingPlanetIds.has(Number(p.planet_id));
+                      const planetLabel = p.name || "Colony";
+                      return /* @__PURE__ */ jsxRuntimeExports.jsxs(
                         "button",
                         {
                           type: "button",
-                          className: "btn btn-secondary btn-sm",
-                          onClick: () => {
-                            var _a3;
-                            setSelectedPlanetId(planet.planet_id);
-                            const mqPlanet = document.getElementById("mq-planet");
-                            if (mqPlanet) {
-                              mqPlanet.value = String(planet.planet_id);
-                              mqPlanet.dispatchEvent(new Event("change", { bubbles: true }));
-                            }
-                            (_a3 = document.getElementById("mq-target")) == null ? void 0 : _a3.focus();
-                          },
-                          children: "+ Queue Here"
-                        }
-                      ) })
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Prio" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Action" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Missing / Cost" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Wait ETA" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Total ETA / Finish" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
-                      ] }) }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: actions.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: "No matching planet actions." }) }) : actions.map((act, idx) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-                        PlanActionRow,
-                        {
-                          action: act,
-                          compact: true,
-                          nowEpochSec,
-                          onDispatch: handleDispatch,
-                          onUpdateQueue: handleUpdateQueue,
-                          onCancelQueue: handleCancelQueue,
-                          onPinQueue: handlePinQueue
+                          className: `chip-btn planet-scope-chip tabular${opsPlanetScope === pidKey ? " active" : ""}${isConstructing ? " is-constructing" : ""}`,
+                          "data-ops-planet": pidKey,
+                          "data-constructing": isConstructing ? "true" : "false",
+                          title: `${planetLabel} [${p.coords}] — ${isConstructing ? "Building in progress" : "Builder idle"} · ${st.ready} ready / ${st.total} queued`,
+                          onClick: () => setUiPref("opsPlanetScope", pidKey),
+                          children: [
+                            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "planet-chip-top", children: p.coords || planetLabel }),
+                            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "planet-chip-sub", children: isConstructing ? `${planetLabel} · Building` : `${planetLabel} (${st.total})` })
+                          ]
                         },
-                        `lane-${planet.planet_id}-${act.manual_queue_id ?? "auto"}-${act.kind}-${act.target_id ?? act.target_name}-${idx}`
-                      )) })
-                    ] }) })
+                        pidKey
+                      );
+                    })
                   ]
-                },
-                `lane-${planet.planet_id}`
-              );
-            }),
-            parallelLanes.researchActions.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
-              "article",
-              {
-                className: "hud-window ops-planet-lane-card ops-global-research-card",
-                "data-planet-lane": "global-research",
-                children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "window-bar window-bar-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "RES" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Global Research Queue" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-count", children: String(parallelLanes.researchActions.length) }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular dash-q-scope", children: "GLOBAL · 1 SHARED SLOT" })
-                  ] }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Prio" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Action" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Missing / Cost" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Wait ETA" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Total ETA / Finish" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
-                    ] }) }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: parallelLanes.researchActions.map((act, idx) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      PlanActionRow,
-                      {
-                        action: act,
-                        compact: true,
-                        nowEpochSec,
-                        onDispatch: handleDispatch,
-                        onUpdateQueue: handleUpdateQueue,
-                        onCancelQueue: handleCancelQueue,
-                        onPinQueue: handlePinQueue
-                      },
-                      `lane-res-${act.manual_queue_id ?? "auto"}-${act.target_id ?? act.target_name}-${idx}`
-                    )) })
-                  ] }) })
-                ]
-              }
-            ) : null
-          ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "ops-plan-table", children: [
+                }
+              ) : null
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(ManualQueueComposer, {}),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "ops-plan-table", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx(
                 SortableTh,
@@ -13408,6 +14857,56 @@
       }
     );
   };
+  function useTablePagination(rows, resetKey = "", defaultPageSize = 25) {
+    const safeDefaultSize = Math.max(1, Math.round(defaultPageSize));
+    const [state, setState] = reactExports.useState(() => ({
+      page: 1,
+      pageSize: safeDefaultSize,
+      resetKey
+    }));
+    const pageSize = state.pageSize;
+    const rawPage = state.resetKey === resetKey ? state.page : 1;
+    const totalItems = rows.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    const effectivePage = Math.max(1, Math.min(totalPages, rawPage));
+    const pagedRows = reactExports.useMemo(() => {
+      const start = (effectivePage - 1) * pageSize;
+      return rows.slice(start, start + pageSize);
+    }, [rows, effectivePage, pageSize]);
+    reactExports.useEffect(() => {
+      if (state.resetKey !== resetKey) {
+        setState((prev) => ({ ...prev, page: 1, resetKey }));
+      } else if (state.page > totalPages) {
+        setState((prev) => ({ ...prev, page: totalPages }));
+      }
+    }, [resetKey, state.page, state.resetKey, totalPages]);
+    const setPage = reactExports.useCallback(
+      (nextPage) => {
+        if (Number.isFinite(nextPage)) {
+          const clamped = Math.max(1, Math.round(nextPage));
+          setState((prev) => ({ ...prev, page: clamped, resetKey }));
+        }
+      },
+      [resetKey]
+    );
+    const setPageSize = reactExports.useCallback(
+      (nextSize) => {
+        if (Number.isFinite(nextSize) && nextSize >= 1) {
+          setState({ page: 1, pageSize: Math.round(nextSize), resetKey });
+        }
+      },
+      [resetKey]
+    );
+    return {
+      page: effectivePage,
+      pageSize,
+      totalItems,
+      totalPages,
+      pagedRows,
+      setPage,
+      setPageSize
+    };
+  }
   const TablePagination = ({
     idPrefix,
     totalItems,
@@ -16453,6 +17952,35 @@
       )
     ] });
   };
+  const MAX_PLANET_NAME_LENGTH = 48;
+  function sanitizeCustomNamesMap(raw) {
+    if (!raw || typeof raw !== "object") return {};
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      const cleanKey = String(k || "").trim();
+      const cleanVal = String(v || "").trim();
+      if (cleanKey && cleanVal) {
+        out[cleanKey] = cleanVal;
+      }
+    }
+    return out;
+  }
+  function validatePlanetRename(raw) {
+    const trimmed = String(raw ?? "").trim();
+    if (trimmed.length > MAX_PLANET_NAME_LENGTH) {
+      return {
+        trimmed,
+        error: `Planet name must be ${MAX_PLANET_NAME_LENGTH} characters or fewer.`
+      };
+    }
+    if (/[\u0000-\u001F\u007F]/.test(trimmed)) {
+      return {
+        trimmed,
+        error: "Planet name cannot contain control characters."
+      };
+    }
+    return { trimmed, error: null };
+  }
   function sanitizeSpecializationsMap(raw) {
     if (!raw || typeof raw !== "object") return {};
     const out = {};
@@ -16646,8 +18174,13 @@
       ga_random_seed: Math.round(num(draft.ga_random_seed, 20261117))
     };
   }
-  function normalizePlanetRows(result, reservedFloorsMap) {
+  function normalizePlanetRows(result, reservedFloorsMap, customPlanetNames, dashboardPlanets) {
     const rawPlanets = Array.isArray(result == null ? void 0 : result.planets) ? result.planets : [];
+    const dashByPid = /* @__PURE__ */ new Map();
+    for (const dp of dashboardPlanets) {
+      const dpId = Math.round(safeFiniteNumber(dp == null ? void 0 : dp.planet_id, 0) ?? 0);
+      if (dpId > 0) dashByPid.set(dpId, dp);
+    }
     return rawPlanets.map((p, idx) => {
       const slot = Math.max(1, Math.round(safeFiniteNumber(p.slot ?? p.slot_index, idx + 1) ?? idx + 1));
       const pid = Math.round(safeFiniteNumber(p.planet_id, 0) ?? 0);
@@ -16655,6 +18188,7 @@
       const isPlaceholder = Boolean(
         p.is_placeholder ?? String(p.planet_status || "").toLowerCase() === "generic"
       );
+      const dashPlanet = !isPlaceholder && pid > 0 ? dashByPid.get(pid) : void 0;
       const isCentral = Boolean(p.is_central_planet);
       const temp = safeFiniteNumber(p.temperature ?? p.temperature_c, null);
       const fieldsMax = Math.max(0, Math.round(safeFiniteNumber(p.fields_max, 300) ?? 300));
@@ -16776,10 +18310,18 @@
       const lockedSpec = normalizeSpecializationKey(p.locked_specialization);
       const prevSpec = p.previous_specialization && String(p.previous_specialization).trim() ? String(p.previous_specialization).trim().toLowerCase() : null;
       const specChanged = Boolean(p.specialization_changed);
+      const customName = !isPlaceholder && pid > 0 ? String(customPlanetNames[String(pid)] || "").trim() : "";
+      const rawGameName = String(
+        p.game_name || (dashPlanet == null ? void 0 : dashPlanet.game_name) || ""
+      ).trim();
+      const resolvedName = customName || String(p.name || (dashPlanet == null ? void 0 : dashPlanet.name) || (isPlaceholder ? `Preview Slot ${slot}` : coords));
+      const gameName = rawGameName || (!customName ? resolvedName : String((dashPlanet == null ? void 0 : dashPlanet.name) || p.name || coords));
       return {
         slot,
         planetId: pid,
-        name: String(p.name || (isPlaceholder ? `Preview Slot ${slot}` : coords)),
+        name: resolvedName,
+        gameName,
+        hasCustomName: Boolean(customName),
         coords,
         isPlaceholder,
         isCentral,
@@ -16804,14 +18346,16 @@
     });
   }
   const ConfigOptimizerTab = ({ hidden = false }) => {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     const {
       dashboard,
+      setDashboard,
       activePage,
       apiOnline,
       plannerJobsStatus,
       setPlannerJobsStatus,
       apiCommand: apiCommand2,
+      loadDashboard,
       showFeedback
     } = useConsole();
     const [optData, setOptData] = reactExports.useState(null);
@@ -16827,9 +18371,13 @@
     const [researchPage, setResearchPage] = reactExports.useState(1);
     const [researchPageSize, setResearchPageSize] = reactExports.useState(25);
     const [isSubmitting, setIsSubmitting] = reactExports.useState(false);
+    const [editingPlanetId, setEditingPlanetId] = reactExports.useState(null);
+    const [renameDraft, setRenameDraft] = reactExports.useState("");
+    const [renamingPlanetId, setRenamingPlanetId] = reactExports.useState(null);
+    const [renameError, setRenameError] = reactExports.useState(null);
     const fetchOptimizerState = reactExports.useCallback(
       async ({ silent = false } = {}) => {
-        var _a2, _b2, _c2, _d, _e;
+        var _a2, _b2, _c2, _d2, _e;
         try {
           const res = await apiCommand2({
             command: "config_optimizer_get"
@@ -16838,7 +18386,7 @@
             setOptData(res);
             if (!draftDirty) {
               const rawParams = ((_a2 = res.active) == null ? void 0 : _a2.params) || ((_c2 = (_b2 = res.active) == null ? void 0 : _b2.result) == null ? void 0 : _c2.meta_parameters) || res.default_params || null;
-              const persistedSpecs = res.planet_specializations || ((_e = (_d = res.active) == null ? void 0 : _d.params) == null ? void 0 : _e.planet_specializations) || null;
+              const persistedSpecs = res.planet_specializations || ((_e = (_d2 = res.active) == null ? void 0 : _d2.params) == null ? void 0 : _e.planet_specializations) || null;
               if (rawParams || persistedSpecs) {
                 setDraft(draftFromParams(rawParams, persistedSpecs));
               }
@@ -16886,9 +18434,54 @@
       var _a2;
       return (optData == null ? void 0 : optData.reserved_floors) || ((_a2 = optData == null ? void 0 : optData.active) == null ? void 0 : _a2.reserved_floors) || {};
     }, [optData]);
+    const dashboardPlanets = reactExports.useMemo(
+      () => {
+        var _a2;
+        return Array.isArray((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.planets) ? dashboard.state.planets : [];
+      },
+      [(_a = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a.planets]
+    );
+    const customPlanetNames = reactExports.useMemo(() => {
+      const dashMap = dashboard == null ? void 0 : dashboard.custom_planet_names;
+      const optMap = optData == null ? void 0 : optData.custom_planet_names;
+      if (dashMap && typeof dashMap === "object") {
+        return sanitizeCustomNamesMap(dashMap);
+      }
+      if (optMap && typeof optMap === "object") {
+        return sanitizeCustomNamesMap(optMap);
+      }
+      return {};
+    }, [dashboard, optData]);
+    const ownedDashboardPlanets = reactExports.useMemo(() => {
+      return dashboardPlanets.filter((p) => {
+        const pid = Math.round(safeFiniteNumber(p == null ? void 0 : p.planet_id, 0) ?? 0);
+        const ptype = String((p == null ? void 0 : p.planet_type) || "normal").toLowerCase();
+        return pid > 0 && ptype === "normal";
+      }).map((p, idx) => {
+        const pid = Math.round(safeFiniteNumber(p.planet_id, 0) ?? 0);
+        const coords = String(p.coords || `Planet ${pid}`);
+        const customName = customPlanetNames[String(pid)] || "";
+        const rawGameName = String(p.game_name || "").trim();
+        const displayName = customName || String(p.name || coords);
+        const gameName = rawGameName || (!customName ? displayName : String(p.name || coords));
+        return {
+          slot: idx + 1,
+          planetId: pid,
+          name: displayName,
+          gameName,
+          hasCustomName: Boolean(customName),
+          coords
+        };
+      });
+    }, [customPlanetNames, dashboardPlanets]);
     const planetRows = reactExports.useMemo(
-      () => normalizePlanetRows(activeResult, reservedFloorsMap),
-      [activeResult, reservedFloorsMap]
+      () => normalizePlanetRows(
+        activeResult,
+        reservedFloorsMap,
+        customPlanetNames,
+        dashboardPlanets
+      ),
+      [activeResult, customPlanetNames, dashboardPlanets, reservedFloorsMap]
     );
     const planetSortCols = reactExports.useMemo(
       () => ({
@@ -16943,7 +18536,7 @@
           gap: Math.max(0, pln - cur)
         };
       });
-    }, [activeResult, (_a = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a.researches, dashboard == null ? void 0 : dashboard.universe_research_max]);
+    }, [activeResult, (_b = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _b.researches, dashboard == null ? void 0 : dashboard.universe_research_max]);
     const researchSortCols = reactExports.useMemo(
       () => ({
         name: (r) => r.name,
@@ -17106,6 +18699,219 @@
     const onUnlockAllRoles = async () => {
       await persistSpecializations({}, "Unlocked all planet specializations back to Auto.");
     };
+    const startRenamingPlanet = (planetId, currentName) => {
+      setEditingPlanetId(planetId);
+      setRenameDraft(currentName);
+      setRenameError(null);
+    };
+    const cancelRenamingPlanet = () => {
+      setEditingPlanetId(null);
+      setRenameDraft("");
+      setRenameError(null);
+    };
+    const submitPlanetRename = async (planetId, rawName, fallbackGameName) => {
+      var _a2, _b2;
+      if (planetId <= 0) return;
+      const { trimmed, error } = validatePlanetRename(rawName);
+      if (error) {
+        setRenameError(error);
+        return;
+      }
+      setRenamingPlanetId(planetId);
+      setRenameError(null);
+      try {
+        const res = await apiCommand2({
+          command: "rename_planet",
+          planet_id: planetId,
+          name: trimmed
+        });
+        const nextCustomNames = res && res.custom_planet_names && typeof res.custom_planet_names === "object" ? sanitizeCustomNamesMap(res.custom_planet_names) : (() => {
+          const copy = { ...customPlanetNames };
+          if (trimmed) {
+            copy[String(planetId)] = trimmed;
+          } else {
+            delete copy[String(planetId)];
+          }
+          return copy;
+        })();
+        const cleared = Boolean(res == null ? void 0 : res.cleared) || !trimmed;
+        const resolvedGameName = String(
+          (res == null ? void 0 : res.game_name) || ((_a2 = res == null ? void 0 : res.planet) == null ? void 0 : _a2.game_name) || fallbackGameName || ""
+        ).trim();
+        const resolvedDisplayName = String(
+          ((_b2 = res == null ? void 0 : res.planet) == null ? void 0 : _b2.name) || (!cleared && (res == null ? void 0 : res.name) ? res.name : "") || trimmed || resolvedGameName || `Planet ${planetId}`
+        ).trim();
+        setOptData((prev) => {
+          if (!prev) return prev;
+          const patchList = (list) => {
+            if (!Array.isArray(list)) return void 0;
+            return list.map((entry) => {
+              if (Math.round(safeFiniteNumber(entry == null ? void 0 : entry.planet_id, 0) ?? 0) !== planetId) {
+                return entry;
+              }
+              return {
+                ...entry,
+                name: resolvedDisplayName,
+                game_name: resolvedGameName || entry.game_name
+              };
+            });
+          };
+          const nextActive = prev.active ? {
+            ...prev.active,
+            ...prev.active.result ? {
+              result: {
+                ...prev.active.result,
+                planets: patchList(prev.active.result.planets) ?? prev.active.result.planets
+              }
+            } : {},
+            ...Array.isArray(prev.active.planets) ? { planets: patchList(prev.active.planets) } : {}
+          } : prev.active;
+          return {
+            ...prev,
+            custom_planet_names: nextCustomNames,
+            active: nextActive
+          };
+        });
+        const patchDashboardObj = (prevDash) => {
+          var _a3, _b3, _c2;
+          if (!prevDash || typeof prevDash !== "object") return prevDash;
+          const prevPlanets = Array.isArray((_a3 = prevDash.state) == null ? void 0 : _a3.planets) ? prevDash.state.planets : null;
+          const nextPlanets = prevPlanets ? prevPlanets.map((pl) => {
+            if (Math.round(safeFiniteNumber(pl == null ? void 0 : pl.planet_id, 0) ?? 0) !== planetId) {
+              return pl;
+            }
+            return {
+              ...pl,
+              name: resolvedDisplayName,
+              game_name: resolvedGameName || pl.game_name
+            };
+          }) : (_b3 = prevDash.state) == null ? void 0 : _b3.planets;
+          const prevActivePl = (_c2 = prevDash.state) == null ? void 0 : _c2.active_planet;
+          const nextActivePl = prevActivePl && Math.round(safeFiniteNumber(prevActivePl.planet_id, 0) ?? 0) === planetId ? {
+            ...prevActivePl,
+            name: resolvedDisplayName,
+            game_name: resolvedGameName || prevActivePl.game_name
+          } : prevActivePl;
+          return {
+            ...prevDash,
+            custom_planet_names: nextCustomNames,
+            state: prevDash.state ? {
+              ...prevDash.state,
+              planets: nextPlanets,
+              ...prevActivePl ? { active_planet: nextActivePl } : {}
+            } : prevDash.state
+          };
+        };
+        setDashboard((prev) => patchDashboardObj(prev));
+        const gState = globalThis.state;
+        if (gState == null ? void 0 : gState.dashboard) {
+          gState.dashboard = patchDashboardObj(gState.dashboard);
+        }
+        setEditingPlanetId(null);
+        setRenameDraft("");
+        setRenameError(null);
+        showFeedback(
+          String(
+            (res == null ? void 0 : res.message) || (cleared ? `Reset planet name to "${resolvedDisplayName}".` : `Renamed planet to "${resolvedDisplayName}".`)
+          ),
+          "ok"
+        );
+        await Promise.all([
+          fetchOptimizerState({ silent: true }),
+          loadDashboard({ refresh: false, preserveConfig: true, force: true })
+        ]);
+      } catch (err) {
+        const msg = String((err == null ? void 0 : err.message) || "Failed to rename planet.");
+        setRenameError(msg);
+        showFeedback(`Planet rename failed: ${msg}`, feedbackKindForError(err));
+      } finally {
+        setRenamingPlanetId(null);
+      }
+    };
+    const renderInlineRenameEditor = (planetId, coords, gameName) => {
+      const isSavingThis = renamingPlanetId === planetId;
+      return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "div",
+        {
+          className: "ag-co-rename-form",
+          onClick: (e) => e.stopPropagation(),
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "input",
+              {
+                type: "text",
+                id: `co-rename-input-${planetId}`,
+                className: "ag-co-rename-input",
+                "aria-label": `New name for planet ${coords}`,
+                maxLength: 64,
+                value: renameDraft,
+                placeholder: gameName || coords,
+                autoFocus: true,
+                disabled: isSavingThis,
+                onChange: (e) => {
+                  setRenameDraft(e.target.value);
+                  if (renameError) setRenameError(null);
+                },
+                onKeyDown: (e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void submitPlanetRename(planetId, renameDraft, gameName);
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelRenamingPlanet();
+                  }
+                }
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-rename-actions", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-primary btn-sm",
+                  id: `btn-co-rename-save-${planetId}`,
+                  disabled: isSavingThis,
+                  onClick: () => void submitPlanetRename(planetId, renameDraft, gameName),
+                  children: isSavingThis ? "Saving..." : "Save"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `btn-co-rename-reset-${planetId}`,
+                  title: "Clear custom name and restore in-game planet name",
+                  disabled: isSavingThis,
+                  onClick: () => void submitPlanetRename(planetId, "", gameName),
+                  children: "Reset"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: `btn-co-rename-cancel-${planetId}`,
+                  disabled: isSavingThis,
+                  onClick: cancelRenamingPlanet,
+                  children: "Cancel"
+                }
+              )
+            ] }),
+            renameError ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "div",
+              {
+                className: "ag-co-rename-error",
+                id: `co-rename-error-${planetId}`,
+                role: "alert",
+                children: renameError
+              }
+            ) : null
+          ]
+        }
+      );
+    };
     const lockedSpecsCount = Object.keys(draft.planet_specializations).length;
     const summary = (activeResult == null ? void 0 : activeResult.summary) || {};
     const stickyPlanApplied = Boolean(summary.sticky_plan_applied);
@@ -17135,10 +18941,10 @@
     );
     const whFields = safeFiniteNumber(summary.warehouse_fields ?? summary.warehouse_fields_used, null);
     const elapsedMs = safeFiniteNumber(
-      (activeResult == null ? void 0 : activeResult.elapsed_ms) ?? ((_b = activeResult == null ? void 0 : activeResult.search) == null ? void 0 : _b.elapsed_ms) ?? (activeJob == null ? void 0 : activeJob.elapsed_ms),
+      (activeResult == null ? void 0 : activeResult.elapsed_ms) ?? ((_c = activeResult == null ? void 0 : activeResult.search) == null ? void 0 : _c.elapsed_ms) ?? (activeJob == null ? void 0 : activeJob.elapsed_ms),
       null
     );
-    const runTs = ((_c = optData == null ? void 0 : optData.active) == null ? void 0 : _c.updated_ts) ?? (activeResult == null ? void 0 : activeResult.generated_at);
+    const runTs = ((_d = optData == null ? void 0 : optData.active) == null ? void 0 : _d.updated_ts) ?? (activeResult == null ? void 0 : activeResult.generated_at);
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-tab-split", id: "ag-pane-config-optimizer", hidden, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window ag-main-window", id: "ag-co-main-window", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
@@ -17335,18 +19141,38 @@
               const resEntries = Object.entries(row.reservedFloors);
               const currentLock = resolveLockedSpecForRow(row, draft.planet_specializations);
               const isLocked = currentLock !== "auto";
+              const canRename = !row.isPlaceholder && row.planetId > 0;
+              const isEditingName = canRename && editingPlanetId === row.planetId;
               return /* @__PURE__ */ jsxRuntimeExports.jsxs(
                 "tr",
                 {
                   className: `clickable-row${isSel ? " row-selected" : ""}`,
                   onClick: () => setSelectedSlot(row.slot),
                   children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "action-title tabular", children: [
-                        `#${row.slot} ${row.name}`,
-                        row.isCentral ? " ★" : ""
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "ag-co-planet-cell", children: [
+                      isEditingName ? renderInlineRenameEditor(row.planetId, row.coords, row.gameName) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-planet-head", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "action-title tabular", children: [
+                          `#${row.slot} ${row.name}`,
+                          row.isCentral ? " ★" : ""
+                        ] }),
+                        canRename ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "button",
+                          {
+                            type: "button",
+                            className: "btn btn-secondary btn-sm ag-co-rename-trigger",
+                            id: `btn-co-rename-${row.planetId}`,
+                            "data-co-rename-planet": String(row.planetId),
+                            "aria-label": `Rename ${row.name} [${row.coords}]`,
+                            disabled: renamingPlanetId !== null,
+                            onClick: (e) => {
+                              e.stopPropagation();
+                              startRenamingPlanet(row.planetId, row.name);
+                            },
+                            children: "Rename"
+                          }
+                        ) : null
                       ] }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-sub tabular", children: `[${row.coords}]${row.isPlaceholder ? " · PREVIEW" : ""}` })
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-sub tabular", children: `[${row.coords}]${row.isPlaceholder ? " · PREVIEW" : ""}${row.hasCustomName && row.gameName && row.gameName !== row.name ? ` · Game: ${row.gameName}` : ""}` })
                     ] }),
                     /* @__PURE__ */ jsxRuntimeExports.jsxs(
                       "td",
@@ -17427,6 +19253,34 @@
               }
             }
           ),
+          planetRows.length === 0 && ownedDashboardPlanets.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-pre-run-planets", id: "co-owned-planets-rename", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-detail-head tabular", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "Owned Planets — Quick Rename" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-toolbar-meta", children: "Custom names sync immediately across Config Optimizer and the console." })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-co-pre-run-grid", children: ownedDashboardPlanets.map((pl) => {
+              const isEditingName = editingPlanetId === pl.planetId;
+              return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-pre-run-card", children: [
+                isEditingName ? renderInlineRenameEditor(pl.planetId, pl.coords, pl.gameName) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-planet-head", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-title tabular", children: `#${pl.slot} ${pl.name}` }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn btn-secondary btn-sm ag-co-rename-trigger",
+                      id: `btn-co-rename-${pl.planetId}`,
+                      "data-co-rename-planet": String(pl.planetId),
+                      "aria-label": `Rename ${pl.name} [${pl.coords}]`,
+                      disabled: renamingPlanetId !== null,
+                      onClick: () => startRenamingPlanet(pl.planetId, pl.name),
+                      children: "Rename"
+                    }
+                  )
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-sub tabular", children: `[${pl.coords}]${pl.hasCustomName && pl.gameName && pl.gameName !== pl.name ? ` · Game: ${pl.gameName}` : ""}` })
+              ] }, pl.planetId);
+            }) })
+          ] }) : null,
           selectedPlanetDetail ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-detail-strip", id: "co-planet-detail", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-detail-head tabular", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: `Slot #${selectedPlanetDetail.slot} · ${selectedPlanetDetail.name} [${selectedPlanetDetail.coords}]` }),
@@ -18217,6 +20071,104 @@
     }
     return false;
   }
+  function extractResourceTotals(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const obj = raw;
+    const pig_iron = Math.max(0, Math.round(safeFiniteNumber(obj.pig_iron, 0) ?? 0));
+    const metal = Math.max(0, Math.round(safeFiniteNumber(obj.metal, 0) ?? 0));
+    const kryptonite = Math.max(0, Math.round(safeFiniteNumber(obj.kryptonite, 0) ?? 0));
+    const spice = Math.max(0, Math.round(safeFiniteNumber(obj.spice, 0) ?? 0));
+    const total = pig_iron + metal + kryptonite + spice;
+    const nonZeroCount = [pig_iron, metal, kryptonite, spice].filter((v) => v > 0).length;
+    return { pig_iron, metal, kryptonite, spice, total, nonZeroCount };
+  }
+  function isFlightReturning(job) {
+    if (!job) return false;
+    const rec = job;
+    if (Boolean(rec.returning) || Boolean(rec.delivered)) return true;
+    const nameLow = String(job.name || "").toLowerCase();
+    const detLow = String(job.detail || "").toLowerCase();
+    return detLow.includes("returning") || nameLow.includes("↩");
+  }
+  function formatOngoingFlightCargo(job) {
+    if (!job) return null;
+    const rec = job;
+    const nameLow = String(job.name || "").toLowerCase();
+    String(job.detail || "").toLowerCase();
+    const missionLow = String(rec.mission_type || rec.mission || "").toLowerCase();
+    const returning = isFlightReturning(job);
+    const isAttack = missionLow === "attack" || missionLow === "raid" || nameLow.includes("attack") || nameLow.includes("raid");
+    const isRecycle = missionLow === "recycle" || nameLow.includes("recycle");
+    const isTransport = missionLow === "transport" || nameLow.includes("transport");
+    const isDelivered = Boolean(rec.delivered) || returning && isTransport;
+    if (isDelivered) {
+      const delivered = extractResourceTotals(rec.delivered_cargo);
+      if (delivered && delivered.total > 0) {
+        return {
+          tag: "DELIVERED",
+          variant: "delivered",
+          inline: formatResourcesInline(delivered),
+          total: delivered.total,
+          multiRes: delivered.nonZeroCount > 1,
+          isEmpty: false
+        };
+      }
+      return {
+        tag: "DELIVERED",
+        variant: "delivered",
+        inline: "",
+        total: 0,
+        multiRes: false,
+        isEmpty: true
+      };
+    }
+    if (!returning) {
+      const expected = extractResourceTotals(rec.expected_cargo) || (isTransport ? extractResourceTotals(job.cargo) : null);
+      if (expected && expected.total > 0) {
+        return {
+          tag: "EXPECTED",
+          variant: "expected",
+          inline: formatResourcesInline(expected),
+          total: expected.total,
+          multiRes: expected.nonZeroCount > 1,
+          isEmpty: false
+        };
+      }
+    }
+    const actual = extractResourceTotals(job.cargo);
+    const tag = returning && isAttack ? "Loot" : returning && isRecycle ? "Harvest" : "Cargo";
+    const variant = returning && isAttack ? "loot" : returning && isRecycle ? "harvest" : "cargo";
+    if (actual && actual.total > 0) {
+      return {
+        tag,
+        variant,
+        inline: formatResourcesInline(actual),
+        total: actual.total,
+        multiRes: actual.nonZeroCount > 1,
+        isEmpty: false
+      };
+    }
+    if (returning && (isAttack || isRecycle)) {
+      return {
+        tag,
+        variant,
+        inline: "0 (empty)",
+        total: 0,
+        multiRes: false,
+        isEmpty: true
+      };
+    }
+    return null;
+  }
+  function isOngoingFleetFlight(job) {
+    if (!job) return false;
+    const cat = String(job.category || "").toLowerCase();
+    if (cat === "shipyard" || cat === "build_ship" || cat === "ships" || cat === "defense") {
+      return false;
+    }
+    if (cat === "fleet") return true;
+    return isFleetActionKind(cat);
+  }
   function buildClientFallbackFleetGraph(planets, activeQueues, plan, slotRows) {
     var _a, _b;
     const lanes = slotRows.map((row) => ({
@@ -18237,9 +20189,9 @@
       if (cat !== "fleet" && cat !== "shipyard" && !isFleetActionKind(cat)) continue;
       const pid = Math.round(safeFiniteNumber(job.planet_id, ((_a = planets[0]) == null ? void 0 : _a.planet_id) ?? 0) ?? 0);
       const id = `flt_active_${nodes.length}`;
-      const cargoInfo = formatQueueJobCargo(job);
+      const cargoInfo = formatOngoingFlightCargo(job);
       const baseReason = String(job.detail || job.remaining_text || "Live in-flight queue item");
-      const reasonWithCargo = cargoInfo && !cargoInfo.isEmpty ? `${baseReason} · ${cargoInfo.label}: ${cargoInfo.inline}` : baseReason;
+      const reasonWithCargo = cargoInfo ? cargoInfo.inline ? `${baseReason} · ${cargoInfo.tag}: ${cargoInfo.inline}` : `${baseReason} · ${cargoInfo.tag}` : baseReason;
       nodes.push({
         id,
         order_index: nodes.length,
@@ -18307,7 +20259,7 @@
     };
   }
   const FleetPlannerTab = ({ hidden = false }) => {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
     const {
       dashboard,
       setDashboard,
@@ -18372,6 +20324,16 @@
       if (hidden || activePage !== "action-graph") return;
       void fetchFleetPlanner({ silent: true });
     }, [hidden, activePage, fetchFleetPlanner]);
+    const customPlanetNames = reactExports.useMemo(() => {
+      const raw = dashboard == null ? void 0 : dashboard.custom_planet_names;
+      if (!raw || typeof raw !== "object") return {};
+      const out = {};
+      for (const [k, v] of Object.entries(raw)) {
+        const clean = String(v || "").trim();
+        if (clean) out[String(k)] = clean;
+      }
+      return out;
+    }, [dashboard]);
     const slotRows = reactExports.useMemo(() => {
       var _a2, _b2;
       const rawBudgets = fleetData == null ? void 0 : fleetData.slot_budgets;
@@ -18407,7 +20369,9 @@
           return {
             planet_id: pid,
             planet_coords: String(b.planet_coords ?? b.coords ?? (matchedPlanet == null ? void 0 : matchedPlanet.coords) ?? `P${pid}`),
-            planet_name: String(b.planet_name ?? (matchedPlanet == null ? void 0 : matchedPlanet.name) ?? "Colony"),
+            planet_name: String(
+              customPlanetNames[String(pid)] || (matchedPlanet == null ? void 0 : matchedPlanet.name) || b.planet_name || "Colony"
+            ),
             b10_level: Math.round(
               safeFiniteNumber(b.b10_level ?? b.fleet_base_level ?? ((_b3 = matchedPlanet == null ? void 0 : matchedPlanet.buildings) == null ? void 0 : _b3.b10), 0) ?? 0
             ),
@@ -18446,7 +20410,9 @@
             return {
               planet_id: pid,
               planet_coords: String((val == null ? void 0 : val.planet_coords) || (matchedPlanet == null ? void 0 : matchedPlanet.coords) || pidKey),
-              planet_name: String((val == null ? void 0 : val.planet_name) || (matchedPlanet == null ? void 0 : matchedPlanet.name) || "Colony"),
+              planet_name: String(
+                customPlanetNames[String(pid)] || (matchedPlanet == null ? void 0 : matchedPlanet.name) || (val == null ? void 0 : val.planet_name) || "Colony"
+              ),
               b10_level: b10Lvl,
               slots_used: slotsUsed,
               slots_max: slotsMax,
@@ -18466,19 +20432,20 @@
       );
       return normalPlanets.map((p) => {
         var _a3;
+        const pid = Number(p.planet_id || 0);
         const b10 = Math.round(safeFiniteNumber((_a3 = p.buildings) == null ? void 0 : _a3.b10, 0) ?? 0);
         const activeFlights = activeQueues.filter(
-          (q) => Number(q.planet_id) === Number(p.planet_id) && String(q.category || "").toLowerCase() === "fleet"
+          (q) => Number(q.planet_id) === pid && String(q.category || "").toLowerCase() === "fleet"
         ).length;
         const plannedCount = plan.filter(
-          (a) => Number(a.planet_id) === Number(p.planet_id) && isFleetActionKind(a.kind)
+          (a) => Number(a.planet_id) === pid && isFleetActionKind(a.kind)
         ).length;
         const docked = summarizeDockedShips(p.ships);
         const slotsMax = Math.max(1, 1 + b10);
         return {
-          planet_id: Number(p.planet_id || 0),
+          planet_id: pid,
           planet_coords: String(p.coords || "—"),
-          planet_name: String(p.name || "Colony"),
+          planet_name: String(customPlanetNames[String(pid)] || p.name || "Colony"),
           b10_level: b10,
           slots_used: activeFlights,
           slots_max: slotsMax,
@@ -18489,7 +20456,45 @@
           status: activeFlights >= slotsMax ? "FULL" : "OPEN"
         };
       });
-    }, [fleetData == null ? void 0 : fleetData.slot_budgets, dashboard]);
+    }, [fleetData == null ? void 0 : fleetData.slot_budgets, dashboard, customPlanetNames]);
+    const ongoingFlights = reactExports.useMemo(() => {
+      var _a2, _b2;
+      const activeQueues = Array.isArray((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.active_queues) ? dashboard.state.active_queues : [];
+      const planets = Array.isArray((_b2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _b2.planets) ? dashboard.state.planets : [];
+      const planetByPid = /* @__PURE__ */ new Map();
+      const planetByCoords = /* @__PURE__ */ new Map();
+      for (const pl of planets) {
+        const pid = Math.round(safeFiniteNumber(pl == null ? void 0 : pl.planet_id, 0) ?? 0);
+        if (pid > 0) planetByPid.set(pid, pl);
+        const c = String((pl == null ? void 0 : pl.coords) || "").trim();
+        if (c) planetByCoords.set(c, pl);
+      }
+      const nowSec = Math.floor(Date.now() / 1e3);
+      return activeQueues.filter((job) => isOngoingFleetFlight(job)).map((job, idx) => {
+        const pid = Math.round(safeFiniteNumber(job.planet_id, 0) ?? 0);
+        const coords = String(
+          job.origin_coords || job.planet_coords || ""
+        ).trim();
+        const pl = (pid > 0 ? planetByPid.get(pid) : void 0) || (coords ? planetByCoords.get(coords) : void 0);
+        const resolvedPid = pid > 0 ? pid : Math.round(safeFiniteNumber(pl == null ? void 0 : pl.planet_id, 0) ?? 0);
+        const originName = (resolvedPid > 0 ? customPlanetNames[String(resolvedPid)] : "") || String((pl == null ? void 0 : pl.name) || "").trim();
+        const originCoords = coords || String((pl == null ? void 0 : pl.coords) || "").trim();
+        const returning = isFlightReturning(job);
+        const cargoInfo = formatOngoingFlightCargo(job);
+        const finTs = safeFiniteNumber(job.finish_ts, null);
+        const remSec = finTs !== null && finTs > 0 ? Math.max(0, Math.round(finTs - nowSec)) : safeFiniteNumber(job.remaining_seconds, null);
+        const etaText = String(job.remaining_text || "").trim() || (remSec !== null ? remSec > 0 ? fmtHms(remSec) : "Arriving..." : "In Flight");
+        return {
+          key: `flt-ongoing-${idx}-${resolvedPid}-${String(job.name || "")}-${String(finTs ?? "")}`,
+          title: String(job.name || "Active Flight"),
+          detail: String(job.detail || "").trim(),
+          originLabel: originName ? originCoords ? `${originName} [${originCoords}]` : originName : originCoords ? `[${originCoords}]` : "Fleet",
+          returning,
+          cargoInfo,
+          etaText
+        };
+      });
+    }, [customPlanetNames, (_a = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a.active_queues, (_b = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _b.planets]);
     const activeGraph = reactExports.useMemo(() => {
       var _a2, _b2;
       if ((fleetData == null ? void 0 : fleetData.graph) && typeof fleetData.graph === "object" && Array.isArray(fleetData.graph.nodes)) {
@@ -18517,19 +20522,19 @@
     const totalDockedShips = slotRows.reduce((acc, r) => acc + r.docked_ships_total, 0);
     const graphNodes = Array.isArray(activeGraph == null ? void 0 : activeGraph.nodes) ? activeGraph.nodes : [];
     const activeMissionsCount = graphNodes.length;
-    const telemetry = (fleetData == null ? void 0 : fleetData.attack_telemetry) || ((_a = dashboard == null ? void 0 : dashboard.ai_planner_summary) == null ? void 0 : _a.attack_telemetry) || {};
+    const telemetry = (fleetData == null ? void 0 : fleetData.attack_telemetry) || ((_c = dashboard == null ? void 0 : dashboard.ai_planner_summary) == null ? void 0 : _c.attack_telemetry) || {};
     const sparePct = safeFiniteNumber(
       draft.numbers.ai_resource_spare_pct,
       safeFiniteNumber(
-        ((_b = fleetData == null ? void 0 : fleetData.spare_budget) == null ? void 0 : _b.spare_percent) ?? ((_c = fleetData == null ? void 0 : fleetData.spare_budget) == null ? void 0 : _c.ai_resource_spare_pct),
+        ((_d = fleetData == null ? void 0 : fleetData.spare_budget) == null ? void 0 : _d.spare_percent) ?? ((_e = fleetData == null ? void 0 : fleetData.spare_budget) == null ? void 0 : _e.ai_resource_spare_pct),
         10
       ) ?? 10
     ) ?? 10;
     const effMode = normalizeUiPlannerMode(
-      (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_d = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _d.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode)
+      (dashboard == null ? void 0 : dashboard.effective_planner_mode) || ((_f = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _f.planner_mode) || (dashboard == null ? void 0 : dashboard.planner_mode)
     );
     const lootPerHour = safeFiniteNumber(
-      (telemetry == null ? void 0 : telemetry.hourly_loot_spice_eq) ?? ((_e = telemetry == null ? void 0 : telemetry.hourly_loot) == null ? void 0 : _e.spice_eq) ?? (telemetry == null ? void 0 : telemetry.median_loot_spice_eq_per_hour) ?? (telemetry == null ? void 0 : telemetry.median_loot_per_hour) ?? ((_f = telemetry == null ? void 0 : telemetry.median_loot) == null ? void 0 : _f.spice_eq),
+      (telemetry == null ? void 0 : telemetry.hourly_loot_spice_eq) ?? ((_g = telemetry == null ? void 0 : telemetry.hourly_loot) == null ? void 0 : _g.spice_eq) ?? (telemetry == null ? void 0 : telemetry.median_loot_spice_eq_per_hour) ?? (telemetry == null ? void 0 : telemetry.median_loot_per_hour) ?? ((_h = telemetry == null ? void 0 : telemetry.median_loot) == null ? void 0 : _h.spice_eq),
       null
     );
     const medianRtSec = safeFiniteNumber(
@@ -18568,7 +20573,7 @@
       setDraftDirty(true);
       setConfigDirty(true);
     };
-    const liveResearches = ((_g = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _g.researches) && typeof dashboard.state.researches === "object" ? dashboard.state.researches : {};
+    const liveResearches = ((_i = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _i.researches) && typeof dashboard.state.researches === "object" ? dashboard.state.researches : {};
     const handleSimulate = async () => {
       if (isSimulating) return;
       setIsSimulating(true);
@@ -18726,6 +20731,53 @@
             emptyMessage: "No active flights, raids, recyclers, or shipyard builds in the current queue."
           }
         ),
+        ongoingFlights.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-flt-ongoing-box", id: "flt-ongoing-flights", role: "region", "aria-label": "Ongoing fleet flights", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-flt-ongoing-head", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Ongoing Flights" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "sub", children: "Live outbound expectations & transport deliveries" })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-toolbar-meta tabular", children: `${ongoingFlights.length} ${ongoingFlights.length === 1 ? "flight" : "flights"}` })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-flt-ongoing-list", children: ongoingFlights.map((flight) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-flt-ongoing-row", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-flt-ongoing-main", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "span",
+                {
+                  className: `ag-flt-dir-pill tabular ${flight.returning ? "is-returning" : "is-outbound"}`,
+                  children: flight.returning ? "RETURNING" : "OUTBOUND"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "ag-flt-ongoing-title", children: sanitizeMainWindowText(flight.title) }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-cell-sub tabular", children: sanitizeMainWindowText(flight.originLabel) }),
+              flight.detail ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-cell-sub", children: sanitizeMainWindowText(flight.detail) }) : null
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-flt-ongoing-meta tabular", children: [
+              flight.cargoInfo ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "span",
+                {
+                  className: `ag-flt-cargo-line is-${flight.cargoInfo.variant}`,
+                  title: flight.cargoInfo.inline ? `${flight.cargoInfo.tag}: ${flight.cargoInfo.inline}${flight.cargoInfo.total > 0 ? ` (${fmtInt(flight.cargoInfo.total)} total)` : ""}` : flight.cargoInfo.tag,
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "span",
+                      {
+                        className: `ag-flt-cargo-badge is-${flight.cargoInfo.variant}`,
+                        "data-cargo-kind": flight.cargoInfo.variant,
+                        children: flight.cargoInfo.tag
+                      }
+                    ),
+                    flight.cargoInfo.inline ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "ag-flt-cargo-vals", children: [
+                      flight.cargoInfo.inline,
+                      flight.cargoInfo.multiRes ? ` (${fmtCompact(flight.cargoInfo.total)})` : ""
+                    ] }) : null
+                  ]
+                }
+              ) : null,
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "eta-pill tabular", children: flight.etaText })
+            ] })
+          ] }, flight.key)) })
+        ] }) : null,
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar ag-subtable-bar", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Per-Planet Fleet Slot & Docked Budget" }),
@@ -18833,7 +20885,7 @@
         ] }) })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("aside", { className: "hud-window ag-control-panel", id: "ag-flt-control-panel", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "CTL" }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Fleet & Tactical Settings" })
@@ -20460,7 +22512,9 @@
   const BuildingInspector = ({
     etaData,
     selectedRow: selected,
-    bfPct
+    bfPct,
+    mode = "buildings",
+    universeMaxRow = null
   }) => {
     var _a, _b;
     const {
@@ -20470,116 +22524,172 @@
       enqueueManualCommand,
       toggleBlastFurnaceRate
     } = useConsole();
+    const isResearchMode = mode === "research";
+    const ids = reactExports.useMemo(
+      () => isResearchMode ? {
+        aside: "res-inspector",
+        key: "res-insp-key",
+        title: "res-insp-title",
+        subtitle: "res-insp-subtitle",
+        metaBox: "res-insp-meta-box",
+        bfHint: "res-insp-bf-hint",
+        targetSelector: "res-insp-target-selector",
+        horizonsTbody: "res-insp-horizons-tbody",
+        buildBtn: "btn-res-insp-research",
+        pinBtn: "btn-res-insp-pin-queue",
+        demolishBtn: "btn-res-insp-demolish"
+      } : {
+        aside: "bld-inspector",
+        key: "insp-key",
+        title: "insp-title",
+        subtitle: "insp-subtitle",
+        metaBox: "insp-meta-box",
+        bfHint: "insp-bf-hint",
+        targetSelector: "insp-target-selector",
+        horizonsTbody: "insp-horizons-tbody",
+        buildBtn: "btn-insp-build",
+        pinBtn: "btn-insp-pin-queue",
+        demolishBtn: "btn-insp-demolish"
+      },
+      [isResearchMode]
+    );
     const horizons = reactExports.useMemo(
       () => Array.isArray(selected == null ? void 0 : selected.horizons) ? selected.horizons : [],
       [selected]
     );
     const horizonSort = useTableSort(horizons, HORIZON_SORT_COLUMNS);
+    const selectedKeySig = `${(selected == null ? void 0 : selected.key) ?? ""}::${(selected == null ? void 0 : selected.next_level) ?? (selected == null ? void 0 : selected.target_level) ?? ""}`;
+    const [selectedTarget, setSelectedTarget] = reactExports.useState(null);
+    const selectedTargetLvl = selectedTarget && selectedTarget.sig === selectedKeySig ? selectedTarget.level : null;
+    const setSelectedTargetLvl = (lvl) => {
+      setSelectedTarget(lvl === null ? null : { sig: selectedKeySig, level: lvl });
+    };
     if (!selected) {
-      return /* @__PURE__ */ jsxRuntimeExports.jsxs("aside", { className: "inspector-pane", id: "bld-inspector", "aria-label": "Selected level forecast", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inspector-head", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", id: "insp-key", children: etaData ? "—" : "B1" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { id: "insp-title", children: etaData ? "Select a Building or Tech" : "Select a Building or Research" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "action-sub tabular", id: "insp-subtitle", children: etaData ? "Click any row on the left." : "Click any row to inspect L+1 to L+4 arrival estimates" })
-          ] })
-        ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inspector-stats tabular", id: "insp-meta-box", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: etaData ? "No data." : "No item selected." }) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inspector-bf-hint", id: "insp-bf-hint", hidden: true }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
-              SortableTh,
-              {
-                label: "Target",
-                sortKey: "target",
-                activeKey: horizonSort.sortKey,
-                direction: horizonSort.sortDirection,
-                onSort: horizonSort.requestSort
-              }
-            ),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
-              SortableTh,
-              {
-                label: "Cost",
-                sortKey: "cost",
-                activeKey: horizonSort.sortKey,
-                direction: horizonSort.sortDirection,
-                onSort: horizonSort.requestSort
-              }
-            ),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
-              SortableTh,
-              {
-                label: "Build",
-                sortKey: "build",
-                activeKey: horizonSort.sortKey,
-                direction: horizonSort.sortDirection,
-                onSort: horizonSort.requestSort,
-                align: "right"
-              }
-            ),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
-              SortableTh,
-              {
-                label: "Reached",
-                sortKey: "reached",
-                activeKey: horizonSort.sortKey,
-                direction: horizonSort.sortDirection,
-                onSort: horizonSort.requestSort,
-                align: "right"
-              }
-            )
-          ] }) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "insp-horizons-tbody", children: !etaData ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 4, className: "empty-cell", children: "Select a row for multi-level schedule." }) }) : null })
-        ] }) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inspector-actions", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "btn btn-primary btn-sm", id: "btn-insp-build", hidden: true, children: "Queue Next Level Live" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              type: "button",
-              className: "btn btn-secondary btn-sm",
-              id: "btn-insp-pin-queue",
-              hidden: true,
-              children: "+ Pin to Queue (P1)"
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              type: "button",
-              className: "btn btn-secondary btn-sm btn-danger-ghost",
-              id: "btn-insp-demolish",
-              hidden: true,
-              children: "Demolish"
-            }
-          )
-        ] })
-      ] });
+      return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "aside",
+        {
+          className: "inspector-pane",
+          id: ids.aside,
+          "aria-label": isResearchMode ? "Selected research level forecast" : "Selected level forecast",
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inspector-head", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", id: ids.key, children: etaData ? "—" : isResearchMode ? "R1" : "B1" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { id: ids.title, children: isResearchMode ? "Select a Research Technology" : "Select a Building" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "action-sub tabular", id: ids.subtitle, children: etaData ? "Click any row on the left." : isResearchMode ? "Click any research row to inspect L+1 to L+3 arrival estimates" : "Click any row to inspect L+1 to L+4 arrival estimates" })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inspector-stats tabular", id: ids.metaBox, children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: etaData ? "No data." : "No item selected." }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inspector-bf-hint", id: ids.bfHint, hidden: true }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Target",
+                    sortKey: "target",
+                    activeKey: horizonSort.sortKey,
+                    direction: horizonSort.sortDirection,
+                    onSort: horizonSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Cost",
+                    sortKey: "cost",
+                    activeKey: horizonSort.sortKey,
+                    direction: horizonSort.sortDirection,
+                    onSort: horizonSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: isResearchMode ? "Research" : "Build",
+                    sortKey: "build",
+                    activeKey: horizonSort.sortKey,
+                    direction: horizonSort.sortDirection,
+                    onSort: horizonSort.requestSort,
+                    align: "right"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Reached",
+                    sortKey: "reached",
+                    activeKey: horizonSort.sortKey,
+                    direction: horizonSort.sortDirection,
+                    onSort: horizonSort.requestSort,
+                    align: "right"
+                  }
+                )
+              ] }) }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: ids.horizonsTbody, children: !etaData ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 4, className: "empty-cell", children: "Select a row for multi-level schedule." }) }) : null })
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inspector-actions", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "btn btn-primary btn-sm", id: ids.buildBtn, hidden: true, children: isResearchMode ? "Start Next Research Live" : "Queue Next Level Live" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "btn btn-secondary btn-sm", id: ids.pinBtn, hidden: true, children: "+ Pin to Queue (P1)" }),
+              !isResearchMode ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm btn-danger-ghost",
+                  id: ids.demolishBtn,
+                  hidden: true,
+                  children: "Demolish"
+                }
+              ) : null
+            ] })
+          ]
+        }
+      );
     }
     const keyStr = String(selected.key || "");
-    const isResearch = keyStr.startsWith("r");
+    const isResearch = isResearchMode || keyStr.startsWith("r");
     const isTurret = Boolean(selected.is_defense_turret);
     const curLvl = finiteNum(selected.current_level, 0);
     const nextLvl = finiteNum(selected.next_level ?? selected.target_level, null);
     const unmet = Array.isArray(selected.unmet_prerequisites) ? selected.unmet_prerequisites : [];
     const pEcon = (etaData == null ? void 0 : etaData.planet_economy) || {};
     const planetId = (_a = etaData == null ? void 0 : etaData.planet) == null ? void 0 : _a.planet_id;
-    const selBnTag = typeof selected.bottleneck === "string" && selected.bottleneck.trim() ? bottleneckTag(selected.bottleneck) : "";
+    const activeHorizon = selectedTargetLvl !== null ? horizons.find((h) => finiteNum(h.level, null) === selectedTargetLvl) || null : null;
+    const effectiveTargetLvl = activeHorizon !== null ? finiteNum(activeHorizon.level, nextLvl) : nextLvl;
+    const isCustomHorizon = activeHorizon !== null && effectiveTargetLvl !== null && effectiveTargetLvl !== nextLvl;
+    const selBnRaw = isCustomHorizon ? activeHorizon == null ? void 0 : activeHorizon.bottleneck : selected.bottleneck;
+    const selBnTag = typeof selBnRaw === "string" && selBnRaw.trim() ? bottleneckTag(selBnRaw) : "";
+    const displayCost = isCustomHorizon ? activeHorizon == null ? void 0 : activeHorizon.cost : selected.cost;
+    const displayWaitEta = isCustomHorizon ? (activeHorizon == null ? void 0 : activeHorizon.wait_eta) ?? "—" : selected.wait_eta ?? "—";
+    const displayReachEta = isCustomHorizon ? (activeHorizon == null ? void 0 : activeHorizon.reach_eta) ?? "—" : selected.reach_eta ?? "—";
     const metaLines = isTurret ? [
       `Stationed Units: ${fmtInt(curLvl)}`,
       `Unit Cost: ${formatResourcesInline(selected.cost)}`,
       `Combat Stats: ATK ${fmtInt(selected.attack ?? 0)} · SHD ${fmtInt(selected.shield ?? 0)} · Hull ${fmtInt(selected.hull ?? 0)}`
     ] : [
       `Prerequisites: ${unmet.length === 0 ? "Unlocked" : unmet.join(", ")}`,
-      `Next L${selected.next_level ?? "—"} Cost: ${formatResourcesInline(selected.cost)}`,
-      `Resources Ready: ${selected.wait_eta ?? "—"}${selBnTag ? ` (${selBnTag} bottleneck)` : ""}`,
-      `Estimated Level Reached: ${selected.reach_eta ?? "—"}`
+      isCustomHorizon ? `Target L${effectiveTargetLvl ?? "—"} Cost: ${formatResourcesInline(displayCost)}` : `Next L${selected.next_level ?? "—"} Cost: ${formatResourcesInline(displayCost)}`,
+      ...isCustomHorizon ? [
+        `${isResearch ? "Research" : "Build"} Time (L${effectiveTargetLvl}): ${(activeHorizon == null ? void 0 : activeHorizon.build_time_text) ?? "—"}`
+      ] : [],
+      `Resources Ready: ${displayWaitEta}${selBnTag ? ` (${selBnTag} bottleneck)` : ""}`,
+      `Estimated Level Reached: ${displayReachEta}`
     ];
     if (!isResearch && !isTurret && selected.energy_delta) {
       metaLines.push(
         `Energy Impact: ${selected.energy_delta >= 0 ? "+" : ""}${selected.energy_delta} E`
+      );
+    }
+    if (isResearch && universeMaxRow) {
+      const uniMax = Math.max(
+        curLvl,
+        Math.round(finiteNum(universeMaxRow.universe_max_level, curLvl))
+      );
+      const gap = Math.max(0, finiteNum(universeMaxRow.gap_to_max, uniMax - curLvl));
+      const isLeader = uniMax > 0 && curLvl >= uniMax;
+      const holderTxt = universeMaxRow.holder ? `${universeMaxRow.holder}${universeMaxRow.holder_coords ? ` [${universeMaxRow.holder_coords}]` : ""}` : isLeader ? "You (Leader)" : "";
+      metaLines.push(
+        `Universe Max: L${uniMax}${gap > 0 ? ` (-${gap} Lvl)` : isLeader ? " (Leader)" : ""}${holderTxt ? ` · ${holderTxt}` : ""}`
       );
     }
     const bfUsed = finiteNum(pEcon.blast_furnace_pig_used_per_hr, 0);
@@ -20596,7 +22706,8 @@
     }
     const canQueueLive = isTurret ? false : Boolean(isResearch ? selected.can_research_live : selected.can_build_live);
     const unitId = isResearch ? selected.research_id : selected.building_id;
-    const canPinQueue = !isTurret && unitId != null && nextLvl !== null && nextLvl > 0;
+    const pinTargetLvl = effectiveTargetLvl;
+    const canPinQueue = !isTurret && unitId != null && pinTargetLvl !== null && pinTargetLvl > 0;
     const canDemolish = !isResearch && !isTurret && unitId != null && curLvl > 0;
     const handleBuildLive = async () => {
       try {
@@ -20616,11 +22727,14 @@
         showFeedback(res.message || "Queued.", "ok");
         await loadDashboard({ refresh: false, force: true });
       } catch (err) {
-        showFeedback(`Build failed: ${err.message}`, feedbackKindForError(err));
+        showFeedback(
+          `${isResearch ? "Research" : "Build"} failed: ${err.message}`,
+          feedbackKindForError(err)
+        );
       }
     };
     const handlePinToQueue = () => {
-      if (!canPinQueue || nextLvl === null) return;
+      if (!canPinQueue || pinTargetLvl === null) return;
       void enqueueManualCommand({
         kind: isResearch ? "RESEARCH" : "BUILD",
         priority: "P1",
@@ -20628,7 +22742,7 @@
         planet_id: planetId || 0,
         target_id: unitId,
         target_name: selected.name || "",
-        target_level: nextLvl,
+        target_level: pinTargetLvl,
         deduplicate_pending: true
       });
     };
@@ -20648,137 +22762,189 @@
         showFeedback(`Demolish failed: ${err.message}`, feedbackKindForError(err));
       }
     };
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs("aside", { className: "inspector-pane", id: "bld-inspector", "aria-label": "Selected level forecast", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inspector-head", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", id: "insp-key", children: keyStr ? keyStr.toUpperCase() : "UNIT" }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { id: "insp-title", children: selected.name || "Unit" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "action-sub tabular", id: "insp-subtitle", children: isTurret ? `Owned ${fmtInt(curLvl)} · Planetary Defense` : `Current L${curLvl} · Next L${selected.next_level ?? "—"} · Build time ${selected.build_time_text ?? "—"}` })
-        ] })
-      ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inspector-stats tabular", id: "insp-meta-box", children: metaLines.map((line, i) => /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: line }, i)) }),
-      selected.building_id === 2 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", "aria-label": "Blast furnace throttle presets", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub tabular", children: `B2 Throttle (${bfPct}%):` }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "button",
-          {
-            type: "button",
-            className: "btn btn-warning btn-sm",
-            disabled: bfPct === 0,
-            onClick: () => toggleBlastFurnaceRate(0),
-            children: "0%"
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "button",
-          {
-            type: "button",
-            className: "btn btn-secondary btn-sm",
-            disabled: bfPct === 50,
-            onClick: () => toggleBlastFurnaceRate(50),
-            children: "50%"
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "button",
-          {
-            type: "button",
-            className: "btn btn-secondary btn-sm",
-            disabled: bfPct === 100,
-            onClick: () => toggleBlastFurnaceRate(100),
-            children: "100%"
-          }
-        )
-      ] }) : null,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inspector-bf-hint", id: "insp-bf-hint", hidden: !showBfHint, children: bfHintText }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            SortableTh,
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "aside",
+      {
+        className: "inspector-pane",
+        id: ids.aside,
+        "aria-label": isResearchMode ? "Selected research level forecast" : "Selected level forecast",
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inspector-head", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", id: ids.key, children: keyStr ? keyStr.toUpperCase() : "UNIT" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { id: ids.title, children: selected.name || "Unit" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "action-sub tabular", id: ids.subtitle, children: isTurret ? `Owned ${fmtInt(curLvl)} · Planetary Defense` : `Current L${curLvl} · Next L${selected.next_level ?? "—"} · ${isResearch ? "Research" : "Build"} time ${selected.build_time_text ?? "—"}` })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inspector-stats tabular", id: ids.metaBox, children: metaLines.map((line, i) => /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: line }, i)) }),
+          !isTurret && horizons.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "div",
             {
-              label: "Target",
-              sortKey: "target",
-              activeKey: horizonSort.sortKey,
-              direction: horizonSort.sortDirection,
-              onSort: horizonSort.requestSort
+              className: "inline-actions",
+              id: ids.targetSelector,
+              role: "group",
+              "aria-label": "Target level selector",
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub tabular", children: "Target Level:" }),
+                horizons.map((h, idx) => {
+                  const hLvl = finiteNum(h.level, null);
+                  if (hLvl === null) return null;
+                  const isActiveTarget = effectiveTargetLvl === hLvl;
+                  return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: `chip-btn tabular${isActiveTarget ? " active" : ""}`,
+                      "data-target-level": String(hLvl),
+                      onClick: () => setSelectedTargetLvl(hLvl),
+                      children: `L${hLvl}`
+                    },
+                    `tgt-${hLvl}-${idx}`
+                  );
+                })
+              ]
             }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            SortableTh,
-            {
-              label: "Cost",
-              sortKey: "cost",
-              activeKey: horizonSort.sortKey,
-              direction: horizonSort.sortDirection,
-              onSort: horizonSort.requestSort
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            SortableTh,
-            {
-              label: "Build",
-              sortKey: "build",
-              activeKey: horizonSort.sortKey,
-              direction: horizonSort.sortDirection,
-              onSort: horizonSort.requestSort,
-              align: "right"
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            SortableTh,
-            {
-              label: "Reached",
-              sortKey: "reached",
-              activeKey: horizonSort.sortKey,
-              direction: horizonSort.sortDirection,
-              onSort: horizonSort.requestSort,
-              align: "right"
-            }
-          )
-        ] }) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "insp-horizons-tbody", children: horizonSort.sortedRows.map((h, idx) => /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `L${h.level}` }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: formatResourcesInline(h.cost) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: h.build_time_text }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `eta-pill${h.reach_eta === "—" ? " is-blocked" : ""}`, children: h.reach_eta }) })
-        ] }, `hz-${h.level ?? idx}`)) })
-      ] }) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inspector-actions", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "button",
-          {
-            type: "button",
-            className: "btn btn-primary btn-sm",
-            id: "btn-insp-build",
-            hidden: !canQueueLive,
-            onClick: handleBuildLive,
-            children: isResearch ? `Start Research L${selected.next_level}` : `Queue L${selected.next_level} Live`
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "button",
-          {
-            type: "button",
-            className: "btn btn-secondary btn-sm",
-            id: "btn-insp-pin-queue",
-            hidden: !canPinQueue,
-            onClick: handlePinToQueue,
-            children: nextLvl !== null ? `+ Pin L${nextLvl} to Queue (P1)` : "+ Pin to Queue (P1)"
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "button",
-          {
-            type: "button",
-            className: "btn btn-secondary btn-sm btn-danger-ghost",
-            id: "btn-insp-demolish",
-            hidden: !canDemolish,
-            onClick: handleDemolish,
-            children: `Demolish L${curLvl} → L${Math.max(0, curLvl - 1)}`
-          }
-        )
-      ] })
-    ] });
+          ) : null,
+          !isResearch && selected.building_id === 2 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", "aria-label": "Blast furnace throttle presets", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub tabular", children: `B2 Throttle (${bfPct}%):` }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-warning btn-sm",
+                disabled: bfPct === 0,
+                onClick: () => toggleBlastFurnaceRate(0),
+                children: "0%"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-secondary btn-sm",
+                disabled: bfPct === 50,
+                onClick: () => toggleBlastFurnaceRate(50),
+                children: "50%"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-secondary btn-sm",
+                disabled: bfPct === 100,
+                onClick: () => toggleBlastFurnaceRate(100),
+                children: "100%"
+              }
+            )
+          ] }) : null,
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inspector-bf-hint", id: ids.bfHint, hidden: !showBfHint, children: bfHintText }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Target",
+                  sortKey: "target",
+                  activeKey: horizonSort.sortKey,
+                  direction: horizonSort.sortDirection,
+                  onSort: horizonSort.requestSort
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Cost",
+                  sortKey: "cost",
+                  activeKey: horizonSort.sortKey,
+                  direction: horizonSort.sortDirection,
+                  onSort: horizonSort.requestSort
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: isResearch ? "Research" : "Build",
+                  sortKey: "build",
+                  activeKey: horizonSort.sortKey,
+                  direction: horizonSort.sortDirection,
+                  onSort: horizonSort.requestSort,
+                  align: "right"
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                SortableTh,
+                {
+                  label: "Reached",
+                  sortKey: "reached",
+                  activeKey: horizonSort.sortKey,
+                  direction: horizonSort.sortDirection,
+                  onSort: horizonSort.requestSort,
+                  align: "right"
+                }
+              )
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: ids.horizonsTbody, children: horizonSort.sortedRows.map((h, idx) => {
+              const hLvl = finiteNum(h.level, null);
+              const isSelectedHz = hLvl !== null && effectiveTargetLvl === hLvl;
+              return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "tr",
+                {
+                  className: `clickable-row${isSelectedHz ? " row-selected" : ""}`,
+                  onClick: () => {
+                    if (hLvl !== null) {
+                      setSelectedTargetLvl(hLvl);
+                    }
+                  },
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `L${h.level}` }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: formatResourcesInline(h.cost) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: h.build_time_text }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `eta-pill${h.reach_eta === "—" ? " is-blocked" : ""}`, children: h.reach_eta }) })
+                  ]
+                },
+                `hz-${h.level ?? idx}`
+              );
+            }) })
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inspector-actions", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-primary btn-sm",
+                id: ids.buildBtn,
+                hidden: !canQueueLive,
+                onClick: handleBuildLive,
+                children: isResearch ? `Start Research L${selected.next_level}` : `Queue L${selected.next_level} Live`
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-secondary btn-sm",
+                id: ids.pinBtn,
+                hidden: !canPinQueue,
+                onClick: handlePinToQueue,
+                children: pinTargetLvl !== null ? `+ Pin L${pinTargetLvl} to Queue (P1)` : "+ Pin to Queue (P1)"
+              }
+            ),
+            !isResearch ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                className: "btn btn-secondary btn-sm btn-danger-ghost",
+                id: ids.demolishBtn,
+                hidden: !canDemolish,
+                onClick: handleDemolish,
+                children: `Demolish L${curLvl} → L${Math.max(0, curLvl - 1)}`
+              }
+            ) : null
+          ] })
+        ]
+      }
+    );
   };
   const BUILDING_CATEGORY_TABS = [
     { id: "all", bcat: "buildings", label: "All 21" },
@@ -20787,10 +22953,9 @@
     { id: "infra", bcat: "infra", label: "Infra" },
     { id: "storage", bcat: "storage", label: "Storage" },
     { id: "special", bcat: "special", label: "Special" },
-    { id: "defense", bcat: "defense", label: "Defense" },
-    { id: "research", bcat: "research", label: "Research r1–15" },
-    { id: "universe_research", bcat: "universe_research", label: "Universe Max Research" }
+    { id: "defense", bcat: "defense", label: "Defense" }
   ];
+  const VALID_BUILDING_CATEGORIES = new Set(BUILDING_CATEGORY_TABS.map((t) => t.id));
   const BuildingsView = () => {
     const {
       dashboard,
@@ -20808,7 +22973,6 @@
       toggleBlastFurnaceRate,
       enqueueManualCommand
     } = useConsole();
-    const [syncingUniverseMax, setSyncingUniverseMax] = reactExports.useState(false);
     const etaData = reactExports.useMemo(() => {
       var _a;
       if (buildingsEtaData && activePlanet && ((_a = buildingsEtaData.planet) == null ? void 0 : _a.planet_id) === activePlanet.planet_id) {
@@ -20823,14 +22987,13 @@
       return (dashboard == null ? void 0 : dashboard.combat) || null;
     }, [activePlanet, combatData, dashboard == null ? void 0 : dashboard.combat]);
     const rawCategory = uiPrefs.bldCategory || "all";
-    const bldCategory = rawCategory === "buildings" ? "all" : rawCategory;
-    const isUniverseResearchTab = bldCategory === "universe_research";
-    const isResearchTab = bldCategory === "research";
+    const normalizedCategory = rawCategory === "buildings" ? "all" : rawCategory;
+    const bldCategory = VALID_BUILDING_CATEGORIES.has(normalizedCategory) ? normalizedCategory : "all";
     const isDefenseTab = bldCategory === "defense";
     const p = (etaData == null ? void 0 : etaData.planet) || {};
     const econ = (etaData == null ? void 0 : etaData.planet_economy) || {};
     const bldDiv = finiteNum(p.building_time_divisor, 1);
-    const planetMetaText = etaData ? `[${p.coords || "--"}] · Dev L${finiteNum(p.dev_center_level, 0)} · Lab L${finiteNum(p.research_lab_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${bldDiv}` : "[--] · Dev L0 · Lab L0 · x1";
+    const planetMetaText = etaData ? `[${p.coords || "--"}] · Dev L${finiteNum(p.dev_center_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${bldDiv}` : "[--] · Dev L0 · Micro L0 · Div x1";
     const econBfPct = finiteNum(econ.blast_furnace_pct, null);
     const bfPct = econBfPct !== null ? clampPct$1(Math.round(econBfPct)) : getSelectedBlastFurnacePct(dashboard, selectedPlanetId, buildingsEtaData);
     const defenseRows = reactExports.useMemo(() => {
@@ -20862,9 +23025,6 @@
     }, [cmbData, etaData]);
     const visibleRows = reactExports.useMemo(() => {
       if (!etaData) return [];
-      if (isResearchTab) {
-        return Array.isArray(etaData.researches) ? etaData.researches : [];
-      }
       if (isDefenseTab) {
         return defenseRows;
       }
@@ -20873,12 +23033,11 @@
         return allBlds;
       }
       return allBlds.filter((b) => (b == null ? void 0 : b.category) === bldCategory);
-    }, [bldCategory, defenseRows, etaData, isDefenseTab, isResearchTab]);
+    }, [bldCategory, defenseRows, etaData, isDefenseTab]);
     const allInspectableRows = reactExports.useMemo(() => {
       if (!etaData) return [];
       return [
         ...Array.isArray(etaData.buildings) ? etaData.buildings : [],
-        ...Array.isArray(etaData.researches) ? etaData.researches : [],
         ...defenseRows.filter((d) => d.is_defense_turret)
       ];
     }, [defenseRows, etaData]);
@@ -20889,10 +23048,6 @@
       if (hit) return hit;
       return visibleRows[0] || allInspectableRows[0] || null;
     }, [allInspectableRows, etaData, selectedUnitKey, visibleRows]);
-    const universeMaxRows = reactExports.useMemo(
-      () => Array.isArray(dashboard == null ? void 0 : dashboard.universe_research_max) ? dashboard.universe_research_max : [],
-      [dashboard == null ? void 0 : dashboard.universe_research_max]
-    );
     const unitSortCols = reactExports.useMemo(
       () => ({
         unit: (row) => String(row.name || row.key || ""),
@@ -20921,56 +23076,7 @@
       }),
       []
     );
-    const uniMaxSortCols = reactExports.useMemo(
-      () => ({
-        research: (r) => String(r.name || r.slug || r.key || ""),
-        ownLevel: {
-          accessor: (r) => Math.max(0, Math.round(finiteNum(r.own_level, 0))),
-          defaultDirection: "desc"
-        },
-        uniMax: {
-          accessor: (r) => {
-            const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
-            return Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
-          },
-          defaultDirection: "desc"
-        },
-        gap: {
-          accessor: (r) => {
-            const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
-            const uni = Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
-            return Math.max(0, finiteNum(r.gap_to_max, uni - own));
-          },
-          defaultDirection: "desc"
-        },
-        spiedMax: {
-          accessor: (r) => Math.max(0, Math.round(finiteNum(r.spied_max_level, 0))),
-          defaultDirection: "desc"
-        },
-        holder: (r) => {
-          const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
-          const uni = Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
-          if (r.holder) {
-            return `${r.holder}${r.holder_coords ? ` [${r.holder_coords}]` : ""}`;
-          }
-          return uni > 0 && own >= uni ? "You" : null;
-        },
-        catalogCap: {
-          accessor: (r) => {
-            const cap = finiteNum(r.catalog_max_level, null);
-            return cap !== null && cap > 0 ? cap : null;
-          },
-          defaultDirection: "desc"
-        },
-        updated: {
-          accessor: (r) => timestampSortKey(r.updated_ts),
-          defaultDirection: "desc"
-        }
-      }),
-      []
-    );
     const unitSort = useTableSort(visibleRows, unitSortCols);
-    const uniMaxSort = useTableSort(universeMaxRows, uniMaxSortCols);
     const handleSyncEconomy = reactExports.useCallback(async () => {
       try {
         await apiCommand2({ command: "navigate", action: "internalEconomy", return_home: true });
@@ -20981,38 +23087,16 @@
         showFeedback(`Sync failed: ${err.message}`, feedbackKindForError(err));
       }
     }, [apiCommand2, loadDashboard, refreshBuildingsEtaForSelectedPlanet, showFeedback]);
-    const handleRefreshUniverseResearch = reactExports.useCallback(async () => {
-      setSyncingUniverseMax(true);
-      try {
-        showFeedback("Refreshing Universe Max Research levels...", "ok");
-        const res = await apiCommand2({ command: "universe_research_max", sync: true });
-        showFeedback(
-          res.message || "Universe Max Research table refreshed and saved to SQLite.",
-          "ok"
-        );
-        await loadDashboard({ refresh: false, force: true });
-      } catch (err) {
-        showFeedback(`Universe research sync failed: ${err.message}`, feedbackKindForError(err));
-      } finally {
-        setSyncingUniverseMax(false);
-      }
-    }, [apiCommand2, loadDashboard, showFeedback]);
     const handleRowLiveBuild = reactExports.useCallback(
-      async (ev, row, rowIsRes) => {
+      async (ev, row) => {
         ev.stopPropagation();
-        const cmd = rowIsRes ? {
-          command: "research",
-          research_id: row.research_id,
-          planet_id: p.planet_id,
-          dry_run: false
-        } : {
-          command: "build",
-          building_id: row.building_id,
-          planet_id: p.planet_id,
-          dry_run: false
-        };
         try {
-          const res = await apiCommand2(cmd);
+          const res = await apiCommand2({
+            command: "build",
+            building_id: row.building_id,
+            planet_id: p.planet_id,
+            dry_run: false
+          });
           showFeedback(res.message || "Queued.", "ok");
           await loadDashboard({ refresh: false, force: true });
         } catch (err) {
@@ -21022,13 +23106,13 @@
       [apiCommand2, loadDashboard, p.planet_id, showFeedback]
     );
     const handleRowPinQueue = reactExports.useCallback(
-      (ev, row, rowIsRes) => {
+      (ev, row) => {
         ev.stopPropagation();
-        const unitId = rowIsRes ? row.research_id : row.building_id;
+        const unitId = row.building_id;
         const nextLvl = finiteNum(row.next_level ?? row.target_level, null);
         if (unitId == null || nextLvl === null || nextLvl <= 0) return;
         void enqueueManualCommand({
-          kind: rowIsRes ? "RESEARCH" : "BUILD",
+          kind: "BUILD",
           priority: "P1",
           position: "top",
           planet_id: p.planet_id || 0,
@@ -21071,7 +23155,7 @@
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "BLD" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Buildings & Research — Level Reach Estimates" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Buildings — Level Reach Estimates" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "bld-planet-meta", children: planetMetaText })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-toolbar", children: [
@@ -21150,7 +23234,7 @@
               ] })
             ] })
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "split-workspace", hidden: isUniverseResearchTab, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "split-workspace", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "bld-table", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -21241,10 +23325,9 @@
                 const bnTag = typeof row.bottleneck === "string" && row.bottleneck.trim() ? bottleneckTag(row.bottleneck) : "";
                 const reachEtaText = row.reach_eta ?? "—";
                 const rowWaitH = finiteNum(row.wait_hours, 0);
-                const rowIsRes = rowKey.startsWith("r") || isResearchTab;
                 const isTurret = Boolean(row.is_defense_turret);
-                const canExec = isTurret ? false : Boolean(rowIsRes ? row.can_research_live : row.can_build_live);
-                const unitId = rowIsRes ? row.research_id : row.building_id;
+                const canExec = isTurret ? false : Boolean(row.can_build_live);
+                const unitId = row.building_id;
                 const nextLvl = finiteNum(row.next_level ?? row.target_level, null);
                 const safeName = String(row.name || "Unit").replace(/>/g, "→");
                 return /* @__PURE__ */ jsxRuntimeExports.jsxs(
@@ -21287,8 +23370,8 @@
                           {
                             type: "button",
                             className: "btn btn-primary btn-sm",
-                            onClick: (ev) => handleRowLiveBuild(ev, row, rowIsRes),
-                            children: rowIsRes ? "Research" : "Build"
+                            onClick: (ev) => handleRowLiveBuild(ev, row),
+                            children: "Build"
                           }
                         ) : Array.isArray(row.unmet_prerequisites) && row.unmet_prerequisites.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: "Locked" }) : null,
                         !isTurret && unitId != null && nextLvl !== null && nextLvl > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -21298,11 +23381,11 @@
                             className: "btn btn-secondary btn-sm",
                             title: `Add ${safeName} L${nextLvl} to P1 priority queue`,
                             "aria-label": `Add ${safeName} L${nextLvl} to P1 priority queue`,
-                            onClick: (ev) => handleRowPinQueue(ev, row, rowIsRes),
+                            onClick: (ev) => handleRowPinQueue(ev, row),
                             children: "+ Queue"
                           }
                         ) : null,
-                        !rowIsRes && !isTurret && row.building_id === 6 && curLvl > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        !isTurret && row.building_id === 6 && curLvl > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx(
                           "button",
                           {
                             type: "button",
@@ -21319,140 +23402,611 @@
                 );
               }) })
             ] }) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(BuildingInspector, { etaData, selectedRow, bfPct })
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "intel-pane", id: "bld-pane-universe-research", hidden: !isUniverseResearchTab, children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "UNV" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Universe Max Research Levels" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", children: `${universeMaxRows.length} TECHNOLOGIES` })
-              ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              BuildingInspector,
+              {
+                etaData,
+                selectedRow,
+                bfPct,
+                mode: "buildings"
+              }
+            )
+          ] })
+        ] })
+      }
+    );
+  };
+  const VALID_RESEARCH_TABS = /* @__PURE__ */ new Set([
+    "all",
+    "unlocked",
+    "locked",
+    "universe_research"
+  ]);
+  const ResearchView = ({ hidden }) => {
+    const {
+      dashboard,
+      activePage,
+      selectedPlanetId,
+      activePlanet,
+      showFeedback,
+      apiCommand: apiCommand2,
+      loadDashboard,
+      uiPrefs,
+      setUiPref,
+      buildingsEtaData,
+      refreshBuildingsEtaForSelectedPlanet,
+      enqueueManualCommand
+    } = useConsole();
+    const [refreshingEta, setRefreshingEta] = reactExports.useState(false);
+    const [syncingUniverseMax, setSyncingUniverseMax] = reactExports.useState(false);
+    const isHidden = hidden !== void 0 ? hidden : activePage !== "research";
+    const etaData = reactExports.useMemo(() => {
+      var _a;
+      if (buildingsEtaData && activePlanet && ((_a = buildingsEtaData.planet) == null ? void 0 : _a.planet_id) === activePlanet.planet_id) {
+        return buildingsEtaData;
+      }
+      return (dashboard == null ? void 0 : dashboard.buildings_eta) || null;
+    }, [activePlanet, buildingsEtaData, dashboard == null ? void 0 : dashboard.buildings_eta]);
+    const prefsAny = uiPrefs;
+    const setPrefAny = setUiPref;
+    const rawTab = String(prefsAny.resTab || "all");
+    const resTab = VALID_RESEARCH_TABS.has(rawTab) ? rawTab : "all";
+    const isUniverseResearchTab = resTab === "universe_research";
+    const p = (etaData == null ? void 0 : etaData.planet) || {};
+    const econ = (etaData == null ? void 0 : etaData.planet_economy) || {};
+    const resDiv = finiteNum(p.research_time_divisor, null) ?? finiteNum(p.building_time_divisor, 1);
+    const planetMetaText = etaData ? `[${p.coords || "--"}] · Lab L${finiteNum(p.research_lab_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${resDiv}` : "[--] · Lab L0 · Micro L0 · Div x1";
+    const econBfPct = finiteNum(econ.blast_furnace_pct, null);
+    const bfPct = econBfPct !== null ? clampPct$1(Math.round(econBfPct)) : getSelectedBlastFurnacePct(dashboard, selectedPlanetId, buildingsEtaData);
+    const allResearches = reactExports.useMemo(
+      () => Array.isArray(etaData == null ? void 0 : etaData.researches) ? etaData.researches : [],
+      [etaData == null ? void 0 : etaData.researches]
+    );
+    const visibleRows = reactExports.useMemo(() => {
+      if (!etaData) return [];
+      if (resTab === "unlocked") {
+        return allResearches.filter(
+          (r) => !Array.isArray(r.unmet_prerequisites) || r.unmet_prerequisites.length === 0
+        );
+      }
+      if (resTab === "locked") {
+        return allResearches.filter(
+          (r) => Array.isArray(r.unmet_prerequisites) && r.unmet_prerequisites.length > 0
+        );
+      }
+      return allResearches;
+    }, [allResearches, etaData, resTab]);
+    const selectedResearchKey = String(prefsAny.selectedResearchKey || "r1");
+    const selectedRow = reactExports.useMemo(() => {
+      if (!etaData) return null;
+      const hit = allResearches.find((r) => (r == null ? void 0 : r.key) === selectedResearchKey);
+      if (hit) return hit;
+      return visibleRows[0] || allResearches[0] || null;
+    }, [allResearches, etaData, selectedResearchKey, visibleRows]);
+    const universeMaxRows = reactExports.useMemo(
+      () => Array.isArray(dashboard == null ? void 0 : dashboard.universe_research_max) ? dashboard.universe_research_max : [],
+      [dashboard == null ? void 0 : dashboard.universe_research_max]
+    );
+    const selectedUniverseMaxRow = reactExports.useMemo(() => {
+      if (!selectedRow) return null;
+      const selKey = String(selectedRow.key || "").trim();
+      const selId = finiteNum(selectedRow.research_id, null);
+      return universeMaxRows.find((r) => {
+        const rk = String(r.key || r.research_key || "").trim();
+        if (selKey && rk === selKey) return true;
+        if (selId !== null && finiteNum(r.research_id, null) === selId) return true;
+        return false;
+      }) || null;
+    }, [selectedRow, universeMaxRows]);
+    const researchTabs = reactExports.useMemo(
+      () => [
+        {
+          id: "all",
+          label: `All ${allResearches.length > 0 ? allResearches.length : 15}`
+        },
+        { id: "unlocked", label: "Unlocked" },
+        { id: "locked", label: "Locked" },
+        { id: "universe_research", label: "Universe Max Research" }
+      ],
+      [allResearches.length]
+    );
+    const researchSortCols = reactExports.useMemo(
+      () => ({
+        unit: (row) => String(row.name || row.key || ""),
+        level: {
+          accessor: (row) => finiteNum(row.current_level, 0),
+          defaultDirection: "desc"
+        },
+        next: {
+          accessor: (row) => finiteNum(row.next_level ?? row.target_level, null),
+          defaultDirection: "desc"
+        },
+        missing: (row) => finiteNum(row.missing_total, null) ?? resourcesTotal(row.missing) ?? 0,
+        buildTime: (row) => finiteNum(row.build_seconds ?? row.build_time_seconds, null) ?? durationToSeconds(row.build_time_text),
+        resReady: (row) => {
+          if (row.wait_eta === "—") return null;
+          const wh = finiteNum(row.wait_hours, null);
+          if (wh !== null) return wh * 3600;
+          return durationToSeconds(row.wait_eta);
+        },
+        reached: (row) => {
+          if (row.reach_eta === "—") return null;
+          const rh = finiteNum(row.reach_hours ?? row.total_hours, null);
+          if (rh !== null) return rh * 3600;
+          return durationToSeconds(row.reach_eta);
+        }
+      }),
+      []
+    );
+    const uniMaxSortCols = reactExports.useMemo(
+      () => ({
+        research: (r) => String(r.name || r.slug || r.key || ""),
+        ownLevel: {
+          accessor: (r) => Math.max(0, Math.round(finiteNum(r.own_level, 0))),
+          defaultDirection: "desc"
+        },
+        uniMax: {
+          accessor: (r) => {
+            const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+            return Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
+          },
+          defaultDirection: "desc"
+        },
+        gap: {
+          accessor: (r) => {
+            const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+            const uni = Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
+            return Math.max(0, finiteNum(r.gap_to_max, uni - own));
+          },
+          defaultDirection: "desc"
+        },
+        spiedMax: {
+          accessor: (r) => Math.max(0, Math.round(finiteNum(r.spied_max_level, 0))),
+          defaultDirection: "desc"
+        },
+        holder: (r) => {
+          const own = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+          const uni = Math.max(own, Math.round(finiteNum(r.universe_max_level, own)));
+          if (r.holder) {
+            return `${r.holder}${r.holder_coords ? ` [${r.holder_coords}]` : ""}`;
+          }
+          return uni > 0 && own >= uni ? "You" : null;
+        },
+        catalogCap: {
+          accessor: (r) => {
+            const cap = finiteNum(r.catalog_max_level, null);
+            return cap !== null && cap > 0 ? cap : null;
+          },
+          defaultDirection: "desc"
+        },
+        updated: {
+          accessor: (r) => timestampSortKey(r.updated_ts),
+          defaultDirection: "desc"
+        }
+      }),
+      []
+    );
+    const researchSort = useTableSort(visibleRows, researchSortCols);
+    const uniMaxSort = useTableSort(universeMaxRows, uniMaxSortCols);
+    const handleRefreshEta = reactExports.useCallback(async () => {
+      setRefreshingEta(true);
+      try {
+        await refreshBuildingsEtaForSelectedPlanet(true);
+        showFeedback("Refreshed research reach estimates.", "ok");
+      } catch (err) {
+        showFeedback(`Research refresh failed: ${err.message}`, feedbackKindForError(err));
+      } finally {
+        setRefreshingEta(false);
+      }
+    }, [refreshBuildingsEtaForSelectedPlanet, showFeedback]);
+    const handleRefreshUniverseResearch = reactExports.useCallback(async () => {
+      setSyncingUniverseMax(true);
+      try {
+        showFeedback("Refreshing Universe Max Research levels...", "ok");
+        const res = await apiCommand2({ command: "universe_research_max", sync: true });
+        showFeedback(
+          res.message || "Universe Max Research table refreshed and saved to SQLite.",
+          "ok"
+        );
+        await loadDashboard({ refresh: false, force: true });
+      } catch (err) {
+        showFeedback(`Universe research sync failed: ${err.message}`, feedbackKindForError(err));
+      } finally {
+        setSyncingUniverseMax(false);
+      }
+    }, [apiCommand2, loadDashboard, showFeedback]);
+    const handleRowLiveResearch = reactExports.useCallback(
+      async (ev, row) => {
+        ev.stopPropagation();
+        try {
+          const res = await apiCommand2({
+            command: "research",
+            research_id: row.research_id,
+            planet_id: p.planet_id,
+            dry_run: false
+          });
+          showFeedback(res.message || "Research queued.", "ok");
+          await loadDashboard({ refresh: false, force: true });
+        } catch (err) {
+          showFeedback(`Research failed: ${err.message}`, feedbackKindForError(err));
+        }
+      },
+      [apiCommand2, loadDashboard, p.planet_id, showFeedback]
+    );
+    const handleRowPinQueue = reactExports.useCallback(
+      (ev, row) => {
+        ev.stopPropagation();
+        const unitId = row.research_id;
+        const nextLvl = finiteNum(row.next_level ?? row.target_level, null);
+        if (unitId == null || nextLvl === null || nextLvl <= 0) return;
+        void enqueueManualCommand({
+          kind: "RESEARCH",
+          priority: "P1",
+          position: "top",
+          planet_id: p.planet_id || 0,
+          target_id: unitId,
+          target_name: row.name || "",
+          target_level: nextLvl,
+          deduplicate_pending: true
+        });
+      },
+      [enqueueManualCommand, p.planet_id]
+    );
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(
+      "section",
+      {
+        id: "view-research",
+        className: "page-view",
+        "aria-label": "Research and reach ETAs",
+        hidden: isHidden,
+        children: /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window page-fill", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "RES" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Research — Level Reach Estimates" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "res-planet-meta", children: planetMetaText })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-toolbar", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "div",
+                {
+                  className: "tab-group",
+                  id: "res-category-filters",
+                  role: "group",
+                  "aria-label": "Research view filters",
+                  children: researchTabs.map((tab) => {
+                    const isActive = resTab === tab.id;
+                    return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        type: "button",
+                        className: `chip-btn${isActive ? " active" : ""}`,
+                        "data-res-tab": tab.id,
+                        "data-bcat": tab.id === "universe_research" ? "universe_research" : void 0,
+                        onClick: () => setPrefAny("resTab", tab.id),
+                        children: tab.label
+                      },
+                      tab.id
+                    );
+                  })
+                }
+              ),
               /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inline-actions", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
                 "button",
                 {
                   type: "button",
                   className: "btn btn-secondary btn-sm",
-                  id: "btn-bld-refresh-universe-research",
-                  disabled: syncingUniverseMax,
-                  onClick: handleRefreshUniverseResearch,
-                  children: syncingUniverseMax ? "Syncing..." : "Refresh Max Research"
+                  id: "btn-res-refresh-eta",
+                  title: "Recompute research reach ETAs for active colony",
+                  disabled: refreshingEta,
+                  onClick: handleRefreshEta,
+                  children: refreshingEta ? "Refreshing..." : "Refresh ETAs"
                 }
               ) })
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "bld-universe-research-table", children: [
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "split-workspace", hidden: isUniverseResearchTab, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "res-table", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   SortableTh,
                   {
-                    label: "Research",
-                    sortKey: "research",
-                    activeKey: uniMaxSort.sortKey,
-                    direction: uniMaxSort.sortDirection,
-                    onSort: uniMaxSort.requestSort
+                    label: "Technology",
+                    sortKey: "unit",
+                    activeKey: researchSort.sortKey,
+                    direction: researchSort.sortDirection,
+                    onSort: researchSort.requestSort
                   }
                 ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   SortableTh,
                   {
-                    label: "Your Level",
-                    sortKey: "ownLevel",
-                    activeKey: uniMaxSort.sortKey,
-                    direction: uniMaxSort.sortDirection,
-                    onSort: uniMaxSort.requestSort,
+                    label: "Lvl",
+                    sortKey: "level",
+                    activeKey: researchSort.sortKey,
+                    direction: researchSort.sortDirection,
+                    onSort: researchSort.requestSort,
                     align: "right"
                   }
                 ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   SortableTh,
                   {
-                    label: "Universe Max",
-                    sortKey: "uniMax",
-                    activeKey: uniMaxSort.sortKey,
-                    direction: uniMaxSort.sortDirection,
-                    onSort: uniMaxSort.requestSort,
+                    label: "Next",
+                    sortKey: "next",
+                    activeKey: researchSort.sortKey,
+                    direction: researchSort.sortDirection,
+                    onSort: researchSort.requestSort,
                     align: "right"
                   }
                 ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   SortableTh,
                   {
-                    label: "Delta / Gap",
-                    sortKey: "gap",
-                    activeKey: uniMaxSort.sortKey,
-                    direction: uniMaxSort.sortDirection,
-                    onSort: uniMaxSort.requestSort,
+                    label: "Missing Resources",
+                    sortKey: "missing",
+                    activeKey: researchSort.sortKey,
+                    direction: researchSort.sortDirection,
+                    onSort: researchSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Research Time",
+                    sortKey: "buildTime",
+                    activeKey: researchSort.sortKey,
+                    direction: researchSort.sortDirection,
+                    onSort: researchSort.requestSort,
                     align: "right"
                   }
                 ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   SortableTh,
                   {
-                    label: "Spied Max",
-                    sortKey: "spiedMax",
-                    activeKey: uniMaxSort.sortKey,
-                    direction: uniMaxSort.sortDirection,
-                    onSort: uniMaxSort.requestSort,
+                    label: "Res Ready",
+                    sortKey: "resReady",
+                    activeKey: researchSort.sortKey,
+                    direction: researchSort.sortDirection,
+                    onSort: researchSort.requestSort,
                     align: "right"
                   }
                 ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   SortableTh,
                   {
-                    label: "Record Holder",
-                    sortKey: "holder",
-                    activeKey: uniMaxSort.sortKey,
-                    direction: uniMaxSort.sortDirection,
-                    onSort: uniMaxSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Catalog Cap",
-                    sortKey: "catalogCap",
-                    activeKey: uniMaxSort.sortKey,
-                    direction: uniMaxSort.sortDirection,
-                    onSort: uniMaxSort.requestSort,
+                    label: "Level Reached",
+                    sortKey: "reached",
+                    activeKey: researchSort.sortKey,
+                    direction: researchSort.sortDirection,
+                    onSort: researchSort.requestSort,
                     align: "right"
                   }
                 ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Updated",
-                    sortKey: "updated",
-                    activeKey: uniMaxSort.sortKey,
-                    direction: uniMaxSort.sortDirection,
-                    onSort: uniMaxSort.requestSort,
-                    align: "right"
-                  }
-                )
+                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Control" })
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "bld-universe-research-tbody", children: uniMaxSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "Click Refresh Max Research to compute and persist universe research records." }) }) : uniMaxSort.sortedRows.map((r, idx) => {
-                const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
-                const uniMax = Math.max(ownLvl, Math.round(finiteNum(r.universe_max_level, ownLvl)));
-                const spiedMax = Math.max(0, Math.round(finiteNum(r.spied_max_level, 0)));
-                const catCap = finiteNum(r.catalog_max_level, null);
-                const gap = Math.max(0, finiteNum(r.gap_to_max, uniMax - ownLvl));
-                const isLeader = uniMax > 0 && ownLvl >= uniMax;
-                const holderStr = r.holder ? `${r.holder}${r.holder_coords ? ` [${r.holder_coords}]` : ""}` : isLeader ? "You" : "—";
-                return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "action-title", children: [
-                    r.name || r.slug || "Research",
-                    r.key ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub tabular", children: ` (${r.key})` }) : null
-                  ] }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `L${ownLvl}` }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `eta-pill${isLeader ? "" : gap > 0 ? " is-wait" : ""}`, children: `L${uniMax}` }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: isLeader ? "Leader (0)" : gap > 0 ? `-${gap} Lvl` : "0" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `L${spiedMax}` }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: holderStr }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: catCap !== null && catCap > 0 ? `L${Math.round(catCap)}` : "—" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtShortDateTime(r.updated_ts) })
-                ] }, r.key || r.slug || idx);
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "res-eta-tbody", children: !etaData ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "Waiting for research catalog..." }) }) : researchSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No research technologies in selected filter." }) }) : researchSort.sortedRows.map((row, idx) => {
+                const rowKey = row.key != null ? String(row.key).trim() : "";
+                const isSelected = Boolean(selectedRow && selectedRow.key === row.key);
+                const curLvl = finiteNum(row.current_level, 0);
+                const missTotal = finiteNum(row.missing_total, 0);
+                const waitEtaText = row.wait_eta ?? "—";
+                const bnTag = typeof row.bottleneck === "string" && row.bottleneck.trim() ? bottleneckTag(row.bottleneck) : "";
+                const reachEtaText = row.reach_eta ?? "—";
+                const rowWaitH = finiteNum(row.wait_hours, 0);
+                const canExec = Boolean(row.can_research_live);
+                const unitId = row.research_id;
+                const nextLvl = finiteNum(row.next_level ?? row.target_level, null);
+                const safeName = String(row.name || "Research").replace(/>/g, "→");
+                return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                  "tr",
+                  {
+                    className: `clickable-row${isSelected ? " row-selected" : ""}`,
+                    onClick: () => {
+                      if (rowKey) {
+                        setPrefAny("selectedResearchKey", rowKey);
+                      }
+                    },
+                    children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "action-title", children: [
+                        row.name || "Research",
+                        rowKey ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub tabular", children: ` (${rowKey})` }) : null,
+                        row.queued_count > 0 || row.active ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "rate-chip", children: row.active ? "ACTIVE" : `Q x${row.queued_count}` }) : null
+                      ] }) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: String(curLvl) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `L${row.next_level ?? row.target_level ?? "—"}` }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: missTotal === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "status-word", children: "Affordable" }) : formatResourcesInline(row.missing) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: row.build_time_text ?? "—" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: bnTag ? `${waitEtaText} (${bnTag})` : waitEtaText }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "span",
+                        {
+                          className: `eta-pill${reachEtaText === "—" ? " is-blocked" : rowWaitH > 0 ? " is-wait" : ""}`,
+                          children: reachEtaText
+                        }
+                      ) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row-actions-wrap", children: [
+                        canExec ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "button",
+                          {
+                            type: "button",
+                            className: "btn btn-primary btn-sm",
+                            onClick: (ev) => handleRowLiveResearch(ev, row),
+                            children: "Research"
+                          }
+                        ) : Array.isArray(row.unmet_prerequisites) && row.unmet_prerequisites.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: "Locked" }) : null,
+                        unitId != null && nextLvl !== null && nextLvl > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "button",
+                          {
+                            type: "button",
+                            className: "btn btn-secondary btn-sm",
+                            title: `Add ${safeName} L${nextLvl} to P1 priority queue`,
+                            "aria-label": `Add ${safeName} L${nextLvl} to P1 priority queue`,
+                            onClick: (ev) => handleRowPinQueue(ev, row),
+                            children: "+ Queue"
+                          }
+                        ) : null
+                      ] }) })
+                    ]
+                  },
+                  rowKey || `research-${idx}`
+                );
               }) })
-            ] }) })
-          ] })
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              BuildingInspector,
+              {
+                etaData,
+                selectedRow,
+                bfPct,
+                mode: "research",
+                universeMaxRow: selectedUniverseMaxRow
+              }
+            )
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "div",
+            {
+              className: "intel-pane",
+              id: "res-pane-universe-research",
+              hidden: !isUniverseResearchTab,
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "UNV" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Universe Max Research Levels" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", children: `${universeMaxRows.length} TECHNOLOGIES` })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inline-actions", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn btn-secondary btn-sm",
+                      id: "btn-res-refresh-universe-research",
+                      disabled: syncingUniverseMax,
+                      onClick: handleRefreshUniverseResearch,
+                      children: syncingUniverseMax ? "Syncing..." : "Refresh Max Research"
+                    }
+                  ) })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "res-universe-research-table", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Research",
+                        sortKey: "research",
+                        activeKey: uniMaxSort.sortKey,
+                        direction: uniMaxSort.sortDirection,
+                        onSort: uniMaxSort.requestSort
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Your Level",
+                        sortKey: "ownLevel",
+                        activeKey: uniMaxSort.sortKey,
+                        direction: uniMaxSort.sortDirection,
+                        onSort: uniMaxSort.requestSort,
+                        align: "right"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Universe Max",
+                        sortKey: "uniMax",
+                        activeKey: uniMaxSort.sortKey,
+                        direction: uniMaxSort.sortDirection,
+                        onSort: uniMaxSort.requestSort,
+                        align: "right"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Delta / Gap",
+                        sortKey: "gap",
+                        activeKey: uniMaxSort.sortKey,
+                        direction: uniMaxSort.sortDirection,
+                        onSort: uniMaxSort.requestSort,
+                        align: "right"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Spied Max",
+                        sortKey: "spiedMax",
+                        activeKey: uniMaxSort.sortKey,
+                        direction: uniMaxSort.sortDirection,
+                        onSort: uniMaxSort.requestSort,
+                        align: "right"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Record Holder",
+                        sortKey: "holder",
+                        activeKey: uniMaxSort.sortKey,
+                        direction: uniMaxSort.sortDirection,
+                        onSort: uniMaxSort.requestSort
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Catalog Cap",
+                        sortKey: "catalogCap",
+                        activeKey: uniMaxSort.sortKey,
+                        direction: uniMaxSort.sortDirection,
+                        onSort: uniMaxSort.requestSort,
+                        align: "right"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      SortableTh,
+                      {
+                        label: "Updated",
+                        sortKey: "updated",
+                        activeKey: uniMaxSort.sortKey,
+                        direction: uniMaxSort.sortDirection,
+                        onSort: uniMaxSort.requestSort,
+                        align: "right"
+                      }
+                    )
+                  ] }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "res-universe-research-tbody", children: uniMaxSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "Click Refresh Max Research to compute and persist universe research records." }) }) : uniMaxSort.sortedRows.map((r, idx) => {
+                    const ownLvl = Math.max(0, Math.round(finiteNum(r.own_level, 0)));
+                    const uniMax = Math.max(
+                      ownLvl,
+                      Math.round(finiteNum(r.universe_max_level, ownLvl))
+                    );
+                    const spiedMax = Math.max(0, Math.round(finiteNum(r.spied_max_level, 0)));
+                    const catCap = finiteNum(r.catalog_max_level, null);
+                    const gap = Math.max(0, finiteNum(r.gap_to_max, uniMax - ownLvl));
+                    const isLeader = uniMax > 0 && ownLvl >= uniMax;
+                    const holderStr = r.holder ? `${r.holder}${r.holder_coords ? ` [${r.holder_coords}]` : ""}` : isLeader ? "You" : "—";
+                    return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "action-title", children: [
+                        r.name || r.slug || "Research",
+                        r.key ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub tabular", children: ` (${r.key})` }) : null
+                      ] }) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `L${ownLvl}` }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `eta-pill${isLeader ? "" : gap > 0 ? " is-wait" : ""}`, children: `L${uniMax}` }) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: isLeader ? "Leader (0)" : gap > 0 ? `-${gap} Lvl` : "0" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `L${spiedMax}` }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: holderStr }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: catCap !== null && catCap > 0 ? `L${Math.round(catCap)}` : "—" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtShortDateTime(r.updated_ts) })
+                    ] }, r.key || r.slug || idx);
+                  }) })
+                ] }) })
+              ]
+            }
+          )
         ] })
       }
     );
@@ -22034,7 +24588,7 @@
       showFeedback("Refreshing live Shipyard offers from Chrome...", "ok");
       const ok = await refreshCombatForSelectedPlanet({ refresh: true });
       if (ok) {
-        showFeedback("Shipyard & Combat state refreshed.", "ok");
+        showFeedback("Fleet Build & Shipyard state refreshed.", "ok");
       }
     };
     const handleBuildShip = async (ship) => {
@@ -22090,7 +24644,7 @@
       {
         id: "view-combat",
         className: "page-view",
-        "aria-label": "Combat simulator and fleet overview",
+        "aria-label": "Fleet Build — shipyard, defense construction, escape flight, and 1:1 combat simulator",
         hidden: isHidden,
         children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "combat-top-cards", children: [
@@ -22110,7 +24664,7 @@
               /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", id: "cmb-cargo-val", children: `Cargo ${fmtInt(cargoCap)} · Weapons Fac L${(cmb == null ? void 0 : cmb.weapons_factory_level) ?? 0}` })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "kpi-card", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Combat Navigation" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Fleet Build Navigation" }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "combat-jumps", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   "button",
@@ -22169,10 +24723,10 @@
             /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "FLT" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Stationed Fleet, Defenses & Escape Flight" })
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "SHP" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Fleet Build — Shipyard, Defenses & Escape Flight" })
                 ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "tablist", "aria-label": "Fleet subtabs", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "tablist", "aria-label": "Fleet Build subtabs", children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx(
                     "button",
                     {
@@ -22454,6 +25008,953 @@
               /* @__PURE__ */ jsxRuntimeExports.jsx(EscapeFlightPane, { hidden: subTab !== "escape", cmb })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsx(CombatSimulator, { cmb })
+          ] })
+        ]
+      }
+    );
+  };
+  const NON_FLIGHT_CATEGORIES = /* @__PURE__ */ new Set([
+    "building",
+    "research",
+    "shipyard",
+    "defense",
+    "defence"
+  ]);
+  const FLIGHT_MISSION_CATEGORIES = /* @__PURE__ */ new Set([
+    "ATTACK",
+    "RAID",
+    "RECYCLE",
+    "TRANSPORT",
+    "SPY",
+    "SPIONAGE",
+    "COLONIZE",
+    "ESCAPE",
+    "ESCAPE_FLIGHT",
+    "SAVE",
+    "FLEET_SAVE",
+    "STATION",
+    "TRANSFER",
+    "EVENT",
+    "PARTICLE",
+    "FLEET_FLIGHT"
+  ]);
+  const SHIPYARD_DETAIL_PREFIXES = [
+    "shipyard",
+    "weapons factory",
+    "defense",
+    "defence",
+    "in construction",
+    "researching",
+    "constructing"
+  ];
+  const COORD_REGEX = /(\d{1,2})\s*:\s*(\d{1,3})\s*:\s*(\d{1,2})/;
+  const SHIP_NAME_BY_TOKEN = (() => {
+    const map = {};
+    for (const item of MQ_SHIPS_CATALOG) {
+      map[item.key.toLowerCase()] = item.name;
+      map[String(item.id)] = item.name;
+      map[item.name.toLowerCase()] = item.name;
+      map[item.name.toLowerCase().replace(/[^a-z0-9]+/g, "_")] = item.name;
+    }
+    return map;
+  })();
+  function normalizeCoordKey(raw) {
+    const s = String(raw || "").trim();
+    if (!s) return "";
+    const m = COORD_REGEX.exec(s);
+    if (!m) return "";
+    return `${Number(m[1])}:${Number(m[2])}:${Number(m[3])}`;
+  }
+  function extractCoordsFromText(raw) {
+    const s = String(raw || "").trim();
+    if (!s) return "";
+    const m = COORD_REGEX.exec(s);
+    if (!m) return "";
+    const g = m[1].padStart(2, "0");
+    const sys = m[2].padStart(3, "0");
+    const pos = m[3].padStart(2, "0");
+    return `${g}:${sys}:${pos}`;
+  }
+  function extractCustomPlanetNames(dashboard) {
+    var _a;
+    const merged = {};
+    const stateMap = (_a = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a.custom_planet_names;
+    const topMap = dashboard == null ? void 0 : dashboard.custom_planet_names;
+    for (const src of [stateMap, topMap]) {
+      if (src && typeof src === "object") {
+        for (const [k, v] of Object.entries(src)) {
+          const cleaned = String(v ?? "").trim();
+          if (cleaned) {
+            merged[String(k)] = cleaned;
+          }
+        }
+      }
+    }
+    return merged;
+  }
+  function resolvePlanetDisplayName(planet, customNames) {
+    const pidKey = String(planet.planet_id);
+    const custom = customNames[pidKey];
+    if (custom && custom.trim()) return custom.trim();
+    const rawName = String(planet.name || "").trim();
+    if (rawName) return rawName;
+    return `Colony ${planet.planet_id}`;
+  }
+  function buildPlanetLookup(planets, customNames) {
+    const byId = /* @__PURE__ */ new Map();
+    const byNormCoords = /* @__PURE__ */ new Map();
+    const ordered = [];
+    if (!Array.isArray(planets)) {
+      return { byId, byNormCoords, ordered };
+    }
+    for (const planet of planets) {
+      if (!planet || typeof planet !== "object") continue;
+      const pid = Number(planet.planet_id);
+      const displayName = resolvePlanetDisplayName(planet, customNames);
+      const rawCoords = String(planet.coords || "").trim();
+      const normCoords = normalizeCoordKey(rawCoords);
+      const entry = {
+        planet,
+        displayName,
+        rawCoords,
+        normCoords
+      };
+      ordered.push(entry);
+      if (Number.isFinite(pid) && pid > 0) {
+        byId.set(pid, entry);
+      }
+      if (normCoords) {
+        byNormCoords.set(normCoords, entry);
+      }
+    }
+    return { byId, byNormCoords, ordered };
+  }
+  function normalizeResourceBundle(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const src = raw;
+    const pig_iron = Math.max(0, Math.round(finiteNum(src.pig_iron, 0)));
+    const metal = Math.max(0, Math.round(finiteNum(src.metal, 0)));
+    const kryptonite = Math.max(0, Math.round(finiteNum(src.kryptonite, 0)));
+    const spice = Math.max(0, Math.round(finiteNum(src.spice, 0)));
+    const total = pig_iron + metal + kryptonite + spice;
+    const nonZeroCount = [pig_iron, metal, kryptonite, spice].filter((v) => v > 0).length;
+    return {
+      bundle: { pig_iron, metal, kryptonite, spice },
+      total,
+      nonZeroCount
+    };
+  }
+  function matchMissionToken(raw) {
+    const s = String(raw || "").trim();
+    if (!s) return null;
+    if (/\b(attack|raid|hostile)\b/i.test(s)) return "ATTACK";
+    if (/\b(recycle|recycler|harvest|debris)\b/i.test(s)) return "RECYCLE";
+    if (/\b(spionage|espionage|spy)\b/i.test(s)) return "SPY";
+    if (/\b(escape|fleetsave|fleet[\s_-]?save|save)\b/i.test(s)) return "ESCAPE";
+    if (/\bcoloniz\w*\b/i.test(s)) return "COLONIZE";
+    if (/\b(station|deploy)\b/i.test(s)) return "STATION";
+    if (/\btransfer\b/i.test(s)) return "TRANSFER";
+    if (/\btransport\b/i.test(s)) return "TRANSPORT";
+    return null;
+  }
+  function isOngoingFlightJob(job) {
+    if (!job || typeof job !== "object") return false;
+    const catLow = String(job.category || "").trim().toLowerCase();
+    if (NON_FLIGHT_CATEGORIES.has(catLow)) return false;
+    const detailLow = String(job.detail || "").trim().toLowerCase();
+    const catUp = catLow.toUpperCase();
+    if (catLow === "fleet") {
+      for (const prefix of SHIPYARD_DETAIL_PREFIXES) {
+        if (detailLow.startsWith(prefix)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (FLIGHT_MISSION_CATEGORIES.has(catUp)) {
+      return true;
+    }
+    if (!catLow) {
+      if (matchMissionToken(job.mission) || matchMissionToken(job.kind) || detailLow.startsWith("outbound") || detailLow.startsWith("returning")) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function classifyFlightMission(job) {
+    const fromMission = matchMissionToken(job.mission);
+    if (fromMission) return fromMission;
+    const fromKind = matchMissionToken(job.kind);
+    if (fromKind) return fromKind;
+    const catRaw = String(job.category || "").trim();
+    if (catRaw && catRaw.toLowerCase() !== "fleet") {
+      const fromCat = matchMissionToken(catRaw);
+      if (fromCat) return fromCat;
+    }
+    const titleCandidates = [String(job.name || ""), String(job.label || "")].filter(Boolean);
+    for (const title of titleCandidates) {
+      const prefix = title.split(/→|->|↩|←|<-/)[0] || "";
+      const fromPrefix = matchMissionToken(prefix);
+      if (fromPrefix) return fromPrefix;
+    }
+    for (const title of titleCandidates) {
+      const fromTitle = matchMissionToken(title);
+      if (fromTitle) return fromTitle;
+    }
+    const detailPrefix = String(job.detail || "").split("·")[0] || "";
+    const fromDetail = matchMissionToken(detailPrefix);
+    if (fromDetail) return fromDetail;
+    return "OTHER";
+  }
+  function classifyFlightDirection(job) {
+    if (job.is_returning === true || job.returning === true) return "returning";
+    if (job.is_returning === false || job.returning === false) {
+      const dir = String(job.direction || "").trim().toLowerCase();
+      if (dir === "returning" || dir === "return" || dir === "inbound") return "returning";
+      return "outbound";
+    }
+    const dirStr = String(job.direction || "").trim().toLowerCase();
+    if (dirStr === "returning" || dirStr === "return" || dirStr === "inbound" || dirStr === "back") {
+      return "returning";
+    }
+    if (dirStr === "outbound" || dirStr === "outgoing") {
+      return "outbound";
+    }
+    if (job.delivered === true) return "returning";
+    const detailLow = String(job.detail || "").toLowerCase();
+    if (detailLow.includes("returning") || detailLow.includes("return flight") || detailLow.includes("↩")) {
+      return "returning";
+    }
+    const title = `${String(job.name || "")} ${String(job.label || "")}`;
+    if (title.includes("↩") || title.includes("←") || title.includes("<-") || /\breturning\b/i.test(title)) {
+      return "returning";
+    }
+    return "outbound";
+  }
+  function missionMeta(mission) {
+    switch (mission) {
+      case "ATTACK":
+        return { filter: "attack", label: "Attack", badgeClass: "outcome-badge is-loss" };
+      case "RECYCLE":
+        return { filter: "recycle", label: "Recycle", badgeClass: "outcome-badge is-win" };
+      case "TRANSPORT":
+        return { filter: "transport", label: "Transport", badgeClass: "outcome-badge is-pending" };
+      case "SPY":
+        return { filter: "spy", label: "Spy", badgeClass: "outcome-badge is-draw" };
+      case "COLONIZE":
+        return { filter: "other", label: "Colonize", badgeClass: "grade-badge grade-aplus" };
+      case "ESCAPE":
+        return { filter: "other", label: "Escape", badgeClass: "outcome-badge is-draw" };
+      case "STATION":
+        return { filter: "other", label: "Station", badgeClass: "outcome-badge" };
+      case "TRANSFER":
+        return { filter: "other", label: "Transfer", badgeClass: "outcome-badge" };
+      default:
+        return { filter: "other", label: "Fleet", badgeClass: "outcome-badge" };
+    }
+  }
+  function formatShipComposition(ships, detail) {
+    if (typeof ships === "string" && ships.trim()) {
+      return ships.trim();
+    }
+    if (ships && typeof ships === "object" && !Array.isArray(ships)) {
+      const parts = [];
+      for (const [k, v] of Object.entries(ships)) {
+        const qty = Math.round(finiteNum(v, 0));
+        if (qty <= 0) continue;
+        const keyLow = String(k).trim().toLowerCase();
+        const pretty = SHIP_NAME_BY_TOKEN[keyLow] || SHIP_NAME_BY_TOKEN[keyLow.replace(/[^a-z0-9]+/g, "_")] || String(k).replace(/_/g, " ");
+        parts.push(`${fmtInt(qty)} ${pretty}`);
+      }
+      if (parts.length > 0) {
+        return parts.join(", ");
+      }
+    }
+    const rawDetail = String(detail || "").trim();
+    if (!rawDetail) return "";
+    const stripped = rawDetail.replace(/^(?:outbound|returning)\s*(?:·|-|\|)?\s*/i, "").trim();
+    return stripped;
+  }
+  function resolveFlightCargo(job, mission, direction) {
+    const expectedNorm = normalizeResourceBundle(job.expected_cargo);
+    const deliveredNorm = normalizeResourceBundle(job.delivered_cargo);
+    const cargoNorm = normalizeResourceBundle(job.cargo);
+    if (job.delivered === true || direction === "returning" && mission === "TRANSPORT") {
+      if (deliveredNorm && deliveredNorm.total > 0) {
+        return {
+          kind: "DELIVERED",
+          bundle: deliveredNorm.bundle,
+          total: deliveredNorm.total,
+          inline: formatResourcesInline(deliveredNorm.bundle),
+          multiRes: deliveredNorm.nonZeroCount > 1,
+          isEmpty: false
+        };
+      }
+      return {
+        kind: "DELIVERED",
+        bundle: null,
+        total: 0,
+        inline: "",
+        multiRes: false,
+        isEmpty: false
+      };
+    }
+    if (direction === "outbound" && (mission === "ATTACK" || mission === "RECYCLE" || mission === "TRANSPORT")) {
+      if (expectedNorm && expectedNorm.total > 0) {
+        return {
+          kind: "EXPECTED",
+          bundle: expectedNorm.bundle,
+          total: expectedNorm.total,
+          inline: formatResourcesInline(expectedNorm.bundle),
+          multiRes: expectedNorm.nonZeroCount > 1,
+          isEmpty: false
+        };
+      }
+      if (mission === "TRANSPORT" && cargoNorm && cargoNorm.total > 0) {
+        return {
+          kind: "EXPECTED",
+          bundle: cargoNorm.bundle,
+          total: cargoNorm.total,
+          inline: formatResourcesInline(cargoNorm.bundle),
+          multiRes: cargoNorm.nonZeroCount > 1,
+          isEmpty: false
+        };
+      }
+      if (cargoNorm && cargoNorm.total > 0) {
+        return {
+          kind: "CARGO",
+          bundle: cargoNorm.bundle,
+          total: cargoNorm.total,
+          inline: formatResourcesInline(cargoNorm.bundle),
+          multiRes: cargoNorm.nonZeroCount > 1,
+          isEmpty: false
+        };
+      }
+      return null;
+    }
+    if (direction === "returning" && (mission === "ATTACK" || mission === "RECYCLE")) {
+      const kind = mission === "ATTACK" ? "LOOT" : "HARVEST";
+      if (cargoNorm && cargoNorm.total > 0) {
+        return {
+          kind,
+          bundle: cargoNorm.bundle,
+          total: cargoNorm.total,
+          inline: formatResourcesInline(cargoNorm.bundle),
+          multiRes: cargoNorm.nonZeroCount > 1,
+          isEmpty: false
+        };
+      }
+      if (job.cargo != null && typeof job.cargo === "object") {
+        return {
+          kind,
+          bundle: { pig_iron: 0, metal: 0, kryptonite: 0, spice: 0 },
+          total: 0,
+          inline: "0 (empty)",
+          multiRes: false,
+          isEmpty: true
+        };
+      }
+      return null;
+    }
+    if (direction === "outbound" && expectedNorm && expectedNorm.total > 0) {
+      return {
+        kind: "EXPECTED",
+        bundle: expectedNorm.bundle,
+        total: expectedNorm.total,
+        inline: formatResourcesInline(expectedNorm.bundle),
+        multiRes: expectedNorm.nonZeroCount > 1,
+        isEmpty: false
+      };
+    }
+    if (cargoNorm && cargoNorm.total > 0) {
+      return {
+        kind: "CARGO",
+        bundle: cargoNorm.bundle,
+        total: cargoNorm.total,
+        inline: formatResourcesInline(cargoNorm.bundle),
+        multiRes: cargoNorm.nonZeroCount > 1,
+        isEmpty: false
+      };
+    }
+    return null;
+  }
+  function parseTargetFromTitle(title) {
+    const trimmed = String(title || "").trim();
+    if (!trimmed) return { name: "", coords: "" };
+    const arrowParts = trimmed.split(/→|->|↩|←|<-/);
+    const tail = arrowParts.length > 1 ? arrowParts.slice(1).join(" ").trim() : "";
+    const searchIn = tail || trimmed;
+    const coords = extractCoordsFromText(searchIn);
+    let name = tail;
+    if (name && coords) {
+      name = name.replace(COORD_REGEX, "").replace(/[()[\]]+/g, " ").replace(/\s+/g, " ").replace(/^[\s·\-:]+|[\s·\-:]+$/g, "").trim();
+    } else if (!tail && coords) {
+      name = "";
+    }
+    return { name, coords };
+  }
+  function parseFlightRow(job, index, lookup, nowEpochSec) {
+    const mission = classifyFlightMission(job);
+    const direction = classifyFlightDirection(job);
+    const meta = missionMeta(mission);
+    const rawOriginCoords = String(job.origin_coords || job.planet_coords || "").trim();
+    const originNorm = normalizeCoordKey(rawOriginCoords);
+    const jobPid = finiteNum(job.planet_id, null);
+    const originEntry = (jobPid !== null && jobPid > 0 ? lookup.byId.get(Math.trunc(jobPid)) : void 0) || (originNorm ? lookup.byNormCoords.get(originNorm) : void 0) || null;
+    const originCoords = (originEntry == null ? void 0 : originEntry.rawCoords) || extractCoordsFromText(rawOriginCoords) || rawOriginCoords;
+    const originNormCoords = (originEntry == null ? void 0 : originEntry.normCoords) || originNorm;
+    const originName = (originEntry == null ? void 0 : originEntry.displayName) || String(job.origin_name || "").trim() || (originCoords ? originCoords : "—");
+    const originPlanetId = originEntry ? originEntry.planet.planet_id : jobPid !== null && jobPid > 0 ? Math.trunc(jobPid) : null;
+    const originIsOwn = Boolean(originEntry);
+    const titleSrc = String(job.name || job.label || "").trim();
+    const parsedFromTitle = parseTargetFromTitle(titleSrc);
+    const explicitTargetCoords = String(
+      job.target_coords || job.dest_coords || job.destination_coords || ""
+    ).trim();
+    const targetCoordsRaw = explicitTargetCoords || parsedFromTitle.coords;
+    const targetNorm = normalizeCoordKey(targetCoordsRaw);
+    const targetEntry = targetNorm ? lookup.byNormCoords.get(targetNorm) || null : null;
+    const targetCoords = (targetEntry == null ? void 0 : targetEntry.rawCoords) || extractCoordsFromText(targetCoordsRaw) || targetCoordsRaw;
+    const targetNormCoords = (targetEntry == null ? void 0 : targetEntry.normCoords) || targetNorm;
+    const explicitTargetName = String(job.target_name || job.dest_name || "").trim();
+    const targetName = (targetEntry == null ? void 0 : targetEntry.displayName) || explicitTargetName || parsedFromTitle.name || (targetCoords ? targetCoords : "—");
+    const targetPlanetId = targetEntry ? targetEntry.planet.planet_id : null;
+    const targetIsOwn = Boolean(targetEntry);
+    const shipsText = formatShipComposition(job.ships, job.detail);
+    const explicitLabel = String(job.label || "").trim();
+    const fallbackTitle = cleanQueueJobTitle(job);
+    const labelText = explicitLabel || (shipsText ? "" : fallbackTitle);
+    const cargo = resolveFlightCargo(job, mission, direction);
+    const finTsRaw = finiteNum(job.finish_ts, null);
+    const finishTs = finTsRaw !== null && finTsRaw > 0 ? finTsRaw : null;
+    const remFromField = finiteNum(job.remaining_seconds, null);
+    let remainingSec = null;
+    let countdownText = String(job.remaining_text || "").trim() || "In flight";
+    let finishClockText = "In progress";
+    if (finishTs !== null) {
+      remainingSec = Math.max(0, Math.round(finishTs - nowEpochSec));
+      countdownText = remainingSec > 0 ? fmtHms(remainingSec) : "Finishing...";
+      finishClockText = fmtClockTime(finishTs, nowEpochSec);
+    } else if (remFromField !== null) {
+      remainingSec = Math.max(0, Math.round(remFromField));
+      countdownText = remainingSec > 0 ? fmtHms(remainingSec) : "Finishing...";
+    }
+    const stableId = `flt-${mission}-${direction}-${originNormCoords || "x"}-${targetNormCoords || "x"}-${finishTs ?? remFromField ?? index}-${index}`;
+    return {
+      id: stableId,
+      mission,
+      missionFilter: meta.filter,
+      missionLabel: meta.label,
+      missionBadgeClass: meta.badgeClass,
+      direction,
+      originName,
+      originCoords,
+      originNormCoords,
+      originPlanetId,
+      originIsOwn,
+      targetName,
+      targetCoords,
+      targetNormCoords,
+      targetPlanetId,
+      targetIsOwn,
+      shipsText,
+      labelText,
+      cargo,
+      finishTs,
+      remainingSec,
+      countdownText,
+      finishClockText,
+      raw: job
+    };
+  }
+  function flightMatchesPlanetFilter(row, selectedPlanetId, lookup) {
+    if (row.originPlanetId === selectedPlanetId || row.targetPlanetId === selectedPlanetId) {
+      return true;
+    }
+    const entry = lookup.byId.get(selectedPlanetId);
+    if (!entry || !entry.normCoords) return false;
+    return Boolean(row.originNormCoords) && row.originNormCoords === entry.normCoords || Boolean(row.targetNormCoords) && row.targetNormCoords === entry.normCoords;
+  }
+  function summarizeFlights(rows) {
+    var _a, _b;
+    const missionCounts = {
+      all: rows.length,
+      attack: 0,
+      recycle: 0,
+      transport: 0,
+      spy: 0,
+      other: 0
+    };
+    let outboundCount = 0;
+    let returningCount = 0;
+    const expectedBundle = { pig_iron: 0, metal: 0, kryptonite: 0, spice: 0 };
+    let expectedTotal = 0;
+    let expectedCount = 0;
+    const deliveredBundle = { pig_iron: 0, metal: 0, kryptonite: 0, spice: 0 };
+    let deliveredTotal = 0;
+    let deliveredCount = 0;
+    for (const row of rows) {
+      missionCounts[row.missionFilter] += 1;
+      if (row.direction === "returning") returningCount += 1;
+      else outboundCount += 1;
+      if (((_a = row.cargo) == null ? void 0 : _a.kind) === "EXPECTED") {
+        expectedCount += 1;
+        if (row.cargo.bundle) {
+          expectedBundle.pig_iron += row.cargo.bundle.pig_iron;
+          expectedBundle.metal += row.cargo.bundle.metal;
+          expectedBundle.kryptonite += row.cargo.bundle.kryptonite;
+          expectedBundle.spice += row.cargo.bundle.spice;
+          expectedTotal += row.cargo.total;
+        }
+      } else if (((_b = row.cargo) == null ? void 0 : _b.kind) === "DELIVERED") {
+        deliveredCount += 1;
+        if (row.cargo.bundle) {
+          deliveredBundle.pig_iron += row.cargo.bundle.pig_iron;
+          deliveredBundle.metal += row.cargo.bundle.metal;
+          deliveredBundle.kryptonite += row.cargo.bundle.kryptonite;
+          deliveredBundle.spice += row.cargo.bundle.spice;
+          deliveredTotal += row.cargo.total;
+        }
+      }
+    }
+    return {
+      total: rows.length,
+      outboundCount,
+      returningCount,
+      missionCounts,
+      expectedBundle,
+      expectedTotal,
+      expectedCount,
+      deliveredBundle,
+      deliveredTotal,
+      deliveredCount
+    };
+  }
+  const MISSION_PILLS = [
+    { key: "all", label: "All" },
+    { key: "attack", label: "Attack" },
+    { key: "recycle", label: "Recycle" },
+    { key: "transport", label: "Transport" },
+    { key: "spy", label: "Spy" },
+    { key: "other", label: "Other" }
+  ];
+  const DIRECTION_PILLS = [
+    { key: "all", label: "All" },
+    { key: "outbound", label: "Outbound" },
+    { key: "returning", label: "Returning" }
+  ];
+  const FleetControlView = ({ hidden }) => {
+    var _a, _b;
+    const {
+      dashboard,
+      activePage,
+      nowEpochSec,
+      loadDashboard,
+      apiCommand: apiCommand2,
+      showFeedback
+    } = useConsole();
+    const [missionFilter, setMissionFilter] = reactExports.useState("all");
+    const [directionFilter, setDirectionFilter] = reactExports.useState("all");
+    const [planetFilter, setPlanetFilter] = reactExports.useState("all");
+    const [refreshing, setRefreshing] = reactExports.useState(false);
+    const [localNowSec, setLocalNowSec] = reactExports.useState(
+      () => typeof window === "undefined" ? 0 : Math.floor(Date.now() / 1e3)
+    );
+    const isHidden = hidden ?? activePage !== "fleet-control";
+    reactExports.useEffect(() => {
+      if (isHidden || typeof window === "undefined") return;
+      setLocalNowSec(Math.floor(Date.now() / 1e3));
+      const timer = setInterval(() => {
+        if (document.visibilityState === "visible") {
+          setLocalNowSec(Math.floor(Date.now() / 1e3));
+        }
+      }, 1e3);
+      return () => clearInterval(timer);
+    }, [isHidden]);
+    const effNowSec = Math.max(
+      nowEpochSec != null && nowEpochSec > 0 ? nowEpochSec : 0,
+      localNowSec > 0 ? localNowSec : 0
+    ) || Math.floor(Date.now() / 1e3);
+    const customPlanetNames = reactExports.useMemo(
+      () => extractCustomPlanetNames(dashboard),
+      [dashboard]
+    );
+    const planetLookup = reactExports.useMemo(
+      () => {
+        var _a2;
+        return buildPlanetLookup((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.planets, customPlanetNames);
+      },
+      [(_a = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a.planets, customPlanetNames]
+    );
+    const allFlights = reactExports.useMemo(() => {
+      var _a2;
+      const rawQueues = Array.isArray((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.active_queues) ? dashboard.state.active_queues : [];
+      const ongoing = rawQueues.filter((job) => isOngoingFlightJob(job));
+      return ongoing.map((job, idx) => parseFlightRow(job, idx, planetLookup, effNowSec));
+    }, [(_b = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _b.active_queues, effNowSec, planetLookup]);
+    const summary = reactExports.useMemo(() => summarizeFlights(allFlights), [allFlights]);
+    const selectedFilterPlanetId = reactExports.useMemo(() => {
+      if (planetFilter === "all") return null;
+      const n = Number(planetFilter);
+      return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+    }, [planetFilter]);
+    const filteredFlights = reactExports.useMemo(() => {
+      return allFlights.filter((row) => {
+        if (missionFilter !== "all" && row.missionFilter !== missionFilter) {
+          return false;
+        }
+        if (directionFilter !== "all" && row.direction !== directionFilter) {
+          return false;
+        }
+        if (selectedFilterPlanetId !== null && !flightMatchesPlanetFilter(row, selectedFilterPlanetId, planetLookup)) {
+          return false;
+        }
+        return true;
+      });
+    }, [allFlights, directionFilter, missionFilter, planetLookup, selectedFilterPlanetId]);
+    const sortColumns = reactExports.useMemo(
+      () => ({
+        mission: (r) => r.missionLabel,
+        direction: (r) => r.direction === "outbound" ? "0-outbound" : "1-returning",
+        origin: (r) => `${r.originName} ${r.originCoords}`.trim(),
+        target: (r) => `${r.targetName} ${r.targetCoords}`.trim(),
+        ships: (r) => r.shipsText || r.labelText || null,
+        cargo: {
+          accessor: (r) => {
+            if (!r.cargo) return null;
+            if (r.cargo.total > 0) return r.cargo.total;
+            return r.cargo.kind === "DELIVERED" ? 0 : null;
+          },
+          defaultDirection: "desc"
+        },
+        eta: {
+          accessor: (r) => r.remainingSec !== null ? r.remainingSec : r.finishTs !== null ? Math.max(0, Math.round(r.finishTs - effNowSec)) : null,
+          defaultDirection: "asc"
+        }
+      }),
+      [effNowSec]
+    );
+    const flightSort = useTableSort(filteredFlights, sortColumns, {
+      initialKey: "eta",
+      initialDirection: "asc"
+    });
+    const hasActiveFilters = missionFilter !== "all" || directionFilter !== "all" || planetFilter !== "all";
+    const handleResetFilters = () => {
+      setMissionFilter("all");
+      setDirectionFilter("all");
+      setPlanetFilter("all");
+    };
+    const handleRefresh = async () => {
+      if (refreshing) return;
+      setRefreshing(true);
+      try {
+        showFeedback("Refreshing live active flights from Chrome...", "ok");
+        const ok = await loadDashboard({ refresh: true, force: true });
+        if (ok) {
+          showFeedback("Fleet Control flights refreshed.", "ok");
+        }
+      } catch (err) {
+        showFeedback(`Flight refresh failed: ${err.message}`, feedbackKindForError(err));
+      } finally {
+        setRefreshing(false);
+      }
+    };
+    const handleNavFleet = async () => {
+      try {
+        await apiCommand2({ command: "navigate", action: "internalFleet" });
+        showFeedback("Chrome switched to internalFleet.", "ok");
+      } catch (err) {
+        showFeedback(`Navigation failed: ${err.message}`, feedbackKindForError(err));
+      }
+    };
+    const expectedInline = summary.expectedTotal > 0 ? formatResourcesInline(summary.expectedBundle) : "";
+    const deliveredInline = summary.deliveredTotal > 0 ? formatResourcesInline(summary.deliveredBundle) : "";
+    const cargoSubText = (() => {
+      const parts = [];
+      if (expectedInline) parts.push(`Expected: ${expectedInline}`);
+      if (deliveredInline) parts.push(`Delivered: ${deliveredInline}`);
+      else if (summary.deliveredCount > 0) {
+        parts.push(
+          `${summary.deliveredCount} delivered return${summary.deliveredCount === 1 ? "" : "s"}`
+        );
+      }
+      return parts.length > 0 ? parts.join(" · ") : "No expected or delivered cargo in flight";
+    })();
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "section",
+      {
+        className: "page-view view-panel",
+        id: "view-fleet-control",
+        hidden: isHidden,
+        "aria-label": "Fleet Control — current flights",
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "combat-top-cards", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "kpi-card", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Active Flights" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "kpi-value tabular", id: "flt-ctrl-kpi-total", children: fmtInt(summary.total) }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", id: "flt-ctrl-kpi-dir", children: `${fmtInt(summary.outboundCount)} Outbound · ${fmtInt(summary.returningCount)} Returning` })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "kpi-card", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Mission Breakdown" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "kpi-value tabular", id: "flt-ctrl-kpi-missions", children: `ATK ${summary.missionCounts.attack} · REC ${summary.missionCounts.recycle} · TRN ${summary.missionCounts.transport}` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", id: "flt-ctrl-kpi-missions-sub", children: `Spy ${summary.missionCounts.spy} · Other ${summary.missionCounts.other}` })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "kpi-card", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Expected / Delivered Cargo" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "kpi-value tabular", id: "flt-ctrl-kpi-cargo", children: `Exp ${summary.expectedTotal > 0 ? fmtCompact(summary.expectedTotal) : "0"} · Del ${summary.deliveredTotal > 0 ? fmtCompact(summary.deliveredTotal) : summary.deliveredCount > 0 ? `${summary.deliveredCount}✓` : "0"}` }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", id: "flt-ctrl-kpi-cargo-sub", title: cargoSubText, children: cargoSubText })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "kpi-card", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-label tabular", children: "Fleet Control Sync" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "combat-jumps", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn-primary btn-sm",
+                    id: "btn-flt-ctrl-refresh",
+                    disabled: refreshing,
+                    onClick: handleRefresh,
+                    children: refreshing ? "Refreshing..." : "Refresh Flights"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn-secondary btn-sm",
+                    id: "btn-flt-ctrl-nav-fleet",
+                    onClick: handleNavFleet,
+                    children: "Open Fleet"
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "kpi-sub tabular", children: `${planetLookup.ordered.length} ${planetLookup.ordered.length === 1 ? "colony" : "colonies"} tracked` })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window page-fill", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "FLT" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Fleet Control — Current Ongoing Flights" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "flt-ctrl-count-meta", children: filteredFlights.length === allFlights.length ? `${allFlights.length} active` : `${filteredFlights.length} / ${allFlights.length} shown` })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "inline-actions", children: hasActiveFilters ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn-secondary btn-sm",
+                  id: "btn-flt-ctrl-reset-filters",
+                  onClick: handleResetFilters,
+                  children: "Reset Filters"
+                }
+              ) : null })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "email-filter-bar", "aria-label": "Flight filters", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "filter-chips", role: "group", "aria-label": "Mission filter", children: MISSION_PILLS.map((pill) => {
+                const active = missionFilter === pill.key;
+                const count = summary.missionCounts[pill.key];
+                return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: `chip-btn${active ? " active" : ""}`,
+                    "data-flt-mission": pill.key,
+                    "aria-pressed": active,
+                    onClick: () => setMissionFilter(pill.key),
+                    children: `${pill.label} (${count})`
+                  },
+                  pill.key
+                );
+              }) }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "filter-chips", role: "group", "aria-label": "Direction filter", children: DIRECTION_PILLS.map((pill) => {
+                const active = directionFilter === pill.key;
+                const count = pill.key === "all" ? summary.total : pill.key === "outbound" ? summary.outboundCount : summary.returningCount;
+                return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: `chip-btn${active ? " active" : ""}`,
+                    "data-flt-dir": pill.key,
+                    "aria-pressed": active,
+                    onClick: () => setDirectionFilter(pill.key),
+                    children: `${pill.label} (${count})`
+                  },
+                  pill.key
+                );
+              }) }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "select",
+                {
+                  id: "flt-ctrl-planet-filter",
+                  className: "mq-prio-select",
+                  "aria-label": "Filter by planet",
+                  value: planetFilter,
+                  onChange: (e) => setPlanetFilter(e.target.value),
+                  style: { width: "auto", minWidth: "180px" },
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "all", children: "All Planets" }),
+                    planetLookup.ordered.map((entry) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: String(entry.planet.planet_id), children: entry.rawCoords ? `${entry.displayName} [${entry.rawCoords}]` : entry.displayName }, entry.planet.planet_id))
+                  ]
+                }
+              )
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "flt-ctrl-table", className: "data-table", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Mission",
+                    sortKey: "mission",
+                    activeKey: flightSort.sortKey,
+                    direction: flightSort.sortDirection,
+                    onSort: flightSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Direction",
+                    sortKey: "direction",
+                    activeKey: flightSort.sortKey,
+                    direction: flightSort.sortDirection,
+                    onSort: flightSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Origin",
+                    sortKey: "origin",
+                    activeKey: flightSort.sortKey,
+                    direction: flightSort.sortDirection,
+                    onSort: flightSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Target",
+                    sortKey: "target",
+                    activeKey: flightSort.sortKey,
+                    direction: flightSort.sortDirection,
+                    onSort: flightSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Ships / Label",
+                    sortKey: "ships",
+                    activeKey: flightSort.sortKey,
+                    direction: flightSort.sortDirection,
+                    onSort: flightSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "Cargo / Status",
+                    sortKey: "cargo",
+                    activeKey: flightSort.sortKey,
+                    direction: flightSort.sortDirection,
+                    onSort: flightSort.requestSort
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
+                    label: "ETA / Arrival",
+                    sortKey: "eta",
+                    activeKey: flightSort.sortKey,
+                    direction: flightSort.sortDirection,
+                    onSort: flightSort.requestSort,
+                    align: "right"
+                  }
+                )
+              ] }) }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "flt-ctrl-tbody", "data-testid": "fleet-control-tbody", children: flightSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 7, className: "empty-cell", children: allFlights.length === 0 ? "No active flights in progress." : "No ongoing flights match the current filters." }) }) : flightSort.sortedRows.map((row) => /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { className: "queue-row", "data-flight-row": row.mission.toLowerCase(), children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "span",
+                  {
+                    className: `${row.missionBadgeClass} tabular`,
+                    "data-flight-mission": row.mission,
+                    children: row.missionLabel
+                  }
+                ) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "span",
+                  {
+                    className: `sector-phase-pill ${row.direction === "returning" ? "is-refresh" : "is-discovery"} tabular`,
+                    "data-flight-dir": row.direction,
+                    children: row.direction === "returning" ? "RETURNING" : "OUTBOUND"
+                  }
+                ) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-title", children: row.originName }),
+                  row.originCoords && row.originCoords !== row.originName ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub tabular", children: `[${row.originCoords}]` }) : null
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-title", children: row.targetName }),
+                  row.targetCoords && row.targetCoords !== row.targetName ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub tabular", children: `[${row.targetCoords}]` }) : null
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "action-title", children: row.shipsText || row.labelText || "—" }),
+                  row.shipsText && row.labelText && row.labelText !== row.shipsText ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: row.labelText }) : null
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: row.cargo ? row.cargo.kind === "DELIVERED" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                  "div",
+                  {
+                    className: "exec-cargo-line tabular",
+                    "data-cargo-flag": "DELIVERED",
+                    title: row.cargo.inline ? `Delivered: ${row.cargo.inline} (${fmtInt(row.cargo.total)} total)` : "Delivered",
+                    children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "outcome-badge is-win tabular", children: "DELIVERED" }),
+                      row.cargo.inline ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                        " ",
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: row.cargo.inline }),
+                        row.cargo.multiRes ? ` (${fmtCompact(row.cargo.total)})` : ""
+                      ] }) : null
+                    ]
+                  }
+                ) : /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                  "div",
+                  {
+                    className: `exec-cargo-line tabular${row.cargo.isEmpty ? " is-empty" : ""}`,
+                    "data-cargo-flag": row.cargo.kind,
+                    title: `${row.cargo.kind}: ${row.cargo.inline}${row.cargo.total > 0 ? ` (${fmtInt(row.cargo.total)} total)` : ""}`,
+                    children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "exec-cargo-tag", children: row.cargo.kind }),
+                      " ",
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: row.cargo.inline }),
+                      row.cargo.multiRes ? ` (${fmtCompact(row.cargo.total)})` : ""
+                    ]
+                  }
+                ) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: "—" }) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                  "div",
+                  {
+                    style: {
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "flex-end",
+                      gap: "2px"
+                    },
+                    children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "span",
+                        {
+                          className: "eta-pill is-exec-timer",
+                          "data-finish-ts": row.finishTs !== null ? String(row.finishTs) : void 0,
+                          children: row.countdownText
+                        }
+                      ),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "eta-pill is-finish-at", children: row.finishClockText })
+                    ]
+                  }
+                ) })
+              ] }, row.id)) })
+            ] }) })
           ] })
         ]
       }
@@ -23572,6 +27073,47 @@
       }
     );
   };
+  const LoadingIndicator = ({
+    id,
+    message,
+    detail,
+    variant = "inline",
+    className = ""
+  }) => {
+    const classes = [
+      "intel-loading",
+      variant === "panel" ? "intel-loading-panel" : "intel-loading-inline",
+      className
+    ].filter(Boolean).join(" ");
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "div",
+      {
+        id,
+        className: classes,
+        role: "status",
+        "aria-live": "polite",
+        "aria-busy": "true",
+        "data-loading-variant": variant,
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "intel-loading-row", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "intel-loading-spinner", "aria-hidden": "true" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "intel-loading-copy", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "intel-loading-message tabular", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: message }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "intel-loading-dots", "aria-hidden": "true", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "intel-loading-dot" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "intel-loading-dot" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "intel-loading-dot" })
+                ] })
+              ] }),
+              detail ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "intel-loading-detail", children: detail }) : null
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-loading-track", "aria-hidden": "true", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "intel-loading-sweep" }) })
+        ]
+      }
+    );
+  };
   function parseCoordsTriple(raw) {
     const txt = String(raw ?? "").trim();
     const m = txt.match(/(\d{1,2})\s*:\s*(\d{1,3})\s*:\s*(\d{1,2})/);
@@ -23650,10 +27192,19 @@
       title: `${fromStr}${sInt} solar systems away${distStr}`
     };
   }
+  const TARGET_FILTERS = [
+    { key: "all", label: "All Targets" },
+    { key: "spied", label: "Spied Intel" },
+    { key: "spacia", label: "Spacia" },
+    { key: "inactive", label: "Inactive" },
+    { key: "debris", label: "Has Debris" }
+  ];
   const EspionageView = ({ hidden }) => {
     var _a, _b, _c;
     const {
       dashboard,
+      apiOnline,
+      reconnectAttempts,
       activePage,
       setActivePage,
       activePlanet,
@@ -23668,12 +27219,83 @@
     } = useConsole();
     const isHidden = hidden ?? activePage !== "espionage";
     const espTab = uiPrefs.espTab === "reports" ? "reports" : "targets";
+    const [espSearch, setEspSearch] = reactExports.useState("");
+    const [targetFilter, setTargetFilter] = reactExports.useState("all");
+    const [loadingCount, setLoadingCount] = reactExports.useState(0);
+    const [loadingLabel, setLoadingLabel] = reactExports.useState(null);
+    const mountedRef = reactExports.useRef(true);
+    const activeReqCountRef = reactExports.useRef(0);
+    reactExports.useEffect(() => {
+      mountedRef.current = true;
+      return () => {
+        mountedRef.current = false;
+      };
+    }, []);
+    const runTrackedRequest = reactExports.useCallback(async (label, fn) => {
+      activeReqCountRef.current += 1;
+      if (mountedRef.current) {
+        setLoadingCount(activeReqCountRef.current);
+        setLoadingLabel(label);
+      }
+      try {
+        await fn();
+      } finally {
+        activeReqCountRef.current = Math.max(0, activeReqCountRef.current - 1);
+        if (mountedRef.current) {
+          setLoadingCount(activeReqCountRef.current);
+          if (activeReqCountRef.current === 0) {
+            setLoadingLabel(null);
+          }
+        }
+      }
+    }, []);
+    const isInitialLoading = espData === null;
+    const isRefreshing = loadingCount > 0;
+    const showLoading = isInitialLoading || isRefreshing;
     const sum = (espData == null ? void 0 : espData.summary) || {};
     const originCoords = String(
       (espData == null ? void 0 : espData.origin_coords) || (activePlanet == null ? void 0 : activePlanet.coords) || ((_c = (_b = (_a = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a.planets) == null ? void 0 : _b[0]) == null ? void 0 : _c.coords) || ""
     ).trim();
-    const targets = Array.isArray(espData == null ? void 0 : espData.targets) ? espData.targets : [];
-    const reports = Array.isArray(espData == null ? void 0 : espData.reports) ? espData.reports : [];
+    const targets = reactExports.useMemo(
+      () => Array.isArray(espData == null ? void 0 : espData.targets) ? espData.targets : [],
+      [espData]
+    );
+    const reports = reactExports.useMemo(
+      () => Array.isArray(espData == null ? void 0 : espData.reports) ? espData.reports : [],
+      [espData]
+    );
+    const filteredTargets = reactExports.useMemo(() => {
+      const needle = espSearch.trim().toLowerCase();
+      return targets.filter((t) => {
+        const isSpacia = Boolean(t.is_spacia);
+        const isInact = Boolean(t.is_inactive) || String(t.status_color || "") === "yellow";
+        if (targetFilter === "spied" && !t.has_spy_intel) return false;
+        if (targetFilter === "spacia" && !isSpacia) return false;
+        if (targetFilter === "inactive" && !isInact) return false;
+        if (targetFilter === "debris" && !t.has_debris) return false;
+        if (!needle) return true;
+        const hay = [
+          t.coords,
+          t.target_coords,
+          t.planet_name,
+          t.owner,
+          t.status_color,
+          isSpacia ? "spacia" : "",
+          isInact ? "inactive" : "",
+          t.has_debris ? "debris" : "",
+          t.dug_in ? "dug-in" : ""
+        ].filter(Boolean).join(" ").toLowerCase();
+        return hay.includes(needle);
+      });
+    }, [targets, targetFilter, espSearch]);
+    const filteredReports = reactExports.useMemo(() => {
+      const needle = espSearch.trim().toLowerCase();
+      if (!needle) return reports;
+      return reports.filter((r) => {
+        const hay = [r.coords, r.target_coords, r.planet_name, r.owner, r.msg_date_text].filter(Boolean).join(" ").toLowerCase();
+        return hay.includes(needle);
+      });
+    }, [reports, espSearch]);
     const targetSortCols = reactExports.useMemo(
       () => ({
         coords: (t) => coordsSortKey(t.coords || t.target_coords),
@@ -23746,8 +27368,20 @@
       }),
       [originCoords]
     );
-    const targetSort = useTableSort(targets, targetSortCols);
-    const reportSort = useTableSort(reports, reportSortCols);
+    const targetSort = useTableSort(filteredTargets, targetSortCols);
+    const reportSort = useTableSort(filteredReports, reportSortCols);
+    const targetPagination = useTablePagination(
+      targetSort.sortedRows,
+      `${espTab}|${targetFilter}|${espSearch}|${targetSort.sortKey ?? ""}|${targetSort.sortDirection ?? ""}`,
+      25
+    );
+    const reportPagination = useTablePagination(
+      reportSort.sortedRows,
+      `${espTab}|${espSearch}|${reportSort.sortKey ?? ""}|${reportSort.sortDirection ?? ""}`,
+      25
+    );
+    const activeTabHasRows = espTab === "reports" ? reports.length > 0 : targets.length > 0;
+    const usePanelLoading = isInitialLoading || isRefreshing && !activeTabHasRows;
     const bestSpEq = targets.reduce(
       (acc, t) => Math.max(acc, finiteNum(t == null ? void 0 : t.spice_eq, 0)),
       0
@@ -23760,6 +27394,15 @@
     const uniExplored = Math.max(0, Math.round(finiteNum(galSweep == null ? void 0 : galSweep.universe_explored_systems, galExplored)));
     const uniPct = galSweep && galSweep.universe_coverage_pct != null ? Math.max(0, Math.min(100, finiteNum(galSweep.universe_coverage_pct, 0))) : galPct !== null ? Math.max(0, Math.min(100, uniExplored / uniTotal * 100)) : null;
     const galPhaseText = String((galSweep == null ? void 0 : galSweep.scan_phase) || "").toLowerCase() === "targeted_refresh" ? "Targeted Refresh" : "Exploratory";
+    const handleRefreshEspionage = () => {
+      void runTrackedRequest("Loading espionage intel...", () => refreshEspionageView());
+    };
+    const handleSyncInbox = () => {
+      void runTrackedRequest(
+        "Syncing inbox folders & espionage intel...",
+        () => syncAllInboxFolders()
+      );
+    };
     const handleSpyTarget = async (coords) => {
       try {
         showFeedback(`Dispatching spy probe to ${coords}...`, "ok");
@@ -23774,7 +27417,7 @@
           res.message || `Spy probe sent to ${coords}.`,
           res.executed ? "ok" : "warn"
         );
-        await refreshEspionageView();
+        await runTrackedRequest("Refreshing espionage intel...", () => refreshEspionageView());
       } catch (err) {
         showFeedback(`Spy failed: ${err.message}`, feedbackKindForError(err));
       }
@@ -23802,8 +27445,10 @@
           res.message || `Attack processed for ${coords}.`,
           res.executed ? "ok" : "warn"
         );
-        await loadDashboard({ refresh: false, force: true });
-        await refreshEspionageView();
+        await runTrackedRequest("Refreshing espionage intel...", async () => {
+          await loadDashboard({ refresh: false, force: true });
+          await refreshEspionageView();
+        });
       } catch (err) {
         showFeedback(`Attack failed: ${err.message}`, feedbackKindForError(err));
       }
@@ -23850,7 +27495,9 @@
                     className: "btn btn-primary btn-sm",
                     id: "btn-esp-sync",
                     "data-testid": "btn-sync-espionage",
-                    onClick: syncAllInboxFolders,
+                    disabled: isRefreshing,
+                    "aria-busy": isRefreshing,
+                    onClick: handleSyncInbox,
                     children: "Sync All Folders"
                   }
                 ),
@@ -23860,7 +27507,9 @@
                     type: "button",
                     className: "btn btn-secondary btn-sm",
                     id: "btn-esp-refresh",
-                    onClick: refreshEspionageView,
+                    disabled: isRefreshing,
+                    "aria-busy": isRefreshing,
+                    onClick: handleRefreshEspionage,
                     children: "Refresh DB"
                   }
                 ),
@@ -23882,7 +27531,7 @@
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "SPY" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Espionage Intelligence & Spy Report Archive" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "esp-meta-count", children: espData ? `${targets.length} TARGETS · ${reports.length} REPORTS${originCoords ? ` · FROM ${originCoords}` : ""}` : "0 TARGETS" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "esp-meta-count", children: espData ? `${filteredTargets.length !== targets.length ? `${filteredTargets.length}/${targets.length}` : String(targets.length)} TARGETS · ${filteredReports.length !== reports.length ? `${filteredReports.length}/${reports.length}` : String(reports.length)} REPORTS${originCoords ? ` · FROM ${originCoords}` : ""}` : "LOADING..." }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   "span",
                   {
@@ -23893,283 +27542,363 @@
                   }
                 )
               ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "tablist", "aria-label": "Espionage subtabs", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-toolbar", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
+                  "input",
                   {
-                    type: "button",
-                    className: `tab-btn${espTab === "targets" ? " active" : ""}`,
-                    "data-esp-tab": "targets",
-                    onClick: () => setUiPref("espTab", "targets"),
-                    children: "Spied Targets"
+                    type: "search",
+                    id: "esp-search",
+                    className: "table-search-input",
+                    placeholder: "Search coords / player / status...",
+                    "aria-label": "Search espionage targets and reports",
+                    value: espSearch,
+                    onChange: (e) => setEspSearch(e.target.value)
                   }
                 ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: `tab-btn${espTab === "reports" ? " active" : ""}`,
-                    "data-esp-tab": "reports",
-                    onClick: () => setUiPref("espTab", "reports"),
-                    children: "Historical Spy Reports"
-                  }
-                )
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "tablist", "aria-label": "Espionage subtabs", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: `tab-btn${espTab === "targets" ? " active" : ""}`,
+                      "data-esp-tab": "targets",
+                      onClick: () => setUiPref("espTab", "targets"),
+                      children: "Spied Targets"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: `tab-btn${espTab === "reports" ? " active" : ""}`,
+                      "data-esp-tab": "reports",
+                      onClick: () => setUiPref("espTab", "reports"),
+                      children: "Historical Spy Reports"
+                    }
+                  )
+                ] })
               ] })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "esp-pane-targets", hidden: espTab !== "targets", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Coords",
-                    sortKey: "coords",
-                    activeKey: targetSort.sortKey,
-                    direction: targetSort.sortDirection,
-                    onSort: targetSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Distance",
-                    sortKey: "distance",
-                    activeKey: targetSort.sortKey,
-                    direction: targetSort.sortDirection,
-                    onSort: targetSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Player / Planet",
-                    sortKey: "player",
-                    activeKey: targetSort.sortKey,
-                    direction: targetSort.sortDirection,
-                    onSort: targetSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Status",
-                    sortKey: "status",
-                    activeKey: targetSort.sortKey,
-                    direction: targetSort.sortDirection,
-                    onSort: targetSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Fields",
-                    sortKey: "fields",
-                    activeKey: targetSort.sortKey,
-                    direction: targetSort.sortDirection,
-                    onSort: targetSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Resources (Pig / Met / Kry / Spi)",
-                    sortKey: "resources",
-                    activeKey: targetSort.sortKey,
-                    direction: targetSort.sortDirection,
-                    onSort: targetSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Loot SpEq",
-                    sortKey: "spiceEq",
-                    activeKey: targetSort.sortKey,
-                    direction: targetSort.sortDirection,
-                    onSort: targetSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Fleet / Defense",
-                    sortKey: "fleetDef",
-                    activeKey: targetSort.sortKey,
-                    direction: targetSort.sortDirection,
-                    onSort: targetSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
-              ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "esp-targets-tbody", children: targetSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 9, className: "empty-cell", children: "No espionage targets recorded yet. Run Scan Galaxy or Sync All Folders." }) }) : targetSort.sortedRows.map((t, idx) => {
-                const coords = String(t.coords || t.target_coords || "—");
-                const dist = formatEspionageDistance(t, originCoords, coords);
-                const isSpacia = Boolean(t.is_spacia);
-                const isInact = Boolean(t.is_inactive) || String(t.status_color || "") === "yellow";
-                const tags = [
-                  isSpacia ? "SPACIA" : isInact ? "INACTIVE" : String(t.status_color || "ACTIVE").toUpperCase()
-                ];
-                if (t.has_debris) tags.push("DEBRIS");
-                if (t.dug_in) tags.push("DUG-IN");
-                const uf = finiteNum(t.uninhabited_fields, null);
-                const fStr = formatUnitDictShort(t.fleet, 3);
-                const dStr = formatUnitDictShort(t.defense, 3);
-                const fdTxt = t.has_spy_intel ? fStr === "None" && dStr === "None" ? "Clear (0)" : `F:${fStr} / D:${dStr}` : "—";
-                return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: coords }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", title: dist.title, children: dist.label }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: [t.planet_name, t.owner].filter(Boolean).join(" · ") || "Uninhabited / Unknown" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "span",
-                    {
-                      className: `status-word${isSpacia || isInact ? "" : " is-warn"}`,
-                      children: tags.join(" · ")
-                    }
-                  ) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: uf !== null && uf > 0 ? String(Math.round(uf)) : "—" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: t.has_spy_intel ? formatResourcesInline(t.resources) : "Not spied yet" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: t.has_spy_intel ? fmtInt(Math.round(finiteNum(t.spice_eq, 0))) : "—" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fdTxt }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row-actions", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "intel-stage", children: [
+              showLoading ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                LoadingIndicator,
+                {
+                  id: "esp-loading-indicator",
+                  variant: usePanelLoading ? "panel" : "inline",
+                  message: loadingLabel || "Loading espionage intel...",
+                  detail: !apiOnline && reconnectAttempts > 0 ? "Waiting for Game API connection..." : usePanelLoading ? "Fetching spied targets and historical spy archive from SQLite" : "Refreshing espionage targets and spy reports"
+                }
+              ) : null,
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "div",
+                {
+                  className: "intel-pane",
+                  id: "esp-pane-targets",
+                  hidden: usePanelLoading || espTab !== "targets",
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-filter-bar", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "filter-chips", role: "group", "aria-label": "Espionage target filters", children: TARGET_FILTERS.map((f) => /* @__PURE__ */ jsxRuntimeExports.jsx(
                       "button",
                       {
                         type: "button",
-                        className: "btn btn-secondary btn-sm",
-                        onClick: () => handleSpyTarget(coords),
-                        children: "Spy"
-                      }
-                    ),
+                        className: `chip-btn${targetFilter === f.key ? " active" : ""}`,
+                        "data-esp-filter": f.key,
+                        onClick: () => setTargetFilter(f.key),
+                        children: f.label
+                      },
+                      f.key
+                    )) }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Coords",
+                            sortKey: "coords",
+                            activeKey: targetSort.sortKey,
+                            direction: targetSort.sortDirection,
+                            onSort: targetSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Distance",
+                            sortKey: "distance",
+                            activeKey: targetSort.sortKey,
+                            direction: targetSort.sortDirection,
+                            onSort: targetSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Player / Planet",
+                            sortKey: "player",
+                            activeKey: targetSort.sortKey,
+                            direction: targetSort.sortDirection,
+                            onSort: targetSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Status",
+                            sortKey: "status",
+                            activeKey: targetSort.sortKey,
+                            direction: targetSort.sortDirection,
+                            onSort: targetSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Fields",
+                            sortKey: "fields",
+                            activeKey: targetSort.sortKey,
+                            direction: targetSort.sortDirection,
+                            onSort: targetSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Resources (Pig / Met / Kry / Spi)",
+                            sortKey: "resources",
+                            activeKey: targetSort.sortKey,
+                            direction: targetSort.sortDirection,
+                            onSort: targetSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Loot SpEq",
+                            sortKey: "spiceEq",
+                            activeKey: targetSort.sortKey,
+                            direction: targetSort.sortDirection,
+                            onSort: targetSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Fleet / Defense",
+                            sortKey: "fleetDef",
+                            activeKey: targetSort.sortKey,
+                            direction: targetSort.sortDirection,
+                            onSort: targetSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
+                      ] }) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "esp-targets-tbody", children: targetPagination.pagedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 9, className: "empty-cell", children: targets.length > 0 ? "No espionage targets match the active filter or search query." : "No espionage targets recorded yet. Run Scan Galaxy or Sync All Folders." }) }) : targetPagination.pagedRows.map((t, idx) => {
+                        const coords = String(t.coords || t.target_coords || "—");
+                        const dist = formatEspionageDistance(t, originCoords, coords);
+                        const isSpacia = Boolean(t.is_spacia);
+                        const isInact = Boolean(t.is_inactive) || String(t.status_color || "") === "yellow";
+                        const tags = [
+                          isSpacia ? "SPACIA" : isInact ? "INACTIVE" : String(t.status_color || "ACTIVE").toUpperCase()
+                        ];
+                        if (t.has_debris) tags.push("DEBRIS");
+                        if (t.dug_in) tags.push("DUG-IN");
+                        const uf = finiteNum(t.uninhabited_fields, null);
+                        const fStr = formatUnitDictShort(t.fleet, 3);
+                        const dStr = formatUnitDictShort(t.defense, 3);
+                        const fdTxt = t.has_spy_intel ? fStr === "None" && dStr === "None" ? "Clear (0)" : `F:${fStr} / D:${dStr}` : "—";
+                        return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: coords }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", title: dist.title, children: dist.label }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: [t.planet_name, t.owner].filter(Boolean).join(" · ") || "Uninhabited / Unknown" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                            "span",
+                            {
+                              className: `status-word${isSpacia || isInact ? "" : " is-warn"}`,
+                              children: tags.join(" · ")
+                            }
+                          ) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: uf !== null && uf > 0 ? String(Math.round(uf)) : "—" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: t.has_spy_intel ? formatResourcesInline(t.resources) : "Not spied yet" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: t.has_spy_intel ? fmtInt(Math.round(finiteNum(t.spice_eq, 0))) : "—" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fdTxt }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row-actions", children: [
+                            /* @__PURE__ */ jsxRuntimeExports.jsx(
+                              "button",
+                              {
+                                type: "button",
+                                className: "btn btn-secondary btn-sm",
+                                onClick: () => handleSpyTarget(coords),
+                                children: "Spy"
+                              }
+                            ),
+                            /* @__PURE__ */ jsxRuntimeExports.jsx(
+                              "button",
+                              {
+                                type: "button",
+                                className: "btn btn-secondary btn-sm",
+                                onClick: () => handleSimTarget(t),
+                                children: "Sim"
+                              }
+                            ),
+                            /* @__PURE__ */ jsxRuntimeExports.jsx(
+                              "button",
+                              {
+                                type: "button",
+                                className: "btn btn-primary btn-sm",
+                                onClick: () => handleAttackTarget(coords),
+                                children: "Attack"
+                              }
+                            )
+                          ] }) })
+                        ] }, `${coords}-${idx}`);
+                      }) })
+                    ] }) }),
                     /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "button",
+                      TablePagination,
                       {
-                        type: "button",
-                        className: "btn btn-secondary btn-sm",
-                        onClick: () => handleSimTarget(t),
-                        children: "Sim"
-                      }
-                    ),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "button",
-                      {
-                        type: "button",
-                        className: "btn btn-primary btn-sm",
-                        onClick: () => handleAttackTarget(coords),
-                        children: "Attack"
+                        idPrefix: "esp-targets",
+                        totalItems: targetPagination.totalItems,
+                        page: targetPagination.page,
+                        pageSize: targetPagination.pageSize,
+                        itemLabel: "targets",
+                        onPageChange: targetPagination.setPage,
+                        onPageSizeChange: targetPagination.setPageSize
                       }
                     )
-                  ] }) })
-                ] }, `${coords}-${idx}`);
-              }) })
-            ] }) }) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "esp-pane-reports", hidden: espTab !== "reports", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Recorded",
-                    sortKey: "recorded",
-                    activeKey: reportSort.sortKey,
-                    direction: reportSort.sortDirection,
-                    onSort: reportSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Coords",
-                    sortKey: "coords",
-                    activeKey: reportSort.sortKey,
-                    direction: reportSort.sortDirection,
-                    onSort: reportSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Distance",
-                    sortKey: "distance",
-                    activeKey: reportSort.sortKey,
-                    direction: reportSort.sortDirection,
-                    onSort: reportSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Owner / Planet",
-                    sortKey: "owner",
-                    activeKey: reportSort.sortKey,
-                    direction: reportSort.sortDirection,
-                    onSort: reportSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Fields",
-                    sortKey: "fields",
-                    activeKey: reportSort.sortKey,
-                    direction: reportSort.sortDirection,
-                    onSort: reportSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Resources & SpEq",
-                    sortKey: "resources",
-                    activeKey: reportSort.sortKey,
-                    direction: reportSort.sortDirection,
-                    onSort: reportSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Buildings / Techs",
-                    sortKey: "buildings",
-                    activeKey: reportSort.sortKey,
-                    direction: reportSort.sortDirection,
-                    onSort: reportSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Fleet / Defense",
-                    sortKey: "fleetDef",
-                    activeKey: reportSort.sortKey,
-                    direction: reportSort.sortDirection,
-                    onSort: reportSort.requestSort
-                  }
-                )
-              ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "esp-reports-tbody", children: reportSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No historical spy reports stored yet." }) }) : reportSort.sortedRows.map((r, idx) => {
-                const rCoords = String(r.coords || r.target_coords || "—");
-                const rDist = formatEspionageDistance(r, originCoords, rCoords);
-                const uf = finiteNum(r.uninhabited_fields, null);
-                const spEq = Math.round(finiteNum(r.spice_eq ?? r.loot_spice_eq, 0));
-                const bStr = formatUnitDictShort(r.buildings, 3);
-                const rStr = formatUnitDictShort(r.researches, 3);
-                const fStr = formatUnitDictShort(r.fleet, 3);
-                const dStr = formatUnitDictShort(r.defense, 3);
-                return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fmtShortDateTime(r.ts, r.msg_date_text) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: rCoords }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", title: rDist.title, children: rDist.label }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: [r.planet_name, r.owner].filter(Boolean).join(" · ") || (r.uninhabited_fields ? "Uninhabited Slot" : "Unknown") }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: uf !== null && uf > 0 ? `${Math.round(uf)} fields` : "—" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `${formatResourcesInline(r.resources)} (${fmtInt(spEq)} SpEq)` }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: bStr === "None" && rStr === "None" ? "—" : `B:${bStr} · R:${rStr}` }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fStr === "None" && dStr === "None" ? "Clear (0)" : `F:${fStr} · D:${dStr}` })
-                ] }, r.id ?? `${r.coords}-${idx}`);
-              }) })
-            ] }) }) })
+                  ]
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "div",
+                {
+                  className: "intel-pane",
+                  id: "esp-pane-reports",
+                  hidden: usePanelLoading || espTab !== "reports",
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Recorded",
+                            sortKey: "recorded",
+                            activeKey: reportSort.sortKey,
+                            direction: reportSort.sortDirection,
+                            onSort: reportSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Coords",
+                            sortKey: "coords",
+                            activeKey: reportSort.sortKey,
+                            direction: reportSort.sortDirection,
+                            onSort: reportSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Distance",
+                            sortKey: "distance",
+                            activeKey: reportSort.sortKey,
+                            direction: reportSort.sortDirection,
+                            onSort: reportSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Owner / Planet",
+                            sortKey: "owner",
+                            activeKey: reportSort.sortKey,
+                            direction: reportSort.sortDirection,
+                            onSort: reportSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Fields",
+                            sortKey: "fields",
+                            activeKey: reportSort.sortKey,
+                            direction: reportSort.sortDirection,
+                            onSort: reportSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Resources & SpEq",
+                            sortKey: "resources",
+                            activeKey: reportSort.sortKey,
+                            direction: reportSort.sortDirection,
+                            onSort: reportSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Buildings / Techs",
+                            sortKey: "buildings",
+                            activeKey: reportSort.sortKey,
+                            direction: reportSort.sortDirection,
+                            onSort: reportSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Fleet / Defense",
+                            sortKey: "fleetDef",
+                            activeKey: reportSort.sortKey,
+                            direction: reportSort.sortDirection,
+                            onSort: reportSort.requestSort
+                          }
+                        )
+                      ] }) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "esp-reports-tbody", children: reportPagination.pagedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: reports.length > 0 ? "No historical spy reports match the active search query." : "No historical spy reports stored yet." }) }) : reportPagination.pagedRows.map((r, idx) => {
+                        const rCoords = String(r.coords || r.target_coords || "—");
+                        const rDist = formatEspionageDistance(r, originCoords, rCoords);
+                        const uf = finiteNum(r.uninhabited_fields, null);
+                        const spEq = Math.round(finiteNum(r.spice_eq ?? r.loot_spice_eq, 0));
+                        const bStr = formatUnitDictShort(r.buildings, 3);
+                        const rStr = formatUnitDictShort(r.researches, 3);
+                        const fStr = formatUnitDictShort(r.fleet, 3);
+                        const dStr = formatUnitDictShort(r.defense, 3);
+                        return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fmtShortDateTime(r.ts, r.msg_date_text) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: rCoords }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", title: rDist.title, children: rDist.label }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: [r.planet_name, r.owner].filter(Boolean).join(" · ") || (r.uninhabited_fields ? "Uninhabited Slot" : "Unknown") }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: uf !== null && uf > 0 ? `${Math.round(uf)} fields` : "—" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `${formatResourcesInline(r.resources)} (${fmtInt(spEq)} SpEq)` }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: bStr === "None" && rStr === "None" ? "—" : `B:${bStr} · R:${rStr}` }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fStr === "None" && dStr === "None" ? "Clear (0)" : `F:${fStr} · D:${dStr}` })
+                        ] }, r.id ?? `${r.coords}-${idx}`);
+                      }) })
+                    ] }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      TablePagination,
+                      {
+                        idPrefix: "esp-reports",
+                        totalItems: reportPagination.totalItems,
+                        page: reportPagination.page,
+                        pageSize: reportPagination.pageSize,
+                        itemLabel: "reports",
+                        onPageChange: reportPagination.setPage,
+                        onPageSizeChange: reportPagination.setPageSize
+                      }
+                    )
+                  ]
+                }
+              )
+            ] })
           ] })
         ]
       }
@@ -24929,8 +28658,22 @@
       }
     );
   };
+  const BATTLE_OUTCOME_FILTERS = [
+    { key: "all", label: "All Outcomes" },
+    { key: "win", label: "Wins" },
+    { key: "loss", label: "Losses" },
+    { key: "draw", label: "Draws" },
+    { key: "debris", label: "Debris Created" }
+  ];
+  const BLOCK_STATUS_FILTERS = [
+    { key: "all", label: "All Blocks" },
+    { key: "active", label: "Active Cooldown" },
+    { key: "cleared", label: "Cleared" }
+  ];
   const AttacksView = ({ hidden }) => {
     const {
+      apiOnline,
+      reconnectAttempts,
       activePage,
       activePlanet,
       atkData,
@@ -24943,11 +28686,78 @@
     } = useConsole();
     const isHidden = hidden ?? activePage !== "attacks";
     const atkTab = uiPrefs.atkTab === "blocks" ? "blocks" : "battles";
+    const [atkSearch, setAtkSearch] = reactExports.useState("");
+    const [outcomeFilter, setOutcomeFilter] = reactExports.useState("all");
+    const [blockFilter, setBlockFilter] = reactExports.useState("all");
+    const [loadingCount, setLoadingCount] = reactExports.useState(0);
+    const [loadingLabel, setLoadingLabel] = reactExports.useState(null);
+    const mountedRef = reactExports.useRef(true);
+    const activeReqCountRef = reactExports.useRef(0);
+    reactExports.useEffect(() => {
+      mountedRef.current = true;
+      return () => {
+        mountedRef.current = false;
+      };
+    }, []);
+    const runTrackedRequest = reactExports.useCallback(async (label, fn) => {
+      activeReqCountRef.current += 1;
+      if (mountedRef.current) {
+        setLoadingCount(activeReqCountRef.current);
+        setLoadingLabel(label);
+      }
+      try {
+        await fn();
+      } finally {
+        activeReqCountRef.current = Math.max(0, activeReqCountRef.current - 1);
+        if (mountedRef.current) {
+          setLoadingCount(activeReqCountRef.current);
+          if (activeReqCountRef.current === 0) {
+            setLoadingLabel(null);
+          }
+        }
+      }
+    }, []);
+    const isInitialLoading = atkData === null;
+    const isRefreshing = loadingCount > 0;
+    const showLoading = isInitialLoading || isRefreshing;
     const sum = (atkData == null ? void 0 : atkData.summary) || {};
     const rStats = (atkData == null ? void 0 : atkData.raid_stats) || {};
-    const battles = Array.isArray(atkData == null ? void 0 : atkData.battles) ? atkData.battles : [];
-    const blocks = Array.isArray(atkData == null ? void 0 : atkData.blocked_targets) ? atkData.blocked_targets : [];
+    const battles = reactExports.useMemo(
+      () => Array.isArray(atkData == null ? void 0 : atkData.battles) ? atkData.battles : [],
+      [atkData]
+    );
+    const blocks = reactExports.useMemo(
+      () => Array.isArray(atkData == null ? void 0 : atkData.blocked_targets) ? atkData.blocked_targets : [],
+      [atkData]
+    );
     const raids24 = Math.round(finiteNum(rStats.total_24h, 0));
+    const filteredBattles = reactExports.useMemo(() => {
+      const needle = atkSearch.trim().toLowerCase();
+      return battles.filter((b) => {
+        var _a, _b;
+        const outVal = String(b.outcome || "draw").toLowerCase();
+        if (outcomeFilter === "win" && outVal !== "win") return false;
+        if (outcomeFilter === "loss" && outVal !== "loss") return false;
+        if (outcomeFilter === "draw" && outVal !== "draw") return false;
+        if (outcomeFilter === "debris" && finiteNum((_a = b.debris) == null ? void 0 : _a.pig_iron, 0) + finiteNum((_b = b.debris) == null ? void 0 : _b.metal, 0) <= 0) {
+          return false;
+        }
+        if (!needle) return true;
+        const hay = [b.coords, b.defender_name, b.subject, outVal, b.msg_date_text].filter(Boolean).join(" ").toLowerCase();
+        return hay.includes(needle);
+      });
+    }, [battles, outcomeFilter, atkSearch]);
+    const filteredBlocks = reactExports.useMemo(() => {
+      const needle = atkSearch.trim().toLowerCase();
+      return blocks.filter((bt) => {
+        const isActive = Boolean(bt.active_block);
+        if (blockFilter === "active" && !isActive) return false;
+        if (blockFilter === "cleared" && isActive) return false;
+        if (!needle) return true;
+        const hay = [bt.coords, bt.planet_name, bt.owner, bt.block_reason].filter(Boolean).join(" ").toLowerCase();
+        return hay.includes(needle);
+      });
+    }, [blocks, blockFilter, atkSearch]);
     const battleSortCols = reactExports.useMemo(
       () => ({
         time: {
@@ -25001,8 +28811,26 @@
       }),
       []
     );
-    const battleSort = useTableSort(battles, battleSortCols);
-    const blockSort = useTableSort(blocks, blockSortCols);
+    const battleSort = useTableSort(filteredBattles, battleSortCols);
+    const blockSort = useTableSort(filteredBlocks, blockSortCols);
+    const battlePagination = useTablePagination(
+      battleSort.sortedRows,
+      `${atkTab}|${outcomeFilter}|${atkSearch}|${battleSort.sortKey ?? ""}|${battleSort.sortDirection ?? ""}`,
+      25
+    );
+    const blockPagination = useTablePagination(
+      blockSort.sortedRows,
+      `${atkTab}|${blockFilter}|${atkSearch}|${blockSort.sortKey ?? ""}|${blockSort.sortDirection ?? ""}`,
+      25
+    );
+    const activeTabHasRows = atkTab === "blocks" ? blocks.length > 0 : battles.length > 0;
+    const usePanelLoading = isInitialLoading || isRefreshing && !activeTabHasRows;
+    const handleRefreshAttacks = () => {
+      void runTrackedRequest("Loading attack results...", () => refreshAttacksView());
+    };
+    const handleSyncInbox = () => {
+      void runTrackedRequest("Syncing inbox folders & attack results...", () => syncAllInboxFolders());
+    };
     const handleSpyBlockTarget = async (coords) => {
       try {
         const res = await apiCommand2({
@@ -25053,7 +28881,9 @@
                     type: "button",
                     className: "btn btn-primary btn-sm",
                     id: "btn-atk-sync",
-                    onClick: syncAllInboxFolders,
+                    disabled: isRefreshing,
+                    "aria-busy": isRefreshing,
+                    onClick: handleSyncInbox,
                     children: "Sync All Folders"
                   }
                 ),
@@ -25063,7 +28893,9 @@
                     type: "button",
                     className: "btn btn-secondary btn-sm",
                     id: "btn-atk-refresh",
-                    onClick: refreshAttacksView,
+                    disabled: isRefreshing,
+                    "aria-busy": isRefreshing,
+                    onClick: handleRefreshAttacks,
                     children: "Refresh DB"
                   }
                 )
@@ -25075,212 +28907,303 @@
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "ATK" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Combat Reports, Plunder & Bash Timeouts" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "atk-meta-count", children: atkData ? `${battles.length} REPORTS · ${blocks.length} BLOCKS` : "0 REPORTS" })
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "atk-meta-count", children: atkData ? `${filteredBattles.length !== battles.length ? `${filteredBattles.length}/${battles.length}` : String(battles.length)} REPORTS · ${filteredBlocks.length !== blocks.length ? `${filteredBlocks.length}/${blocks.length}` : String(blocks.length)} BLOCKS` : "LOADING..." })
               ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "tablist", "aria-label": "Attack view subtabs", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-toolbar", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
+                  "input",
                   {
-                    type: "button",
-                    className: `tab-btn${atkTab === "battles" ? " active" : ""}`,
-                    "data-atk-tab": "battles",
-                    onClick: () => setUiPref("atkTab", "battles"),
-                    children: "Battle Reports"
+                    type: "search",
+                    id: "atk-search",
+                    className: "table-search-input",
+                    placeholder: "Search coords / defender / reason...",
+                    "aria-label": "Search battle reports and blocks",
+                    value: atkSearch,
+                    onChange: (e) => setAtkSearch(e.target.value)
                   }
                 ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: `tab-btn${atkTab === "blocks" ? " active" : ""}`,
-                    "data-atk-tab": "blocks",
-                    onClick: () => setUiPref("atkTab", "blocks"),
-                    children: "Bash & Server Blocks"
-                  }
-                )
-              ] })
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "atk-pane-battles", hidden: atkTab !== "battles", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Time",
-                    sortKey: "time",
-                    activeKey: battleSort.sortKey,
-                    direction: battleSort.sortDirection,
-                    onSort: battleSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Target",
-                    sortKey: "target",
-                    activeKey: battleSort.sortKey,
-                    direction: battleSort.sortDirection,
-                    onSort: battleSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Defender",
-                    sortKey: "defender",
-                    activeKey: battleSort.sortKey,
-                    direction: battleSort.sortDirection,
-                    onSort: battleSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Outcome",
-                    sortKey: "outcome",
-                    activeKey: battleSort.sortKey,
-                    direction: battleSort.sortDirection,
-                    onSort: battleSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Rounds",
-                    sortKey: "rounds",
-                    activeKey: battleSort.sortKey,
-                    direction: battleSort.sortDirection,
-                    onSort: battleSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Plundered Loot",
-                    sortKey: "loot",
-                    activeKey: battleSort.sortKey,
-                    direction: battleSort.sortDirection,
-                    onSort: battleSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Losses (Atk / Def)",
-                    sortKey: "losses",
-                    activeKey: battleSort.sortKey,
-                    direction: battleSort.sortDirection,
-                    onSort: battleSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Debris Created",
-                    sortKey: "debris",
-                    activeKey: battleSort.sortKey,
-                    direction: battleSort.sortDirection,
-                    onSort: battleSort.requestSort
-                  }
-                )
-              ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "atk-battles-tbody", children: battleSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "Click Sync All Folders to archive in-game battle reports." }) }) : battleSort.sortedRows.map((b, idx) => {
-                var _a, _b, _c, _d, _e;
-                const outVal = String(b.outcome || "draw").toLowerCase();
-                const outCls = outVal === "win" ? "is-win" : outVal === "loss" ? "is-loss" : "is-draw";
-                const lootSp = Math.round(finiteNum((_a = b.loot) == null ? void 0 : _a.spice_eq, 0));
-                const atkLoss = Math.round(finiteNum((_b = b.attacker_losses) == null ? void 0 : _b.spice_eq, 0));
-                const defLoss = Math.round(finiteNum((_c = b.defender_losses) == null ? void 0 : _c.spice_eq, 0));
-                const dPig = Math.round(finiteNum((_d = b.debris) == null ? void 0 : _d.pig_iron, 0));
-                const dMet = Math.round(finiteNum((_e = b.debris) == null ? void 0 : _e.metal, 0));
-                return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fmtShortDateTime(b.ts, b.msg_date_text) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: String(b.coords || "—") }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: String(b.defender_name || b.subject || "Unknown") }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `outcome-badge ${outCls}`, children: outVal.toUpperCase() }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: String(Math.round(finiteNum(b.rounds, 0))) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: lootSp > 0 ? `${formatResourcesInline(b.loot)} (+${fmtInt(lootSp)} SpEq)` : "0" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `Atk ${fmtInt(atkLoss)} / Def ${fmtInt(defLoss)} SpEq` }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: dPig > 0 || dMet > 0 ? `${fmtInt(dPig)} Pig · ${fmtInt(dMet)} Met` : "None" })
-                ] }, b.id ?? `${b.coords}-${idx}`);
-              }) })
-            ] }) }) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "atk-pane-blocks", hidden: atkTab !== "blocks", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Coords",
-                    sortKey: "coords",
-                    activeKey: blockSort.sortKey,
-                    direction: blockSort.sortDirection,
-                    onSort: blockSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Owner / Planet",
-                    sortKey: "owner",
-                    activeKey: blockSort.sortKey,
-                    direction: blockSort.sortDirection,
-                    onSort: blockSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Bash Hits",
-                    sortKey: "bashHits",
-                    activeKey: blockSort.sortKey,
-                    direction: blockSort.sortDirection,
-                    onSort: blockSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Cooldown Left",
-                    sortKey: "cooldown",
-                    activeKey: blockSort.sortKey,
-                    direction: blockSort.sortDirection,
-                    onSort: blockSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Server Protection Reason",
-                    sortKey: "reason",
-                    activeKey: blockSort.sortKey,
-                    direction: blockSort.sortDirection,
-                    onSort: blockSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
-              ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "atk-blocks-tbody", children: blockSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: "No active bash protection or server blocks recorded." }) }) : blockSort.sortedRows.map((bt, idx) => {
-                const coords = String(bt.coords || "—");
-                return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: coords }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: [bt.planet_name, bt.owner].filter(Boolean).join(" · ") || "Unknown" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: String(Math.round(finiteNum(bt.bash_hits, 0))) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: bt.active_block ? fmtDurationCountdown(bt.remaining_seconds) : "Cleared" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: String(bt.block_reason || "Bash / Server protection") }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "tablist", "aria-label": "Attack view subtabs", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
                     "button",
                     {
                       type: "button",
-                      className: "btn btn-secondary btn-sm",
-                      onClick: () => handleSpyBlockTarget(coords),
-                      children: "Spy"
+                      className: `tab-btn${atkTab === "battles" ? " active" : ""}`,
+                      "data-atk-tab": "battles",
+                      onClick: () => setUiPref("atkTab", "battles"),
+                      children: "Battle Reports"
                     }
-                  ) })
-                ] }, `${coords}-${idx}`);
-              }) })
-            ] }) }) })
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      className: `tab-btn${atkTab === "blocks" ? " active" : ""}`,
+                      "data-atk-tab": "blocks",
+                      onClick: () => setUiPref("atkTab", "blocks"),
+                      children: "Bash & Server Blocks"
+                    }
+                  )
+                ] })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "intel-stage", children: [
+              showLoading ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                LoadingIndicator,
+                {
+                  id: "atk-loading-indicator",
+                  variant: usePanelLoading ? "panel" : "inline",
+                  message: loadingLabel || "Loading attack results...",
+                  detail: !apiOnline && reconnectAttempts > 0 ? "Waiting for Game API connection..." : usePanelLoading ? "Fetching archived battle reports and bash cooldown records from SQLite" : "Refreshing battle reports and bash protection status"
+                }
+              ) : null,
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "div",
+                {
+                  className: "intel-pane",
+                  id: "atk-pane-battles",
+                  hidden: usePanelLoading || atkTab !== "battles",
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-filter-bar", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "filter-chips", role: "group", "aria-label": "Battle outcome filters", children: BATTLE_OUTCOME_FILTERS.map((f) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        type: "button",
+                        className: `chip-btn${outcomeFilter === f.key ? " active" : ""}`,
+                        "data-atk-outcome": f.key,
+                        onClick: () => setOutcomeFilter(f.key),
+                        children: f.label
+                      },
+                      f.key
+                    )) }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Time",
+                            sortKey: "time",
+                            activeKey: battleSort.sortKey,
+                            direction: battleSort.sortDirection,
+                            onSort: battleSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Target",
+                            sortKey: "target",
+                            activeKey: battleSort.sortKey,
+                            direction: battleSort.sortDirection,
+                            onSort: battleSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Defender",
+                            sortKey: "defender",
+                            activeKey: battleSort.sortKey,
+                            direction: battleSort.sortDirection,
+                            onSort: battleSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Outcome",
+                            sortKey: "outcome",
+                            activeKey: battleSort.sortKey,
+                            direction: battleSort.sortDirection,
+                            onSort: battleSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Rounds",
+                            sortKey: "rounds",
+                            activeKey: battleSort.sortKey,
+                            direction: battleSort.sortDirection,
+                            onSort: battleSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Plundered Loot",
+                            sortKey: "loot",
+                            activeKey: battleSort.sortKey,
+                            direction: battleSort.sortDirection,
+                            onSort: battleSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Losses (Atk / Def)",
+                            sortKey: "losses",
+                            activeKey: battleSort.sortKey,
+                            direction: battleSort.sortDirection,
+                            onSort: battleSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Debris Created",
+                            sortKey: "debris",
+                            activeKey: battleSort.sortKey,
+                            direction: battleSort.sortDirection,
+                            onSort: battleSort.requestSort
+                          }
+                        )
+                      ] }) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "atk-battles-tbody", children: battlePagination.pagedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: battles.length > 0 ? "No battle reports match the active filter or search query." : "Click Sync All Folders to archive in-game battle reports." }) }) : battlePagination.pagedRows.map((b, idx) => {
+                        var _a, _b, _c, _d, _e;
+                        const outVal = String(b.outcome || "draw").toLowerCase();
+                        const outCls = outVal === "win" ? "is-win" : outVal === "loss" ? "is-loss" : "is-draw";
+                        const lootSp = Math.round(finiteNum((_a = b.loot) == null ? void 0 : _a.spice_eq, 0));
+                        const atkLoss = Math.round(finiteNum((_b = b.attacker_losses) == null ? void 0 : _b.spice_eq, 0));
+                        const defLoss = Math.round(finiteNum((_c = b.defender_losses) == null ? void 0 : _c.spice_eq, 0));
+                        const dPig = Math.round(finiteNum((_d = b.debris) == null ? void 0 : _d.pig_iron, 0));
+                        const dMet = Math.round(finiteNum((_e = b.debris) == null ? void 0 : _e.metal, 0));
+                        return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fmtShortDateTime(b.ts, b.msg_date_text) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: String(b.coords || "—") }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: String(b.defender_name || b.subject || "Unknown") }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `outcome-badge ${outCls}`, children: outVal.toUpperCase() }) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: String(Math.round(finiteNum(b.rounds, 0))) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: lootSp > 0 ? `${formatResourcesInline(b.loot)} (+${fmtInt(lootSp)} SpEq)` : "0" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `Atk ${fmtInt(atkLoss)} / Def ${fmtInt(defLoss)} SpEq` }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: dPig > 0 || dMet > 0 ? `${fmtInt(dPig)} Pig · ${fmtInt(dMet)} Met` : "None" })
+                        ] }, b.id ?? `${b.coords}-${idx}`);
+                      }) })
+                    ] }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      TablePagination,
+                      {
+                        idPrefix: "atk-battles",
+                        totalItems: battlePagination.totalItems,
+                        page: battlePagination.page,
+                        pageSize: battlePagination.pageSize,
+                        itemLabel: "reports",
+                        onPageChange: battlePagination.setPage,
+                        onPageSizeChange: battlePagination.setPageSize
+                      }
+                    )
+                  ]
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "div",
+                {
+                  className: "intel-pane",
+                  id: "atk-pane-blocks",
+                  hidden: usePanelLoading || atkTab !== "blocks",
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-filter-bar", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "filter-chips", role: "group", "aria-label": "Block status filters", children: BLOCK_STATUS_FILTERS.map((f) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        type: "button",
+                        className: `chip-btn${blockFilter === f.key ? " active" : ""}`,
+                        "data-atk-block-filter": f.key,
+                        onClick: () => setBlockFilter(f.key),
+                        children: f.label
+                      },
+                      f.key
+                    )) }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Coords",
+                            sortKey: "coords",
+                            activeKey: blockSort.sortKey,
+                            direction: blockSort.sortDirection,
+                            onSort: blockSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Owner / Planet",
+                            sortKey: "owner",
+                            activeKey: blockSort.sortKey,
+                            direction: blockSort.sortDirection,
+                            onSort: blockSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Bash Hits",
+                            sortKey: "bashHits",
+                            activeKey: blockSort.sortKey,
+                            direction: blockSort.sortDirection,
+                            onSort: blockSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Cooldown Left",
+                            sortKey: "cooldown",
+                            activeKey: blockSort.sortKey,
+                            direction: blockSort.sortDirection,
+                            onSort: blockSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Server Protection Reason",
+                            sortKey: "reason",
+                            activeKey: blockSort.sortKey,
+                            direction: blockSort.sortDirection,
+                            onSort: blockSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Ops" })
+                      ] }) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "atk-blocks-tbody", children: blockPagination.pagedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: blocks.length > 0 ? "No bash or server blocks match the active filter or search query." : "No active bash protection or server blocks recorded." }) }) : blockPagination.pagedRows.map((bt, idx) => {
+                        const coords = String(bt.coords || "—");
+                        return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: coords }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: [bt.planet_name, bt.owner].filter(Boolean).join(" · ") || "Unknown" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: String(Math.round(finiteNum(bt.bash_hits, 0))) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: bt.active_block ? fmtDurationCountdown(bt.remaining_seconds) : "Cleared" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: String(bt.block_reason || "Bash / Server protection") }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                            "button",
+                            {
+                              type: "button",
+                              className: "btn btn-secondary btn-sm",
+                              onClick: () => handleSpyBlockTarget(coords),
+                              children: "Spy"
+                            }
+                          ) })
+                        ] }, `${coords}-${idx}`);
+                      }) })
+                    ] }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      TablePagination,
+                      {
+                        idPrefix: "atk-blocks",
+                        totalItems: blockPagination.totalItems,
+                        page: blockPagination.page,
+                        pageSize: blockPagination.pageSize,
+                        itemLabel: "blocks",
+                        onPageChange: blockPagination.setPage,
+                        onPageSizeChange: blockPagination.setPageSize
+                      }
+                    )
+                  ]
+                }
+              )
+            ] })
           ] })
         ]
       }
@@ -25297,6 +29220,8 @@
   ];
   const RecyclersView = ({ hidden }) => {
     const {
+      apiOnline,
+      reconnectAttempts,
       activePage,
       activePlanet,
       recData,
@@ -25310,11 +29235,84 @@
     const isHidden = hidden ?? activePage !== "recyclers";
     const recTab = uiPrefs.recTab === "debris" || uiPrefs.recTab === "emails" ? uiPrefs.recTab : "harvests";
     const emailCat = uiPrefs.emailCatFilter || "all";
+    const [recSearch, setRecSearch] = reactExports.useState("");
+    const [loadingCount, setLoadingCount] = reactExports.useState(0);
+    const [loadingLabel, setLoadingLabel] = reactExports.useState(null);
+    const mountedRef = reactExports.useRef(true);
+    const activeReqCountRef = reactExports.useRef(0);
+    reactExports.useEffect(() => {
+      mountedRef.current = true;
+      return () => {
+        mountedRef.current = false;
+      };
+    }, []);
+    const runTrackedRequest = reactExports.useCallback(async (label, fn) => {
+      activeReqCountRef.current += 1;
+      if (mountedRef.current) {
+        setLoadingCount(activeReqCountRef.current);
+        setLoadingLabel(label);
+      }
+      try {
+        await fn();
+      } finally {
+        activeReqCountRef.current = Math.max(0, activeReqCountRef.current - 1);
+        if (mountedRef.current) {
+          setLoadingCount(activeReqCountRef.current);
+          if (activeReqCountRef.current === 0) {
+            setLoadingLabel(null);
+          }
+        }
+      }
+    }, []);
+    const isInitialLoading = recData === null;
+    const isRefreshing = loadingCount > 0;
+    const showLoading = isInitialLoading || isRefreshing;
     const sum = (recData == null ? void 0 : recData.summary) || {};
-    const recycles = Array.isArray(recData == null ? void 0 : recData.recycles) ? recData.recycles : [];
-    const debris = Array.isArray(recData == null ? void 0 : recData.debris_targets) ? recData.debris_targets : [];
-    const emails = Array.isArray(recData == null ? void 0 : recData.other_emails) ? recData.other_emails : [];
+    const recycles = reactExports.useMemo(
+      () => Array.isArray(recData == null ? void 0 : recData.recycles) ? recData.recycles : [],
+      [recData]
+    );
+    const debris = reactExports.useMemo(
+      () => Array.isArray(recData == null ? void 0 : recData.debris_targets) ? recData.debris_targets : [],
+      [recData]
+    );
+    const emails = reactExports.useMemo(
+      () => Array.isArray(recData == null ? void 0 : recData.other_emails) ? recData.other_emails : [],
+      [recData]
+    );
     const cats = sum.category_counts || {};
+    const filteredRecycles = reactExports.useMemo(() => {
+      const needle = recSearch.trim().toLowerCase();
+      if (!needle) return recycles;
+      return recycles.filter((r) => {
+        const hay = [r.coords, r.msg_date_text].filter(Boolean).join(" ").toLowerCase();
+        return hay.includes(needle);
+      });
+    }, [recycles, recSearch]);
+    const filteredDebris = reactExports.useMemo(() => {
+      const needle = recSearch.trim().toLowerCase();
+      if (!needle) return debris;
+      return debris.filter((d) => {
+        const hay = [d.coords, d.planet_name, d.owner].filter(Boolean).join(" ").toLowerCase();
+        return hay.includes(needle);
+      });
+    }, [debris, recSearch]);
+    const filteredEmails = reactExports.useMemo(() => {
+      const needle = recSearch.trim().toLowerCase();
+      if (!needle) return emails;
+      return emails.filter((m) => {
+        const hay = [
+          m.coords,
+          m.folder_type,
+          m.category,
+          m.sender,
+          m.subject,
+          m.body_text,
+          m.msg_date_text
+        ].filter(Boolean).join(" ").toLowerCase();
+        return hay.includes(needle);
+      });
+    }, [emails, recSearch]);
     const tPig = Math.round(finiteNum(sum.total_pig_iron, 0));
     const tMet = Math.round(finiteNum(sum.total_metal, 0));
     const tKry = Math.round(finiteNum(sum.total_kryptonite, 0));
@@ -25383,15 +29381,44 @@
       }),
       []
     );
-    const recycleSort = useTableSort(recycles, recycleSortCols);
-    const debrisSort = useTableSort(debris, debrisSortCols);
-    const emailSort = useTableSort(emails, emailSortCols);
+    const recycleSort = useTableSort(filteredRecycles, recycleSortCols);
+    const debrisSort = useTableSort(filteredDebris, debrisSortCols);
+    const emailSort = useTableSort(filteredEmails, emailSortCols);
+    const recyclePagination = useTablePagination(
+      recycleSort.sortedRows,
+      `${recTab}|${recSearch}|${recycleSort.sortKey ?? ""}|${recycleSort.sortDirection ?? ""}`,
+      25
+    );
+    const debrisPagination = useTablePagination(
+      debrisSort.sortedRows,
+      `${recTab}|${recSearch}|${debrisSort.sortKey ?? ""}|${debrisSort.sortDirection ?? ""}`,
+      25
+    );
+    const emailPagination = useTablePagination(
+      emailSort.sortedRows,
+      `${recTab}|${emailCat}|${recSearch}|${emailSort.sortKey ?? ""}|${emailSort.sortDirection ?? ""}`,
+      25
+    );
+    const activeTabHasRows = recTab === "debris" ? debris.length > 0 : recTab === "emails" ? emails.length > 0 : recycles.length > 0;
+    const usePanelLoading = isInitialLoading || isRefreshing && !activeTabHasRows;
     const rawKpiText = tKry > 0 || tSpi > 0 ? `${fmtInt(tPig)} Pig · ${fmtInt(tMet)} Met · ${fmtInt(tKry)} Kry · ${fmtInt(tSpi)} Spi` : `${fmtInt(tPig)} Pig · ${fmtInt(tMet)} Met`;
     const userCnt = Math.round(finiteNum(cats.general, 0));
     const retCnt = Math.round(finiteNum(cats.fleet_return, 0));
+    const handleRefreshRecyclers = () => {
+      void runTrackedRequest("Loading recycler reports...", () => refreshRecyclersView());
+    };
+    const handleSyncInbox = () => {
+      void runTrackedRequest(
+        "Syncing inbox folders & recycler reports...",
+        () => syncAllInboxFolders()
+      );
+    };
     const handleSelectEmailCat = (cat) => {
       setUiPref("emailCatFilter", cat);
-      refreshRecyclersView(cat);
+      void runTrackedRequest(
+        "Loading recycler reports & emails...",
+        () => refreshRecyclersView(cat)
+      );
     };
     const handleRecycleDebris = async (coords) => {
       try {
@@ -25406,7 +29433,7 @@
           res.message || `Recycler dispatched to ${coords}.`,
           res.executed ? "ok" : "warn"
         );
-        await refreshRecyclersView();
+        await runTrackedRequest("Refreshing recycler reports...", () => refreshRecyclersView());
       } catch (err) {
         showFeedback(`Recycle failed: ${err.message}`, feedbackKindForError(err));
       }
@@ -25447,8 +29474,22 @@
                     className: "btn btn-primary btn-sm",
                     id: "btn-rec-sync",
                     "data-testid": "btn-sync-all-messages",
-                    onClick: syncAllInboxFolders,
+                    disabled: isRefreshing,
+                    "aria-busy": isRefreshing,
+                    onClick: handleSyncInbox,
                     children: "Sync All Folders"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn-secondary btn-sm",
+                    id: "btn-rec-refresh",
+                    disabled: isRefreshing,
+                    "aria-busy": isRefreshing,
+                    onClick: handleRefreshRecyclers,
+                    children: "Refresh DB"
                   }
                 )
               ] })
@@ -25459,289 +29500,378 @@
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-title-group", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "REC" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Recycler Harvests, Debris & Inbox Emails" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "rec-meta-count", children: recData ? `${recycles.length} HARVESTS · ${debris.length} DEBRIS · ${emails.length} EMAILS` : "0 HARVESTS" })
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", id: "rec-meta-count", children: recData ? `${filteredRecycles.length !== recycles.length ? `${filteredRecycles.length}/${recycles.length}` : String(recycles.length)} HARVESTS · ${filteredDebris.length !== debris.length ? `${filteredDebris.length}/${debris.length}` : String(debris.length)} DEBRIS · ${filteredEmails.length !== emails.length ? `${filteredEmails.length}/${emails.length}` : String(emails.length)} EMAILS` : "LOADING..." })
               ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "tablist", "aria-label": "Recycler and email subtabs", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-toolbar", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
+                  "input",
                   {
-                    type: "button",
-                    className: `tab-btn${recTab === "harvests" ? " active" : ""}`,
-                    "data-rec-tab": "harvests",
-                    onClick: () => setUiPref("recTab", "harvests"),
-                    children: "Recycler Reports"
+                    type: "search",
+                    id: "rec-search",
+                    className: "table-search-input",
+                    placeholder: "Search coords / owner / subject...",
+                    "aria-label": "Search recycler harvests, debris, and emails",
+                    value: recSearch,
+                    onChange: (e) => setRecSearch(e.target.value)
                   }
                 ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: `tab-btn${recTab === "debris" ? " active" : ""}`,
-                    "data-rec-tab": "debris",
-                    onClick: () => setUiPref("recTab", "debris"),
-                    children: "Active Debris"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    className: `tab-btn${recTab === "emails" ? " active" : ""}`,
-                    "data-rec-tab": "emails",
-                    onClick: () => setUiPref("recTab", "emails"),
-                    children: "Other Emails & Fleet"
-                  }
-                )
-              ] })
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "rec-pane-harvests", hidden: recTab !== "harvests", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Time",
-                    sortKey: "time",
-                    activeKey: recycleSort.sortKey,
-                    direction: recycleSort.sortDirection,
-                    onSort: recycleSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Debris Coords",
-                    sortKey: "coords",
-                    activeKey: recycleSort.sortKey,
-                    direction: recycleSort.sortDirection,
-                    onSort: recycleSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Recyclers / Cap",
-                    sortKey: "recyclers",
-                    activeKey: recycleSort.sortKey,
-                    direction: recycleSort.sortDirection,
-                    onSort: recycleSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Pig Iron",
-                    sortKey: "pigIron",
-                    activeKey: recycleSort.sortKey,
-                    direction: recycleSort.sortDirection,
-                    onSort: recycleSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Metal",
-                    sortKey: "metal",
-                    activeKey: recycleSort.sortKey,
-                    direction: recycleSort.sortDirection,
-                    onSort: recycleSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Harvest SpEq",
-                    sortKey: "spiceEq",
-                    activeKey: recycleSort.sortKey,
-                    direction: recycleSort.sortDirection,
-                    onSort: recycleSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Field Before",
-                    sortKey: "fieldBefore",
-                    activeKey: recycleSort.sortKey,
-                    direction: recycleSort.sortDirection,
-                    onSort: recycleSort.requestSort
-                  }
-                )
-              ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rec-harvests-tbody", children: recycleSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 7, className: "empty-cell", children: "Click Sync All Folders to archive fleet recycling reports." }) }) : recycleSort.sortedRows.map((r, idx) => {
-                const rCnt = Math.round(finiteNum(r.recycler_count, 0));
-                const rCap = Math.round(finiteNum(r.cargo_capacity, 0));
-                const bPig = Math.round(finiteNum(r.field_pig_iron, 0));
-                const bMet = Math.round(finiteNum(r.field_metal, 0));
-                const hKry = Math.round(finiteNum(r.harvested_kryptonite, 0));
-                const hSpi = Math.round(finiteNum(r.harvested_spice, 0));
-                const befText = hKry > 0 || hSpi > 0 ? `+${fmtInt(hKry)} Kry · +${fmtInt(hSpi)} Spi` : bPig > 0 || bMet > 0 ? `${fmtInt(bPig)} Pig · ${fmtInt(bMet)} Met` : "—";
-                return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fmtShortDateTime(r.ts, r.msg_date_text) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: String(r.coords || "—") }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: rCnt > 0 ? `${fmtInt(rCnt)}x (${fmtInt(rCap)})` : "—" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtInt(r.harvested_pig_iron ?? 0) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtInt(r.harvested_metal ?? 0) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `${fmtInt(Math.round(finiteNum(r.spice_eq, 0)))} SpEq` }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: befText })
-                ] }, r.id ?? `${r.coords}-${idx}`);
-              }) })
-            ] }) }) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "intel-pane", id: "rec-pane-debris", hidden: recTab !== "debris", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Coords",
-                    sortKey: "coords",
-                    activeKey: debrisSort.sortKey,
-                    direction: debrisSort.sortDirection,
-                    onSort: debrisSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Planet / Owner",
-                    sortKey: "owner",
-                    activeKey: debrisSort.sortKey,
-                    direction: debrisSort.sortDirection,
-                    onSort: debrisSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Status",
-                    sortKey: "status",
-                    activeKey: debrisSort.sortKey,
-                    direction: debrisSort.sortDirection,
-                    onSort: debrisSort.requestSort
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  SortableTh,
-                  {
-                    label: "Last Seen",
-                    sortKey: "lastSeen",
-                    activeKey: debrisSort.sortKey,
-                    direction: debrisSort.sortDirection,
-                    onSort: debrisSort.requestSort,
-                    align: "right"
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Dispatch" })
-              ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rec-debris-tbody", children: debrisSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 5, className: "empty-cell", children: "No active floating debris fields spotted in scanned systems." }) }) : debrisSort.sortedRows.map((d, idx) => {
-                const coords = String(d.coords || "—");
-                return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: coords }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: [d.planet_name, d.owner].filter(Boolean).join(" · ") || "Orbital Debris" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "status-word", children: "RUBBLE FIELD" }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtShortDateTime(d.last_scanned_ts) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "tablist", "aria-label": "Recycler and email subtabs", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
                     "button",
                     {
                       type: "button",
-                      className: "btn btn-primary btn-sm",
-                      onClick: () => handleRecycleDebris(coords),
-                      children: "Recycle"
-                    }
-                  ) })
-                ] }, `${coords}-${idx}`);
-              }) })
-            ] }) }) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "intel-pane", id: "rec-pane-emails", hidden: recTab !== "emails", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "email-filter-bar", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "filter-chips", role: "group", "aria-label": "Email category filters", children: EMAIL_CATS.map((c) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  type: "button",
-                  className: `chip-btn${emailCat === c.key ? " active" : ""}`,
-                  "data-email-cat": c.key,
-                  onClick: () => handleSelectEmailCat(c.key),
-                  children: c.label
-                },
-                c.key
-              )) }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    SortableTh,
-                    {
-                      label: "Time",
-                      sortKey: "time",
-                      activeKey: emailSort.sortKey,
-                      direction: emailSort.sortDirection,
-                      onSort: emailSort.requestSort
+                      className: `tab-btn${recTab === "harvests" ? " active" : ""}`,
+                      "data-rec-tab": "harvests",
+                      onClick: () => setUiPref("recTab", "harvests"),
+                      children: "Recycler Reports"
                     }
                   ),
                   /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    SortableTh,
+                    "button",
                     {
-                      label: "Folder / Type",
-                      sortKey: "folderType",
-                      activeKey: emailSort.sortKey,
-                      direction: emailSort.sortDirection,
-                      onSort: emailSort.requestSort
+                      type: "button",
+                      className: `tab-btn${recTab === "debris" ? " active" : ""}`,
+                      "data-rec-tab": "debris",
+                      onClick: () => setUiPref("recTab", "debris"),
+                      children: "Active Debris"
                     }
                   ),
                   /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    SortableTh,
+                    "button",
                     {
-                      label: "Sender",
-                      sortKey: "sender",
-                      activeKey: emailSort.sortKey,
-                      direction: emailSort.sortDirection,
-                      onSort: emailSort.requestSort
-                    }
-                  ),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    SortableTh,
-                    {
-                      label: "Subject",
-                      sortKey: "subject",
-                      activeKey: emailSort.sortKey,
-                      direction: emailSort.sortDirection,
-                      onSort: emailSort.requestSort
-                    }
-                  ),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    SortableTh,
-                    {
-                      label: "Coords",
-                      sortKey: "coords",
-                      activeKey: emailSort.sortKey,
-                      direction: emailSort.sortDirection,
-                      onSort: emailSort.requestSort
-                    }
-                  ),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    SortableTh,
-                    {
-                      label: "Message Body",
-                      sortKey: "body",
-                      activeKey: emailSort.sortKey,
-                      direction: emailSort.sortDirection,
-                      onSort: emailSort.requestSort
+                      type: "button",
+                      className: `tab-btn${recTab === "emails" ? " active" : ""}`,
+                      "data-rec-tab": "emails",
+                      onClick: () => setUiPref("recTab", "emails"),
+                      children: "Other Emails & Fleet"
                     }
                   )
-                ] }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rec-emails-tbody", children: emailSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: "No other emails or fleet notices archived yet." }) }) : emailSort.sortedRows.map((m, idx) => {
-                  const rawTxt = String(m.body_text || "").trim();
-                  const bodyTxt = rawTxt.length > 260 ? `${rawTxt.slice(0, 260)}...` : rawTxt || "—";
-                  return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fmtShortDateTime(m.ts ?? m.ingested_ts, m.msg_date_text) }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `${m.folder_type || "inbox"} · ${m.category || "general"}` }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: String(m.sender || "System") }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: String(m.subject || "—") }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: String(m.coords || "—") }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "msg-body-cell", children: bodyTxt })
-                  ] }, m.msg_uid ?? m.id ?? idx);
-                }) })
-              ] }) })
+                ] })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "intel-stage", children: [
+              showLoading ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                LoadingIndicator,
+                {
+                  id: "rec-loading-indicator",
+                  variant: usePanelLoading ? "panel" : "inline",
+                  message: loadingLabel || "Loading recycler reports...",
+                  detail: !apiOnline && reconnectAttempts > 0 ? "Waiting for Game API connection..." : usePanelLoading ? "Fetching recycler harvests, orbital debris fields, and inbox emails from SQLite" : "Refreshing recycler harvests, active debris, and inbox archive"
+                }
+              ) : null,
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "div",
+                {
+                  className: "intel-pane",
+                  id: "rec-pane-harvests",
+                  hidden: usePanelLoading || recTab !== "harvests",
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Time",
+                            sortKey: "time",
+                            activeKey: recycleSort.sortKey,
+                            direction: recycleSort.sortDirection,
+                            onSort: recycleSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Debris Coords",
+                            sortKey: "coords",
+                            activeKey: recycleSort.sortKey,
+                            direction: recycleSort.sortDirection,
+                            onSort: recycleSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Recyclers / Cap",
+                            sortKey: "recyclers",
+                            activeKey: recycleSort.sortKey,
+                            direction: recycleSort.sortDirection,
+                            onSort: recycleSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Pig Iron",
+                            sortKey: "pigIron",
+                            activeKey: recycleSort.sortKey,
+                            direction: recycleSort.sortDirection,
+                            onSort: recycleSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Metal",
+                            sortKey: "metal",
+                            activeKey: recycleSort.sortKey,
+                            direction: recycleSort.sortDirection,
+                            onSort: recycleSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Harvest SpEq",
+                            sortKey: "spiceEq",
+                            activeKey: recycleSort.sortKey,
+                            direction: recycleSort.sortDirection,
+                            onSort: recycleSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Field Before",
+                            sortKey: "fieldBefore",
+                            activeKey: recycleSort.sortKey,
+                            direction: recycleSort.sortDirection,
+                            onSort: recycleSort.requestSort
+                          }
+                        )
+                      ] }) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rec-harvests-tbody", children: recyclePagination.pagedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 7, className: "empty-cell", children: recycles.length > 0 ? "No recycler harvests match the active search query." : "Click Sync All Folders to archive fleet recycling reports." }) }) : recyclePagination.pagedRows.map((r, idx) => {
+                        const rCnt = Math.round(finiteNum(r.recycler_count, 0));
+                        const rCap = Math.round(finiteNum(r.cargo_capacity, 0));
+                        const bPig = Math.round(finiteNum(r.field_pig_iron, 0));
+                        const bMet = Math.round(finiteNum(r.field_metal, 0));
+                        const hKry = Math.round(finiteNum(r.harvested_kryptonite, 0));
+                        const hSpi = Math.round(finiteNum(r.harvested_spice, 0));
+                        const befText = hKry > 0 || hSpi > 0 ? `+${fmtInt(hKry)} Kry · +${fmtInt(hSpi)} Spi` : bPig > 0 || bMet > 0 ? `${fmtInt(bPig)} Pig · ${fmtInt(bMet)} Met` : "—";
+                        return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fmtShortDateTime(r.ts, r.msg_date_text) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: String(r.coords || "—") }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: rCnt > 0 ? `${fmtInt(rCnt)}x (${fmtInt(rCap)})` : "—" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtInt(r.harvested_pig_iron ?? 0) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtInt(r.harvested_metal ?? 0) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: `${fmtInt(Math.round(finiteNum(r.spice_eq, 0)))} SpEq` }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: befText })
+                        ] }, r.id ?? `${r.coords}-${idx}`);
+                      }) })
+                    ] }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      TablePagination,
+                      {
+                        idPrefix: "rec-harvests",
+                        totalItems: recyclePagination.totalItems,
+                        page: recyclePagination.page,
+                        pageSize: recyclePagination.pageSize,
+                        itemLabel: "harvests",
+                        onPageChange: recyclePagination.setPage,
+                        onPageSizeChange: recyclePagination.setPageSize
+                      }
+                    )
+                  ]
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "div",
+                {
+                  className: "intel-pane",
+                  id: "rec-pane-debris",
+                  hidden: usePanelLoading || recTab !== "debris",
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Coords",
+                            sortKey: "coords",
+                            activeKey: debrisSort.sortKey,
+                            direction: debrisSort.sortDirection,
+                            onSort: debrisSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Planet / Owner",
+                            sortKey: "owner",
+                            activeKey: debrisSort.sortKey,
+                            direction: debrisSort.sortDirection,
+                            onSort: debrisSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Status",
+                            sortKey: "status",
+                            activeKey: debrisSort.sortKey,
+                            direction: debrisSort.sortDirection,
+                            onSort: debrisSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Last Seen",
+                            sortKey: "lastSeen",
+                            activeKey: debrisSort.sortKey,
+                            direction: debrisSort.sortDirection,
+                            onSort: debrisSort.requestSort,
+                            align: "right"
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Dispatch" })
+                      ] }) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rec-debris-tbody", children: debrisPagination.pagedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 5, className: "empty-cell", children: debris.length > 0 ? "No debris fields match the active search query." : "No active floating debris fields spotted in scanned systems." }) }) : debrisPagination.pagedRows.map((d, idx) => {
+                        const coords = String(d.coords || "—");
+                        return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: coords }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: [d.planet_name, d.owner].filter(Boolean).join(" · ") || "Orbital Debris" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "status-word", children: "RUBBLE FIELD" }) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtShortDateTime(d.last_scanned_ts) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                            "button",
+                            {
+                              type: "button",
+                              className: "btn btn-primary btn-sm",
+                              onClick: () => handleRecycleDebris(coords),
+                              children: "Recycle"
+                            }
+                          ) })
+                        ] }, `${coords}-${idx}`);
+                      }) })
+                    ] }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      TablePagination,
+                      {
+                        idPrefix: "rec-debris",
+                        totalItems: debrisPagination.totalItems,
+                        page: debrisPagination.page,
+                        pageSize: debrisPagination.pageSize,
+                        itemLabel: "debris fields",
+                        onPageChange: debrisPagination.setPage,
+                        onPageSizeChange: debrisPagination.setPageSize
+                      }
+                    )
+                  ]
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "div",
+                {
+                  className: "intel-pane",
+                  id: "rec-pane-emails",
+                  hidden: usePanelLoading || recTab !== "emails",
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "email-filter-bar", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "filter-chips", role: "group", "aria-label": "Email category filters", children: EMAIL_CATS.map((c) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        type: "button",
+                        className: `chip-btn${emailCat === c.key ? " active" : ""}`,
+                        "data-email-cat": c.key,
+                        onClick: () => handleSelectEmailCat(c.key),
+                        children: c.label
+                      },
+                      c.key
+                    )) }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Time",
+                            sortKey: "time",
+                            activeKey: emailSort.sortKey,
+                            direction: emailSort.sortDirection,
+                            onSort: emailSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Folder / Type",
+                            sortKey: "folderType",
+                            activeKey: emailSort.sortKey,
+                            direction: emailSort.sortDirection,
+                            onSort: emailSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Sender",
+                            sortKey: "sender",
+                            activeKey: emailSort.sortKey,
+                            direction: emailSort.sortDirection,
+                            onSort: emailSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Subject",
+                            sortKey: "subject",
+                            activeKey: emailSort.sortKey,
+                            direction: emailSort.sortDirection,
+                            onSort: emailSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Coords",
+                            sortKey: "coords",
+                            activeKey: emailSort.sortKey,
+                            direction: emailSort.sortDirection,
+                            onSort: emailSort.requestSort
+                          }
+                        ),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SortableTh,
+                          {
+                            label: "Message Body",
+                            sortKey: "body",
+                            activeKey: emailSort.sortKey,
+                            direction: emailSort.sortDirection,
+                            onSort: emailSort.requestSort
+                          }
+                        )
+                      ] }) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "rec-emails-tbody", children: emailPagination.pagedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 6, className: "empty-cell", children: emails.length > 0 ? "No emails or fleet notices match the active search query." : "No other emails or fleet notices archived yet." }) }) : emailPagination.pagedRows.map((m, idx) => {
+                        const rawTxt = String(m.body_text || "").trim();
+                        const bodyTxt = rawTxt.length > 260 ? `${rawTxt.slice(0, 260)}...` : rawTxt || "—";
+                        return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: fmtShortDateTime(m.ts ?? m.ingested_ts, m.msg_date_text) }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `${m.folder_type || "inbox"} · ${m.category || "general"}` }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: String(m.sender || "System") }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: String(m.subject || "—") }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: String(m.coords || "—") }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "msg-body-cell", children: bodyTxt })
+                        ] }, m.msg_uid ?? m.id ?? idx);
+                      }) })
+                    ] }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      TablePagination,
+                      {
+                        idPrefix: "rec-emails",
+                        totalItems: emailPagination.totalItems,
+                        page: emailPagination.page,
+                        pageSize: emailPagination.pageSize,
+                        itemLabel: "emails",
+                        onPageChange: emailPagination.setPage,
+                        onPageSizeChange: emailPagination.setPageSize
+                      }
+                    )
+                  ]
+                }
+              )
             ] })
           ] })
         ]
@@ -26346,6 +30476,8 @@
       dashboard,
       setDashboard,
       activePage,
+      uiPrefs,
+      setUiPref,
       configHydrationTick,
       setConfigDirty,
       setConfigSaving,
@@ -26356,6 +30488,19 @@
       loadDashboard,
       showFeedback
     } = useConsole();
+    const botCtrl = (dashboard == null ? void 0 : dashboard.bot_control) || {};
+    const modeVal = uiPrefs.modeOverride || botCtrl.mode_override || "auto";
+    const onModeChange = async (mode) => {
+      const val = mode === "auto" ? null : mode;
+      try {
+        await apiCommand2({ command: "bot_control", mode_override: val });
+        setUiPref("modeOverride", mode);
+        await loadDashboard({ refresh: false, force: true });
+        showFeedback(`Loop mode set to ${mode}.`, "ok");
+      } catch (err) {
+        showFeedback(`Mode update failed: ${err.message}`, feedbackKindForError(err));
+      }
+    };
     const [formValues, setFormValues] = reactExports.useState(
       () => buildFormStateFromConfig(dashboard == null ? void 0 : dashboard.config)
     );
@@ -26631,6 +30776,50 @@
             ] })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "config-body", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("section", { className: "config-group", "aria-labelledby": "cfg-grp-execution-mode", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "config-group-head", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { id: "cfg-grp-execution-mode", children: "Runtime & Autopilot Execution" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "config-group-sub", children: "Override how the Commander loop executes ticks against Chrome without restarting the stack or editing config.yaml." })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "config-list", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "config-item config-item-mode", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "config-item-info", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "config-item-head", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("label", { className: "config-item-label", id: "mode-group-label", children: "Execution Mode" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("code", { className: "config-item-key tabular", children: "mode_override" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "config-item-bounds tabular", children: "auto | live | dry-run" })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "config-item-desc", children: "Controls whether the Commander autopilot dispatches live game clicks or runs in simulation: CLI Default inherits launcher flags, Force Live executes real actions, and Force Dry-Run simulates every tick safely." })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "config-item-control", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "div",
+                  {
+                    className: "mode-stack config-mode-stack",
+                    role: "radiogroup",
+                    "aria-labelledby": "mode-group-label",
+                    children: [
+                      { key: "auto", label: "CLI Default" },
+                      { key: "live", label: "Force Live" },
+                      { key: "dry-run", label: "Force Dry-Run" }
+                    ].map((m) => {
+                      const isAct = modeVal === m.key;
+                      return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "button",
+                        {
+                          type: "button",
+                          className: `stack-item${isAct ? " active" : ""}`,
+                          role: "radio",
+                          "aria-checked": isAct ? "true" : "false",
+                          "data-mode": m.key,
+                          onClick: () => onModeChange(m.key),
+                          children: m.label
+                        },
+                        m.key
+                      );
+                    })
+                  }
+                ) })
+              ] }) })
+            ] }),
             CONFIG_GROUPS.map((group) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
               "section",
               {
@@ -26995,13 +31184,14 @@
         /* @__PURE__ */ jsxRuntimeExports.jsx(AppSidebar, {}),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "main-column", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(AppHeader, {}),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(FeedbackBanner, {}),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("main", { className: "view-stage", id: "view-stage", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(DashboardView, {}),
             /* @__PURE__ */ jsxRuntimeExports.jsx(OperationsView, {}),
             /* @__PURE__ */ jsxRuntimeExports.jsx(ActionGraphView, {}),
             /* @__PURE__ */ jsxRuntimeExports.jsx(BuildingsView, {}),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(ResearchView, {}),
             /* @__PURE__ */ jsxRuntimeExports.jsx(CombatView, {}),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(FleetControlView, {}),
             /* @__PURE__ */ jsxRuntimeExports.jsx(SectorsView, {}),
             /* @__PURE__ */ jsxRuntimeExports.jsx(EspionageView, {}),
             /* @__PURE__ */ jsxRuntimeExports.jsx(ColoniesView, {}),
@@ -27028,9 +31218,13 @@
       rootEl.replaceChildren();
     }
     const root = clientExports.createRoot(rootEl);
-    reactDomExports.flushSync(() => {
-      root.render(/* @__PURE__ */ jsxRuntimeExports.jsx(App, {}));
-    });
+    try {
+      reactDomExports.flushSync(() => {
+        root.render(/* @__PURE__ */ jsxRuntimeExports.jsx(App, {}));
+      });
+    } finally {
+      document.documentElement.classList.remove("si-hydrating");
+    }
   }
   if (typeof document !== "undefined") {
     if (document.readyState === "loading") {

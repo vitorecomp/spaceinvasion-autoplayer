@@ -811,10 +811,10 @@ def run_commander_tick(
             cur_mq = [x for x in res_dict["manual_queue"] if isinstance(x, Mapping)]
         actual_result = res_dict
         outcomes.append(res_dict)
+        acted += 1
         if not live:
-            acted += 1
             break
-        if res_dict.get("captcha_gate") or res_dict.get("paused"):
+        if res_dict.get("captcha_gate") or res_dict.get("paused") or res_dict.get("rate_limited"):
             break
         if not res_dict.get("executed"):
             failed_attempts += 1
@@ -835,7 +835,6 @@ def run_commander_tick(
                 actions = _compute_tick_actions(state, cur_mq)
                 continue
             continue
-        acted += 1
         after_live = True
         if ready.kind == "BUILD":
             pid_built = _safe_cmd_int(ready.planet_id, 0)

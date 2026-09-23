@@ -2,7 +2,7 @@ import React, { useEffect } from "react";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import { ConsoleProvider, useConsole } from "../context/ConsoleContext";
+import { ConsoleProvider, resetConsoleStore, useConsole } from "../context/ConsoleContext";
 import { BuildingsView } from "../features/buildings";
 import { ResearchView } from "../features/research";
 import { PAGE_TITLES, type DashboardPayload } from "../types/api";
@@ -295,6 +295,7 @@ describe("Dedicated Research tab split from BuildingsView", () => {
     } else {
       addedResearchTitleShim = false;
     }
+    resetConsoleStore({ clearStorage: true });
     sessionStorage.clear();
     window.history.replaceState(null, "", "#dashboard");
     commandCalls = [];
@@ -348,6 +349,7 @@ describe("Dedicated Research tab split from BuildingsView", () => {
 
   afterEach(() => {
     cleanup();
+    resetConsoleStore({ clearStorage: true });
     vi.restoreAllMocks();
     if (addedResearchTitleShim) {
       delete (PAGE_TITLES as Record<string, string>).research;

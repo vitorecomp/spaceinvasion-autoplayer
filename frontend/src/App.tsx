@@ -11,6 +11,7 @@ import { ActionGraphView } from "./features/action-graph";
 import { BuildingsView } from "./features/buildings";
 import { ResearchView } from "./features/research";
 import { CombatView } from "./features/combat";
+import { FleetControlView } from "./features/fleet-control";
 import { SectorsView } from "./features/sectors";
 import { EspionageView } from "./features/espionage";
 import { ColoniesView } from "./features/colonies";
@@ -39,6 +40,7 @@ export const App: React.FC<AppProps> = ({ disableInitialFetch = false }) => {
               <BuildingsView />
               <ResearchView />
               <CombatView />
+              <FleetControlView />
               <SectorsView />
               <EspionageView />
               <ColoniesView />

@@ -2043,10 +2043,10 @@ class GameDatabase:
                     free_cnt,
                     prime_cnt,
                     hist_deb,
-                    json.dumps(owners_list, separators=(",", ":"), ensure_ascii=False),
-                    json.dumps(owner_counts, separators=(",", ":"), ensure_ascii=False),
-                    json.dumps(co_norm, separators=(",", ":"), ensure_ascii=False),
-                    json.dumps(sorted(spacia_set), separators=(",", ":"), ensure_ascii=False),
+                    json.dumps(owners_list, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
+                    json.dumps(owner_counts, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
+                    json.dumps(co_norm, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
+                    json.dumps(sorted(spacia_set), separators=(",", ":"), ensure_ascii=False, allow_nan=False),
                     ts_r,
                 )
             )
