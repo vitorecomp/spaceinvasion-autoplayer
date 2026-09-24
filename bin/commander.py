@@ -710,7 +710,7 @@ def run_commander_tick(
     after_live = False
 
     for alert in [a for a in actions if a.priority == "P0"]:
-        print(f"[CMD][P0 ALERT] {redact_sensitive(_safe_cmd_str(alert.reason))}")
+        print(f"[CMD][P0 ALERT] {redact_sensitive(_safe_cmd_str(alert.reason))}", flush=True)
 
     def _action_dedup_key(act: PlannedAction) -> tuple[str, int, Optional[int], Optional[int], str]:
         return (
@@ -1001,6 +1001,51 @@ def is_captcha_error(
     return any(marker in low for marker in _CAPTCHA_STOP_MARKERS)
 
 
+_CONNECTION_REFUSED_MARKERS = (
+    "connection refused",
+    "errno 111",
+    "failed to establish a new connection",
+    "remote end closed connection",
+    "connection aborted",
+)
+
+
+def _is_connection_refused_error(exc: BaseException, exc_txt: str = "") -> bool:
+    """Return True when an error indicates the local API server is restarting or unreachable."""
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return True
+    low = (exc_txt or _safe_cmd_str(exc)).lower()
+    return any(marker in low for marker in _CONNECTION_REFUSED_MARKERS)
+
+
+def _wait_for_api_reconnect(
+    api: GameApiClient,
+    *,
+    max_wait_s: float = 6.0,
+    poll_s: float = 0.5,
+) -> bool:
+    """Poll `api.health()` briefly while the local API restarts (e.g. hot-reload)."""
+    health_fn = getattr(api, "health", None)
+    if not callable(health_fn):
+        return False
+    step_s = max(0.05, min(1.0, float(poll_s)))
+    bounded_wait = max(0.1, min(15.0, float(max_wait_s)))
+    max_attempts = max(1, min(20, int(math.ceil(bounded_wait / step_s))))
+    deadline = time.monotonic() + bounded_wait
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            time.sleep(step_s)
+        try:
+            health_payload = health_fn()
+            if isinstance(health_payload, Mapping):
+                return True
+        except Exception:
+            pass
+        if time.monotonic() >= deadline:
+            break
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -1062,7 +1107,16 @@ def main(argv: list[str] | None = None) -> int:
                 transmitter_status: Optional[Mapping[str, Any]] = None
                 paused_via_ui = False
                 try:
-                    bot_ctrl = api.get_bot_control()
+                    try:
+                        bot_ctrl = api.get_bot_control()
+                    except (requests.RequestException, GameApiError) as bc_exc:
+                        if run_loop and _is_connection_refused_error(bc_exc):
+                            if _wait_for_api_reconnect(api, max_wait_s=6.0, poll_s=0.5):
+                                bot_ctrl = api.get_bot_control()
+                            else:
+                                raise
+                        else:
+                            raise
                     if not isinstance(bot_ctrl, Mapping):
                         raise GameApiError(
                             f"Expected JSON object from /bot_status, got {type(bot_ctrl).__name__}"
@@ -1075,18 +1129,22 @@ def main(argv: list[str] | None = None) -> int:
                         if not captcha_alert_logged:
                             print(
                                 f"[CMD][ALERT] CAPTCHA / anti-bot gate active ({redact_sensitive(cap_msg)}) — "
-                                "automation paused; waiting for operator to solve in Chrome (:9222) and click Resume..."
+                                "automation paused; waiting for operator to solve in Chrome (:9222) and click Resume...",
+                                flush=True,
                             )
                             captcha_alert_logged = True
                         paused_via_ui = True
                         loop_sleep = min(5.0, eff_min_interval_s)
                     elif run_loop and bot_ctrl.get("paused"):
-                        print(f"[CMD tick {game_data.fmt_compact_int(tick)}] Paused via control UI; waiting.")
+                        print(
+                            f"[CMD tick {game_data.fmt_compact_int(tick)}] Paused via control UI; waiting.",
+                            flush=True,
+                        )
                         paused_via_ui = True
                         loop_sleep = max(3.0, min(8.0, eff_min_interval_s))
                     else:
                         if captcha_alert_logged and not bot_ctrl.get("paused"):
-                            print("[CMD] CAPTCHA gate cleared and automation resumed.")
+                            print("[CMD] CAPTCHA gate cleared and automation resumed.", flush=True)
                             captcha_alert_logged = False
                         override = bot_ctrl.get("mode_override")
                         if override in ("live", "dry-run"):
@@ -1150,8 +1208,9 @@ def main(argv: list[str] | None = None) -> int:
                         raw_tm = bot_ctrl.get("transmitter_status")
                         if isinstance(raw_tm, Mapping):
                             transmitter_status = dict(raw_tm)
-                except (requests.RequestException, GameApiError):
-                    pass
+                except (requests.RequestException, GameApiError) as bc_outer_exc:
+                    if run_loop and _is_connection_refused_error(bc_outer_exc):
+                        raise
 
                 if not paused_via_ui:
                     now_mono = time.monotonic()
@@ -1231,9 +1290,12 @@ def main(argv: list[str] | None = None) -> int:
                         1 for o in outcomes if isinstance(o, Mapping) and bool(o.get("executed"))
                     )
                     batch_tag = f" | BatchExec={executed_count}" if executed_count > 1 else ""
-                    print(f"[CMD tick {game_data.fmt_compact_int(tick)} | {eff_label}] {coords_txt} | {res_str}{metal_tag}{batch_tag}")
-                    print(f"  Actual: {format_action_summary(actual_action)} => {msg}")
-                    print(f"  Next:   {format_action_summary(next_action)}")
+                    print(
+                        f"[CMD tick {game_data.fmt_compact_int(tick)} | {eff_label}] {coords_txt} | {res_str}{metal_tag}{batch_tag}",
+                        flush=True,
+                    )
+                    print(f"  Actual: {format_action_summary(actual_action)} => {msg}", flush=True)
+                    print(f"  Next:   {format_action_summary(next_action)}", flush=True)
                     if run_loop:
                         wake_s, wake_reason = compute_next_wakeup_seconds(
                             state,
@@ -1246,7 +1308,10 @@ def main(argv: list[str] | None = None) -> int:
                         jitter_s = random.uniform(0.5, 2.5) if wake_s >= 5.0 else 0.0
                         loop_sleep = wake_s + jitter_s
                         if loop_sleep >= 5.0:
-                            print(f"  Wake:   in {loop_sleep:.0f}s ({redact_sensitive(wake_reason)})")
+                            print(
+                                f"  Wake:   in {loop_sleep:.0f}s ({redact_sensitive(wake_reason)})",
+                                flush=True,
+                            )
                     if args.log_dir:
                         append_tick_logs(
                             args.log_dir,
@@ -1270,14 +1335,36 @@ def main(argv: list[str] | None = None) -> int:
                     if not captcha_alert_logged:
                         print(
                             f"[CMD][ALERT] CAPTCHA / anti-bot challenge detected ({format_clean_error(exc_txt)}) — "
-                            "automation paused; waiting for operator to solve in Chrome (:9222) and click Resume..."
+                            "automation paused; waiting for operator to solve in Chrome (:9222) and click Resume...",
+                            flush=True,
                         )
                         captcha_alert_logged = True
                     if not run_loop:
                         return 0
                     loop_sleep = min(5.0, eff_min_interval_s)
+                elif run_loop and _is_connection_refused_error(exc, exc_txt):
+                    reconnected = _wait_for_api_reconnect(
+                        api,
+                        max_wait_s=min(5.0, max(0.5, eff_min_interval_s)),
+                        poll_s=0.5,
+                    )
+                    if reconnected:
+                        print(
+                            f"[CMD tick {tick_s}] API unavailable ({redact_sensitive(args.api_url)} restarted); retrying immediately.",
+                            flush=True,
+                        )
+                        loop_sleep = 0.5
+                    else:
+                        print(
+                            f"[CMD tick {tick_s}] API unavailable (waiting for {redact_sensitive(args.api_url)} to come up); retrying shortly.",
+                            flush=True,
+                        )
+                        loop_sleep = min(3.0, max(0.5, eff_min_interval_s))
                 else:
-                    print(f"[CMD tick {tick_s}] API unavailable ({format_clean_error(exc_txt)}); retrying shortly.")
+                    print(
+                        f"[CMD tick {tick_s}] API unavailable ({format_clean_error(exc_txt)}); retrying shortly.",
+                        flush=True,
+                    )
                     if not run_loop:
                         return 1
                     err_lower = exc_txt.lower()
@@ -1291,7 +1378,10 @@ def main(argv: list[str] | None = None) -> int:
                     rl_backoff = compute_rate_limit_backoff(exc_txt, health_payload=health_info)
                     if rl_backoff is not None:
                         wait_s = rl_backoff + random.uniform(1.0, 3.0)
-                        print(f"[CMD tick {tick_s}] Rate-limit cooldown active; backing off {wait_s:.1f}s.")
+                        print(
+                            f"[CMD tick {tick_s}] Rate-limit cooldown active; backing off {wait_s:.1f}s.",
+                            flush=True,
+                        )
                         loop_sleep = wait_s
                     elif (
                         isinstance(exc, GameApiError)
@@ -1309,7 +1399,10 @@ def main(argv: list[str] | None = None) -> int:
                         last_recovery_at = time.monotonic()
                         try:
                             api.send_command({"command": "ensure_session"})
-                            print(f"[CMD tick {tick_s}] Recovered browser session via ensure_session.")
+                            print(
+                                f"[CMD tick {tick_s}] Recovered browser session via ensure_session.",
+                                flush=True,
+                            )
                             loop_sleep = 1.0
                         except (requests.RequestException, GameApiError) as rec_exc:
                             rec_txt = _safe_cmd_str(rec_exc)
@@ -1321,12 +1414,16 @@ def main(argv: list[str] | None = None) -> int:
                                 if not captcha_alert_logged:
                                     print(
                                         f"[CMD][ALERT] CAPTCHA / anti-bot challenge detected ({format_clean_error(rec_txt)}) — "
-                                        "automation paused; waiting for operator to solve in Chrome (:9222) and click Resume..."
+                                        "automation paused; waiting for operator to solve in Chrome (:9222) and click Resume...",
+                                        flush=True,
                                     )
                                     captcha_alert_logged = True
                                 loop_sleep = min(5.0, eff_min_interval_s)
                             else:
-                                print(f"[CMD tick {tick_s}] Session recovery pending: {format_clean_error(rec_txt)}")
+                                print(
+                                    f"[CMD tick {tick_s}] Session recovery pending: {format_clean_error(rec_txt)}",
+                                    flush=True,
+                                )
                                 if any(gate in rec_txt.lower() for gate in ("2-factor", "2fa")):
                                     loop_sleep = 15.0
                                 else:
@@ -1338,7 +1435,8 @@ def main(argv: list[str] | None = None) -> int:
                 tick_s = game_data.fmt_compact_int(tick)
                 print(
                     f"[CMD tick {tick_s}] Unexpected error ({type(exc).__name__}: {format_clean_error(exc_txt)}); "
-                    + ("retrying shortly." if run_loop else "aborting.")
+                    + ("retrying shortly." if run_loop else "aborting."),
+                    flush=True,
                 )
                 try:
                     from spaceinvasion.core.logging_utils import append_crash_debug_log
@@ -1365,7 +1463,7 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(loop_sleep)
         return 0
     except KeyboardInterrupt:
-        print("\n[CMD] Stopped.")
+        print("\n[CMD] Stopped.", flush=True)
         return 0
     finally:
         close_fn = getattr(api, "close", None)

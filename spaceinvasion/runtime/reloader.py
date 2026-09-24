@@ -126,6 +126,7 @@ def watch_and_run(
     """Run `cmd` as a supervised child process, restarting on watched file edits."""
     env = os.environ.copy()
     env[RELOAD_CHILD_ENV] = "1"
+    env.setdefault("PYTHONUNBUFFERED", "1")
 
     is_main = threading.current_thread() is threading.main_thread()
     prev_sigterm = signal.getsignal(signal.SIGTERM) if is_main else None

@@ -1530,12 +1530,18 @@ class GameApiBridge:
         self._dash_cache_state_ref: Optional[GameState] = None
         self._dash_static_cache_key: Optional[Any] = None
         self._dash_static_cache_json: Optional[str] = None
+        self._dash_plan_cache_key: Optional[Any] = None
+        self._dash_plan_cache_val: Optional[
+            tuple[list[PlannedAction], Optional[dict[str, Any]], dict[int, dict[str, Any]]]
+        ] = None
         self._dash_ag_cache_key: Optional[Any] = None
         self._dash_ag_cache_json: Optional[str] = None
         self._db_summary_cache_key: Optional[Any] = None
         self._db_summary_cache: Optional[dict[str, Any]] = None
         self._raid_stats_cache_key: Optional[Any] = None
         self._raid_stats_cache: Optional[dict[str, Any]] = None
+        self._raid_stats_cache_ts: float = 0.0
+        self._raid_targets_cache_key: Optional[Any] = None
         self._last_bot_control_payload: Optional[dict[str, Any]] = None
         self._last_dashboard_payload: Optional[dict[str, Any]] = None
         resolved_db = (
@@ -3006,6 +3012,13 @@ class GameApiBridge:
     def _get_custom_planet_names_locked(self) -> dict[str, str]:
         return dict(self._custom_planet_names)
 
+    def _patch_last_dashboard_custom_names_locked(self) -> None:
+        prev = self._last_dashboard_payload
+        if isinstance(prev, Mapping):
+            patched = dict(prev)
+            patched["custom_planet_names"] = dict(self._custom_planet_names)
+            self._last_dashboard_payload = patched
+
     def _set_custom_planet_name_locked(self, planet_id: int, raw_name: Any) -> dict[str, str]:
         pid = _safe_api_int(planet_id, 0)
         clean_name = GameDatabase.sanitize_custom_planet_name(raw_name)
@@ -3019,7 +3032,7 @@ class GameApiBridge:
                 else:
                     self._custom_planet_names.pop(str(pid), None)
         self._invalidate_dashboard_cache()
-        self._last_dashboard_payload = None
+        self._patch_last_dashboard_custom_names_locked()
         return dict(self._custom_planet_names)
 
     def _set_custom_planet_names_batch_locked(self, updates: Mapping[int, Any]) -> dict[str, str]:
@@ -3037,7 +3050,7 @@ class GameApiBridge:
                 else:
                     self._custom_planet_names.pop(str(pid), None)
         self._invalidate_dashboard_cache()
-        self._last_dashboard_payload = None
+        self._patch_last_dashboard_custom_names_locked()
         return dict(self._custom_planet_names)
 
     def _apply_custom_planet_names_to_state(
@@ -4120,18 +4133,41 @@ class GameApiBridge:
             get_stats = getattr(self._db, "get_raid_stats", None)
             if callable(get_stats):
                 tok = self._db_total_changes_token()
-                rs_ckey = (tok, int(time.time()), get_stats) if tok is not None else None
+                rs_ckey = (tok, get_stats) if tok is not None else None
+                now_wall = time.time()
                 if (
                     rs_ckey is not None
                     and self._raid_stats_cache_key == rs_ckey
                     and self._raid_stats_cache is not None
                 ):
                     stats = self._raid_stats_cache
+                    raw_bt = stats.get("blocked_targets")
+                    if isinstance(raw_bt, Mapping) and raw_bt:
+                        needs_bt_refresh = (now_wall - self._raid_stats_cache_ts) >= 10.0 or any(
+                            _safe_api_float(v.get("blocked_until_ts", 0.0)) <= now_wall
+                            for v in raw_bt.values()
+                            if isinstance(v, Mapping)
+                        )
+                        if needs_bt_refresh:
+                            fresh_bt: dict[str, dict[str, Any]] = {}
+                            for bk, bv in raw_bt.items():
+                                if not isinstance(bv, Mapping):
+                                    continue
+                                b_until = _safe_api_float(bv.get("blocked_until_ts", 0.0))
+                                if b_until > now_wall:
+                                    nbv = dict(bv)
+                                    nbv["remaining_seconds"] = round(max(0.0, b_until - now_wall), 1)
+                                    fresh_bt[str(bk)] = nbv
+                            stats = dict(stats)
+                            stats["blocked_targets"] = fresh_bt
+                            self._raid_stats_cache = stats
+                            self._raid_stats_cache_ts = now_wall
                 else:
                     stats = get_stats()
                     if rs_ckey is not None and isinstance(stats, Mapping):
                         self._raid_stats_cache_key = rs_ckey
                         self._raid_stats_cache = dict(stats)
+                        self._raid_stats_cache_ts = now_wall
                 if isinstance(stats, Mapping):
                     base_rs.update(stats)
             base_rs["transmitter_status"] = self._get_transmitter_status_locked()
@@ -4145,6 +4181,8 @@ class GameApiBridge:
         self._dash_cache_state_ref = None
         self._dash_static_cache_key = None
         self._dash_static_cache_json = None
+        self._dash_plan_cache_key = None
+        self._dash_plan_cache_val = None
         self._dash_ag_cache_key = None
         self._dash_ag_cache_json = None
 
@@ -4412,7 +4450,12 @@ class GameApiBridge:
         raid_rows: list[dict[str, Any]] = []
         if hasattr(self._db, "get_raid_stats"):
             try:
-                rs = self._db.get_raid_stats()
+                get_rs = self._db.get_raid_stats
+                rs = (
+                    get_rs(include_telemetry_summary=False)
+                    if GameApiBridge._supports_kwarg(get_rs, "include_telemetry_summary")
+                    else get_rs()
+                )
                 hist = rs.get("history") if isinstance(rs, Mapping) else None
                 if isinstance(hist, Sequence) and not isinstance(hist, (str, bytes)):
                     raid_rows = [dict(h) for h in hist if isinstance(h, Mapping)]
@@ -5881,9 +5924,23 @@ class GameApiBridge:
         if self._db is None:
             self._raid_targets = self._enrich_raid_targets(self._raid_targets)
             return self._raid_targets
-        spy_rows = self._db.get_spy_targets(limit=limit)
         st = state_override if state_override is not None else getattr(self, "_last_state", None)
         own_coords = [str(p.coords or "") for p in (st.planets if st is not None else ()) if getattr(p, "coords", "")]
+        tok = self._db_total_changes_token()
+        rt_ckey = (
+            (
+                tok,
+                int(limit),
+                int(debris_limit),
+                tuple(own_coords),
+                tuple(sorted(self._target_blocks.items())),
+            )
+            if tok is not None
+            else None
+        )
+        if rt_ckey is not None and self._raid_targets_cache_key == rt_ckey:
+            return self._raid_targets
+        spy_rows = self._db.get_spy_targets(limit=limit)
         merged: list[dict[str, Any]] = []
         seen_coords: set[str] = set()
         get_deb_fn = getattr(self._db, "get_active_debris_targets", None)
@@ -5905,6 +5962,7 @@ class GameApiBridge:
                 seen_coords.add(nc)
             merged.append(dict(srow))
         self._raid_targets = self._enrich_raid_targets(merged)
+        self._raid_targets_cache_key = rt_ckey
         return self._raid_targets
 
     def _enrich_raid_targets(self, rows: Sequence[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
@@ -5914,7 +5972,11 @@ class GameApiBridge:
         if self._db is not None:
             get_stats = getattr(self._db, "get_raid_stats", None)
             if callable(get_stats):
-                stats = get_stats()
+                stats = (
+                    get_stats(include_telemetry_summary=False)
+                    if GameApiBridge._supports_kwarg(get_stats, "include_telemetry_summary")
+                    else get_stats()
+                )
                 if isinstance(stats, Mapping) and isinstance(stats.get("per_target"), Mapping):
                     per_target = stats["per_target"]
         enriched: list[dict[str, Any]] = []
@@ -6323,10 +6385,11 @@ class GameApiBridge:
 
     def dashboard(self, *, refresh: bool = False) -> dict[str, Any]:
         """Return combined UI telemetry, plan, buildings ETAs, combat, ranking, config, and logs."""
-        if not refresh and isinstance(self._last_dashboard_payload, Mapping):
+        cached_dash = self._last_dashboard_payload
+        if not refresh and isinstance(cached_dash, Mapping):
             acquired = self._lock.acquire(timeout=2.0)
             if not acquired:
-                fallback = dict(self._last_dashboard_payload)
+                fallback = dict(cached_dash)
                 fallback["bot_control"] = _sanitize_finite_json(
                     _redact_api_payload(dict(self._bot_control))
                 )
@@ -6392,15 +6455,112 @@ class GameApiBridge:
                 else None
             )
             eff_mode = normalize_planner_mode(self.strategy_config.planner_mode)
+            dash_sig = _dashboard_state_sig(self._last_state, dash_state, self._rank_samples)
+            cfg_raw = asdict(self.strategy_config)
+            cfg_sig = _freeze_sig_tree(cfg_raw)
+            mq_pre = (
+                self._db.get_manual_queue(status="pending", limit=200)
+                if self._db is not None and hasattr(self._db, "get_manual_queue")
+                else []
+            )
+            mq_pre_sig = _freeze_sig_tree(mq_pre)
+            plan_cache_hit = False
             if dash_state is not None:
-                actions, opt_summary = self._plan_with_summary(dash_state, _already_enriched=True)
+                db_tok_plan = self._db_total_changes_token()
+                now_mono_plan = time.monotonic()
+                now_wall_plan = time.time()
+                with self._planner_jobs_lock:
+                    ai_job_sig = (
+                        self._ai_planner_job.get("run_id"),
+                        self._ai_planner_job.get("updated_ts"),
+                    )
+                scanned_sig = (
+                    (len(self._scanned_systems), max(self._scanned_systems.values(), default=0.0))
+                    if db_tok_plan is not None
+                    else tuple(sorted(self._scanned_systems.items()))
+                )
+                throttle_sig = tuple(
+                    sorted((int(pid), round(float(ts), 1)) for pid, ts in self._throttle_timestamps.items())
+                )
+                fleet_cd_sig = tuple(
+                    sorted(int(pid) for pid, ts in self._fleet_slot_cooldown_until.items() if ts > now_mono_plan)
+                )
+                target_blocks_sig = tuple(
+                    sorted(
+                        (str(c), round(float(u), 1), str(r))
+                        for c, (u, r) in self._target_blocks.items()
+                        if u > now_wall_plan
+                    )
+                )
+                ai_mem_sig = None if db_tok_plan is not None else _freeze_sig_tree(self._active_ai_plan_mem)
+                plan_key = (
+                    dash_sig,
+                    cfg_sig,
+                    eff_mode,
+                    db_tok_plan,
+                    mq_pre_sig,
+                    ai_job_sig,
+                    ai_mem_sig,
+                    scanned_sig,
+                    throttle_sig,
+                    fleet_cd_sig,
+                    target_blocks_sig,
+                    plan_actions,
+                    run_optimizer,
+                    plan_fleet_and_attack_actions,
+                )
+                if (
+                    not refresh
+                    and self._dash_plan_cache_val is not None
+                    and _safe_sig_eq(self._dash_plan_cache_key, plan_key)
+                ):
+                    cached_acts, opt_summary, cached_early_needs = self._dash_plan_cache_val
+                    actions = list(cached_acts)
+                    if cached_early_needs:
+                        self._last_early_transport_needs = {
+                            int(k): dict(v) for k, v in cached_early_needs.items()
+                        }
+                        self._last_early_transport_needs_sig = id(dash_state)
+                    plan_cache_hit = True
+                else:
+                    actions, opt_summary = self._plan_with_summary(dash_state, _already_enriched=True)
+                    early_copy = (
+                        {int(k): dict(v) for k, v in self._last_early_transport_needs.items()}
+                        if self._last_early_transport_needs_sig == id(dash_state)
+                        else {}
+                    )
+                    post_db_tok = self._db_total_changes_token()
+                    post_mq_sig = (
+                        _freeze_sig_tree(self._db.get_manual_queue(status="pending", limit=200))
+                        if (
+                            post_db_tok != db_tok_plan
+                            and self._db is not None
+                            and hasattr(self._db, "get_manual_queue")
+                        )
+                        else mq_pre_sig
+                    )
+                    store_plan_key = (
+                        dash_sig,
+                        cfg_sig,
+                        eff_mode,
+                        post_db_tok,
+                        post_mq_sig,
+                        ai_job_sig,
+                        ai_mem_sig,
+                        scanned_sig,
+                        throttle_sig,
+                        fleet_cd_sig,
+                        target_blocks_sig,
+                        plan_actions,
+                        run_optimizer,
+                        plan_fleet_and_attack_actions,
+                    )
+                    self._dash_plan_cache_key = store_plan_key
+                    self._dash_plan_cache_val = (list(actions), opt_summary, early_copy)
             else:
                 actions = []
                 opt_summary = self._last_optimizer_summary if eff_mode == "ga_nn" else None
 
-            dash_sig = _dashboard_state_sig(self._last_state, dash_state, self._rank_samples)
-            cfg_raw = asdict(self.strategy_config)
-            cfg_sig = _freeze_sig_tree(cfg_raw)
             static_key = (
                 dash_sig,
                 cfg_sig,
@@ -6465,13 +6625,17 @@ class GameApiBridge:
 
             planner_status = self._get_planner_jobs_snapshot(dash_state, cfg=self.strategy_config)
             manual_queue_pending = (
-                self._db.get_manual_queue(status="pending", limit=200)
-                if self._db is not None and hasattr(self._db, "get_manual_queue")
-                else []
+                mq_pre
+                if plan_cache_hit
+                else (
+                    self._db.get_manual_queue(status="pending", limit=200)
+                    if self._db is not None and hasattr(self._db, "get_manual_queue")
+                    else []
+                )
             )
             ag_opt = opt_summary if eff_mode == "ga_nn" else None
             ag_opt_sig = _freeze_sig_tree(_summary_without_elapsed(ag_opt))
-            mq_sig = _freeze_sig_tree(manual_queue_pending)
+            mq_sig = mq_pre_sig if plan_cache_hit else _freeze_sig_tree(manual_queue_pending)
             early_needs_map = (
                 self._last_early_transport_needs
                 if (
@@ -6621,6 +6785,19 @@ class GameApiBridge:
                 "db_summary": db_summary_clean,
                 "logs": envelope["logs"],
             }
+            if (
+                dash_state is not None
+                and not plan_cache_hit
+                and isinstance(self._dash_plan_cache_key, tuple)
+                and len(self._dash_plan_cache_key) >= 4
+            ):
+                final_db_tok = self._db_total_changes_token()
+                if self._dash_plan_cache_key[3] != final_db_tok:
+                    self._dash_plan_cache_key = (
+                        self._dash_plan_cache_key[:3]
+                        + (final_db_tok,)
+                        + self._dash_plan_cache_key[4:]
+                    )
             self._last_dashboard_payload = result
             return result
         finally:
@@ -7266,7 +7443,12 @@ class GameApiBridge:
         if self._db is not None:
             self._db.record_galaxy_scan(int(galaxy), int(system), slots, ts=now_ts)
 
-    def _persist_galaxy_slots(self, slots: list[Any] | tuple[Any, ...]) -> int:
+    def _persist_galaxy_slots(
+        self,
+        slots: list[Any] | tuple[Any, ...],
+        *,
+        refresh_targets: bool = True,
+    ) -> int:
         if not slots:
             return 0
         for s in slots:
@@ -7290,7 +7472,8 @@ class GameApiBridge:
                 self._galaxy_debris_amounts.pop(norm_sc_deb, None)
         if self._db is not None:
             saved = self._db.record_galaxy_slots(slots)
-            self._refresh_raid_targets_locked(limit=250)
+            if refresh_targets:
+                self._refresh_raid_targets_locked(limit=250)
             return saved
         by_coords: dict[str, dict[str, Any]] = {
             normalize_coords(r.get("coords") or r.get("target_coords") or ""): dict(r)
@@ -7677,7 +7860,7 @@ class GameApiBridge:
                     ]
                 )
                 self._persist_galaxy_scan(page_gal, page_sys, slots_for_scan)
-                self._persist_galaxy_slots(slots_for_scan)
+                self._persist_galaxy_slots(slots_for_scan, refresh_targets=False)
 
                 if count_as_planned:
                     pages_scanned += 1
@@ -7922,6 +8105,7 @@ class GameApiBridge:
                     ts=now_done,
                 )
                 if pages_scanned > 0:
+                    self._refresh_raid_targets_locked(limit=250)
                     # Refresh coverage + next-batch preview (phase may flip exploratory -> targeted_refresh)
                     self._refresh_smart_sweep_summary_locked(now_ts=now_done, force=True)
                     updated_sw = self._merge_smart_sweep_summary_locked(
@@ -9292,6 +9476,81 @@ class GameApiBridge:
             summary["notifications"] = _sanitize_finite_json(self._get_notifications_summary_locked())
         return _sanitize_finite_json(summary)
 
+    _KNOWN_COMMANDS: frozenset[str] = frozenset(
+        {
+            "notifications_list",
+            "notification_get",
+            "notification_ack",
+            "notifications_ack_all",
+            "queue_list",
+            "queue_add",
+            "queue_update",
+            "queue_cancel",
+            "queue_clear",
+            "config",
+            "db_summary",
+            "db_migrations",
+            "db_migrate",
+            "db_backup",
+            "db_verify",
+            "state_snapshots",
+            "game_messages",
+            "espionage_intel",
+            "scanned_sectors",
+            "colony_candidates",
+            "discard_colony_candidate",
+            "restore_colony_candidate",
+            "universe_research_max",
+            "attack_results",
+            "recycler_results",
+            "bot_control",
+            "bot_resume",
+            "update_config",
+            "action_graph",
+            "galaxy_sweep",
+            "simulate_combat",
+            "planner_jobs_status",
+            "config_optimizer_get",
+            "rename_planet",
+            "config_optimizer_set_specializations",
+            "config_optimizer_run",
+            "config_optimizer_export",
+            "ai_planner_get",
+            "ai_planner_run",
+            "ai_planner_export",
+            "resolve_field_conflict",
+            "fleet_planner_get",
+            "ensure_session",
+            "buildings_eta",
+            "combat_overview",
+            "plan",
+            "ranking_evolution",
+            "tick_once",
+            "menu",
+            "navigate",
+            "scan_galaxy",
+            "activate_transmitter",
+            "sync_spy_reports",
+            "sync_messages",
+            "spy",
+            "recycle",
+            "colonize",
+            "transport",
+            "station",
+            "abandon_colony",
+            "attack",
+            "build",
+            "demolish_building",
+            "research",
+            "build_ship",
+            "sync_economy",
+            "throttle_building",
+            "fleetsave_plan",
+            "escape_flight",
+            "claim_tutorial",
+        }
+    )
+
     def handle_command(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, Mapping) or not payload.get("command"):
             raise ApiRequestError("Request JSON must include a non-empty 'command' field.")
@@ -9302,6 +9561,8 @@ class GameApiBridge:
         cmd = raw_cmd.strip().lower()
         if not cmd:
             raise ApiRequestError("Request JSON must include a non-empty 'command' field.")
+        if cmd not in self._KNOWN_COMMANDS:
+            raise ApiRequestError(f"Unknown command {cmd!r}.")
         dry_run = bool(payload.get("dry_run", False))
 
         if cmd == "notifications_list":
@@ -12003,6 +12264,46 @@ class GameApiBridge:
                             )
                         ),
                     }
+                )
+
+            if (
+                cmd == "plan"
+                and "refresh" in payload
+                and payload.get("refresh") is False
+                and self._last_state is not None
+            ):
+                override_cfg_fast: Optional[StrategyConfig] = None
+                if "planner_mode" in payload and payload["planner_mode"] is not None:
+                    raw_mode_fast = payload["planner_mode"]
+                    if not isinstance(raw_mode_fast, str) or not raw_mode_fast.strip():
+                        raise ApiRequestError(
+                            "'planner_mode' override must be a non-empty string ('priority', 'ai_planner', or 'ga_nn')."
+                        )
+                    try:
+                        req_mode_fast = normalize_planner_mode(raw_mode_fast, strict=True)
+                    except ValueError as exc:
+                        raise ApiRequestError(_redact_api_payload(exc)) from exc
+                    override_cfg_fast = replace(self.strategy_config, planner_mode=req_mode_fast)
+                effective_cfg_fast = override_cfg_fast or self.strategy_config
+                effective_mode_fast = normalize_planner_mode(effective_cfg_fast.planner_mode)
+                state_fast = self._refresh_cached_economy(self._last_state)
+                actions_fast, opt_summary_fast = self._plan_with_summary(state_fast, config=override_cfg_fast)
+                gate_fast = self._evaluate_ai_planner_gate_locked(state_fast, cfg=effective_cfg_fast)
+                return _sanitize_finite_json(
+                    _redact_api_payload(
+                        {
+                            "ok": True,
+                            "command": cmd,
+                            "planner_mode": effective_mode_fast,
+                            "effective_planner_mode": gate_fast["effective_planner_mode"],
+                            "fallback_reason": gate_fast["fallback_reason"],
+                            "live_ai_unlocked": gate_fast["live_ai_unlocked"],
+                            "colonies_owned": gate_fast["colonies_owned"],
+                            "max_planets": gate_fast["max_planets"],
+                            "actions": [self._serialize_action(a) for a in actions_fast],
+                            "optimizer_summary": opt_summary_fast,
+                        }
+                    )
                 )
 
             self._raise_if_rate_limited()

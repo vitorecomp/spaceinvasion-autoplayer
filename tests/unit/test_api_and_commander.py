@@ -8767,6 +8767,132 @@ class TestApiAndCommander(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_perf_and_stability_regressions_toctou_plan_fastpath_unknown_cmd_and_cmd_reconnect(self) -> None:
+        import io
+        import threading
+        import time
+        from contextlib import redirect_stdout
+        import requests
+        import bin.commander as commander_cli
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "perf_reg.db"
+            client_calls = 0
+
+            def _counting_factory(_port: int) -> Any:
+                nonlocal client_calls
+                client_calls += 1
+                raise AssertionError("Should not open Selenium client on cached plan(refresh=False)")
+
+            bridge = GameApiBridge(
+                debug_port=9222,
+                db_path=db_path,
+                log_dir=None,
+                client_factory=_counting_factory,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                st = _sample_state()
+                bridge._record_state(
+                    st,
+                    fetched_buildings=False,
+                    fetched_research=False,
+                    fetched_shipyard=False,
+                    fetched_home=False,
+                    observed_active_planet=True,
+                )
+                # Force snapshot to look stale (>15s) to prove plan(refresh=False) never scrapes Chrome!
+                bridge._last_snapshot_at = time.monotonic() - 120.0
+
+                # 1. plan(refresh=False) reuses _last_state with 0 Selenium client calls
+                p_res = bridge.handle_command({"command": "plan", "refresh": False})
+                self.assertTrue(p_res["ok"])
+                self.assertEqual(p_res["command"], "plan")
+                self.assertEqual(client_calls, 0)
+
+                # 2. dashboard(refresh=False) caches _plan_with_summary on repeated calls
+                with patch.object(
+                    bridge,
+                    "_plan_with_summary",
+                    wraps=bridge._plan_with_summary,
+                ) as spy_plan:
+                    d1 = bridge.dashboard(refresh=False)
+                    d2 = bridge.dashboard(refresh=False)
+                    d3 = bridge.dashboard(refresh=False)
+                self.assertEqual(spy_plan.call_count, 1)
+                self.assertEqual(len(d1["plan"]), len(d2["plan"]))
+                self.assertEqual(len(d2["plan"]), len(d3["plan"]))
+
+                # 3. rename_planet patches _last_dashboard_payload safely (never sets it to None)
+                ren = bridge.handle_command(
+                    {"command": "rename_planet", "planet_id": st.planets[0].planet_id, "name": "Home Prime"}
+                )
+                self.assertTrue(ren["ok"])
+                self.assertIsInstance(bridge._last_dashboard_payload, dict)
+                self.assertEqual(
+                    bridge._last_dashboard_payload["custom_planet_names"].get(str(st.planets[0].planet_id)),
+                    "Home Prime",
+                )
+
+                # 4. Unknown command rejects BEFORE acquiring bridge._lock, and dashboard(refresh=False)
+                #    returns safe busy fallback without crashing even if another thread holds bridge._lock
+                lock_held = threading.Event()
+                release_lock = threading.Event()
+
+                def _hold_lock() -> None:
+                    with bridge._lock:
+                        lock_held.set()
+                        release_lock.wait(timeout=5.0)
+
+                holder = threading.Thread(target=_hold_lock, daemon=True)
+                holder.start()
+                self.assertTrue(lock_held.wait(timeout=2.0))
+                try:
+                    t0 = time.perf_counter()
+                    with self.assertRaises(ApiRequestError) as ctx:
+                        bridge.handle_command({"command": "totally_nonexistent_cmd"})
+                    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                    self.assertIn("Unknown command", str(ctx.exception))
+                    self.assertLess(elapsed_ms, 500.0)
+
+                    # Simulate concurrent mutation of _last_dashboard_payload -> None after read starts
+                    orig_payload = bridge._last_dashboard_payload
+                    try:
+                        # While lock is held (>2s), dashboard(refresh=False) must return busy=True dict cleanly
+                        dash_busy = bridge.dashboard(refresh=False)
+                        self.assertTrue(dash_busy.get("busy"))
+                        self.assertIn("bot_control", dash_busy)
+                    finally:
+                        bridge._last_dashboard_payload = orig_payload
+                finally:
+                    release_lock.set()
+                    holder.join(timeout=2.0)
+            finally:
+                bridge.close()
+
+        # 5. Commander --loop cleanly waits for API reconnect on ConnectionRefusedError without raw urllib3 noise
+        conn_err = requests.exceptions.ConnectionError(
+            "HTTPConnectionPool(host='127.0.0.1', port=8787): Max retries exceeded with url: /state "
+            "(Caused by NewConnectionError('Failed to establish a new connection: [Errno 111] Connection refused'))"
+        )
+        fake_api = MagicMock()
+        fake_api.get_bot_control.side_effect = [conn_err, conn_err]
+        fake_api.health.side_effect = [conn_err, {"ok": True}]
+        buf = io.StringIO()
+        with (
+            patch.object(commander_cli, "GameApiClient", return_value=fake_api),
+            patch.object(commander_cli.time, "sleep", return_value=None),
+            redirect_stdout(buf),
+        ):
+            rc = commander_cli.main(
+                ["--api-url", "http://127.0.0.1:8787", "--loop", "--interval", "1", "--max-ticks", "1"]
+            )
+        out = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("API unavailable", out)
+        self.assertNotIn("HTTPConnectionPool", out)
+        self.assertNotIn("NewConnectionError", out)
+
 
 if __name__ == "__main__":
     unittest.main()

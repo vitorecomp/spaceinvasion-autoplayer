@@ -645,6 +645,8 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
   const inFlightSectorsCountRef = useRef<number>(0);
   const coloniesReqSeqRef = useRef<number>(0);
   const inFlightColoniesCountRef = useRef<number>(0);
+  const inFlightBuildingsEtaRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
+  const inFlightCombatRef = useRef<{ key: string; promise: Promise<boolean> } | null>(null);
   const sectorPreviewRef = useRef<SectorQueuePreviewOverrides | null>(null);
 
   // Keep sharedLegacyState (window.state & window.__SI_STATE__) synchronized at all times
@@ -961,18 +963,30 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         sharedLegacyState.selectedPlanetId
       );
       if (!planet) return;
-      try {
-        const res = await rawApiCommand({
-          command: "buildings_eta",
-          planet_id: planet.planet_id,
-          refresh: forceRefresh,
-        });
-        if (res.buildings_eta) {
-          setBuildingsEtaData(res.buildings_eta);
-        }
-      } catch {
-        // Non-fatal during offline fallback — keep cached buildingsEtaData intact
+      const reqKey = `${planet.planet_id}:${forceRefresh ? "1" : "0"}`;
+      if (inFlightBuildingsEtaRef.current?.key === reqKey) {
+        return inFlightBuildingsEtaRef.current.promise;
       }
+      const reqPromise = (async () => {
+        try {
+          const res = await rawApiCommand({
+            command: "buildings_eta",
+            planet_id: planet.planet_id,
+            refresh: forceRefresh,
+          });
+          if (res.buildings_eta) {
+            setBuildingsEtaData(res.buildings_eta);
+          }
+        } catch {
+          // Non-fatal during offline fallback — keep cached buildingsEtaData intact
+        } finally {
+          if (inFlightBuildingsEtaRef.current?.promise === reqPromise) {
+            inFlightBuildingsEtaRef.current = null;
+          }
+        }
+      })();
+      inFlightBuildingsEtaRef.current = { key: reqKey, promise: reqPromise };
+      return reqPromise;
     },
     [setBuildingsEtaData]
   );
@@ -984,22 +998,34 @@ export const ConsoleProvider: React.FC<ConsoleProviderProps> = ({
         sharedLegacyState.selectedPlanetId
       );
       if (!planet) return false;
-      try {
-        const res = await rawApiCommand({
-          command: "combat_overview",
-          planet_id: planet.planet_id,
-          refresh,
-        });
-        if (res.combat) {
-          setCombatData(res.combat);
-        }
-        return true;
-      } catch (err: any) {
-        if (refresh || isRateLimitError(err)) {
-          showFeedback(`Shipyard refresh failed: ${err.message}`, feedbackKindForError(err));
-        }
-        return false;
+      const reqKey = `${planet.planet_id}:${refresh ? "1" : "0"}`;
+      if (inFlightCombatRef.current?.key === reqKey) {
+        return inFlightCombatRef.current.promise;
       }
+      const reqPromise = (async (): Promise<boolean> => {
+        try {
+          const res = await rawApiCommand({
+            command: "combat_overview",
+            planet_id: planet.planet_id,
+            refresh,
+          });
+          if (res.combat) {
+            setCombatData(res.combat);
+          }
+          return true;
+        } catch (err: any) {
+          if (refresh || isRateLimitError(err)) {
+            showFeedback(`Shipyard refresh failed: ${err.message}`, feedbackKindForError(err));
+          }
+          return false;
+        } finally {
+          if (inFlightCombatRef.current?.promise === reqPromise) {
+            inFlightCombatRef.current = null;
+          }
+        }
+      })();
+      inFlightCombatRef.current = { key: reqKey, promise: reqPromise };
+      return reqPromise;
     },
     [setCombatData, showFeedback]
   );

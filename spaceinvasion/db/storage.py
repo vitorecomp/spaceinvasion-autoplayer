@@ -1085,6 +1085,14 @@ class GameDatabase:
                 self._galaxy_intel_base_cache: dict[tuple[int, ...], dict[str, Any]] = {}
                 self._colony_cand_cache_ver: Optional[tuple[int, int]] = None
                 self._colony_cand_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+                self._full_history_cache_ver: Optional[tuple[int, int]] = None
+                self._full_history_cache_json: Optional[str] = None
+                self._raid_stats_base_ver: Optional[tuple[int, int]] = None
+                self._raid_stats_base_cache: dict[bool, dict[str, Any]] = {}
+                self._spy_targets_cache_ver: Optional[tuple[int, int]] = None
+                self._spy_targets_cache: dict[tuple[int, bool], str] = {}
+                self._debris_targets_cache_ver: Optional[tuple[int, int]] = None
+                self._debris_targets_cache: dict[tuple[tuple[str, ...], int, bool], str] = {}
                 now_ts = time.time()
                 self._migration_result = DEFAULT_GAME_MIGRATION_RUNNER.migrate(
                     self._conn,
@@ -1448,6 +1456,14 @@ class GameDatabase:
         self._colony_cand_cache = {}
         self._summary_cache_ver = None
         self._summary_cache_json = None
+        self._full_history_cache_ver = None
+        self._full_history_cache_json = None
+        self._raid_stats_base_ver = None
+        self._raid_stats_base_cache = {}
+        self._spy_targets_cache_ver = None
+        self._spy_targets_cache = {}
+        self._debris_targets_cache_ver = None
+        self._debris_targets_cache = {}
 
     @staticmethod
     def _parse_norm_gsp_fast(raw_c: Any) -> Optional[tuple[str, int, int, int]]:
@@ -5185,10 +5201,12 @@ class GameDatabase:
             backfill_v012_hot_tables(self._conn, time.time())
         self._conn.commit()
 
-    def _enrich_debris_amounts_locked(self, targets: list[dict[str, Any]]) -> None:
-        debris_coords = [t["coords"] for t in targets if t.get("has_debris") and t.get("coords")]
+    def _build_debris_lookup_locked(
+        self,
+        debris_coords: Sequence[str],
+    ) -> dict[str, tuple[int, int, int, int]]:
         if not debris_coords:
-            return
+            return {}
         # Map: norm_coords -> (pig, met, kry, spi)
         debris_lookup: dict[str, tuple[int, int, int, int]] = {}
         raw_deb_map = self._load_meta_json_locked("galaxy_debris_amounts")
@@ -5204,21 +5222,32 @@ class GameDatabase:
                         debris_lookup[nc] = (dp, dm, dk, ds)
         missing_after_meta = [c for c in debris_coords if c not in debris_lookup]
         if missing_after_meta:
-            placeholders = ",".join("?" for _ in missing_after_meta)
+            missing_after_meta_set = set(missing_after_meta)
             try:
-                b_rows = self._conn.execute(
-                    f"""
-                    SELECT target_coords, debris_pig_iron, debris_metal, ts
-                    FROM battle_reports
-                    WHERE target_coords IN ({placeholders})
-                      AND (debris_pig_iron > 0 OR debris_metal > 0)
-                    ORDER BY ts DESC, id DESC
-                    """,
-                    tuple(missing_after_meta),
-                ).fetchall()
+                if len(missing_after_meta) > 100:
+                    b_rows = self._conn.execute(
+                        """
+                        SELECT target_coords, debris_pig_iron, debris_metal, ts
+                        FROM battle_reports
+                        WHERE debris_pig_iron > 0 OR debris_metal > 0
+                        ORDER BY ts DESC, id DESC
+                        """
+                    ).fetchall()
+                else:
+                    placeholders = ",".join("?" for _ in missing_after_meta)
+                    b_rows = self._conn.execute(
+                        f"""
+                        SELECT target_coords, debris_pig_iron, debris_metal, ts
+                        FROM battle_reports
+                        WHERE target_coords IN ({placeholders})
+                          AND (debris_pig_iron > 0 OR debris_metal > 0)
+                        ORDER BY ts DESC, id DESC
+                        """,
+                        tuple(missing_after_meta),
+                    ).fetchall()
                 for br in b_rows:
                     nc = normalize_coords(_raw_text(br["target_coords"], ""))
-                    if nc and nc not in debris_lookup:
+                    if nc and nc in missing_after_meta_set and nc not in debris_lookup:
                         dp = game_data.cap_json_int(max(0, _safe_int(br["debris_pig_iron"], 0)))
                         dm = game_data.cap_json_int(max(0, _safe_int(br["debris_metal"], 0)))
                         if dp + dm > 0:
@@ -5227,29 +5256,47 @@ class GameDatabase:
                 pass
         missing_deb = [c for c in debris_coords if c not in debris_lookup]
         if missing_deb:
-            ph2 = ",".join("?" for _ in missing_deb)
+            missing_deb_set = set(missing_deb)
             try:
-                r_rows = self._conn.execute(
-                    f"""
-                    SELECT coords AS target_coords, debris_avail_pig, debris_avail_metal,
-                           harvested_pig_iron, harvested_metal, raw_text, ts
-                    FROM recycle_reports
-                    WHERE coords IN ({ph2})
-                    ORDER BY ts DESC, id DESC
-                    """,
-                    tuple(missing_deb),
-                ).fetchall()
+                if len(missing_deb) > 100:
+                    r_rows = self._conn.execute(
+                        """
+                        SELECT coords AS target_coords, debris_avail_pig, debris_avail_metal,
+                               harvested_pig_iron, harvested_metal, raw_text, ts
+                        FROM recycle_reports
+                        ORDER BY ts DESC, id DESC
+                        """
+                    ).fetchall()
+                else:
+                    ph2 = ",".join("?" for _ in missing_deb)
+                    r_rows = self._conn.execute(
+                        f"""
+                        SELECT coords AS target_coords, debris_avail_pig, debris_avail_metal,
+                               harvested_pig_iron, harvested_metal, raw_text, ts
+                        FROM recycle_reports
+                        WHERE coords IN ({ph2})
+                        ORDER BY ts DESC, id DESC
+                        """,
+                        tuple(missing_deb),
+                    ).fetchall()
                 for rr in r_rows:
                     if is_non_recycle_fleet_notice_text(_raw_text(rr["raw_text"], "")):
                         continue
                     nc = normalize_coords(_raw_text(rr["target_coords"], ""))
-                    if nc and nc not in debris_lookup:
+                    if nc and nc in missing_deb_set and nc not in debris_lookup:
                         dp = max(0, _safe_int(rr["debris_avail_pig"], 0) - _safe_int(rr["harvested_pig_iron"], 0))
                         dm = max(0, _safe_int(rr["debris_avail_metal"], 0) - _safe_int(rr["harvested_metal"], 0))
                         if dp + dm > 0:
                             debris_lookup[nc] = (game_data.cap_json_int(dp), game_data.cap_json_int(dm), 0, 0)
             except sqlite3.Error:
                 pass
+        return debris_lookup
+
+    def _enrich_debris_amounts_locked(self, targets: list[dict[str, Any]]) -> None:
+        debris_coords = [t["coords"] for t in targets if t.get("has_debris") and t.get("coords")]
+        if not debris_coords:
+            return
+        debris_lookup = self._build_debris_lookup_locked(debris_coords)
         for t in targets:
             if t.get("has_debris") and t.get("coords") in debris_lookup:
                 dp, dm, dk, ds = debris_lookup[t["coords"]]
@@ -5266,7 +5313,17 @@ class GameDatabase:
         include_own: bool = False,
     ) -> list[dict[str, Any]]:
         own_clause = "" if include_own else "AND is_own_planet = 0"
+        lim = max(1, _sql_int(limit, 50))
+        cache_key = (lim, bool(include_own))
         with self._lock:
+            db_ver = self._db_version_locked()
+            if self._spy_targets_cache_ver == db_ver:
+                cached_json = self._spy_targets_cache.get(cache_key)
+                if cached_json is not None:
+                    return json.loads(cached_json)
+            else:
+                self._spy_targets_cache_ver = db_ver
+                self._spy_targets_cache = {}
             cmax_clause = "AND colonize_max_fields IS NULL" if self._has_column_locked("spy_targets", "colonize_max_fields") else ""
             own_filter = own_clause if self._has_column_locked("spy_targets", "is_own_planet") else ""
             merged_filter = "merged_into = ''" if self._has_column_locked("spy_targets", "merged_into") else "1=1"
@@ -5288,10 +5345,13 @@ class GameDatabase:
                 ORDER BY (is_inactive + is_spacia + has_debris) DESC, (last_spied_ts > 0) DESC, last_scanned_ts DESC
                 LIMIT ?
                 """,
-                (max(1, _sql_int(limit, 50)),),
+                (lim,),
             ).fetchall()
             out = [self._row_to_spy_target_dict(r) for r in rows]
             self._enrich_debris_amounts_locked(out)
+            if len(self._spy_targets_cache) >= 16:
+                self._spy_targets_cache.clear()
+            self._spy_targets_cache[cache_key] = json.dumps(out, allow_nan=False)
         return out
 
     def get_active_debris_targets(
@@ -5306,7 +5366,25 @@ class GameDatabase:
         free/player rubble fields are never evicted by distant Spacia planets."""
         own_clause = "" if include_own else "AND is_own_planet = 0"
         lim = max(1, _sql_int(limit, 100))
+        parsed_origins: list[tuple[int, int, int]] = []
+        norm_origin_set: set[str] = set()
+        for oc in origin_coords or ():
+            p_oc = self._parse_norm_gsp_fast(normalize_coords(_raw_text(oc, "")))
+            if p_oc is not None:
+                if p_oc[0] not in norm_origin_set:
+                    norm_origin_set.add(p_oc[0])
+                    parsed_origins.append((p_oc[1], p_oc[2], p_oc[3]))
+        origin_key = tuple(sorted(norm_origin_set))
+        cache_key = (origin_key, lim, bool(include_own))
         with self._lock:
+            db_ver = self._db_version_locked()
+            if self._debris_targets_cache_ver == db_ver:
+                cached_json = self._debris_targets_cache.get(cache_key)
+                if cached_json is not None:
+                    return json.loads(cached_json)
+            else:
+                self._debris_targets_cache_ver = db_ver
+                self._debris_targets_cache = {}
             own_filter = own_clause if self._has_column_locked("spy_targets", "is_own_planet") else ""
             merged_filter = "merged_into = ''" if self._has_column_locked("spy_targets", "merged_into") else "1=1"
             rows = self._conn.execute(
@@ -5319,35 +5397,56 @@ class GameDatabase:
                 LIMIT 2000
                 """
             ).fetchall()
-            out = [self._row_to_spy_target_dict(r) for r in rows]
-            self._enrich_debris_amounts_locked(out)
+            # Rank raw rows BEFORE calling `_row_to_spy_target_dict` (which runs deep JSON
+            # parsing & redaction) so we only materialize the top `lim` winners instead of 2,000 rows.
+            raw_items: list[tuple[Optional[tuple[str, int, int, int]], str, float, sqlite3.Row]] = []
+            debris_coords: list[str] = []
+            for r in rows:
+                nc = normalize_coords(_raw_text(r["coords"], ""))
+                p_t = self._parse_norm_gsp_fast(nc) if nc else None
+                ts_scan = _safe_float(r["last_scanned_ts"], 0.0)
+                raw_items.append((p_t, nc, ts_scan, r))
+                if nc:
+                    debris_coords.append(nc)
+            debris_lookup = self._build_debris_lookup_locked(debris_coords)
 
-        parsed_origins: list[tuple[int, int, int]] = []
-        for oc in origin_coords or ():
-            p_oc = self._parse_norm_gsp_fast(normalize_coords(_raw_text(oc, "")))
-            if p_oc is not None:
-                parsed_origins.append((p_oc[1], p_oc[2], p_oc[3]))
-
-        def _debris_sort_key(item: dict[str, Any]) -> tuple[int, int, int, int, int, float]:
-            tot = max(0, _safe_int(item.get("debris_total"), 0))
-            ts_scan = _safe_float(item.get("last_scanned_ts"), 0.0)
-            p_t = self._parse_norm_gsp_fast(normalize_coords(_raw_text(item.get("coords"), "")))
-            if parsed_origins and p_t is not None:
-                _, tg, ts_num, tp = p_t
-                best_d = min(
-                    (
-                        0 if tg == og else 1,
-                        abs(tg - og),
-                        abs(ts_num - osys),
-                        abs(tp - opos),
+            def _debris_raw_sort_key(
+                entry: tuple[Optional[tuple[str, int, int, int]], str, float, sqlite3.Row]
+            ) -> tuple[int, int, int, int, int, float]:
+                p_t, nc, ts_scan, _r = entry
+                d_tup = debris_lookup.get(nc)
+                tot = (d_tup[0] + d_tup[1] + d_tup[2] + d_tup[3]) if d_tup is not None else 0
+                if parsed_origins and p_t is not None:
+                    _, tg, ts_num, tp = p_t
+                    best_d = min(
+                        (
+                            0 if tg == og else 1,
+                            abs(tg - og),
+                            abs(ts_num - osys),
+                            abs(tp - opos),
+                        )
+                        for og, osys, opos in parsed_origins
                     )
-                    for og, osys, opos in parsed_origins
-                )
-                return (best_d[0], best_d[1], best_d[2], best_d[3], -tot, -ts_scan)
-            return (0, 0, 0, 0, -tot, -ts_scan)
+                    return (best_d[0], best_d[1], best_d[2], best_d[3], -tot, -ts_scan)
+                return (0, 0, 0, 0, -tot, -ts_scan)
 
-        out.sort(key=_debris_sort_key)
-        return out[:lim]
+            raw_items.sort(key=_debris_raw_sort_key)
+            trimmed: list[dict[str, Any]] = []
+            for _p_t, nc, _ts_scan, r in raw_items[:lim]:
+                t = self._row_to_spy_target_dict(r)
+                d_tup = debris_lookup.get(nc)
+                if t.get("has_debris") and d_tup is not None:
+                    dp, dm, dk, ds = d_tup
+                    t["debris_pig_iron"] = dp
+                    t["debris_metal"] = dm
+                    t["debris_kryptonite"] = dk
+                    t["debris_spice"] = ds
+                    t["debris_total"] = game_data.cap_json_int(dp + dm + dk + ds)
+                trimmed.append(t)
+            if len(self._debris_targets_cache) >= 16:
+                self._debris_targets_cache.clear()
+            self._debris_targets_cache[cache_key] = json.dumps(trimmed, allow_nan=False)
+            return trimmed
 
     def get_spy_reports(
         self,
@@ -6678,6 +6777,10 @@ class GameDatabase:
         return norm_rows
 
     def _get_full_history_summary_locked(self) -> dict[str, Any]:
+        db_ver = self._db_version_locked()
+        if self._full_history_cache_ver == db_ver and self._full_history_cache_json is not None:
+            return json.loads(self._full_history_cache_json)
+
         # 1. Raid history summary
         norm_raids = self._query_norm_raid_rows_locked()
         max_raid_ts = max((r["attacked_ts"] for r in norm_raids), default=0.0)
@@ -6701,37 +6804,47 @@ class GameDatabase:
             "last_attack": last_attack,
         }
 
-        # 2. Spy targets summary
-        spy_rows = self._conn.execute(
+        # 2. Spy targets summary (aggregate counts in SQL; only compute spice_eq on non-zero rows)
+        spy_agg_row = self._conn.execute(
             """
-            SELECT is_inactive, is_spacia, last_spied_ts, pig_iron, metal, kryptonite, spice
+            SELECT
+                COUNT(*) AS cnt,
+                COALESCE(SUM(CASE WHEN is_inactive IS NOT NULL AND is_inactive != 0 AND is_inactive != '' THEN 1 ELSE 0 END), 0) AS inact_cnt,
+                COALESCE(SUM(CASE WHEN is_spacia IS NOT NULL AND is_spacia != 0 AND is_spacia != '' THEN 1 ELSE 0 END), 0) AS spacia_cnt
             FROM spy_targets
             """
+        ).fetchone()
+        spy_count = int(spy_agg_row["cnt"]) if spy_agg_row is not None else 0
+        inactive_count = int(spy_agg_row["inact_cnt"]) if spy_agg_row is not None else 0
+        spacia_count = int(spy_agg_row["spacia_cnt"]) if spy_agg_row is not None else 0
+        spied_or_res_rows = self._conn.execute(
+            """
+            SELECT last_spied_ts, pig_iron, metal, kryptonite, spice
+            FROM spy_targets
+            WHERE (last_spied_ts IS NOT NULL AND last_spied_ts != 0 AND last_spied_ts != '')
+               OR (pig_iron IS NOT NULL AND pig_iron != 0 AND pig_iron != '')
+               OR (metal IS NOT NULL AND metal != 0 AND metal != '')
+               OR (kryptonite IS NOT NULL AND kryptonite != 0 AND kryptonite != '')
+               OR (spice IS NOT NULL AND spice != 0 AND spice != '')
+            """
         ).fetchall()
-        spy_count = len(spy_rows)
-        inactive_count = sum(1 for r in spy_rows if bool(r["is_inactive"]))
-        spacia_count = sum(1 for r in spy_rows if bool(r["is_spacia"]))
-        spied_count = sum(1 for r in spy_rows if _safe_float(r["last_spied_ts"], 0.0) > 0.0)
-        total_known_res_sp = round(
-            _safe_float(
-                sum(
-                    _safe_float(
-                        game_data.spice_equivalent(
-                            {
-                                "pig_iron": game_data.cap_json_int(_safe_int(r["pig_iron"], 0)),
-                                "metal": game_data.cap_json_int(_safe_int(r["metal"], 0)),
-                                "kryptonite": game_data.cap_json_int(_safe_int(r["kryptonite"], 0)),
-                                "spice": game_data.cap_json_int(_safe_int(r["spice"], 0)),
-                            }
-                        ),
-                        0.0,
-                    )
-                    for r in spy_rows
+        spied_count = 0
+        known_res_sp_sum = 0.0
+        for r in spied_or_res_rows:
+            if _safe_float(r["last_spied_ts"], 0.0) > 0.0:
+                spied_count += 1
+            known_res_sp_sum += _safe_float(
+                game_data.spice_equivalent(
+                    {
+                        "pig_iron": game_data.cap_json_int(_safe_int(r["pig_iron"], 0)),
+                        "metal": game_data.cap_json_int(_safe_int(r["metal"], 0)),
+                        "kryptonite": game_data.cap_json_int(_safe_int(r["kryptonite"], 0)),
+                        "spice": game_data.cap_json_int(_safe_int(r["spice"], 0)),
+                    }
                 ),
                 0.0,
-            ),
-            3,
-        )
+            )
+        total_known_res_sp = round(_safe_float(known_res_sp_sum, 0.0), 3)
         spy_summary = {
             "count": spy_count,
             "inactive_count": inactive_count,
@@ -6748,17 +6861,52 @@ class GameDatabase:
             self._conn.execute("SELECT COUNT(*) FROM spy_reports").fetchone()[0]
         )
 
-        # 4. Planet snapshots summary
-        p_rows = self._conn.execute(
-            """
-            SELECT ts, planet_id, coords, planet_type, fields_used, fields_max,
-                   pig_iron, metal, kryptonite, spice, energy_produced, energy_used,
-                   buildings_json, ships_json, economy_rates_json
-            FROM planet_snapshots
-            ORDER BY ts ASC, id ASC
-            """
-        ).fetchall()
-        p_count = len(p_rows)
+        # 4. Planet snapshots summary (only fetch first & latest row per planet_id via window fn)
+        p_count = int(
+            self._conn.execute("SELECT COUNT(*) FROM planet_snapshots").fetchone()[0]
+        )
+        first_ts_val: Optional[float] = None
+        latest_ts_val: Optional[float] = None
+        if p_count > 0:
+            first_ts_row = self._conn.execute(
+                "SELECT ts FROM planet_snapshots ORDER BY ts ASC, id ASC LIMIT 1"
+            ).fetchone()
+            latest_ts_row = self._conn.execute(
+                "SELECT ts FROM planet_snapshots ORDER BY ts DESC, id DESC LIMIT 1"
+            ).fetchone()
+            first_ts_val = _safe_float(first_ts_row["ts"], 0.0) if first_ts_row is not None else None
+            latest_ts_val = _safe_float(latest_ts_row["ts"], 0.0) if latest_ts_row is not None else None
+            try:
+                p_rows = self._conn.execute(
+                    """
+                    WITH ranked AS (
+                        SELECT id, ts, planet_id, coords, planet_type, fields_used, fields_max,
+                               pig_iron, metal, kryptonite, spice, energy_produced, energy_used,
+                               buildings_json, ships_json, economy_rates_json,
+                               ROW_NUMBER() OVER (PARTITION BY planet_id ORDER BY ts ASC, id ASC) AS rn_first,
+                               ROW_NUMBER() OVER (PARTITION BY planet_id ORDER BY ts DESC, id DESC) AS rn_last
+                        FROM planet_snapshots
+                    )
+                    SELECT ts, planet_id, coords, planet_type, fields_used, fields_max,
+                           pig_iron, metal, kryptonite, spice, energy_produced, energy_used,
+                           buildings_json, ships_json, economy_rates_json
+                    FROM ranked
+                    WHERE rn_first = 1 OR rn_last = 1
+                    ORDER BY ts ASC, id ASC
+                    """
+                ).fetchall()
+            except sqlite3.OperationalError:
+                p_rows = self._conn.execute(
+                    """
+                    SELECT ts, planet_id, coords, planet_type, fields_used, fields_max,
+                           pig_iron, metal, kryptonite, spice, energy_produced, energy_used,
+                           buildings_json, ships_json, economy_rates_json
+                    FROM planet_snapshots
+                    ORDER BY ts ASC, id ASC
+                    """
+                ).fetchall()
+        else:
+            p_rows = []
         first_by_pid: dict[int, dict[str, Any]] = {}
         latest_by_pid: dict[int, dict[str, Any]] = {}
         for r in p_rows:
@@ -6809,8 +6957,8 @@ class GameDatabase:
         planet_summary = {
             "count": p_count,
             "distinct_planets": len(latest_by_pid),
-            "first_ts": _safe_float(p_rows[0]["ts"], 0.0) if p_rows else None,
-            "latest_ts": _safe_float(p_rows[-1]["ts"], 0.0) if p_rows else None,
+            "first_ts": first_ts_val,
+            "latest_ts": latest_ts_val,
             "latest_by_planet": latest_by_planet_clean,
             "trend": {
                 "first_total_buildings_levels": first_bld_lvls,
@@ -6905,33 +7053,36 @@ class GameDatabase:
             "trajectory": rank_trajectory,
         }
 
-        # 6. Action history summary
+        # 6. Action history summary (grouped in SQL)
         act_rows = self._conn.execute(
             """
-            SELECT kind, executed, dry_run
+            SELECT kind, executed, dry_run, COUNT(*) AS cnt
             FROM action_history
+            GROUP BY kind, executed, dry_run
             """
         ).fetchall()
-        act_total = len(act_rows)
+        act_total = 0
         act_executed = 0
         act_failed = 0
         act_dry = 0
         by_kind: dict[str, dict[str, int]] = {}
         for r in act_rows:
+            cnt = int(r["cnt"])
             kind = _sanitize_text(_raw_text(r["kind"], "UNKNOWN") or "UNKNOWN")
             ex = bool(r["executed"])
             dry = bool(r["dry_run"])
+            act_total += cnt
             bucket = by_kind.setdefault(kind, {"total": 0, "executed": 0, "failed": 0, "dry_run": 0})
-            bucket["total"] += 1
+            bucket["total"] += cnt
             if ex:
-                act_executed += 1
-                bucket["executed"] += 1
+                act_executed += cnt
+                bucket["executed"] += cnt
             elif dry:
-                act_dry += 1
-                bucket["dry_run"] += 1
+                act_dry += cnt
+                bucket["dry_run"] += cnt
             else:
-                act_failed += 1
-                bucket["failed"] += 1
+                act_failed += cnt
+                bucket["failed"] += cnt
         live_attempts = act_total - act_dry
         act_sr = round(act_executed / max(1, live_attempts), 4) if live_attempts > 0 else 0.0
         action_summary = {
@@ -6944,7 +7095,7 @@ class GameDatabase:
         }
 
         points_delta_val = _safe_float(srv_pts_delta, 0.0) if srv_pts_delta != 0 else est_delta
-        return _sanitize_obj(
+        out_full = _sanitize_obj(
             {
                 "raid_history": raid_summary,
                 "spy_targets": spy_summary,
@@ -6966,6 +7117,9 @@ class GameDatabase:
                 "action_success_rate": act_sr,
             }
         )
+        self._full_history_cache_ver = db_ver
+        self._full_history_cache_json = json.dumps(out_full, allow_nan=False)
+        return out_full
 
     def get_full_history_summary(self) -> dict[str, Any]:
         with self._lock:
@@ -6976,7 +7130,32 @@ class GameDatabase:
         *,
         window_seconds: Optional[float] = None,
         now: Optional[float] = None,
+        include_telemetry_summary: bool = True,
     ) -> dict[str, Any]:
+        inc_tel = bool(include_telemetry_summary)
+        active_now = _safe_float(now, time.time()) if now is not None else time.time()
+        use_cache = window_seconds is None and now is None
+        if use_cache:
+            db_ver = self._db_version_locked()
+            if self._raid_stats_base_ver != db_ver:
+                self._raid_stats_base_ver = db_ver
+                self._raid_stats_base_cache = {}
+            cached_base = self._raid_stats_base_cache.get(inc_tel)
+            if cached_base is not None:
+                blocked_targets_c: dict[str, dict[str, Any]] = {}
+                for bc, b_until, b_reason, b_hits, b_last_ts in cached_base["blocked_candidates"]:
+                    if b_until > active_now:
+                        blocked_targets_c[bc] = {
+                            "blocked_until_ts": b_until,
+                            "remaining_seconds": round(max(0.0, b_until - active_now), 1),
+                            "reason": b_reason,
+                            "bash_hits": b_hits,
+                            "last_blocked_ts": b_last_ts,
+                        }
+                res_c = json.loads(cached_base["base_json"])
+                res_c["blocked_targets"] = blocked_targets_c
+                return res_c
+
         norm_rows = self._query_norm_raid_rows_locked(window_seconds=window_seconds, now=now)
         max_row_ts = max((r["attacked_ts"] for r in norm_rows), default=0.0)
         ref_ts = _safe_float(now, max_row_ts) if (now is not None and _safe_float(now, 0.0) > 0.0) else max_row_ts
@@ -7029,50 +7208,78 @@ class GameDatabase:
             }
             for br in bash_block_rows
         ]
-        active_now = _safe_float(now, time.time()) if now is not None else time.time()
-        blocked_spy_rows = self._conn.execute(
-            """
-            SELECT coords, blocked_until_ts, block_reason, bash_hits, last_blocked_ts
-            FROM spy_targets
-            WHERE blocked_until_ts > ?
-            ORDER BY blocked_until_ts DESC
-            """,
-            (active_now,),
-        ).fetchall()
+        if use_cache:
+            blocked_spy_rows = self._conn.execute(
+                """
+                SELECT coords, blocked_until_ts, block_reason, bash_hits, last_blocked_ts
+                FROM spy_targets
+                WHERE blocked_until_ts IS NOT NULL AND blocked_until_ts > 0
+                ORDER BY blocked_until_ts DESC
+                """
+            ).fetchall()
+        else:
+            blocked_spy_rows = self._conn.execute(
+                """
+                SELECT coords, blocked_until_ts, block_reason, bash_hits, last_blocked_ts
+                FROM spy_targets
+                WHERE blocked_until_ts > ?
+                ORDER BY blocked_until_ts DESC
+                """,
+                (active_now,),
+            ).fetchall()
+        blocked_candidates: list[tuple[str, float, str, int, float]] = []
         blocked_targets: dict[str, dict[str, Any]] = {}
         for sr in blocked_spy_rows:
             bc = normalize_coords(_raw_text(sr["coords"], ""))
             if not bc:
                 continue
             b_until = _safe_float(sr["blocked_until_ts"], 0.0)
-            blocked_targets[bc] = {
-                "blocked_until_ts": b_until,
-                "remaining_seconds": round(max(0.0, b_until - active_now), 1),
-                "reason": _sanitize_text(_raw_text(sr["block_reason"], "")),
-                "bash_hits": game_data.cap_json_int(max(0, _safe_int(sr["bash_hits"], 0))),
-                "last_blocked_ts": _safe_float(sr["last_blocked_ts"], 0.0),
-            }
+            b_reason = _sanitize_text(_raw_text(sr["block_reason"], ""))
+            b_hits = game_data.cap_json_int(max(0, _safe_int(sr["bash_hits"], 0)))
+            b_last_ts = _safe_float(sr["last_blocked_ts"], 0.0)
+            if use_cache and b_until > 0.0:
+                blocked_candidates.append((bc, b_until, b_reason, b_hits, b_last_ts))
+            if b_until > active_now:
+                blocked_targets[bc] = {
+                    "blocked_until_ts": b_until,
+                    "remaining_seconds": round(max(0.0, b_until - active_now), 1),
+                    "reason": b_reason,
+                    "bash_hits": b_hits,
+                    "last_blocked_ts": b_last_ts,
+                }
 
-        telemetry_summary = self._get_full_history_summary_locked()
-        return _sanitize_obj(
+        telemetry_summary = self._get_full_history_summary_locked() if inc_tel else {}
+        base_payload = _sanitize_obj(
             {
                 "overall": overall,
                 "per_target": per_target,
                 "history": norm_rows,
                 "bash_blocks": bash_blocks_list,
-                "blocked_targets": blocked_targets,
                 "telemetry_summary": telemetry_summary,
             }
         )
+        if use_cache:
+            self._raid_stats_base_cache[inc_tel] = {
+                "base_json": json.dumps(base_payload, allow_nan=False),
+                "blocked_candidates": blocked_candidates,
+            }
+        out_stats = dict(base_payload)
+        out_stats["blocked_targets"] = _sanitize_obj(blocked_targets)
+        return out_stats
 
     def get_raid_stats(
         self,
         *,
         window_seconds: Optional[float] = None,
         now: Optional[float] = None,
+        include_telemetry_summary: bool = True,
     ) -> dict[str, Any]:
         with self._lock:
-            return self._get_raid_stats_locked(window_seconds=window_seconds, now=now)
+            return self._get_raid_stats_locked(
+                window_seconds=window_seconds,
+                now=now,
+                include_telemetry_summary=include_telemetry_summary,
+            )
 
     def _sync_attack_history_file_locked(self) -> Optional[Path]:
         if self.attack_history_path is None:

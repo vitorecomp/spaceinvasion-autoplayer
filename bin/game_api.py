@@ -62,6 +62,8 @@ WATCH_PATHS = (
     _REPO_ROOT / "spaceinvasion/db/storage.py",
     _REPO_ROOT / "spaceinvasion/planner/strategy.py",
     _REPO_ROOT / "spaceinvasion/planner/optimizer.py",
+    _REPO_ROOT / "spaceinvasion/planner/ai_planner.py",
+    _REPO_ROOT / "spaceinvasion/planner/config_optimizer.py",
     _REPO_ROOT / "spaceinvasion/session/client.py",
     _REPO_ROOT / "spaceinvasion/session/executor.py",
     _REPO_ROOT / "spaceinvasion/runtime/api_server.py",
@@ -188,7 +190,11 @@ def main(argv: list[str] | None = None) -> int:
             account=args.account,
         )
     except SpaceInvasionAuthError as exc:
-        print(f"[API] Browser startup error: {redact_sensitive(_safe_err_text(exc))}", file=sys.stderr)
+        print(
+            f"[API] Browser startup error: {redact_sensitive(_safe_err_text(exc))}",
+            file=sys.stderr,
+            flush=True,
+        )
         return 1
 
     bridge = GameApiBridge(
@@ -213,12 +219,12 @@ def main(argv: list[str] | None = None) -> int:
             signal.signal(signal.SIGTERM, _shutdown_handler)
         print(
             f"[API] Listening on http://{args.host}:{args.port} "
-            f"(Control UI: http://{args.host}:{args.port}/ | Chrome debug port: 127.0.0.1:{args.debug_port})"
+            f"(Control UI: http://{args.host}:{args.port}/ | Chrome debug port: 127.0.0.1:{args.debug_port})",
+            flush=True,
         )
-        sys.stdout.flush()
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n[API] Shutting down (Chrome remains open on debug port).")
+        print("\n[API] Shutting down (Chrome remains open on debug port).", flush=True)
     finally:
         bridge.stop_galaxy_sweep_worker()
         if server is not None:

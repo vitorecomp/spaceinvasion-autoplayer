@@ -1721,6 +1721,159 @@ class TestGameDatabase(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_hot_read_caches_telemetry_toggle_blocked_expiry_and_cte_snapshot_parity(self) -> None:
+        import time
+        from unittest.mock import patch
+        from spaceinvasion.combat.fleet import GalaxySlot
+
+        db = GameDatabase(":memory:")
+        try:
+            now = time.time()
+            # Seed multiple planets across multiple snapshots to verify ROW_NUMBER() CTE first/latest parity
+            for step_i, offset_s in enumerate((300, 200, 100)):
+                p1 = PlanetState(
+                    planet_id=101,
+                    name="Alpha",
+                    coords="02:380:01",
+                    planet_type="normal",
+                    temperature=20,
+                    fields_used=40,
+                    fields_max=200,
+                    resources=Resources(1000 * (step_i + 1), 500, 200, 100),
+                    storage=Resources(100000, 100000, 100000, 100000),
+                    energy=EnergyBalance(500, 300),
+                    buildings={"b1": 5 + step_i, "b2": 3},
+                )
+                p2 = PlanetState(
+                    planet_id=102,
+                    name="Beta",
+                    coords="02:380:02",
+                    planet_type="normal",
+                    temperature=25,
+                    fields_used=35,
+                    fields_max=210,
+                    resources=Resources(2000 * (step_i + 1), 600, 300, 150),
+                    storage=Resources(100000, 100000, 100000, 100000),
+                    energy=EnergyBalance(500, 300),
+                    buildings={"b1": 4 + step_i, "b2": 2},
+                )
+                st = GameState(
+                    universe_id=31,
+                    user_id=1,
+                    nickname="Tester",
+                    timestamp=now - offset_s,
+                    active_planet_id=101,
+                    planets=(p1, p2),
+                )
+                db.record_state_snapshot(st)
+
+            # Record galaxy slots + debris + bash block
+            db.record_galaxy_slots(
+                [
+                    GalaxySlot(
+                        position=9,
+                        coords="02:380:09",
+                        owner="InactiveA",
+                        name="RichA",
+                        status_color="yellow",
+                        has_debris=True,
+                        is_spacia=False,
+                    ),
+                    GalaxySlot(
+                        position=10,
+                        coords="02:380:10",
+                        owner="InactiveB",
+                        name="RichB",
+                        status_color="yellow",
+                        has_debris=False,
+                        is_spacia=False,
+                    ),
+                ],
+                ts=now - 50,
+            )
+            db.record_target_block(
+                "02:380:09",
+                blocked_until_ts=now + 120.0,
+                reason="bash test",
+                is_bash=True,
+                ts=now - 10,
+            )
+            db.record_raid(
+                target_coords="02:380:09",
+                outcome="win",
+                loot={"pig_iron": 4000, "metal": 2000, "kryptonite": 500, "spice": 100},
+                attacked_ts=now - 40,
+            )
+
+            # 1. include_telemetry_summary=True vs False + warm cache hit isolation
+            rs_full_1 = db.get_raid_stats()
+            rs_full_2 = db.get_raid_stats()
+            self.assertEqual(rs_full_1["overall"]["attempts"], 1)
+            self.assertIn("02:380:09", rs_full_1["blocked_targets"])
+            self.assertEqual(rs_full_1["telemetry_summary"]["planet_snapshots_count"], 6)
+            self.assertEqual(
+                rs_full_1["telemetry_summary"]["planet_snapshots"]["trend"]["building_levels_delta"],
+                4,
+            )
+            self.assertEqual(rs_full_1["telemetry_summary"]["spy_targets_count"], 2)
+            # Mutating returned dict must not poison cache
+            rs_full_1["overall"]["attempts"] = 999
+            self.assertEqual(rs_full_2["overall"]["attempts"], 1)
+            self.assertEqual(db.get_raid_stats()["overall"]["attempts"], 1)
+
+            rs_light = db.get_raid_stats(include_telemetry_summary=False)
+            self.assertEqual(rs_light["telemetry_summary"], {})
+            self.assertEqual(rs_light["overall"]["attempts"], 1)
+            self.assertIn("02:380:09", rs_light["per_target"])
+            self.assertIn("02:380:09", rs_light["blocked_targets"])
+
+            # 2. Cached spy_targets & active_debris_targets invalidate on DB write
+            sp1 = db.get_spy_targets(limit=50)
+            sp2 = db.get_spy_targets(limit=50)
+            self.assertEqual(len(sp1), 2)
+            self.assertEqual(sp1, sp2)
+            deb1 = db.get_active_debris_targets(origin_coords=["02:380:01"], limit=20)
+            deb2 = db.get_active_debris_targets(origin_coords=["02:380:01"], limit=20)
+            self.assertEqual(len(deb1), 1)
+            self.assertEqual(deb1[0]["coords"], "02:380:09")
+            self.assertEqual(deb1, deb2)
+
+            # Insert new debris slot -> version bump invalidates caches immediately
+            db.record_galaxy_slots(
+                [
+                    GalaxySlot(
+                        position=11,
+                        coords="02:380:11",
+                        owner="InactiveC",
+                        name="RichC",
+                        status_color="yellow",
+                        has_debris=True,
+                        is_spacia=False,
+                    )
+                ],
+                ts=now - 5,
+            )
+            self.assertEqual(len(db.get_spy_targets(limit=50)), 3)
+            self.assertEqual(len(db.get_active_debris_targets(origin_coords=["02:380:01"], limit=20)), 2)
+
+            # 3. Blocked target expires dynamically on warm cache hit as wall clock advances
+            db.record_target_block(
+                "02:380:10",
+                blocked_until_ts=now + 2.0,
+                reason="short block",
+                is_bash=True,
+                ts=now - 1.5,
+            )
+            with patch("spaceinvasion.db.storage.time.time", return_value=now):
+                rs_before = db.get_raid_stats(include_telemetry_summary=False)
+                self.assertIn("02:380:10", rs_before["blocked_targets"])
+            with patch("spaceinvasion.db.storage.time.time", return_value=now + 10.0):
+                rs_after = db.get_raid_stats(include_telemetry_summary=False)
+                self.assertNotIn("02:380:10", rs_after["blocked_targets"])
+                self.assertIn("02:380:09", rs_after["blocked_targets"])
+        finally:
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8645,6 +8645,8 @@
     const inFlightSectorsCountRef = reactExports.useRef(0);
     const coloniesReqSeqRef = reactExports.useRef(0);
     const inFlightColoniesCountRef = reactExports.useRef(0);
+    const inFlightBuildingsEtaRef = reactExports.useRef(null);
+    const inFlightCombatRef = reactExports.useRef(null);
     const sectorPreviewRef = reactExports.useRef(null);
     if (typeof window !== "undefined") {
       syncLegacyStateFromSnapshot(snap);
@@ -8919,48 +8921,76 @@
     );
     const refreshBuildingsEtaForSelectedPlanet = reactExports.useCallback(
       async (forceRefresh = false) => {
+        var _a2;
         const planet = selectActivePlanet(
           sharedLegacyState.dashboard,
           sharedLegacyState.selectedPlanetId
         );
         if (!planet) return;
-        try {
-          const res = await apiCommand({
-            command: "buildings_eta",
-            planet_id: planet.planet_id,
-            refresh: forceRefresh
-          });
-          if (res.buildings_eta) {
-            setBuildingsEtaData(res.buildings_eta);
-          }
-        } catch {
+        const reqKey = `${planet.planet_id}:${forceRefresh ? "1" : "0"}`;
+        if (((_a2 = inFlightBuildingsEtaRef.current) == null ? void 0 : _a2.key) === reqKey) {
+          return inFlightBuildingsEtaRef.current.promise;
         }
+        const reqPromise = (async () => {
+          var _a3;
+          try {
+            const res = await apiCommand({
+              command: "buildings_eta",
+              planet_id: planet.planet_id,
+              refresh: forceRefresh
+            });
+            if (res.buildings_eta) {
+              setBuildingsEtaData(res.buildings_eta);
+            }
+          } catch {
+          } finally {
+            if (((_a3 = inFlightBuildingsEtaRef.current) == null ? void 0 : _a3.promise) === reqPromise) {
+              inFlightBuildingsEtaRef.current = null;
+            }
+          }
+        })();
+        inFlightBuildingsEtaRef.current = { key: reqKey, promise: reqPromise };
+        return reqPromise;
       },
       [setBuildingsEtaData]
     );
     const refreshCombatForSelectedPlanet = reactExports.useCallback(
       async ({ refresh = false } = {}) => {
+        var _a2;
         const planet = selectActivePlanet(
           sharedLegacyState.dashboard,
           sharedLegacyState.selectedPlanetId
         );
         if (!planet) return false;
-        try {
-          const res = await apiCommand({
-            command: "combat_overview",
-            planet_id: planet.planet_id,
-            refresh
-          });
-          if (res.combat) {
-            setCombatData(res.combat);
-          }
-          return true;
-        } catch (err) {
-          if (refresh || isRateLimitError(err)) {
-            showFeedback(`Shipyard refresh failed: ${err.message}`, feedbackKindForError(err));
-          }
-          return false;
+        const reqKey = `${planet.planet_id}:${refresh ? "1" : "0"}`;
+        if (((_a2 = inFlightCombatRef.current) == null ? void 0 : _a2.key) === reqKey) {
+          return inFlightCombatRef.current.promise;
         }
+        const reqPromise = (async () => {
+          var _a3;
+          try {
+            const res = await apiCommand({
+              command: "combat_overview",
+              planet_id: planet.planet_id,
+              refresh
+            });
+            if (res.combat) {
+              setCombatData(res.combat);
+            }
+            return true;
+          } catch (err) {
+            if (refresh || isRateLimitError(err)) {
+              showFeedback(`Shipyard refresh failed: ${err.message}`, feedbackKindForError(err));
+            }
+            return false;
+          } finally {
+            if (((_a3 = inFlightCombatRef.current) == null ? void 0 : _a3.promise) === reqPromise) {
+              inFlightCombatRef.current = null;
+            }
+          }
+        })();
+        inFlightCombatRef.current = { key: reqKey, promise: reqPromise };
+        return reqPromise;
       },
       [setCombatData, showFeedback]
     );

@@ -202,7 +202,11 @@ def main(argv: list[str] | None = None) -> int:
             account=args.account,
         )
     except SpaceInvasionAuthError as exc:
-        print(f"[STACK] Browser startup error: {redact_sensitive(_safe_err_text(exc))}", file=sys.stderr)
+        print(
+            f"[STACK] Browser startup error: {redact_sensitive(_safe_err_text(exc))}",
+            file=sys.stderr,
+            flush=True,
+        )
         return 1
 
     base_dir = Path(__file__).resolve().parent
@@ -254,18 +258,21 @@ def main(argv: list[str] | None = None) -> int:
     if is_main:
         signal.signal(signal.SIGTERM, _sigterm)
 
+    child_env = os.environ.copy()
+    child_env.setdefault("PYTHONUNBUFFERED", "1")
     api_proc: Optional[subprocess.Popen] = None
     cmd_proc: Optional[subprocess.Popen] = None
     try:
-        api_proc = subprocess.Popen(api_cmd)
+        api_proc = subprocess.Popen(api_cmd, env=child_env)
         if not _wait_api_health(api_url, proc=api_proc):
-            print("[STACK] Game API failed to start.", file=sys.stderr)
+            print("[STACK] Game API failed to start.", file=sys.stderr, flush=True)
             return 1
 
-        cmd_proc = subprocess.Popen(cmd_cmd)
+        cmd_proc = subprocess.Popen(cmd_cmd, env=child_env)
         print(
             f"[STACK] Running: Chrome @ 127.0.0.1:{args.debug_port} | "
-            f"API @ {api_url} (hot-reload) | Commander (hot-reload)"
+            f"API @ {api_url} (hot-reload) | Commander (hot-reload)",
+            flush=True,
         )
 
         while True:
@@ -278,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
     except KeyboardInterrupt:
-        print("\n[STACK] Stopping API & Commander (Chrome stays open on debug port).")
+        print("\n[STACK] Stopping API & Commander (Chrome stays open on debug port).", flush=True)
         return 0
     finally:
         if cmd_proc is not None:
