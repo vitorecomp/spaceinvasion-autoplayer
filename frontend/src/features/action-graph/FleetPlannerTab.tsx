@@ -55,6 +55,7 @@ const FLEET_BOOL_FIELDS: ReadonlyArray<{
   { key: "allow_galaxy_scan", def: false },
   { key: "galaxy_scan_explore_first", def: true },
   { key: "galaxy_scan_all_galaxies", def: true },
+  { key: "spy_reserved_slots_only", def: false },
   { key: "allow_shipyard", def: true },
   { key: "allow_fleet_research", def: true },
 ];
@@ -169,6 +170,7 @@ function buildConfigPatchFromDraft(draft: FleetDraftState): Record<string, any> 
     galaxy_scan_near_weight: num("galaxy_scan_near_weight", 0, 10),
     galaxy_scan_attack_weight: num("galaxy_scan_attack_weight", 0, 10),
     reserved_spy_slots: intNum("reserved_spy_slots", 0, 20),
+    spy_reserved_slots_only: Boolean(draft.booleans.spy_reserved_slots_only),
     spy_dispatch_planet_id: intNum("spy_dispatch_planet_id", 0),
     allow_shipyard: Boolean(draft.booleans.allow_shipyard),
     allow_fleet_research: Boolean(draft.booleans.allow_fleet_research),
@@ -1421,6 +1423,7 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
                     "allow_galaxy_scan",
                     "galaxy_scan_explore_first",
                     "galaxy_scan_all_galaxies",
+                    "spy_reserved_slots_only",
                   ] as const
                 ).map((bKey) => (
                   <ActionGraphParamRow

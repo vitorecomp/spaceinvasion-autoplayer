@@ -11752,7 +11752,7 @@
     }
     return "auto";
   }
-  function formatSpecializationLabel(raw) {
+  function formatSpecializationLabel$1(raw) {
     const norm = String(raw ?? "").trim().toLowerCase();
     if (norm === "balanced") return "Balanced";
     const found = PLANET_SPECIALIZATION_OPTIONS.find((opt) => opt.key === norm);
@@ -16018,6 +16018,15 @@
           step: 1
         },
         {
+          key: "spy_reserved_slots_only",
+          id: "cfg-spy_reserved_slots_only",
+          title: "Restrict Spy Probes to Reserved Slot(s) Only",
+          boundsLabel: "default: false · boolean",
+          description: "When enabled, SPY probe launches on each planet are strictly capped to the Reserved Spy Fleet Slots count (reserved_spy_slots) and will never spill into extra unreserved fleet slots — keeping all remaining Fleet base (1 + b10) slots free for TRANSPORT, COLONIZE, ATTACK, and RECYCLE flights. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: false
+        },
+        {
           key: "spy_dispatch_planet_id",
           id: "cfg-spy_dispatch_planet_id",
           title: "Designated Spy Dispatch Colony",
@@ -18701,7 +18710,7 @@
       if (nextRole !== "auto") {
         nextSpecs[targetKey] = nextRole;
       }
-      const label = formatSpecializationLabel(nextRole);
+      const label = formatSpecializationLabel$1(nextRole);
       await persistSpecializations(
         nextSpecs,
         nextRole === "auto" ? `Unlocked ${row.name} [${row.coords}] to Auto specialization.` : `Locked ${row.name} [${row.coords}] specialization to ${label}. Click Run Config Optimizer to re-solve.`
@@ -19215,14 +19224,14 @@
                               "span",
                               {
                                 className: `ag-co-spec-badge tabular${isLocked ? " is-locked" : ""}${row.specializationChanged ? " is-changed" : ""}`,
-                                title: row.previousSpecialization && row.specializationChanged ? `Switched from ${formatSpecializationLabel(row.previousSpecialization)} to ${formatSpecializationLabel(row.detectedSpecialization)}` : `Current target specialization: ${formatSpecializationLabel(row.detectedSpecialization)}`,
+                                title: row.previousSpecialization && row.specializationChanged ? `Switched from ${formatSpecializationLabel$1(row.previousSpecialization)} to ${formatSpecializationLabel$1(row.detectedSpecialization)}` : `Current target specialization: ${formatSpecializationLabel$1(row.detectedSpecialization)}`,
                                 children: [
-                                  formatSpecializationLabel(row.detectedSpecialization),
+                                  formatSpecializationLabel$1(row.detectedSpecialization),
                                   isLocked ? " · LOCKED" : ""
                                 ]
                               }
                             ),
-                            row.specializationChanged && row.previousSpecialization ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub tabular", children: `was ${formatSpecializationLabel(row.previousSpecialization)}` }) : null
+                            row.specializationChanged && row.previousSpecialization ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub tabular", children: `was ${formatSpecializationLabel$1(row.previousSpecialization)}` }) : null
                           ] }),
                           /* @__PURE__ */ jsxRuntimeExports.jsx(
                             "select",
@@ -19314,7 +19323,7 @@
           selectedPlanetDetail ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-detail-strip", id: "co-planet-detail", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-co-detail-head tabular", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: `Slot #${selectedPlanetDetail.slot} · ${selectedPlanetDetail.name} [${selectedPlanetDetail.coords}]` }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `Role: ${formatSpecializationLabel(selectedPlanetDetail.detectedSpecialization)} · Fields: ${selectedPlanetDetail.fieldsUsedTarget}/${selectedPlanetDetail.fieldsMax}` })
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: `Role: ${formatSpecializationLabel$1(selectedPlanetDetail.detectedSpecialization)} · Fields: ${selectedPlanetDetail.fieldsUsedTarget}/${selectedPlanetDetail.fieldsMax}` })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-co-detail-grid", children: selectedPlanetDetail.buildingsDetail.map((bd) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
               "div",
@@ -19974,6 +19983,7 @@
     { key: "allow_galaxy_scan", def: false },
     { key: "galaxy_scan_explore_first", def: true },
     { key: "galaxy_scan_all_galaxies", def: true },
+    { key: "spy_reserved_slots_only", def: false },
     { key: "allow_shipyard", def: true },
     { key: "allow_fleet_research", def: true }
   ];
@@ -20064,6 +20074,7 @@
       galaxy_scan_near_weight: num("galaxy_scan_near_weight", 0, 10),
       galaxy_scan_attack_weight: num("galaxy_scan_attack_weight", 0, 10),
       reserved_spy_slots: intNum("reserved_spy_slots", 0, 20),
+      spy_reserved_slots_only: Boolean(draft.booleans.spy_reserved_slots_only),
       spy_dispatch_planet_id: intNum("spy_dispatch_planet_id", 0),
       allow_shipyard: Boolean(draft.booleans.allow_shipyard),
       allow_fleet_research: Boolean(draft.booleans.allow_fleet_research),
@@ -21157,7 +21168,8 @@
               [
                 "allow_galaxy_scan",
                 "galaxy_scan_explore_first",
-                "galaxy_scan_all_galaxies"
+                "galaxy_scan_all_galaxies",
+                "spy_reserved_slots_only"
               ].map((bKey) => /* @__PURE__ */ jsxRuntimeExports.jsx(
                 ActionGraphParamRow,
                 {
@@ -21508,6 +21520,7 @@
     "allow_multi_planet",
     "allow_fleetsave",
     "allow_galaxy_scan",
+    "spy_reserved_slots_only",
     "allow_raids",
     "allow_pvp_in_az",
     "allow_colonize",
@@ -22544,7 +22557,9 @@
     selectedRow: selected,
     bfPct,
     mode = "buildings",
-    universeMaxRow = null
+    universeMaxRow = null,
+    goalLevel = null,
+    goalSpecialization = null
   }) => {
     var _a, _b;
     const {
@@ -22708,6 +22723,13 @@
     if (!isResearch && !isTurret && selected.energy_delta) {
       metaLines.push(
         `Energy Impact: ${selected.energy_delta >= 0 ? "+" : ""}${selected.energy_delta} E`
+      );
+    }
+    if (!isResearch && !isTurret && goalLevel !== null && goalLevel !== void 0) {
+      const goalGap = goalLevel - curLvl;
+      const goalStatusTxt = goalLevel === 0 && curLvl === 0 ? " (Not targeted)" : goalGap <= 0 ? " (Reached)" : ` (+${goalGap} remaining)`;
+      metaLines.push(
+        `Config Optimizer Goal: L${goalLevel}${goalStatusTxt}${goalSpecialization ? ` · ${goalSpecialization}` : ""}`
       );
     }
     if (isResearch && universeMaxRow) {
@@ -22986,6 +23008,18 @@
     { id: "defense", bcat: "defense", label: "Defense" }
   ];
   const VALID_BUILDING_CATEGORIES = new Set(BUILDING_CATEGORY_TABS.map((t) => t.id));
+  const SPECIALIZATION_LABELS = {
+    metal: "Metal",
+    kryptonite: "Kryptonite",
+    spice: "Spice",
+    shipyard: "Shipyard",
+    spice_shipyard: "Spice + Shipyard"
+  };
+  function formatSpecializationLabel(raw) {
+    const key = String(raw || "").trim().toLowerCase();
+    if (!key || key === "auto") return "";
+    return SPECIALIZATION_LABELS[key] || key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
   const BuildingsView = () => {
     const {
       dashboard,
@@ -23023,7 +23057,38 @@
     const p = (etaData == null ? void 0 : etaData.planet) || {};
     const econ = (etaData == null ? void 0 : etaData.planet_economy) || {};
     const bldDiv = finiteNum(p.building_time_divisor, 1);
-    const planetMetaText = etaData ? `[${p.coords || "--"}] · Dev L${finiteNum(p.dev_center_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${bldDiv}` : "[--] · Dev L0 · Micro L0 · Div x1";
+    const coGoals = (etaData == null ? void 0 : etaData.config_optimizer_goals) ?? (dashboard == null ? void 0 : dashboard.config_optimizer_goals) ?? null;
+    const planetGoalEntry = reactExports.useMemo(() => {
+      if (!coGoals || typeof coGoals !== "object") return null;
+      const pid = p.planet_id ?? (activePlanet == null ? void 0 : activePlanet.planet_id);
+      const byPid = coGoals.by_planet_id;
+      if (pid != null && byPid && typeof byPid === "object" && byPid[String(pid)]) {
+        return byPid[String(pid)];
+      }
+      const rawCoords = String(p.coords || (activePlanet == null ? void 0 : activePlanet.coords) || "").trim();
+      const byCoords = coGoals.by_coords;
+      if (rawCoords && byCoords && typeof byCoords === "object") {
+        if (byCoords[rawCoords]) return byCoords[rawCoords];
+        const m = rawCoords.match(/^(\d{1,2}):(\d{1,3}):(\d{1,2})$/);
+        if (m) {
+          const norm = `${m[1].padStart(2, "0")}:${m[2].padStart(3, "0")}:${m[3].padStart(2, "0")}`;
+          if (byCoords[norm]) return byCoords[norm];
+        }
+      }
+      return null;
+    }, [activePlanet == null ? void 0 : activePlanet.coords, activePlanet == null ? void 0 : activePlanet.planet_id, coGoals, p.coords, p.planet_id]);
+    const planetGoalsMap = (planetGoalEntry == null ? void 0 : planetGoalEntry.goals) && typeof planetGoalEntry.goals === "object" ? planetGoalEntry.goals : null;
+    const planetGoalSpec = formatSpecializationLabel(planetGoalEntry == null ? void 0 : planetGoalEntry.specialization);
+    const getGoalLevelForRow = reactExports.useCallback(
+      (row) => {
+        if (!row || row.is_defense_turret || !planetGoalsMap) return null;
+        const rk = String(row.key || (row.building_id != null ? `b${row.building_id}` : "")).trim().toLowerCase();
+        if (!rk || !(rk in planetGoalsMap)) return null;
+        return finiteNum(planetGoalsMap[rk], null);
+      },
+      [planetGoalsMap]
+    );
+    const planetMetaText = etaData ? `[${p.coords || "--"}] · Dev L${finiteNum(p.dev_center_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${bldDiv}${planetGoalSpec ? ` · Goal: ${planetGoalSpec}` : ""}` : "[--] · Dev L0 · Micro L0 · Div x1";
     const econBfPct = finiteNum(econ.blast_furnace_pct, null);
     const bfPct = econBfPct !== null ? clampPct$1(Math.round(econBfPct)) : getSelectedBlastFurnacePct(dashboard, selectedPlanetId, buildingsEtaData);
     const defenseRows = reactExports.useMemo(() => {
@@ -23085,6 +23150,10 @@
           accessor: (row) => finiteNum(row.current_level, 0),
           defaultDirection: "desc"
         },
+        goal: {
+          accessor: (row) => getGoalLevelForRow(row),
+          defaultDirection: "desc"
+        },
         next: {
           accessor: (row) => row.is_defense_turret ? null : finiteNum(row.next_level ?? row.target_level, null),
           defaultDirection: "desc"
@@ -23104,7 +23173,7 @@
           return durationToSeconds(row.reach_eta);
         }
       }),
-      []
+      [getGoalLevelForRow]
     );
     const unitSort = useTableSort(visibleRows, unitSortCols);
     const handleSyncEconomy = reactExports.useCallback(async () => {
@@ -23291,6 +23360,18 @@
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   SortableTh,
                   {
+                    label: "Goal",
+                    sortKey: "goal",
+                    activeKey: unitSort.sortKey,
+                    direction: unitSort.sortDirection,
+                    onSort: unitSort.requestSort,
+                    align: "right",
+                    title: "Target building level defined by the active Config Optimizer run"
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  SortableTh,
+                  {
                     label: "Next",
                     sortKey: "next",
                     activeKey: unitSort.sortKey,
@@ -23344,10 +23425,11 @@
                 ),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "col-right", children: "Control" })
               ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "eta-table-tbody", children: !etaData ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "Waiting for building catalog..." }) }) : unitSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 8, className: "empty-cell", children: "No items in selected category." }) }) : unitSort.sortedRows.map((row, idx) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "eta-table-tbody", children: !etaData ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 9, className: "empty-cell", children: "Waiting for building catalog..." }) }) : unitSort.sortedRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 9, className: "empty-cell", children: "No items in selected category." }) }) : unitSort.sortedRows.map((row, idx) => {
                 const rowKey = row.key != null ? String(row.key).trim() : "";
                 const isSelected = Boolean(selectedRow && selectedRow.key === row.key);
                 const curLvl = finiteNum(row.current_level, 0);
+                const goalLvl = getGoalLevelForRow(row);
                 const rowPct = finiteNum(row.economy_rate_pct, null);
                 const clampedRowPct = rowPct !== null ? clampPct$1(Math.round(rowPct)) : null;
                 const missTotal = finiteNum(row.missing_total, 0);
@@ -23383,6 +23465,30 @@
                         ) : null
                       ] }) }),
                       /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: String(curLvl) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", "data-col": "goal", children: isTurret || goalLvl === null ? "—" : goalLvl === 0 && curLvl === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "span",
+                        {
+                          className: "action-sub",
+                          title: "Config Optimizer target: L0 (not targeted on this planet)",
+                          children: "L0"
+                        }
+                      ) : curLvl >= goalLvl ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "span",
+                        {
+                          className: "status-word",
+                          title: `Config Optimizer goal reached (L${goalLvl})`,
+                          children: `L${goalLvl}`
+                        }
+                      ) : /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                        "span",
+                        {
+                          title: `Config Optimizer goal: L${goalLvl} (+${goalLvl - curLvl} remaining)`,
+                          children: [
+                            `L${goalLvl}`,
+                            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: ` +${goalLvl - curLvl}` })
+                          ]
+                        }
+                      ) }),
                       /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: isTurret ? "—" : `L${row.next_level ?? row.target_level ?? "—"}` }),
                       /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: isTurret ? formatResourcesInline(row.cost) : missTotal === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "status-word", children: "Affordable" }) : formatResourcesInline(row.missing) }),
                       /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: row.build_time_text ?? "—" }),
@@ -23438,7 +23544,9 @@
                 etaData,
                 selectedRow,
                 bfPct,
-                mode: "buildings"
+                mode: "buildings",
+                goalLevel: getGoalLevelForRow(selectedRow),
+                goalSpecialization: planetGoalSpec || null
               }
             )
           ] })

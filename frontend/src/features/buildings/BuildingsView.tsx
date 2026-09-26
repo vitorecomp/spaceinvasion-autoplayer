@@ -30,6 +30,22 @@ const BUILDING_CATEGORY_TABS = [
 
 const VALID_BUILDING_CATEGORIES = new Set<string>(BUILDING_CATEGORY_TABS.map((t) => t.id));
 
+const SPECIALIZATION_LABELS: Record<string, string> = {
+  metal: "Metal",
+  kryptonite: "Kryptonite",
+  spice: "Spice",
+  shipyard: "Shipyard",
+  spice_shipyard: "Spice + Shipyard",
+};
+
+function formatSpecializationLabel(raw?: string | null): string {
+  const key = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (!key || key === "auto") return "";
+  return SPECIALIZATION_LABELS[key] || key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export const BuildingsView: React.FC = () => {
   const {
     dashboard,
@@ -76,8 +92,44 @@ export const BuildingsView: React.FC = () => {
   const p = etaData?.planet || {};
   const econ = etaData?.planet_economy || {};
   const bldDiv = finiteNum(p.building_time_divisor, 1);
+  const coGoals = (etaData as any)?.config_optimizer_goals ?? dashboard?.config_optimizer_goals ?? null;
+  const planetGoalEntry = useMemo(() => {
+    if (!coGoals || typeof coGoals !== "object") return null;
+    const pid = p.planet_id ?? activePlanet?.planet_id;
+    const byPid = coGoals.by_planet_id;
+    if (pid != null && byPid && typeof byPid === "object" && byPid[String(pid)]) {
+      return byPid[String(pid)];
+    }
+    const rawCoords = String(p.coords || activePlanet?.coords || "").trim();
+    const byCoords = coGoals.by_coords;
+    if (rawCoords && byCoords && typeof byCoords === "object") {
+      if (byCoords[rawCoords]) return byCoords[rawCoords];
+      const m = rawCoords.match(/^(\d{1,2}):(\d{1,3}):(\d{1,2})$/);
+      if (m) {
+        const norm = `${m[1].padStart(2, "0")}:${m[2].padStart(3, "0")}:${m[3].padStart(2, "0")}`;
+        if (byCoords[norm]) return byCoords[norm];
+      }
+    }
+    return null;
+  }, [activePlanet?.coords, activePlanet?.planet_id, coGoals, p.coords, p.planet_id]);
+  const planetGoalsMap: Record<string, number> | null =
+    planetGoalEntry?.goals && typeof planetGoalEntry.goals === "object"
+      ? planetGoalEntry.goals
+      : null;
+  const planetGoalSpec = formatSpecializationLabel(planetGoalEntry?.specialization);
+  const getGoalLevelForRow = useCallback(
+    (row: Record<string, any> | null | undefined): number | null => {
+      if (!row || row.is_defense_turret || !planetGoalsMap) return null;
+      const rk = String(row.key || (row.building_id != null ? `b${row.building_id}` : ""))
+        .trim()
+        .toLowerCase();
+      if (!rk || !(rk in planetGoalsMap)) return null;
+      return finiteNum(planetGoalsMap[rk], null);
+    },
+    [planetGoalsMap]
+  );
   const planetMetaText = etaData
-    ? `[${p.coords || "--"}] · Dev L${finiteNum(p.dev_center_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${bldDiv}`
+    ? `[${p.coords || "--"}] · Dev L${finiteNum(p.dev_center_level, 0)} · Micro L${finiteNum(p.microsystem_level, 0)} · Div x${bldDiv}${planetGoalSpec ? ` · Goal: ${planetGoalSpec}` : ""}`
     : "[--] · Dev L0 · Micro L0 · Div x1";
 
   const econBfPct = finiteNum(econ.blast_furnace_pct, null);
@@ -147,13 +199,17 @@ export const BuildingsView: React.FC = () => {
   const unitSortCols = useMemo<
     SortColumnMap<
       Record<string, any>,
-      "unit" | "level" | "next" | "missing" | "buildTime" | "resReady" | "reached"
+      "unit" | "level" | "goal" | "next" | "missing" | "buildTime" | "resReady" | "reached"
     >
   >(
     () => ({
       unit: (row) => String(row.name || row.key || ""),
       level: {
         accessor: (row) => finiteNum(row.current_level, 0),
+        defaultDirection: "desc",
+      },
+      goal: {
+        accessor: (row) => getGoalLevelForRow(row),
         defaultDirection: "desc",
       },
       next: {
@@ -181,7 +237,7 @@ export const BuildingsView: React.FC = () => {
         return durationToSeconds(row.reach_eta);
       },
     }),
-    []
+    [getGoalLevelForRow]
   );
 
   const unitSort = useTableSort(visibleRows, unitSortCols);
@@ -363,6 +419,15 @@ export const BuildingsView: React.FC = () => {
                     align="right"
                   />
                   <SortableTh
+                    label="Goal"
+                    sortKey="goal"
+                    activeKey={unitSort.sortKey}
+                    direction={unitSort.sortDirection}
+                    onSort={unitSort.requestSort}
+                    align="right"
+                    title="Target building level defined by the active Config Optimizer run"
+                  />
+                  <SortableTh
                     label="Next"
                     sortKey="next"
                     activeKey={unitSort.sortKey}
@@ -407,13 +472,13 @@ export const BuildingsView: React.FC = () => {
               <tbody id="eta-table-tbody">
                 {!etaData ? (
                   <tr>
-                    <td colSpan={8} className="empty-cell">
+                    <td colSpan={9} className="empty-cell">
                       Waiting for building catalog...
                     </td>
                   </tr>
                 ) : unitSort.sortedRows.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="empty-cell">
+                    <td colSpan={9} className="empty-cell">
                       No items in selected category.
                     </td>
                   </tr>
@@ -422,6 +487,7 @@ export const BuildingsView: React.FC = () => {
                     const rowKey = row.key != null ? String(row.key).trim() : "";
                     const isSelected = Boolean(selectedRow && selectedRow.key === row.key);
                     const curLvl = finiteNum(row.current_level, 0);
+                    const goalLvl = getGoalLevelForRow(row);
                     const rowPct = finiteNum(row.economy_rate_pct, null);
                     const clampedRowPct = rowPct !== null ? clampPct(Math.round(rowPct)) : null;
                     const missTotal = finiteNum(row.missing_total, 0);
@@ -470,6 +536,32 @@ export const BuildingsView: React.FC = () => {
                         </td>
 
                         <td className="col-right tabular">{String(curLvl)}</td>
+                        <td className="col-right tabular" data-col="goal">
+                          {isTurret || goalLvl === null ? (
+                            "—"
+                          ) : goalLvl === 0 && curLvl === 0 ? (
+                            <span
+                              className="action-sub"
+                              title="Config Optimizer target: L0 (not targeted on this planet)"
+                            >
+                              L0
+                            </span>
+                          ) : curLvl >= goalLvl ? (
+                            <span
+                              className="status-word"
+                              title={`Config Optimizer goal reached (L${goalLvl})`}
+                            >
+                              {`L${goalLvl}`}
+                            </span>
+                          ) : (
+                            <span
+                              title={`Config Optimizer goal: L${goalLvl} (+${goalLvl - curLvl} remaining)`}
+                            >
+                              {`L${goalLvl}`}
+                              <span className="action-sub">{` +${goalLvl - curLvl}`}</span>
+                            </span>
+                          )}
+                        </td>
                         <td className="col-right tabular">
                           {isTurret ? "—" : `L${row.next_level ?? row.target_level ?? "—"}`}
                         </td>
@@ -549,6 +641,8 @@ export const BuildingsView: React.FC = () => {
             selectedRow={selectedRow}
             bfPct={bfPct}
             mode="buildings"
+            goalLevel={getGoalLevelForRow(selectedRow)}
+            goalSpecialization={planetGoalSpec || null}
           />
         </div>
       </article>

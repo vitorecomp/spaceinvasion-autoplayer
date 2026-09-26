@@ -3058,7 +3058,8 @@ class TestStrategyPlanner(unittest.TestCase):
         tr_off = plan_interplanet_transports(st, cfg_off, [shortfall_build, donor_reserve_act])
         self.assertEqual(tr_off, [])
 
-        # 2. allow_transport=True respects donor P1 reserve (<=10k pig_iron), 85% dest storage cap, and Spice fuel reserve!
+        # 2. allow_transport=True respects donor P1 reserve (<=10k pig_iron), 85% dest storage cap,
+        #    Spice fuel reserve (>=2,500 kept on donor), AND tops up spare cargo to optimize the trip!
         cfg_on = StrategyConfig(allow_transport=True, fleet_save_fuel_reserve_spice=2500)
         tr_on = plan_interplanet_transports(st, cfg_on, [shortfall_build, donor_reserve_act])
         self.assertEqual(len(tr_on), 1)
@@ -3070,8 +3071,12 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(act.target_id, 202)
         self.assertIn("02:380:02", act.target_name)
         self.assertLessEqual(act.cost.pig_iron, 10_000)
-        self.assertLessEqual(act.cost.metal, 9_000)
-        self.assertEqual(act.cost.spice, 0)  # Spice not requested & fuel reserved
+        self.assertGreaterEqual(act.cost.metal, 9_000)
+        self.assertLessEqual(act.cost.metal, 16_000)  # <= 85% of 20k storage (17k) - 1k existing
+        self.assertGreater(act.cost.kryptonite, 0)
+        self.assertLessEqual(act.cost.kryptonite, 16_500)  # <= 85% of 20k storage (17k) - 500 existing
+        self.assertGreaterEqual(donor.resources.spice - act.cost.spice, 2_500)  # Fuel reserve protected
+        self.assertIn("spare fill", act.reason)
 
         # 3. Inbound transport already in flight to 02:380:02 -> skipped!
         st_inflight = replace(
@@ -4398,6 +4403,229 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertTrue(mq_home.executable_now)
         self.assertFalse(mq_col.executable_now)
         self.assertIn("build queue full", mq_col.reason.lower())
+
+    def test_plan_interplanet_transports_max_cargo_top_up_and_pass1_fairness(self) -> None:
+        """Pass 1 satisfies every colony's requested shortfall first; Pass 2 tops up each trip to max usable fleet cargo."""
+        from spaceinvasion.planner.strategy import plan_interplanet_transports
+
+        # Donor has 2 Large Transports (2 * 25,000 = 50,000 raw cap) and huge spare resources
+        donor = PlanetState(
+            planet_id=301,
+            name="Hub",
+            coords="02:380:01",
+            planet_type="planet",
+            temperature=20,
+            fields_used=80,
+            fields_max=300,
+            resources=Resources(200_000, 100_000, 100_000, 30_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(800, 300),
+            buildings={"b1": 16, "b2": 14, "b3": 14, "b4": 12, "b10": 5},
+            ships={"s2": 2},  # 2 * 30,000 = 60,000 raw cap; hold_fuel_buf = min(6000, max(2500, 1800)) = 2500 -> 57,500 usable
+        )
+        dest_b = PlanetState(
+            planet_id=302,
+            name="ColonyB",
+            coords="02:380:02",
+            planet_type="planet",
+            temperature=15,
+            fields_used=40,
+            fields_max=300,
+            resources=Resources(1_000, 1_000, 1_000, 1_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(300, 100),
+            buildings={"b1": 10, "b2": 8, "b3": 8, "b4": 6},
+            ships={},
+        )
+        small_req = PlannedAction(
+            priority="P1",
+            kind="BUILD",
+            planet_id=302,
+            planet_coords="02:380:02",
+            target_id=1,
+            target_level=11,
+            target_name="Pig iron mine",
+            cost=Resources(6_000, 0, 0, 0),
+            missing=Resources(5_000, 0, 0, 0),
+            executable_now=False,
+            reason="Wait for 5k pig iron",
+        )
+        st_single = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(donor, dest_b),
+            active_planet_id=301,
+            researches={"r4": 4, "r5": 4},
+        )
+        cfg = StrategyConfig(allow_transport=True, fleet_save_fuel_reserve_spice=2500)
+        tr_single = plan_interplanet_transports(st_single, cfg, [small_req])
+        self.assertEqual(len(tr_single), 1)
+        act1 = tr_single[0]
+        tot1 = act1.cost.pig_iron + act1.cost.metal + act1.cost.kryptonite + act1.cost.spice
+        # Requested only 5,000 Pig Iron, but donor has spare Pig Iron & 57,500 usable cargo -> fills full usable fleet cap!
+        self.assertEqual(act1.cost.pig_iron, 57_500)
+        self.assertEqual(tot1, 57_500)
+        self.assertIn("2x s2", act1.reason)
+        self.assertIn("+52,500 spare fill", act1.reason)
+
+        # Multi-colony Pass-1 fairness: Donor has 30k Metal (27k spare after 3k cushion), 4x s2.
+        # Colony B (P1) asks for 10k Metal, Colony C (P2) asks for 10k Metal.
+        # Pass 1 MUST satisfy BOTH Colony B (10k) and Colony C (10k) BEFORE Pass 2 tops up Colony B with remaining 7k!
+        donor_fair = PlanetState(
+            planet_id=301,
+            name="Hub",
+            coords="02:380:01",
+            planet_type="planet",
+            temperature=20,
+            fields_used=80,
+            fields_max=300,
+            resources=Resources(0, 30_000, 0, 2_500),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(800, 300),
+            buildings={"b1": 16, "b2": 14, "b3": 14, "b4": 12, "b10": 5},
+            ships={"s2": 4},
+        )
+        dest_c = PlanetState(
+            planet_id=303,
+            name="ColonyC",
+            coords="02:380:03",
+            planet_type="planet",
+            temperature=15,
+            fields_used=40,
+            fields_max=300,
+            resources=Resources(1_000, 1_000, 1_000, 1_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(300, 100),
+            buildings={"b1": 10, "b2": 8, "b3": 8, "b4": 6},
+            ships={},
+        )
+        req_b = PlannedAction(
+            priority="P1",
+            kind="BUILD",
+            planet_id=302,
+            planet_coords="02:380:02",
+            target_id=2,
+            target_level=9,
+            target_name="Blast furnace",
+            cost=Resources(0, 11_000, 0, 0),
+            missing=Resources(0, 10_000, 0, 0),
+            executable_now=False,
+            reason="ColonyB metal need",
+        )
+        req_c = PlannedAction(
+            priority="P2",
+            kind="BUILD",
+            planet_id=303,
+            planet_coords="02:380:03",
+            target_id=2,
+            target_level=9,
+            target_name="Blast furnace",
+            cost=Resources(0, 11_000, 0, 0),
+            missing=Resources(0, 10_000, 0, 0),
+            executable_now=False,
+            reason="ColonyC metal need",
+        )
+        st_fair = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(donor_fair, dest_b, dest_c),
+            active_planet_id=301,
+            researches={"r4": 4, "r5": 4},
+        )
+        tr_fair = plan_interplanet_transports(st_fair, cfg, [req_b, req_c])
+        self.assertEqual(len(tr_fair), 2)
+        by_dest = {a.target_id: a for a in tr_fair}
+        # Colony C MUST receive its full 10k Metal (not starved by Colony B top-up!),
+        # and Colony B gets 10k requested + 7k leftover spare = 17k Metal!
+        self.assertEqual(by_dest[303].cost.metal, 10_000)
+        self.assertEqual(by_dest[302].cost.metal, 17_000)
+
+    def test_spy_reserved_slots_only_caps_spy_and_frees_remaining_slots(self) -> None:
+        """When spy_reserved_slots_only=True, SPY strictly uses <= reserved_spy_slots and frees remaining slots once occupied."""
+        from dataclasses import replace
+
+        p1 = PlanetState(
+            planet_id=101,
+            name="Home",
+            coords="02:380:12",
+            planet_type="planet",
+            temperature=30,
+            fields_used=90,
+            fields_max=230,
+            resources=Resources(50_000, 30_000, 20_000, 15_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(500, 250),
+            buildings={"b1": 12, "b2": 10, "b3": 10, "b4": 8, "b5": 12, "b10": 3},  # max_slots = 4
+            ships={"s10": 15, "s2": 10, "s7": 15, "s1": 10},
+        )
+        raid_targets = (
+            {"coords": "02:380:04", "owner": "SleepyA (i)", "status_color": "yellow", "last_scanned_ts": 1995.0},
+            {"coords": "02:380:05", "owner": "SleepyB (i)", "status_color": "yellow", "last_scanned_ts": 1995.0},
+            {"coords": "02:380:06", "owner": "SleepyC (i)", "status_color": "yellow", "last_scanned_ts": 1995.0},
+            {
+                "coords": "02:380:08",
+                "owner": "Spacia",
+                "status_color": "yellow",
+                "is_spacia": True,
+                "last_spied_ts": 1990.0,
+                "resources": {"pig_iron": 60_000, "metal": 30_000, "kryptonite": 20_000, "spice": 10_000},
+            },
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1,),
+            active_planet_id=101,
+            researches={"r1": 4, "r2": 6, "r3": 4, "r4": 5, "r6": 3, "r7": 4},
+            raid_targets=raid_targets,
+        )
+        cfg_strict = StrategyConfig(
+            planner_mode="priority",
+            allow_raids=True,
+            allow_galaxy_scan=True,
+            reserved_spy_slots=1,
+            spy_reserved_slots_only=True,
+        )
+
+        # 1. With 0 SPY in flight and 3 spy targets (planner emits top 2 SPY actions):
+        #    ONLY 1 SPY is executable_now=True; excess SPY action(s) are held with restricted-to-reserved reason!
+        acts_0 = plan_actions(st, config=cfg_strict, now_ts=2000.0)
+        spy_exec_0 = [a for a in acts_0 if a.kind == "SPY" and a.executable_now]
+        spy_held_0 = [a for a in acts_0 if a.kind == "SPY" and not a.executable_now]
+        self.assertEqual(len(spy_exec_0), 1)
+        self.assertGreaterEqual(len(spy_held_0), 1)
+        self.assertTrue(all("restricted to reserved" in a.reason.lower() for a in spy_held_0))
+
+        # 2. With 1 SPY already in flight + 2 ATTACKs in flight (3/4 slots used):
+        #    - 0 new SPY actions are executable (1/1 spy slot used)
+        #    - ATTACK IS STILL executable because the 1 reserved spy slot is already occupied by the in-flight SPY!
+        st_1spy_2atk = replace(
+            st,
+            active_queues=(
+                QueueJob(category="fleet", name="Espionage → 02:380:04", origin_coords="02:380:12", remaining_seconds=60.0),
+                QueueJob(category="fleet", name="Attack → 02:380:01", origin_coords="02:380:12", remaining_seconds=120.0),
+                QueueJob(category="fleet", name="Attack → 02:380:02", origin_coords="02:380:12", remaining_seconds=120.0),
+            ),
+        )
+        acts_1 = plan_actions(st_1spy_2atk, config=cfg_strict, now_ts=2000.0)
+        spy_exec_1 = [a for a in acts_1 if a.kind == "SPY" and a.executable_now]
+        atk_exec_1 = [a for a in acts_1 if a.kind == "ATTACK" and a.executable_now]
+        self.assertEqual(len(spy_exec_1), 0)
+        self.assertGreaterEqual(len(atk_exec_1), 1)
+
+        # 3. With reserved_spy_slots=0 and spy_reserved_slots_only=True: ALL SPY actions are held (0/0).
+        cfg_zero = replace(cfg_strict, reserved_spy_slots=0)
+        acts_zero = plan_actions(st, config=cfg_zero, now_ts=2000.0)
+        spy_all_zero = [a for a in acts_zero if a.kind == "SPY"]
+        self.assertTrue(spy_all_zero)
+        self.assertTrue(all(not a.executable_now for a in spy_all_zero))
+        self.assertTrue(all("0/0 spy slots" in a.reason.lower() for a in spy_all_zero))
 
 
 if __name__ == "__main__":

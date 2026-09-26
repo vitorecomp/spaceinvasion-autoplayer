@@ -1467,6 +1467,39 @@ class TestFleetAndCombat(unittest.TestCase):
         self.assertEqual(msgs["9002"].coords, "02:380:14")
         self.assertFalse(is_non_recycle_fleet_notice_text(msgs["9002"].body_text, msgs["9002"].subject))
 
+    def test_pack_and_top_up_transport_cargo_maximizes_fleet_capacity_within_bounds(self) -> None:
+        from spaceinvasion.combat.fleet import pack_transport_cargo, top_up_transport_cargo
+
+        need = Resources(pig_iron=5_000, metal=3_000, kryptonite=0, spice=0)
+        surplus = Resources(pig_iron=40_000, metal=30_000, kryptonite=25_000, spice=10_000)
+        dest_free = Resources(pig_iron=20_000, metal=20_000, kryptonite=15_000, spice=5_000)
+
+        # Default (fill_to_capacity=False): packs only requested shortfall (8k)
+        exact = pack_transport_cargo(need, surplus, dest_free, capacity=50_000)
+        self.assertEqual(exact, Resources(5_000, 3_000, 0, 0))
+
+        # fill_to_capacity=True: prioritizes requested resource types first up to dest_free (20k+20k=40k),
+        # then fills remaining 10k capacity proportionally from spare kryptonite/spice!
+        filled = pack_transport_cargo(need, surplus, dest_free, capacity=50_000, fill_to_capacity=True)
+        self.assertEqual(filled.pig_iron, 20_000)
+        self.assertEqual(filled.metal, 20_000)
+        self.assertEqual(filled.pig_iron + filled.metal + filled.kryptonite + filled.spice, 50_000)
+        self.assertLessEqual(filled.kryptonite, dest_free.kryptonite)
+        self.assertLessEqual(filled.spice, dest_free.spice)
+        self.assertGreater(filled.kryptonite, 0)
+        self.assertGreater(filled.spice, 0)
+
+        # top_up_transport_cargo with remaining surplus after Pass-1 deduction matches capacity & dest_free bounds
+        rem_surplus = Resources(
+            surplus.pig_iron - exact.pig_iron,
+            surplus.metal - exact.metal,
+            surplus.kryptonite - exact.kryptonite,
+            surplus.spice - exact.spice,
+        )
+        topped = top_up_transport_cargo(exact, need, rem_surplus, dest_free, capacity=100_000)
+        # Bounded by dest_free total (20k + 20k + 15k + 5k = 60k) even though capacity is 100k
+        self.assertEqual(topped, Resources(20_000, 20_000, 15_000, 5_000))
+
 
 if __name__ == "__main__":
     unittest.main()

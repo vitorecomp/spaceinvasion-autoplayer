@@ -247,6 +247,7 @@ export interface StrategyConfigData {
   galaxy_scan_near_weight?: number;
   galaxy_scan_attack_weight?: number;
   reserved_spy_slots?: number;
+  spy_reserved_slots_only?: boolean;
   spy_dispatch_planet_id?: number;
   ai_resource_spare_pct?: number;
   ga_population_size?: number;
@@ -750,6 +751,28 @@ export interface DashboardPayload {
   ranking?: Record<string, any> | null;
   action_graph?: Record<string, any> | null;
   optimizer_summary?: Record<string, any> | null;
+  config_optimizer_goals?: {
+    run_id?: number | null;
+    updated_ts?: number;
+    by_planet_id?: Record<
+      string,
+      {
+        planet_id?: number;
+        coords?: string;
+        specialization?: string;
+        goals?: Record<string, number>;
+      }
+    >;
+    by_coords?: Record<
+      string,
+      {
+        planet_id?: number;
+        coords?: string;
+        specialization?: string;
+        goals?: Record<string, number>;
+      }
+    >;
+  } | null;
   logs?: {
     commander?: string;
     game_api?: string;

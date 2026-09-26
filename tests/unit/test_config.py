@@ -947,6 +947,38 @@ shipyard_targets:
             self.assertTrue(loaded_db.allow_fleet_research)
             self.assertEqual(loaded_db.fleet_research_targets, {"r6": 6, "r9": 8, "r11": 5})
 
+    def test_spy_reserved_slots_only_default_and_roundtrip(self) -> None:
+        from spaceinvasion.db.storage import GameDatabase
+
+        default_cfg = StrategyConfig()
+        self.assertFalse(default_cfg.spy_reserved_slots_only)
+
+        parsed = strategy_config_from_dict(
+            {
+                "reserved_spy_slots": 2,
+                "spy_reserved_slots_only": True,
+            }
+        )
+        self.assertEqual(parsed.reserved_spy_slots, 2)
+        self.assertTrue(parsed.spy_reserved_slots_only)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            yaml_path = tp / "spy_res_only.yaml"
+            save_strategy_config(parsed, yaml_path)
+            self.assertIn("spy_reserved_slots_only: true", yaml_path.read_text(encoding="utf-8"))
+            loaded_yaml = load_strategy_config(yaml_path)
+            self.assertTrue(loaded_yaml.spy_reserved_slots_only)
+            self.assertEqual(loaded_yaml.reserved_spy_slots, 2)
+
+            db_path = tp / "spy_res_only.db"
+            db = GameDatabase(db_path, attack_history_path="")
+            db.close()
+            save_strategy_config(parsed, db_path)
+            loaded_db = load_strategy_config(db_path)
+            self.assertTrue(loaded_db.spy_reserved_slots_only)
+            self.assertEqual(loaded_db.reserved_spy_slots, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

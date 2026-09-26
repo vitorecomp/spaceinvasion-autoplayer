@@ -21,6 +21,7 @@ from spaceinvasion.core.state import (
     Resources,
     UnitOffer,
     count_in_flight_fleets_for_planet,
+    count_in_flight_spy_fleets_for_planet,
     extract_in_flight_colonize_coords,
     extract_in_flight_recycle_coords,
     extract_in_flight_station_dest_coords,
@@ -1771,7 +1772,8 @@ def plan_interplanet_transports(
         return []
 
     planet_by_id = {p.planet_id: p for p in normal_planets}
-    out_transports: list[PlannedAction] = []
+    # Pass 1: satisfy concrete requested shortfalls in strict priority order first so no colony is starved.
+    planned_trips: list[dict[str, Any]] = []
     for urgency, _need_by_sec, dest, need_res, need_label, cap_ratio in demands:
         dest_free = Resources(
             pig_iron=max(0, int(dest.storage.pig_iron * cap_ratio) - max(0, dest.resources.pig_iron)) if dest.storage.pig_iron > 0 else need_res.pig_iron,
@@ -1815,8 +1817,8 @@ def plan_interplanet_transports(
 
         if best_cand is None:
             continue
-        rph, cargo_tot, donor, cargo, chosen_ships, flight_s = best_cand
-        # Deduct reserved ships and surplus from donor pool
+        _rph, _cargo_tot, donor, cargo, chosen_ships, _flight_s = best_cand
+        # Deduct Pass-1 reserved ships and surplus from donor pool
         d_rem_ships = donor_ships_rem[donor.planet_id]
         for sk, sq in chosen_ships.items():
             left_q = max(0, d_rem_ships.get(sk, 0) - sq)
@@ -1829,7 +1831,111 @@ def plan_interplanet_transports(
         d_rem_surp[1] = max(0, d_rem_surp[1] - cargo.metal)
         d_rem_surp[2] = max(0, d_rem_surp[2] - cargo.kryptonite)
         d_rem_surp[3] = max(0, d_rem_surp[3] - cargo.spice)
+        planned_trips.append(
+            {
+                "donor": donor,
+                "dest": dest,
+                "need_res": need_res,
+                "need_label": need_label,
+                "dest_free": dest_free,
+                "cargo": cargo,
+                "chosen_ships": dict(chosen_ships),
+            }
+        )
 
+    # Pass 2: top up each planned transport up to maximum available fleet cargo capacity using remaining
+    # spare donor resources (still respecting donor P0/P1 reserves, cushions, Spice fuel reserve, and
+    # destination storage cap_ratio) to maximize resources moved per fleet slot / trip.
+    out_transports: list[PlannedAction] = []
+    for trip in planned_trips:
+        donor: PlanetState = trip["donor"]
+        dest: PlanetState = trip["dest"]
+        need_res: Resources = trip["need_res"]
+        need_label: str = trip["need_label"]
+        dest_free: Resources = trip["dest_free"]
+        cargo: Resources = trip["cargo"]
+        chosen_ships: dict[str, int] = trip["chosen_ships"]
+
+        orig_cargo_tot = cargo.pig_iron + cargo.metal + cargo.kryptonite + cargo.spice
+        cargo_tot = orig_cargo_tot
+        extra_added = 0
+
+        d_pid = donor.planet_id
+        d_rem_ships = donor_ships_rem.get(d_pid, {})
+        d_rem_surp = donor_surplus_rem.get(d_pid, [0, 0, 0, 0])
+        if sum(d_rem_surp) > 0:
+            avail_ships = {
+                k: chosen_ships.get(k, 0) + d_rem_ships.get(k, 0)
+                for k in ("s3", "s2", "s1")
+                if chosen_ships.get(k, 0) + d_rem_ships.get(k, 0) > 0
+            }
+            raw_fleet_cap = _fleet.fleet_cargo_capacity(avail_ships, miner_spec_level=miner_spec)
+            hold_fuel_buf = (
+                min(raw_fleet_cap // 10, max(fuel_reserve, int(raw_fleet_cap * 0.03)))
+                if raw_fleet_cap > 0
+                else 0
+            )
+            max_usable_cap = max(orig_cargo_tot, raw_fleet_cap - hold_fuel_buf)
+            if max_usable_cap > orig_cargo_tot:
+                rem_surp_res = Resources(d_rem_surp[0], d_rem_surp[1], d_rem_surp[2], d_rem_surp[3])
+                topped = _fleet.top_up_transport_cargo(
+                    cargo, need_res, rem_surp_res, dest_free, max_usable_cap
+                )
+                topped_tot = topped.pig_iron + topped.metal + topped.kryptonite + topped.spice
+                if topped_tot > orig_cargo_tot:
+                    new_ships = _fleet.select_transport_ships(
+                        avail_ships, topped_tot, miner_spec_level=miner_spec
+                    )
+                    if new_ships:
+                        new_cap = _fleet.fleet_cargo_capacity(new_ships, miner_spec_level=miner_spec)
+                        new_buf = (
+                            min(new_cap // 10, max(fuel_reserve, int(new_cap * 0.03)))
+                            if new_cap > 0
+                            else 0
+                        )
+                        if topped_tot > max(orig_cargo_tot, new_cap - new_buf):
+                            cand_ships = _fleet.select_transport_ships(
+                                avail_ships, topped_tot + new_buf, miner_spec_level=miner_spec
+                            )
+                            if cand_ships:
+                                new_ships = cand_ships
+                                new_cap = _fleet.fleet_cargo_capacity(new_ships, miner_spec_level=miner_spec)
+                                new_buf = (
+                                    min(new_cap // 10, max(fuel_reserve, int(new_cap * 0.03)))
+                                    if new_cap > 0
+                                    else 0
+                                )
+                            if topped_tot > max(orig_cargo_tot, new_cap - new_buf):
+                                capped_usable = max(orig_cargo_tot, new_cap - new_buf)
+                                topped = _fleet.top_up_transport_cargo(
+                                    cargo, need_res, rem_surp_res, dest_free, capped_usable
+                                )
+                                topped_tot = (
+                                    topped.pig_iron + topped.metal + topped.kryptonite + topped.spice
+                                )
+                    if new_ships and topped_tot > orig_cargo_tot:
+                        d_rem_surp[0] = max(0, d_rem_surp[0] - max(0, topped.pig_iron - cargo.pig_iron))
+                        d_rem_surp[1] = max(0, d_rem_surp[1] - max(0, topped.metal - cargo.metal))
+                        d_rem_surp[2] = max(0, d_rem_surp[2] - max(0, topped.kryptonite - cargo.kryptonite))
+                        d_rem_surp[3] = max(0, d_rem_surp[3] - max(0, topped.spice - cargo.spice))
+                        donor_ships_rem[d_pid] = {
+                            sk: left_q
+                            for sk, tot_q in avail_ships.items()
+                            if (left_q := max(0, tot_q - new_ships.get(sk, 0))) > 0
+                        }
+                        cargo = topped
+                        chosen_ships = new_ships
+                        extra_added = topped_tot - orig_cargo_tot
+                        cargo_tot = topped_tot
+
+        flight_s = _fleet.estimate_fleet_flight_seconds(
+            donor.coords,
+            dest.coords,
+            chosen_ships,
+            researches=state.researches,
+            round_trip=True,
+        )
+        rph = _fleet.estimate_resource_per_hour(cargo_tot, flight_s)
         norm_dest = _fleet.normalize_coords(dest.coords)
         ship_desc = ", ".join(f"{q}x {k}" for k, q in chosen_ships.items())
         ow_txt = _fleet.format_flight_duration(flight_s / 2.0)
@@ -1845,6 +1951,11 @@ def plan_interplanet_transports(
         if cargo.spice > 0:
             parts_r.append(f"{game_data.fmt_compact_int(cargo.spice, grouped=True)}S")
         res_summary = "/".join(parts_r)
+        fill_note = (
+            f" (+{game_data.fmt_compact_int(extra_added, grouped=True)} spare fill)"
+            if extra_added > 0
+            else ""
+        )
         out_transports.append(
             PlannedAction(
                 priority="P1",
@@ -1857,8 +1968,8 @@ def plan_interplanet_transports(
                 cost=cargo,
                 missing=Resources(),
                 reason=(
-                    f"Supply {dest.name} [{norm_dest}] ({res_summary} · {game_data.fmt_compact_int(cargo_tot, grouped=True)} res / "
-                    f"1-way {ow_txt} · RT {dur_txt}, {rph_txt} res/h via {ship_desc}) for {need_label}"
+                    f"Supply {dest.name} [{norm_dest}] ({res_summary} · {game_data.fmt_compact_int(cargo_tot, grouped=True)} res"
+                    f"{fill_note} / 1-way {ow_txt} · RT {dur_txt}, {rph_txt} res/h via {ship_desc}) for {need_label}"
                 ),
                 executable_now=True,
             )
@@ -2383,12 +2494,20 @@ def _plan_combat_and_raid_actions(
     used_slots_by_pid: dict[int, int] = {
         p.planet_id: count_in_flight_fleets_for_planet(state, p) for p in state.planets
     }
+    used_spy_slots_by_pid: dict[int, int] = {
+        p.planet_id: count_in_flight_spy_fleets_for_planet(state, p) for p in state.planets
+    }
 
     def _max_slots_for(p_obj: PlanetState) -> int:
         return 1 + max(0, p_obj.building_level(FLEET_BASE))
 
     def _used_slots_for(p_obj: PlanetState) -> int:
         return used_slots_by_pid.get(p_obj.planet_id, count_in_flight_fleets_for_planet(state, p_obj))
+
+    def _used_spy_slots_for(p_obj: PlanetState) -> int:
+        return used_spy_slots_by_pid.get(
+            p_obj.planet_id, count_in_flight_spy_fleets_for_planet(state, p_obj)
+        )
 
     used_fleet_slots = sum(1 for q in (state.active_queues or ()) if is_in_flight_fleet_job(q))
     own_fleet_in_flight = used_fleet_slots > 0
@@ -2817,6 +2936,37 @@ def _plan_combat_and_raid_actions(
     # COLONIZE reserves slots against STATION/ATTACK/RECYCLE;
     # STATION reserves slots against ATTACK/RECYCLE on the donor planet.
     res_spy_cfg = max(0, _safe_strategy_int(getattr(cfg, "reserved_spy_slots", 1), 1))
+    spy_only_res = bool(getattr(cfg, "spy_reserved_slots_only", False))
+
+    # When `spy_reserved_slots_only` is enabled, cap concurrent SPY flights per planet strictly
+    # to `min(max_slots, reserved_spy_slots)` so SPY never spills into unreserved general slots.
+    if spy_only_res:
+        colony_spy_actions.sort(key=lambda item: item[0])
+        spy_actions.sort(key=lambda item: item[0])
+        spy_dispatch_by_pid: dict[int, int] = {}
+
+        def _gate_strict_spy_list(entries: list[tuple[Any, PlannedAction]]) -> list[tuple[Any, PlannedAction]]:
+            gated_out: list[tuple[Any, PlannedAction]] = []
+            for sk_s, act_s in entries:
+                p_sp = planet_by_id.get(act_s.planet_id, origin)
+                spy_cap = min(_max_slots_for(p_sp), res_spy_cfg)
+                spy_used = _used_spy_slots_for(p_sp) + spy_dispatch_by_pid.get(p_sp.planet_id, 0)
+                if act_s.executable_now:
+                    if spy_used >= spy_cap:
+                        rsn_s = act_s.reason
+                        if "restricted to reserved" not in rsn_s.lower():
+                            rsn_s += (
+                                f" [Hold: Spy restricted to reserved slot(s) ({spy_used}/{spy_cap} spy slots used)]"
+                            )
+                        gated_out.append(((1, *sk_s[1:]), replace(act_s, executable_now=False, reason=rsn_s)))
+                        continue
+                    spy_dispatch_by_pid[p_sp.planet_id] = spy_dispatch_by_pid.get(p_sp.planet_id, 0) + 1
+                gated_out.append((sk_s, act_s))
+            return gated_out
+
+        colony_spy_actions = _gate_strict_spy_list(colony_spy_actions)
+        spy_actions = _gate_strict_spy_list(spy_actions)
+
     all_spy_planet_ids = {
         sa.planet_id
         for _, sa in [*spy_actions, *colony_spy_actions]
@@ -2829,7 +2979,13 @@ def _plan_combat_and_raid_actions(
             and _safe_strategy_int(p_obj.ships.get("s10", 0), 0) > 0
             and p_obj.planet_id in all_spy_planet_ids
         )
-        return min(res_spy_cfg, max(0, _max_slots_for(p_obj) - 1)) if has_spy_demand_p else 0
+        if not has_spy_demand_p:
+            return 0
+        base_res = min(res_spy_cfg, max(0, _max_slots_for(p_obj) - 1))
+        if spy_only_res:
+            # Reserved spy slots already occupied by in-flight SPY flights are fulfilled; free remaining slots for non-SPY.
+            return max(0, base_res - _used_spy_slots_for(p_obj))
+        return base_res
 
     # Tier #2: Inter-planet TRANSPORT (yields only to SPY; reserves slots against COLONIZE, STATION, ATTACK, RECYCLE)
     raw_transports = plan_interplanet_transports(

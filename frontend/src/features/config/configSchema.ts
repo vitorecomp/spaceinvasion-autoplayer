@@ -415,6 +415,16 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
         step: 1,
       },
       {
+        key: "spy_reserved_slots_only",
+        id: "cfg-spy_reserved_slots_only",
+        title: "Restrict Spy Probes to Reserved Slot(s) Only",
+        boundsLabel: "default: false · boolean",
+        description:
+          "When enabled, SPY probe launches on each planet are strictly capped to the Reserved Spy Fleet Slots count (reserved_spy_slots) and will never spill into extra unreserved fleet slots — keeping all remaining Fleet base (1 + b10) slots free for TRANSPORT, COLONIZE, ATTACK, and RECYCLE flights. Boolean toggle.",
+        control: "checkbox",
+        defaultValue: false,
+      },
+      {
         key: "spy_dispatch_planet_id",
         id: "cfg-spy_dispatch_planet_id",
         title: "Designated Spy Dispatch Colony",

@@ -8893,6 +8893,172 @@ class TestApiAndCommander(unittest.TestCase):
         self.assertNotIn("HTTPConnectionPool", out)
         self.assertNotIn("NewConnectionError", out)
 
+    def test_spy_reserved_slots_only_and_config_optimizer_goals_api(self) -> None:
+        """Verify spy_reserved_slots_only validation/holds/live guard, fleet planner slot fields, and config_optimizer_goals."""
+        from dataclasses import replace
+        import time
+        from spaceinvasion.core.config import save_strategy_config
+        from spaceinvasion.planner.action_graph import build_fleet_planner_graph
+
+        p1 = PlanetState(
+            planet_id=101,
+            name="Home",
+            coords="02:380:12",
+            planet_type="normal",
+            temperature=30,
+            fields_used=90,
+            fields_max=230,
+            resources=Resources(50_000, 30_000, 20_000, 15_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(500, 250),
+            buildings={"b1": 12, "b2": 10, "b3": 10, "b4": 8, "b5": 12, "b10": 3},  # max_slots = 4
+            ships={"s10": 10, "s7": 10, "s2": 8},
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Cmdr",
+            timestamp=time.time(),
+            planets=(p1,),
+            active_planet_id=101,
+            researches={"r1": 5, "r2": 6, "r6": 3},
+            active_queues=(
+                QueueJob(
+                    category="fleet",
+                    name="Espionage → 02:380:04",
+                    origin_coords="02:380:12",
+                    remaining_seconds=60.0,
+                ),
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            cfg_path = tp / "config.yaml"
+            save_strategy_config(
+                StrategyConfig(
+                    allow_raids=True,
+                    allow_galaxy_scan=True,
+                    reserved_spy_slots=1,
+                    spy_reserved_slots_only=False,
+                ),
+                cfg_path,
+            )
+            fake_client = MagicMock()
+            bridge = GameApiBridge(
+                client_factory=lambda: fake_client,
+                config_path=cfg_path,
+                db_path=tp / "state.db",
+            )
+            try:
+                bridge._last_state = st
+                bridge._last_snapshot_at = time.monotonic()
+
+                # 1. action_graph strictly rejects non-bool spy_reserved_slots_only; update_config persists bool
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command(
+                        {"command": "action_graph", "config": {"spy_reserved_slots_only": "yes"}}
+                    )
+                upd = bridge.handle_command(
+                    {"command": "update_config", "config": {"spy_reserved_slots_only": True}}
+                )
+                self.assertTrue(upd["ok"])
+                self.assertTrue(upd["config"]["spy_reserved_slots_only"])
+                self.assertTrue(bridge.strategy_config.spy_reserved_slots_only)
+
+                # 2. _apply_fleet_slot_holds enforces strict reserved spy cap AND releases remaining slots to ATTACK
+                spy_a = PlannedAction(
+                    priority="P1",
+                    kind="SPY",
+                    planet_id=101,
+                    planet_coords="02:380:12",
+                    target_id=10,
+                    target_level=1,
+                    target_name="02:380:05",
+                    cost=Resources(),
+                    missing=Resources(),
+                    reason="Spy 02:380:05",
+                    executable_now=True,
+                )
+                atk_a = PlannedAction(
+                    priority="P2",
+                    kind="ATTACK",
+                    planet_id=101,
+                    planet_coords="02:380:12",
+                    target_id=0,
+                    target_level=0,
+                    target_name="02:380:08",
+                    cost=Resources(),
+                    missing=Resources(),
+                    reason="Raid 02:380:08",
+                    executable_now=True,
+                )
+                # 1 SPY already in flight (1/1 spy slot used) + 2 non-SPY flights -> 3/4 total slots used:
+                st_3used = replace(
+                    st,
+                    active_queues=(
+                        QueueJob(category="fleet", name="Espionage → 02:380:04", origin_coords="02:380:12", remaining_seconds=60.0),
+                        QueueJob(category="fleet", name="Attack → 02:380:01", origin_coords="02:380:12", remaining_seconds=120.0),
+                        QueueJob(category="fleet", name="Attack → 02:380:02", origin_coords="02:380:12", remaining_seconds=120.0),
+                    ),
+                )
+                held = bridge._apply_fleet_slot_holds(st_3used, [spy_a, atk_a])
+                self.assertFalse(held[0].executable_now)
+                self.assertIn("restricted to reserved", held[0].reason.lower())
+                # ATTACK remains executable because the 1 reserved spy slot is already occupied by in-flight SPY!
+                self.assertTrue(held[1].executable_now)
+
+                # 3. Live _execute_and_summarize aborts SPY when spy_used >= spy_cap (0 executor calls)
+                exec_res = bridge._execute_and_summarize(fake_client, st_3used, "execute_action", spy_a, False)
+                self.assertTrue(exec_res["ok"])
+                self.assertFalse(exec_res["executed"])
+                self.assertIn("restricted to reserved", exec_res["message"].lower())
+
+                # 4. build_fleet_planner_graph surfaces spy_used_slots / reserved_spy_slots / spy_reserved_slots_only
+                fgraph = build_fleet_planner_graph(st_3used, [], config=bridge.strategy_config)
+                sb0 = fgraph["slot_budgets"][0]
+                self.assertEqual(sb0["spy_used_slots"], 1)
+                self.assertEqual(sb0["reserved_spy_slots"], 1)
+                self.assertTrue(sb0["spy_reserved_slots_only"])
+
+                # 5. config_optimizer_goals exposed in dashboard & buildings_eta and refreshes when active run updates
+                d_empty = bridge.dashboard(refresh=False)
+                self.assertIsNone(d_empty["config_optimizer_goals"])
+                bridge._db.record_config_optimizer_run(
+                    {
+                        "summary": {"total_sp_eq_per_hr": 12345.0},
+                        "planets": [
+                            {
+                                "planet_id": 101,
+                                "coords": "02:380:12",
+                                "detected_specialization": "pig_iron",
+                                "buildings": [
+                                    {"key": "b1", "building_id": 1, "built_level": 12, "target_level": 24},
+                                    {"key": "b2", "building_id": 2, "built_level": 10, "target_level": 20},
+                                ],
+                            }
+                        ],
+                    },
+                    set_active=True,
+                )
+                d_pop = bridge.dashboard(refresh=False)
+                g_dash = d_pop["config_optimizer_goals"]
+                self.assertIsNotNone(g_dash)
+                self.assertEqual(g_dash["by_planet_id"]["101"]["specialization"], "pig_iron")
+                self.assertEqual(g_dash["by_planet_id"]["101"]["goals"]["b1"], 24)
+                self.assertEqual(g_dash["by_planet_id"]["101"]["goals"]["b2"], 20)
+                self.assertEqual(g_dash["by_coords"]["02:380:12"]["goals"]["b1"], 24)
+
+                eta_res = bridge.handle_command({"command": "buildings_eta", "refresh": False, "planet_id": 101})
+                self.assertTrue(eta_res["ok"])
+                self.assertEqual(eta_res["config_optimizer_goals"]["by_planet_id"]["101"]["goals"]["b1"], 24)
+                self.assertEqual(
+                    eta_res["buildings_eta"]["config_optimizer_goals"]["by_planet_id"]["101"]["goals"]["b2"],
+                    20,
+                )
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()

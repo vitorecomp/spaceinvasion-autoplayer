@@ -623,4 +623,76 @@ describe("Dedicated Research tab split from BuildingsView", () => {
     // Strict 2-SVG total invariant across full App
     expect(container.querySelectorAll("svg")).toHaveLength(2);
   });
+
+  it("displays Config Optimizer building level goals, specialization, sorting, and inspector line in BuildingsView", async () => {
+    const dashWithGoals: DashboardPayload = {
+      ...RESEARCH_TAB_DASHBOARD,
+      config_optimizer_goals: {
+        run_id: 42,
+        updated_ts: 1700000100,
+        by_planet_id: {
+          "12476": {
+            planet_id: 12476,
+            coords: "02:380:12",
+            specialization: "pig_iron",
+            goals: { b1: 25, b2: 14, b5: 12 },
+          },
+        },
+        by_coords: {
+          "02:380:12": {
+            planet_id: 12476,
+            coords: "02:380:12",
+            specialization: "pig_iron",
+            goals: { b1: 25, b2: 14, b5: 12 },
+          },
+        },
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).startsWith("/dashboard")) {
+          return { ok: true, status: 200, text: async () => JSON.stringify(dashWithGoals) };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+      })
+    );
+
+    const { container } = render(
+      <ConsoleProvider>
+        <ActivatePage page="buildings" />
+        <BuildingsView />
+      </ConsoleProvider>
+    );
+
+    await waitFor(() => {
+      expect(container.querySelectorAll("#eta-table-tbody tr")).toHaveLength(3);
+    });
+
+    // Planet meta bar displays Config Optimizer specialization
+    expect(container.querySelector("#bld-planet-meta")?.textContent).toContain("Goal: Pig Iron");
+
+    // Goal column header exists and cells show remaining delta (+7), reached (L14), and above-goal (L12)
+    const goalSortBtn = Array.from(container.querySelectorAll("#bld-table th button")).find(
+      (b) => b.textContent?.trim() === "Goal"
+    ) as HTMLButtonElement | undefined;
+    expect(goalSortBtn).toBeDefined();
+    const goalCells = Array.from(
+      container.querySelectorAll('#eta-table-tbody tr td[data-col="goal"]')
+    ).map((td) => td.textContent?.trim());
+    expect(goalCells).toEqual(["L25 +7", "L14", "L12"]);
+
+    // Clicking Goal sort header sorts descending first (25, 14, 12), then ascending (12, 14, 25)
+    fireEvent.click(goalSortBtn!);
+    fireEvent.click(goalSortBtn!);
+    const ascGoals = Array.from(
+      container.querySelectorAll('#eta-table-tbody tr td[data-col="goal"]')
+    ).map((td) => td.textContent?.trim());
+    expect(ascGoals).toEqual(["L12", "L14", "L25 +7"]);
+
+    // BuildingInspector shows Config Optimizer Goal detail for the selected building (b1: L18 -> L25)
+    expect(container.querySelector("#insp-meta-box")?.textContent).toContain(
+      "Config Optimizer Goal: L25 (+7 remaining) · Pig Iron"
+    );
+  });
 });

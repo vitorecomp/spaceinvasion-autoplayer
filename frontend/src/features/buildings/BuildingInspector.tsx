@@ -21,6 +21,8 @@ export interface BuildingInspectorProps {
   bfPct: number;
   mode?: "buildings" | "research";
   universeMaxRow?: Record<string, any> | null;
+  goalLevel?: number | null;
+  goalSpecialization?: string | null;
 }
 
 const HORIZON_SORT_COLUMNS: SortColumnMap<
@@ -44,6 +46,8 @@ export const BuildingInspector: React.FC<BuildingInspectorProps> = ({
   bfPct,
   mode = "buildings",
   universeMaxRow = null,
+  goalLevel = null,
+  goalSpecialization = null,
 }) => {
   const {
     apiCommand,
@@ -256,6 +260,19 @@ export const BuildingInspector: React.FC<BuildingInspectorProps> = ({
   if (!isResearch && !isTurret && selected.energy_delta) {
     metaLines.push(
       `Energy Impact: ${selected.energy_delta >= 0 ? "+" : ""}${selected.energy_delta} E`
+    );
+  }
+
+  if (!isResearch && !isTurret && goalLevel !== null && goalLevel !== undefined) {
+    const goalGap = goalLevel - curLvl;
+    const goalStatusTxt =
+      goalLevel === 0 && curLvl === 0
+        ? " (Not targeted)"
+        : goalGap <= 0
+          ? " (Reached)"
+          : ` (+${goalGap} remaining)`;
+    metaLines.push(
+      `Config Optimizer Goal: L${goalLevel}${goalStatusTxt}${goalSpecialization ? ` · ${goalSpecialization}` : ""}`
     );
   }
 

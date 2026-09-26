@@ -17,6 +17,7 @@ const AG_BOOL_FIELDS = [
   "allow_multi_planet",
   "allow_fleetsave",
   "allow_galaxy_scan",
+  "spy_reserved_slots_only",
   "allow_raids",
   "allow_pvp_in_az",
   "allow_colonize",

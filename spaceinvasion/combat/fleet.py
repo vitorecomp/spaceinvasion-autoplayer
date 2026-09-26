@@ -953,13 +953,110 @@ def select_transport_ships(
     return chosen
 
 
-def pack_transport_cargo(
+def _pack_resource_budget(
+    avail_by_res: Mapping[str, int],
+    cap_left: int,
+) -> dict[str, int]:
+    """Pack up to `cap_left` units from `avail_by_res`, proportionally when total exceeds `cap_left`."""
+    cap = max(0, int(cap_left))
+    clean = {rk: max(0, int(avail_by_res.get(rk, 0))) for rk in ("pig_iron", "metal", "kryptonite", "spice")}
+    total_want = sum(clean.values())
+    if cap <= 0 or total_want <= 0:
+        return {rk: 0 for rk in ("pig_iron", "metal", "kryptonite", "spice")}
+    if total_want <= cap:
+        return clean
+    packed = {rk: int((clean[rk] * cap) // total_want) for rk in clean}
+    rem_cap = cap - sum(packed.values())
+    for rk in ("spice", "metal", "kryptonite", "pig_iron"):
+        if rem_cap <= 0:
+            break
+        room = clean[rk] - packed[rk]
+        take = min(room, rem_cap)
+        if take > 0:
+            packed[rk] += take
+            rem_cap -= take
+    return packed
+
+
+def top_up_transport_cargo(
+    packed: Resources,
     need: Resources,
     surplus: Resources,
     dest_free_storage: Optional[Resources],
     capacity: int,
 ) -> Resources:
-    """Pack transport cargo satisfying `need` bounded by `surplus`, `dest_free_storage`, and `capacity`."""
+    """Top up an already-packed transport `packed` with additional spare origin `surplus` up to `capacity`.
+
+    Respects `surplus` (remaining spare resources on origin, after deducting `packed`) and
+    `dest_free_storage` (total free storage headroom on destination before `packed`).
+    Prioritizes requested resource types (`need > 0`) first, then fills any remaining cargo room
+    proportionally across all remaining spare resources so each fleet slot moves maximum cargo.
+    """
+    cap_left = max(0, int(capacity))
+    base = {
+        rk: max(0, int(getattr(packed, rk, 0)))
+        for rk in ("pig_iron", "metal", "kryptonite", "spice")
+    }
+    base_tot = sum(base.values())
+    rem_cap = max(0, cap_left - base_tot)
+    if rem_cap <= 0:
+        return Resources(
+            pig_iron=base["pig_iron"],
+            metal=base["metal"],
+            kryptonite=base["kryptonite"],
+            spice=base["spice"],
+        )
+
+    # Extra available per resource: remaining donor surplus bounded by remaining destination free room
+    extra_avail: dict[str, int] = {}
+    for rk in ("pig_iron", "metal", "kryptonite", "spice"):
+        s_rem = max(0, int(getattr(surplus, rk, 0)))
+        if dest_free_storage is not None:
+            d_rem = max(0, int(getattr(dest_free_storage, rk, 0)) - base[rk])
+            extra_avail[rk] = min(s_rem, d_rem)
+        else:
+            extra_avail[rk] = s_rem
+
+    # Stage 1: top up resource types explicitly requested (`need > 0`) first
+    req_extra = {
+        rk: extra_avail[rk] if max(0, int(getattr(need, rk, 0))) > 0 else 0
+        for rk in ("pig_iron", "metal", "kryptonite", "spice")
+    }
+    add1 = _pack_resource_budget(req_extra, rem_cap)
+    for rk in ("pig_iron", "metal", "kryptonite", "spice"):
+        if add1[rk] > 0:
+            base[rk] += add1[rk]
+            extra_avail[rk] = max(0, extra_avail[rk] - add1[rk])
+            rem_cap = max(0, rem_cap - add1[rk])
+
+    # Stage 2: fill any remaining cargo capacity with remaining spare origin resources
+    if rem_cap > 0:
+        add2 = _pack_resource_budget(extra_avail, rem_cap)
+        for rk in ("pig_iron", "metal", "kryptonite", "spice"):
+            base[rk] += add2[rk]
+
+    return Resources(
+        pig_iron=base["pig_iron"],
+        metal=base["metal"],
+        kryptonite=base["kryptonite"],
+        spice=base["spice"],
+    )
+
+
+def pack_transport_cargo(
+    need: Resources,
+    surplus: Resources,
+    dest_free_storage: Optional[Resources],
+    capacity: int,
+    *,
+    fill_to_capacity: bool = False,
+) -> Resources:
+    """Pack transport cargo satisfying `need` bounded by `surplus`, `dest_free_storage`, and `capacity`.
+
+    When `fill_to_capacity=True` and unused cargo capacity remains after satisfying `need`,
+    tops up the shipment with remaining spare `surplus` (still bounded by `dest_free_storage`
+    and `capacity`) so each transport trip maximizes moved cargo.
+    """
     cap_left = max(0, int(capacity))
     if cap_left <= 0:
         return Resources()
@@ -971,33 +1068,22 @@ def pack_transport_cargo(
         if dest_free_storage is not None:
             bound = min(bound, max(0, int(getattr(dest_free_storage, rk, 0))))
         avail_by_res[rk] = bound
-    total_want = sum(avail_by_res.values())
-    if total_want <= 0:
-        return Resources()
-    if total_want <= cap_left:
-        return Resources(
-            pig_iron=avail_by_res["pig_iron"],
-            metal=avail_by_res["metal"],
-            kryptonite=avail_by_res["kryptonite"],
-            spice=avail_by_res["spice"],
-        )
-    # Proportionally allocate when total demand exceeds fleet cargo capacity, prioritizing rare resources for remainder
-    packed = {rk: int((avail_by_res[rk] * cap_left) // total_want) for rk in avail_by_res}
-    rem_cap = cap_left - sum(packed.values())
-    for rk in ("spice", "metal", "kryptonite", "pig_iron"):
-        if rem_cap <= 0:
-            break
-        room = avail_by_res[rk] - packed[rk]
-        take = min(room, rem_cap)
-        if take > 0:
-            packed[rk] += take
-            rem_cap -= take
-    return Resources(
-        pig_iron=packed["pig_iron"],
-        metal=packed["metal"],
-        kryptonite=packed["kryptonite"],
-        spice=packed["spice"],
+    packed_map = _pack_resource_budget(avail_by_res, cap_left)
+    packed_res = Resources(
+        pig_iron=packed_map["pig_iron"],
+        metal=packed_map["metal"],
+        kryptonite=packed_map["kryptonite"],
+        spice=packed_map["spice"],
     )
+    if fill_to_capacity and packed_res.total() < cap_left:
+        rem_surplus = Resources(
+            pig_iron=max(0, int(getattr(surplus, "pig_iron", 0)) - packed_res.pig_iron),
+            metal=max(0, int(getattr(surplus, "metal", 0)) - packed_res.metal),
+            kryptonite=max(0, int(getattr(surplus, "kryptonite", 0)) - packed_res.kryptonite),
+            spice=max(0, int(getattr(surplus, "spice", 0)) - packed_res.spice),
+        )
+        return top_up_transport_cargo(packed_res, need, rem_surplus, dest_free_storage, cap_left)
+    return packed_res
 
 
 _GALAXY_POS_CELL_RE = re.compile(r"^\s*(?:#\s*)?\[?\s*0?(\d{1,2})\s*\]?\.?\s*$", re.ASCII)

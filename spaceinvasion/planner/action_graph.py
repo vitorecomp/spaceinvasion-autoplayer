@@ -19,6 +19,7 @@ from spaceinvasion.combat.ranking import attach_action_etas
 from spaceinvasion.core.state import (
     GameState,
     PlanetState,
+    count_in_flight_spy_fleets_for_planet,
     is_in_flight_fleet_job,
     normalize_planet_type,
 )
@@ -2384,11 +2385,14 @@ def build_fleet_planner_graph(
     slot_budget_by_pid: dict[int, dict[str, Any]] = {}
     total_slots_used = 0
     total_slots_max = 0
+    res_spy_slots_cfg = max(0, _clean_int(getattr(config, "reserved_spy_slots", 1), 1))
+    spy_res_only_cfg = bool(getattr(config, "spy_reserved_slots_only", False))
     for p in ordered_planets:
         pid = _clean_int(p.planet_id, 0)
         b10_lvl = max(0, p.building_level(10))
         max_slots = 1 + b10_lvl
         used_slots = len(inflight_by_pid.get(pid, ()))
+        spy_used_slots = count_in_flight_spy_fleets_for_planet(state, p) if state is not None else 0
         avail_slots = max(0, max_slots - used_slots)
         total_slots_used += used_slots
         total_slots_max += max_slots
@@ -2406,6 +2410,9 @@ def build_fleet_planner_graph(
             "planet_type": normalize_planet_type(p),
             "b10_level": b10_lvl,
             "used_slots": used_slots,
+            "spy_used_slots": spy_used_slots,
+            "reserved_spy_slots": min(max_slots, res_spy_slots_cfg),
+            "spy_reserved_slots_only": spy_res_only_cfg,
             "max_slots": max_slots,
             "available_slots": avail_slots,
             "in_flight_count": used_slots,

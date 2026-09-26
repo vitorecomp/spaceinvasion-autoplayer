@@ -98,6 +98,7 @@ from spaceinvasion.core.state import (
     Resources,
     count_allocated_normal_planets,
     count_in_flight_fleets_for_planet,
+    count_in_flight_spy_fleets_for_planet,
     extract_in_flight_recycle_coords,
     homeworld_planet_id,
     is_building_allowed_on_planet_type,
@@ -651,6 +652,7 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         "forbid_planetary_solar",
         "galaxy_scan_explore_first",
         "galaxy_scan_all_galaxies",
+        "spy_reserved_slots_only",
     )
     if strict_bools:
         for key in bool_keys:
@@ -1542,6 +1544,8 @@ class GameApiBridge:
         self._raid_stats_cache: Optional[dict[str, Any]] = None
         self._raid_stats_cache_ts: float = 0.0
         self._raid_targets_cache_key: Optional[Any] = None
+        self._co_goals_cache_key: Optional[Any] = None
+        self._co_goals_cache: Optional[dict[str, Any]] = None
         self._last_bot_control_payload: Optional[dict[str, Any]] = None
         self._last_dashboard_payload: Optional[dict[str, Any]] = None
         resolved_db = (
@@ -2211,14 +2215,21 @@ class GameApiBridge:
             return actions
         eff_cfg = cfg or self.strategy_config
         res_spy_cfg = max(0, _safe_api_int(getattr(eff_cfg, "reserved_spy_slots", 1), 1))
+        spy_only_res = bool(getattr(eff_cfg, "spy_reserved_slots_only", False))
         planets_by_id = {p.planet_id: p for p in state.planets}
         default_p = state.active_planet() or state.planets[0]
         used_by_pid: dict[int, int] = {
             p.planet_id: count_in_flight_fleets_for_planet(state, p) for p in state.planets
         }
+        spy_used_by_pid: dict[int, int] = {
+            p.planet_id: count_in_flight_spy_fleets_for_planet(state, p) for p in state.planets
+        }
 
         def _used_for(p_o: PlanetState) -> int:
             return used_by_pid.get(p_o.planet_id, count_in_flight_fleets_for_planet(state, p_o))
+
+        def _spy_used_for(p_o: PlanetState) -> int:
+            return spy_used_by_pid.get(p_o.planet_id, count_in_flight_spy_fleets_for_planet(state, p_o))
 
         spy_pids = {
             a.planet_id
@@ -2233,7 +2244,12 @@ class GameApiBridge:
                 and _safe_api_int(p_o.ships.get("s10", 0), 0) > 0
                 and p_o.planet_id in spy_pids
             )
-            return min(res_spy_cfg, max(0, max_s - 1)) if has_dem else 0
+            if not has_dem:
+                return 0
+            base_res = min(res_spy_cfg, max(0, max_s - 1))
+            if spy_only_res:
+                return max(0, base_res - _spy_used_for(p_o))
+            return base_res
 
         # Per-planet Tier #2 (TRANSPORT), Tier #3 (COLONIZE), and Tier #3.5 (STATION) reservations
         tr_count_by_pid: dict[int, int] = {}
@@ -2281,6 +2297,7 @@ class GameApiBridge:
             )
 
         changed = False
+        spy_dispatched_by_pid: dict[int, int] = {}
         out: list[PlannedAction] = []
         for act in actions:
             if act.kind not in ("SPY", "TRANSPORT", "COLONIZE", "STATION", "ATTACK", "RECYCLE") or act.priority == "P3":
@@ -2301,6 +2318,22 @@ class GameApiBridge:
                         changed = True
                         out.append(replace(act, executable_now=False, reason=new_r))
                         continue
+                elif spy_only_res:
+                    spy_cap = min(max_slots, res_spy_cfg)
+                    spy_used_here = _spy_used_for(p_obj) + spy_dispatched_by_pid.get(p_obj.planet_id, 0)
+                    if spy_used_here >= spy_cap:
+                        cur_r = str(act.reason or "")
+                        new_r = (
+                            cur_r
+                            if "restricted to reserved" in cur_r.lower()
+                            else f"{cur_r} [Hold: Spy restricted to reserved slot(s) ({spy_used_here}/{spy_cap} spy slots used)]"
+                        )
+                        if act.executable_now or new_r != cur_r:
+                            changed = True
+                            out.append(replace(act, executable_now=False, reason=new_r))
+                            continue
+                    elif act.executable_now:
+                        spy_dispatched_by_pid[p_obj.planet_id] = spy_dispatched_by_pid.get(p_obj.planet_id, 0) + 1
                 out.append(act)
                 continue
 
@@ -4185,6 +4218,8 @@ class GameApiBridge:
         self._dash_plan_cache_val = None
         self._dash_ag_cache_key = None
         self._dash_ag_cache_json = None
+        self._co_goals_cache_key = None
+        self._co_goals_cache = None
 
     def _serialize_action(
         self,
@@ -4269,6 +4304,73 @@ class GameApiBridge:
         if self._db is not None and hasattr(self._db, "get_active_config_optimizer"):
             return self._db.get_active_config_optimizer()
         return dict(self._active_config_opt_mem) if isinstance(self._active_config_opt_mem, Mapping) else None
+
+    def _get_config_optimizer_building_goals_locked(self) -> Optional[dict[str, Any]]:
+        """Return lightweight per-planet Config Optimizer building target levels (`b1..b21`), cached by DB version."""
+        tok = self._db_total_changes_token()
+        ckey = (tok, self._db is not None, id(self._active_config_opt_mem))
+        if tok is not None and self._co_goals_cache_key == ckey:
+            return self._co_goals_cache
+        active_co = self._get_active_config_optimizer_locked()
+        if not isinstance(active_co, Mapping):
+            if tok is not None:
+                self._co_goals_cache_key = ckey
+                self._co_goals_cache = None
+            return None
+        res_obj = active_co.get("result") if isinstance(active_co.get("result"), Mapping) else active_co
+        planets_raw = res_obj.get("planets") if isinstance(res_obj, Mapping) else None
+        if not isinstance(planets_raw, Sequence) or isinstance(planets_raw, (str, bytes)):
+            if tok is not None:
+                self._co_goals_cache_key = ckey
+                self._co_goals_cache = None
+            return None
+        all_bkeys = tuple(f"b{bid}" for bid in sorted(game_data.BUILDING_BY_ID))
+        by_planet_id: dict[str, dict[str, Any]] = {}
+        by_coords: dict[str, dict[str, Any]] = {}
+        for p_rec in planets_raw:
+            if not isinstance(p_rec, Mapping) or bool(p_rec.get("is_placeholder", False)):
+                continue
+            pid_i = _safe_api_int(p_rec.get("planet_id"), 0)
+            coords_s = normalize_coords(str(p_rec.get("coords") or ""))
+            spec_s = str(
+                p_rec.get("detected_specialization")
+                or p_rec.get("locked_specialization")
+                or p_rec.get("specialization")
+                or ""
+            ).strip()
+            goals_map: dict[str, int] = {bk: 0 for bk in all_bkeys}
+            raw_blds = p_rec.get("buildings")
+            if isinstance(raw_blds, Sequence) and not isinstance(raw_blds, (str, bytes)):
+                for brow in raw_blds:
+                    if not isinstance(brow, Mapping):
+                        continue
+                    bkey = str(brow.get("key") or "").strip().lower()
+                    if bkey in goals_map:
+                        goals_map[bkey] = max(0, _safe_api_int(brow.get("target_level"), 0))
+            entry = {
+                "planet_id": pid_i,
+                "coords": coords_s,
+                "specialization": spec_s,
+                "goals": goals_map,
+            }
+            if pid_i > 0:
+                by_planet_id[str(pid_i)] = entry
+            if coords_s:
+                by_coords[coords_s] = entry
+        out: Optional[dict[str, Any]] = (
+            {
+                "run_id": active_co.get("run_id"),
+                "updated_ts": _safe_api_float(active_co.get("updated_ts"), 0.0),
+                "by_planet_id": by_planet_id,
+                "by_coords": by_coords,
+            }
+            if (by_planet_id or by_coords)
+            else None
+        )
+        if tok is not None:
+            self._co_goals_cache_key = ckey
+            self._co_goals_cache = out
+        return out
 
     def _list_config_optimizer_runs_locked(self, limit: int = 20) -> list[dict[str, Any]]:
         if self._db is not None and hasattr(self._db, "list_config_optimizer_runs"):
@@ -6751,6 +6853,9 @@ class GameApiBridge:
                 and isinstance(ag_obj.get("ga_summary"), dict)
             ):
                 ag_obj["ga_summary"]["elapsed_ms"] = env_opt["elapsed_ms"]
+            co_goals_clean = _sanitize_finite_json(
+                _redact_api_payload(self._get_config_optimizer_building_goals_locked())
+            )
             result = {
                 "ok": envelope["ok"],
                 "server_boot_id": envelope["server_boot_id"],
@@ -6778,6 +6883,7 @@ class GameApiBridge:
                 "loot_recycle_history": loot_rec["history"],
                 "loot_recycle_summary": loot_rec["summary"],
                 "optimizer_summary": envelope["optimizer_summary"],
+                "config_optimizer_goals": co_goals_clean,
                 "buildings_eta": static_val["buildings_eta"],
                 "planet_economies": static_val["planet_economies"],
                 "combat": static_val["combat"],
@@ -8858,6 +8964,55 @@ class GameApiBridge:
         return_home: bool = False,
     ) -> dict[str, Any]:
         planned = attach_action_etas(state, [planned])[0]
+
+        # Pre-dispatch safety verification for SPY when `spy_reserved_slots_only` is enabled:
+        # Never allow SPY dispatch (step, batch, execute_action, manual spy, or fleet_execute)
+        # to exceed `min(max_slots, reserved_spy_slots)` concurrent in-flight SPY flights on the planet.
+        if (
+            not dry_run
+            and planned.kind == "SPY"
+            and bool(getattr(self.strategy_config, "spy_reserved_slots_only", False))
+        ):
+            spy_planet = (
+                next((p for p in (state.planets or ()) if p.planet_id == planned.planet_id), None)
+                or state.active_planet()
+            )
+            if spy_planet is not None:
+                max_spy_sl = 1 + max(0, spy_planet.building_level(10))
+                spy_cap = min(
+                    max_spy_sl,
+                    max(0, _safe_api_int(getattr(self.strategy_config, "reserved_spy_slots", 1), 1)),
+                )
+                spy_used = count_in_flight_spy_fleets_for_planet(state, spy_planet)
+                if spy_used >= spy_cap:
+                    abort_msg = (
+                        f"Aborted: Spy restricted to reserved slot(s) "
+                        f"({spy_used}/{spy_cap} spy slots in use on [{spy_planet.coords}])."
+                    )
+                    aborted_act = replace(planned, executable_now=False)
+                    if self._db is not None:
+                        self._db.record_action(
+                            source="api",
+                            command=cmd,
+                            action=aborted_act,
+                            executed=False,
+                            dry_run=False,
+                            message=abort_msg,
+                        )
+                    return _sanitize_finite_json(
+                        _redact_api_payload(
+                            {
+                                "ok": True,
+                                "command": cmd,
+                                "executed": False,
+                                "validated": True,
+                                "dry_run": False,
+                                "message": abort_msg,
+                                "action": self._serialize_action(aborted_act, state),
+                                "next_action": None,
+                            }
+                        )
+                    )
 
         # Pre-dispatch safety verification for RECYCLE:
         # 1) Never duplicate an already in-flight Recycle wave (auto-planned / step / execute_action).
@@ -12235,11 +12390,16 @@ class GameApiBridge:
                     max_val=2**63 - 1,
                 )
                 planet = self._resolve_planet(self._last_state, pid) if pid is not None else self._last_state.active_planet()
+                eta_payload = build_buildings_eta(self._last_state, planet)
+                co_goals = self._get_config_optimizer_building_goals_locked()
+                if isinstance(eta_payload, dict):
+                    eta_payload["config_optimizer_goals"] = co_goals
                 return _sanitize_finite_json(
                     {
                         "ok": True,
                         "command": cmd,
-                        "buildings_eta": _redact_api_payload(build_buildings_eta(self._last_state, planet)),
+                        "buildings_eta": _redact_api_payload(eta_payload),
+                        "config_optimizer_goals": _redact_api_payload(co_goals),
                     }
                 )
 
@@ -12657,11 +12817,16 @@ class GameApiBridge:
                             max_val=2**63 - 1,
                         )
                         planet = self._resolve_planet(state, pid) if pid is not None else state.active_planet()
+                        eta_payload = build_buildings_eta(state, planet)
+                        co_goals = self._get_config_optimizer_building_goals_locked()
+                        if isinstance(eta_payload, dict):
+                            eta_payload["config_optimizer_goals"] = co_goals
                         return _sanitize_finite_json(
                             {
                                 "ok": True,
                                 "command": cmd,
-                                "buildings_eta": _redact_api_payload(build_buildings_eta(state, planet)),
+                                "buildings_eta": _redact_api_payload(eta_payload),
+                                "config_optimizer_goals": _redact_api_payload(co_goals),
                             }
                         )
 
@@ -13390,6 +13555,33 @@ class GameApiBridge:
                             executable_now=True,
                         )
                         if not dry_run:
+                            if bool(getattr(self.strategy_config, "spy_reserved_slots_only", False)):
+                                max_spy_sl_live = 1 + max(0, planet.building_level(10))
+                                spy_cap_live = min(
+                                    max_spy_sl_live,
+                                    max(0, _safe_api_int(getattr(self.strategy_config, "reserved_spy_slots", 1), 1)),
+                                )
+                                spy_used_live = count_in_flight_spy_fleets_for_planet(state, planet)
+                                if spy_used_live >= spy_cap_live:
+                                    return _sanitize_finite_json(
+                                        _redact_api_payload(
+                                            {
+                                                "ok": True,
+                                                "command": cmd,
+                                                "executed": False,
+                                                "validated": True,
+                                                "dry_run": dry_run,
+                                                "message": (
+                                                    f"Aborted: Spy restricted to reserved slot(s) "
+                                                    f"({spy_used_live}/{spy_cap_live} spy slots in use on [{planet.coords}])."
+                                                ),
+                                                "action": self._serialize_action(
+                                                    replace(planned, executable_now=False), state
+                                                ),
+                                                "next_action": None,
+                                            }
+                                        )
+                                    )
                             now_spy_s = time.time()
                             spy_trow = next(
                                 (

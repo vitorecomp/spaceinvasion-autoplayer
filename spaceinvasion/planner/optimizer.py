@@ -54,6 +54,7 @@ from spaceinvasion.core.state import (
     UnitOffer,
     _parse_cost_from_text,
     count_in_flight_fleets_for_planet,
+    count_in_flight_spy_fleets_for_planet,
     extract_in_flight_colonize_coords,
     has_in_flight_fleet_from_planet,
     is_asteroid_planet,
@@ -7636,9 +7637,17 @@ def _materialize_planned_actions(
     used_slots_by_pid_opt: dict[int, int] = {
         p.planet_id: count_in_flight_fleets_for_planet(state, p) for p in state.planets
     }
+    used_spy_slots_by_pid_opt: dict[int, int] = {
+        p.planet_id: count_in_flight_spy_fleets_for_planet(state, p) for p in state.planets
+    }
 
     def _opt_used_slots_for(p_obj: PlanetState) -> int:
         return used_slots_by_pid_opt.get(p_obj.planet_id, count_in_flight_fleets_for_planet(state, p_obj))
+
+    def _opt_used_spy_slots_for(p_obj: PlanetState) -> int:
+        return used_spy_slots_by_pid_opt.get(
+            p_obj.planet_id, count_in_flight_spy_fleets_for_planet(state, p_obj)
+        )
 
     used_fleet_slots_opt = sum(1 for q in (state.active_queues or ()) if is_in_flight_fleet_job(q))
     own_fleet_in_flight = used_fleet_slots_opt > 0
@@ -9783,6 +9792,29 @@ def _materialize_planned_actions(
     from spaceinvasion.planner.strategy import plan_interplanet_stationing, plan_interplanet_transports
 
     res_spy_opt = max(0, _safe_int(getattr(cfg, "reserved_spy_slots", 1), 1))
+    spy_only_res_opt = bool(getattr(cfg, "spy_reserved_slots_only", False))
+
+    if spy_only_res_opt:
+        spy_dispatch_by_pid_opt: dict[int, int] = {}
+        for idx_sp, act_sp in enumerate(plan):
+            if act_sp.kind != "SPY" or act_sp.priority == "P3":
+                continue
+            p_sp = planet_map.get(act_sp.planet_id, active)
+            max_sl_sp = 1 + max(0, p_sp.building_level(10))
+            spy_cap_sp = min(max_sl_sp, res_spy_opt)
+            spy_used_sp = _opt_used_spy_slots_for(p_sp) + spy_dispatch_by_pid_opt.get(p_sp.planet_id, 0)
+            if act_sp.executable_now:
+                if spy_used_sp >= spy_cap_sp:
+                    rsn_sp = act_sp.reason
+                    if "restricted to reserved" not in rsn_sp.lower():
+                        rsn_sp = (
+                            f"{rsn_sp} [Hold: Spy restricted to reserved slot(s) "
+                            f"({spy_used_sp}/{spy_cap_sp} spy slots used)]"
+                        )
+                    plan[idx_sp] = replace(act_sp, executable_now=False, reason=rsn_sp)
+                else:
+                    spy_dispatch_by_pid_opt[p_sp.planet_id] = spy_dispatch_by_pid_opt.get(p_sp.planet_id, 0) + 1
+
     spy_pids_opt = {
         a_s.planet_id
         for a_s in plan
@@ -9795,7 +9827,12 @@ def _materialize_planned_actions(
             and _safe_int(p_obj.ships.get("s10", 0), 0) > 0
             and p_obj.planet_id in spy_pids_opt
         )
-        return min(res_spy_opt, max(0, (1 + max(0, p_obj.building_level(10))) - 1)) if has_dem else 0
+        if not has_dem:
+            return 0
+        base_res = min(res_spy_opt, max(0, (1 + max(0, p_obj.building_level(10))) - 1))
+        if spy_only_res_opt:
+            return max(0, base_res - _opt_used_spy_slots_for(p_obj))
+        return base_res
 
     raw_transports_opt = plan_interplanet_transports(state, cfg, plan, now_ts=live_now_ts)
     tr_dispatch_by_pid_opt: dict[int, int] = {}

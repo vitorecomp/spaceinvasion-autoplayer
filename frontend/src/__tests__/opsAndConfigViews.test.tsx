@@ -1403,5 +1403,23 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
         (c) => c.command === "rename_planet" && c.planet_id === 12476 && c.name === "Citadel Prime"
       )
     ).toBe(true);
+
+    // 7. ConfigView renders spy_reserved_slots_only toggle and saves it via update_config
+    const spyResOnlyCheckbox = configView.querySelector(
+      "#cfg-spy_reserved_slots_only"
+    ) as HTMLInputElement | null;
+    expect(spyResOnlyCheckbox).not.toBeNull();
+    expect(spyResOnlyCheckbox?.checked).toBe(false);
+    fireEvent.click(spyResOnlyCheckbox!);
+    expect(spyResOnlyCheckbox?.checked).toBe(true);
+    const saveCfgBtn = configView.querySelector("#btn-save-config") as HTMLButtonElement;
+    fireEvent.click(saveCfgBtn);
+    await waitFor(() => {
+      expect(
+        postedCommands.some(
+          (c) => c.command === "update_config" && c.config?.spy_reserved_slots_only === true
+        )
+      ).toBe(true);
+    });
   });
 });

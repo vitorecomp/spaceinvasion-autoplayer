@@ -1808,6 +1808,33 @@ def count_in_flight_fleets_for_planet(state: Any, planet: Any) -> int:
     return count
 
 
+_SPY_QUEUE_MARKERS = ("spy", "spio", "espionage", "probe")
+
+
+def is_in_flight_spy_job(job: Any) -> bool:
+    """Return True when an in-flight fleet QueueJob represents a SPY / espionage probe mission."""
+    if not is_in_flight_fleet_job(job):
+        return False
+    txt = f"{getattr(job, 'name', '') or ''} {getattr(job, 'detail', '') or ''}".lower()
+    return any(tok in txt for tok in _SPY_QUEUE_MARKERS)
+
+
+def count_in_flight_spy_fleets_for_planet(state: Any, planet: Any) -> int:
+    """Count active in-flight SPY probe fleet slots currently occupied on `planet`."""
+    norm_p = _normalize_queue_coords(getattr(planet, "coords", "") if planet is not None else "")
+    count = 0
+    for q in getattr(state, "active_queues", ()) or ():
+        if not is_in_flight_spy_job(q):
+            continue
+        q_orig = _normalize_queue_coords(getattr(q, "origin_coords", "") or "")
+        if q_orig and norm_p:
+            if q_orig == norm_p:
+                count += 1
+        else:
+            count += 1
+    return count
+
+
 def has_in_flight_fleet_from_planet(state: Any, planet: Any) -> bool:
     """Return True when `planet` itself has an active in-flight/returning fleet."""
     return count_in_flight_fleets_for_planet(state, planet) > 0

@@ -485,6 +485,7 @@ class StrategyConfig:
     galaxy_scan_near_weight: float = 2.0
     galaxy_scan_attack_weight: float = 3.0
     reserved_spy_slots: int = 1
+    spy_reserved_slots_only: bool = False
     spy_dispatch_planet_id: int = 0
     planner_mode: str = "priority"  # "priority" | "ai_planner" | "ga_nn"
     ai_resource_spare_pct: float = 10.0
@@ -1259,6 +1260,7 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
             0.0, min(20.0, _safe_cfg_float(data.get("galaxy_scan_attack_weight"), 3.0))
         ),
         reserved_spy_slots=max(0, min(10, _safe_cfg_int(data.get("reserved_spy_slots"), 1))),
+        spy_reserved_slots_only=_safe_cfg_bool(data.get("spy_reserved_slots_only"), False),
         spy_dispatch_planet_id=max(0, _safe_cfg_int(data.get("spy_dispatch_planet_id"), 0)),
         planner_mode=normalize_planner_mode(raw_mode),
         ai_resource_spare_pct=max(
@@ -1490,6 +1492,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
     scan_near_weight = max(0.0, min(20.0, _safe_cfg_float(cfg.galaxy_scan_near_weight, 2.0)))
     scan_attack_weight = max(0.0, min(20.0, _safe_cfg_float(cfg.galaxy_scan_attack_weight, 3.0)))
     res_spy_slots = max(0, min(10, _safe_cfg_int(cfg.reserved_spy_slots, 1)))
+    spy_res_only = _safe_cfg_bool(getattr(cfg, "spy_reserved_slots_only", False), False)
     spy_disp_pid = max(0, _safe_cfg_int(cfg.spy_dispatch_planet_id, 0))
     planner_mode = normalize_planner_mode(cfg.planner_mode)
     ai_spare_pct = max(
@@ -1555,6 +1558,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         f"galaxy_scan_near_weight: {scan_near_weight}",
         f"galaxy_scan_attack_weight: {scan_attack_weight}",
         f"reserved_spy_slots: {res_spy_slots}",
+        f"spy_reserved_slots_only: {'true' if spy_res_only else 'false'}",
         f"spy_dispatch_planet_id: {spy_disp_pid}",
         f"planner_mode: {planner_mode}",
         f"ai_resource_spare_pct: {ai_spare_pct}",
