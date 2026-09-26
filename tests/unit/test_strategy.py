@@ -4911,5 +4911,529 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertTrue(any(a.kind == "RECYCLE" for a in acts_tut_r))
 
 
+def _adaptive_cfg(enabled: bool = True, **kwargs) -> StrategyConfig:
+    """StrategyConfig with `ai_adaptive_execution` set (works before and after the config field lands)."""
+    try:
+        return StrategyConfig(ai_adaptive_execution=enabled, **kwargs)  # type: ignore[call-arg]
+    except TypeError:
+        cfg = StrategyConfig(**kwargs)
+        object.__setattr__(cfg, "ai_adaptive_execution", enabled)
+        return cfg
+
+
+def _colony(
+    pid: int,
+    coords: str,
+    *,
+    metal: int = 10_000,
+    pig: int = 60_000,
+    b2: int = 10,
+    b2_pct: int = 0,
+    ships: dict[str, int] | None = None,
+    buildings: dict[str, int] | None = None,
+    metal_storage: int = 500_000,
+    pig_storage: int = 500_000,
+) -> PlanetState:
+    blds = {"b1": 16, "b2": b2, "b3": 4, "b4": 4, "b5": 14}
+    blds.update(buildings or {})
+    return PlanetState(
+        planet_id=pid,
+        name=f"Colony{pid}",
+        coords=coords,
+        planet_type="normal",
+        temperature=25,
+        fields_used=70,
+        fields_max=300,
+        resources=Resources(pig_iron=pig, metal=metal, kryptonite=50_000, spice=10_000),
+        storage=Resources(pig_storage, metal_storage, 500_000, 500_000),
+        energy=EnergyBalance(produced=4000, used=1500),
+        buildings=blds,
+        ships=dict(ships or {}),
+        economy_rates={"resource1": 100, "resource2": b2_pct, "resource3": 100, "resource4": 100},
+    )
+
+
+def _ai_step(pid: int, coords: str, metal: int, *, kind: str = "WAIT_RESOURCES", name: str = "Kryptonite mine",
+             pig: int = 0, ready: bool = False, priority: str = "P1") -> PlannedAction:
+    return PlannedAction(
+        priority=priority,
+        kind=kind,
+        planet_id=pid,
+        planet_coords=coords,
+        target_id=3,
+        target_name=name,
+        target_level=15,
+        cost=Resources(pig_iron=pig, metal=metal, kryptonite=0, spice=0),
+        missing=Resources() if ready else Resources(pig_iron=0, metal=max(1, metal), kryptonite=0, spice=0),
+        reason=f"AI-Planner: {name}",
+        executable_now=ready,
+    )
+
+
+def _state(planets: tuple[PlanetState, ...], *, queues: tuple[QueueJob, ...] = (), researches=None) -> GameState:
+    return GameState(
+        universe_id=31,
+        user_id=1,
+        nickname="cmdr",
+        timestamp=5000.0,
+        planets=planets,
+        active_planet_id=planets[0].planet_id,
+        researches=dict(researches or {"r1": 8}),
+        active_queues=queues,
+    )
+
+
+class TestAdaptiveBlastFurnace(unittest.TestCase):
+    """Plan v2 Step 1: per-colony (+ donor) Blast furnace control behind `ai_adaptive_execution`."""
+
+    def setUp(self) -> None:
+        from spaceinvasion.planner.strategy import plan_ai_blast_furnace_throttles
+
+        self.plan = plan_ai_blast_furnace_throttles
+        self.base_kwargs = dict(
+            planner_mode="ai_planner",
+            allow_multi_planet=True,
+            allow_transport=True,
+            auto_throttle_blast_furnace=True,
+            merchant_mode=False,
+        )
+        self.cfg = _adaptive_cfg(True, **self.base_kwargs)
+        self.cfg_off = _adaptive_cfg(False, **self.base_kwargs)
+
+    def _by_pid(self, acts):
+        return {a.planet_id: a for a in acts}
+
+    def test_per_colony_on_and_off(self) -> None:
+        short = _colony(901, "02:380:04", metal=10_000, b2_pct=0)
+        covered = _colony(902, "02:380:08", metal=20_000, b2_pct=100)
+        idle = _colony(903, "02:380:09", metal=5_000, b2_pct=100)
+        st = _state((short, covered, idle))
+        ai = [
+            _ai_step(901, "02:380:04", 50_000),
+            _ai_step(902, "02:380:08", 5_000),
+        ]
+        acts = self._by_pid(self.plan(st, ai, [], self.cfg, now_ts=5000.0))
+        self.assertEqual(acts[901].target_level, 100)
+        self.assertEqual(acts[901].priority, "P1")
+        self.assertIn("on this colony", acts[901].reason)
+        self.assertEqual(acts[902].target_level, 0)
+        self.assertEqual(acts[902].priority, "P2")
+        self.assertEqual(acts[903].target_level, 0)
+        self.assertIn("idle", acts[903].reason)
+
+        # Same state with the switch off follows today's empire rule (reserved step #1 short on empire
+        # Metal -> every colony smelts, so the covered/idle colonies are NOT turned off).
+        acts_off = self._by_pid(self.plan(st, ai, [], self.cfg_off, now_ts=5000.0))
+        self.assertEqual(set(acts_off), {901})
+        self.assertEqual(acts_off[901].target_level, 100)
+
+    def test_lab_research_and_build_combined_need(self) -> None:
+        lab = _colony(901, "02:380:04", metal=30_000, b2_pct=0)
+        st = _state((lab,))
+        build_only = [_ai_step(901, "02:380:04", 20_000)]
+        self.assertEqual(self.plan(st, build_only, [], self.cfg, now_ts=5000.0), [])
+        combined = [
+            _ai_step(901, "02:380:04", 20_000),
+            _ai_step(901, "02:380:04", 20_000, kind="RESEARCH", name="Mining technology"),
+        ]
+        acts = self.plan(st, combined, [], self.cfg, now_ts=5000.0)
+        self.assertEqual(len(acts), 1)
+        self.assertEqual(acts[0].target_level, 100)
+        self.assertIn("10,000", acts[0].reason)
+
+        # Ready local steps consume local Metal first.
+        with_ready = [_ai_step(901, "02:380:04", 25_000, ready=True), _ai_step(901, "02:380:04", 10_000)]
+        acts_ready = self.plan(st, with_ready, [], self.cfg, now_ts=5000.0)
+        self.assertEqual([a.target_level for a in acts_ready], [100])
+
+    def test_inbound_cargo_covers_gap(self) -> None:
+        p_off = _colony(901, "02:380:04", metal=10_000, b2_pct=0)
+        p_on = replace(p_off, economy_rates={"resource2": 100})
+        ai = [_ai_step(901, "02:380:04", 50_000)]
+        inbound = {901: Resources(pig_iron=0, metal=40_000, kryptonite=0, spice=0)}
+        self.assertEqual(
+            self.plan(_state((p_off,)), ai, [], self.cfg, now_ts=5000.0, inbound_cargo_by_planet=inbound), []
+        )
+        acts = self.plan(_state((p_on,)), ai, [], self.cfg, now_ts=5000.0, inbound_cargo_by_planet={901: {"metal": 40_000}})
+        self.assertEqual([a.target_level for a in acts], [0])
+        # Partial inbound leaves a gap -> ON.
+        acts_gap = self.plan(_state((p_off,)), ai, [], self.cfg, now_ts=5000.0, inbound_cargo_by_planet={901: 30_000})
+        self.assertEqual([a.target_level for a in acts_gap], [100])
+        # Fallback: parse friendly flights to this colony when no map is passed.
+        flight = QueueJob(
+            category="fleet",
+            name="Transport → [02:380:04] Colony901",
+            remaining_seconds=1200.0,
+            origin_coords="02:380:08",
+            cargo=Resources(pig_iron=0, metal=40_000, kryptonite=0, spice=0),
+        )
+        self.assertEqual(self.plan(_state((p_off,), queues=(flight,)), ai, [], self.cfg, now_ts=5000.0), [])
+
+    def test_busy_queue_delays_turn_on_but_never_flaps_running_furnace(self) -> None:
+        from spaceinvasion.core import game_data
+
+        p_off = _colony(901, "02:380:04", metal=10_000, b2_pct=0)
+        ai = [_ai_step(901, "02:380:04", 11_000)]  # 1,000 Metal gap
+        metal_per_h = game_data.blast_furnace_pig_iron_used(10) / 2.0
+        smelt_sec = 1_000 / metal_per_h * 3600.0
+        busy = self.plan(
+            _state((p_off,)), ai, [], self.cfg, now_ts=5000.0,
+            in_progress_rem_by_planet={901: smelt_sec * 2.0},
+        )
+        self.assertEqual(busy, [])
+        soon = self.plan(
+            _state((p_off,)), ai, [], self.cfg, now_ts=5000.0,
+            in_progress_rem_by_planet={901: smelt_sec * 0.5},
+        )
+        self.assertEqual([a.target_level for a in soon], [100])
+        # Already smelting: stays ON (no 0% action) even while the queue is busy.
+        p_on = replace(p_off, economy_rates={"resource2": 100})
+        self.assertEqual(
+            self.plan(_state((p_on,)), ai, [], self.cfg, now_ts=5000.0, in_progress_rem_by_planet={901: 1e9}), []
+        )
+        # Partial % with a gap is raised to 100%.
+        p_part = replace(p_off, economy_rates={"resource2": 40})
+        acts_part = self.plan(_state((p_part,)), ai, [], self.cfg, now_ts=5000.0, in_progress_rem_by_planet={901: 1e9})
+        self.assertEqual([a.target_level for a in acts_part], [100])
+
+    def test_donor_arm(self) -> None:
+        needy = _colony(901, "02:380:04", metal=0, b2=0)
+        donor = _colony(902, "02:380:08", metal=5_000, pig=60_000, b2_pct=0, ships={"s1": 2})
+        st = _state((needy, donor))
+        ai = [_ai_step(901, "02:380:04", 80_000)]
+        self.assertEqual(self.plan(st, ai, [], self.cfg, now_ts=5000.0), [])
+        acts = self.plan(st, ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True)
+        self.assertEqual([(a.planet_id, a.target_level) for a in acts], [(902, 100)])
+        self.assertIn("donor", acts[0].reason)
+        # No transport hulls (parked or flying) -> no donor smelting.
+        st_no_hulls = _state((needy, replace(donor, ships={})))
+        self.assertEqual(self.plan(st_no_hulls, ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True), [])
+        # Hulls in flight from the donor count.
+        flight = QueueJob(
+            category="fleet",
+            name="Transport → 02:380:04",
+            remaining_seconds=900.0,
+            origin_coords="02:380:08",
+            detail="Outbound · 3 Small transport",
+            cargo=Resources(),
+        )
+        st_flying = _state((needy, replace(donor, ships={})), queues=(flight,))
+        acts_fly = self.plan(st_flying, ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True)
+        self.assertEqual([(a.planet_id, a.target_level) for a in acts_fly], [(902, 100)])
+        # Low Pig iron -> no donor smelting.
+        st_low_pig = _state((needy, replace(donor, resources=Resources(10_000, 5_000, 0, 0))))
+        self.assertEqual(self.plan(st_low_pig, ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True), [])
+        # Empire pool already covers the need -> no donor smelting.
+        rich = replace(donor, resources=Resources(60_000, 90_000, 0, 0))
+        self.assertEqual(self.plan(_state((needy, rich)), ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True), [])
+
+    def test_metal_overflow_pause_and_resume_unchanged(self) -> None:
+        full = _colony(901, "02:380:04", metal=500_000, b2_pct=100)
+        ai = [_ai_step(901, "02:380:04", 900_000)]
+        acts = self.plan(_state((full,)), ai, [], self.cfg, now_ts=5000.0)
+        self.assertEqual([(a.target_level, a.priority) for a in acts], [(0, "P1")])
+        self.assertIn("Metal storage full", acts[0].reason)
+        # Paused + Metal < 95% + colony still short -> immediate resume, bypassing cooldown.
+        drained = _colony(901, "02:380:04", metal=100_000, b2_pct=0)
+        acts_res = self.plan(
+            _state((drained,)), ai, [], self.cfg, now_ts=5000.0,
+            metal_overflow_paused=(901,), throttle_cooldowns={901: 4990.0},
+        )
+        self.assertEqual([a.target_level for a in acts_res], [100])
+        self.assertIn("auto-resume", acts_res[0].reason)
+        # Paused + 95..100% band -> hold.
+        band = _colony(901, "02:380:04", metal=480_000, b2_pct=0)
+        self.assertEqual(
+            self.plan(_state((band,)), ai, [], self.cfg, now_ts=5000.0, metal_overflow_paused=(901,)), []
+        )
+        # Cooldown still applies to normal transitions.
+        self.assertEqual(
+            self.plan(_state((drained,)), ai, [], self.cfg, now_ts=5000.0, throttle_cooldowns={901: 4990.0}), []
+        )
+        # Master toggles unchanged.
+        cfg_manual = _adaptive_cfg(True, **{**self.base_kwargs, "auto_throttle_blast_furnace": False})
+        self.assertEqual(self.plan(_state((drained,)), ai, [], cfg_manual, now_ts=5000.0), [])
+
+    def test_switch_off_ignores_new_inputs(self) -> None:
+        needy = _colony(901, "02:380:04", metal=0, b2=0)
+        donor = _colony(902, "02:380:08", metal=5_000, b2_pct=0, ships={"s1": 2})
+        st = _state((needy, donor))
+        ai = [_ai_step(901, "02:380:04", 80_000)]
+        baseline = self.plan(st, ai, [], StrategyConfig(**self.base_kwargs), now_ts=5000.0)
+        with_new = self.plan(
+            st, ai, [], self.cfg_off, now_ts=5000.0,
+            inbound_cargo_by_planet={901: {"metal": 1_000_000}},
+            in_progress_rem_by_planet={902: 1e9},
+            enable_donor_smelting=True,
+        )
+        self.assertEqual(baseline, with_new)
+        self.assertEqual([(a.planet_id, a.target_level) for a in baseline], [(902, 100)])
+
+
+class TestAdaptiveInFlightHulls(unittest.TestCase):
+    """Plan v2 Step 3: ships in flight count as owned behind `ai_adaptive_execution`."""
+
+    def setUp(self) -> None:
+        self.yard = _colony(
+            701, "02:380:05", b2=0, ships={"s1": 2}, buildings={"b9": 4}, metal=100_000,
+        )
+        self.offers = {
+            1: UnitOffer(
+                unit_type="ship", unit_id=1, name="Small transport", owned=2,
+                cost=Resources(0, 3000, 3000, 0), can_build=True,
+            )
+        }
+        self.cfg_kwargs = dict(allow_shipyard=True, shipyard_targets={"small-transport": 6})
+
+    def _flight(self, detail: str, *, origin: str = "02:380:05", name: str = "Transport → 02:380:09") -> QueueJob:
+        return QueueJob(category="fleet", name=name, remaining_seconds=600.0, origin_coords=origin, detail=detail)
+
+    def _ships(self, st, cfg):
+        from spaceinvasion.planner.strategy import _plan_planet_shipyard_targets
+
+        return [a for a in _plan_planet_shipyard_targets(st, st.planets[0], self.offers, cfg) if a.target_id == 1]
+
+    def test_in_flight_hulls_counted_and_hold_dropped(self) -> None:
+        st = _state((self.yard,), queues=(self._flight("Outbound · 2 Small transport"),), researches={"r4": 4})
+        off = self._ships(st, _adaptive_cfg(False, **self.cfg_kwargs))
+        self.assertEqual(len(off), 1)
+        self.assertIn("hold while own fleet is in transit", off[0].reason)
+        self.assertFalse(off[0].executable_now)
+        on = self._ships(st, _adaptive_cfg(True, **self.cfg_kwargs))
+        self.assertEqual(len(on), 1)
+        self.assertNotIn("hold while own fleet", on[0].reason)
+        self.assertIn("(4/6 Small transport)", on[0].reason)
+        self.assertTrue(on[0].executable_now)
+
+    def test_no_overbuild_when_whole_fleet_is_out(self) -> None:
+        yard_empty = replace(self.yard, ships={})
+        st = _state((yard_empty,), queues=(self._flight("Outbound · 6 Small transport"),), researches={"r4": 4})
+        self.assertEqual(self._ships(st, _adaptive_cfg(True, **self.cfg_kwargs)), [])
+
+    def test_truncated_detail_keeps_hold(self) -> None:
+        long_detail = "Outbound · 2 Small transport, " + ", ".join(["1 Spy probe"] * 12)
+        long_detail = long_detail[:150]
+        st = _state((self.yard,), queues=(self._flight(long_detail),), researches={"r4": 4})
+        on = self._ships(st, _adaptive_cfg(True, **self.cfg_kwargs))
+        self.assertEqual(len(on), 1)
+        self.assertIn("hold while own fleet is in transit", on[0].reason)
+        self.assertFalse(on[0].executable_now)
+        # Missing composition also keeps the hold.
+        st_bare = _state((self.yard,), queues=(self._flight("Outbound"),), researches={"r4": 4})
+        bare = self._ships(st_bare, _adaptive_cfg(True, **self.cfg_kwargs))
+        self.assertIn("hold while own fleet is in transit", bare[0].reason)
+
+    def test_station_flight_counts_for_destination(self) -> None:
+        dest = _colony(702, "02:380:09", b2=0, ships={}, buildings={"b9": 4})
+        st = _state(
+            (self.yard, dest),
+            queues=(self._flight("Outbound · 4 Small transport", name="Station → 02:380:09"),),
+            researches={"r4": 4},
+        )
+        from spaceinvasion.planner.strategy import _in_flight_ship_counts
+
+        counts = _in_flight_ship_counts(st)
+        self.assertEqual(counts["by_planet_id"].get(702, {}).get("s1"), 4)
+        self.assertEqual(counts["empire_in_flight"].get("s1"), 4)
+
+    def test_unlock_advisory_ship_targets_count_in_flight(self) -> None:
+        from spaceinvasion.planner.strategy import _plan_unlock_and_advisory_actions
+
+        st = _state((self.yard,), queues=(self._flight("Outbound · 4 Small transport"),), researches={"r4": 4})
+
+        def _run(cfg):
+            _, adv = _plan_unlock_and_advisory_actions(
+                st, self.yard, dict(self.yard.buildings), {}, {}, self.offers, False, False, False, cfg,
+            )
+            return [a for a in adv if a.kind == "BUILD_SHIP" and a.target_id == 1]
+
+        off = _run(_adaptive_cfg(False, **self.cfg_kwargs))
+        self.assertEqual(len(off), 1)
+        self.assertIn("hold while own fleet", off[0].reason)
+        self.assertEqual(_run(_adaptive_cfg(True, **self.cfg_kwargs)), [])
+
+    def test_urgency_counts_in_flight_ships(self) -> None:
+        from spaceinvasion.planner.strategy import compute_spare_ship_budget
+
+        empty = replace(self.yard, ships={"s4": 3})
+        st = _state(
+            (empty,),
+            queues=(self._flight("Outbound · 3 Small transport, 2 Spy probe"),),
+        )
+        off = compute_spare_ship_budget(st, 10.0)
+        self.assertEqual(set(off["urgent_zero_count_ships"]), {"s10", "s1", "s2"})
+        on = compute_spare_ship_budget(st, 10.0, adaptive_execution=True)
+        self.assertEqual(on["urgent_zero_count_ships"], [])
+        via_cfg = compute_spare_ship_budget(st, 10.0, config=_adaptive_cfg(True))
+        self.assertEqual(via_cfg["urgent_zero_count_ships"], [])
+
+
+class TestAdaptiveTransportFleet(unittest.TestCase):
+    """Plan v2 Step 4a: plan-sized transport fleet and 25% income funding cap."""
+
+    DEMAND = {"cargo_per_hour_24h": 858_000.0, "round_trips_per_hour": 2.8, "realized_utilization": 0.5}
+
+    def _yards(self, *, s2_ready: int = 3, s1_only: int = 1, parked_s1: int = 14):
+        planets = []
+        pid = 801
+        for i in range(s2_ready):
+            planets.append(_colony(pid, f"02:381:{i + 1:02d}", b2=0, buildings={"b9": 6},
+                                   ships={"s1": parked_s1 if i == 0 else 0}, metal=200_000))
+            pid += 1
+        for i in range(s1_only):
+            planets.append(_colony(pid, f"02:382:{i + 1:02d}", b2=0, buildings={"b9": 4}, metal=200_000))
+            pid += 1
+        return tuple(planets)
+
+    def test_target_capacity_math_and_even_s2_split(self) -> None:
+        import math
+
+        from spaceinvasion.planner.strategy import compute_infra_transport_targets
+
+        planets = self._yards()
+        st = _state(planets, researches={"r4": 6})
+        targets = compute_infra_transport_targets(st, _adaptive_cfg(True), self.DEMAND)
+        target_cargo = math.ceil(858_000.0 / 2.8 / 0.5)
+        n_s2 = math.ceil((target_cargo - 14 * 6_000) / 30_000)
+        self.assertEqual(n_s2, 18)
+        self.assertEqual(set(targets), {801, 802, 803})  # s1-only colony 804 gets no s2 share
+        self.assertEqual(sum(t["large-transport"] for t in targets.values()), n_s2)
+        self.assertEqual(sorted(t["large-transport"] for t in targets.values()), [6, 6, 6])
+
+        # Uneven split stays exact (no per-colony full-deficit overbuild).
+        demand_small = {"cargo_per_hour_24h": 300_000.0, "round_trips_per_hour": 2.5, "utilization_assumed": 0.5}
+        t2 = compute_infra_transport_targets(st, _adaptive_cfg(True), demand_small)
+        n2 = math.ceil((math.ceil(300_000 / 2.5 / 0.5) - 84_000) / 30_000)
+        self.assertEqual(sum(t["large-transport"] for t in t2.values()), n2)
+        self.assertLessEqual(max(t["large-transport"] for t in t2.values()) - min(t["large-transport"] for t in t2.values()), 1)
+
+        # Switch off / no demand / covered fleet -> no targets.
+        self.assertEqual(compute_infra_transport_targets(st, _adaptive_cfg(False), self.DEMAND), {})
+        self.assertEqual(compute_infra_transport_targets(st, _adaptive_cfg(True), None), {})
+        self.assertEqual(
+            compute_infra_transport_targets(st, _adaptive_cfg(True), {"cargo_per_hour_24h": 50_000.0}), {}
+        )
+
+    def test_in_flight_and_utilization_clamps(self) -> None:
+        from spaceinvasion.planner.strategy import compute_infra_transport_targets
+
+        planets = self._yards(s2_ready=1, s1_only=0, parked_s1=0)
+        flight = QueueJob(
+            category="fleet", name="Transport → 02:390:01", remaining_seconds=600.0,
+            origin_coords="02:381:01", detail="Outbound · 4 Large transport",
+        )
+        st = _state(planets, queues=(flight,), researches={"r4": 6})
+        # util clamps to 0.9 -> ceil(270000/2.5/0.9) = 120000 cargo; 4 s2 in flight already cover it.
+        demand = {"cargo_per_hour_24h": 270_000.0, "round_trips_per_hour": 2.5, "realized_utilization": 5.0}
+        self.assertEqual(compute_infra_transport_targets(st, _adaptive_cfg(True), demand), {})
+        demand_more = {**demand, "cargo_per_hour_24h": 405_000.0}  # 180000 cargo -> 2 more s2 (target 4 flying + 2)
+        self.assertEqual(
+            compute_infra_transport_targets(st, _adaptive_cfg(True), demand_more), {801: {"large-transport": 6}}
+        )
+
+    def test_small_transport_fallback_when_no_s2_colony(self) -> None:
+        import math
+
+        from spaceinvasion.planner.strategy import compute_infra_transport_targets
+
+        planets = self._yards()
+        st = _state(planets, researches={"r4": 5})  # Rocket engine 5 < 6 -> no Large transport anywhere
+        targets = compute_infra_transport_targets(st, _adaptive_cfg(True), self.DEMAND)
+        n_s1 = math.ceil((math.ceil(858_000.0 / 2.8 / 0.5) - 84_000) / 6_000)
+        self.assertEqual(set(targets), {801, 802, 803, 804})
+        self.assertTrue(all(set(t) == {"small-transport"} for t in targets.values()))
+        total_new = sum(t["small-transport"] for t in targets.values()) - 14  # 801 already parks 14
+        self.assertEqual(total_new, n_s1)
+
+    def test_shipyard_targets_tag_and_floor(self) -> None:
+        from spaceinvasion.planner.strategy import AI_INFRA_CARGO_TAG, _plan_planet_shipyard_targets
+
+        planets = self._yards(s2_ready=1, s1_only=0, parked_s1=0)
+        st = _state(planets, researches={"r4": 6})
+        offers = {2: UnitOffer("ship", 2, "Large transport", 0, Resources(0, 8000, 6000, 0), True)}
+        demand = {"cargo_per_hour_24h": 150_000.0, "round_trips_per_hour": 2.5, "realized_utilization": 0.5}
+        # 120000 cargo -> 4 Large transports
+        cfg_on = _adaptive_cfg(True, allow_shipyard=True, shipyard_targets={"large-transport": 1})
+        acts = _plan_planet_shipyard_targets(st, planets[0], offers, cfg_on, transport_demand=demand)
+        s2 = [a for a in acts if a.target_id == 2]
+        self.assertEqual(len(s2), 1)
+        self.assertIn(AI_INFRA_CARGO_TAG, s2[0].reason)
+        self.assertIn("(0/4 Large transport)", s2[0].reason)
+        # Configured floor above the plan target wins (no tag).
+        cfg_floor = _adaptive_cfg(True, allow_shipyard=True, shipyard_targets={"large-transport": 10})
+        acts_floor = _plan_planet_shipyard_targets(st, planets[0], offers, cfg_floor, transport_demand=demand)
+        s2_floor = [a for a in acts_floor if a.target_id == 2]
+        self.assertIn("(0/10 Large transport)", s2_floor[0].reason)
+        self.assertNotIn(AI_INFRA_CARGO_TAG, s2_floor[0].reason)
+        # Switch off -> demand ignored.
+        cfg_off = _adaptive_cfg(False, allow_shipyard=True, shipyard_targets={"large-transport": 1})
+        acts_off = _plan_planet_shipyard_targets(st, planets[0], offers, cfg_off, transport_demand=demand)
+        s2_off = [a for a in acts_off if a.target_id == 2]
+        self.assertIn("(0/1 Large transport)", s2_off[0].reason)
+        self.assertNotIn(AI_INFRA_CARGO_TAG, s2_off[0].reason)
+
+    def test_infra_budget_cap_and_filter_funding(self) -> None:
+        from spaceinvasion.planner.strategy import (
+            AI_INFRA_CARGO_TAG,
+            compute_spare_ship_budget,
+            filter_shipyard_actions_by_spare_budget,
+        )
+
+        planets = self._yards(s2_ready=1, s1_only=0)
+        st = _state(planets, researches={"r4": 6})
+        econ = {"pig_iron_per_hr": 0.0, "metal_per_hr": 40_000.0, "kryptonite_per_hr": 20_000.0, "spice_per_hr": 0.0}
+        with mock.patch("spaceinvasion.combat.ranking.estimate_hourly_economy", return_value=econ):
+            budget = compute_spare_ship_budget(st, 10.0)
+            budget_tight = compute_spare_ship_budget(
+                st, 10.0, reserved_cost={"metal": 195_000.0, "kryptonite": 48_000.0},
+            )
+        self.assertAlmostEqual(budget["infra_transport_budget"]["metal"], 10_000.0)  # 25% of 40k/h
+        self.assertAlmostEqual(budget["infra_transport_budget"]["kryptonite"], 5_000.0)
+        self.assertAlmostEqual(budget["available_budget"]["metal"], 4_000.0)  # 10% spare unchanged
+        # Bounded by free stock above reserve.
+        self.assertAlmostEqual(budget_tight["infra_transport_budget"]["metal"], 5_000.0)
+        self.assertAlmostEqual(budget_tight["infra_transport_budget"]["kryptonite"], 2_000.0)
+
+        def _s2(tag: bool) -> PlannedAction:
+            return PlannedAction(
+                priority="P2", kind="BUILD_SHIP", planet_id=801, planet_coords="02:381:01",
+                target_id=2, target_name="Large transport", target_level=1,
+                cost=Resources(0, 8000, 6000, 0), executable_now=True,
+                reason="Fleet build target (0/4 Large transport)" + (f" {AI_INFRA_CARGO_TAG}" if tag else ""),
+            )
+
+        b = {
+            "available_budget": {"pig_iron": 0.0, "metal": 0.0, "kryptonite": 0.0, "spice": 0.0},
+            "free_after_reserve": {"pig_iron": 0.0, "metal": 100_000.0, "kryptonite": 100_000.0, "spice": 0.0},
+            "infra_transport_budget": {"metal": 20_000.0, "kryptonite": 12_000.0},
+            "urgent_replacements": {"s10": False, "s1": False, "s2": False},
+        }
+        out = filter_shipyard_actions_by_spare_budget(st, [_s2(True), _s2(True), _s2(True), _s2(False)], b)
+        self.assertEqual([a.executable_now for a in out], [True, True, False, False])
+        # free_after_reserve caps infra funding even when the infra budget looks larger.
+        b_tight = {**b, "free_after_reserve": {"pig_iron": 0.0, "metal": 9_000.0, "kryptonite": 100_000.0, "spice": 0.0}}
+        out_t = filter_shipyard_actions_by_spare_budget(st, [_s2(True), _s2(True)], b_tight)
+        self.assertEqual([a.executable_now for a in out_t], [True, False])
+        # Without infra budget (switch-off payloads) tagged builds fall back to the spare % budget.
+        b_none = {k: v for k, v in b.items() if k != "infra_transport_budget"}
+        self.assertEqual([a.executable_now for a in filter_shipyard_actions_by_spare_budget(st, [_s2(True)], b_none)], [False])
+
+    def test_fleet_planner_end_to_end_and_switch_off(self) -> None:
+        from spaceinvasion.planner.strategy import AI_INFRA_CARGO_TAG, plan_fleet_and_attack_actions
+
+        planets = self._yards(s2_ready=2, s1_only=0)
+        st = _state(planets, researches={"r4": 6})
+        base = dict(allow_shipyard=True, allow_multi_planet=True, shipyard_targets={"large-transport": 1})
+        demand = {"cargo_per_hour_24h": 300_000.0, "round_trips_per_hour": 2.5, "realized_utilization": 0.5}
+        on = plan_fleet_and_attack_actions(st, config=_adaptive_cfg(True, **base), transport_demand=demand)
+        tagged = [a for a in on if a.kind == "BUILD_SHIP" and AI_INFRA_CARGO_TAG in a.reason]
+        self.assertEqual({a.planet_id for a in tagged}, {801, 802})
+        off = plan_fleet_and_attack_actions(st, config=_adaptive_cfg(False, **base), transport_demand=demand)
+        baseline = plan_fleet_and_attack_actions(st, config=StrategyConfig(**base))
+        self.assertFalse(any(AI_INFRA_CARGO_TAG in a.reason for a in off))
+        self.assertEqual([(a.kind, a.planet_id, a.target_id, a.reason) for a in off],
+                         [(a.kind, a.planet_id, a.target_id, a.reason) for a in baseline])
+
+
 if __name__ == "__main__":
     unittest.main()
