@@ -3905,6 +3905,21 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(acts_resume[0].priority, "P1")
         self.assertEqual(acts_resume[0].target_level, 100)
 
+        # 1b. Strictly binary: partial 40% raises straight to 100% when AI-Planner wants Metal
+        p_metal_partial = replace(
+            p_metal_off,
+            economy_rates={"resource1": 100, "resource2": 40, "resource3": 100, "resource4": 100},
+        )
+        acts_binary = plan_ai_blast_furnace_throttles(
+            replace(st_resume, planets=(p_krypt, p_metal_partial)),
+            ai_need_metal,
+            [],
+            cfg,
+            now_ts=5000.0,
+        )
+        self.assertEqual(len(acts_binary), 1)
+        self.assertEqual(acts_binary[0].target_level, 100)
+
         # 2. In-flight friendly Transport carrying 40k Metal covers the remaining gap (5k + 10k + 40k = 55k >= 50k)
         #    -> do NOT falsely resume Blast furnace!
         st_inflight = replace(
@@ -3923,7 +3938,7 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(acts_inflight, [])
 
         # 3. Empire already has enough Metal for reserved step #1 (which needs Pig iron) -> pause Metal specialist
-        #    to 0% (P1), even though Metal specialist's own LATER step #2 lacks Metal!
+        #    to 0% (P1), even though Metal specialist's own LATER step #2 lacks Metal (strict 1:1 simulator mirror)!
         p_metal_rich = replace(
             p_metal_on,
             resources=Resources(pig_iron=20_000, metal=55_000, kryptonite=10_000, spice=10_000),
@@ -3963,8 +3978,14 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertEqual(acts_pause[0].priority, "P1")
         self.assertEqual(acts_pause[0].target_level, 0)
 
+        # 3b. Idle AI-Planner (no waiting steps) -> disable Blast furnace to 0% (P2)
+        acts_idle = plan_ai_blast_furnace_throttles(st_pause, [], [], cfg, now_ts=5000.0)
+        self.assertEqual(len(acts_idle), 1)
+        self.assertEqual(acts_idle[0].target_level, 0)
+        self.assertEqual(acts_idle[0].priority, "P2")
+
         # 4. Deduct ready executable AI-Planner step cost first: ready #0 spends 45k Metal, leaving 15k < 30k
-        #    -> must NOT pause (and when off, resumes smelting)!
+        #    -> must NOT pause!
         ai_with_ready = [
             PlannedAction(
                 priority="P1",
@@ -3984,7 +4005,7 @@ class TestStrategyPlanner(unittest.TestCase):
         acts_after_ready = plan_ai_blast_furnace_throttles(st_pause, ai_with_ready, [], cfg, now_ts=5000.0)
         self.assertEqual(acts_after_ready, [])
 
-        # 5. Non-AI P1 fleet/shipyard Metal need (Colony ship s8) protects b2 from being paused!
+        # 5. Non-AI fleet_actions (e.g. P1 Colony ship) MUST NOT override AI-Planner smelting control!
         p1_colony_ship = [
             PlannedAction(
                 priority="P1",
@@ -4000,78 +4021,180 @@ class TestStrategyPlanner(unittest.TestCase):
                 executable_now=False,
             )
         ]
-        acts_protect = plan_ai_blast_furnace_throttles(st_pause, ai_need_pig_first, p1_colony_ship, cfg, now_ts=5000.0)
-        self.assertEqual(acts_protect, [])
+        acts_ignore_fleet = plan_ai_blast_furnace_throttles(
+            st_pause, ai_need_pig_first, p1_colony_ship, cfg, now_ts=5000.0
+        )
+        self.assertEqual(len(acts_ignore_fleet), 1)
+        self.assertEqual(acts_ignore_fleet[0].target_level, 0)
 
-        # 6. Metal storage overflow (>=98% Metal while Pig iron has free capacity) immediately pauses to 0%
-        #    even when inside the 300s cooldown and even when Metal is needed!
-        p_metal_full = replace(
+        # 6. Strict 100% Metal overflow exception (res_met >= sto_met while res_pig < sto_pig):
+        #    - 99% Metal does NOT trigger overflow pause
+        #    - 100% Metal with Pig iron ALSO 100% full does NOT trigger overflow pause
+        #    - 100% Metal with Pig iron space pauses immediately to 0% bypassing the 60s cooldown!
+        p_metal_99 = replace(
             p_metal_on,
             resources=Resources(pig_iron=50_000, metal=495_000, kryptonite=10_000, spice=10_000),
             storage=Resources(500_000, 500_000, 500_000, 500_000),
         )
-        st_full = replace(st_resume, planets=(p_krypt, p_metal_full))
+        ai_huge_metal = [
+            replace(
+                ai_need_metal[0],
+                cost=Resources(pig_iron=80_000, metal=600_000, kryptonite=0, spice=0),
+                missing=Resources(pig_iron=70_000, metal=595_000, kryptonite=0, spice=0),
+            )
+        ]
+        self.assertEqual(
+            plan_ai_blast_furnace_throttles(
+                replace(st_resume, planets=(p_krypt, p_metal_99)),
+                ai_huge_metal,
+                [],
+                cfg,
+                now_ts=5000.0,
+            ),
+            [],
+        )
+        p_both_100 = replace(
+            p_metal_on,
+            resources=Resources(pig_iron=500_000, metal=500_000, kryptonite=10_000, spice=10_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+        )
+        self.assertEqual(
+            plan_ai_blast_furnace_throttles(
+                replace(st_resume, planets=(p_krypt, p_both_100)),
+                ai_huge_metal,
+                [],
+                cfg,
+                now_ts=5000.0,
+            ),
+            [],
+        )
+        p_metal_100 = replace(
+            p_metal_on,
+            resources=Resources(pig_iron=50_000, metal=500_000, kryptonite=10_000, spice=10_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+        )
+        st_full = replace(st_resume, planets=(p_krypt, p_metal_100))
         acts_full = plan_ai_blast_furnace_throttles(
             st_full,
-            ai_need_metal,
+            ai_huge_metal,
             [],
             cfg,
-            throttle_cooldowns={902: 4950.0},
+            throttle_cooldowns={902: 4990.0},
             now_ts=5000.0,
         )
         self.assertEqual(len(acts_full), 1)
         self.assertEqual(acts_full[0].target_level, 0)
+        self.assertEqual(acts_full[0].priority, "P1")
         self.assertIn("Metal storage full", acts_full[0].reason)
 
-        # 7. Pig iron storage overflow (>=98% Pig iron with Metal space <90%) resumes Blast furnace (P2)
-        p_pig_full = replace(
+        # 6b. Overflow auto-resume hysteresis:
+        #     - Tracked overflow-paused at 96% Metal -> hold at 0% (no flapping)
+        #     - Tracked overflow-paused at 94% Metal (<95%) + AI wants ON -> auto-resume 100% bypassing 60s cooldown!
+        #     - Tracked overflow-paused at 94% Metal (<95%) + AI wants OFF -> stay 0% & add planet to cleared_overflow_pids!
+        p_metal_96_off = replace(
             p_metal_off,
-            resources=Resources(pig_iron=495_000, metal=50_000, kryptonite=10_000, spice=10_000),
+            resources=Resources(pig_iron=50_000, metal=480_000, kryptonite=10_000, spice=10_000),
             storage=Resources(500_000, 500_000, 500_000, 500_000),
         )
-        st_pig_full = replace(st_resume, planets=(p_krypt, p_pig_full))
-        acts_pig_full = plan_ai_blast_furnace_throttles(st_pig_full, ai_need_pig_first, [], cfg, now_ts=5000.0)
-        self.assertEqual(len(acts_pig_full), 1)
-        self.assertEqual(acts_pig_full[0].target_level, 100)
-        self.assertEqual(acts_pig_full[0].priority, "P2")
-
-        # 8. Negative energy safety: never turns ON into e_net < 0; pauses/throttles active b2 bypassing cooldown
-        p_neg_off = replace(p_metal_off, energy=EnergyBalance(produced=1000, used=1200))
-        st_neg_off = replace(st_resume, planets=(p_krypt, p_neg_off))
+        cleared_96: set[int] = set()
         self.assertEqual(
-            plan_ai_blast_furnace_throttles(st_neg_off, ai_need_metal, [], cfg, now_ts=5000.0),
+            plan_ai_blast_furnace_throttles(
+                replace(st_resume, planets=(p_krypt, p_metal_96_off)),
+                ai_huge_metal,
+                [],
+                cfg,
+                throttle_cooldowns={902: 4990.0},
+                now_ts=5000.0,
+                metal_overflow_paused={902},
+                cleared_overflow_pids=cleared_96,
+            ),
             [],
         )
-        p_neg_on = replace(p_metal_on, energy=EnergyBalance(produced=1000, used=1500))
-        st_neg_on = replace(st_resume, planets=(p_krypt, p_neg_on))
-        acts_neg_on = plan_ai_blast_furnace_throttles(
-            st_neg_on,
+        self.assertEqual(cleared_96, set())
+
+        p_metal_94_off = replace(
+            p_metal_off,
+            resources=Resources(pig_iron=50_000, metal=470_000, kryptonite=10_000, spice=10_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+        )
+        cleared_94_on: set[int] = set()
+        acts_auto_resume = plan_ai_blast_furnace_throttles(
+            replace(st_resume, planets=(p_krypt, p_metal_94_off)),
+            ai_huge_metal,
+            [],
+            cfg,
+            throttle_cooldowns={902: 4990.0},
+            now_ts=5000.0,
+            metal_overflow_paused={902},
+            cleared_overflow_pids=cleared_94_on,
+        )
+        self.assertEqual(len(acts_auto_resume), 1)
+        self.assertEqual(acts_auto_resume[0].target_level, 100)
+        self.assertEqual(acts_auto_resume[0].priority, "P1")
+        self.assertIn("Metal overflow cleared", acts_auto_resume[0].reason)
+        self.assertEqual(cleared_94_on, set())
+
+        cleared_94_off: set[int] = set()
+        acts_auto_clear = plan_ai_blast_furnace_throttles(
+            replace(st_resume, planets=(p_krypt, p_metal_94_off)),
             ai_need_pig_first,
             [],
             cfg,
-            throttle_cooldowns={902: 4950.0},
+            throttle_cooldowns={902: 4990.0},
             now_ts=5000.0,
+            metal_overflow_paused={902},
+            cleared_overflow_pids=cleared_94_off,
         )
-        self.assertEqual(len(acts_neg_on), 1)
-        self.assertEqual(acts_neg_on[0].target_level, 0)
-        self.assertIn("Negative energy", acts_neg_on[0].reason)
+        self.assertEqual(acts_auto_clear, [])
+        self.assertEqual(cleared_94_off, {902})
 
-        # 9. Respects 300s cooldown on non-emergency toggles, merchant_mode, and auto_throttle_blast_furnace=False
+        # 7. Pig iron storage full (>=98% / 100%) MUST NOT force b2 ON when AI-Planner wants OFF
+        p_pig_full = replace(
+            p_metal_off,
+            resources=Resources(pig_iron=500_000, metal=50_000, kryptonite=10_000, spice=10_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+        )
+        st_pig_full = replace(st_resume, planets=(p_krypt, p_pig_full))
+        self.assertEqual(
+            plan_ai_blast_furnace_throttles(st_pig_full, ai_need_pig_first, [], cfg, now_ts=5000.0),
+            [],
+        )
+
+        # 8. Negative energy (e_net < 0) MUST NOT override AI-Planner smelting control (no partial % / no e_net pause)
+        p_neg_off = replace(p_metal_off, energy=EnergyBalance(produced=1000, used=1200))
+        st_neg_off = replace(st_resume, planets=(p_krypt, p_neg_off))
+        acts_neg_off = plan_ai_blast_furnace_throttles(st_neg_off, ai_need_metal, [], cfg, now_ts=5000.0)
+        self.assertEqual(len(acts_neg_off), 1)
+        self.assertEqual(acts_neg_off[0].target_level, 100)
+        p_neg_on = replace(p_metal_on, energy=EnergyBalance(produced=1000, used=1500))
+        st_neg_on = replace(st_resume, planets=(p_krypt, p_neg_on))
+        self.assertEqual(
+            plan_ai_blast_furnace_throttles(st_neg_on, ai_need_metal, [], cfg, now_ts=5000.0),
+            [],
+        )
+
+        # 9. Respects 60s anti-flap cooldown on normal AI-Planner switches (not 300s),
+        #    merchant_mode, and auto_throttle_blast_furnace=False (master toggle)
         self.assertEqual(
             plan_ai_blast_furnace_throttles(
-                st_resume, ai_need_metal, [], cfg, throttle_cooldowns={902: 4900.0}, now_ts=5000.0
+                st_resume, ai_need_metal, [], cfg, throttle_cooldowns={902: 4960.0}, now_ts=5000.0
+            ),
+            [],
+        )
+        acts_after_60s = plan_ai_blast_furnace_throttles(
+            st_resume, ai_need_metal, [], cfg, throttle_cooldowns={902: 4930.0}, now_ts=5000.0
+        )
+        self.assertEqual(len(acts_after_60s), 1)
+        self.assertEqual(acts_after_60s[0].target_level, 100)
+        self.assertEqual(
+            plan_ai_blast_furnace_throttles(
+                st_full, ai_huge_metal, [], replace(cfg, auto_throttle_blast_furnace=False), now_ts=5000.0
             ),
             [],
         )
         self.assertEqual(
             plan_ai_blast_furnace_throttles(
-                st_resume, ai_need_metal, [], replace(cfg, auto_throttle_blast_furnace=False), now_ts=5000.0
-            ),
-            [],
-        )
-        self.assertEqual(
-            plan_ai_blast_furnace_throttles(
-                st_resume, ai_need_metal, [], replace(cfg, merchant_mode=True), now_ts=5000.0
+                st_full, ai_huge_metal, [], replace(cfg, merchant_mode=True), now_ts=5000.0
             ),
             [],
         )

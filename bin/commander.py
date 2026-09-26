@@ -385,13 +385,17 @@ def _action_to_command_payload(action: PlannedAction, *, dry_run: bool) -> dict:
             "dry_run": dry_run,
         }
     if action.kind == "THROTTLE_BUILDING" and action.target_id is not None:
-        return {
+        th_payload: dict[str, Any] = {
             "command": "throttle_building",
             "building_id": _safe_cmd_opt_int(action.target_id),
             "percentage": 0 if action.target_level is None else _safe_cmd_int(action.target_level, 0),
             "planet_id": pid,
             "dry_run": dry_run,
         }
+        th_reason = _safe_cmd_str(action.reason).strip()
+        if th_reason:
+            th_payload["reason"] = th_reason
+        return th_payload
     if action.kind == "ESCAPE_FLIGHT":
         t_name = _safe_cmd_str(action.target_name)
         m = re.search(r"(\d{1,2}:\d{1,3}:\d{1,2})", t_name, re.ASCII)
@@ -756,7 +760,11 @@ def run_commander_tick(
             if pr == 1:
                 if act.kind == "THROTTLE_BUILDING":
                     rsn_l = _safe_cmd_str(act.reason).lower()
-                    if "negative energy" in rsn_l or "metal storage full" in rsn_l:
+                    if (
+                        "negative energy" in rsn_l
+                        or "metal storage full" in rsn_l
+                        or "metal overflow cleared" in rsn_l
+                    ):
                         return (1, 0, 0, 0)
                     return (1, is_manual, 4, 0)
                 if act.kind == "BUILD":

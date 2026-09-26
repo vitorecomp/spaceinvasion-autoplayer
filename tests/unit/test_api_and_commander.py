@@ -7779,7 +7779,9 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(throttles_off[0]["target_level"], 0)
                 self.assertEqual(throttles_off[0]["priority"], "P1")
 
-                # Phase 3: Pinning a manual Metal-needing build on MetalSpec overrides auto b2 -> 0% pause!
+                # Phase 3: In active ai_planner mode, pinning a manual Metal-needing BUILD does NOT
+                #          cancel AI-Planner's b2 -> 0% pause (only AI-Planner + 100% Metal overflow
+                #          guard control b2 automatically)!
                 p_metal_need_local = dc_replace(
                     p_metal_rich_on,
                     resources=Resources(pig_iron=20_000, metal=65_000, kryptonite=10_000, spice=10_000),
@@ -7808,18 +7810,261 @@ class TestApiAndCommander(unittest.TestCase):
                     }
                 )
                 self.assertTrue(enq["ok"])
+                self.assertIn("AI-Planner", enq.get("metal_production_review", {}).get("summary", ""))
                 resp_pinned = bridge.handle_command({"command": "plan", "refresh": False})
-                self.assertFalse(
+                self.assertTrue(
                     any(
                         a["kind"] == "THROTTLE_BUILDING"
                         and a["planet_id"] == 852
                         and a["target_level"] == 0
                         for a in resp_pinned["actions"]
                     ),
-                    msg=f"Pinned Metal-needing build should cancel auto b2->0%: {resp_pinned['actions']}",
+                    msg=f"AI-Planner b2->0% must NOT be overridden by pinned BUILD: {resp_pinned['actions']}",
                 )
+
+                # Phase 3b: Fallback priority mode still preserves manual-queue Metal reconciliation!
+                bridge.strategy_config = dc_replace(bridge.strategy_config, planner_mode="priority")
+                resp_prio_fallback = bridge.handle_command({"command": "plan", "refresh": False})
+                self.assertEqual(resp_prio_fallback["effective_planner_mode"], "priority")
+                self.assertFalse(
+                    any(
+                        a["kind"] == "THROTTLE_BUILDING"
+                        and a["planet_id"] == 852
+                        and a["target_level"] == 0
+                        for a in resp_prio_fallback["actions"]
+                    ),
+                    msg=f"priority fallback should keep manual-queue b2 reconciliation: {resp_prio_fallback['actions']}",
+                )
+                bridge.strategy_config = dc_replace(bridge.strategy_config, planner_mode="ai_planner")
+
+                # Phase 3c: Explicit user-pinned THROTTLE_BUILDING queue item (80% != current 100%) is still respected!
+                enq_th = bridge.handle_command(
+                    {
+                        "command": "queue_add",
+                        "kind": "THROTTLE_BUILDING",
+                        "planet_id": 852,
+                        "target_id": 2,
+                        "target_level": 80,
+                        "target_name": "Blast furnace 80%",
+                    }
+                )
+                self.assertTrue(enq_th["ok"])
+                resp_manual_th = bridge.handle_command({"command": "plan", "refresh": False})
+                self.assertFalse(
+                    any(
+                        a["kind"] == "THROTTLE_BUILDING"
+                        and a["planet_id"] == 852
+                        and a["target_level"] == 0
+                        for a in resp_manual_th["actions"]
+                    ),
+                    msg=f"Explicit manual THROTTLE_BUILDING should supersede auto b2->0%: {resp_manual_th['actions']}",
+                )
+                self.assertTrue(
+                    any(
+                        a["kind"] == "THROTTLE_BUILDING"
+                        and a["planet_id"] == 852
+                        and a["target_level"] == 80
+                        and a.get("manual_queue_id") is not None
+                        for a in resp_manual_th["actions"]
+                    ),
+                    msg=f"Explicit manual THROTTLE_BUILDING should remain queued: {resp_manual_th['actions']}",
+                )
+                for qrow in bridge._db.get_manual_queue(status="pending", limit=50):
+                    bridge._db.cancel_manual_queue_item(int(qrow["id"]))
+
+                # Phase 4: 100% Metal overflow pause -> SQLite persistence across restart ->
+                #          hysteresis hold at 96% -> immediate auto-resume at 94% (bypassing 60s
+                #          cooldown) when AI wants ON -> clear flag & stay 0% when AI wants OFF!
+                p_krypt_huge = dc_replace(
+                    p_krypt,
+                    building_offers=(
+                        BuildingOffer(
+                            3,
+                            "Kryptonite mine",
+                            10,
+                            11,
+                            Resources(80_000, 150_000, 0, 0),
+                            False,
+                            "Not enough resources",
+                            None,
+                        ),
+                    ),
+                )
+                huge_plan = dict(synthetic_plan)
+                huge_plan["steps"] = [
+                    {
+                        **synthetic_plan["steps"][0],
+                        "cost": {"pig_iron": 80_000, "metal": 150_000, "kryptonite": 0, "spice": 0},
+                    }
+                ]
+                bridge._db.record_ai_planner_run(
+                    huge_plan,
+                    params=huge_plan["meta_parameters"],
+                    trigger_source="test_overflow",
+                    set_active=True,
+                )
+                p_metal_100 = dc_replace(
+                    p_metal_rich_on,
+                    resources=Resources(pig_iron=50_000, metal=100_000, kryptonite=10_000, spice=10_000),
+                    storage=Resources(100_000, 100_000, 100_000, 100_000),
+                    economy_rates={"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
+                )
+                _seed(dc_replace(base_st, planets=(p_krypt_huge, p_metal_100)))
+                resp_ovf = bridge.handle_command({"command": "plan", "refresh": False})
+                th_ovf = [a for a in resp_ovf["actions"] if a["kind"] == "THROTTLE_BUILDING"]
+                self.assertEqual(len(th_ovf), 1)
+                self.assertEqual(th_ovf[0]["target_level"], 0)
+                self.assertIn("Metal storage full", th_ovf[0]["reason"])
+
+                # Execute the live overflow pause via throttle_building command
+                from spaceinvasion.session.executor import ExecutionResult
+
+                p_metal_100_paused = dc_replace(
+                    p_metal_100,
+                    economy_rates={"resource1": 100, "resource2": 0, "resource3": 100, "resource4": 100},
+                )
+                post_pause_state = dc_replace(base_st, planets=(p_krypt_huge, p_metal_100_paused))
+                mock_client1 = MagicMock()
+                mock_client1.__enter__.return_value = mock_client1
+                mock_client1.read_full_snapshot.return_value = post_pause_state
+                mock_client1.last_snapshot_observed_active_planet = True
+                mock_client1.current_url = "https://spaceinvasion.bitmeup.com/indexInternal.es"
+                bridge._client_factory = lambda _: mock_client1
+                mock_exec_ok = MagicMock(
+                    side_effect=lambda _client, _state, action, **_kw: ExecutionResult(
+                        executed=True,
+                        dry_run=False,
+                        action=action,
+                        message=f"Set b2 to {action.target_level}%",
+                        validated=True,
+                    )
+                )
+                with patch.object(bridge._live_executor, "execute_action", mock_exec_ok):
+                    exec_pause = bridge.handle_command(
+                        {
+                            "command": "throttle_building",
+                            "planet_id": 852,
+                            "building_id": 2,
+                            "percentage": 0,
+                            "reason": th_ovf[0]["reason"],
+                            "dry_run": False,
+                        }
+                    )
+                self.assertTrue(exec_pause["executed"])
+                self.assertIn(852, bridge._metal_overflow_paused_planets)
+                bot_st = bridge.get_bot_control()
+                self.assertEqual(bot_st["metal_overflow_paused_planets"], [852])
             finally:
                 bridge.close()
+
+            # Restart a brand-new bridge against the same SQLite DB -> must hydrate overflow_paused!
+            mock_client2 = MagicMock()
+            mock_client2.__enter__.return_value = mock_client2
+            mock_client2.current_url = "https://spaceinvasion.bitmeup.com/indexInternal.es"
+            bridge2 = GameApiBridge(
+                debug_port=19999,
+                env_file=td_path / "no.env",
+                config_path=cfg_path,
+                db_path=td_path / "ai_bf.db",
+                log_dir=None,
+                client_factory=lambda _: mock_client2,
+                ensure_session_fn=lambda: None,
+            )
+            try:
+                self.assertIn(852, bridge2._metal_overflow_paused_planets)
+
+                def _seed2(st_obj: GameState) -> None:
+                    bridge2._record_state(
+                        st_obj,
+                        fetched_buildings=True,
+                        fetched_research=True,
+                        fetched_shipyard=True,
+                        fetched_home=True,
+                        observed_active_planet=True,
+                    )
+                    bridge2._last_spio_sync_at = time.monotonic()
+
+                # 96% Metal -> still in hysteresis band (stays 0%, no auto-resume yet)
+                p_metal_96 = dc_replace(
+                    p_metal_off,
+                    resources=Resources(pig_iron=50_000, metal=96_000, kryptonite=10_000, spice=10_000),
+                    storage=Resources(100_000, 100_000, 100_000, 100_000),
+                    economy_rates={"resource1": 100, "resource2": 0, "resource3": 100, "resource4": 100},
+                )
+                _seed2(dc_replace(base_st, planets=(p_krypt_huge, p_metal_96)))
+                resp_96 = bridge2.handle_command({"command": "plan", "refresh": False})
+                self.assertEqual(
+                    [a for a in resp_96["actions"] if a["kind"] == "THROTTLE_BUILDING"],
+                    [],
+                )
+                self.assertIn(852, bridge2._metal_overflow_paused_planets)
+
+                # 94% Metal (<95%) while AI wants ON (and still inside 60s cooldown!) -> immediate auto-resume 100%!
+                p_metal_94 = dc_replace(
+                    p_metal_96,
+                    resources=Resources(pig_iron=50_000, metal=94_000, kryptonite=10_000, spice=10_000),
+                )
+                _seed2(dc_replace(base_st, planets=(p_krypt_huge, p_metal_94)))
+                resp_94_on = bridge2.handle_command({"command": "plan", "refresh": False})
+                th_94_on = [a for a in resp_94_on["actions"] if a["kind"] == "THROTTLE_BUILDING"]
+                self.assertEqual(len(th_94_on), 1)
+                self.assertEqual(th_94_on[0]["target_level"], 100)
+                self.assertEqual(th_94_on[0]["priority"], "P1")
+                self.assertIn("Metal overflow cleared", th_94_on[0]["reason"])
+                # Still tracked until executed!
+                self.assertIn(852, bridge2._metal_overflow_paused_planets)
+
+                # Execute auto-resume 100% -> clears tracked overflow flag!
+                from spaceinvasion.session.executor import ExecutionResult
+
+                p_metal_94_resumed = dc_replace(
+                    p_metal_94,
+                    economy_rates={"resource1": 100, "resource2": 100, "resource3": 100, "resource4": 100},
+                )
+                mock_client2.read_full_snapshot.return_value = dc_replace(
+                    base_st, planets=(p_krypt_huge, p_metal_94_resumed)
+                )
+                mock_client2.last_snapshot_observed_active_planet = True
+                mock_exec_ok2 = MagicMock(
+                    side_effect=lambda _client, _state, action, **_kw: ExecutionResult(
+                        executed=True,
+                        dry_run=False,
+                        action=action,
+                        message=f"Set b2 to {action.target_level}%",
+                        validated=True,
+                    )
+                )
+                with patch.object(bridge2._live_executor, "execute_action", mock_exec_ok2):
+                    exec_res = bridge2.handle_command(
+                        {
+                            "command": "throttle_building",
+                            "planet_id": 852,
+                            "building_id": 2,
+                            "percentage": 100,
+                            "reason": th_94_on[0]["reason"],
+                            "dry_run": False,
+                        }
+                    )
+                self.assertTrue(exec_res["executed"])
+                self.assertNotIn(852, bridge2._metal_overflow_paused_planets)
+
+                # If overflow-paused and Metal drops <95% while AI wants OFF (60k <= 99k) -> clear flag & stay 0%!
+                bridge2._metal_overflow_paused_planets[852] = time.time()
+                bridge2._db.record_ai_planner_run(
+                    synthetic_plan,
+                    params=synthetic_plan["meta_parameters"],
+                    trigger_source="test_overflow_clear_off",
+                    set_active=True,
+                )
+                _seed2(dc_replace(base_st, planets=(p_krypt, p_metal_94)))
+                resp_94_off = bridge2.handle_command({"command": "plan", "refresh": False})
+                self.assertEqual(
+                    [a for a in resp_94_off["actions"] if a["kind"] == "THROTTLE_BUILDING"],
+                    [],
+                )
+                self.assertNotIn(852, bridge2._metal_overflow_paused_planets)
+            finally:
+                bridge2.close()
 
     def test_fleet_research_config_validation_merge_and_hybrid_ai_plan(self) -> None:
         import time

@@ -1524,6 +1524,7 @@ class GameApiBridge:
         self._economy_sync_timestamps: dict[int, float] = {}
         self._scanned_systems: dict[str, float] = {}
         self._throttle_timestamps: dict[int, float] = {}
+        self._metal_overflow_paused_planets: dict[int, float] = {}
         self._fleet_slot_cooldown_until: dict[int, float] = {}
         self._target_blocks: dict[str, tuple[float, str]] = {}
         # Colony trial ledger (`colony_attempts`): dedupe keys for kept/settled observations,
@@ -1784,6 +1785,13 @@ class GameApiBridge:
                     ts_f = _safe_api_float(raw_ts, 0.0)
                     if pid_i > 0 and ts_f > 0.0:
                         self._economy_sync_timestamps[pid_i] = ts_f
+            overflow_paused = rt.get("metal_overflow_paused_planets")
+            if isinstance(overflow_paused, Mapping):
+                for raw_pid, raw_ts in overflow_paused.items():
+                    pid_i = _safe_api_int(raw_pid, 0)
+                    ts_f = _safe_api_float(raw_ts, 0.0)
+                    if pid_i > 0 and ts_f > 0.0:
+                        self._metal_overflow_paused_planets[pid_i] = ts_f
             self._last_synced_unread_total = max(
                 0, _safe_api_int(rt.get("last_synced_unread_total", 0), 0)
             )
@@ -1927,6 +1935,11 @@ class GameApiBridge:
             "economy_sync_timestamps": {
                 str(int(k)): round(float(v), 3)
                 for k, v in self._economy_sync_timestamps.items()
+                if isinstance(v, (int, float)) and math.isfinite(v) and v > 0.0
+            },
+            "metal_overflow_paused_planets": {
+                str(int(k)): round(float(v), 3)
+                for k, v in self._metal_overflow_paused_planets.items()
                 if isinstance(v, (int, float)) and math.isfinite(v) and v > 0.0
             },
             "fleet_slot_cooldown_until_wall": fsc_wall,
@@ -5402,6 +5415,7 @@ class GameApiBridge:
             spare_budget=spare_budget,
         )
         fleet_actions = [a for a in fleet_actions if a.kind != "DEMOLISH_BUILDING"]
+        cleared_overflow_pids: set[int] = set()
         throttle_actions = plan_ai_blast_furnace_throttles(
             enriched_state,
             ai_actions,
@@ -5409,7 +5423,16 @@ class GameApiBridge:
             cfg,
             throttle_cooldowns=self._get_throttle_cooldowns(),
             storage_warn_ratio=cfg.storage_warn_ratio,
+            metal_overflow_paused=tuple(self._metal_overflow_paused_planets.keys()),
+            cleared_overflow_pids=cleared_overflow_pids,
         )
+        if record_conflicts and cleared_overflow_pids:
+            overflow_changed = False
+            for cpid in cleared_overflow_pids:
+                if self._metal_overflow_paused_planets.pop(cpid, None) is not None:
+                    overflow_changed = True
+            if overflow_changed:
+                self._persist_runtime_state()
 
         combined: list[PlannedAction] = [*ai_actions, *fleet_actions, *throttle_actions]
         prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
@@ -5420,7 +5443,11 @@ class GameApiBridge:
             if a.priority == "P1":
                 if a.kind == "THROTTLE_BUILDING":
                     rsn_l = str(a.reason or "").lower()
-                    if "negative energy" in rsn_l or "metal storage full" in rsn_l:
+                    if (
+                        "negative energy" in rsn_l
+                        or "metal storage full" in rsn_l
+                        or "metal overflow cleared" in rsn_l
+                    ):
                         return (0, 0)
                     return (1, 0)
                 if a.kind in ("BUILD", "RESEARCH"):
@@ -5492,6 +5519,7 @@ class GameApiBridge:
                 actions,
                 cfg=cfg,
                 persist_auto_satisfied=bool(record_summary and config is None),
+                reconcile_metal_production=False,
             ), None
         if eff_mode == "ga_nn":
             if not record_summary:
@@ -5565,6 +5593,7 @@ class GameApiBridge:
         *,
         cfg: StrategyConfig,
         persist_auto_satisfied: bool = True,
+        reconcile_metal_production: bool = True,
     ) -> list[PlannedAction]:
         if self._db is None:
             return actions
@@ -5579,6 +5608,7 @@ class GameApiBridge:
             actions,
             pending_mq,
             config=cfg,
+            reconcile_metal_production=reconcile_metal_production,
         )
         if auto_done_ids and persist_auto_satisfied:
             comp_fn = getattr(self._db, "complete_manual_queue_item", None)
@@ -5605,11 +5635,14 @@ class GameApiBridge:
             return {"checked": False, "summary": ""}
         b2_lvl = planet.building_level(2)
         cur_b2_pct = max(0, min(100, _safe_api_int((planet.economy_rates or {}).get("resource2", 100), 100)))
+        gate = self._evaluate_ai_planner_gate_locked(enriched, cfg=self.strategy_config)
+        in_ai_planner = gate.get("effective_planner_mode") == "ai_planner"
         merged, _ = merge_manual_queue_actions(
             enriched,
             [],
             pending_mq,
             config=self.strategy_config,
+            reconcile_metal_production=not in_ai_planner,
         )
         p_acts = [a for a in merged if a.planet_id == planet.planet_id]
         bf_throttle = next(
@@ -5634,7 +5667,9 @@ class GameApiBridge:
         )
         summary_txt = ""
         scheduled_pct: Optional[int] = None
-        if bf_throttle is not None:
+        if in_ai_planner and pinned_needs_metal:
+            summary_txt = "Blast furnace controlled exclusively by AI-Planner (+ 100% Metal overflow guard)"
+        elif bf_throttle is not None:
             scheduled_pct = _safe_api_int(bf_throttle.target_level, cur_b2_pct)
             if scheduled_pct > 0:
                 summary_txt = f"Metal production scheduled: Blast furnace {cur_b2_pct}% -> {scheduled_pct}%"
@@ -5845,6 +5880,9 @@ class GameApiBridge:
                         **bot_ctrl_snap,
                         "scanned_systems": dict(self._scanned_systems),
                         "throttle_cooldowns": {},
+                        "metal_overflow_paused_planets": sorted(
+                            int(pid) for pid in self._metal_overflow_paused_planets
+                        ),
                         "fleet_slot_cooldowns": {},
                         "economy_sync_timestamps": dict(self._economy_sync_timestamps),
                         "metal_production_by_planet": {},
@@ -5867,6 +5905,9 @@ class GameApiBridge:
                         **dict(self._bot_control),
                         "scanned_systems": self._get_scanned_systems(),
                         "throttle_cooldowns": self._get_throttle_cooldowns(),
+                        "metal_overflow_paused_planets": sorted(
+                            int(pid) for pid in self._metal_overflow_paused_planets
+                        ),
                         "fleet_slot_cooldowns": self._get_fleet_slot_cooldowns(),
                         "economy_sync_timestamps": dict(self._economy_sync_timestamps),
                         "metal_production_by_planet": metal_prod,
@@ -6586,6 +6627,9 @@ class GameApiBridge:
                 throttle_sig = tuple(
                     sorted((int(pid), round(float(ts), 1)) for pid, ts in self._throttle_timestamps.items())
                 )
+                overflow_paused_sig = tuple(
+                    sorted(int(pid) for pid in self._metal_overflow_paused_planets)
+                )
                 fleet_cd_sig = tuple(
                     sorted(int(pid) for pid, ts in self._fleet_slot_cooldown_until.items() if ts > now_mono_plan)
                 )
@@ -6607,6 +6651,7 @@ class GameApiBridge:
                     ai_mem_sig,
                     scanned_sig,
                     throttle_sig,
+                    overflow_paused_sig,
                     fleet_cd_sig,
                     target_blocks_sig,
                     plan_actions,
@@ -6643,6 +6688,9 @@ class GameApiBridge:
                         )
                         else mq_pre_sig
                     )
+                    post_overflow_paused_sig = tuple(
+                        sorted(int(pid) for pid in self._metal_overflow_paused_planets)
+                    )
                     store_plan_key = (
                         dash_sig,
                         cfg_sig,
@@ -6653,6 +6701,7 @@ class GameApiBridge:
                         ai_mem_sig,
                         scanned_sig,
                         throttle_sig,
+                        post_overflow_paused_sig,
                         fleet_cd_sig,
                         target_blocks_sig,
                         plan_actions,
@@ -9255,7 +9304,28 @@ class GameApiBridge:
                     )
             if res.executed and res.action.kind == "THROTTLE_BUILDING":
                 pid_i = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
-                self._throttle_timestamps[pid_i] = time.time()
+                now_th_wall = time.time()
+                self._throttle_timestamps[pid_i] = now_th_wall
+                if pid_i > 0 and _safe_api_int(res.action.target_id, 0) == 2:
+                    pct_set = _safe_api_int(res.action.target_level, 0)
+                    rsn_th = _bounded_api_str(res.action.reason, default="").lower()
+                    p_th = next((p for p in (state.planets or ()) if p.planet_id == pid_i), None)
+                    live_overflow = False
+                    if p_th is not None:
+                        sto_m = _safe_api_int(getattr(p_th.storage, "metal", 0), 0)
+                        res_m = _safe_api_int(getattr(p_th.resources, "metal", 0), 0)
+                        sto_p = _safe_api_int(getattr(p_th.storage, "pig_iron", 0), 0)
+                        res_p = _safe_api_int(getattr(p_th.resources, "pig_iron", 0), 0)
+                        live_overflow = (
+                            sto_m > 0
+                            and res_m >= sto_m
+                            and (sto_p <= 0 or res_p < sto_p)
+                        )
+                    if pct_set == 0 and ("metal storage full" in rsn_th or live_overflow):
+                        self._metal_overflow_paused_planets[pid_i] = now_th_wall
+                        self._persist_runtime_state()
+                    elif self._metal_overflow_paused_planets.pop(pid_i, None) is not None:
+                        self._persist_runtime_state()
             if res.action.kind in ("ATTACK", "SPY", "TRANSPORT", "STATION", "RECYCLE", "ESCAPE_FLIGHT", "COLONIZE"):
                 pid_f = game_data.cap_json_int(_safe_api_int(res.action.planet_id, 0))
                 if pid_f > 0:
@@ -14110,6 +14180,8 @@ class GameApiBridge:
                             self._economy_rates.pop(planet.planet_id, None)
                             self._economy_sync_timestamps.pop(planet.planet_id, None)
                             self._throttle_timestamps.pop(planet.planet_id, None)
+                            if self._metal_overflow_paused_planets.pop(planet.planet_id, None) is not None:
+                                self._persist_runtime_state()
                             self._fleet_slot_cooldown_until.pop(planet.planet_id, None)
                             self._invalidate_dashboard_cache()
                         return res_ab
@@ -14710,7 +14782,15 @@ class GameApiBridge:
                         elif bid not in (1, 2, 3, 4, 5, 6):
                             t_reason = f"Building b{bid} does not support internalEconomy rate control"
                         else:
-                            t_reason = f"Set {label} rate to {pct}% in internalEconomy"
+                            raw_th_reason = payload.get("reason")
+                            if isinstance(raw_th_reason, str) and raw_th_reason.strip():
+                                t_reason = _bounded_api_str(
+                                    raw_th_reason.strip(),
+                                    default=f"Set {label} rate to {pct}% in internalEconomy",
+                                    max_len=300,
+                                )
+                            else:
+                                t_reason = f"Set {label} rate to {pct}% in internalEconomy"
                         planned = PlannedAction(
                             priority="P1",
                             kind="THROTTLE_BUILDING",
