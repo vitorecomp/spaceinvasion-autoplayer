@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 from pathlib import Path
 import unittest
 
@@ -40,6 +41,7 @@ def _make_planet(
     buildings: dict[str, int] | None = None,
     resources: Resources | None = None,
     storage: Resources | None = None,
+    energy: EnergyBalance | None = None,
     building_offers: tuple[BuildingOffer, ...] = (),
     economy_rates: dict[str, int] | None = None,
 ) -> PlanetState:
@@ -54,11 +56,17 @@ def _make_planet(
         fields_max=fields_max,
         resources=resources or Resources(20_000, 10_000, 10_000, 5_000),
         storage=storage or Resources(400_000, 400_000, 400_000, 400_000),
-        energy=EnergyBalance(produced=400, used=200),
+        energy=energy or EnergyBalance(produced=400, used=200),
         buildings=bmap,
         building_offers=building_offers,
         economy_rates=dict(economy_rates or {}),
     )
+
+
+def _config_with_adaptive(adaptive: bool, **kwargs: object) -> StrategyConfig:
+    cfg = StrategyConfig(**kwargs)
+    object.__setattr__(cfg, "ai_adaptive_execution", bool(adaptive))
+    return cfg
 
 
 def _sample_target_config(
@@ -1913,6 +1921,889 @@ class AiPlannerUnitTests(unittest.TestCase):
         self.assertFalse(sm5["initial_target_enabled"])
         self.assertFalse(sm5["initial_toggle_needed"])
         self.assertEqual(sm5["smelting_events"], [])
+
+    def test_compute_inbound_friendly_cargo_and_in_progress_rem_helpers(self) -> None:
+        now_ts = 1_700_010_000.0
+        p1 = _make_planet(
+            101,
+            "02:380:01",
+            "Prime",
+            buildings={"b1": 10, "b7": 6, "b8": 8},
+            building_offers=(
+                BuildingOffer(
+                    building_id=1,
+                    name="Pig iron mine",
+                    current_level=10,
+                    target_level=11,
+                    cost=Resources(5000, 0, 2000, 0),
+                    can_build=False,
+                    status_text="In construction",
+                ),
+            ),
+        )
+        p2 = _make_planet(
+            102,
+            "02:380:04",
+            "Forge",
+            buildings={"b1": 8, "b3": 6, "b7": 4},
+        )
+        p3 = _make_planet(
+            103,
+            "02:380:09",
+            "OfferOnlyBuild",
+            buildings={"b1": 6, "b7": 4},
+            building_offers=(
+                BuildingOffer(
+                    building_id=1,
+                    name="Pig iron mine",
+                    current_level=6,
+                    target_level=7,
+                    cost=Resources(1000, 0, 400, 0),
+                    can_build=False,
+                    status_text="In progress",
+                ),
+            ),
+        )
+        raid_p = _make_planet(104, "02:380:15", "RaidBase", planet_type="raid", buildings={"b1": 5})
+
+        class _HostileJob(QueueJob):
+            hostile: bool = True
+
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="HelpersTest",
+            timestamp=now_ts,
+            planets=(p1, p2, p3, raid_p),
+            active_planet_id=101,
+            researches={"r1": 4},
+            active_queues=(
+                # Outbound Transport -> p2
+                QueueJob(
+                    category="fleet",
+                    name="Transport → 02:380:04",
+                    detail="Outbound · 5 Small transport",
+                    origin_coords="02:380:01",
+                    remaining_seconds=600,
+                    finish_ts=now_ts + 600,
+                    cargo=Resources(1_000, 5_000, 2_000, 500),
+                ),
+                # Outbound Station with both origin & dest coords in name -> must pick destination p2!
+                QueueJob(
+                    category="fleet",
+                    name="Station 02:380:01 -> 02:380:04",
+                    detail="Outbound · 3 Small transport",
+                    origin_coords="02:380:01",
+                    remaining_seconds=900,
+                    finish_ts=now_ts + 900,
+                    cargo=Resources(0, 3_000, 1_000, 0),
+                ),
+                # Returning fleet carrying loot -> credited to origin_coords (p1)
+                QueueJob(
+                    category="fleet",
+                    name="↩ Attack 02:381:12",
+                    detail="Returning · 4 Small transport",
+                    origin_coords="02:380:01",
+                    remaining_seconds=450,
+                    finish_ts=now_ts + 450,
+                    cargo=Resources(4_000, 2_500, 1_500, 750),
+                ),
+                # Outbound Attack carrying fuel/cargo -> NOT inbound friendly delivery
+                QueueJob(
+                    category="fleet",
+                    name="Attack → 02:380:04",
+                    detail="Outbound · 10 Fighter",
+                    origin_coords="02:380:01",
+                    remaining_seconds=300,
+                    finish_ts=now_ts + 300,
+                    cargo=Resources(9_999, 9_999, 9_999, 9_999),
+                ),
+                # Hostile fleet -> MUST be excluded!
+                _HostileJob(
+                    category="fleet",
+                    name="Transport → 02:380:04",
+                    detail="Hostile incoming",
+                    origin_coords="02:399:01",
+                    remaining_seconds=200,
+                    finish_ts=now_ts + 200,
+                    cargo=Resources(50_000, 50_000, 50_000, 50_000),
+                ),
+                # Expired friendly Transport -> already landed, MUST be excluded!
+                QueueJob(
+                    category="fleet",
+                    name="Transport → 02:380:04",
+                    detail="Outbound · 2 Small transport",
+                    origin_coords="02:380:01",
+                    finish_ts=now_ts - 15.0,
+                    cargo=Resources(10_000, 10_000, 0, 0),
+                ),
+                # Outbound Transport to raid planet -> ignored (normal colonies only)
+                QueueJob(
+                    category="fleet",
+                    name="Transport → 02:380:15",
+                    detail="Outbound · 2 Small transport",
+                    origin_coords="02:380:01",
+                    remaining_seconds=300,
+                    finish_ts=now_ts + 300,
+                    cargo=Resources(1_000, 1_000, 0, 0),
+                ),
+                # Building job on p1 with exact 120s left (must NOT be overwritten by longer Wiki fallback on offer!)
+                QueueJob(
+                    category="building",
+                    name="Pig iron mine (Level 11)",
+                    building_id=1,
+                    target_level=11,
+                    origin_coords="02:380:01",
+                    remaining_seconds=120,
+                    finish_ts=now_ts + 120,
+                ),
+                # Two building jobs on p2 (one via finish_ts=900s, one via remaining_text="01:15:30"=4530s -> max=4530s)
+                QueueJob(
+                    category="building",
+                    name="Pig iron mine (Level 9)",
+                    building_id=1,
+                    target_level=9,
+                    origin_coords="02:380:04",
+                    finish_ts=now_ts + 900.0,
+                ),
+                QueueJob(
+                    category="building",
+                    name="Kryptonite mine (Level 7)",
+                    building_id=3,
+                    target_level=7,
+                    origin_coords="02:380:04",
+                    remaining_text="01:15:30",
+                ),
+                # Expired building job on p3 (should not mask offer fallback)
+                QueueJob(
+                    category="building",
+                    name="Kryptonite mine (Level 5)",
+                    building_id=3,
+                    target_level=5,
+                    origin_coords="02:380:09",
+                    finish_ts=now_ts - 5.0,
+                ),
+                # Active research job (2400s remaining)
+                QueueJob(
+                    category="research",
+                    name="Mining technology (Level 5)",
+                    target_level=5,
+                    remaining_seconds=2400,
+                    finish_ts=now_ts + 2400,
+                ),
+            ),
+            speedup_factor=5.0,
+        )
+
+        inbound = ap.compute_inbound_friendly_cargo_by_planet(state)
+        self.assertEqual(set(inbound.keys()), {101, 102})
+        self.assertEqual(inbound[101], Resources(4_000, 2_500, 1_500, 750))
+        self.assertEqual(inbound[102], Resources(1_000, 8_000, 3_000, 500))
+        self.assertNotIn(104, inbound)
+
+        build_rem = ap.compute_in_progress_build_rem_by_planet(state)
+        self.assertEqual(build_rem[101], 120.0)
+        self.assertEqual(build_rem[102], 4530.0)
+        self.assertIn(103, build_rem)
+        self.assertGreater(build_rem[103], 0.0)
+        self.assertNotIn(104, build_rem)
+
+        self.assertEqual(ap.compute_in_progress_research_rem_seconds(state), 2400.0)
+
+        # Idle state returns empty dicts & 0.0
+        idle_state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Idle",
+            timestamp=now_ts,
+            planets=(p2,),
+            active_planet_id=102,
+            speedup_factor=5.0,
+        )
+        self.assertEqual(ap.compute_inbound_friendly_cargo_by_planet(idle_state), {})
+        self.assertEqual(ap.compute_in_progress_build_rem_by_planet(idle_state), {})
+        self.assertEqual(ap.compute_in_progress_research_rem_seconds(idle_state), 0.0)
+
+    def test_reconcile_remote_research_start_rule_adaptive_vs_switch_off(self) -> None:
+        lab = _make_planet(
+            101,
+            "02:380:01",
+            "LabColony",
+            buildings={"b1": 10, "b8": 8},
+            resources=Resources(50_000, 50_000, 50_000, 20_000),
+        )
+        remote_other = _make_planet(
+            102,
+            "02:380:02",
+            "NonLabActive",
+            buildings={"b1": 10, "b8": 0},
+            resources=Resources(100, 100, 100, 100),
+        )
+        stale_nonlab_offer = ResearchOffer(
+            research_id=1,
+            research_key="r1",
+            name="Mining technology",
+            current_level=2,
+            target_level=3,
+            cost=Resources(4_000, 0, 2_000, 0),
+            can_research=False,
+            status_text="Not enough resources",
+            research_href=None,
+            active=False,
+        )
+        ready_lab_offer = ResearchOffer(
+            research_id=1,
+            research_key="r1",
+            name="Mining technology",
+            current_level=2,
+            target_level=3,
+            cost=Resources(4_000, 0, 2_000, 0),
+            can_research=True,
+            status_text="Research level 3",
+            research_href="indexInternal.es?action=internalBuildItem&researchID=1",
+            active=False,
+        )
+        plan_res = {
+            "steps": [
+                {
+                    "seq": 1,
+                    "kind": "RESEARCH",
+                    "planet_id": 0,
+                    "planet_coords": "account",
+                    "entity_key": "r1",
+                    "entity_name": "Mining technology",
+                    "target_level": 3,
+                }
+            ]
+        }
+
+        # 1. No offers cached on active lab planet
+        st_empty_offers = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="ResTest",
+            timestamp=1_700_000_000.0,
+            planets=(lab, remote_other),
+            active_planet_id=101,
+            researches={"r1": 2, "r2": 4},
+            research_offers=(),
+            speedup_factor=5.0,
+        )
+        # Switch OFF -> exact legacy behavior (executable_now=False)
+        acts_off, _ = ap.reconcile_live_ai_actions(st_empty_offers, plan_res, _config_with_adaptive(False))
+        self.assertEqual(len(acts_off), 1)
+        self.assertFalse(acts_off[0].executable_now)
+        # Switch ON -> Wiki cost fallback allows execution with action_href=None
+        acts_on, _ = ap.reconcile_live_ai_actions(st_empty_offers, plan_res, _config_with_adaptive(True))
+        self.assertEqual(len(acts_on), 1)
+        self.assertTrue(acts_on[0].executable_now)
+        self.assertIsNone(acts_on[0].action_href)
+        self.assertEqual(acts_on[0].planet_id, 101)
+        self.assertEqual(acts_on[0].cost, Resources(4_000, 0, 2_000, 0))
+
+        # 2. Offers read on a NON-LAB active planet (102) with can_research=False
+        st_nonlab_active = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="ResTest",
+            timestamp=1_700_000_000.0,
+            planets=(lab, remote_other),
+            active_planet_id=102,
+            researches={"r1": 2, "r2": 4},
+            research_offers=(stale_nonlab_offer,),
+            speedup_factor=5.0,
+        )
+        # Switch OFF -> trusts stale offer -> executable_now=False
+        acts_nonlab_off, _ = ap.reconcile_live_ai_actions(st_nonlab_active, plan_res, _config_with_adaptive(False))
+        self.assertFalse(acts_nonlab_off[0].executable_now)
+        # Switch ON + allow_multi_planet=True -> ignores non-lab offer, executes on lab 101 with action_href=None!
+        acts_nonlab_on, _ = ap.reconcile_live_ai_actions(
+            st_nonlab_active, plan_res, _config_with_adaptive(True, allow_multi_planet=True)
+        )
+        self.assertTrue(acts_nonlab_on[0].executable_now)
+        self.assertIsNone(acts_nonlab_on[0].action_href)
+        self.assertEqual(acts_nonlab_on[0].planet_id, 101)
+        # Switch ON + allow_multi_planet=False -> remote lab blocked!
+        acts_nonlab_single, _ = ap.reconcile_live_ai_actions(
+            st_nonlab_active, plan_res, _config_with_adaptive(True, allow_multi_planet=False)
+        )
+        self.assertFalse(acts_nonlab_single[0].executable_now)
+        self.assertIn("multi-planet disabled", acts_nonlab_single[0].reason)
+        # Switch ON + allow_research=False -> blocked!
+        acts_nonlab_nores, _ = ap.reconcile_live_ai_actions(
+            st_nonlab_active, plan_res, _config_with_adaptive(True, allow_research=False)
+        )
+        self.assertFalse(acts_nonlab_nores[0].executable_now)
+        self.assertIn("research disabled", acts_nonlab_nores[0].reason)
+
+        # 3. Offers read on ACTIVE lab planet (101) ARE trusted
+        st_active_lab_blocked = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="ResTest",
+            timestamp=1_700_000_000.0,
+            planets=(lab, remote_other),
+            active_planet_id=101,
+            researches={"r1": 2, "r2": 4},
+            research_offers=(stale_nonlab_offer,),
+            speedup_factor=5.0,
+        )
+        acts_lab_blocked, _ = ap.reconcile_live_ai_actions(
+            st_active_lab_blocked, plan_res, _config_with_adaptive(True)
+        )
+        self.assertFalse(acts_lab_blocked[0].executable_now)
+
+        st_active_lab_ready = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="ResTest",
+            timestamp=1_700_000_000.0,
+            planets=(lab, remote_other),
+            active_planet_id=101,
+            researches={"r1": 2, "r2": 4},
+            research_offers=(ready_lab_offer,),
+            speedup_factor=5.0,
+        )
+        acts_lab_ready, _ = ap.reconcile_live_ai_actions(
+            st_active_lab_ready, plan_res, _config_with_adaptive(True)
+        )
+        self.assertTrue(acts_lab_ready[0].executable_now)
+        self.assertEqual(acts_lab_ready[0].action_href, ready_lab_offer.research_href)
+
+        # 4. Research slot busy -> executable_now=False even when adaptive=True
+        st_busy = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="ResTest",
+            timestamp=1_700_000_000.0,
+            planets=(lab, remote_other),
+            active_planet_id=102,
+            researches={"r1": 2, "r2": 4},
+            active_queues=(QueueJob(category="research", name="Energy technology (Level 5)", target_level=5),),
+            speedup_factor=5.0,
+        )
+        acts_busy, _ = ap.reconcile_live_ai_actions(st_busy, plan_res, _config_with_adaptive(True))
+        self.assertFalse(acts_busy[0].executable_now)
+        self.assertIn("research slot busy", acts_busy[0].reason)
+
+        # 5. Lab planet unaffordable -> executable_now=False even when adaptive=True
+        poor_lab = _make_planet(
+            101,
+            "02:380:01",
+            "LabPoor",
+            buildings={"b1": 10, "b8": 8},
+            resources=Resources(500, 0, 500, 0),
+        )
+        st_poor_lab = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="ResTest",
+            timestamp=1_700_000_000.0,
+            planets=(poor_lab, remote_other),
+            active_planet_id=102,
+            researches={"r1": 2, "r2": 4},
+            research_offers=(),
+            speedup_factor=5.0,
+        )
+        acts_poor, _ = ap.reconcile_live_ai_actions(st_poor_lab, plan_res, _config_with_adaptive(True))
+        self.assertFalse(acts_poor[0].executable_now)
+        self.assertFalse(acts_poor[0].missing.is_zero())
+
+    def test_transport_demand_telemetry_and_summary_fields(self) -> None:
+        donor = _make_planet(
+            101,
+            "02:380:01",
+            "Donor",
+            buildings={"b1": 12, "b2": 8, "b3": 10, "b4": 8, "b5": 16, "b7": 6, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+            resources=Resources(500_000, 300_000, 300_000, 150_000),
+        )
+        dest = _make_planet(
+            102,
+            "02:380:05",
+            "Recipient",
+            buildings={"b1": 4, "b2": 0, "b3": 0, "b4": 0, "b5": 10, "b7": 2, "b11": 6, "b12": 6, "b13": 6, "b14": 6},
+            resources=Resources(0, 0, 0, 0),
+        )
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="DemandTest",
+            timestamp=1_700_000_000.0,
+            planets=(donor, dest),
+            active_planet_id=101,
+            researches={"r1": 2, "r2": 4, "r4": 3, "r5": 3},
+            speedup_factor=5.0,
+        )
+        target = _sample_target_config(
+            [
+                _target_planet_entry(
+                    1,
+                    101,
+                    "02:380:01",
+                    "Donor",
+                    {"b1": 12, "b2": 8, "b3": 10, "b4": 8, "b5": 16, "b7": 6, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+                    is_central=True,
+                    pays_for_research=True,
+                ),
+                _target_planet_entry(
+                    2,
+                    102,
+                    "02:380:05",
+                    "Recipient",
+                    {"b1": 10, "b3": 8, "b5": 12, "b7": 5, "b11": 6, "b12": 6, "b13": 6, "b14": 6},
+                ),
+            ],
+            planned_research={"r1": 2, "r2": 4},
+        )
+        plan = ap.run_ai_planner(
+            state,
+            target,
+            params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 0.0},
+        )
+        td = plan["transport_demand"]
+        expected_keys = {
+            "cargo_4h",
+            "cargo_per_hour_4h",
+            "cargo_24h",
+            "cargo_per_hour_24h",
+            "max_single_shipment_cargo",
+            "shipment_steps_4h",
+            "shipment_steps_24h",
+            "avg_one_way_seconds",
+            "round_trips_per_hour",
+            "utilization_assumed",
+            "recommended_cargo_capacity",
+            "recommended_large_transports",
+            "recommended_small_transports",
+        }
+        self.assertEqual(set(td.keys()), expected_keys)
+        self.assertGreater(td["cargo_4h"], 0)
+        self.assertGreaterEqual(td["cargo_24h"], td["cargo_4h"])
+        self.assertGreater(td["max_single_shipment_cargo"], 0)
+        self.assertLessEqual(td["max_single_shipment_cargo"], td["cargo_24h"])
+        self.assertGreaterEqual(td["shipment_steps_4h"], 1)
+        self.assertGreaterEqual(td["shipment_steps_24h"], td["shipment_steps_4h"])
+        self.assertEqual(td["avg_one_way_seconds"], plan["transport_matrix"]["avg_one_way_seconds"])
+        self.assertGreater(td["avg_one_way_seconds"], 0.0)
+        self.assertAlmostEqual(
+            td["round_trips_per_hour"], round(3600.0 / (2.0 * td["avg_one_way_seconds"]), 4), places=4
+        )
+        self.assertEqual(td["utilization_assumed"], 0.5)
+        expected_cap = int(math.ceil(td["cargo_per_hour_24h"] / max(0.25, td["round_trips_per_hour"]) / 0.5))
+        self.assertEqual(td["recommended_cargo_capacity"], expected_cap)
+        self.assertEqual(td["recommended_large_transports"], int(math.ceil(expected_cap / 30_000.0)))
+        self.assertEqual(td["recommended_small_transports"], int(math.ceil(expected_cap / 6_000.0)))
+
+        # Summary mirrors key transport demand fields
+        self.assertEqual(plan["summary"]["planned_cargo_per_hour_24h"], td["cargo_per_hour_24h"])
+        self.assertEqual(plan["summary"]["recommended_cargo_capacity"], td["recommended_cargo_capacity"])
+        self.assertEqual(plan["summary"]["recommended_large_transports"], td["recommended_large_transports"])
+
+        # Export header contract (exact 14 lines) remains untouched
+        txt_lines = ap.export_ai_planner_txt(plan).splitlines()
+        self.assertTrue(all(txt_lines[i].strip() for i in range(13)))
+        self.assertEqual(txt_lines[13], "")
+
+        # Single-planet empire has zero transport demand and fallback 2.5 round_trips_per_hour
+        single_state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Single",
+            timestamp=1_700_000_000.0,
+            planets=(donor,),
+            active_planet_id=101,
+            researches={"r1": 2, "r2": 4},
+            speedup_factor=5.0,
+        )
+        single_target = _sample_target_config(
+            [
+                _target_planet_entry(
+                    1,
+                    101,
+                    "02:380:01",
+                    "Donor",
+                    {"b1": 13, "b2": 8, "b3": 10, "b4": 8, "b5": 16, "b7": 6, "b8": 4, "b11": 8, "b12": 8, "b13": 8, "b14": 8},
+                    is_central=True,
+                    pays_for_research=True,
+                ),
+            ],
+            planned_research={"r1": 2, "r2": 4},
+        )
+        single_plan = ap.run_ai_planner(single_state, single_target, params={"reward_weeks": 1, "ga_generations": 0})
+        std = single_plan["transport_demand"]
+        self.assertEqual(std["cargo_4h"], 0)
+        self.assertEqual(std["cargo_24h"], 0)
+        self.assertEqual(std["avg_one_way_seconds"], 0.0)
+        self.assertEqual(std["round_trips_per_hour"], 2.5)
+        self.assertEqual(std["recommended_cargo_capacity"], 0)
+        self.assertEqual(std["recommended_large_transports"], 0)
+        self.assertEqual(std["recommended_small_transports"], 0)
+
+    def test_diagnose_ai_colony_idle_states_all_buckets_step5_gate_and_b2_energy(self) -> None:
+        now_ts = 1_700_020_000.0
+        # b2 L10 consumes 80 energy (mine_energy_needed(2, 10) == 80)
+        # 1. building (active queue + affordable later step -> idle_with_affordable MUST be False!)
+        p_build = _make_planet(
+            101,
+            "02:380:01",
+            "Col-Building",
+            buildings={"b1": 5, "b2": 10, "b3": 4},
+            resources=Resources(50_000, 50_000, 50_000, 20_000),
+            energy=EnergyBalance(produced=400, used=250),  # net=150; b2=0% -> margin@100 = 150 - 80 = 70
+            economy_rates={"resource2": 0},
+        )
+        # 2. ready_not_started (top step b1 L6 affordable -> idle_with_affordable MUST be False!)
+        p_ready = _make_planet(
+            102,
+            "02:380:02",
+            "Col-Ready",
+            buildings={"b1": 5, "b2": 10},
+            resources=Resources(50_000, 50_000, 50_000, 20_000),
+            energy=EnergyBalance(produced=400, used=330),  # net=70; b2=100% -> margin@100 = 70 - 0 = 70
+            economy_rates={"resource2": 100},
+        )
+        # 3. field_conflict (fields_used == fields_max)
+        p_field = _make_planet(
+            103,
+            "02:380:03",
+            "Col-Fields",
+            fields_max=20,
+            fields_used=20,
+            buildings={"b1": 10, "b5": 10},
+            resources=Resources(50_000, 50_000, 50_000, 20_000),
+            energy=EnergyBalance(produced=400, used=200),  # b2=0 -> margin@100 = 200
+        )
+        # 4. storage_blocked (b17 L1 costs 500k Metal / 1M Kry, storage=400k, prereqs b7=12 & r2=10 met)
+        p_storage = _make_planet(
+            104,
+            "02:380:04",
+            "Col-Storage",
+            buildings={"b7": 12},
+            resources=Resources(100_000, 100_000, 100_000, 100_000),
+            storage=Resources(400_000, 400_000, 400_000, 400_000),
+        )
+        # 5. transport_inbound (needs b7 L6 = 19200M/9600K/6400S; short 19200M, inbound covers 20000M!)
+        p_inbound = _make_planet(
+            105,
+            "02:380:05",
+            "Col-Inbound",
+            buildings={"b7": 5},
+            resources=Resources(10_000, 0, 20_000, 20_000),
+        )
+        # 6. waiting_metal + affordable secondary step b1 L6 (costs 613 Pig, 197 Kry, 0 Metal) -> Step 5 gate True!
+        p_wait_m = _make_planet(
+            106,
+            "02:380:06",
+            "Col-WaitMetal",
+            buildings={"b1": 5, "b2": 10, "b7": 5},
+            resources=Resources(10_000, 0, 20_000, 20_000),
+            energy=EnergyBalance(produced=300, used=250),  # net=50, b2=0% -> margin@100 = -30
+            economy_rates={"resource2": 0},
+        )
+        # 7. waiting_pig_iron (needs b1 L6 = 613 Pig, 197 Kry; has 0 Pig, 1000 Kry)
+        p_wait_p = _make_planet(
+            107,
+            "02:380:07",
+            "Col-WaitPig",
+            buildings={"b1": 5},
+            resources=Resources(0, 10_000, 10_000, 10_000),
+        )
+        # 8. waiting_kryptonite (needs b1 L6 = 613 Pig, 197 Kry; has 10000 Pig, 0 Kry)
+        p_wait_k = _make_planet(
+            108,
+            "02:380:08",
+            "Col-WaitKry",
+            buildings={"b1": 5},
+            resources=Resources(10_000, 10_000, 0, 10_000),
+        )
+        # 9. waiting_spice (needs b7 L6 = 19200M, 9600K, 6400S; has 50k M, 50k K, 0 S)
+        p_wait_s = _make_planet(
+            109,
+            "02:380:09",
+            "Col-WaitSpice",
+            buildings={"b7": 5},
+            resources=Resources(50_000, 50_000, 50_000, 0),
+        )
+        # 10. idle_complete (all planned steps already met)
+        p_done = _make_planet(
+            110,
+            "02:380:10",
+            "Col-Done",
+            buildings={"b1": 10},
+            resources=Resources(50_000, 50_000, 50_000, 50_000),
+        )
+        # Non-normal raid planet must be excluded from total_colonies
+        p_raid = _make_planet(111, "02:380:15", "RaidPlanet", planet_type="raid", buildings={"b1": 1})
+
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="DiagTest",
+            timestamp=now_ts,
+            planets=(p_build, p_ready, p_field, p_storage, p_inbound, p_wait_m, p_wait_p, p_wait_k, p_wait_s, p_done, p_raid),
+            active_planet_id=101,
+            researches={"r1": 4, "r2": 10},
+            active_queues=(
+                QueueJob(
+                    category="building",
+                    name="Pig iron mine (Level 6)",
+                    building_id=1,
+                    target_level=6,
+                    origin_coords="02:380:01",
+                    remaining_seconds=600,
+                    finish_ts=now_ts + 600,
+                ),
+                QueueJob(
+                    category="fleet",
+                    name="Transport → 02:380:05",
+                    detail="Outbound · 4 Small transport",
+                    origin_coords="02:380:01",
+                    remaining_seconds=300,
+                    finish_ts=now_ts + 300,
+                    cargo=Resources(0, 20_000, 0, 0),
+                ),
+            ),
+            speedup_factor=5.0,
+        )
+        plan_res = {
+            "steps": [
+                # p_build: b1 L6 in flight, b3 L5 affordable (must NOT set idle_with_affordable since building!)
+                {"seq": 1, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:01", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                {"seq": 2, "kind": "BUILD", "planet_id": 101, "planet_coords": "02:380:01", "entity_key": "b3", "entity_name": "Kryptonite mine", "target_level": 5},
+                # p_ready: b1 L6 ready
+                {"seq": 3, "kind": "BUILD", "planet_id": 102, "planet_coords": "02:380:02", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                # p_field: b1 L11 field-blocked
+                {"seq": 4, "kind": "BUILD", "planet_id": 103, "planet_coords": "02:380:03", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 11},
+                # p_storage: b17 L1 exceeds 400k storage
+                {"seq": 5, "kind": "BUILD", "planet_id": 104, "planet_coords": "02:380:04", "entity_key": "b17", "entity_name": "Microsystem accelerator", "target_level": 1},
+                # p_inbound: b7 L6 short of Metal, covered by inbound Transport
+                {"seq": 6, "kind": "BUILD", "planet_id": 105, "planet_coords": "02:380:05", "entity_key": "b7", "entity_name": "Development center", "target_level": 6},
+                # p_wait_m: top step b7 L6 waits on Metal, later step b1 L6 IS locally affordable!
+                {"seq": 7, "kind": "BUILD", "planet_id": 106, "planet_coords": "02:380:06", "entity_key": "b7", "entity_name": "Development center", "target_level": 6},
+                {"seq": 8, "kind": "BUILD", "planet_id": 106, "planet_coords": "02:380:06", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                # p_wait_p: b1 L6 waits on Pig iron
+                {"seq": 9, "kind": "BUILD", "planet_id": 107, "planet_coords": "02:380:07", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                # p_wait_k: b1 L6 waits on Kryptonite
+                {"seq": 10, "kind": "BUILD", "planet_id": 108, "planet_coords": "02:380:08", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 6},
+                # p_wait_s: b7 L6 waits on Spice
+                {"seq": 11, "kind": "BUILD", "planet_id": 109, "planet_coords": "02:380:09", "entity_key": "b7", "entity_name": "Development center", "target_level": 6},
+                # p_done: b1 L10 already built
+                {"seq": 12, "kind": "BUILD", "planet_id": 110, "planet_coords": "02:380:10", "entity_key": "b1", "entity_name": "Pig iron mine", "target_level": 10},
+            ]
+        }
+
+        cfg = StrategyConfig(allow_multi_planet=True)
+        ai_acts, conflicts = ap.reconcile_live_ai_actions(state, plan_res, cfg)
+        diag = ap.diagnose_ai_colony_idle_states(
+            state,
+            plan_res,
+            ai_acts,
+            cfg,
+            field_conflicts=conflicts,
+        )
+
+        self.assertEqual(diag["total_colonies"], 10)
+        self.assertEqual(diag["active_builders"], 1)
+        self.assertEqual(diag["ready_not_started_count"], 1)
+        self.assertEqual(diag["idle_with_affordable_count"], 1)
+        self.assertEqual(sum(diag["counts"].values()), 10)
+        for bucket in ap.AI_COLONY_IDLE_STATES:
+            self.assertEqual(diag["counts"][bucket], 1, f"expected 1 colony in bucket {bucket!r}")
+
+        by_pid = {row["planet_id"]: row for row in diag["colonies"]}
+        self.assertNotIn(111, by_pid)
+        self.assertEqual(by_pid[101]["state"], "building")
+        self.assertFalse(by_pid[101]["idle_with_affordable_target_step"])
+        self.assertEqual(by_pid[101]["b2_level"], 10)
+        self.assertEqual(by_pid[101]["b2_pct"], 0)
+        self.assertEqual(by_pid[101]["energy_net"], 150)
+        self.assertEqual(by_pid[101]["b2_energy_margin_at_100"], 70)
+
+        self.assertEqual(by_pid[102]["state"], "ready_not_started")
+        self.assertFalse(by_pid[102]["idle_with_affordable_target_step"])
+        self.assertEqual(by_pid[102]["b2_pct"], 100)
+        self.assertEqual(by_pid[102]["energy_net"], 70)
+        self.assertEqual(by_pid[102]["b2_energy_margin_at_100"], 70)
+
+        self.assertEqual(by_pid[103]["state"], "field_conflict")
+        self.assertFalse(by_pid[103]["idle_with_affordable_target_step"])
+        self.assertEqual(by_pid[103]["b2_level"], 0)
+        self.assertEqual(by_pid[103]["b2_energy_margin_at_100"], 200)
+
+        self.assertEqual(by_pid[104]["state"], "storage_blocked")
+        self.assertEqual(by_pid[105]["state"], "transport_inbound")
+
+        self.assertEqual(by_pid[106]["state"], "waiting_metal")
+        self.assertTrue(by_pid[106]["idle_with_affordable_target_step"])
+        self.assertEqual(by_pid[106]["b2_energy_margin_at_100"], -30)
+
+        self.assertEqual(by_pid[107]["state"], "waiting_pig_iron")
+        self.assertFalse(by_pid[107]["idle_with_affordable_target_step"])
+        self.assertEqual(by_pid[108]["state"], "waiting_kryptonite")
+        self.assertEqual(by_pid[109]["state"], "waiting_spice")
+        self.assertEqual(by_pid[110]["state"], "idle_complete")
+        self.assertIsNone(by_pid[110]["next_label"])
+
+        # Auto-reconcile path (ai_actions omitted) matches explicit path 1:1
+        diag_auto = ap.diagnose_ai_colony_idle_states(state, plan_res, config=cfg)
+        self.assertEqual(diag_auto["counts"], diag["counts"])
+        self.assertEqual(diag_auto["idle_with_affordable_count"], diag["idle_with_affordable_count"])
+        self.assertEqual(diag_auto["ready_not_started_count"], diag["ready_not_started_count"])
+
+    def test_step6_gene_persistence_and_non_regressing_warm_start(self) -> None:
+        p1 = _make_planet(
+            101,
+            "02:380:12",
+            "Homeworld",
+            buildings={"b1": 6, "b2": 3, "b3": 5, "b4": 3, "b5": 9, "b7": 3, "b8": 3, "b10": 1, "b11": 5, "b12": 5, "b13": 5, "b14": 5},
+            resources=Resources(30_000, 15_000, 15_000, 8_000),
+        )
+        p2 = _make_planet(
+            102,
+            "02:381:05",
+            "Colony 1",
+            buildings={"b1": 4, "b2": 2, "b3": 4, "b4": 2, "b5": 7, "b7": 2, "b10": 1, "b11": 5, "b12": 5, "b13": 5, "b14": 5},
+            resources=Resources(15_000, 8_000, 8_000, 4_000),
+        )
+        state = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="WarmStartTest",
+            timestamp=1_700_000_000.0,
+            planets=(p1, p2),
+            active_planet_id=101,
+            researches={"r1": 2, "r2": 4},
+            speedup_factor=5.0,
+        )
+        target = _sample_target_config(
+            [
+                _target_planet_entry(
+                    1,
+                    101,
+                    "02:380:12",
+                    "Homeworld",
+                    {"b1": 12, "b2": 8, "b3": 10, "b4": 8, "b5": 14, "b7": 5, "b8": 5, "b10": 3, "b11": 5, "b12": 5, "b13": 5, "b14": 5},
+                    is_central=True,
+                    pays_for_research=True,
+                ),
+                _target_planet_entry(
+                    2,
+                    102,
+                    "02:381:05",
+                    "Colony 1",
+                    {"b1": 10, "b2": 7, "b3": 9, "b4": 7, "b5": 13, "b7": 4, "b10": 2, "b11": 5, "b12": 5, "b13": 5, "b14": 5},
+                ),
+            ],
+            planned_research={"r1": 5, "r2": 6},
+        )
+
+        # 1. Default run (no warm_start_genes): always records search["best_parameters"], exact 3 baseline comparisons
+        base_plan = ap.run_ai_planner(
+            state,
+            target,
+            params={"reward_weeks": 4, "ga_generations": 2, "ga_population_size": 4, "ga_random_seed": 42},
+        )
+        search_base = base_plan["search"]
+        self.assertIn("best_parameters", search_base)
+        self.assertIsInstance(search_base["best_parameters"], dict)
+        self.assertIn("rule", search_base["best_parameters"])
+        self.assertFalse(search_base["warm_start_used"])
+        self.assertIsNone(search_base["warm_start_genes"])
+        self.assertEqual(len(search_base["strategy_comparisons"]), 3)
+
+        base_only_no_ga = ap.run_ai_planner(
+            state,
+            target,
+            params={"reward_weeks": 4, "ga_generations": 0},
+        )
+        best_baseline_reward = float(base_only_no_ga["search"]["best_reward"])
+
+        # 2. Warm-start from out-of-range 8-float sequence -> clamped to PATH_GENE_RANGES & non-regressing!
+        extreme_seq = [99.0, -5.0, 5.0, -2.0, 10.0, -10.0, 0.5, -0.5]
+        warm_seq_plan = ap.run_ai_planner(
+            state,
+            target,
+            params={
+                "reward_weeks": 4,
+                "ga_generations": 0,
+                "warm_start_genes": extreme_seq,
+            },
+        )
+        ws_search = warm_seq_plan["search"]
+        self.assertTrue(ws_search["warm_start_used"])
+        self.assertEqual(ws_search["warm_start_genes"]["focus"], 3.0)
+        self.assertEqual(ws_search["warm_start_genes"]["critical_share"], 0.2)
+        self.assertEqual(ws_search["warm_start_genes"]["patience"], 1.0)
+        self.assertEqual(ws_search["warm_start_genes"]["speed_weight"], 0.0)
+        self.assertEqual(ws_search["warm_start_genes"]["value_pig_iron"], 2.0)
+        self.assertEqual(ws_search["warm_start_genes"]["value_metal"], -2.0)
+        self.assertEqual(ws_search["warm_start_genes"]["value_kryptonite"], 0.5)
+        self.assertEqual(ws_search["warm_start_genes"]["value_spice"], -0.5)
+        self.assertEqual(len(ws_search["strategy_comparisons"]), 4)
+        self.assertTrue(
+            any(row["strategy"] == "warm-start tuned strategy" for row in ws_search["strategy_comparisons"])
+        )
+        # Non-regressing guarantee: never worse than the best baseline!
+        self.assertGreaterEqual(ws_search["best_reward"], best_baseline_reward)
+
+        # 3. Warm-start from gene dict (tuned_genes) with GA enabled -> never regresses below warm-start or baselines!
+        warm_dict = search_base["tuned_genes"] or {
+            "focus": 1.2,
+            "critical_share": 0.85,
+            "patience": 0.3,
+            "speed_weight": 1.6,
+            "value_pig_iron": 0.1,
+            "value_metal": 0.4,
+            "value_kryptonite": -0.2,
+            "value_spice": 0.0,
+        }
+        warm_ga_plan = ap.run_ai_planner(
+            state,
+            target,
+            params={
+                "reward_weeks": 4,
+                "ga_generations": 2,
+                "ga_population_size": 4,
+                "ga_random_seed": 99,
+                "warm_start_genes": warm_dict,
+            },
+        )
+        wga_search = warm_ga_plan["search"]
+        self.assertTrue(wga_search["warm_start_used"])
+        self.assertIn("best_parameters", wga_search)
+        warm_comp = next(
+            row for row in wga_search["strategy_comparisons"] if row["strategy"] == "warm-start tuned strategy"
+        )
+        self.assertGreaterEqual(wga_search["best_reward"], max(best_baseline_reward, float(warm_comp["discounted_reward"])) - 1e-2)
+
+        # 4. Warm-start from `best_parameters` dict (bias -> log2 round-trip) & graceful ignore of cheapest rule
+        bp_payload = {
+            "rule": "payback",
+            "values": "scarcity",
+            "focus": 1.5,
+            "critical_share": 0.8,
+            "patience": 0.4,
+            "speed_weight": 1.2,
+            "bias": [2.0, 0.5, 4.0, 0.25],
+        }
+        warm_bp_plan = ap.run_ai_planner(
+            state,
+            target,
+            params={"reward_weeks": 4, "ga_generations": 0, "warm_start_genes": bp_payload},
+        )
+        self.assertTrue(warm_bp_plan["search"]["warm_start_used"])
+        self.assertEqual(warm_bp_plan["search"]["warm_start_genes"]["value_pig_iron"], 1.0)
+        self.assertEqual(warm_bp_plan["search"]["warm_start_genes"]["value_metal"], -1.0)
+        self.assertEqual(warm_bp_plan["search"]["warm_start_genes"]["value_kryptonite"], 2.0)
+        self.assertEqual(warm_bp_plan["search"]["warm_start_genes"]["value_spice"], -2.0)
+
+        cheapest_bp_plan = ap.run_ai_planner(
+            state,
+            target,
+            params={"reward_weeks": 4, "ga_generations": 0, "warm_start_genes": {"rule": "cheapest"}},
+        )
+        self.assertFalse(cheapest_bp_plan["search"]["warm_start_used"])
+        self.assertEqual(len(cheapest_bp_plan["search"]["strategy_comparisons"]), 3)
 
 
 if __name__ == "__main__":
