@@ -1856,6 +1856,274 @@ def extract_in_flight_station_dest_coords(state: Any) -> set[str]:
     return out
 
 
+_INFLIGHT_SHIP_SLUG_BY_KEY: dict[str, str] = {
+    "s1": "small-transport",
+    "s2": "large-transport",
+    "s3": "transmitter",
+    "s4": "small-fighter",
+    "s5": "warship",
+    "s6": "starcruiser",
+    "s7": "phoenix",
+    "s8": "colony-ship",
+    "s9": "solar-cells",
+    "s10": "spy-probe",
+    "s11": "recycler",
+    "s13": "battleship",
+    "s14": "stealth-bomber",
+    "s15": "destroyer",
+    "s16": "imperial-starbase",
+}
+_INFLIGHT_SHIP_KEY_BY_SLUG: dict[str, str] = {
+    slug: skey for skey, slug in _INFLIGHT_SHIP_SLUG_BY_KEY.items()
+}
+
+
+def _build_inflight_ship_alias_map() -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for skey, slug in _INFLIGHT_SHIP_SLUG_BY_KEY.items():
+        mapping[skey.lower()] = skey
+        mapping[slug.lower()] = skey
+        mapping[game_data.normalize_unit_key(slug)] = skey
+        info = game_data.SHIPS.get(slug) or game_data.resolve_unit("ships", slug)
+        if isinstance(info, Mapping):
+            nm = str(info.get("name") or "").strip()
+            if nm:
+                norm_nm = game_data.normalize_unit_key(nm)
+                mapping[norm_nm] = skey
+                if not norm_nm.endswith("s"):
+                    mapping[norm_nm + "s"] = skey
+                elif len(norm_nm) > 2:
+                    mapping[norm_nm[:-1]] = skey
+    mapping.update(
+        {
+            "small transports": "s1",
+            "kleiner transporter": "s1",
+            "large transports": "s2",
+            "großer transporter": "s2",
+            "grosser transporter": "s2",
+            "transmitters": "s3",
+            "small fighters": "s4",
+            "kleiner jäger": "s4",
+            "kleiner jaeger": "s4",
+            "warships": "s5",
+            "kriegsschiff": "s5",
+            "kriegsschiffe": "s5",
+            "starcruisers": "s6",
+            "sternkreuzer": "s6",
+            "phoenixes": "s7",
+            "phönix": "s7",
+            "phonix": "s7",
+            "nixe": "s7",
+            "colony ships": "s8",
+            "kolonieschiff": "s8",
+            "kolonieschiffe": "s8",
+            "solar cell": "s9",
+            "solarzelle": "s9",
+            "solarzellen": "s9",
+            "spy probes": "s10",
+            "spionagesonde": "s10",
+            "spionagesonden": "s10",
+            "recyclers": "s11",
+            "battleships": "s13",
+            "schlachtschiff": "s13",
+            "schlachtschiffe": "s13",
+            "stealth bombers": "s14",
+            "tarnkappenbomber": "s14",
+            "destroyers": "s15",
+            "zerstörer": "s15",
+            "zerstoerer": "s15",
+            "imperial starbases": "s16",
+            "imperiale sternenbasis": "s16",
+        }
+    )
+    return mapping
+
+
+_INFLIGHT_SHIP_ALIAS_TO_KEY: dict[str, str] = _build_inflight_ship_alias_map()
+_INFLIGHT_LEG_PREFIX_RE = re.compile(
+    r"^\s*(?:outbound|returning|in\s+flight|flight)\b\s*(?:[·•:\-|]\s*)?",
+    re.IGNORECASE,
+)
+_INFLIGHT_PART_SPLIT_RE = re.compile(r"(?:(?<!\d),|,(?!\d{3}(?!\d))|[;|\n])+")
+_INFLIGHT_SHIP_NUM_FIRST_RE = re.compile(
+    r"^\s*([0-9][0-9.,']*)(?:\s*[xX×]\s*|\s+)([A-Za-zÀ-ÿ0-9_\-\s]{1,48})\s*$"
+)
+_INFLIGHT_SHIP_NAME_FIRST_RE = re.compile(
+    r"^\s*([A-Za-zÀ-ÿ0-9_\-\s]{1,48}?)\s*[:=xX×]\s*([0-9][0-9.,']*)\s*$"
+)
+_INFLIGHT_DETAIL_TRUNCATION_LEN = 138
+
+
+def _resolve_inflight_ship_key(raw_name: str) -> Optional[str]:
+    norm = game_data.normalize_unit_key(str(raw_name or ""))
+    if not norm:
+        return None
+    skey = _INFLIGHT_SHIP_ALIAS_TO_KEY.get(norm)
+    if skey is not None:
+        return skey
+    if norm.endswith("es") and len(norm) > 3:
+        skey = _INFLIGHT_SHIP_ALIAS_TO_KEY.get(norm[:-2])
+        if skey is not None:
+            return skey
+    if norm.endswith("s") and len(norm) > 2:
+        skey = _INFLIGHT_SHIP_ALIAS_TO_KEY.get(norm[:-1])
+        if skey is not None:
+            return skey
+    unit = game_data.resolve_unit("ships", norm)
+    if isinstance(unit, Mapping):
+        slug = str(unit.get("slug") or "")
+        if slug in _INFLIGHT_SHIP_KEY_BY_SLUG:
+            return _INFLIGHT_SHIP_KEY_BY_SLUG[slug]
+    return None
+
+
+def _parse_inflight_ships_detail(detail: str) -> tuple[dict[str, int], bool]:
+    txt = _INFLIGHT_LEG_PREFIX_RE.sub("", str(detail or "").strip()).strip()
+    if not txt:
+        return {}, False
+    ships: dict[str, int] = {}
+    had_unparsed = False
+    for seg in _INFLIGHT_PART_SPLIT_RE.split(txt):
+        part = " ".join(seg.strip().split())
+        if not part:
+            continue
+        qty = 0
+        raw_name = ""
+        m_nf = _INFLIGHT_SHIP_NUM_FIRST_RE.match(part)
+        if m_nf:
+            qty = parse_si_int(m_nf.group(1))
+            raw_name = m_nf.group(2)
+        else:
+            m_lf = _INFLIGHT_SHIP_NAME_FIRST_RE.match(part)
+            if m_lf:
+                raw_name = m_lf.group(1)
+                qty = parse_si_int(m_lf.group(2))
+        if qty <= 0 or not raw_name:
+            had_unparsed = True
+            continue
+        skey = _resolve_inflight_ship_key(raw_name)
+        if skey is None:
+            had_unparsed = True
+            continue
+        ships[skey] = ships.get(skey, 0) + qty
+    return ships, had_unparsed
+
+
+def count_in_flight_ships_by_planet(state: Any) -> dict[str, Any]:
+    """Count friendly in-flight ships attributed per owned planet and empire-wide.
+
+    One-way non-returning `Station` flights are attributed to their destination owned
+    planet (falling back to `origin_coords` if destination coords do not match an owned
+    planet). All other friendly flights (outbound/returning `Transport`, `Recycle`,
+    `Attack`, `Spy`, `Colonize`, or returning `Station`) are attributed to their
+    `origin_coords` owned planet.
+
+    `detail_complete_by_planet_id[pid]` is initialized to `True` for every planet in
+    `state.planets` and set to `False` if any friendly in-flight job attributed to `pid`
+    (or an unattributable legacy fleet job with missing `origin_coords`) yields zero
+    parsed hulls, contains unparseable ship tokens, or has `len(detail) >= 138` (near
+    the 140-char cap in `_parse_home_fadata_fleets`).
+    """
+    by_planet_id: dict[int, dict[str, int]] = {}
+    detail_complete_by_planet_id: dict[int, bool] = {}
+    empire_in_flight: dict[str, int] = {}
+
+    if state is None:
+        return {
+            "by_planet_id": by_planet_id,
+            "detail_complete_by_planet_id": detail_complete_by_planet_id,
+            "empire_in_flight": empire_in_flight,
+        }
+
+    pid_by_coords: dict[str, int] = {}
+    non_normal_coords: set[str] = set()
+    for p in getattr(state, "planets", ()) or ():
+        pid = _safe_state_int(getattr(p, "planet_id", 0), 0)
+        if pid <= 0:
+            continue
+        by_planet_id[pid] = {}
+        detail_complete_by_planet_id[pid] = True
+        norm_c = _normalize_queue_coords(_safe_state_str(getattr(p, "coords", "")))
+        if norm_c:
+            is_norm = normalize_planet_type(p) == "normal"
+            if norm_c not in pid_by_coords or (is_norm and norm_c in non_normal_coords):
+                pid_by_coords[norm_c] = pid
+                if is_norm:
+                    non_normal_coords.discard(norm_c)
+                else:
+                    non_normal_coords.add(norm_c)
+
+    for q in getattr(state, "active_queues", ()) or ():
+        if not is_in_flight_fleet_job(q):
+            continue
+        if bool(getattr(q, "hostile", False)):
+            continue
+        name_s = _safe_state_str(getattr(q, "name", "") or "")
+        detail_raw = _safe_state_str(getattr(q, "detail", "") or "")
+        name_l = name_s.lower()
+        detail_l = detail_raw.lower()
+        combined_l = f"{name_l} {detail_l}"
+        if (
+            "hostile" in combined_l
+            or "enemy" in combined_l
+            or "feind" in combined_l
+            or name_l.startswith("incoming")
+            or detail_l.startswith("incoming")
+        ):
+            continue
+
+        orig_coords = _normalize_queue_coords(_safe_state_str(getattr(q, "origin_coords", "") or ""))
+        is_one_way_station = (
+            "station" in name_l
+            and "↩" not in name_s
+            and "return" not in detail_l
+            and "rück" not in detail_l
+            and "rueck" not in detail_l
+        )
+
+        target_pid: Optional[int] = None
+        if is_one_way_station:
+            dest_part = name_s
+            for arrow in ("→", "->"):
+                if arrow in name_s:
+                    dest_part = name_s.split(arrow, 1)[1]
+                    break
+            dest_coords = _normalize_queue_coords(dest_part) or _normalize_queue_coords(name_s)
+            if dest_coords and dest_coords in pid_by_coords:
+                target_pid = pid_by_coords[dest_coords]
+            elif orig_coords and orig_coords in pid_by_coords:
+                target_pid = pid_by_coords[orig_coords]
+        elif orig_coords and orig_coords in pid_by_coords:
+            target_pid = pid_by_coords[orig_coords]
+
+        parsed_ships, had_unparsed = _parse_inflight_ships_detail(detail_raw)
+        is_incomplete = (
+            not parsed_ships
+            or had_unparsed
+            or len(detail_raw) >= _INFLIGHT_DETAIL_TRUNCATION_LEN
+            or detail_raw.rstrip().endswith(("...", "…"))
+        )
+
+        for skey, qty in parsed_ships.items():
+            empire_in_flight[skey] = empire_in_flight.get(skey, 0) + qty
+
+        if target_pid is not None:
+            p_counts = by_planet_id.setdefault(target_pid, {})
+            for skey, qty in parsed_ships.items():
+                p_counts[skey] = p_counts.get(skey, 0) + qty
+            if is_incomplete:
+                detail_complete_by_planet_id[target_pid] = False
+        elif not orig_coords:
+            for pid in detail_complete_by_planet_id:
+                detail_complete_by_planet_id[pid] = False
+
+    return {
+        "by_planet_id": by_planet_id,
+        "detail_complete_by_planet_id": detail_complete_by_planet_id,
+        "empire_in_flight": empire_in_flight,
+    }
+
+
 _FADATA_CARGO_EMPTY_TOKENS = frozenset({"", "none", "keine", "ninguno", "aucun", "nenhum", "-", "—"})
 _FADATA_CARGO_RES_ALIASES: tuple[tuple[str, str], ...] = (
     ("pig iron", "pig_iron"),

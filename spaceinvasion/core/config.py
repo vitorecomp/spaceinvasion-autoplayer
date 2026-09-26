@@ -491,6 +491,7 @@ class StrategyConfig:
     spy_dispatch_planet_id: int = 0
     planner_mode: str = "priority"  # "priority" | "ai_planner" | "ga_nn"
     ai_resource_spare_pct: float = 10.0
+    ai_adaptive_execution: bool = False
     ga_population_size: int = 24
     ga_generations: int = 12
     ga_horizon_steps: int = 6
@@ -1270,6 +1271,7 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         ai_resource_spare_pct=max(
             0.0, min(100.0, _safe_cfg_float(data.get("ai_resource_spare_pct"), 10.0))
         ),
+        ai_adaptive_execution=_safe_cfg_bool(data.get("ai_adaptive_execution"), False),
         ga_population_size=max(4, min(200, _safe_cfg_int(data.get("ga_population_size"), 24))),
         ga_generations=max(1, min(200, _safe_cfg_int(data.get("ga_generations"), 12))),
         ga_horizon_steps=max(1, min(24, _safe_cfg_int(data.get("ga_horizon_steps"), 6))),
@@ -1504,6 +1506,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
     ai_spare_pct = max(
         0.0, min(100.0, _safe_cfg_float(getattr(cfg, "ai_resource_spare_pct", 10.0), 10.0))
     )
+    ai_adaptive_exec = _safe_cfg_bool(getattr(cfg, "ai_adaptive_execution", False), False)
     ga_pop = max(4, min(200, _safe_cfg_int(cfg.ga_population_size, 24)))
     ga_gen = max(1, min(200, _safe_cfg_int(cfg.ga_generations, 12)))
     ga_hor = max(1, min(24, _safe_cfg_int(cfg.ga_horizon_steps, 6)))
@@ -1570,6 +1573,7 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         f"spy_dispatch_planet_id: {spy_disp_pid}",
         f"planner_mode: {planner_mode}",
         f"ai_resource_spare_pct: {ai_spare_pct}",
+        f"ai_adaptive_execution: {'true' if ai_adaptive_exec else 'false'}",
         f"ga_population_size: {ga_pop}",
         f"ga_generations: {ga_gen}",
         f"ga_horizon_steps: {ga_hor}",

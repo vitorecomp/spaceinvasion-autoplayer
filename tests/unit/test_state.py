@@ -1288,6 +1288,311 @@ class TestStateParsers(unittest.TestCase):
         )
         self.assertFalse(is_undersized_fresh_colony(p2, gs_b2, 300))
 
+    def test_count_in_flight_ships_by_planet_all_hulls_station_and_truncation_safety(self) -> None:
+        from spaceinvasion.core.state import (
+            EnergyBalance,
+            GameState,
+            PlanetState,
+            QueueJob,
+            Resources,
+            count_in_flight_ships_by_planet,
+            parse_home_metadata,
+        )
+
+        # None state returns clean empty dicts
+        self.assertEqual(
+            count_in_flight_ships_by_planet(None),
+            {
+                "by_planet_id": {},
+                "detail_complete_by_planet_id": {},
+                "empire_in_flight": {},
+            },
+        )
+
+        def _make_planet(pid: int, name: str, coords: str) -> PlanetState:
+            return PlanetState(
+                planet_id=pid,
+                name=name,
+                coords=coords,
+                planet_type="normal",
+                temperature=20,
+                fields_used=20,
+                fields_max=300,
+                resources=Resources(1000, 1000, 1000, 1000),
+                storage=Resources(100000, 100000, 100000, 100000),
+                energy=EnergyBalance(200, 100),
+            )
+
+        p1 = _make_planet(1, "Home", "02:380:12")
+        p2 = _make_planet(2, "ColonyA", "02:380:08")
+        p3 = _make_planet(3, "ColonyB", "02:380:09")
+
+        # 1. Verify every SpaceInvasion Classic hull (s1..s11, s13..s16) maps cleanly
+        #    via catalog names, plurals, slugs, keys, 'x' syntax, and '.' / ',' thousands separators.
+        all_hulls_jobs = (
+            QueueJob(
+                category="fleet",
+                name="Transport → [02:380:08] ColonyA",
+                detail="Outbound · 1.200 Small transport, 2,500 Large transport, 3 x Transmitter",
+                origin_coords="02:380:12",
+            ),
+            QueueJob(
+                category="fleet",
+                name="Attack → [02:378:15] Target",
+                detail="Outbound · 4 Small fighter, 5 Warship, 6 Starcruiser, 7 Phoenix",
+                origin_coords="02:380:12",
+            ),
+            QueueJob(
+                category="fleet",
+                name="Colonize → [02:380:15] Empty",
+                detail="Outbound · 1 colony-ship, 2 Solar cells, 10 Spy probes",
+                origin_coords="02:380:12",
+            ),
+            QueueJob(
+                category="fleet",
+                name="Recycle ↩ [02:381:06] Debris",
+                detail="Returning · 11 Recycler, 13 Battleship, 14 Stealth bomber",
+                origin_coords="02:380:12",
+            ),
+            QueueJob(
+                category="fleet",
+                name="Attack ↩ [02:379:04] Spacia",
+                detail="Returning · 15 destroyer, 16 s16",
+                origin_coords="02:380:12",
+            ),
+        )
+        gs_all = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2, p3),
+            active_planet_id=1,
+            active_queues=all_hulls_jobs,
+        )
+        res_all = count_in_flight_ships_by_planet(gs_all)
+        expected_all = {
+            "s1": 1200,
+            "s2": 2500,
+            "s3": 3,
+            "s4": 4,
+            "s5": 5,
+            "s6": 6,
+            "s7": 7,
+            "s8": 1,
+            "s9": 2,
+            "s10": 10,
+            "s11": 11,
+            "s13": 13,
+            "s14": 14,
+            "s15": 15,
+            "s16": 16,
+        }
+        self.assertEqual(res_all["by_planet_id"][1], expected_all)
+        self.assertEqual(res_all["by_planet_id"][2], {})
+        self.assertEqual(res_all["by_planet_id"][3], {})
+        self.assertEqual(res_all["empire_in_flight"], expected_all)
+        self.assertEqual(res_all["detail_complete_by_planet_id"], {1: True, 2: True, 3: True})
+
+        # 2. Attribution rules:
+        #    - Outbound/returning Transport & Recycle -> origin planet
+        #    - One-way Station to owned planet -> destination planet
+        #    - One-way Station to non-owned coords -> fallback to origin planet
+        #    - Returning Station ('↩' or 'Returning') -> origin planet
+        #    - Hostile flight & shipyard build job -> skipped
+        attr_jobs = (
+            QueueJob(
+                category="fleet",
+                name="Transport → [02:380:08] ColonyA",
+                detail="Outbound · 5 Small transport",
+                origin_coords="02:380:12",
+            ),
+            QueueJob(
+                category="fleet",
+                name="Recycle ↩ [02:381:04] Debris",
+                detail="Returning · 4 Recycler",
+                origin_coords="02:380:12",
+            ),
+            QueueJob(
+                category="fleet",
+                name="Station → [02:380:09] ColonyB",
+                detail="Outbound · 6 Large transport",
+                origin_coords="02:380:12",
+            ),
+            QueueJob(
+                category="fleet",
+                name="Station → [02:399:01] External",
+                detail="Outbound · 2 Small fighter",
+                origin_coords="02:380:08",
+            ),
+            QueueJob(
+                category="fleet",
+                name="Station ↩ [02:380:09] ColonyB",
+                detail="Returning · 3 Small transport",
+                origin_coords="02:380:08",
+            ),
+            QueueJob(
+                category="fleet",
+                name="Hostile Attack → [02:380:12] Home",
+                detail="Hostile · 50 Battleship",
+                origin_coords="02:380:12",
+            ),
+            QueueJob(
+                category="fleet",
+                name="10 Small transport",
+                detail="Shipyard (40%)",
+                origin_coords="02:380:12",
+            ),
+            QueueJob(
+                category="building",
+                name="Blast furnace (Level 8)",
+                detail="In construction",
+                origin_coords="02:380:12",
+            ),
+        )
+        gs_attr = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2, p3),
+            active_planet_id=1,
+            active_queues=attr_jobs,
+        )
+        res_attr = count_in_flight_ships_by_planet(gs_attr)
+        self.assertEqual(res_attr["by_planet_id"][1], {"s1": 5, "s11": 4})
+        self.assertEqual(res_attr["by_planet_id"][2], {"s4": 2, "s1": 3})
+        self.assertEqual(res_attr["by_planet_id"][3], {"s2": 6})
+        self.assertEqual(
+            res_attr["empire_in_flight"],
+            {"s1": 8, "s2": 6, "s4": 2, "s11": 4},
+        )
+        self.assertEqual(res_attr["detail_complete_by_planet_id"], {1: True, 2: True, 3: True})
+
+        # 3. Truncation (>=138 chars), empty/leg-only detail, and malformed detail safety
+        long_detail = (
+            "Outbound · 10 Small transport, 12 Large transport, 15 Small fighter, "
+            "20 Warship, 8 Starcruiser, 6 Phoenix, 12 Recycler, 4 Battleship, 2 Destroy"
+        )
+        self.assertGreaterEqual(len(long_detail), 138)
+        gs_trunc = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2, p3),
+            active_planet_id=1,
+            active_queues=(
+                QueueJob(
+                    category="fleet",
+                    name="Attack → [02:378:15] Target",
+                    detail=long_detail,
+                    origin_coords="02:380:12",
+                ),
+                QueueJob(
+                    category="fleet",
+                    name="Transport → [02:380:09] ColonyB",
+                    detail="Outbound",
+                    origin_coords="02:380:08",
+                ),
+                QueueJob(
+                    category="fleet",
+                    name="Recycle ↩ [02:381:05] Debris",
+                    detail="Returning · 3 Recycler",
+                    origin_coords="02:380:09",
+                ),
+            ),
+        )
+        res_trunc = count_in_flight_ships_by_planet(gs_trunc)
+        self.assertFalse(res_trunc["detail_complete_by_planet_id"][1])
+        self.assertFalse(res_trunc["detail_complete_by_planet_id"][2])
+        self.assertTrue(res_trunc["detail_complete_by_planet_id"][3])
+        self.assertEqual(res_trunc["by_planet_id"][1]["s1"], 10)
+        self.assertEqual(res_trunc["by_planet_id"][3], {"s11": 3})
+
+        # Malformed detail (0 parsed hulls) and partially unrecognized detail
+        gs_bad = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2, p3),
+            active_planet_id=1,
+            active_queues=(
+                QueueJob(
+                    category="fleet",
+                    name="Attack → [02:378:15] Target",
+                    detail="Outbound · ???",
+                    origin_coords="02:380:12",
+                ),
+                QueueJob(
+                    category="fleet",
+                    name="Transport → [02:380:09] ColonyB",
+                    detail="Outbound · 5 Small transport, 3 MysteryShip",
+                    origin_coords="02:380:08",
+                ),
+            ),
+        )
+        res_bad = count_in_flight_ships_by_planet(gs_bad)
+        self.assertFalse(res_bad["detail_complete_by_planet_id"][1])
+        self.assertFalse(res_bad["detail_complete_by_planet_id"][2])
+        self.assertTrue(res_bad["detail_complete_by_planet_id"][3])
+        self.assertEqual(res_bad["by_planet_id"][2], {"s1": 5})
+
+        # Legacy originless fleet job marks all planets incomplete for safe hold
+        gs_legacy = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2),
+            active_planet_id=1,
+            active_queues=(
+                QueueJob(
+                    category="fleet",
+                    name="Active/returning fleet",
+                    detail="In flight",
+                    origin_coords="",
+                ),
+            ),
+        )
+        res_legacy = count_in_flight_ships_by_planet(gs_legacy)
+        self.assertEqual(res_legacy["detail_complete_by_planet_id"], {1: False, 2: False})
+
+        # 4. End-to-end integration from live internalHome var faData HTML
+        fadata_html = """
+        <html><body><script>
+        var faData = [
+          {"title": "Own fleet", "rows": [
+            {"id": 1, "t": 300, "n": 5, "tt": "5 Small transport<br>2 Recycler<br><hr>10.000 Metal", "a": "TRANSPORT", "start": "[02:380:12] Home", "dest": "[02:380:08] ColonyA"},
+            {"id": 2, "t": 400, "n": 4, "tt": "4 Large transport<br><hr>None", "a": "STATION", "start": "[02:380:12] Home", "dest": "[02:380:09] ColonyB"}
+          ]},
+          {"title": "Returning Fleets", "rows": [
+            {"id": 3, "t": 150, "n": 3, "tt": "3 Spy probe<br><hr>None", "a": "SPIONAGE", "return": true, "start": "ColonyA [02:380:08]", "dest": "[02:377:01] Target"}
+          ]}
+        ];
+        </script></body></html>
+        """
+        _, _, _, h_queues, _ = parse_home_metadata(fadata_html, now_ts=1_700_000_000.0)
+        gs_html = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p1, p2, p3),
+            active_planet_id=1,
+            active_queues=h_queues,
+        )
+        res_html = count_in_flight_ships_by_planet(gs_html)
+        self.assertEqual(res_html["by_planet_id"][1], {"s1": 5, "s11": 2})
+        self.assertEqual(res_html["by_planet_id"][2], {"s10": 3})
+        self.assertEqual(res_html["by_planet_id"][3], {"s2": 4})
+        self.assertEqual(
+            res_html["empire_in_flight"],
+            {"s1": 5, "s2": 4, "s10": 3, "s11": 2},
+        )
+        self.assertEqual(res_html["detail_complete_by_planet_id"], {1: True, 2: True, 3: True})
+
 
 if __name__ == "__main__":
     unittest.main()

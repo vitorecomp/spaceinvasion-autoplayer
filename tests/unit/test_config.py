@@ -1023,6 +1023,60 @@ shipyard_targets:
             self.assertAlmostEqual(loaded_db.attack_min_res_per_hour, 12500.0)
             self.assertAlmostEqual(loaded_db.recycle_min_res_per_hour, 8400.5)
 
+    def test_ai_adaptive_execution_default_bool_parsing_and_roundtrip(self) -> None:
+        from spaceinvasion.db.storage import GameDatabase
+        from spaceinvasion.planner.action_graph import merge_strategy_config_overrides
+
+        default_cfg = StrategyConfig()
+        self.assertFalse(default_cfg.ai_adaptive_execution)
+
+        for raw_val, expected in (
+            (True, True),
+            (False, False),
+            ("true", True),
+            ("on", True),
+            ("yes", True),
+            ("1", True),
+            ("false", False),
+            ("off", False),
+            ("0", False),
+            (None, False),
+            ("", False),
+            ("invalid", False),
+            (float("nan"), False),
+        ):
+            parsed_case = strategy_config_from_dict({"ai_adaptive_execution": raw_val})
+            self.assertIs(parsed_case.ai_adaptive_execution, expected, f"raw_val={raw_val!r}")
+
+        enabled_cfg = strategy_config_from_dict({"ai_adaptive_execution": True})
+        self.assertTrue(enabled_cfg.ai_adaptive_execution)
+
+        eff_cfg, changed = merge_strategy_config_overrides(
+            default_cfg, {"ai_adaptive_execution": True}
+        )
+        self.assertTrue(eff_cfg.ai_adaptive_execution)
+        self.assertEqual(changed, ["ai_adaptive_execution"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            yaml_path = tp / "adaptive_exec.yaml"
+            save_strategy_config(enabled_cfg, yaml_path)
+            self.assertIn("ai_adaptive_execution: true", yaml_path.read_text(encoding="utf-8"))
+            loaded_yaml = load_strategy_config(yaml_path)
+            self.assertTrue(loaded_yaml.ai_adaptive_execution)
+
+            yaml_off = tp / "adaptive_exec_off.yaml"
+            save_strategy_config(default_cfg, yaml_off)
+            self.assertIn("ai_adaptive_execution: false", yaml_off.read_text(encoding="utf-8"))
+            self.assertFalse(load_strategy_config(yaml_off).ai_adaptive_execution)
+
+            db_path = tp / "adaptive_exec.db"
+            db = GameDatabase(db_path, attack_history_path="")
+            db.close()
+            save_strategy_config(enabled_cfg, db_path)
+            loaded_db = load_strategy_config(db_path)
+            self.assertTrue(loaded_db.ai_adaptive_execution)
+
 
 if __name__ == "__main__":
     unittest.main()
