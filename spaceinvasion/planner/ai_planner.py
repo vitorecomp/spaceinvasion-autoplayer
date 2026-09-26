@@ -913,51 +913,22 @@ def _extract_live_in_progress_state(
     # 3. Live in-flight friendly cargo arrivals (outbound Transport/Station + returning fleets carrying cargo)
     in_flight_arrivals: list[dict[str, Any]] = []
     for job in state.active_queues or ():
-        if str(getattr(job, "category", "") or "").strip().lower() != "fleet":
+        parsed_fleet = _parse_friendly_inbound_fleet_job(
+            job,
+            idx_by_coords,
+            state_ts=state_ts,
+            skip_expired=False,
+        )
+        if parsed_fleet is None:
             continue
-        if bool(getattr(job, "hostile", False)):
-            continue
-        raw_cargo = getattr(job, "cargo", None)
-        if raw_cargo is None:
-            continue
-        if isinstance(raw_cargo, Mapping):
-            cargo_tuple = tuple(
-                max(0.0, game_data.safe_finite_float(raw_cargo.get(r), 0.0))
-                for r in RESOURCE_KEYS
-            )
-        else:
-            cargo_tuple = tuple(
-                max(0.0, game_data.safe_finite_float(getattr(raw_cargo, r, 0.0), 0.0))
-                for r in RESOURCE_KEYS
-            )
-        if sum(cargo_tuple) <= 0.0:
-            continue
-        q_name = str(getattr(job, "name", "") or "")
-        q_det = str(getattr(job, "detail", "") or "")
-        is_returning = ("return" in q_det.lower()) or ("↩" in q_name)
-        dest_idx: Optional[int] = None
-        if is_returning:
-            orig = str(getattr(job, "origin_coords", "") or "").strip()
-            if orig:
-                dest_idx = idx_by_coords.get(orig)
-                if dest_idx is None:
-                    dest_idx = idx_by_coords.get(normalize_coords(orig))
-        elif any(tok in q_name.lower() or tok in q_det.lower() for tok in ("transport", "station")):
-            m_dst = _EMBEDDED_COORDS_RE.search(q_name) or _EMBEDDED_COORDS_RE.search(q_det)
-            if m_dst:
-                raw_dst = m_dst.group(1)
-                dest_idx = idx_by_coords.get(raw_dst)
-                if dest_idx is None:
-                    dest_idx = idx_by_coords.get(normalize_coords(raw_dst))
-        if dest_idx is None:
-            continue
+        dest_idx, cargo_tuple, is_returning, q_name = parsed_fleet
         rem_sec = _parse_queue_remaining_seconds(job, state_ts=state_ts, fallback_seconds=60.0)
         if rem_sec <= 0.0:
             rem_sec = 1.0
-        p_entry = problem_planets[dest_idx]
+        p_entry = problem_planets[int(dest_idx)]
         in_flight_arrivals.append(
             {
-                "planet": dest_idx,
+                "planet": int(dest_idx),
                 "planet_id": int(p_entry["planet_id"]),
                 "planet_coords": str(p_entry["coords"]),
                 "planet_name": str(p_entry["name"]),
@@ -972,6 +943,266 @@ def _extract_live_in_progress_state(
         )
     in_flight_arrivals.sort(key=lambda row: (float(row["remaining_seconds"]), int(row["planet"])))
     return in_progress_builds, in_progress_research, in_flight_arrivals
+
+
+def _parse_friendly_inbound_fleet_job(
+    job: Any,
+    coords_to_key: Mapping[str, Any],
+    *,
+    state_ts: float = 0.0,
+    skip_expired: bool = False,
+) -> Optional[tuple[Any, tuple[float, float, float, float], bool, str]]:
+    """Parse one non-hostile fleet `QueueJob` into `(dest_key, cargo_tuple, is_returning, name)` if inbound."""
+    if str(getattr(job, "category", "") or "").strip().lower() != "fleet":
+        return None
+    if skip_expired and _is_queue_job_expired(job, state_ts):
+        return None
+    q_name = str(getattr(job, "name", "") or "")
+    q_det = str(getattr(job, "detail", "") or "")
+    q_name_l = q_name.lower()
+    q_det_l = q_det.lower()
+    if (
+        bool(getattr(job, "hostile", False))
+        or "hostile" in q_name_l
+        or "hostile" in q_det_l
+        or "enemy" in q_name_l
+        or "enemy" in q_det_l
+    ):
+        return None
+    raw_cargo = getattr(job, "cargo", None)
+    if raw_cargo is None:
+        return None
+    if isinstance(raw_cargo, Mapping):
+        cargo_tuple = tuple(
+            max(0.0, game_data.safe_finite_float(raw_cargo.get(r), 0.0))
+            for r in RESOURCE_KEYS
+        )
+    else:
+        cargo_tuple = tuple(
+            max(0.0, game_data.safe_finite_float(getattr(raw_cargo, r, 0.0), 0.0))
+            for r in RESOURCE_KEYS
+        )
+    if sum(cargo_tuple) <= 0.0:
+        return None
+    is_returning = ("return" in q_det_l) or ("↩" in q_name)
+    dest_key: Any = None
+    if is_returning:
+        orig = str(getattr(job, "origin_coords", "") or "").strip()
+        if orig:
+            dest_key = coords_to_key.get(orig)
+            if dest_key is None:
+                dest_key = coords_to_key.get(normalize_coords(orig))
+    elif any(tok in q_name_l or tok in q_det_l for tok in ("transport", "station")):
+        coord_matches = _EMBEDDED_COORDS_RE.findall(q_name) or _EMBEDDED_COORDS_RE.findall(q_det)
+        if coord_matches:
+            raw_dst = coord_matches[-1]
+            dest_key = coords_to_key.get(raw_dst)
+            if dest_key is None:
+                dest_key = coords_to_key.get(normalize_coords(raw_dst))
+    if dest_key is None:
+        return None
+    return dest_key, cargo_tuple, is_returning, q_name
+
+
+def compute_inbound_friendly_cargo_by_planet(state: GameState) -> dict[int, Resources]:
+    """Return `{planet_id: Resources}` of non-hostile inbound fleet cargo heading to each normal colony.
+
+    Counts outbound `Transport` / `Station` flights destined for an owned normal colony plus
+    returning friendly fleets carrying cargo back to their owned normal `origin_coords`.
+    """
+    if state is None:
+        return {}
+    state_ts = max(0.0, game_data.safe_finite_float(getattr(state, "timestamp", 0.0), 0.0))
+    pid_by_coords: dict[str, int] = {}
+    for p in state.planets or ():
+        if normalize_planet_type(p) != "normal":
+            continue
+        pid = int(p.planet_id)
+        c = str(p.coords or "").strip()
+        if c:
+            pid_by_coords[c] = pid
+            pid_by_coords[normalize_coords(c)] = pid
+    if not pid_by_coords:
+        return {}
+
+    totals: dict[int, list[float]] = {}
+    for job in state.active_queues or ():
+        parsed = _parse_friendly_inbound_fleet_job(
+            job,
+            pid_by_coords,
+            state_ts=state_ts,
+            skip_expired=True,
+        )
+        if parsed is None:
+            continue
+        dest_pid, cargo_tuple, _is_ret, _q_name = parsed
+        buf = totals.setdefault(int(dest_pid), [0.0, 0.0, 0.0, 0.0])
+        for pos in range(4):
+            buf[pos] += float(cargo_tuple[pos])
+
+    out: dict[int, Resources] = {}
+    for pid, buf in totals.items():
+        res = Resources(
+            pig_iron=max(0, int(round(buf[0]))),
+            metal=max(0, int(round(buf[1]))),
+            kryptonite=max(0, int(round(buf[2]))),
+            spice=max(0, int(round(buf[3]))),
+        )
+        if not res.is_zero():
+            out[pid] = res
+    return out
+
+
+def compute_in_progress_build_rem_by_planet(state: GameState) -> dict[int, float]:
+    """Return `{planet_id: max_remaining_seconds}` for active building jobs per normal colony."""
+    if state is None:
+        return {}
+    state_ts = max(0.0, game_data.safe_finite_float(getattr(state, "timestamp", 0.0), 0.0))
+    speedup = _safe_speedup(state, {})
+    all_live_planets = list(state.planets or ())
+    normal_planets = [p for p in all_live_planets if normalize_planet_type(p) == "normal"]
+    if not normal_planets:
+        return {}
+
+    active_p = state.active_planet()
+    by_coords: dict[str, PlanetState] = {}
+    for p in normal_planets:
+        c = str(p.coords or "").strip()
+        if c:
+            by_coords[c] = p
+            by_coords[normalize_coords(c)] = p
+
+    base_times_cache: dict[str, dict[int, float]] = {}
+
+    def _base_hours(bkey: str, level: int) -> float:
+        if bkey not in base_times_cache:
+            info = game_data.BUILDING_BY_ID[int(bkey[1:])]
+            levels_map = info.get("levels") or {}
+            top_level = max(int(info.get("max_table_level") or len(levels_map)), level)
+            base_times_cache[bkey] = build_monotonic_base_times(levels_map, top_level)
+        return float(base_times_cache[bkey].get(level, 0.0)) / 3600.0
+
+    rem_by_pid: dict[int, float] = {}
+    seen_jobs: set[tuple[int, int, int]] = set()
+
+    for job in state.active_queues or ():
+        if str(getattr(job, "category", "") or "").strip().lower() != "building":
+            continue
+        if _is_queue_job_expired(job, state_ts):
+            continue
+        bid, parsed_tgt = _extract_building_job_id_and_level(job)
+        origin = str(getattr(job, "origin_coords", "") or "").strip()
+        target_planet = by_coords.get(origin) or (by_coords.get(normalize_coords(origin)) if origin else None)
+        if target_planet is None and not origin:
+            matched_p = _resolve_untagged_building_job_planet(bid, parsed_tgt, all_live_planets, active_p)
+            if matched_p is not None and normalize_planet_type(matched_p) == "normal":
+                target_planet = matched_p
+        if target_planet is None:
+            continue
+        pid = int(target_planet.planet_id)
+        fallback_sec = 60.0
+        tgt_lvl = parsed_tgt
+        if bid is not None and bid in game_data.BUILDING_BY_ID:
+            built = target_planet.building_level(bid)
+            if tgt_lvl is None or tgt_lvl <= built:
+                m_lvl = _LEVEL_RE.search(str(getattr(job, "name", "") or ""))
+                tgt_lvl = max(built + 1, int(m_lvl.group(1))) if m_lvl else (built + 1)
+            div = building_time_divisor(
+                target_planet.building_level(7),
+                target_planet.building_level(17),
+                speedup,
+            )
+            fallback_sec = max(1.0, (_base_hours(f"b{bid}", tgt_lvl) / max(1e-9, div)) * 3600.0)
+            seen_jobs.add((pid, int(bid), int(tgt_lvl)))
+        rem_sec = _parse_queue_remaining_seconds(job, state_ts=state_ts, fallback_seconds=fallback_sec)
+        if rem_sec <= 0.0:
+            rem_sec = 1.0
+        rem_by_pid[pid] = max(rem_by_pid.get(pid, 0.0), round(float(rem_sec), 2))
+
+    for p in normal_planets:
+        pid = int(p.planet_id)
+        for off in p.building_offers or ():
+            if not _is_active_construction_status(getattr(off, "status_text", "")):
+                continue
+            bid = game_data.safe_optional_int(getattr(off, "building_id", None), None)
+            if bid is not None and bid in game_data.BUILDING_BY_ID:
+                built = p.building_level(bid)
+                tgt_lvl = max(built + 1, game_data.safe_int(getattr(off, "target_level", built + 1), built + 1))
+                if (pid, int(bid), int(tgt_lvl)) in seen_jobs:
+                    continue
+                div = building_time_divisor(p.building_level(7), p.building_level(17), speedup)
+                fallback_sec = max(1.0, (_base_hours(f"b{bid}", tgt_lvl) / max(1e-9, div)) * 3600.0)
+                rem_by_pid[pid] = max(rem_by_pid.get(pid, 0.0), round(float(fallback_sec), 2))
+            elif pid not in rem_by_pid:
+                rem_by_pid[pid] = 60.0
+
+    return rem_by_pid
+
+
+def compute_in_progress_research_rem_seconds(state: GameState) -> float:
+    """Return max remaining seconds for any active global research job (0.0 if idle)."""
+    if state is None:
+        return 0.0
+    state_ts = max(0.0, game_data.safe_finite_float(getattr(state, "timestamp", 0.0), 0.0))
+    speedup = _safe_speedup(state, {})
+    non_raid = [p for p in (state.planets or ()) if normalize_planet_type(p) != "raid"]
+    lab_b8 = max((p.building_level(8) for p in non_raid), default=0)
+    res_div = research_time_divisor(lab_b8, speedup)
+    name_to_rkey = {
+        game_data.normalize_unit_key(str(info["name"])): rkey for rkey, info in research_catalog()
+    }
+    base_times_cache: dict[str, dict[int, float]] = {}
+
+    def _base_hours(rkey: str, level: int) -> float:
+        if rkey not in base_times_cache:
+            info = game_data.RESEARCH_BY_ID[rkey]
+            levels_map = info.get("levels") or {}
+            top_level = max(int(info.get("max_table_level") or len(levels_map)), level)
+            base_times_cache[rkey] = build_monotonic_base_times(levels_map, top_level)
+        return float(base_times_cache[rkey].get(level, 0.0)) / 3600.0
+
+    max_rem = 0.0
+    seen_res: set[tuple[str, int]] = set()
+
+    for job in state.active_queues or ():
+        if str(getattr(job, "category", "") or "").strip().lower() != "research":
+            continue
+        if _is_queue_job_expired(job, state_ts):
+            continue
+        raw_name = str(getattr(job, "name", "") or "")
+        clean = re.sub(r"\(.*?\)", "", raw_name)
+        clean = _TIMER_RE.sub("", clean)
+        clean = re.sub(r"\b(?:level|lvl|l)\s*\d+\b", "", clean, flags=re.IGNORECASE).strip()
+        rkey = name_to_rkey.get(game_data.normalize_unit_key(clean))
+        fallback_sec = 60.0
+        if rkey and rkey in game_data.RESEARCH_BY_ID:
+            cur = max(0, int((state.researches or {}).get(rkey, 0) or 0))
+            tgt = game_data.safe_optional_int(getattr(job, "target_level", None), None)
+            if tgt is None or tgt <= cur:
+                m_lvl = _LEVEL_RE.search(raw_name)
+                tgt = max(cur + 1, int(m_lvl.group(1))) if m_lvl else (cur + 1)
+            fallback_sec = max(1.0, (_base_hours(rkey, tgt) / max(1e-9, res_div)) * 3600.0)
+            seen_res.add((rkey, int(tgt)))
+        rem_sec = _parse_queue_remaining_seconds(job, state_ts=state_ts, fallback_seconds=fallback_sec)
+        if rem_sec <= 0.0:
+            rem_sec = 1.0
+        max_rem = max(max_rem, float(rem_sec))
+
+    for roff in state.research_offers or ():
+        if not getattr(roff, "active", False):
+            continue
+        rkey = str(getattr(roff, "research_key", "") or "").strip()
+        if rkey and rkey in game_data.RESEARCH_BY_ID:
+            cur = max(0, int((state.researches or {}).get(rkey, 0) or 0))
+            tgt = max(cur + 1, game_data.safe_int(getattr(roff, "target_level", cur + 1), cur + 1))
+            if (rkey, int(tgt)) in seen_res:
+                continue
+            fallback_sec = max(1.0, (_base_hours(rkey, tgt) / max(1e-9, res_div)) * 3600.0)
+            max_rem = max(max_rem, float(fallback_sec))
+        elif max_rem <= 0.0:
+            max_rem = 60.0
+
+    return round(max_rem, 2)
 
 
 def summarize_blast_furnace_entries(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -4063,6 +4294,92 @@ def tune_path_strategy(
 # ---------------------------------------------------------------------------
 
 
+_GENE_NAMES: tuple[str, ...] = tuple(PATH_GENE_RANGES.keys())
+_VALUE_GENE_NAMES: tuple[str, ...] = (
+    "value_pig_iron",
+    "value_metal",
+    "value_kryptonite",
+    "value_spice",
+)
+_WARM_GENE_DEFAULTS: dict[str, float] = {
+    "focus": 1.0,
+    "critical_share": 0.9,
+    "patience": 0.25,
+    "speed_weight": 1.5,
+    "value_pig_iron": 0.0,
+    "value_metal": 0.0,
+    "value_kryptonite": 0.0,
+    "value_spice": 0.0,
+}
+
+
+def _parse_warm_start_genes(raw: Any) -> Optional[tuple[float, ...]]:
+    """Parse optional `warm_start_genes` (gene dict, `best_parameters` dict, or 8-float sequence) clamped to `PATH_GENE_RANGES`."""
+    if raw is None:
+        return None
+    bounds = [PATH_GENE_RANGES[name] for name in _GENE_NAMES]
+
+    def _clamp(idx: int, val: float) -> float:
+        lo, hi = bounds[idx]
+        return min(hi, max(lo, float(val)))
+
+    if isinstance(raw, Mapping):
+        if str(raw.get("rule") or "").strip().lower() == "cheapest":
+            return None
+        recognized = set(_GENE_NAMES) | {"bias"}
+        if not any(k in raw for k in recognized):
+            return None
+        raw_bias = raw.get("bias")
+        bias_seq: Optional[list[float]] = None
+        if (
+            isinstance(raw_bias, (Sequence, np.ndarray))
+            and not isinstance(raw_bias, (str, bytes, bytearray))
+            and len(raw_bias) == 4
+        ):
+            parsed_bias: list[float] = []
+            for item in raw_bias:
+                if isinstance(item, bool):
+                    parsed_bias = []
+                    break
+                fv = game_data.safe_finite_float(item, float("nan"))
+                if not math.isfinite(fv) or fv <= 0.0:
+                    parsed_bias = []
+                    break
+                parsed_bias.append(fv)
+            if len(parsed_bias) == 4:
+                bias_seq = parsed_bias
+
+        vals: list[float] = []
+        for idx, gname in enumerate(_GENE_NAMES):
+            raw_v = raw.get(gname)
+            if raw_v is not None and not isinstance(raw_v, bool):
+                fv = game_data.safe_finite_float(raw_v, float("nan"))
+                if not math.isfinite(fv):
+                    return None
+                vals.append(_clamp(idx, fv))
+            elif gname in _VALUE_GENE_NAMES and bias_seq is not None:
+                v_pos = _VALUE_GENE_NAMES.index(gname)
+                vals.append(_clamp(idx, math.log2(max(1e-6, bias_seq[v_pos]))))
+            else:
+                vals.append(_clamp(idx, _WARM_GENE_DEFAULTS[gname]))
+        return tuple(vals)
+
+    if isinstance(raw, (Sequence, np.ndarray)) and not isinstance(raw, (str, bytes, bytearray)):
+        if len(raw) != len(_GENE_NAMES):
+            return None
+        vals = []
+        for idx, item in enumerate(raw):
+            if isinstance(item, bool):
+                return None
+            fv = game_data.safe_finite_float(item, float("nan"))
+            if not math.isfinite(fv):
+                return None
+            vals.append(_clamp(idx, fv))
+        return tuple(vals)
+
+    return None
+
+
 def _normalize_ai_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
     merged: dict[str, Any] = copy.deepcopy(DEFAULT_AI_PLANNER_PARAMS)
     if isinstance(raw_params, Mapping):
@@ -4106,6 +4423,14 @@ def _normalize_ai_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]
         1440.0,
         max(0.0, game_data.safe_finite_float(merged.get("transport_dispatch_delay_minutes"), 120.0)),
     )
+    if "warm_start_genes" in merged:
+        parsed_warm = _parse_warm_start_genes(merged.get("warm_start_genes"))
+        if parsed_warm is not None:
+            merged["warm_start_genes"] = {
+                name: round(float(g), 6) for name, g in zip(_GENE_NAMES, parsed_warm)
+            }
+        else:
+            merged.pop("warm_start_genes", None)
     return merged
 
 
@@ -4280,6 +4605,10 @@ def run_ai_planner(
     if progress_cb is not None:
         progress_cb("simulating_baselines", 0.12)
 
+    warm_genes = _parse_warm_start_genes(
+        params.get("warm_start_genes") if isinstance(params, Mapping) else None
+    )
+
     strategies: list[PathStrategy] = [
         PathStrategy("cheapest step first", rule="cheapest", patience=cfg["patience"]),
         PathStrategy(
@@ -4302,6 +4631,10 @@ def run_ai_planner(
             revalue_every_steps=cfg["revalue_every_steps"],
         ),
     ]
+    if warm_genes is not None:
+        strategies.append(
+            strategy_from_genes("warm-start tuned strategy", warm_genes, cfg["revalue_every_steps"])
+        )
     baseline_runs: dict[str, dict[str, Any]] = {}
     for idx, strat in enumerate(strategies):
         baseline_runs[strat.name] = simulator.run(strat)
@@ -4316,6 +4649,12 @@ def run_ai_planner(
         "simulations_of_the_genetic_algorithm": 0,
         "tuned_genes": None,
         "tuned_reward": None,
+        "warm_start_used": warm_genes is not None,
+        "warm_start_genes": (
+            {name: round(float(g), 6) for name, g in zip(PATH_GENE_RANGES, warm_genes)}
+            if warm_genes is not None
+            else None
+        ),
         "ga_history": [],
     }
 
@@ -4338,14 +4677,18 @@ def run_ai_planner(
             )
         else:
             start_genes = (
-                cfg["scarcity_focus"],
-                cfg["critical_queue_share"],
-                cfg["patience"],
-                cfg["speed_weight"],
-                0.0,
-                0.0,
-                0.0,
-                0.0,
+                warm_genes
+                if warm_genes is not None
+                else (
+                    cfg["scarcity_focus"],
+                    cfg["critical_queue_share"],
+                    cfg["patience"],
+                    cfg["speed_weight"],
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                )
             )
             genes, tuned_run, ga_history = tune_path_strategy(
                 simulator,
@@ -4377,6 +4720,7 @@ def run_ai_planner(
 
     search_summary["best_strategy"] = best_strategy.name
     search_summary["best_reward"] = float(best_run["discounted_reward"])
+    search_summary["best_parameters"] = best_strategy.parameters()
     search_summary["strategy_comparisons"] = [
         {
             "strategy": s.name,
@@ -4593,12 +4937,60 @@ def run_ai_planner(
                     "hull": hull_i,
                 }
             )
+    avg_one_way_sec = round(max(0.0, game_data.safe_finite_float(problem.get("avg_transport_travel_seconds"), 0.0)), 2)
     transport_matrix_out = {
         "dispatch_delay_minutes": round(simulator.transport_dispatch_delay_minutes, 2),
         "dispatch_delay_seconds": dispatch_delay_sec,
-        "avg_one_way_seconds": round(float(problem.get("avg_transport_travel_seconds", 0.0)), 2),
+        "avg_one_way_seconds": avg_one_way_sec,
         "max_one_way_seconds": round(float(problem.get("max_transport_travel_seconds", 0.0)), 2),
         "pairs": transport_pairs,
+    }
+
+    cargo_4h_f = 0.0
+    cargo_24h_f = 0.0
+    max_single_shipment_f = 0.0
+    shipment_steps_4h = 0
+    shipment_steps_24h = 0
+    for tr_info in step_tr_map.values():
+        if not isinstance(tr_info, Mapping):
+            continue
+        raw_shipped = tr_info.get("total_shipped") or ()
+        step_cargo = sum(max(0.0, game_data.safe_finite_float(v, 0.0)) for v in raw_shipped)
+        if step_cargo <= 0.0:
+            continue
+        req_hr = max(0.0, game_data.safe_finite_float(tr_info.get("earliest_request_hr"), 0.0))
+        if req_hr <= 24.0 + 1e-9:
+            cargo_24h_f += step_cargo
+            shipment_steps_24h += 1
+            if step_cargo > max_single_shipment_f:
+                max_single_shipment_f = step_cargo
+            if req_hr <= 4.0 + 1e-9:
+                cargo_4h_f += step_cargo
+                shipment_steps_4h += 1
+
+    cargo_per_hour_4h = round(cargo_4h_f / 4.0, 2)
+    cargo_per_hour_24h = round(cargo_24h_f / 24.0, 2)
+    rt_per_hour = round(3600.0 / (2.0 * avg_one_way_sec), 4) if avg_one_way_sec > 0.0 else 2.5
+    util_assumed = 0.5
+    rec_cargo_cap = (
+        int(math.ceil(cargo_per_hour_24h / max(0.25, rt_per_hour) / util_assumed))
+        if cargo_per_hour_24h > 0.0
+        else 0
+    )
+    transport_demand_out = {
+        "cargo_4h": int(round(cargo_4h_f)),
+        "cargo_per_hour_4h": cargo_per_hour_4h,
+        "cargo_24h": int(round(cargo_24h_f)),
+        "cargo_per_hour_24h": cargo_per_hour_24h,
+        "max_single_shipment_cargo": int(round(max_single_shipment_f)),
+        "shipment_steps_4h": int(shipment_steps_4h),
+        "shipment_steps_24h": int(shipment_steps_24h),
+        "avg_one_way_seconds": avg_one_way_sec,
+        "round_trips_per_hour": rt_per_hour,
+        "utilization_assumed": util_assumed,
+        "recommended_cargo_capacity": rec_cargo_cap,
+        "recommended_large_transports": int(math.ceil(rec_cargo_cap / 30_000.0)) if rec_cargo_cap > 0 else 0,
+        "recommended_small_transports": int(math.ceil(rec_cargo_cap / 6_000.0)) if rec_cargo_cap > 0 else 0,
     }
 
     raw_smelting_spans = list(best_run.get("smelting_spans") or ())
@@ -4736,6 +5128,9 @@ def run_ai_planner(
         "early_transports_dispatched": int(best_run.get("early_transports_dispatched", 0)),
         "avg_transport_travel_seconds": round(float(problem.get("avg_transport_travel_seconds", 0.0)), 2),
         "max_transport_travel_seconds": round(float(problem.get("max_transport_travel_seconds", 0.0)), 2),
+        "planned_cargo_per_hour_24h": transport_demand_out["cargo_per_hour_24h"],
+        "recommended_cargo_capacity": transport_demand_out["recommended_cargo_capacity"],
+        "recommended_large_transports": transport_demand_out["recommended_large_transports"],
         "in_progress_buildings_count": int(len(in_prog_buildings_out)),
         "in_progress_research_count": int(len(in_prog_research_out)),
         "in_flight_arrivals_count": int(len(in_flight_arrivals_out)),
@@ -4760,6 +5155,7 @@ def run_ai_planner(
             },
             "smelting": smelting_out,
             "transport_matrix": transport_matrix_out,
+            "transport_demand": transport_demand_out,
             "weekly_breakdown": weekly_breakdown,
             "factor_levels": factor_levels,
             "steps": steps_out,
@@ -5182,25 +5578,75 @@ def reconcile_live_ai_actions(
 
             offer = research_offers_by_key.get(entity_key)
             reason = f"AI-Planner #{seq}: research {r_name} L{target_level}"
-            if offer is not None and game_data.safe_int(offer.target_level, target_level) == target_level:
-                cost = offer.cost
-                missing = lab_planet.resources.missing(cost)
-                can_exec = (
-                    (not research_queue_busy)
-                    and bool(offer.can_research)
-                    and lab_planet.resources.can_afford(cost)
-                )
-                href = (str(offer.research_href) or None) if can_exec else None
-                out_reason = f"{reason} (research slot busy)" if research_queue_busy else reason
-                tid = game_data.safe_optional_int(offer.research_id, rid_num)
+            adaptive_exec = bool(getattr(config, "ai_adaptive_execution", False))
+            if not adaptive_exec:
+                if offer is not None and game_data.safe_int(offer.target_level, target_level) == target_level:
+                    cost = offer.cost
+                    missing = lab_planet.resources.missing(cost)
+                    can_exec = (
+                        (not research_queue_busy)
+                        and bool(offer.can_research)
+                        and lab_planet.resources.can_afford(cost)
+                    )
+                    href = (str(offer.research_href) or None) if can_exec else None
+                    out_reason = f"{reason} (research slot busy)" if research_queue_busy else reason
+                    tid = game_data.safe_optional_int(offer.research_id, rid_num)
+                else:
+                    raw_cost = ((r_info.get("levels") or {}).get(target_level) or {}).get("cost") or {}
+                    cost = Resources(**full_cost(raw_cost))
+                    missing = lab_planet.resources.missing(cost)
+                    can_exec = False
+                    href = None
+                    out_reason = f"{reason} (research slot busy)" if research_queue_busy else reason
+                    tid = rid_num
             else:
-                raw_cost = ((r_info.get("levels") or {}).get(target_level) or {}).get("cost") or {}
-                cost = Resources(**full_cost(raw_cost))
-                missing = lab_planet.resources.missing(cost)
-                can_exec = False
-                href = None
-                out_reason = f"{reason} (research slot busy)" if research_queue_busy else reason
-                tid = rid_num
+                allow_research = bool(getattr(config, "allow_research", True))
+                is_lab_active = (
+                    state.active_planet_id is not None
+                    and int(lab_planet.planet_id) == int(state.active_planet_id)
+                )
+                is_remote_lab = (
+                    state.active_planet_id is not None
+                    and int(lab_planet.planet_id) != int(state.active_planet_id)
+                )
+                if (
+                    is_lab_active
+                    and offer is not None
+                    and game_data.safe_int(offer.target_level, target_level) == target_level
+                ):
+                    cost = offer.cost
+                    missing = lab_planet.resources.missing(cost)
+                    can_exec = bool(
+                        allow_research
+                        and (not research_queue_busy)
+                        and (not unmet_prereqs)
+                        and bool(offer.can_research)
+                        and lab_planet.resources.can_afford(cost)
+                    )
+                    href = (str(offer.research_href) or None) if can_exec else None
+                    tid = game_data.safe_optional_int(offer.research_id, rid_num)
+                else:
+                    raw_cost = ((r_info.get("levels") or {}).get(target_level) or {}).get("cost") or {}
+                    cost = Resources(**full_cost(raw_cost))
+                    missing = lab_planet.resources.missing(cost)
+                    can_exec = bool(
+                        allow_research
+                        and (not is_remote_lab or allow_multi_planet)
+                        and (not research_queue_busy)
+                        and (not unmet_prereqs)
+                        and (not cost.is_zero())
+                        and lab_planet.resources.can_afford(cost)
+                    )
+                    href = None
+                    tid = rid_num
+                if not allow_research:
+                    out_reason = f"{reason} (research disabled)"
+                elif is_remote_lab and not allow_multi_planet:
+                    out_reason = f"{reason} (multi-planet disabled)"
+                elif research_queue_busy:
+                    out_reason = f"{reason} (research slot busy)"
+                else:
+                    out_reason = reason
 
             actions.append(
                 PlannedAction(
@@ -5223,6 +5669,383 @@ def reconcile_live_ai_actions(
     if actions:
         actions = attach_action_etas(state, actions)
     return actions, field_conflicts
+
+
+AI_COLONY_IDLE_STATES: tuple[str, ...] = (
+    "building",
+    "ready_not_started",
+    "field_conflict",
+    "storage_blocked",
+    "transport_inbound",
+    "waiting_metal",
+    "waiting_pig_iron",
+    "waiting_kryptonite",
+    "waiting_spice",
+    "idle_complete",
+)
+
+_RESOURCE_DISPLAY_LABELS: dict[str, str] = {
+    "pig_iron": "Pig iron",
+    "metal": "Metal",
+    "kryptonite": "Kryptonite",
+    "spice": "Spice",
+}
+
+_RESOURCE_TIE_PRIORITY: dict[str, int] = {
+    "metal": 4,
+    "kryptonite": 3,
+    "spice": 2,
+    "pig_iron": 1,
+}
+
+
+def _coerce_resources_obj(raw: Any) -> Resources:
+    if isinstance(raw, Resources):
+        return raw
+    if isinstance(raw, Mapping):
+        return Resources(
+            pig_iron=max(0, game_data.safe_int(raw.get("pig_iron"), 0)),
+            metal=max(0, game_data.safe_int(raw.get("metal"), 0)),
+            kryptonite=max(0, game_data.safe_int(raw.get("kryptonite"), 0)),
+            spice=max(0, game_data.safe_int(raw.get("spice"), 0)),
+        )
+    if raw is not None:
+        return Resources(
+            pig_iron=max(0, game_data.safe_int(getattr(raw, "pig_iron", 0), 0)),
+            metal=max(0, game_data.safe_int(getattr(raw, "metal", 0), 0)),
+            kryptonite=max(0, game_data.safe_int(getattr(raw, "kryptonite", 0), 0)),
+            spice=max(0, game_data.safe_int(getattr(raw, "spice", 0), 0)),
+        )
+    return Resources()
+
+
+def diagnose_ai_colony_idle_states(
+    state: GameState,
+    plan_result: Mapping[str, Any],
+    ai_actions: Sequence[PlannedAction] = (),
+    config: Optional[StrategyConfig] = None,
+    *,
+    field_conflicts: Sequence[Mapping[str, Any]] = (),
+    inbound_cargo_by_planet: Optional[Mapping[int, Resources]] = None,
+) -> dict[str, Any]:
+    """Classify every normal colony's live AI-Planner builder/idle state and Step-5 gate metrics."""
+    counts: dict[str, int] = {st: 0 for st in AI_COLONY_IDLE_STATES}
+    if state is None:
+        return {
+            "active_builders": 0,
+            "total_colonies": 0,
+            "colonies": [],
+            "counts": counts,
+            "idle_with_affordable_count": 0,
+            "ready_not_started_count": 0,
+        }
+
+    normal_planets = [p for p in (state.planets or ()) if normalize_planet_type(p) == "normal"]
+    if not normal_planets:
+        return {
+            "active_builders": 0,
+            "total_colonies": 0,
+            "colonies": [],
+            "counts": counts,
+            "idle_with_affordable_count": 0,
+            "ready_not_started_count": 0,
+        }
+
+    steps_seq = plan_result.get("steps") if isinstance(plan_result, Mapping) else None
+    has_steps = isinstance(steps_seq, Sequence) and len(steps_seq) > 0
+    eff_actions: Sequence[PlannedAction] = ai_actions
+    eff_conflicts: Sequence[Mapping[str, Any]] = field_conflicts
+    if not eff_actions and not eff_conflicts and has_steps:
+        eff_actions, eff_conflicts = reconcile_live_ai_actions(
+            state,
+            plan_result,
+            config or StrategyConfig(),
+        )
+
+    if inbound_cargo_by_planet is None:
+        inbound_map: dict[int, Resources] = compute_inbound_friendly_cargo_by_planet(state)
+    else:
+        inbound_map = {
+            game_data.safe_int(pid, 0): _coerce_resources_obj(val)
+            for pid, val in inbound_cargo_by_planet.items()
+        }
+
+    in_flight_buildings, planet_queue_counts = _resolve_in_flight_buildings(state)
+    in_prog_rem_by_pid = compute_in_progress_build_rem_by_planet(state)
+
+    building_action_by_pid: dict[int, PlannedAction] = {}
+    for act in eff_actions or ():
+        if act.kind not in ("BUILD", "WAIT_RESOURCES"):
+            continue
+        pid = int(act.planet_id)
+        if pid not in building_action_by_pid:
+            building_action_by_pid[pid] = act
+
+    conflicts_by_pid: dict[int, Mapping[str, Any]] = {}
+    for c in eff_conflicts or ():
+        if isinstance(c, Mapping):
+            cpid = game_data.safe_int(c.get("planet_id"), 0)
+            if cpid > 0 and cpid not in conflicts_by_pid:
+                conflicts_by_pid[cpid] = c
+
+    planets_by_id: dict[int, PlanetState] = {}
+    planets_by_coords: dict[str, PlanetState] = {}
+    for p in normal_planets:
+        pid = int(p.planet_id)
+        planets_by_id[pid] = p
+        c_str = str(p.coords or "").strip()
+        if c_str:
+            planets_by_coords[c_str] = p
+            planets_by_coords[normalize_coords(c_str)] = p
+
+    steps_by_pid: dict[int, list[Mapping[str, Any]]] = {}
+    if has_steps:
+        for step in steps_seq:
+            if not isinstance(step, Mapping):
+                continue
+            if str(step.get("kind") or "").strip().upper() != "BUILD":
+                continue
+            step_pid = game_data.safe_optional_int(step.get("planet_id"), None)
+            step_coords = str(step.get("planet_coords") or "").strip()
+            p_match = planets_by_id.get(step_pid) if step_pid is not None else None
+            if p_match is None and step_coords:
+                p_match = planets_by_coords.get(step_coords) or planets_by_coords.get(
+                    normalize_coords(step_coords)
+                )
+            if p_match is not None:
+                steps_by_pid.setdefault(int(p_match.planet_id), []).append(step)
+
+    colonies_out: list[dict[str, Any]] = []
+    for planet in normal_planets:
+        pid = int(planet.planet_id)
+        coords_s = str(planet.coords or "")
+        name_s = str(planet.name or coords_s)
+
+        b2_level = max(0, planet.building_level(2))
+        eco_rates = getattr(planet, "economy_rates", None) or {}
+        b2_pct = (
+            max(0, min(100, game_data.safe_int(eco_rates.get("resource2", 100), 100)))
+            if b2_level > 0
+            else 0
+        )
+        energy_net = int(getattr(planet.energy, "net", 0))
+        b2_full_energy = game_data.mine_energy_needed(2, b2_level) if b2_level > 0 else 0
+        b2_extra_energy = (
+            int(math.ceil(b2_full_energy * max(0, 100 - b2_pct) / 100.0)) if b2_level > 0 else 0
+        )
+        b2_energy_margin_at_100 = int(energy_net - b2_extra_energy)
+
+        active_build_count = planet_queue_counts.get(pid, 0)
+        in_flight_bmap = in_flight_buildings.get(pid, {})
+        b_act = building_action_by_pid.get(pid)
+        conflict = conflicts_by_pid.get(pid)
+        inbound_res = inbound_map.get(pid, Resources())
+        offers_by_id = {
+            int(o.building_id): o
+            for o in (planet.building_offers or ())
+            if getattr(o, "building_id", None) is not None
+        }
+        fields_full = bool(planet.fields_max > 0 and planet.fields_used >= planet.fields_max)
+
+        first_storage_blocked: Optional[tuple[str, str, int, int]] = None
+        first_field_blocked: Optional[str] = None
+        first_prereq_blocked: Optional[str] = None
+        has_affordable_target_step = False
+
+        for step in steps_by_pid.get(pid, ()):
+            entity_key = str(step.get("entity_key") or "").strip()
+            target_level = game_data.safe_int(step.get("target_level"), 0)
+            if not (entity_key.startswith("b") and entity_key[1:].isdigit()) or target_level <= 0:
+                continue
+            bid = int(entity_key[1:])
+            b_info = game_data.BUILDING_BY_ID.get(bid)
+            if not b_info:
+                continue
+            live_level = planet.building_level(bid)
+            in_flight_lvl = in_flight_bmap.get(entity_key, 0)
+            if max(live_level, in_flight_lvl) >= target_level:
+                continue
+            b_name = str(step.get("entity_name") or b_info["name"])
+            step_lbl = f"{b_name} L{target_level}"
+            if target_level != live_level + 1:
+                continue
+            if not is_building_allowed_on_planet_type(planet, bid, has_b8_offer=(8 in offers_by_id)):
+                continue
+            if game_data.missing_prerequisites(
+                "buildings", bid, buildings=planet.buildings, researches=state.researches
+            ):
+                if first_prereq_blocked is None:
+                    first_prereq_blocked = step_lbl
+                continue
+            if fields_full:
+                if first_field_blocked is None:
+                    first_field_blocked = step_lbl
+                continue
+
+            wiki_cost = Resources(**full_cost(game_data.building_cost(bid, target_level)))
+            storage_blocker: Optional[tuple[str, int, int]] = None
+            if bid not in (11, 12, 13, 14):
+                for r in RESOURCE_KEYS:
+                    cap = game_data.safe_int(getattr(planet.storage, r, 0), 0)
+                    need_r = game_data.safe_int(getattr(wiki_cost, r, 0), 0)
+                    if cap > 0 and need_r > cap:
+                        storage_blocker = (_RESOURCE_DISPLAY_LABELS[r], need_r, cap)
+                        break
+            if storage_blocker is not None:
+                if first_storage_blocked is None:
+                    first_storage_blocked = (
+                        step_lbl,
+                        storage_blocker[0],
+                        storage_blocker[1],
+                        storage_blocker[2],
+                    )
+                continue
+
+            if (not wiki_cost.is_zero()) and planet.resources.can_afford(wiki_cost):
+                has_affordable_target_step = True
+
+        next_label: Optional[str] = None
+        if active_build_count > 0:
+            col_state = "building"
+            if in_flight_bmap:
+                first_bkey, first_lvl = next(iter(in_flight_bmap.items()))
+                if first_bkey.startswith("b") and first_bkey[1:].isdigit():
+                    binfo = game_data.BUILDING_BY_ID.get(int(first_bkey[1:]))
+                    bname = str(binfo["name"]) if binfo else first_bkey
+                else:
+                    bname = first_bkey
+                next_label = f"{bname} L{int(first_lvl)}"
+            elif b_act is not None:
+                next_label = (
+                    f"{b_act.target_name} L{b_act.target_level}"
+                    if b_act.target_level
+                    else str(b_act.target_name)
+                )
+            rem_s = in_prog_rem_by_pid.get(pid, 0.0)
+            if next_label and rem_s > 0.0:
+                reason = f"Building {next_label} ({fmt_path_time(rem_s / 3600.0)} left)"
+            elif next_label:
+                reason = f"Building {next_label}"
+            else:
+                reason = "Build queue active"
+        elif b_act is not None and b_act.executable_now:
+            col_state = "ready_not_started"
+            next_label = (
+                f"{b_act.target_name} L{b_act.target_level}"
+                if b_act.target_level
+                else str(b_act.target_name)
+            )
+            reason = str(b_act.reason or f"Ready to start {next_label}")
+        elif conflict is not None or first_field_blocked is not None:
+            col_state = "field_conflict"
+            if conflict is not None:
+                blk_name = str(
+                    conflict.get("blocked_building_name")
+                    or conflict.get("blocked_building_key")
+                    or "building"
+                )
+                blk_lvl = game_data.safe_int(conflict.get("blocked_target_level"), 0)
+                next_label = f"{blk_name} L{blk_lvl}" if blk_lvl > 0 else blk_name
+            else:
+                next_label = first_field_blocked
+            reason = (
+                f"Fields full ({planet.fields_used}/{planet.fields_max}) blocking {next_label}"
+                if next_label
+                else f"Fields full ({planet.fields_used}/{planet.fields_max})"
+            )
+        elif b_act is not None and not b_act.missing.is_zero():
+            next_label = (
+                f"{b_act.target_name} L{b_act.target_level}"
+                if b_act.target_level
+                else str(b_act.target_name)
+            )
+            rem_missing = {
+                r: max(
+                    0,
+                    game_data.safe_int(getattr(b_act.missing, r, 0), 0)
+                    - game_data.safe_int(getattr(inbound_res, r, 0), 0),
+                )
+                for r in RESOURCE_KEYS
+            }
+            if sum(rem_missing.values()) == 0:
+                col_state = "transport_inbound"
+                reason = f"Inbound friendly cargo covers {next_label}"
+            else:
+                top_res = max(
+                    (r for r, amt in rem_missing.items() if amt > 0),
+                    key=lambda r: (
+                        rem_missing[r] / max(1e-9, float(game_data.MERCHANT_RATES_IN_SPICE[r])),
+                        _RESOURCE_TIE_PRIORITY[r],
+                    ),
+                )
+                col_state = f"waiting_{top_res}"
+                parts = []
+                for r in ("metal", "pig_iron", "kryptonite", "spice"):
+                    rem_amt = rem_missing[r]
+                    if rem_amt > 0:
+                        inb_amt = game_data.safe_int(getattr(inbound_res, r, 0), 0)
+                        if inb_amt > 0:
+                            parts.append(
+                                f"{rem_amt:,} {_RESOURCE_DISPLAY_LABELS[r]} ({inb_amt:,} inbound)"
+                            )
+                        else:
+                            parts.append(f"{rem_amt:,} {_RESOURCE_DISPLAY_LABELS[r]}")
+                reason = f"Waiting for {', '.join(parts)} for {next_label}"
+        elif first_storage_blocked is not None:
+            col_state = "storage_blocked"
+            next_label = first_storage_blocked[0]
+            reason = (
+                f"{next_label} exceeds {first_storage_blocked[1]} storage "
+                f"({first_storage_blocked[2]:,} > {first_storage_blocked[3]:,})"
+            )
+        else:
+            col_state = "idle_complete"
+            if b_act is not None:
+                next_label = (
+                    f"{b_act.target_name} L{b_act.target_level}"
+                    if b_act.target_level
+                    else str(b_act.target_name)
+                )
+                reason = str(b_act.reason or f"Waiting on {next_label}")
+            elif first_prereq_blocked is not None:
+                next_label = first_prereq_blocked
+                reason = f"Waiting on prerequisites for {first_prereq_blocked}"
+            else:
+                next_label = None
+                reason = "All planned steps complete"
+
+        idle_with_affordable = bool(
+            has_affordable_target_step and col_state not in ("building", "ready_not_started")
+        )
+        counts[col_state] += 1
+        colonies_out.append(
+            {
+                "planet_id": pid,
+                "coords": coords_s,
+                "name": name_s,
+                "state": col_state,
+                "reason": reason,
+                "next_label": next_label,
+                "idle_with_affordable_target_step": idle_with_affordable,
+                "b2_level": b2_level,
+                "b2_pct": b2_pct,
+                "energy_net": energy_net,
+                "b2_energy_margin_at_100": b2_energy_margin_at_100,
+            }
+        )
+
+    return _json_ready(
+        {
+            "active_builders": int(counts["building"]),
+            "total_colonies": int(len(colonies_out)),
+            "colonies": colonies_out,
+            "counts": counts,
+            "idle_with_affordable_count": int(
+                sum(1 for row in colonies_out if row["idle_with_affordable_target_step"])
+            ),
+            "ready_not_started_count": int(counts["ready_not_started"]),
+        }
+    )
 
 
 def compute_early_transport_needs(
