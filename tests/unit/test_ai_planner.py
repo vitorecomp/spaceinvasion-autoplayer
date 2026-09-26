@@ -41,6 +41,7 @@ def _make_planet(
     resources: Resources | None = None,
     storage: Resources | None = None,
     building_offers: tuple[BuildingOffer, ...] = (),
+    economy_rates: dict[str, int] | None = None,
 ) -> PlanetState:
     bmap = dict(buildings or {})
     return PlanetState(
@@ -56,6 +57,7 @@ def _make_planet(
         energy=EnergyBalance(produced=400, used=200),
         buildings=bmap,
         building_offers=building_offers,
+        economy_rates=dict(economy_rates or {}),
     )
 
 
@@ -1737,6 +1739,180 @@ class AiPlannerUnitTests(unittest.TestCase):
             config=cfg,
         )
         self.assertEqual(captcha_api.dispatched, [("build", 101)])
+
+    def test_initial_blast_furnace_state_and_smelting_transitions(self) -> None:
+        # Target requires b7 L5 (which needs Metal > 0), starting with 0 Metal so AI-Planner must smelt at t=0.
+        target_single = _sample_target_config(
+            [
+                _target_planet_entry(
+                    1,
+                    101,
+                    "02:380:12",
+                    "Homeworld",
+                    {
+                        "b1": 8,
+                        "b2": 5,
+                        "b3": 6,
+                        "b4": 4,
+                        "b5": 12,
+                        "b7": 5,
+                        "b8": 3,
+                        "b11": 6,
+                        "b12": 6,
+                        "b13": 6,
+                        "b14": 6,
+                    },
+                    is_central=True,
+                    pays_for_research=True,
+                ),
+            ],
+            planned_research={"r1": 2, "r2": 4},
+        )
+        base_b = {"b1": 8, "b2": 5, "b3": 6, "b4": 4, "b5": 12, "b7": 4, "b8": 3, "b11": 6, "b12": 6, "b13": 6, "b14": 6}
+
+        def _state_with_single(res: Resources, eco: dict[str, int]) -> GameState:
+            return GameState(
+                universe_id=31,
+                user_id=1,
+                nickname="SmeltTest",
+                timestamp=1_700_000_000.0,
+                planets=(
+                    _make_planet(
+                        101,
+                        "02:380:12",
+                        "Homeworld",
+                        buildings=base_b,
+                        resources=res,
+                        economy_rates=eco,
+                    ),
+                ),
+                active_planet_id=101,
+                researches={"r1": 2, "r2": 4},
+                speedup_factor=5.0,
+            )
+
+        # Case 1: Live b2 OFF (0%), 0 Metal stock -> AI-Planner wants ON (100%) at t=0 -> emits t=0 ENABLE toggle!
+        st_off_need = _state_with_single(Resources(200_000, 0, 200_000, 100_000), {"resource2": 0})
+        plan_off_need = ap.run_ai_planner(
+            st_off_need, target_single, params={"reward_weeks": 2, "ga_generations": 0}
+        )
+        sm1 = plan_off_need["smelting"]
+        self.assertEqual(sm1["initial_live_mode"], "off")
+        self.assertFalse(sm1["initial_live_any_enabled"])
+        self.assertTrue(sm1["initial_target_enabled"])
+        self.assertEqual(sm1["initial_target_pct"], 100)
+        self.assertTrue(sm1["initial_toggle_needed"])
+        self.assertEqual(len(sm1["initial_planets_needing_toggle"]), 1)
+        self.assertEqual(sm1["initial_planets_needing_toggle"][0]["from_pct"], 0)
+        self.assertEqual(sm1["initial_planets_needing_toggle"][0]["to_pct"], 100)
+        self.assertGreater(sm1["metal_smelted"], 0)
+        self.assertGreater(len(sm1["smelting_spans"]), 0)
+        self.assertGreaterEqual(len(sm1["smelting_events"]), 2)
+        ev0 = sm1["smelting_events"][0]
+        self.assertTrue(ev0["is_initial"])
+        self.assertEqual(ev0["time_sec"], 0.0)
+        self.assertEqual(ev0["action"], "enable")
+        self.assertTrue(ev0["enabled"])
+        self.assertEqual(ev0["from_mode"], "off")
+        # Once Metal is satisfied / step starts, AI-Planner emits a subsequent DISABLE event.
+        self.assertEqual(sm1["smelting_events"][1]["action"], "disable")
+        self.assertFalse(sm1["smelting_events"][1]["is_initial"])
+        self.assertGreater(sm1["smelting_events"][1]["time_sec"], 0.0)
+        # Summary mirrors smelting metadata
+        self.assertEqual(plan_off_need["summary"]["initial_smelting_live_mode"], "off")
+        self.assertFalse(plan_off_need["summary"]["initial_smelting_live_enabled"])
+        self.assertTrue(plan_off_need["summary"]["initial_smelting_target_enabled"])
+        self.assertTrue(plan_off_need["summary"]["initial_smelting_toggle_needed"])
+        self.assertEqual(plan_off_need["summary"]["smelting_toggles_count"], len(sm1["smelting_events"]))
+
+        # Case 2: Live b2 ALREADY ON (100%) with same 0 Metal stock -> aligned at t=0, NO initial toggle event,
+        # and simulation reward/steps/metal_smelted remain 100% identical to Case 1!
+        st_on_need = _state_with_single(Resources(200_000, 0, 200_000, 100_000), {"resource2": 100})
+        plan_on_need = ap.run_ai_planner(
+            st_on_need, target_single, params={"reward_weeks": 2, "ga_generations": 0}
+        )
+        sm2 = plan_on_need["smelting"]
+        self.assertEqual(sm2["initial_live_mode"], "on")
+        self.assertTrue(sm2["initial_live_any_enabled"])
+        self.assertTrue(sm2["initial_live_all_enabled"])
+        self.assertTrue(sm2["initial_target_enabled"])
+        self.assertFalse(sm2["initial_toggle_needed"])
+        self.assertEqual(sm2["initial_planets_needing_toggle"], [])
+        self.assertFalse(any(ev["is_initial"] for ev in sm2["smelting_events"]))
+        self.assertEqual(sm2["metal_smelted"], sm1["metal_smelted"])
+        self.assertEqual(
+            plan_on_need["summary"]["discounted_reward"], plan_off_need["summary"]["discounted_reward"]
+        )
+        self.assertEqual(len(plan_on_need["steps"]), len(plan_off_need["steps"]))
+
+        # Case 3: Live b2 ON (100%), abundant Metal stock -> AI-Planner wants OFF (0%) at t=0 -> emits t=0 DISABLE!
+        st_on_abundant = _state_with_single(Resources(0, 300_000, 200_000, 100_000), {"resource2": 100})
+        plan_on_abundant = ap.run_ai_planner(
+            st_on_abundant, target_single, params={"reward_weeks": 2, "ga_generations": 0}
+        )
+        sm3 = plan_on_abundant["smelting"]
+        self.assertEqual(sm3["initial_live_mode"], "on")
+        self.assertFalse(sm3["initial_target_enabled"])
+        self.assertTrue(sm3["initial_toggle_needed"])
+        self.assertEqual(sm3["smelting_events"][0]["is_initial"], True)
+        self.assertEqual(sm3["smelting_events"][0]["action"], "disable")
+        self.assertEqual(sm3["smelting_events"][0]["target_pct"], 0)
+        self.assertEqual(sm3["smelting_events"][0]["from_mode"], "on")
+
+        # Case 4: Mixed multi-colony (P1 ON 100%, P2 OFF 0%, P3 no b2) -> only mismatched b2 planet flagged!
+        p1_on = _make_planet(101, "02:380:01", "Prime", buildings=base_b, resources=Resources(100_000, 0, 100_000, 50_000), economy_rates={"resource2": 100})
+        p2_off = _make_planet(102, "02:380:02", "Forge", buildings={"b1": 8, "b2": 4, "b3": 4, "b5": 12, "b11": 6, "b12": 6, "b13": 6, "b14": 6}, resources=Resources(50_000, 0, 50_000, 20_000), economy_rates={"resource2": 0})
+        p3_nob2 = _make_planet(103, "02:380:03", "Outpost", buildings={"b1": 6, "b3": 4, "b5": 10, "b11": 6, "b12": 6, "b13": 6, "b14": 6}, resources=Resources(50_000, 0, 50_000, 20_000), economy_rates={"resource2": 0})
+        st_mixed = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="MixedSmelt",
+            timestamp=1_700_000_000.0,
+            planets=(p1_on, p2_off, p3_nob2),
+            active_planet_id=101,
+            researches={"r1": 2, "r2": 4},
+            speedup_factor=5.0,
+        )
+        target_mixed = _sample_target_config(
+            [
+                _target_planet_entry(1, 101, "02:380:01", "Prime", {**base_b, "b7": 5}, is_central=True, pays_for_research=True),
+                _target_planet_entry(2, 102, "02:380:02", "Forge", {"b1": 8, "b2": 4, "b3": 4, "b5": 12, "b11": 6, "b12": 6, "b13": 6, "b14": 6}),
+                _target_planet_entry(3, 103, "02:380:03", "Outpost", {"b1": 6, "b3": 4, "b5": 10, "b11": 6, "b12": 6, "b13": 6, "b14": 6}),
+            ],
+            planned_research={"r1": 2, "r2": 4},
+        )
+        plan_mixed = ap.run_ai_planner(
+            st_mixed, target_mixed, params={"reward_weeks": 2, "ga_generations": 0, "transport_dispatch_delay_minutes": 0}
+        )
+        sm4 = plan_mixed["smelting"]
+        self.assertEqual(sm4["initial_live_mode"], "mixed")
+        self.assertEqual(sm4["initial_live_enabled_count"], 1)
+        self.assertEqual(sm4["initial_live_disabled_count"], 1)
+        self.assertEqual(sm4["total_b2_planets"], 2)
+        self.assertTrue(sm4["initial_target_enabled"])
+        self.assertTrue(sm4["initial_toggle_needed"])
+        # Only planet 102 (0% -> 100%) needs toggling; 101 is already 100% and 103 has no b2!
+        self.assertEqual([row["planet_id"] for row in sm4["initial_planets_needing_toggle"]], [102])
+        self.assertEqual(sm4["smelting_events"][0]["action"], "enable")
+        self.assertEqual(sm4["smelting_events"][0]["from_mode"], "mixed")
+
+        # Case 5: No b2 built anywhere yet -> mode="none", no t=0 toggle needed!
+        p_nob2 = _make_planet(201, "02:380:09", "Fresh", buildings={"b1": 4, "b3": 2, "b5": 6, "b11": 4, "b12": 4, "b13": 4, "b14": 4}, resources=Resources(10_000, 0, 10_000, 5_000))
+        st_nob2 = GameState(
+            universe_id=31, user_id=1, nickname="NoB2", timestamp=1_700_000_000.0,
+            planets=(p_nob2,), active_planet_id=201, researches={"r1": 1, "r2": 1}, speedup_factor=5.0,
+        )
+        target_nob2 = _sample_target_config(
+            [_target_planet_entry(1, 201, "02:380:09", "Fresh", {"b1": 5, "b3": 2, "b5": 6, "b11": 4, "b12": 4, "b13": 4, "b14": 4}, is_central=True)],
+            planned_research={"r1": 1, "r2": 1},
+        )
+        plan_nob2 = ap.run_ai_planner(st_nob2, target_nob2, params={"reward_weeks": 1, "ga_generations": 0})
+        sm5 = plan_nob2["smelting"]
+        self.assertEqual(sm5["initial_live_mode"], "none")
+        self.assertEqual(sm5["total_b2_planets"], 0)
+        self.assertFalse(sm5["initial_target_enabled"])
+        self.assertFalse(sm5["initial_toggle_needed"])
+        self.assertEqual(sm5["smelting_events"], [])
 
 
 if __name__ == "__main__":

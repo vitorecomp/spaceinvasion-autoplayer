@@ -974,6 +974,89 @@ def _extract_live_in_progress_state(
     return in_progress_builds, in_progress_research, in_flight_arrivals
 
 
+def summarize_blast_furnace_entries(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Summarize per-colony Blast furnace (`b2`) levels and live throttle percentages."""
+    planets_out: list[dict[str, Any]] = []
+    for row in entries:
+        if not isinstance(row, Mapping):
+            continue
+        b2_lvl = max(0, game_data.safe_int(row.get("b2_level"), 0))
+        if b2_lvl > 0:
+            pct = max(0, min(100, game_data.safe_int(row.get("initial_pct"), 100)))
+        else:
+            pct = 0
+        enabled = bool(b2_lvl > 0 and pct > 0)
+        planets_out.append(
+            {
+                "planet_index": game_data.safe_int(row.get("planet_index"), -1),
+                "planet_id": game_data.safe_int(row.get("planet_id"), 0),
+                "coords": str(row.get("coords") or ""),
+                "name": str(row.get("name") or row.get("coords") or ""),
+                "b2_level": b2_lvl,
+                "initial_pct": pct,
+                "initial_enabled": enabled,
+                "rate_known": bool(row.get("rate_known", False)),
+            }
+        )
+
+    b2_capable = [row for row in planets_out if row["b2_level"] > 0]
+    enabled_count = sum(1 for row in b2_capable if row["initial_enabled"])
+    disabled_count = len(b2_capable) - enabled_count
+    full_on_count = sum(1 for row in b2_capable if row["initial_pct"] >= 100)
+    full_off_count = sum(1 for row in b2_capable if row["initial_pct"] <= 0)
+    if not b2_capable:
+        mode = "none"
+        any_enabled = False
+        all_enabled = False
+    elif full_on_count == len(b2_capable):
+        mode = "on"
+        any_enabled = True
+        all_enabled = True
+    elif full_off_count == len(b2_capable):
+        mode = "off"
+        any_enabled = False
+        all_enabled = False
+    else:
+        mode = "mixed"
+        any_enabled = enabled_count > 0
+        all_enabled = enabled_count == len(b2_capable)
+
+    return {
+        "mode": mode,
+        "any_enabled": any_enabled,
+        "all_enabled": all_enabled,
+        "enabled_count": enabled_count,
+        "disabled_count": disabled_count,
+        "total_b2_planets": len(b2_capable),
+        "planets": planets_out,
+    }
+
+
+def summarize_live_blast_furnace_state(state: Optional[GameState]) -> dict[str, Any]:
+    """Capture live Blast furnace (`b2`) enabled/disabled state across owned normal colonies."""
+    if state is None:
+        return summarize_blast_furnace_entries(())
+    entries: list[dict[str, Any]] = []
+    normal_planets = [p for p in (state.planets or ()) if normalize_planet_type(p) == "normal"]
+    for idx, p in enumerate(normal_planets):
+        b2_lvl = max(0, int((p.buildings or {}).get("b2", 0) or 0))
+        eco_rates = getattr(p, "economy_rates", None) or {}
+        rate_known = "resource2" in eco_rates
+        pct = max(0, min(100, game_data.safe_int(eco_rates.get("resource2", 100), 100))) if b2_lvl > 0 else 0
+        entries.append(
+            {
+                "planet_index": idx,
+                "planet_id": int(p.planet_id),
+                "coords": str(p.coords or ""),
+                "name": str(p.name or p.coords or ""),
+                "b2_level": b2_lvl,
+                "initial_pct": pct,
+                "rate_known": rate_known,
+            }
+        )
+    return summarize_blast_furnace_entries(entries)
+
+
 def build_path_problem(
     state: GameState,
     target_config: Mapping[str, Any],
@@ -1054,6 +1137,15 @@ def build_path_problem(
         resolved_name, resolved_game_name = _resolve_planet_display_name(
             live_planet, slot_idx, merged_planet_names or None
         )
+        b2_lvl = levels.get("b2", 0)
+        eco_rates = getattr(live_planet, "economy_rates", None) or {}
+        b2_rate_known = "resource2" in eco_rates
+        blast_furnace_pct = (
+            max(0, min(100, game_data.safe_int(eco_rates.get("resource2", 100), 100)))
+            if b2_lvl > 0
+            else 0
+        )
+        blast_furnace_enabled = bool(b2_lvl > 0 and blast_furnace_pct > 0)
         return {
             "index": index,
             "slot_index": slot_idx,
@@ -1073,6 +1165,9 @@ def build_path_problem(
             "solar_cells": stationed_s9,
             "resources": res_tuple,
             "ships": transport_ships,
+            "blast_furnace_pct": blast_furnace_pct,
+            "blast_furnace_enabled": blast_furnace_enabled,
+            "blast_furnace_rate_known": b2_rate_known,
             "saved_production": dict(raw_entry.get("production") or {}) if raw_entry is not None else {},
             "missing_ships": {},
         }
@@ -1120,6 +1215,9 @@ def build_path_problem(
                     "solar_cells": 0,
                     "resources": (0.0, 0.0, 0.0, 0.0),
                     "ships": {},
+                    "blast_furnace_pct": 0,
+                    "blast_furnace_enabled": False,
+                    "blast_furnace_rate_known": False,
                     "saved_production": dict(raw_entry.get("production") or {}),
                     "missing_ships": {},
                 }
@@ -1164,6 +1262,9 @@ def build_path_problem(
                     "solar_cells": 0,
                     "resources": (0.0, 0.0, 0.0, 0.0),
                     "ships": {},
+                    "blast_furnace_pct": 0,
+                    "blast_furnace_enabled": False,
+                    "blast_furnace_rate_known": False,
                     "saved_production": dict(raw_entry.get("production") or {}),
                     "missing_ships": {},
                 }
@@ -1398,9 +1499,28 @@ def build_path_problem(
     avg_travel_sec = float(np.mean(np.asarray(off_diag_secs, dtype=np.float64))) if off_diag_secs else 0.0
     max_travel_sec = float(max(off_diag_secs)) if off_diag_secs else 0.0
 
+    initial_blast_furnace = summarize_blast_furnace_entries(
+        [
+            {
+                "planet_index": int(p["index"]),
+                "planet_id": int(p["planet_id"]),
+                "coords": str(p["coords"]),
+                "name": str(p["name"]),
+                "b2_level": int((p.get("levels") or {}).get("b2", 0)),
+                "initial_pct": int(
+                    p.get("blast_furnace_pct", 100 if int((p.get("levels") or {}).get("b2", 0)) > 0 else 0)
+                ),
+                "rate_known": bool(p.get("blast_furnace_rate_known", False)),
+            }
+            for p in problem_planets
+            if p.get("founded")
+        ]
+    )
+
     return {
         "speedup_factor": speedup,
         "planets": problem_planets,
+        "initial_blast_furnace": initial_blast_furnace,
         "research_levels": research_now,
         "research_target": research_target,
         "lab_planet": lab_planet,
@@ -1516,6 +1636,35 @@ class EmpirePathSimulator:
             list(problem.get("in_progress_builds") or ()) + list(problem.get("in_progress_research") or ())
         )
         self.initial_arrivals: tuple[dict[str, Any], ...] = tuple(problem.get("in_flight_arrivals") or ())
+        raw_init_bf = problem.get("initial_blast_furnace")
+        if isinstance(raw_init_bf, Mapping) and isinstance(raw_init_bf.get("planets"), Sequence):
+            self.initial_blast_furnace: dict[str, Any] = summarize_blast_furnace_entries(
+                raw_init_bf.get("planets") or ()
+            )
+        else:
+            self.initial_blast_furnace = summarize_blast_furnace_entries(
+                [
+                    {
+                        "planet_index": int(p.get("index", idx)),
+                        "planet_id": int(p.get("planet_id", idx + 1)),
+                        "coords": str(p.get("coords") or ""),
+                        "name": str(p.get("name") or p.get("coords") or ""),
+                        "b2_level": int((p.get("levels") or {}).get("b2", 0)),
+                        "initial_pct": int(
+                            p.get(
+                                "blast_furnace_pct",
+                                100 if int((p.get("levels") or {}).get("b2", 0)) > 0 else 0,
+                            )
+                        ),
+                        "rate_known": bool(p.get("blast_furnace_rate_known", False)),
+                    }
+                    for idx, p in enumerate(self.planets)
+                    if p.get("founded")
+                ]
+            )
+        self._initial_b2_capable_planets: tuple[dict[str, Any], ...] = tuple(
+            row for row in self.initial_blast_furnace["planets"] if int(row["b2_level"]) > 0
+        )
         self._empire_transport_ships: dict[str, int] = dict(problem.get("empire_transport_ships") or {})
         self._fallback_distance_units: float = float(problem.get("fallback_distance_units", 1175.0))
         self._base_travel_hours: list[list[float]] = self._compute_travel_hours_matrix(
@@ -1759,14 +1908,18 @@ class EmpirePathSimulator:
 
     def _refresh_rates(self) -> None:
         mined = left = metal = kry = spice = 0.0
+        b2_founded = 0
         for planet in range(self.planet_count):
             if self.founded[planet]:
+                if self.levels[planet].get("b2", 0) > 0:
+                    b2_founded += 1
                 out = self.output[planet]
                 mined += out[0]
                 left += out[1]
                 metal += out[2]
                 kry += out[3]
                 spice += out[4]
+        self.b2_founded_count = b2_founded
         self.fleet_slots = self.fleet_slots_of(self.levels, self.founded)
         attack = self.gross_attack_of(self.fleet_slots)
         self.attack_now = attack
@@ -2312,6 +2465,8 @@ class EmpirePathSimulator:
                 ends_a_transit=(elapsed == until_transit and bool(self.transit_heap)),
             )
 
+        if not self._smelting_initialized:
+            self._record_smelting_transition()
         if self.clock < self.horizon_hours:
             self._accrue_weekly(self.clock, self.horizon_hours - self.clock)
         rates = self.merchant_rates
@@ -2338,6 +2493,11 @@ class EmpirePathSimulator:
             "waiting_for_step": self.reserved if status == "stuck" else -1,
             "metal_smelted": self.metal_smelted,
             "smelting_spans": [tuple(span) for span in self.smelting_spans],
+            "initial_blast_furnace": self.initial_blast_furnace,
+            "initial_smelting_target": bool(self.initial_smelting_target),
+            "initial_toggle_needed": bool(self.initial_toggle_needed),
+            "initial_planets_needing_toggle": [dict(row) for row in self.initial_planets_needing_toggle],
+            "smelting_events": [dict(ev) for ev in self.smelting_events],
             "events": events,
             "reviews": self.reviews,
             "final_stock": tuple(self.stock),
@@ -2487,6 +2647,12 @@ class EmpirePathSimulator:
         self.smelting = False
         self.metal_smelted = 0.0
         self.smelting_spans: list[list[float]] = []
+        self.smelting_events: list[dict[str, Any]] = []
+        self._smelting_initialized = False
+        self._last_recorded_smelt = False
+        self.initial_smelting_target = False
+        self.initial_toggle_needed = False
+        self.initial_planets_needing_toggle: list[dict[str, Any]] = []
         self.reviews = 0
         self.completions_since_review = 0
         self.review_at = PATH_NEVER
@@ -3002,6 +3168,116 @@ class EmpirePathSimulator:
                 horizon = max(horizon, missing[position] / supply if supply > 0.0 else PATH_NEVER)
         return horizon
 
+    def _format_smelt_step_label(self, step_id: int) -> str:
+        if 0 <= step_id < len(self.steps):
+            st = self.steps[step_id]
+            p_idx = int(st["planet"])
+            where = f" on {self.planets[p_idx]['coords']}" if p_idx >= 0 else ""
+            return f"{st['name']} L{int(st['level_to'])}{where}"
+        return ""
+
+    def _record_smelting_transition(self) -> None:
+        effective_smelt = bool(self.smelting) and self.b2_founded_count > 0
+        if (not self._smelting_initialized) or (
+            self.clock <= 1e-12 and not any(not ev["is_initial"] for ev in self.smelting_events)
+        ):
+            self._smelting_initialized = True
+            self._last_recorded_smelt = effective_smelt
+            self.initial_smelting_target = effective_smelt
+            target_pct = 100 if effective_smelt else 0
+            needing_toggle = [
+                {
+                    "planet_id": int(row["planet_id"]),
+                    "coords": str(row["coords"]),
+                    "name": str(row["name"]),
+                    "b2_level": int(row["b2_level"]),
+                    "from_pct": int(row["initial_pct"]),
+                    "to_pct": target_pct,
+                }
+                for row in self._initial_b2_capable_planets
+                if int(row["initial_pct"]) != target_pct
+            ]
+            self.initial_planets_needing_toggle = needing_toggle
+            self.initial_toggle_needed = bool(needing_toggle)
+            if self.smelting_events and self.smelting_events[-1]["is_initial"]:
+                self.smelting_events.pop()
+            if needing_toggle:
+                live_mode = str(self.initial_blast_furnace["mode"])
+                live_desc = (
+                    f"{live_mode.upper()} "
+                    f"({self.initial_blast_furnace['enabled_count']}/{self.initial_blast_furnace['total_b2_planets']} ON)"
+                )
+                step_lbl = self._format_smelt_step_label(self.reserved)
+                if effective_smelt:
+                    reason = (
+                        f"Initial live b2 {live_desc} -> ENABLE 100%: Metal needed for {step_lbl}"
+                        if step_lbl
+                        else f"Initial live b2 {live_desc} -> ENABLE 100%"
+                    )
+                elif step_lbl:
+                    reason = f"Initial live b2 {live_desc} -> DISABLE 0%: Metal sufficient for {step_lbl}"
+                else:
+                    reason = f"Initial live b2 {live_desc} -> DISABLE 0%: No waiting step requires Metal"
+                self.smelting_events.append(
+                    {
+                        "time_hours": 0.0,
+                        "action": "enable" if effective_smelt else "disable",
+                        "enabled": effective_smelt,
+                        "target_pct": target_pct,
+                        "from_mode": live_mode,
+                        "from_enabled": bool(self.initial_blast_furnace["any_enabled"]),
+                        "is_initial": True,
+                        "reserved_step_id": int(self.reserved),
+                        "affected_planets": needing_toggle,
+                        "reason": reason,
+                    }
+                )
+            return
+
+        if effective_smelt == self._last_recorded_smelt:
+            return
+
+        prev_enabled = self._last_recorded_smelt
+        self._last_recorded_smelt = effective_smelt
+        target_pct = 100 if effective_smelt else 0
+
+        if (
+            self.smelting_events
+            and not self.smelting_events[-1]["is_initial"]
+            and abs(float(self.smelting_events[-1]["time_hours"]) - self.clock) <= 1e-12
+        ):
+            if bool(self.smelting_events[-1]["from_enabled"]) == effective_smelt:
+                self.smelting_events.pop()
+                return
+            self.smelting_events.pop()
+
+        step_lbl = self._format_smelt_step_label(self.reserved)
+        if effective_smelt:
+            reason = (
+                f"ENABLE 100%: Metal shortfall for {step_lbl}"
+                if step_lbl
+                else "ENABLE 100%: Metal required"
+            )
+        elif step_lbl:
+            reason = f"DISABLE 0%: Metal satisfied for {step_lbl}"
+        else:
+            reason = "DISABLE 0%: Queue complete or no waiting Metal shortfall"
+
+        self.smelting_events.append(
+            {
+                "time_hours": float(self.clock),
+                "action": "enable" if effective_smelt else "disable",
+                "enabled": effective_smelt,
+                "target_pct": target_pct,
+                "from_mode": "on" if prev_enabled else "off",
+                "from_enabled": prev_enabled,
+                "is_initial": False,
+                "reserved_step_id": int(self.reserved),
+                "affected_planets": [],
+                "reason": reason,
+            }
+        )
+
     def _decide(self) -> None:
         self.early_dispatch_at = PATH_NEVER
         for _ in range(self.queue_count + 2):
@@ -3017,6 +3293,7 @@ class EmpirePathSimulator:
                 for _ in range(self.queue_count + 2):
                     if not self._start_proposals(self.strategy.proposals(self, forced=True)):
                         break
+        self._record_smelting_transition()
 
     def _start_proposals(self, proposals: list[tuple[tuple, int]]) -> bool:
         reserved = -1
@@ -4324,6 +4601,82 @@ def run_ai_planner(
         "pairs": transport_pairs,
     }
 
+    raw_smelting_spans = list(best_run.get("smelting_spans") or ())
+    smelting_hours_total = sum(
+        max(0.0, float(span[1]) - float(span[0]))
+        for span in raw_smelting_spans
+        if isinstance(span, (list, tuple)) and len(span) >= 2
+    )
+    smelting_spans_out = [
+        {
+            "start_hours": round(float(span[0]), 4),
+            "end_hours": round(float(span[1]), 4),
+            "start_sec": round(float(span[0]) * 3600.0, 2),
+            "end_sec": round(float(span[1]) * 3600.0, 2),
+            "duration_sec": round(max(0.0, float(span[1]) - float(span[0])) * 3600.0, 2),
+            "start_text": "now" if float(span[0]) <= 1e-6 else fmt_path_time(float(span[0])),
+            "end_text": fmt_path_time(float(span[1])),
+            "duration_text": fmt_path_time(max(0.0, float(span[1]) - float(span[0]))),
+        }
+        for span in raw_smelting_spans
+        if isinstance(span, (list, tuple)) and len(span) >= 2
+    ]
+
+    raw_smelting_events = list(best_run.get("smelting_events") or ())
+    smelting_events_out: list[dict[str, Any]] = []
+    for ev_seq, ev in enumerate(raw_smelting_events, start=1):
+        ev_hr = max(0.0, float(ev.get("time_hours", 0.0)))
+        ev_wk = min(simulator.reward_weeks, max(1, int(ev_hr // PATH_HOURS_PER_WEEK) + 1))
+        step_id = ev.get("reserved_step_id", -1)
+        step_label: Optional[str] = None
+        step_planet_coords: Optional[str] = None
+        if isinstance(step_id, int) and 0 <= step_id < len(simulator.steps):
+            st_det = simulator.steps[step_id]
+            step_label = f"{st_det['name']} L{int(st_det['level_to'])}"
+            sp_idx = int(st_det["planet"])
+            step_planet_coords = str(simulator.planets[sp_idx]["coords"]) if sp_idx >= 0 else "account"
+        smelting_events_out.append(
+            {
+                "seq": ev_seq,
+                "time_hours": round(ev_hr, 4),
+                "time_sec": round(ev_hr * 3600.0, 2),
+                "time_text": "now" if ev_hr <= 1e-6 else fmt_path_time(ev_hr),
+                "week": ev_wk,
+                "action": str(ev.get("action") or ("enable" if ev.get("enabled") else "disable")),
+                "enabled": bool(ev.get("enabled", False)),
+                "target_pct": 100 if ev.get("enabled") else 0,
+                "from_mode": str(ev.get("from_mode") or "off"),
+                "from_enabled": bool(ev.get("from_enabled", False)),
+                "is_initial": bool(ev.get("is_initial", False)),
+                "affected_planets": list(ev.get("affected_planets") or ()),
+                "step_label": step_label,
+                "step_planet_coords": step_planet_coords,
+                "reason": str(ev.get("reason") or ""),
+            }
+        )
+
+    init_bf_info = dict(best_run.get("initial_blast_furnace") or simulator.initial_blast_furnace)
+    smelting_out = {
+        "initial_live_mode": str(init_bf_info.get("mode") or "none"),
+        "initial_live_any_enabled": bool(init_bf_info.get("any_enabled", False)),
+        "initial_live_all_enabled": bool(init_bf_info.get("all_enabled", False)),
+        "initial_live_enabled_count": int(init_bf_info.get("enabled_count", 0)),
+        "initial_live_disabled_count": int(init_bf_info.get("disabled_count", 0)),
+        "total_b2_planets": int(init_bf_info.get("total_b2_planets", 0)),
+        "initial_target_enabled": bool(best_run.get("initial_smelting_target", False)),
+        "initial_target_pct": 100 if best_run.get("initial_smelting_target", False) else 0,
+        "initial_toggle_needed": bool(best_run.get("initial_toggle_needed", False)),
+        "initial_planets_needing_toggle": list(best_run.get("initial_planets_needing_toggle") or ()),
+        "metal_smelted": int(round(best_run["metal_smelted"])),
+        "smelting_hours_total": round(smelting_hours_total, 4),
+        "smelting_time_text": fmt_path_time(smelting_hours_total),
+        "smelting_toggles_count": len(smelting_events_out),
+        "smelting_spans_count": len(smelting_spans_out),
+        "smelting_spans": smelting_spans_out,
+        "smelting_events": smelting_events_out,
+        "planets": list(init_bf_info.get("planets") or ()),
+    }
+
     summary = {
         "strategy": best_strategy.name,
         "status": str(best_run["status"]),
@@ -4370,6 +4723,12 @@ def run_ai_planner(
         "busy_hours_of_that_queue": round(max(0.0, busiest_hours), 2),
         "cost_spent": {r: int(round(cost_spent[pos])) for pos, r in enumerate(RESOURCE_KEYS)},
         "metal_smelted": int(round(best_run["metal_smelted"])),
+        "initial_smelting_live_mode": smelting_out["initial_live_mode"],
+        "initial_smelting_live_enabled": smelting_out["initial_live_any_enabled"],
+        "initial_smelting_target_enabled": smelting_out["initial_target_enabled"],
+        "initial_smelting_toggle_needed": smelting_out["initial_toggle_needed"],
+        "smelting_hours_total": smelting_out["smelting_hours_total"],
+        "smelting_toggles_count": smelting_out["smelting_toggles_count"],
         "loot_counted": {r: int(round(loot_collected[pos])) for pos, r in enumerate(RESOURCE_KEYS)},
         "loot_share_of_cost_spent": round(loot_val / cost_val, 4) if cost_val > 0.0 else 0.0,
         "transport_dispatch_delay_minutes": round(simulator.transport_dispatch_delay_minutes, 2),
@@ -4399,6 +4758,7 @@ def run_ai_planner(
                 "research": in_prog_research_out,
                 "fleet_arrivals": in_flight_arrivals_out,
             },
+            "smelting": smelting_out,
             "transport_matrix": transport_matrix_out,
             "weekly_breakdown": weekly_breakdown,
             "factor_levels": factor_levels,

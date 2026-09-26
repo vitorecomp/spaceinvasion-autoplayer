@@ -6,6 +6,7 @@ import { useConsole } from "../../context/ConsoleContext";
 import { useTableSort, type SortColumnMap } from "../../hooks/useTableSort";
 import type {
   AiPlannerGetPayload,
+  AiPlannerSmeltingToggleTarget,
   AiPlannerStepItem,
   FieldConflictItem,
   PlannerJobState,
@@ -152,7 +153,7 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
   );
   const [draftDirty, setDraftDirty] = useState<boolean>(false);
   const [paramSubTab, setParamSubTab] = useState<"horizon" | "weights">("horizon");
-  const [subView, setSubView] = useState<"dag" | "steps" | "weekly">("dag");
+  const [subView, setSubView] = useState<"dag" | "steps" | "weekly" | "smelting">("dag");
 
   const [windowSize, setWindowSize] = useState<number>(40);
   const [weekFilter, setWeekFilter] = useState<string>("all");
@@ -473,6 +474,61 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
       120
     ) ?? 120
   );
+  const smelting = aiData?.smelting || null;
+  const liveBf = aiData?.live_blast_furnace || null;
+  const smeltingEvents = Array.isArray(smelting?.smelting_events)
+    ? smelting!.smelting_events!
+    : [];
+  const smeltingPlanets =
+    Array.isArray(smelting?.planets) && smelting!.planets!.length > 0
+      ? smelting!.planets!
+      : Array.isArray(liveBf?.planets)
+        ? liveBf!.planets!
+        : [];
+  const initLiveMode = String(
+    smelting?.initial_live_mode ?? liveBf?.mode ?? summary.initial_smelting_live_mode ?? "none"
+  ).toLowerCase();
+  const initLiveEnabledCount = Math.round(
+    safeFiniteNumber(smelting?.initial_live_enabled_count ?? liveBf?.enabled_count, 0) ?? 0
+  );
+  const totalB2Planets = Math.round(
+    safeFiniteNumber(smelting?.total_b2_planets ?? liveBf?.total_b2_planets, 0) ?? 0
+  );
+  const hasSmeltingTarget =
+    typeof smelting?.initial_target_enabled === "boolean" ||
+    typeof summary.initial_smelting_target_enabled === "boolean";
+  const initTargetEnabled = Boolean(
+    smelting?.initial_target_enabled ?? summary.initial_smelting_target_enabled ?? false
+  );
+  const initToggleNeeded = Boolean(
+    smelting?.initial_toggle_needed ?? summary.initial_smelting_toggle_needed ?? false
+  );
+  const metalSmelted = safeFiniteNumber(smelting?.metal_smelted ?? summary.metal_smelted, null);
+  const smeltingHours = safeFiniteNumber(
+    smelting?.smelting_hours_total ?? summary.smelting_hours_total,
+    null
+  );
+  const smeltingTimeText =
+    smelting?.smelting_time_text ||
+    (smeltingHours !== null ? formatDurationSecondsCompact(smeltingHours * 3600) : "0m");
+  const smeltingTogglesCount = Math.round(
+    safeFiniteNumber(
+      smelting?.smelting_toggles_count ?? summary.smelting_toggles_count,
+      smeltingEvents.length
+    ) ?? 0
+  );
+  const toggleByPlanetId = new Map<number, AiPlannerSmeltingToggleTarget>();
+  if (Array.isArray(smelting?.initial_planets_needing_toggle)) {
+    for (const row of smelting!.initial_planets_needing_toggle!) {
+      if (row && typeof row.planet_id === "number") {
+        toggleByPlanetId.set(row.planet_id, row);
+      }
+    }
+  }
+  const liveModeLabel =
+    totalB2Planets <= 0
+      ? "NONE"
+      : `${initLiveMode.toUpperCase()} (${initLiveEnabledCount}/${totalB2Planets} ON)`;
 
   return (
     <div className="ag-tab-split" id="ag-pane-ai-planner" hidden={hidden}>
@@ -527,6 +583,16 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                 onClick={() => setSubView("weekly")}
               >
                 {`Weekly (${weeklyRows.length})`}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={subView === "smelting"}
+                className={`tab-btn${subView === "smelting" ? " active" : ""}`}
+                id="ai-subtab-smelting"
+                onClick={() => setSubView("smelting")}
+              >
+                {`Smelting (${smeltingTogglesCount})`}
               </button>
             </div>
             <button
@@ -687,6 +753,57 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                 ? `${fmtCompact(lootPerHr)} SpEq/h · RT ${formatDurationSecondsCompact(medianRtSec)}`
                 : "SQLite attack history"}
             </span>
+          </div>
+        </div>
+
+        {/* Blast Furnace (b2) Initial State & Smelting Summary Strip */}
+        <div
+          className="ag-smelt-strip"
+          id="ag-ai-smelting-strip"
+          role="region"
+          aria-label="Blast furnace smelting state"
+        >
+          <div className="ag-smelt-strip-main">
+            <span className="module-code tabular">B2</span>
+            <span className="ag-smelt-label">Blast furnace:</span>
+            <span
+              className={`ag-smelt-pill tabular ${
+                initLiveMode === "on"
+                  ? "is-on"
+                  : initLiveMode === "mixed"
+                    ? "is-toggle"
+                    : "is-off"
+              }`}
+              id="ai-smelt-live-badge"
+            >
+              {`Initial ${liveModeLabel}`}
+            </span>
+            {hasSmeltingTarget ? (
+              <>
+                <span className="ag-smelt-arrow" aria-hidden="true">
+                  →
+                </span>
+                <span
+                  className={`ag-smelt-pill tabular ${
+                    initToggleNeeded
+                      ? "is-toggle"
+                      : initTargetEnabled
+                        ? "is-on"
+                        : "is-off"
+                  }`}
+                  id="ai-smelt-target-badge"
+                >
+                  {`t=0 ${initTargetEnabled ? "ON 100%" : "OFF 0%"}${
+                    initToggleNeeded ? " · TOGGLE NEEDED" : " · ALIGNED"
+                  }`}
+                </span>
+              </>
+            ) : null}
+          </div>
+          <div className="ag-smelt-strip-meta tabular">
+            {metalSmelted !== null
+              ? `Smelted ${fmtCompact(metalSmelted)} Metal · ${smeltingTimeText} · ${smeltingTogglesCount} toggles`
+              : "Run AI-Planner to compute smelting schedule"}
           </div>
         </div>
 
@@ -989,6 +1106,93 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
                       </td>
                     </tr>
                   ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Subview 4: Blast Furnace (b2) Initial State & Smelting Toggle Schedule */}
+        <div className="ag-ai-subpane" id="ai-view-smelting" hidden={subView !== "smelting"}>
+          <div className="ag-smelt-planets-bar" id="ag-ai-smelting-planets">
+            <span className="ag-smelt-label">Initial Colony b2 Snapshot:</span>
+            {smeltingPlanets.length === 0 ? (
+              <span className="action-sub">No colonized planets captured yet.</span>
+            ) : (
+              <div className="ag-smelt-planet-chips">
+                {smeltingPlanets.map((pl) => {
+                  const pending = toggleByPlanetId.get(pl.planet_id);
+                  const chipTone =
+                    pl.b2_level <= 0
+                      ? "is-off"
+                      : pending
+                        ? "is-toggle"
+                        : pl.initial_enabled
+                          ? "is-on"
+                          : "is-off";
+                  return (
+                    <span
+                      key={`${pl.planet_id}-${pl.coords}`}
+                      className={`ag-smelt-pill tabular ${chipTone}`}
+                    >
+                      {pl.b2_level <= 0
+                        ? `${pl.name || "Colony"} [${pl.coords}] · No b2`
+                        : `${pl.name || "Colony"} [${pl.coords}] · b2 L${pl.b2_level} · ${pl.initial_pct}%${
+                            pending ? ` → ${pending.to_pct}%` : ""
+                          }`}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="table-wrap table-scroll">
+            <table id="ag-ai-smelting-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Time</th>
+                  <th>Week</th>
+                  <th>Action</th>
+                  <th>From</th>
+                  <th>Driving Step</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody id="ag-ai-smelting-tbody">
+                {smeltingEvents.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="empty-cell">
+                      No Blast furnace (b2) toggle transitions scheduled in this plan.
+                    </td>
+                  </tr>
+                ) : (
+                  smeltingEvents.map((ev) => {
+                    const isOn = Boolean(ev.enabled);
+                    return (
+                      <tr key={`smelt-${ev.seq}-${ev.time_sec}`}>
+                        <td className="tabular">{`#${ev.seq}`}</td>
+                        <td className="tabular">{ev.time_text || "now"}</td>
+                        <td className="tabular">{`W${ev.week}`}</td>
+                        <td>
+                          <span className={`ag-smelt-pill tabular ${isOn ? "is-on" : "is-toggle"}`}>
+                            {isOn ? "ENABLE 100%" : "DISABLE 0%"}
+                          </span>
+                          {ev.is_initial ? (
+                            <span className="ag-smelt-init-tag tabular">t=0 LIVE</span>
+                          ) : null}
+                        </td>
+                        <td className="tabular">{String(ev.from_mode || "off").toUpperCase()}</td>
+                        <td className="tabular">
+                          {ev.step_label
+                            ? `${ev.step_label}${ev.step_planet_coords ? ` [${ev.step_planet_coords}]` : ""}`
+                            : "—"}
+                        </td>
+                        <td>{ev.reason || "—"}</td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

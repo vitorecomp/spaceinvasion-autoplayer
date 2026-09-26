@@ -17069,6 +17069,47 @@
         120
       ) ?? 120
     );
+    const smelting = (aiData == null ? void 0 : aiData.smelting) || null;
+    const liveBf = (aiData == null ? void 0 : aiData.live_blast_furnace) || null;
+    const smeltingEvents = Array.isArray(smelting == null ? void 0 : smelting.smelting_events) ? smelting.smelting_events : [];
+    const smeltingPlanets = Array.isArray(smelting == null ? void 0 : smelting.planets) && smelting.planets.length > 0 ? smelting.planets : Array.isArray(liveBf == null ? void 0 : liveBf.planets) ? liveBf.planets : [];
+    const initLiveMode = String(
+      (smelting == null ? void 0 : smelting.initial_live_mode) ?? (liveBf == null ? void 0 : liveBf.mode) ?? summary.initial_smelting_live_mode ?? "none"
+    ).toLowerCase();
+    const initLiveEnabledCount = Math.round(
+      safeFiniteNumber((smelting == null ? void 0 : smelting.initial_live_enabled_count) ?? (liveBf == null ? void 0 : liveBf.enabled_count), 0) ?? 0
+    );
+    const totalB2Planets = Math.round(
+      safeFiniteNumber((smelting == null ? void 0 : smelting.total_b2_planets) ?? (liveBf == null ? void 0 : liveBf.total_b2_planets), 0) ?? 0
+    );
+    const hasSmeltingTarget = typeof (smelting == null ? void 0 : smelting.initial_target_enabled) === "boolean" || typeof summary.initial_smelting_target_enabled === "boolean";
+    const initTargetEnabled = Boolean(
+      (smelting == null ? void 0 : smelting.initial_target_enabled) ?? summary.initial_smelting_target_enabled ?? false
+    );
+    const initToggleNeeded = Boolean(
+      (smelting == null ? void 0 : smelting.initial_toggle_needed) ?? summary.initial_smelting_toggle_needed ?? false
+    );
+    const metalSmelted = safeFiniteNumber((smelting == null ? void 0 : smelting.metal_smelted) ?? summary.metal_smelted, null);
+    const smeltingHours = safeFiniteNumber(
+      (smelting == null ? void 0 : smelting.smelting_hours_total) ?? summary.smelting_hours_total,
+      null
+    );
+    const smeltingTimeText = (smelting == null ? void 0 : smelting.smelting_time_text) || (smeltingHours !== null ? formatDurationSecondsCompact(smeltingHours * 3600) : "0m");
+    const smeltingTogglesCount = Math.round(
+      safeFiniteNumber(
+        (smelting == null ? void 0 : smelting.smelting_toggles_count) ?? summary.smelting_toggles_count,
+        smeltingEvents.length
+      ) ?? 0
+    );
+    const toggleByPlanetId = /* @__PURE__ */ new Map();
+    if (Array.isArray(smelting == null ? void 0 : smelting.initial_planets_needing_toggle)) {
+      for (const row of smelting.initial_planets_needing_toggle) {
+        if (row && typeof row.planet_id === "number") {
+          toggleByPlanetId.set(row.planet_id, row);
+        }
+      }
+    }
+    const liveModeLabel = totalB2Planets <= 0 ? "NONE" : `${initLiveMode.toUpperCase()} (${initLiveEnabledCount}/${totalB2Planets} ON)`;
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-tab-split", id: "ag-pane-ai-planner", hidden, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window ag-main-window", id: "ag-ai-main-window", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
@@ -17121,6 +17162,18 @@
                   id: "ai-subtab-weekly",
                   onClick: () => setSubView("weekly"),
                   children: `Weekly (${weeklyRows.length})`
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  type: "button",
+                  role: "tab",
+                  "aria-selected": subView === "smelting",
+                  className: `tab-btn${subView === "smelting" ? " active" : ""}`,
+                  id: "ai-subtab-smelting",
+                  onClick: () => setSubView("smelting"),
+                  children: `Smelting (${smeltingTogglesCount})`
                 }
               )
             ] }),
@@ -17247,6 +17300,41 @@
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-kpi-sub tabular", children: lootPerHr !== null ? `${fmtCompact(lootPerHr)} SpEq/h · RT ${formatDurationSecondsCompact(medianRtSec)}` : "SQLite attack history" })
           ] })
         ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(
+          "div",
+          {
+            className: "ag-smelt-strip",
+            id: "ag-ai-smelting-strip",
+            role: "region",
+            "aria-label": "Blast furnace smelting state",
+            children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-smelt-strip-main", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "B2" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-smelt-label", children: "Blast furnace:" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "span",
+                  {
+                    className: `ag-smelt-pill tabular ${initLiveMode === "on" ? "is-on" : initLiveMode === "mixed" ? "is-toggle" : "is-off"}`,
+                    id: "ai-smelt-live-badge",
+                    children: `Initial ${liveModeLabel}`
+                  }
+                ),
+                hasSmeltingTarget ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-smelt-arrow", "aria-hidden": "true", children: "→" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "span",
+                    {
+                      className: `ag-smelt-pill tabular ${initToggleNeeded ? "is-toggle" : initTargetEnabled ? "is-on" : "is-off"}`,
+                      id: "ai-smelt-target-badge",
+                      children: `t=0 ${initTargetEnabled ? "ON 100%" : "OFF 0%"}${initToggleNeeded ? " · TOGGLE NEEDED" : " · ALIGNED"}`
+                    }
+                  )
+                ] }) : null
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-smelt-strip-meta tabular", children: metalSmelted !== null ? `Smelted ${fmtCompact(metalSmelted)} Metal · ${smeltingTimeText} · ${smeltingTogglesCount} toggles` : "Run AI-Planner to compute smelting schedule" })
+            ]
+          }
+        ),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-ai-subpane", id: "ai-view-dag", hidden: subView !== "dag", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-ai-window-bar", id: "ag-ai-window-controls", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "group", "aria-label": "DAG window slice", children: [
@@ -17526,7 +17614,50 @@
             /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtCompact(w.discounted_spice_eq) }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "col-right tabular", children: fmtCompact(w.cumulative_discounted_spice_eq ?? w.cumulative) })
           ] }, String(w.week))) })
-        ] }) }) })
+        ] }) }) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-ai-subpane", id: "ai-view-smelting", hidden: subView !== "smelting", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-smelt-planets-bar", id: "ag-ai-smelting-planets", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-smelt-label", children: "Initial Colony b2 Snapshot:" }),
+            smeltingPlanets.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: "No colonized planets captured yet." }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-smelt-planet-chips", children: smeltingPlanets.map((pl) => {
+              const pending = toggleByPlanetId.get(pl.planet_id);
+              const chipTone = pl.b2_level <= 0 ? "is-off" : pending ? "is-toggle" : pl.initial_enabled ? "is-on" : "is-off";
+              return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "span",
+                {
+                  className: `ag-smelt-pill tabular ${chipTone}`,
+                  children: pl.b2_level <= 0 ? `${pl.name || "Colony"} [${pl.coords}] · No b2` : `${pl.name || "Colony"} [${pl.coords}] · b2 L${pl.b2_level} · ${pl.initial_pct}%${pending ? ` → ${pending.to_pct}%` : ""}`
+                },
+                `${pl.planet_id}-${pl.coords}`
+              );
+            }) })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "ag-ai-smelting-table", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "#" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Time" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Week" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Action" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "From" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Driving Step" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Reason" })
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { id: "ag-ai-smelting-tbody", children: smeltingEvents.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: 7, className: "empty-cell", children: "No Blast furnace (b2) toggle transitions scheduled in this plan." }) }) : smeltingEvents.map((ev) => {
+              const isOn = Boolean(ev.enabled);
+              return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `#${ev.seq}` }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: ev.time_text || "now" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: `W${ev.week}` }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `ag-smelt-pill tabular ${isOn ? "is-on" : "is-toggle"}`, children: isOn ? "ENABLE 100%" : "DISABLE 0%" }),
+                  ev.is_initial ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-smelt-init-tag tabular", children: "t=0 LIVE" }) : null
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: String(ev.from_mode || "off").toUpperCase() }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "tabular", children: ev.step_label ? `${ev.step_label}${ev.step_planet_coords ? ` [${ev.step_planet_coords}]` : ""}` : "—" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: ev.reason || "—" })
+              ] }, `smelt-${ev.seq}-${ev.time_sec}`);
+            }) })
+          ] }) })
+        ] })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs(
         "aside",

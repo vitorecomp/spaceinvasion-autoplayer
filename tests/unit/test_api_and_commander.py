@@ -7008,6 +7008,13 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertLessEqual(len(ai_get["steps_page"]["items"]), 10)
                 self.assertGreaterEqual(ai_get["attack_telemetry"]["sample_count"], 1)
                 self.assertFalse(ai_get["live_ai_unlocked"])
+                self.assertIsInstance(ai_get.get("smelting"), dict)
+                self.assertIn("initial_live_mode", ai_get["smelting"])
+                self.assertIn("initial_target_enabled", ai_get["smelting"])
+                self.assertIsInstance(ai_get["smelting"].get("smelting_events"), list)
+                self.assertIsInstance(ai_get["smelting"].get("planets"), list)
+                self.assertIsInstance(ai_get.get("live_blast_furnace"), dict)
+                self.assertIn("mode", ai_get["live_blast_furnace"])
 
                 ai_exp = bridge.handle_command({"command": "ai_planner_export"})
                 self.assertEqual(ai_exp["filename"], "full_planner_path.txt")

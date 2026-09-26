@@ -418,6 +418,76 @@ export interface AiPlannerStepItem {
   [key: string]: any;
 }
 
+export interface AiPlannerSmeltingPlanet {
+  planet_index?: number;
+  planet_id: number;
+  coords: string;
+  name: string;
+  b2_level: number;
+  initial_pct: number;
+  initial_enabled: boolean;
+  rate_known?: boolean;
+}
+
+export interface AiPlannerSmeltingToggleTarget {
+  planet_id: number;
+  coords: string;
+  name: string;
+  b2_level: number;
+  from_pct: number;
+  to_pct: number;
+}
+
+export interface AiPlannerSmeltingEvent {
+  seq: number;
+  time_hours: number;
+  time_sec: number;
+  time_text: string;
+  week: number;
+  action: "enable" | "disable" | string;
+  enabled: boolean;
+  target_pct: number;
+  from_mode: string;
+  from_enabled: boolean;
+  is_initial: boolean;
+  affected_planets?: AiPlannerSmeltingToggleTarget[];
+  step_label?: string | null;
+  step_planet_coords?: string | null;
+  reason?: string;
+}
+
+export interface AiPlannerSmeltingSpan {
+  start_hours: number;
+  end_hours: number;
+  start_sec: number;
+  end_sec: number;
+  duration_sec: number;
+  start_text: string;
+  end_text: string;
+  duration_text: string;
+}
+
+export interface AiPlannerSmeltingSummary {
+  initial_live_mode?: "on" | "off" | "mixed" | "none" | string;
+  initial_live_any_enabled?: boolean;
+  initial_live_all_enabled?: boolean;
+  initial_live_enabled_count?: number;
+  initial_live_disabled_count?: number;
+  total_b2_planets?: number;
+  initial_target_enabled?: boolean;
+  initial_target_pct?: number;
+  initial_toggle_needed?: boolean;
+  initial_planets_needing_toggle?: AiPlannerSmeltingToggleTarget[];
+  metal_smelted?: number;
+  smelting_hours_total?: number;
+  smelting_time_text?: string;
+  smelting_toggles_count?: number;
+  smelting_spans_count?: number;
+  smelting_spans?: AiPlannerSmeltingSpan[];
+  smelting_events?: AiPlannerSmeltingEvent[];
+  planets?: AiPlannerSmeltingPlanet[];
+}
+
 export interface AiPlannerGetPayload {
   ok?: boolean;
   has_plan?: boolean;
@@ -426,6 +496,16 @@ export interface AiPlannerGetPayload {
   weekly_breakdown?: Array<Record<string, any>>;
   attack_telemetry?: Record<string, any> | null;
   in_progress?: Record<string, any> | null;
+  smelting?: AiPlannerSmeltingSummary | null;
+  live_blast_furnace?: {
+    mode?: string;
+    any_enabled?: boolean;
+    all_enabled?: boolean;
+    enabled_count?: number;
+    disabled_count?: number;
+    total_b2_planets?: number;
+    planets?: AiPlannerSmeltingPlanet[];
+  } | null;
   transport_matrix?: Record<string, any> | null;
   graph?: Record<string, any> | null;
   steps_page?: {

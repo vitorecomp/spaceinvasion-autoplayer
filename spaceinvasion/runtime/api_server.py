@@ -12060,6 +12060,27 @@ class GameApiBridge:
                 if has_plan and isinstance(active_result.get("transport_matrix"), Mapping)
                 else None
             )
+            smelting_snap: Optional[dict[str, Any]] = None
+            if has_plan and isinstance(active_result.get("smelting"), Mapping):
+                smelting_snap = dict(active_result.get("smelting") or {})
+                for list_key in ("planets", "initial_planets_needing_toggle"):
+                    raw_rows = smelting_snap.get(list_key)
+                    if isinstance(raw_rows, Sequence) and not isinstance(raw_rows, (str, bytes)):
+                        patched_rows: list[dict[str, Any]] = []
+                        for r in raw_rows:
+                            if not isinstance(r, Mapping):
+                                continue
+                            rd = dict(r)
+                            rpid = _safe_api_int(rd.get("planet_id"), 0)
+                            if rpid > 0 and custom_names.get(str(rpid)):
+                                rd["name"] = custom_names[str(rpid)]
+                            patched_rows.append(rd)
+                        smelting_snap[list_key] = patched_rows
+            live_blast_furnace = (
+                ai_mod.summarize_live_blast_furnace_state(display_state if display_state is not None else snap_state)
+                if hasattr(ai_mod, "summarize_live_blast_furnace_state")
+                else None
+            )
             graph_obj = build_ai_graph(
                 display_state if display_state is not None else snap_state,
                 active_result,
@@ -12079,6 +12100,8 @@ class GameApiBridge:
                         "attack_telemetry": plan_telemetry,
                         "live_attack_telemetry": live_telemetry,
                         "in_progress": in_progress_snap,
+                        "smelting": smelting_snap,
+                        "live_blast_furnace": live_blast_furnace,
                         "transport_matrix": transport_matrix_snap,
                         "graph": graph_obj,
                         "steps_page": {

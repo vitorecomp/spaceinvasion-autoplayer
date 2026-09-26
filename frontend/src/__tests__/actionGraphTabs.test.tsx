@@ -403,6 +403,95 @@ describe("ActionGraph 4-Tab Workspace", () => {
                   median_round_trip_seconds: 1320,
                   current_fleet_slots: 12,
                 },
+                smelting: {
+                  initial_live_mode: "off",
+                  initial_live_any_enabled: false,
+                  initial_live_all_enabled: false,
+                  initial_live_enabled_count: 0,
+                  initial_live_disabled_count: 1,
+                  total_b2_planets: 1,
+                  initial_target_enabled: true,
+                  initial_target_pct: 100,
+                  initial_toggle_needed: true,
+                  initial_planets_needing_toggle: [
+                    {
+                      planet_id: 100,
+                      coords: "02:380:1",
+                      name: "Homeworld",
+                      b2_level: 10,
+                      from_pct: 0,
+                      to_pct: 100,
+                    },
+                  ],
+                  metal_smelted: 125000,
+                  smelting_hours_total: 4.5,
+                  smelting_time_text: "4h 30m",
+                  smelting_toggles_count: 2,
+                  smelting_spans_count: 1,
+                  smelting_spans: [],
+                  smelting_events: [
+                    {
+                      seq: 1,
+                      time_hours: 0,
+                      time_sec: 0,
+                      time_text: "now",
+                      week: 1,
+                      action: "enable",
+                      enabled: true,
+                      target_pct: 100,
+                      from_mode: "off",
+                      from_enabled: false,
+                      is_initial: true,
+                      step_label: "Development center L12",
+                      step_planet_coords: "02:380:1",
+                      reason: "Initial live b2 OFF (0/1 ON) -> ENABLE 100%: Metal needed",
+                    },
+                    {
+                      seq: 2,
+                      time_hours: 4.5,
+                      time_sec: 16200,
+                      time_text: "4h 30m",
+                      week: 1,
+                      action: "disable",
+                      enabled: false,
+                      target_pct: 0,
+                      from_mode: "on",
+                      from_enabled: true,
+                      is_initial: false,
+                      step_label: "Kryptonite mine L11",
+                      step_planet_coords: "02:380:1",
+                      reason: "DISABLE 0%: Metal satisfied",
+                    },
+                  ],
+                  planets: [
+                    {
+                      planet_id: 100,
+                      coords: "02:380:1",
+                      name: "Homeworld",
+                      b2_level: 10,
+                      initial_pct: 0,
+                      initial_enabled: false,
+                    },
+                  ],
+                },
+                live_blast_furnace: {
+                  mode: "off",
+                  any_enabled: false,
+                  all_enabled: false,
+                  enabled_count: 0,
+                  disabled_count: 1,
+                  total_b2_planets: 1,
+                  planets: [
+                    {
+                      planet_id: 100,
+                      coords: "02:380:1",
+                      name: "Homeworld",
+                      b2_level: 10,
+                      initial_pct: 0,
+                      initial_enabled: false,
+                    },
+                  ],
+                },
                 weekly_breakdown: [
                   {
                     week: 1,
@@ -1238,5 +1327,42 @@ describe("ActionGraph 4-Tab Workspace", () => {
     expect(document.getElementById("gann-nn-val")?.textContent).toBe("32 evals");
     expect(document.getElementById("gann-fit-val")?.textContent).toBe(">+999.9%");
     expect(document.getElementById("gann-genome-val")?.textContent).toBe("2 genes");
+  });
+
+  it("renders AI-Planner initial Blast furnace (b2) state strip and Smelting schedule subview with zero extra SVGs", async () => {
+    render(
+      <Harness initialDashboard={mockDashboardState}>
+        <ActionGraphView />
+      </Harness>
+    );
+
+    fireEvent.click(document.getElementById("ag-tab-btn-ai-planner")!);
+    await waitFor(() => {
+      expect(document.getElementById("ai-smelt-live-badge")?.textContent).toContain("OFF (0/1 ON)");
+    });
+
+    expect(document.getElementById("ai-smelt-target-badge")?.textContent).toContain("ON 100%");
+    expect(document.getElementById("ai-smelt-target-badge")?.textContent).toContain("TOGGLE NEEDED");
+    expect(document.getElementById("ag-ai-smelting-strip")?.textContent).toContain("125.0k Metal");
+    expect(document.getElementById("ag-ai-smelting-strip")?.textContent).toContain("2 toggles");
+    expect(document.getElementById("ai-subtab-smelting")?.textContent).toContain("Smelting (2)");
+
+    // Open Smelting subview and verify per-colony initial snapshot + toggle schedule table
+    fireEvent.click(document.getElementById("ai-subtab-smelting")!);
+    const smeltPane = document.getElementById("ai-view-smelting")!;
+    expect(smeltPane.hidden).toBe(false);
+    expect(document.getElementById("ag-ai-smelting-planets")?.textContent).toContain(
+      "Homeworld [02:380:1] · b2 L10 · 0% → 100%"
+    );
+    const tbody = document.getElementById("ag-ai-smelting-tbody")!;
+    expect(tbody.querySelectorAll("tr").length).toBe(2);
+    expect(tbody.textContent).toContain("ENABLE 100%");
+    expect(tbody.textContent).toContain("t=0 LIVE");
+    expect(tbody.textContent).toContain("DISABLE 0%");
+    expect(tbody.textContent).toContain("Development center L12");
+
+    // Zero SVGs inside the smelting strip or subview
+    expect(document.getElementById("ag-ai-smelting-strip")?.querySelectorAll("svg").length).toBe(0);
+    expect(smeltPane.querySelectorAll("svg").length).toBe(0);
   });
 });
