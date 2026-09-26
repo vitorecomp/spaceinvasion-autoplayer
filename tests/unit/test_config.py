@@ -979,6 +979,50 @@ shipyard_targets:
             self.assertTrue(loaded_db.spy_reserved_slots_only)
             self.assertEqual(loaded_db.reserved_spy_slots, 2)
 
+    def test_attack_and_recycle_min_res_per_hour_defaults_clamping_and_roundtrip(self) -> None:
+        from spaceinvasion.db.storage import GameDatabase
+
+        default_cfg = StrategyConfig()
+        self.assertAlmostEqual(default_cfg.attack_min_res_per_hour, 0.0)
+        self.assertAlmostEqual(default_cfg.recycle_min_res_per_hour, 0.0)
+
+        clamped = strategy_config_from_dict(
+            {
+                "attack_min_res_per_hour": -500.0,
+                "recycle_min_res_per_hour": float("nan"),
+            }
+        )
+        self.assertAlmostEqual(clamped.attack_min_res_per_hour, 0.0)
+        self.assertAlmostEqual(clamped.recycle_min_res_per_hour, 0.0)
+
+        parsed = strategy_config_from_dict(
+            {
+                "attack_min_res_per_hour": 12500.0,
+                "recycle_min_res_per_hour": 8400.5,
+            }
+        )
+        self.assertAlmostEqual(parsed.attack_min_res_per_hour, 12500.0)
+        self.assertAlmostEqual(parsed.recycle_min_res_per_hour, 8400.5)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            yaml_path = tp / "harvest_rph.yaml"
+            save_strategy_config(parsed, yaml_path)
+            yaml_text = yaml_path.read_text(encoding="utf-8")
+            self.assertIn("attack_min_res_per_hour: 12500.0", yaml_text)
+            self.assertIn("recycle_min_res_per_hour: 8400.5", yaml_text)
+            loaded_yaml = load_strategy_config(yaml_path)
+            self.assertAlmostEqual(loaded_yaml.attack_min_res_per_hour, 12500.0)
+            self.assertAlmostEqual(loaded_yaml.recycle_min_res_per_hour, 8400.5)
+
+            db_path = tp / "harvest_rph.db"
+            db = GameDatabase(db_path, attack_history_path="")
+            db.close()
+            save_strategy_config(parsed, db_path)
+            loaded_db = load_strategy_config(db_path)
+            self.assertAlmostEqual(loaded_db.attack_min_res_per_hour, 12500.0)
+            self.assertAlmostEqual(loaded_db.recycle_min_res_per_hour, 8400.5)
+
 
 if __name__ == "__main__":
     unittest.main()

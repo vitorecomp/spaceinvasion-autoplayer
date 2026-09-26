@@ -801,17 +801,47 @@ describe("ActionGraph 4-Tab Workspace", () => {
       expect(runCmd?.refresh).toBe(true);
     });
 
-    // Tab 4: Fleet / Attack Planner (51+ parameters across Combat, Logistics, Scanner, Shipyard & Tech)
+    // Tab 4: Fleet / Attack Planner (53+ parameters across Combat, Logistics, Scanner, Shipyard & Tech)
     fireEvent.click(document.getElementById("ag-tab-btn-fleet-planner")!);
     await waitFor(() => {
       expect(document.getElementById("ag-flt-control-panel")).not.toBeNull();
     });
-    assertPanelHasDetailedDocs("ag-flt-control-panel", 51);
+    assertPanelHasDetailedDocs("ag-flt-control-panel", 53);
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("combat_safety_margin");
+    expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("attack_min_res_per_hour");
+    expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("recycle_min_res_per_hour");
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("ai_resource_spare_pct");
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("shipyard_targets.starcruiser");
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("allow_fleet_research");
     expect(document.getElementById("ag-flt-control-panel")?.textContent).toContain("fleet_research_targets.r9");
+
+    // Verify Min Attack Yield and Min Recycle Yield sit at the VERY TOP of the Shipyard & Tech group and sync independently
+    const shipyardTabBtn = document.querySelector(
+      '#ag-flt-control-panel [data-flt-ptab="shipyard"]'
+    ) as HTMLButtonElement | null;
+    expect(shipyardTabBtn).not.toBeNull();
+    fireEvent.click(shipyardTabBtn!);
+    const rphGroup = document.getElementById("flt-harvest-rph-group");
+    expect(rphGroup).not.toBeNull();
+    const shipyardPane = rphGroup!.parentElement!;
+    expect(shipyardPane.hidden).toBe(false);
+    expect(shipyardPane.firstElementChild).toBe(rphGroup);
+
+    const atkRphInput = document.getElementById("flt-cfg-attack_min_res_per_hour") as HTMLInputElement;
+    const recRphInput = document.getElementById("flt-cfg-recycle_min_res_per_hour") as HTMLInputElement;
+    expect(atkRphInput).not.toBeNull();
+    expect(recRphInput).not.toBeNull();
+    expect(atkRphInput.value).toBe("0");
+    expect(recRphInput.value).toBe("0");
+
+    fireEvent.change(atkRphInput, { target: { value: "25000" } });
+    fireEvent.change(recRphInput, { target: { value: "12000" } });
+    fireEvent.click(document.getElementById("btn-flt-apply")!);
+    await waitFor(() => {
+      const lastUpd = [...postedCommands].reverse().find((c) => c.command === "update_config");
+      expect(lastUpd?.config?.attack_min_res_per_hour).toBe(25000);
+      expect(lastUpd?.config?.recycle_min_res_per_hour).toBe(12000);
+    });
   });
 
   it("supports inline planet renaming in Config Optimizer with validation, Escape cancel, Enter save, Reset, and Dashboard sync", async () => {

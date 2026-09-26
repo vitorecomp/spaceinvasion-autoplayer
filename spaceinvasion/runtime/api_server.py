@@ -626,6 +626,8 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         "blast_pig_iron_max_share": (0.1, 1.0),
         "combat_safety_margin": (1.0, 1000.0),
         "raid_min_loot_spice_eq": (0.0, 1e12),
+        "attack_min_res_per_hour": (0.0, 1e12),
+        "recycle_min_res_per_hour": (0.0, 1e12),
         "galaxy_scan_click_delay_seconds": (0.2, 60.0),
         "galaxy_scan_click_jitter_seconds": (0.0, 30.0),
         "galaxy_scan_near_weight": (0.0, 20.0),

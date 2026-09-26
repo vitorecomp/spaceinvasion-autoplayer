@@ -16068,6 +16068,28 @@
           step: 100
         },
         {
+          key: "attack_min_res_per_hour",
+          id: "cfg-attack_min_res_per_hour",
+          title: "Min Attack Yield (res/h)",
+          boundsLabel: "default: 0 (off) · >= 0 res/h",
+          description: "Minimum expected total plunder throughput per round-trip flight hour (Pig iron + Metal + Kryptonite + Spice divided by round-trip hours) required from a candidate origin planet before triggering an ATTACK mission. Origins below this threshold are skipped so closer colonies can qualify; set to 0 to disable. Tutorial fight missions remain exempt.",
+          control: "number",
+          defaultValue: 0,
+          min: 0,
+          step: 100
+        },
+        {
+          key: "recycle_min_res_per_hour",
+          id: "cfg-recycle_min_res_per_hour",
+          title: "Min Recycle Yield (res/h)",
+          boundsLabel: "default: 0 (off) · >= 0 res/h",
+          description: "Minimum expected debris recovery throughput per round-trip Recycler flight hour (expected collectible rubble divided by round-trip hours) required from a candidate origin planet before triggering a RECYCLE mission. Distant origins below this threshold are skipped so closer Recycler hubs can qualify; set to 0 to disable. Tutorial recycle missions remain exempt.",
+          control: "number",
+          defaultValue: 0,
+          min: 0,
+          step: 100
+        },
+        {
           key: "allow_fleetsave",
           id: "cfg-allow_fleetsave",
           title: "P0 Automatic Hostile Escape Flight (SAVE)",
@@ -16563,6 +16585,7 @@
     logistics: "Free-slot 300+-field colonization caps, inter-planet resource transport, and daily free Interdimensional Transmitter automation (synced with Config).",
     scanner: "Smart 2-phase Galaxy scanner (contiguous arrow-first exploration when distance < 5, then proximity + attack-history weighted refresh), click cadence, and reserved spy slots (synced with Config).",
     shipyard: "Per-hull empire shipyard quotas constructed at Weapons factory (b9) whenever allow_shipyard is enabled and soft spare-income budget permits (synced with Config).",
+    harvestThresholds: "Separate minimum round-trip resource-per-hour (res/h) yield gates required before triggering ATTACK raids or RECYCLE debris flights (0 = disabled; synced with Config).",
     fleetResearch: "Spends the same soft spare-income budget (ahead of non-urgent ship builds) to auto-unlock missing research prerequisites for any configured shipyard_targets > 0 and level explicit combat, drive, and stealth techs (r3–r15) whenever the global Research lab is free of P1 AI-Planner research."
   };
   const SHIP_HULL_ROLE_DESC = {
@@ -19990,6 +20013,8 @@
   const FLEET_NUM_DEFAULTS = {
     combat_safety_margin: 1.4,
     raid_min_loot_spice_eq: 1500,
+    attack_min_res_per_hour: 0,
+    recycle_min_res_per_hour: 0,
     fleet_save_fuel_reserve_spice: 500,
     ai_resource_spare_pct: 10,
     min_colony_fields: 300,
@@ -20056,6 +20081,8 @@
       allow_fleetsave: Boolean(draft.booleans.allow_fleetsave),
       combat_safety_margin: num("combat_safety_margin", 1, 10),
       raid_min_loot_spice_eq: Math.round(num("raid_min_loot_spice_eq", 0, 1e9)),
+      attack_min_res_per_hour: num("attack_min_res_per_hour", 0, 1e12),
+      recycle_min_res_per_hour: num("recycle_min_res_per_hour", 0, 1e12),
       fleet_save_fuel_reserve_spice: Math.round(num("fleet_save_fuel_reserve_spice", 0, 1e9)),
       ai_resource_spare_pct: num("ai_resource_spare_pct", 0, 100),
       allow_colonize: Boolean(draft.booleans.allow_colonize),
@@ -21371,6 +21398,54 @@
             ] })
           ] }) }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-pane", hidden: paramGroupTab !== "shipyard", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", id: "flt-harvest-rph-group", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Attack & Recycle Min Yield (res/h)" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "ag-param-group-sub", children: FLEET_PLANNER_GROUP_SUBTITLES.harvestThresholds })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-list", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  ActionGraphParamRow,
+                  {
+                    doc: getStrategyParamDoc("attack_min_res_per_hour"),
+                    htmlFor: "flt-cfg-attack_min_res_per_hour",
+                    layout: "inline",
+                    children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        id: "flt-cfg-attack_min_res_per_hour",
+                        type: "number",
+                        min: 0,
+                        max: 1e12,
+                        step: 100,
+                        value: draft.numbers.attack_min_res_per_hour,
+                        onChange: (e) => handleNumChange("attack_min_res_per_hour", e.target.value)
+                      }
+                    )
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  ActionGraphParamRow,
+                  {
+                    doc: getStrategyParamDoc("recycle_min_res_per_hour"),
+                    htmlFor: "flt-cfg-recycle_min_res_per_hour",
+                    layout: "inline",
+                    children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        id: "flt-cfg-recycle_min_res_per_hour",
+                        type: "number",
+                        min: 0,
+                        max: 1e12,
+                        step: 100,
+                        value: draft.numbers.recycle_min_res_per_hour,
+                        onChange: (e) => handleNumChange("recycle_min_res_per_hour", e.target.value)
+                      }
+                    )
+                  }
+                )
+              ] })
+            ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-param-group-head", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Fleet & Ship Research (Spare Budget)" }),
@@ -21533,6 +21608,8 @@
     blast_pig_iron_max_share: 0.7,
     combat_safety_margin: 1.4,
     raid_min_loot_spice_eq: 1500,
+    attack_min_res_per_hour: 0,
+    recycle_min_res_per_hour: 0,
     hot_planet_solar_temp_threshold: 40,
     min_free_fields_warning: 20,
     min_colony_fields: 300,
@@ -22212,6 +22289,8 @@
                     ["blast_pig_iron_max_share", 0.1, 1, 0.05],
                     ["combat_safety_margin", 1, 1e3, 0.1],
                     ["raid_min_loot_spice_eq", 0, void 0, 100],
+                    ["attack_min_res_per_hour", 0, void 0, 100],
+                    ["recycle_min_res_per_hour", 0, void 0, 100],
                     ["hot_planet_solar_temp_threshold", -273, 1e3, 5],
                     ["min_free_fields_warning", 1, 1e3, 1],
                     ["min_colony_fields", 50, 600, 10],

@@ -4560,6 +4560,29 @@ def _execute_sim_step(
                 target_name=t_coords,
             )
 
+        if not tut_fight_ok:
+            min_atk_rph = max(
+                0.0, _safe_float_any(getattr(cfg, "attack_min_res_per_hour", 0.0), 0.0)
+            )
+            if min_atk_rph > 0.0:
+                atk_fl_s = estimate_fleet_flight_seconds(
+                    planet.coords,
+                    t_coords,
+                    atk_ships,
+                    researches=sim.researches,
+                    round_trip=True,
+                )
+                atk_rph = estimate_resource_per_hour(loot.total(), atk_fl_s)
+                if atk_rph < min_atk_rph - 1e-6:
+                    return SimStepOutcome(
+                        idx,
+                        action,
+                        False,
+                        f"Expected raid yield {atk_rph:.0f} res/h below min {min_atk_rph:.0f}",
+                        planet_id=planet.planet_id,
+                        target_name=t_coords,
+                    )
+
         if t_hist is not None and eff_win_prob < 0.70:
             sim.raid_risk_penalty += (0.70 - eff_win_prob) * 4.0
         else:
@@ -6171,6 +6194,7 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
             if atk_ships and sim.fleet_busy_until.get(p.planet_id, 0.0) <= sim.clock_s + 1e-6:
                 sim_now = sim.sim_base_ts + sim.clock_s
                 min_req = max(0.0, _safe_float_any(getattr(cfg, "raid_min_loot_spice_eq", 1500.0), 1500.0))
+                min_atk_rph = max(0.0, _safe_float_any(getattr(cfg, "attack_min_res_per_hour", 0.0), 0.0))
                 tut_fight_ok = _sim_tutorial_fight_pending(sim)
                 own_coords = {normalize_coords(op.coords) for op in sim.planets}
                 for t_coords, meta in sim.raid_targets_info.items():
@@ -6215,18 +6239,57 @@ def _legal_candidates(sim: _SimState, cfg: StrategyConfig) -> list[SimAction]:
                             target_depleted=(t_coords in sim.depleted_targets),
                         )
                         if tut_fight_ok or exp_loot_sp >= min_req - 1e-6:
-                            candidates.append(
-                                SimAction(
-                                    "ATTACK",
-                                    p.planet_id,
-                                    target_coords=t_coords,
-                                    reason=(
-                                        f"Tutorial fight raid -> {t_coords}"
-                                        if (tut_fight_ok and exp_loot_sp < min_req - 1e-6)
-                                        else f"Raid {t_coords} (~{_fmt_sp_int(exp_loot_sp)} SpEq, p={eff_win_prob:.0%})"
-                                    ),
+                            rph_ok = True
+                            if not tut_fight_ok and min_atk_rph > 0.0:
+                                scale_cand = (
+                                    (exp_loot_sp / combat.loot_spice_equivalent)
+                                    if combat.loot_spice_equivalent > 1e-6
+                                    else 0.0
                                 )
-                            )
+                                loot_tot_cand = (
+                                    game_data.safe_scale_round_int(
+                                        combat.expected_loot.pig_iron,
+                                        scale_cand,
+                                        max_result=game_data.MAX_JSON_SAFE_INT,
+                                    )
+                                    + game_data.safe_scale_round_int(
+                                        combat.expected_loot.metal,
+                                        scale_cand,
+                                        max_result=game_data.MAX_JSON_SAFE_INT,
+                                    )
+                                    + game_data.safe_scale_round_int(
+                                        combat.expected_loot.kryptonite,
+                                        scale_cand,
+                                        max_result=game_data.MAX_JSON_SAFE_INT,
+                                    )
+                                    + game_data.safe_scale_round_int(
+                                        combat.expected_loot.spice,
+                                        scale_cand,
+                                        max_result=game_data.MAX_JSON_SAFE_INT,
+                                    )
+                                )
+                                cand_fl_s = estimate_fleet_flight_seconds(
+                                    p.coords,
+                                    t_coords,
+                                    atk_ships,
+                                    researches=sim.researches,
+                                    round_trip=True,
+                                )
+                                cand_rph = estimate_resource_per_hour(loot_tot_cand, cand_fl_s)
+                                rph_ok = cand_rph >= min_atk_rph - 1e-6
+                            if rph_ok:
+                                candidates.append(
+                                    SimAction(
+                                        "ATTACK",
+                                        p.planet_id,
+                                        target_coords=t_coords,
+                                        reason=(
+                                            f"Tutorial fight raid -> {t_coords}"
+                                            if (tut_fight_ok and exp_loot_sp < min_req - 1e-6)
+                                            else f"Raid {t_coords} (~{_fmt_sp_int(exp_loot_sp)} SpEq, p={eff_win_prob:.0%})"
+                                        ),
+                                    )
+                                )
 
     if cfg.allow_research:
         lab_planets = [
@@ -9228,6 +9291,7 @@ def _materialize_planned_actions(
             eff_win_prob = 1.0
             t_hist: Optional[dict[str, Any]] = None
             min_req = max(0.0, _safe_float_any(getattr(cfg, "raid_min_loot_spice_eq", 1500.0), 1500.0))
+            min_atk_rph = max(0.0, _safe_float_any(getattr(cfg, "attack_min_res_per_hour", 0.0), 0.0))
             bash_ok = bash_tracker.can_attack(
                 coords,
                 is_inactive=is_inact,
@@ -9323,6 +9387,25 @@ def _materialize_planned_actions(
                 full_reason = f"{full_reason} [Hold: Tutorial attack already in flight]"
             elif hold_for_escape_tut and "escape flight pending" not in full_reason.lower():
                 full_reason = f"{full_reason} [Hold: Tutorial escape flight pending]"
+            atk_total_res = rounded_loot.total() if not rounded_loot.is_zero() else combat_loot_raw.total()
+            atk_flight_s = estimate_fleet_flight_seconds(
+                planet.coords,
+                coords,
+                atk_ships if atk_ships else {"s1": 1},
+                researches=state.researches,
+                round_trip=True,
+            )
+            atk_res_per_h = estimate_resource_per_hour(atk_total_res, atk_flight_s)
+            if (
+                not tut_zero_loot_ok
+                and min_atk_rph > 0.0
+                and atk_res_per_h < min_atk_rph - 1e-6
+                and "below min" not in full_reason.lower()
+            ):
+                full_reason = (
+                    f"{full_reason} [Hold: Yield {game_data.fmt_compact_int(round(atk_res_per_h), grouped=True)} res/h "
+                    f"< min {game_data.fmt_compact_int(round(min_atk_rph), grouped=True)} res/h]"
+                )
             if already_raided_t0 or (is_depleted_now and not tut_zero_loot_ok) or hold_tut_inflight or hold_for_escape_tut:
                 can_exec = False
             else:
@@ -9331,6 +9414,7 @@ def _materialize_planned_actions(
                     and exp_loot_sp > 0.0
                     and not rounded_loot.is_zero()
                     and exp_loot_sp >= min_req - 1e-6
+                    and (min_atk_rph <= 0.0 or atk_res_per_h >= min_atk_rph - 1e-6)
                 )
                 can_exec = bool(
                     cfg.allow_raids
@@ -9358,15 +9442,6 @@ def _materialize_planned_actions(
                     depleted_target_coords.add(norm_step_coords)
             if can_exec and not (is_inact or is_spacia):
                 bash_tracker.record_attack(coords, timestamp=live_now_ts)
-            atk_total_res = rounded_loot.total() if not rounded_loot.is_zero() else combat_loot_raw.total()
-            atk_flight_s = estimate_fleet_flight_seconds(
-                planet.coords,
-                coords,
-                atk_ships if atk_ships else {"s1": 1},
-                researches=state.researches,
-                round_trip=True,
-            )
-            atk_res_per_h = estimate_resource_per_hour(atk_total_res, atk_flight_s)
             if atk_total_res > 0 and "res/h" not in full_reason:
                 atk_dur_txt = format_flight_duration(atk_flight_s)
                 atk_rph_txt = game_data.fmt_compact_int(round(atk_res_per_h), grouped=True)
@@ -9593,6 +9668,7 @@ def _materialize_planned_actions(
         }
         sim_fleet = atk_ships if atk_ships else {"s1": 1}
         min_req = max(0.0, _safe_float_any(getattr(cfg, "raid_min_loot_spice_eq", 1500.0), 1500.0))
+        min_atk_rph_p3 = max(0.0, _safe_float_any(getattr(cfg, "attack_min_res_per_hour", 0.0), 0.0))
         for raw in state.raid_targets:
             if not isinstance(raw, Mapping):
                 continue
@@ -9651,7 +9727,17 @@ def _materialize_planned_actions(
                     combat.expected_loot.spice, scale_p3, max_result=game_data.MAX_JSON_SAFE_INT
                 ),
             )
-            if not rounded_p3.is_zero() and exp_loot_sp >= min_req - 1e-6:
+            p3_rph_ok = True
+            if min_atk_rph_p3 > 0.0:
+                p3_fl_s = estimate_fleet_flight_seconds(
+                    active.coords,
+                    t_coords,
+                    sim_fleet,
+                    researches=state.researches,
+                    round_trip=True,
+                )
+                p3_rph_ok = estimate_resource_per_hour(rounded_p3.total(), p3_fl_s) >= min_atk_rph_p3 - 1e-6
+            if not rounded_p3.is_zero() and exp_loot_sp >= min_req - 1e-6 and p3_rph_ok:
                 tag = "Spacia" if is_spacia else ("Inactive" if is_inact else scolor.title())
                 plan.append(
                     _make_planned_action(
@@ -10041,6 +10127,7 @@ def _materialize_planned_actions(
             }
             opt_rec_candidates: list[tuple[tuple[int, float, int, float], "PlannedAction", tuple[float, int, float]]] = []
             scored_debris_work: list[tuple[float, str, str, str, int, list[tuple[PlanetState, int, int, float, float]]]] = []
+            min_rec_rph_o = max(0.0, _safe_float_any(getattr(cfg, "recycle_min_res_per_hour", 0.0), 0.0))
             for nc_rec, ow_rec, pn_rec, known_d_tot in raw_debris_opt:
                 cands_d: list[tuple[PlanetState, int, int, float, float]] = []
                 best_rph_o = -1.0
@@ -10069,6 +10156,8 @@ def _materialize_planned_actions(
                         round_trip=True,
                     )
                     rec_rph = estimate_resource_per_hour(exp_rub_o, rec_fl_s)
+                    if min_rec_rph_o > 0.0 and rec_rph < min_rec_rph_o - 1e-6:
+                        continue
                     cands_d.append((rp_o, rec_qty_o, exp_rub_o, rec_fl_s, rec_rph))
                     if rec_rph > best_rph_o:
                         best_rph_o = rec_rph

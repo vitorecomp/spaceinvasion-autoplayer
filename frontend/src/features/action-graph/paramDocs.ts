@@ -437,6 +437,8 @@ export const FLEET_PLANNER_GROUP_SUBTITLES = {
     "Smart 2-phase Galaxy scanner (contiguous arrow-first exploration when distance < 5, then proximity + attack-history weighted refresh), click cadence, and reserved spy slots (synced with Config).",
   shipyard:
     "Per-hull empire shipyard quotas constructed at Weapons factory (b9) whenever allow_shipyard is enabled and soft spare-income budget permits (synced with Config).",
+  harvestThresholds:
+    "Separate minimum round-trip resource-per-hour (res/h) yield gates required before triggering ATTACK raids or RECYCLE debris flights (0 = disabled; synced with Config).",
   fleetResearch:
     "Spends the same soft spare-income budget (ahead of non-urgent ship builds) to auto-unlock missing research prerequisites for any configured shipyard_targets > 0 and level explicit combat, drive, and stealth techs (r3–r15) whenever the global Research lab is free of P1 AI-Planner research.",
 } as const;

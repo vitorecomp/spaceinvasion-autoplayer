@@ -468,6 +468,8 @@ class StrategyConfig:
     blast_pig_iron_max_share: float = 0.70
     combat_safety_margin: float = 1.4
     raid_min_loot_spice_eq: float = 1500.0
+    attack_min_res_per_hour: float = 0.0
+    recycle_min_res_per_hour: float = 0.0
     fleet_save_fuel_reserve_spice: int = 500
     action_batch_interval_seconds: int = 120
     max_actions_per_hour: int = 60
@@ -1233,6 +1235,8 @@ def strategy_config_from_dict(data: Any) -> StrategyConfig:
         blast_pig_iron_max_share=max(0.1, min(1.0, _safe_cfg_float(data.get("blast_pig_iron_max_share"), 0.70))),
         combat_safety_margin=max(1.0, _safe_cfg_float(data.get("combat_safety_margin"), 1.4)),
         raid_min_loot_spice_eq=max(0.0, _safe_cfg_float(data.get("raid_min_loot_spice_eq"), 1500.0)),
+        attack_min_res_per_hour=max(0.0, _safe_cfg_float(data.get("attack_min_res_per_hour"), 0.0)),
+        recycle_min_res_per_hour=max(0.0, _safe_cfg_float(data.get("recycle_min_res_per_hour"), 0.0)),
         fleet_save_fuel_reserve_spice=max(0, _safe_cfg_int(data.get("fleet_save_fuel_reserve_spice"), 500)),
         action_batch_interval_seconds=max(5, min(86400, _safe_cfg_int(data.get("action_batch_interval_seconds"), 120))),
         max_actions_per_hour=max(1, _safe_cfg_int(data.get("max_actions_per_hour"), 60)),
@@ -1475,6 +1479,8 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
     blast_share = max(0.1, min(1.0, _safe_cfg_float(cfg.blast_pig_iron_max_share, 0.70)))
     combat_margin = max(1.0, _safe_cfg_float(cfg.combat_safety_margin, 1.4))
     raid_min_loot = max(0.0, _safe_cfg_float(cfg.raid_min_loot_spice_eq, 1500.0))
+    attack_min_rph = max(0.0, _safe_cfg_float(getattr(cfg, "attack_min_res_per_hour", 0.0), 0.0))
+    recycle_min_rph = max(0.0, _safe_cfg_float(getattr(cfg, "recycle_min_res_per_hour", 0.0), 0.0))
     fleet_reserve = max(0, _safe_cfg_int(cfg.fleet_save_fuel_reserve_spice, 500))
     batch_interval = max(5, min(86400, _safe_cfg_int(cfg.action_batch_interval_seconds, 120)))
     max_actions = max(1, _safe_cfg_int(cfg.max_actions_per_hour, 60))
@@ -1541,6 +1547,8 @@ def save_strategy_config(cfg: StrategyConfig, path: Optional[Path] = None) -> Pa
         f"blast_pig_iron_max_share: {blast_share}",
         f"combat_safety_margin: {combat_margin}",
         f"raid_min_loot_spice_eq: {raid_min_loot}",
+        f"attack_min_res_per_hour: {attack_min_rph}",
+        f"recycle_min_res_per_hour: {recycle_min_rph}",
         f"fleet_save_fuel_reserve_spice: {fleet_reserve}",
         f"action_batch_interval_seconds: {batch_interval}",
         f"max_actions_per_hour: {max_actions}",

@@ -63,6 +63,8 @@ const FLEET_BOOL_FIELDS: ReadonlyArray<{
 const FLEET_NUM_DEFAULTS: Record<string, number> = {
   combat_safety_margin: 1.4,
   raid_min_loot_spice_eq: 1500,
+  attack_min_res_per_hour: 0,
+  recycle_min_res_per_hour: 0,
   fleet_save_fuel_reserve_spice: 500,
   ai_resource_spare_pct: 10,
   min_colony_fields: 300,
@@ -152,6 +154,8 @@ function buildConfigPatchFromDraft(draft: FleetDraftState): Record<string, any> 
     allow_fleetsave: Boolean(draft.booleans.allow_fleetsave),
     combat_safety_margin: num("combat_safety_margin", 1.0, 10.0),
     raid_min_loot_spice_eq: Math.round(num("raid_min_loot_spice_eq", 0, 1e9)),
+    attack_min_res_per_hour: num("attack_min_res_per_hour", 0, 1e12),
+    recycle_min_res_per_hour: num("recycle_min_res_per_hour", 0, 1e12),
     fleet_save_fuel_reserve_spice: Math.round(num("fleet_save_fuel_reserve_spice", 0, 1e9)),
     ai_resource_spare_pct: num("ai_resource_spare_pct", 0, 100),
     allow_colonize: Boolean(draft.booleans.allow_colonize),
@@ -1595,6 +1599,48 @@ export const FleetPlannerTab: React.FC<FleetPlannerTabProps> = ({ hidden = false
           </div>
 
           <div className="ag-param-pane" hidden={paramGroupTab !== "shipyard"}>
+            <div className="ag-param-group" id="flt-harvest-rph-group">
+              <div className="ag-param-group-head">
+                <h3>Attack &amp; Recycle Min Yield (res/h)</h3>
+                <p className="ag-param-group-sub">
+                  {FLEET_PLANNER_GROUP_SUBTITLES.harvestThresholds}
+                </p>
+              </div>
+              <div className="ag-param-list">
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("attack_min_res_per_hour")}
+                  htmlFor="flt-cfg-attack_min_res_per_hour"
+                  layout="inline"
+                >
+                  <input
+                    id="flt-cfg-attack_min_res_per_hour"
+                    type="number"
+                    min={0}
+                    max={1000000000000}
+                    step={100}
+                    value={draft.numbers.attack_min_res_per_hour}
+                    onChange={(e) => handleNumChange("attack_min_res_per_hour", e.target.value)}
+                  />
+                </ActionGraphParamRow>
+
+                <ActionGraphParamRow
+                  doc={getStrategyParamDoc("recycle_min_res_per_hour")}
+                  htmlFor="flt-cfg-recycle_min_res_per_hour"
+                  layout="inline"
+                >
+                  <input
+                    id="flt-cfg-recycle_min_res_per_hour"
+                    type="number"
+                    min={0}
+                    max={1000000000000}
+                    step={100}
+                    value={draft.numbers.recycle_min_res_per_hour}
+                    onChange={(e) => handleNumChange("recycle_min_res_per_hour", e.target.value)}
+                  />
+                </ActionGraphParamRow>
+              </div>
+            </div>
+
             <div className="ag-param-group">
               <div className="ag-param-group-head">
                 <h3>Fleet &amp; Ship Research (Spare Budget)</h3>

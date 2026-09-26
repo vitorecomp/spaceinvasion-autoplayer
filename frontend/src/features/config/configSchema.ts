@@ -470,6 +470,30 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
         step: 100,
       },
       {
+        key: "attack_min_res_per_hour",
+        id: "cfg-attack_min_res_per_hour",
+        title: "Min Attack Yield (res/h)",
+        boundsLabel: "default: 0 (off) · >= 0 res/h",
+        description:
+          "Minimum expected total plunder throughput per round-trip flight hour (Pig iron + Metal + Kryptonite + Spice divided by round-trip hours) required from a candidate origin planet before triggering an ATTACK mission. Origins below this threshold are skipped so closer colonies can qualify; set to 0 to disable. Tutorial fight missions remain exempt.",
+        control: "number",
+        defaultValue: 0,
+        min: 0,
+        step: 100,
+      },
+      {
+        key: "recycle_min_res_per_hour",
+        id: "cfg-recycle_min_res_per_hour",
+        title: "Min Recycle Yield (res/h)",
+        boundsLabel: "default: 0 (off) · >= 0 res/h",
+        description:
+          "Minimum expected debris recovery throughput per round-trip Recycler flight hour (expected collectible rubble divided by round-trip hours) required from a candidate origin planet before triggering a RECYCLE mission. Distant origins below this threshold are skipped so closer Recycler hubs can qualify; set to 0 to disable. Tutorial recycle missions remain exempt.",
+        control: "number",
+        defaultValue: 0,
+        min: 0,
+        step: 100,
+      },
+      {
         key: "allow_fleetsave",
         id: "cfg-allow_fleetsave",
         title: "P0 Automatic Hostile Escape Flight (SAVE)",

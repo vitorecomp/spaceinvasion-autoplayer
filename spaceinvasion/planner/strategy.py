@@ -3174,6 +3174,8 @@ def _plan_combat_and_raid_actions(
     miner_spec_rec = _safe_strategy_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
     per_rec_cap = max(1, _fleet.fleet_cargo_capacity({"s11": 1}, miner_spec_level=miner_spec_rec))
     min_loot_cfg = max(0.0, _safe_strategy_float(getattr(cfg, "raid_min_loot_spice_eq", 1500.0), 1500.0))
+    min_attack_rph_cfg = max(0.0, _safe_strategy_float(getattr(cfg, "attack_min_res_per_hour", 0.0), 0.0))
+    min_recycle_rph_cfg = max(0.0, _safe_strategy_float(getattr(cfg, "recycle_min_res_per_hour", 0.0), 0.0))
     safety_margin_val = _safe_strategy_float(getattr(cfg, "combat_safety_margin", 1.4), 1.4)
     if safety_margin_val <= 0.0:
         safety_margin_val = 1.4
@@ -3215,6 +3217,12 @@ def _plan_combat_and_raid_actions(
                 if rp_g_m and tg_m and int(rp_g_m.group(1)) != int(tg_m.group(1)):
                     continue
             rec_rph_rp = _fleet.estimate_resource_per_hour(exp_rubble_rp, rec_flight_rp)
+            if (
+                not tutorial_recycle_pending
+                and min_recycle_rph_cfg > 0.0
+                and rec_rph_rp < min_recycle_rph_cfg - 1e-6
+            ):
+                continue
             hold_rec_rp = bool(tutorial_recycle_pending and has_in_flight_fleet_from_planet(state, rp))
             can_exec_rp = bool((cfg.allow_raids or cfg.allow_galaxy_scan) and not hold_rec_rp)
             rec_cands.append((rp, rec_qty_rp, exp_rubble_rp, rec_flight_rp, rec_rph_rp, can_exec_rp, hold_rec_rp))
@@ -3268,6 +3276,12 @@ def _plan_combat_and_raid_actions(
                     round_trip=True,
                 )
             atk_rph = _fleet.estimate_resource_per_hour(atk_total_res, atk_flight_s)
+            if (
+                not tutorial_fight_pending
+                and min_attack_rph_cfg > 0.0
+                and atk_rph < min_attack_rph_cfg - 1e-6
+            ):
+                continue
             atk_cands.append((ap, rec, atk_total_res, atk_flight_s, atk_rph, can_exec_ap, hold_tut_ap))
             if atk_rph > best_rph_a:
                 best_rph_a = atk_rph

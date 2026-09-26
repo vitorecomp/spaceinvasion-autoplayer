@@ -186,6 +186,8 @@ def _diff_strategy_configs(active: StrategyConfig, effective: StrategyConfig) ->
             "blast_pig_iron_max_share",
             "combat_safety_margin",
             "raid_min_loot_spice_eq",
+            "attack_min_res_per_hour",
+            "recycle_min_res_per_hour",
             "ga_mutation_rate",
             "ga_nn_weight",
         ):

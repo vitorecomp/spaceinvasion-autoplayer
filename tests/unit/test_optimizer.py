@@ -3584,6 +3584,92 @@ class TestIteration3Wave2Regressions(unittest.TestCase):
         acts_capped = plan_actions(st_capped, config=ga_cfg, now_ts=1500.0)
         self.assertTrue(any(a.kind == "BUILD" and a.target_id == 12 and a.executable_now for a in acts_capped))
 
+    def test_ga_nn_attack_and_recycle_min_res_per_hour_thresholds(self) -> None:
+        p1 = _make_planet(
+            301,
+            coords="02:380:10",
+            buildings={"b1": 10, "b2": 8, "b3": 8, "b4": 6, "b5": 10, "b9": 4, "b10": 3},
+            ships={"s2": 10, "s7": 15, "s11": 4},
+        )
+        targets = (
+            {
+                "coords": "02:380:08",
+                "owner": "InactiveVictim (i)",
+                "status_color": "yellow",
+                "last_spied_ts": 1995.0,
+                "resources": {"pig_iron": 40_000, "metal": 20_000, "kryptonite": 10_000, "spice": 10_000},
+            },
+            {
+                "coords": "02:380:09",
+                "owner": "DebrisTarget",
+                "status_color": "yellow",
+                "has_debris": True,
+                "debris": {"pig_iron": 30_000, "metal": 15_000, "kryptonite": 5_000, "spice": 0},
+                "last_scanned_ts": 1995.0,
+            },
+        )
+        st = GameState(
+            31,
+            1,
+            "cmdr",
+            2000.0,
+            (p1,),
+            active_planet_id=301,
+            researches={"r1": 4, "r2": 6, "r3": 4, "r4": 5, "r5": 4, "r6": 3},
+            raid_targets=targets,
+        )
+        cfg_high_atk = StrategyConfig(
+            planner_mode="ga_nn",
+            allow_raids=True,
+            allow_galaxy_scan=True,
+            raid_min_loot_spice_eq=0.0,
+            attack_min_res_per_hour=10_000_000.0,
+            recycle_min_res_per_hour=0.0,
+            ga_population_size=4,
+            ga_generations=1,
+            ga_seed=7,
+        )
+        # Simulator rejects ATTACK below attack_min_res_per_hour
+        sim_res = simulate_action_sequence(
+            st,
+            (SimAction("ATTACK", 301, target_coords="02:380:08"),),
+            config=cfg_high_atk,
+        )
+        self.assertEqual(sim_res.valid_steps, 0)
+        self.assertEqual(sim_res.rejected_steps, 1)
+
+        # Materialization holds ATTACK below attack_min_res_per_hour while RECYCLE remains executable
+        mat_atk_blocked = _materialize_planned_actions(
+            st,
+            (SimAction("ATTACK", 301, target_coords="02:380:08"),),
+            cfg_high_atk,
+            0.85,
+        )
+        atk_rows = [a for a in mat_atk_blocked if a.kind == "ATTACK"]
+        self.assertTrue(all(not a.executable_now for a in atk_rows))
+        self.assertTrue(any(a.kind == "RECYCLE" and a.executable_now for a in mat_atk_blocked))
+
+        # High recycle_min_res_per_hour blocks RECYCLE while ATTACK remains executable
+        cfg_high_rec = StrategyConfig(
+            planner_mode="ga_nn",
+            allow_raids=True,
+            allow_galaxy_scan=True,
+            raid_min_loot_spice_eq=0.0,
+            attack_min_res_per_hour=0.0,
+            recycle_min_res_per_hour=10_000_000.0,
+            ga_population_size=4,
+            ga_generations=1,
+            ga_seed=7,
+        )
+        mat_rec_blocked = _materialize_planned_actions(
+            st,
+            (SimAction("ATTACK", 301, target_coords="02:380:08"),),
+            cfg_high_rec,
+            0.85,
+        )
+        self.assertTrue(any(a.kind == "ATTACK" and a.executable_now for a in mat_rec_blocked))
+        self.assertFalse(any(a.kind == "RECYCLE" for a in mat_rec_blocked))
+
 
 if __name__ == "__main__":
     unittest.main()

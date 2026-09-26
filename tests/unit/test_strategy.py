@@ -4627,6 +4627,166 @@ class TestStrategyPlanner(unittest.TestCase):
         self.assertTrue(all(not a.executable_now for a in spy_all_zero))
         self.assertTrue(all("0/0 spy slots" in a.reason.lower() for a in spy_all_zero))
 
+    def test_attack_and_recycle_min_res_per_hour_thresholds_independent_and_multiplanet(self) -> None:
+        from dataclasses import replace
+
+        # Two origin planets: far planet (02:300:01) vs near planet (02:380:10)
+        p_far = PlanetState(
+            planet_id=201,
+            name="FarHub",
+            coords="02:300:01",
+            planet_type="planet",
+            temperature=30,
+            fields_used=80,
+            fields_max=240,
+            resources=Resources(50_000, 30_000, 20_000, 15_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(500, 250),
+            buildings={"b1": 10, "b2": 8, "b3": 8, "b4": 6, "b5": 10, "b10": 3},
+            ships={"s2": 10, "s7": 15, "s11": 5},
+        )
+        p_near = PlanetState(
+            planet_id=202,
+            name="NearOutpost",
+            coords="02:380:10",
+            planet_type="planet",
+            temperature=25,
+            fields_used=60,
+            fields_max=220,
+            resources=Resources(50_000, 30_000, 20_000, 15_000),
+            storage=Resources(200_000, 200_000, 200_000, 200_000),
+            energy=EnergyBalance(500, 250),
+            buildings={"b1": 10, "b2": 8, "b3": 8, "b4": 6, "b5": 10, "b10": 3},
+            ships={"s2": 10, "s7": 15, "s11": 5},
+        )
+        raid_targets = (
+            {
+                "coords": "02:380:08",
+                "owner": "SleepyTarget (i)",
+                "status_color": "yellow",
+                "last_spied_ts": 1995.0,
+                "resources": {"pig_iron": 40_000, "metal": 20_000, "kryptonite": 10_000, "spice": 10_000},
+            },
+            {
+                "coords": "02:380:09",
+                "owner": "DebrisOwner",
+                "status_color": "yellow",
+                "has_debris": True,
+                "debris": {"pig_iron": 30_000, "metal": 15_000, "kryptonite": 5_000, "spice": 0},
+                "last_scanned_ts": 1995.0,
+            },
+        )
+        st_far_only = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="cmdr",
+            timestamp=2000.0,
+            planets=(p_far,),
+            active_planet_id=201,
+            researches={"r1": 4, "r2": 6, "r3": 4, "r4": 5, "r5": 4, "r6": 3},
+            raid_targets=raid_targets,
+        )
+        base_cfg = StrategyConfig(
+            planner_mode="priority",
+            allow_raids=True,
+            allow_galaxy_scan=True,
+            raid_min_loot_spice_eq=0.0,
+        )
+
+        # Baseline (both thresholds = 0): both ATTACK and RECYCLE trigger from p_far
+        acts_base = plan_actions(st_far_only, config=base_cfg, now_ts=2000.0)
+        self.assertTrue(any(a.kind == "ATTACK" for a in acts_base))
+        self.assertTrue(any(a.kind == "RECYCLE" for a in acts_base))
+
+        # 1. Very high attack_min_res_per_hour blocks ATTACK only; RECYCLE still triggers
+        acts_block_atk = plan_actions(
+            st_far_only,
+            config=replace(base_cfg, attack_min_res_per_hour=10_000_000.0, recycle_min_res_per_hour=0.0),
+            now_ts=2000.0,
+        )
+        self.assertFalse(any(a.kind == "ATTACK" for a in acts_block_atk))
+        self.assertTrue(any(a.kind == "RECYCLE" for a in acts_block_atk))
+
+        # 2. Very high recycle_min_res_per_hour blocks RECYCLE only; ATTACK still triggers
+        acts_block_rec = plan_actions(
+            st_far_only,
+            config=replace(base_cfg, attack_min_res_per_hour=0.0, recycle_min_res_per_hour=10_000_000.0),
+            now_ts=2000.0,
+        )
+        self.assertTrue(any(a.kind == "ATTACK" for a in acts_block_rec))
+        self.assertFalse(any(a.kind == "RECYCLE" for a in acts_block_rec))
+
+        # 3. Multi-planet fallback: threshold rejects p_far (80 systems away) but allows p_near (same system)
+        from spaceinvasion.combat import fleet as _fleet
+
+        far_atk_s = _fleet.estimate_fleet_flight_seconds(
+            p_far.coords, "02:380:08", {"s2": 10, "s7": 15}, researches=st_far_only.researches, round_trip=True
+        )
+        near_atk_s = _fleet.estimate_fleet_flight_seconds(
+            p_near.coords, "02:380:08", {"s2": 10, "s7": 15}, researches=st_far_only.researches, round_trip=True
+        )
+        far_atk_rph = _fleet.estimate_resource_per_hour(40_000, far_atk_s)
+        near_atk_rph = _fleet.estimate_resource_per_hour(40_000, near_atk_s)
+        self.assertGreater(near_atk_rph, far_atk_rph)
+
+        far_rec_s = _fleet.estimate_fleet_flight_seconds(
+            p_far.coords, "02:380:09", {"s11": 5}, researches=st_far_only.researches, round_trip=True
+        )
+        near_rec_s = _fleet.estimate_fleet_flight_seconds(
+            p_near.coords, "02:380:09", {"s11": 5}, researches=st_far_only.researches, round_trip=True
+        )
+        far_rec_rph = _fleet.estimate_resource_per_hour(50_000, far_rec_s)
+        near_rec_rph = _fleet.estimate_resource_per_hour(50_000, near_rec_s)
+        self.assertGreater(near_rec_rph, far_rec_rph)
+
+        mid_atk_thr = (far_atk_rph + near_atk_rph) / 2.0
+        mid_rec_thr = (far_rec_rph + near_rec_rph) / 2.0
+        st_two = replace(st_far_only, planets=(p_far, p_near))
+        acts_two = plan_actions(
+            st_two,
+            config=replace(base_cfg, attack_min_res_per_hour=mid_atk_thr, recycle_min_res_per_hour=mid_rec_thr),
+            now_ts=2000.0,
+        )
+        atk_two = [a for a in acts_two if a.kind == "ATTACK"]
+        rec_two = [a for a in acts_two if a.kind == "RECYCLE"]
+        self.assertEqual(len(atk_two), 1)
+        self.assertEqual(atk_two[0].planet_id, 202)
+        self.assertEqual(len(rec_two), 1)
+        self.assertEqual(rec_two[0].planet_id, 202)
+
+        # 4. Tutorial fight & tutorial recycle remain exempt even under extreme thresholds
+        st_tut_fight = replace(
+            st_far_only,
+            tutorial=TutorialStatus(
+                step=6,
+                total_steps=11,
+                can_complete=False,
+                tasks=(TutorialTask("Fight a battle 0 / 1", "Fight a battle", None, 0, 1, "milestone"),),
+            ),
+        )
+        acts_tut_f = plan_actions(
+            st_tut_fight,
+            config=replace(base_cfg, attack_min_res_per_hour=1e9),
+            now_ts=2000.0,
+        )
+        self.assertTrue(any(a.kind == "ATTACK" for a in acts_tut_f))
+
+        st_tut_rec = replace(
+            st_far_only,
+            tutorial=TutorialStatus(
+                step=10,
+                total_steps=11,
+                can_complete=False,
+                tasks=(TutorialTask("Recycle a rubble field 0 / 1", "Recycle a rubble field", None, 0, 1, "milestone"),),
+            ),
+        )
+        acts_tut_r = plan_actions(
+            st_tut_rec,
+            config=replace(base_cfg, recycle_min_res_per_hour=1e9),
+            now_ts=2000.0,
+        )
+        self.assertTrue(any(a.kind == "RECYCLE" for a in acts_tut_r))
+
 
 if __name__ == "__main__":
     unittest.main()

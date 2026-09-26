@@ -230,6 +230,8 @@ export interface StrategyConfigData {
   blast_pig_iron_max_share?: number;
   combat_safety_margin?: number;
   raid_min_loot_spice_eq?: number;
+  attack_min_res_per_hour?: number;
+  recycle_min_res_per_hour?: number;
   fleet_save_fuel_reserve_spice?: number;
   action_batch_interval_seconds?: number;
   max_actions_per_hour?: number;
