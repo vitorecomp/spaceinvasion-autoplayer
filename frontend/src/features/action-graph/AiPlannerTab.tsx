@@ -5,11 +5,15 @@ import { TablePagination } from "../../components/TablePagination";
 import { useConsole } from "../../context/ConsoleContext";
 import { useTableSort, type SortColumnMap } from "../../hooks/useTableSort";
 import type {
+  AiPlannerAdaptiveStatus,
+  AiPlannerColonyDiag,
   AiPlannerGetPayload,
   AiPlannerSmeltingToggleTarget,
   AiPlannerStepItem,
   FieldConflictItem,
+  PlanetData,
   PlannerJobState,
+  QueueJobData,
 } from "../../types/api";
 import { fmtCompact, fmtInt } from "../../utils/formatters";
 import { ActionGraphParamRow } from "./ActionGraphParamRow";
@@ -28,6 +32,103 @@ import {
   formatJobBadgeText,
   normalizeUiPlannerMode,
 } from "./plannerHelpers";
+
+function formatAdaptiveColonyState(stateRaw: unknown): {
+  label: string;
+  tone: "is-building" | "is-ready" | "is-inbound" | "is-wait" | "is-blocked" | "is-idle";
+} {
+  const norm = String(stateRaw || "").trim().toLowerCase();
+  switch (norm) {
+    case "building":
+      return { label: "Building", tone: "is-building" };
+    case "ready_not_started":
+    case "ready":
+      return { label: "Ready", tone: "is-ready" };
+    case "waiting_metal":
+      return { label: "Wait Metal", tone: "is-wait" };
+    case "waiting_pig_iron":
+    case "waiting_pig":
+      return { label: "Wait Pig", tone: "is-wait" };
+    case "waiting_kryptonite":
+    case "waiting_kry":
+      return { label: "Wait Kry", tone: "is-wait" };
+    case "waiting_spice":
+      return { label: "Wait Spice", tone: "is-wait" };
+    case "transport_inbound":
+    case "cargo_inbound":
+      return { label: "Cargo Inbound", tone: "is-inbound" };
+    case "storage_blocked":
+    case "storage_cap":
+      return { label: "Storage Cap", tone: "is-blocked" };
+    case "field_conflict":
+      return { label: "Field Conflict", tone: "is-blocked" };
+    case "idle_complete":
+    case "idle":
+    case "":
+      return { label: "Idle", tone: "is-idle" };
+    default:
+      return {
+        label: norm
+          .split("_")
+          .filter(Boolean)
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(" "),
+        tone: "is-idle",
+      };
+  }
+}
+
+function formatSharePct(val: unknown): string {
+  const n = safeFiniteNumber(val, 0) ?? 0;
+  return String(Number(n.toFixed(1)));
+}
+
+function countFallbackActiveBuilders(
+  planets: PlanetData[],
+  activeQueues: QueueJobData[]
+): { active: number; total: number } {
+  const normalPlanets = planets.filter(
+    (p) => String(p?.planet_type || "normal").toLowerCase() === "normal"
+  );
+  const scoped = normalPlanets.length > 0 ? normalPlanets : planets;
+  const knownPid = new Set<number>();
+  const coordsToPid = new Map<string, number>();
+  for (const pl of scoped) {
+    const pid = Math.round(safeFiniteNumber(pl?.planet_id, 0) ?? 0);
+    if (pid > 0) {
+      knownPid.add(pid);
+      const c = String(pl?.coords || "").trim();
+      if (c) coordsToPid.set(c, pid);
+    }
+  }
+  const nowSec = Math.floor(Date.now() / 1000);
+  const activeKeys = new Set<string>();
+  for (const job of activeQueues) {
+    if (!job || String(job.category || "").toLowerCase() !== "building") continue;
+    const finTs = safeFiniteNumber(job.finish_ts, null);
+    const remSec = safeFiniteNumber(job.remaining_seconds, null);
+    let active = false;
+    if (finTs !== null && finTs > 0) {
+      active = finTs > nowSec;
+    } else if (remSec !== null) {
+      active = remSec > 0;
+    } else {
+      const remTxt = String(job.remaining_text || "").trim().toLowerCase();
+      active = remTxt.length > 0 && remTxt !== "0s" && remTxt !== "done" && remTxt !== "finished";
+    }
+    if (!active) continue;
+    const jobPid = Math.round(safeFiniteNumber(job.planet_id, 0) ?? 0);
+    const jobCoords = String(job.origin_coords || job.planet_coords || "").trim();
+    if (jobPid > 0 && (knownPid.size === 0 || knownPid.has(jobPid))) {
+      activeKeys.add(`pid:${jobPid}`);
+    } else if (jobCoords && coordsToPid.has(jobCoords)) {
+      activeKeys.add(`pid:${coordsToPid.get(jobCoords)!}`);
+    } else if (jobCoords && knownPid.size === 0) {
+      activeKeys.add(`coords:${jobCoords}`);
+    }
+  }
+  return { active: activeKeys.size, total: scoped.length };
+}
 
 function draftFromAiParams(raw: Record<string, any> | null | undefined): AiPlannerDraft {
   if (!raw || typeof raw !== "object") {
@@ -163,6 +264,7 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
   const [stepsPageSize, setStepsPageSize] = useState<number>(25);
 
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [isTogglingAdaptive, setIsTogglingAdaptive] = useState<boolean>(false);
   const [resolvingConflictKey, setResolvingConflictKey] = useState<string | null>(null);
   const [selectedCandidateByConflict, setSelectedCandidateByConflict] = useState<
     Record<string, string>
@@ -411,6 +513,43 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
     }
   };
 
+  const onToggleAdaptiveExecution = async (nextVal: boolean) => {
+    setIsTogglingAdaptive(true);
+    try {
+      const res = await apiCommand({
+        command: "update_config",
+        config: { ai_adaptive_execution: nextVal },
+      });
+      if (res.config && typeof res.config === "object") {
+        (globalThis as any).renderConfigForm?.(res.config);
+        const curDash = (globalThis as any).state?.dashboard || dashboard;
+        const nextDash = curDash
+          ? {
+              ...curDash,
+              config: res.config,
+            }
+          : {
+              config: res.config,
+            };
+        if ((globalThis as any).state) (globalThis as any).state.dashboard = nextDash;
+        setDashboard(nextDash);
+      }
+      await loadDashboard({ refresh: false, preserveConfig: false, force: true });
+      await fetchAiState({ silent: true });
+      showFeedback(
+        `Adaptive AI-Planner execution ${nextVal ? "enabled" : "disabled"} (config.yaml saved).`,
+        "ok"
+      );
+    } catch (err: any) {
+      showFeedback(
+        `Adaptive execution update failed: ${err.message}`,
+        feedbackKindForError(err)
+      );
+    } finally {
+      setIsTogglingAdaptive(false);
+    }
+  };
+
   const onExportTxt = async () => {
     try {
       const res = await apiCommand({ command: "ai_planner_export" });
@@ -529,6 +668,53 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
     totalB2Planets <= 0
       ? "NONE"
       : `${initLiveMode.toUpperCase()} (${initLiveEnabledCount}/${totalB2Planets} ON)`;
+
+  const customPlanetNames = useMemo<Record<string, string>>(() => {
+    const raw = (dashboard as Record<string, any> | null | undefined)?.custom_planet_names;
+    if (!raw || typeof raw !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      const clean = String(v || "").trim();
+      if (clean) out[String(k)] = clean;
+    }
+    return out;
+  }, [dashboard]);
+
+  const planetNameById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const p of planets) {
+      const pid = Math.round(safeFiniteNumber(p?.planet_id, 0) ?? 0);
+      const nm = String(p?.name || "").trim();
+      if (pid > 0 && nm) map.set(pid, nm);
+    }
+    return map;
+  }, [planets]);
+
+  const adaptiveStatus: AiPlannerAdaptiveStatus | null = aiData?.adaptive_status || null;
+  const adaptiveEnabled = Boolean(
+    dashboard?.config?.ai_adaptive_execution ?? adaptiveStatus?.enabled ?? false
+  );
+  const fallbackBuilders = useMemo(
+    () => countFallbackActiveBuilders(planets, dashboard?.state?.active_queues || []),
+    [planets, dashboard?.state?.active_queues]
+  );
+  const adaptiveActiveBuilders =
+    adaptiveStatus && typeof adaptiveStatus.active_builders === "number"
+      ? Math.max(0, Math.round(adaptiveStatus.active_builders))
+      : fallbackBuilders.active;
+  const adaptiveTotalColonies =
+    adaptiveStatus && typeof adaptiveStatus.total_colonies === "number"
+      ? Math.max(0, Math.round(adaptiveStatus.total_colonies))
+      : fallbackBuilders.total;
+  const adaptiveColonies: AiPlannerColonyDiag[] = Array.isArray(adaptiveStatus?.colonies)
+    ? adaptiveStatus!.colonies
+    : [];
+  const transportFleet = adaptiveStatus?.transport_fleet || null;
+  const window24h = adaptiveStatus?.window_24h || null;
+  const hasWindow24hSamples = Boolean(
+    window24h && (safeFiniteNumber(window24h.colony_samples, 0) ?? 0) > 0
+  );
+  const autoReplan = adaptiveStatus?.auto_replan || null;
 
   return (
     <div className="ag-tab-split" id="ag-pane-ai-planner" hidden={hidden}>
@@ -804,6 +990,155 @@ export const AiPlannerTab: React.FC<AiPlannerTabProps> = ({ hidden = false }) =>
             {metalSmelted !== null
               ? `Smelted ${fmtCompact(metalSmelted)} Metal · ${smeltingTimeText} · ${smeltingTogglesCount} toggles`
               : "Run AI-Planner to compute smelting schedule"}
+          </div>
+        </div>
+
+        {/* Adaptive Execution (Plan v2) Switch & Per-Colony Idle Diagnostics Strip */}
+        <div
+          className="ag-adaptive-strip"
+          id="ag-ai-adaptive-strip"
+          role="region"
+          aria-label="Adaptive execution switch and per-colony idle diagnostics"
+        >
+          <div className="ag-adaptive-strip-head">
+            <div className="ag-adaptive-strip-controls">
+              <label className="ag-adaptive-toggle" htmlFor="ai-adaptive-exec-toggle">
+                <input
+                  type="checkbox"
+                  className="config-checkbox"
+                  id="ai-adaptive-exec-toggle"
+                  checked={adaptiveEnabled}
+                  disabled={isTogglingAdaptive}
+                  onChange={(e) => void onToggleAdaptiveExecution(e.target.checked)}
+                />
+                <span className="module-code tabular">V2</span>
+                <span className="ag-smelt-label">Adaptive Execution</span>
+                <span
+                  className={`ag-smelt-pill tabular ${adaptiveEnabled ? "is-on" : "is-off"}`}
+                  id="ai-adaptive-exec-state"
+                >
+                  {adaptiveEnabled ? "ON" : "OFF"}
+                </span>
+              </label>
+
+              <span
+                className={`ag-smelt-pill tabular ${
+                  adaptiveTotalColonies > 0 && adaptiveActiveBuilders >= adaptiveTotalColonies
+                    ? "is-on"
+                    : adaptiveActiveBuilders > 0
+                      ? "is-toggle"
+                      : "is-off"
+                }`}
+                id="ai-adaptive-builders-badge"
+              >
+                {`Builders ${adaptiveActiveBuilders}/${adaptiveTotalColonies}`}
+              </span>
+
+              {transportFleet ? (
+                <span
+                  className={`ag-smelt-pill tabular ${
+                    (safeFiniteNumber(transportFleet.target_fleet_cargo, 0) ?? 0) <= 0 ||
+                    (safeFiniteNumber(transportFleet.total_fleet_cargo, 0) ?? 0) >=
+                      (safeFiniteNumber(transportFleet.target_fleet_cargo, 0) ?? 0)
+                      ? "is-on"
+                      : "is-toggle"
+                  }`}
+                  id="ai-adaptive-fleet-badge"
+                  title={`Parked: ${fmtInt(transportFleet.owned_parked_cargo)} · In-flight: ${fmtInt(
+                    transportFleet.in_flight_cargo
+                  )} · Planned 24h flow: ${fmtCompact(transportFleet.planned_cargo_per_hour_24h)}/h · Util: ${Math.round(
+                    (safeFiniteNumber(transportFleet.realized_utilization, 0.5) ?? 0.5) * 100
+                  )}%`}
+                >
+                  {`Cargo ${fmtCompact(transportFleet.total_fleet_cargo)} / ${fmtCompact(
+                    transportFleet.target_fleet_cargo
+                  )}`}
+                </span>
+              ) : null}
+
+              {hasWindow24hSamples && window24h ? (
+                <span
+                  className={`ag-smelt-pill tabular ${
+                    (safeFiniteNumber(window24h.idle_with_affordable_share_pct, 0) ?? 0) > 15 ||
+                    (safeFiniteNumber(window24h.ready_not_started_share_pct, 0) ?? 0) > 5
+                      ? "is-toggle"
+                      : "is-on"
+                  }`}
+                  id="ai-adaptive-gate24h-badge"
+                  title={`24h Step-5 diagnostics (${window24h.colony_samples} colony samples across ${window24h.bucket_count} x 10m buckets)`}
+                >
+                  {`Idle w/ affordable: ${formatSharePct(
+                    window24h.idle_with_affordable_share_pct
+                  )}% · Ready gap: ${formatSharePct(window24h.ready_not_started_share_pct)}%`}
+                </span>
+              ) : null}
+            </div>
+
+            {autoReplan ? (
+              <div className="ag-smelt-strip-meta tabular" id="ai-adaptive-replan-badge">
+                {`Auto-replan: ${autoReplan.drift_ready ? "Drift ready" : "Cooldown"}${
+                  autoReplan.last_trigger_reason ? ` · Last: ${autoReplan.last_trigger_reason}` : ""
+                }`}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="ag-adaptive-diag-list" id="ag-ai-colony-diag-list">
+            {adaptiveColonies.length === 0 ? (
+              <span className="action-sub">
+                Colony idle diagnostics appear once AI-Planner state is loaded.
+              </span>
+            ) : (
+              adaptiveColonies.map((col) => {
+                const pid = Math.round(safeFiniteNumber(col.planet_id, 0) ?? 0);
+                const coords = String(col.coords || "").trim();
+                const displayName =
+                  customPlanetNames[String(pid)] ||
+                  col.name ||
+                  planetNameById.get(pid) ||
+                  "Colony";
+                const stateMeta = formatAdaptiveColonyState(col.state);
+                const b2Lvl = Math.round(safeFiniteNumber(col.b2_level, 0) ?? 0);
+                const b2Pct = Math.round(safeFiniteNumber(col.b2_pct, 0) ?? 0);
+                const marginAt100 = safeFiniteNumber(col.b2_energy_margin_at_100, null);
+                const lowEnergyMargin = marginAt100 !== null && marginAt100 < 100;
+                const tooltipParts = [
+                  col.reason || stateMeta.label,
+                  col.next_label ? `Next: ${col.next_label}` : "",
+                  col.idle_with_affordable_target_step
+                    ? "Affordable target step waiting"
+                    : "",
+                  lowEnergyMargin
+                    ? `Energy margin at 100% b2: ${Math.round(marginAt100!)}`
+                    : "",
+                ].filter(Boolean);
+
+                return (
+                  <div
+                    key={`${pid}-${coords || displayName}`}
+                    className={`ag-adaptive-chip ${stateMeta.tone}`}
+                    data-planet-id={pid}
+                    data-colony-state={col.state}
+                    title={tooltipParts.join(" · ")}
+                  >
+                    <span className="ag-adaptive-chip-name tabular">
+                      {coords ? `${displayName} [${coords}]` : displayName}
+                    </span>
+                    <span className={`ag-adaptive-state-pill tabular ${stateMeta.tone}`}>
+                      {stateMeta.label}
+                    </span>
+                    <span className="ag-adaptive-b2-pill tabular">
+                      {b2Lvl > 0 ? `b2 ${b2Pct}%` : "no b2"}
+                    </span>
+                    {lowEnergyMargin ? (
+                      <span className="ag-adaptive-energy-warn tabular">
+                        {`Low E (${Math.round(marginAt100!)})`}
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
 
