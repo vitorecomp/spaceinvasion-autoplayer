@@ -5744,9 +5744,354 @@ def reconcile_live_ai_actions(
             )
             handled_research = True
 
+    if actions and bool(getattr(config, "ai_adaptive_execution", False)):
+        try:
+            actions.extend(plan_live_fill_actions(state, plan_result, config, actions))
+        except Exception:  # noqa: BLE001 - a fault in the fill rule must never take the plan's own steps down
+            pass
     if actions:
         actions = attach_action_etas(state, actions)
     return actions, field_conflicts
+
+
+AI_FILL_REASON_PREFIX = "AI-Planner fill"
+AI_FILL_MIN_PATIENCE = 0.25
+AI_FILL_MAX_PATIENCE = 0.75
+# A waiting step that the pooled empire stock could pay for is assumed to need at least this long before a
+# plan-order loan lands (dispatch + one flight between colonies).
+AI_FILL_POOL_LEAD_HOURS = 1.0 / 3.0
+_AI_FILL_NEVER_HOURS = 1e9
+_AI_STEP_SEQ_RE = re.compile(r"^AI-Planner #(\d+):", re.ASCII)
+
+
+def _plan_fill_patience(plan_result: Mapping[str, Any]) -> float:
+    """Share of a fill step's own duration by which it may hold the waiting step back (the plan's tuned patience)."""
+    raw: Any = None
+    search = plan_result.get("search") if isinstance(plan_result, Mapping) else None
+    if isinstance(search, Mapping) and isinstance(search.get("tuned_genes"), Mapping):
+        raw = search["tuned_genes"].get("patience")
+    if raw is None:
+        meta = plan_result.get("meta_parameters") if isinstance(plan_result, Mapping) else None
+        if isinstance(meta, Mapping):
+            raw = meta.get("patience")
+    val = game_data.safe_finite_float(raw, AI_FILL_MIN_PATIENCE)
+    return min(AI_FILL_MAX_PATIENCE, max(AI_FILL_MIN_PATIENCE, val))
+
+
+def _hours_until_paid(
+    need: Sequence[float],
+    stock: Sequence[float],
+    inbound: Sequence[float],
+    rate: Sequence[float],
+) -> float:
+    """Hours until `stock + inbound + rate x t` covers `need` in every resource (`_AI_FILL_NEVER_HOURS` if never)."""
+    worst = 0.0
+    for pos in range(4):
+        gap = float(need[pos]) - float(stock[pos]) - float(inbound[pos])
+        if gap <= 0.0:
+            continue
+        if rate[pos] <= 0.0:
+            return _AI_FILL_NEVER_HOURS
+        worst = max(worst, gap / float(rate[pos]))
+    return min(worst, _AI_FILL_NEVER_HOURS)
+
+
+def plan_live_fill_actions(
+    state: GameState,
+    plan_result: Mapping[str, Any],
+    config: StrategyConfig,
+    actions: Sequence[PlannedAction],
+) -> list[PlannedAction]:
+    """Plan v4 live fill rule: start a later plan step on a colony whose builder is free while its next step waits.
+
+    `actions` is the output of `reconcile_live_ai_actions` before fills: at most one building action per
+    colony (its next plan step `T`) and one research action. For every normal colony whose builder is
+    free and whose `T` cannot be paid from local stock yet, this picks the first later plan step `F` of
+    that colony, in plan order, that
+
+    - is causally ready (next level of its chain, prerequisites met, fits storage, and the colony keeps
+      a free field for `T`),
+    - can be paid from the colony's stock right now,
+    - does not hold `T` back: paying for `F` and occupying the builder delays the start of `T` by at
+      most `patience x duration(F)`. `T` is expected to start at the earlier of two moments: when the
+      colony can pay for it alone (its stock, friendly cargo already flying in, its own hourly
+      production), or when the empire can pay for it in plan order (all stock pooled, every earlier
+      step paid first, empire production; never sooner than `AI_FILL_POOL_LEAD_HOURS`). The same bound
+      protects a research step waiting on this colony, and
+    - spends nothing the empire is short of: for every resource `F` costs, the pooled stock of all
+      colonies plus friendly cargo in flight covers the cost of every colony's next step, the research
+      step, the fills already chosen, and `F`.
+
+    Returns executable `BUILD` actions whose reason starts with `AI-Planner fill #<seq>`, at most one per
+    colony. The colony's `WAIT_RESOURCES` action for `T` is left in place and stays first, so transports
+    and furnaces keep serving `T`.
+    """
+    steps = plan_result.get("steps") if isinstance(plan_result, Mapping) else None
+    if not isinstance(steps, Sequence) or not steps or not actions:
+        return []
+    from spaceinvasion.combat.ranking import estimate_planet_hourly_economy
+
+    planets_by_id: dict[int, PlanetState] = {}
+    planets_by_coords: dict[str, PlanetState] = {}
+    for p in state.planets or ():
+        if normalize_planet_type(p) != "normal":
+            continue
+        planets_by_id[int(p.planet_id)] = p
+        c = str(p.coords or "").strip()
+        if c:
+            planets_by_coords[c] = p
+            planets_by_coords[normalize_coords(c)] = p
+    if not planets_by_id:
+        return []
+
+    in_flight_buildings, planet_queue_counts = _resolve_in_flight_buildings(state)
+    allow_multi_planet = bool(getattr(config, "allow_multi_planet", True))
+    inbound_by_pid = compute_inbound_friendly_cargo_by_planet(state)
+    research_rem_h = max(0.0, float(compute_in_progress_research_rem_seconds(state) or 0.0)) / 3600.0
+    patience = _plan_fill_patience(plan_result)
+    speedup = _safe_speedup(state, {})
+
+    def _vals(res: Any) -> list[float]:
+        return [max(0.0, float(getattr(res, r, 0) or 0)) for r in RESOURCE_KEYS]
+
+    # Every colony's next building step, and the research step, as the reconciler emitted them.
+    top_by_pid: dict[int, PlannedAction] = {}
+    research_cost_by_pid: dict[int, list[float]] = {}
+    ready_cost_by_pid: dict[int, list[float]] = {}
+    committed = [0.0, 0.0, 0.0, 0.0]
+    for act in actions:
+        if act.kind in ("BUILD", "WAIT_RESOURCES", "DEMOLISH_BUILDING"):
+            top_by_pid.setdefault(int(act.planet_id), act)
+        if act.kind not in ("BUILD", "WAIT_RESOURCES", "RESEARCH"):
+            continue
+        cost_vals = _vals(act.cost)
+        for pos in range(4):
+            committed[pos] += cost_vals[pos]
+        if act.kind == "RESEARCH":
+            by_pid = ready_cost_by_pid if act.executable_now else research_cost_by_pid
+            buf = by_pid.setdefault(int(act.planet_id), [0.0, 0.0, 0.0, 0.0])
+            for pos in range(4):
+                buf[pos] += cost_vals[pos]
+
+    # Empire stock that no next step needs: what a fill may spend, per resource.
+    pooled = [0.0, 0.0, 0.0, 0.0]
+    for p in planets_by_id.values():
+        for pos, val in enumerate(_vals(p.resources)):
+            pooled[pos] += val
+    for cargo in inbound_by_pid.values():
+        for pos, val in enumerate(_vals(cargo)):
+            pooled[pos] += val
+    spare = [pooled[pos] - committed[pos] for pos in range(4)]
+
+    waiting: dict[int, PlannedAction] = {}
+    for pid, top in top_by_pid.items():
+        planet = planets_by_id.get(pid)
+        if planet is None or top.kind != "WAIT_RESOURCES" or top.executable_now or top.missing.is_zero():
+            continue
+        if top.target_id is None or not top.target_level:
+            continue
+        if planet_queue_counts.get(pid, 0) >= 1:
+            continue
+        is_remote = state.active_planet_id is not None and pid != int(state.active_planet_id)
+        if is_remote and not allow_multi_planet:
+            continue
+        # Keep one field free for the waiting step itself.
+        if planet.fields_max > 0 and planet.fields_max - planet.fields_used < 2:
+            continue
+        waiting[pid] = top
+    if not waiting:
+        return []
+
+    base_times_cache: dict[str, dict[int, float]] = {}
+
+    def _duration_hours(planet: PlanetState, key: str, level: int) -> float:
+        if key not in base_times_cache:
+            info = game_data.BUILDING_BY_ID[int(key[1:])]
+            levels_map = info.get("levels") or {}
+            top_level = max(int(info.get("max_table_level") or len(levels_map)), level)
+            base_times_cache[key] = build_monotonic_base_times(levels_map, top_level)
+        base_h = float(base_times_cache[key].get(level, 0.0)) / 3600.0
+        div = building_time_divisor(planet.building_level(7), planet.building_level(17), speedup)
+        return base_h / max(1e-9, div)
+
+    rates_cache: dict[int, list[float]] = {}
+
+    def _rates(planet: PlanetState) -> list[float]:
+        pid = int(planet.planet_id)
+        if pid not in rates_cache:
+            econ = estimate_planet_hourly_economy(state, planet)
+            rates_cache[pid] = [
+                max(0.0, game_data.safe_finite_float(econ.get(f"{r}_per_hr"), 0.0)) for r in RESOURCE_KEYS
+            ]
+        return rates_cache[pid]
+
+    # Plan-order funding estimate: with every colony's stock pooled and every earlier step paid first,
+    # how many hours until the empire can pay for each colony's next step and for the research step?
+    income = [0.0, 0.0, 0.0, 0.0]
+    for p in planets_by_id.values():
+        for pos, val in enumerate(_rates(p)):
+            income[pos] += val
+    ranked: list[tuple[int, PlannedAction]] = []
+    for act in actions:
+        if act.kind not in ("BUILD", "WAIT_RESOURCES", "RESEARCH"):
+            continue
+        m_seq = _AI_STEP_SEQ_RE.match(str(act.reason or ""))
+        ranked.append((int(m_seq.group(1)) if m_seq else 10**9, act))
+    ranked.sort(key=lambda item: item[0])
+    pool_wait_build: dict[int, float] = {}
+    pool_wait_research: dict[int, float] = {}
+    cumulative = [0.0, 0.0, 0.0, 0.0]
+    for _seq, act in ranked:
+        hours = 0.0
+        for pos, val in enumerate(_vals(act.cost)):
+            cumulative[pos] += val
+            gap = cumulative[pos] - pooled[pos]
+            if gap > 0.0:
+                hours = max(hours, gap / income[pos] if income[pos] > 0.0 else _AI_FILL_NEVER_HOURS)
+        by_kind = pool_wait_research if act.kind == "RESEARCH" else pool_wait_build
+        by_kind.setdefault(int(act.planet_id), max(AI_FILL_POOL_LEAD_HOURS, min(hours, _AI_FILL_NEVER_HOURS)))
+
+    out: list[PlannedAction] = []
+    filled: set[int] = set()
+    for step in steps:
+        if len(filled) >= len(waiting):
+            break
+        if not isinstance(step, Mapping) or str(step.get("kind") or "").strip().upper() != "BUILD":
+            continue
+        entity_key = str(step.get("entity_key") or "").strip()
+        target_level = game_data.safe_int(step.get("target_level"), 0)
+        if target_level <= 0 or not (entity_key.startswith("b") and entity_key[1:].isdigit()):
+            continue
+        step_pid = game_data.safe_optional_int(step.get("planet_id"), None)
+        step_coords = str(step.get("planet_coords") or "").strip()
+        planet = planets_by_id.get(step_pid) if step_pid is not None else None
+        if planet is None and step_coords:
+            planet = planets_by_coords.get(step_coords) or planets_by_coords.get(normalize_coords(step_coords))
+        if planet is None:
+            continue
+        pid = int(planet.planet_id)
+        top = waiting.get(pid)
+        if top is None or pid in filled:
+            continue
+        bid = int(entity_key[1:])
+        b_info = game_data.BUILDING_BY_ID.get(bid)
+        if not b_info:
+            continue
+        if bid == int(top.target_id or -1):
+            continue  # the waiting step itself, or a later level of the same chain
+        live_level = planet.building_level(bid)
+        if max(live_level, in_flight_buildings.get(pid, {}).get(entity_key, 0)) >= target_level:
+            continue
+        if target_level != live_level + 1:
+            continue
+        offers_by_id = {
+            int(o.building_id): o
+            for o in (planet.building_offers or ())
+            if getattr(o, "building_id", None) is not None
+        }
+        if not is_building_allowed_on_planet_type(planet, bid, has_b8_offer=(8 in offers_by_id)):
+            continue
+        if game_data.missing_prerequisites("buildings", bid, buildings=planet.buildings, researches=state.researches):
+            continue
+
+        wiki_cost = Resources(**full_cost(game_data.building_cost(bid, target_level)))
+        if bid not in (11, 12, 13, 14) and any(
+            0 < game_data.safe_int(getattr(planet.storage, r, 0), 0) < game_data.safe_int(getattr(wiki_cost, r, 0), 0)
+            for r in RESOURCE_KEYS
+        ):
+            continue
+        is_remote = state.active_planet_id is not None and pid != int(state.active_planet_id)
+        offer = offers_by_id.get(bid)
+        if offer is not None and game_data.safe_int(offer.target_level, target_level) == target_level:
+            cost = offer.cost
+            can_exec = (
+                bool(offer.can_build) or (_is_stale_remote_resource_wait(offer) and not cost.is_zero())
+            ) and planet.resources.can_afford(cost)
+            href = (str(offer.build_href) or None) if (can_exec and offer.can_build) else None
+        else:
+            cost = wiki_cost
+            can_live_verify = (
+                is_remote
+                or (not offers_by_id)
+                or (offer is not None and game_data.safe_int(offer.target_level, 0) < target_level)
+            )
+            can_exec = can_live_verify and (not cost.is_zero()) and planet.resources.can_afford(cost)
+            href = None
+        if not can_exec:
+            continue
+
+        cost_f = _vals(cost)
+        if any(cost_f[pos] > 0.0 and spare[pos] < cost_f[pos] for pos in range(4)):
+            continue  # the empire is short of something this step costs
+
+        # A research step about to start on this colony is paid first.
+        ready_cost = ready_cost_by_pid.get(pid) or (0.0, 0.0, 0.0, 0.0)
+        stock = [max(0.0, val - ready_cost[pos]) for pos, val in enumerate(_vals(planet.resources))]
+        if any(stock[pos] < cost_f[pos] for pos in range(4)):
+            continue
+        inbound = _vals(inbound_by_pid.get(pid))
+        rate = _rates(planet)
+        after = [stock[pos] - cost_f[pos] for pos in range(4)]
+        dur_h = _duration_hours(planet, entity_key, target_level)
+        allowed_delay = patience * dur_h + 1e-9
+
+        need_top = _vals(top.cost)
+        pool_top = pool_wait_build.get(pid, _AI_FILL_NEVER_HOURS)
+        start_now = min(_hours_until_paid(need_top, stock, inbound, rate), pool_top)
+        start_after = min(_hours_until_paid(need_top, after, inbound, rate), pool_top)
+        if max(start_after, dur_h) - start_now > allowed_delay:
+            continue
+        # What the colony does not produce cannot be earned back: leave it alone if the waiting step lacks it.
+        if any(
+            cost_f[pos] > 0.0 and rate[pos] <= 0.0 and need_top[pos] - after[pos] - inbound[pos] > 0.0
+            for pos in range(4)
+        ):
+            continue
+
+        research_cost = research_cost_by_pid.get(pid)
+        if research_cost is not None:
+            need_both = [need_top[pos] + research_cost[pos] for pos in range(4)]
+            pool_research = pool_wait_research.get(pid, _AI_FILL_NEVER_HOURS)
+            research_now = max(min(_hours_until_paid(need_both, stock, inbound, rate), pool_research), research_rem_h)
+            research_after = max(
+                min(_hours_until_paid(need_both, after, inbound, rate), pool_research), research_rem_h
+            )
+            if research_after - research_now > allowed_delay:
+                continue
+            if any(
+                cost_f[pos] > 0.0 and rate[pos] <= 0.0 and need_both[pos] - after[pos] - inbound[pos] > 0.0
+                for pos in range(4)
+            ):
+                continue
+
+        seq = game_data.safe_int(step.get("seq"), 0)
+        b_name = str(step.get("entity_name") or b_info["name"])
+        short_txt = ", ".join(
+            _RESOURCE_DISPLAY_LABELS[r] for r in RESOURCE_KEYS if game_data.safe_int(getattr(top.missing, r, 0), 0) > 0
+        )
+        out.append(
+            PlannedAction(
+                priority="P1",
+                kind="BUILD",
+                planet_id=pid,
+                planet_coords=str(planet.coords),
+                target_id=bid,
+                target_name=b_name,
+                target_level=target_level,
+                cost=cost,
+                missing=Resources(),
+                reason=(
+                    f"{AI_FILL_REASON_PREFIX} #{seq}: build {b_name} L{target_level} while "
+                    f"{top.target_name} L{top.target_level} waits for {short_txt}"
+                ),
+                executable_now=True,
+                action_href=href,
+            )
+        )
+        filled.add(pid)
+        for pos in range(4):
+            spare[pos] -= cost_f[pos]
+    return out
 
 
 AI_COLONY_IDLE_STATES: tuple[str, ...] = (

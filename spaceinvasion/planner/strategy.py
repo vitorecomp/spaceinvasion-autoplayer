@@ -1534,6 +1534,16 @@ def _plan_tutorial_fleet_milestones(
 
 _COMBAT_AND_RAID_SHIP_KEYS = ("s4", "s5", "s6", "s7", "s13", "s14", "s15", "s16", "s1", "s2", "s3")
 
+# Plan v4 plan-order pooling (adaptive switch only): a colony that cannot yet pay for its own next plan
+# step lends what it holds back for that step to a waiting step that comes earlier in the plan. A loan is
+# flown when it pays for the whole need, or carries at least `PLAN_ORDER_LOAN_MIN_CARGO` and
+# `PLAN_ORDER_LOAN_MIN_SHARE` of it.
+AI_PLAN_ORDER_LOAN_TAG = "[Plan order loan]"
+PLAN_ORDER_LOAN_MIN_CARGO = 20_000
+PLAN_ORDER_LOAN_MIN_SHARE = 0.25
+_AI_PLAN_STEP_RANK_RE = re.compile(r"^AI-Planner #(\d+):", re.ASCII)
+_PLAN_ORDER_NO_RANK = 10**9
+
 
 def _parse_gal_sys_pos(coords: Any) -> tuple[int, int, int]:
     coords_s = game_data.safe_key(coords) if coords is not None else ""
@@ -1554,7 +1564,15 @@ def plan_interplanet_transports(
     now_ts: Optional[float] = None,
     priority_resource_need: Optional[Mapping[int, Any]] = None,
 ) -> list[PlannedAction]:
-    """Plan own-planet resource `TRANSPORT` shipments (Fleet Priority #2: after `SPY`, before `COLONIZE`)."""
+    """Plan own-planet resource `TRANSPORT` shipments (Fleet Priority #2: after `SPY`, before `COLONIZE`).
+
+    With `ai_adaptive_execution` on (Plan v4 plan-order pooling), AI-Planner needs are served in plan
+    order, and a colony whose own next plan step still waits for resources lends what it holds back for
+    that step to a colony whose waiting step comes earlier in the plan (`AI_PLAN_ORDER_LOAN_TAG` in the
+    reason). A loan is only used when spare stock cannot cover the need, it covers only the borrower's
+    own waiting building step, and it never touches what the lender keeps for a step it can already pay,
+    for research, for the cushion, or for fuel.
+    """
     del now_ts
     if not getattr(cfg, "allow_transport", False) or not getattr(cfg, "allow_multi_planet", True):
         return []
@@ -1628,6 +1646,41 @@ def plan_interplanet_transports(
             buf[1] += max(0, _safe_strategy_int(act.cost.metal, 0))
             buf[2] += max(0, _safe_strategy_int(act.cost.kryptonite, 0))
             buf[3] += max(0, _safe_strategy_int(act.cost.spice, 0))
+
+    # Plan v4 plan-order pooling: where each colony's next AI-Planner building step stands in the plan,
+    # which of those steps still wait for resources, and what a colony holds back for a step it cannot
+    # pay yet (counting cargo already flying in) and may therefore lend to an earlier step.
+    plan_order_on = _adaptive_execution_enabled(cfg)
+    step_rank_by_pid: dict[int, int] = {}
+    waiting_step_by_pid: dict[int, PlannedAction] = {}
+    lendable_cost_by_pid: dict[int, list[int]] = {}
+    if plan_order_on:
+        for act in existing_plan:
+            if (
+                act.priority != "P1"
+                or act.kind not in ("BUILD", "WAIT_RESOURCES")
+                or act.planet_id in step_rank_by_pid
+            ):
+                continue
+            m_rank = _AI_PLAN_STEP_RANK_RE.match(_safe_strategy_str(act.reason))
+            if m_rank is None:
+                continue
+            step_rank_by_pid[act.planet_id] = int(m_rank.group(1))
+            if act.kind != "WAIT_RESOURCES" or act.executable_now or act.missing.is_zero():
+                continue
+            waiting_step_by_pid[act.planet_id] = act
+            own_need = norm_prio_needs.get(act.planet_id)
+            if own_need is not None and any(
+                _safe_strategy_int(getattr(act.missing, rk, 0), 0) > 0
+                and _safe_strategy_int(getattr(own_need, rk, 0), 0) > 0
+                for rk in ("pig_iron", "metal", "kryptonite", "spice")
+            ):
+                lendable_cost_by_pid[act.planet_id] = [
+                    max(0, _safe_strategy_int(act.cost.pig_iron, 0)),
+                    max(0, _safe_strategy_int(act.cost.metal, 0)),
+                    max(0, _safe_strategy_int(act.cost.kryptonite, 0)),
+                    max(0, _safe_strategy_int(act.cost.spice, 0)),
+                ]
 
     # Compute per-colony resource demands: AI-Planner priority targets + P1/P2 missing shortfalls + young-colony bootstrap
     demands: list[tuple[int, float, PlanetState, Resources, str, float]] = []
@@ -1717,6 +1770,8 @@ def plan_interplanet_transports(
         key=lambda item: (
             item[0],
             item[1],
+            # Plan order among equally urgent needs when the adaptive switch is on.
+            step_rank_by_pid.get(item[2].planet_id, _PLAN_ORDER_NO_RANK) if plan_order_on else 0,
             -(item[3].pig_iron + item[3].metal + item[3].kryptonite + item[3].spice),
         )
     )
@@ -1724,6 +1779,7 @@ def plan_interplanet_transports(
     # Track remaining donor ships and surplus resources across shipments in this tick
     donor_ships_rem: dict[int, dict[str, int]] = {}
     donor_surplus_rem: dict[int, list[int]] = {}
+    donor_lend_rem: dict[int, list[int]] = {}
     for p in normal_planets:
         c_ships = {
             k: max(0, _safe_strategy_int((p.ships or {}).get(k, 0), 0))
@@ -1746,6 +1802,8 @@ def plan_interplanet_transports(
             max(0, p.storage.spice),
         ]
         surp: list[int] = []
+        lend: list[int] = [0, 0, 0, 0]
+        lendable_cost = lendable_cost_by_pid.get(p.planet_id)
         donor_own_prio = norm_prio_needs.get(p.planet_id)
         donor_prio_vals = (
             (
@@ -1758,16 +1816,24 @@ def plan_interplanet_transports(
             else (0, 0, 0, 0)
         )
         for idx_r in range(4):
-            if donor_prio_vals[idx_r] > 0:
-                surp.append(0)
-                continue
             near_cap = sto_vals[idx_r] > 0 and cur_vals[idx_r] >= int(sto_vals[idx_r] * 0.85)
             cushion = 0 if near_cap else min(int(cur_vals[idx_r] * 0.10), 5_000)
             extra = fuel_reserve if idx_r == 3 else 0
-            surp.append(max(0, cur_vals[idx_r] - resv[idx_r] - cushion - extra))
-        if sum(surp) > 0:
+            spare_r = (
+                0
+                if donor_prio_vals[idx_r] > 0
+                else max(0, cur_vals[idx_r] - resv[idx_r] - cushion - extra)
+            )
+            surp.append(spare_r)
+            if lendable_cost is not None:
+                # Everything above the colony's other reservations (ready steps, research, cushion, fuel).
+                kept = max(0, resv[idx_r] - lendable_cost[idx_r])
+                lend[idx_r] = max(0, cur_vals[idx_r] - kept - cushion - extra - spare_r)
+        if sum(surp) > 0 or sum(lend) > 0:
             donor_ships_rem[p.planet_id] = c_ships
             donor_surplus_rem[p.planet_id] = surp
+            if sum(lend) > 0:
+                donor_lend_rem[p.planet_id] = lend
 
     if not donor_ships_rem:
         return []
@@ -1775,7 +1841,7 @@ def plan_interplanet_transports(
     planet_by_id = {p.planet_id: p for p in normal_planets}
     # Pass 1: satisfy concrete requested shortfalls in strict priority order first so no colony is starved.
     planned_trips: list[dict[str, Any]] = []
-    for urgency, _need_by_sec, dest, need_res, need_label, cap_ratio in demands:
+    for urgency, dest_need_by_sec, dest, need_res, need_label, cap_ratio in demands:
         dest_free = Resources(
             pig_iron=max(0, int(dest.storage.pig_iron * cap_ratio) - max(0, dest.resources.pig_iron)) if dest.storage.pig_iron > 0 else need_res.pig_iron,
             metal=max(0, int(dest.storage.metal * cap_ratio) - max(0, dest.resources.metal)) if dest.storage.metal > 0 else need_res.metal,
@@ -1783,39 +1849,89 @@ def plan_interplanet_transports(
             spice=max(0, int(dest.storage.spice * cap_ratio) - max(0, dest.resources.spice)) if dest.storage.spice > 0 else need_res.spice,
         )
         need_tot = need_res.pig_iron + need_res.metal + need_res.kryptonite + need_res.spice
+
+        def _trip_candidate(
+            donor_p: PlanetState,
+            ships_avail: Mapping[str, int],
+            avail_vals: Sequence[int],
+        ) -> Optional[tuple[float, int, PlanetState, Resources, dict[str, int], float]]:
+            max_cap = _fleet.fleet_cargo_capacity(ships_avail, miner_spec_level=miner_spec)
+            if max_cap <= 0:
+                return None
+            avail_res = Resources(avail_vals[0], avail_vals[1], avail_vals[2], avail_vals[3])
+            cargo_c = _fleet.pack_transport_cargo(need_res, avail_res, dest_free, max_cap)
+            cargo_tot_c = cargo_c.pig_iron + cargo_c.metal + cargo_c.kryptonite + cargo_c.spice
+            if cargo_tot_c <= 0:
+                return None
+            # Require meaningful shipment unless it fully satisfies a concrete queued shortfall
+            if cargo_tot_c < 500 and not (urgency <= 1 and cargo_tot_c >= need_tot):
+                return None
+            ships_c = _fleet.select_transport_ships(ships_avail, cargo_tot_c, miner_spec_level=miner_spec)
+            if not ships_c:
+                return None
+            flight_c = _fleet.estimate_fleet_flight_seconds(
+                donor_p.coords,
+                dest.coords,
+                ships_c,
+                researches=state.researches,
+                round_trip=True,
+            )
+            rph_c = _fleet.estimate_resource_per_hour(cargo_tot_c, flight_c)
+            return (rph_c, cargo_tot_c, donor_p, cargo_c, ships_c, flight_c)
+
+        # Plan-order loans serve only an immediate AI-Planner need of a colony whose own next building
+        # step is waiting, and only up to what that step still lacks.
+        borrow_step = (
+            waiting_step_by_pid.get(dest.planet_id)
+            if (plan_order_on and urgency == -1 and dest_need_by_sec <= 0.0)
+            else None
+        )
+        dest_rank = step_rank_by_pid.get(dest.planet_id, _PLAN_ORDER_NO_RANK)
+        borrow_cap = (
+            [
+                min(need_res.pig_iron, max(0, _safe_strategy_int(borrow_step.missing.pig_iron, 0))),
+                min(need_res.metal, max(0, _safe_strategy_int(borrow_step.missing.metal, 0))),
+                min(need_res.kryptonite, max(0, _safe_strategy_int(borrow_step.missing.kryptonite, 0))),
+                min(need_res.spice, max(0, _safe_strategy_int(borrow_step.missing.spice, 0))),
+            ]
+            if borrow_step is not None
+            else None
+        )
+
         best_cand: Optional[tuple[float, int, PlanetState, Resources, dict[str, int], float]] = None
+        best_loan: Optional[tuple[float, int, PlanetState, Resources, dict[str, int], float]] = None
         for d_pid, d_ships in donor_ships_rem.items():
             if d_pid == dest.planet_id or not d_ships:
                 continue
             donor = planet_by_id[d_pid]
             surp_vals = donor_surplus_rem.get(d_pid, [0, 0, 0, 0])
-            if sum(surp_vals) <= 0:
-                continue
-            max_cap = _fleet.fleet_cargo_capacity(d_ships, miner_spec_level=miner_spec)
-            if max_cap <= 0:
-                continue
-            surp_res = Resources(surp_vals[0], surp_vals[1], surp_vals[2], surp_vals[3])
-            cargo = _fleet.pack_transport_cargo(need_res, surp_res, dest_free, max_cap)
-            cargo_tot = cargo.pig_iron + cargo.metal + cargo.kryptonite + cargo.spice
-            if cargo_tot <= 0:
-                continue
-            # Require meaningful shipment unless it fully satisfies a concrete queued shortfall
-            if cargo_tot < 500 and not (urgency <= 1 and cargo_tot >= need_tot):
-                continue
-            chosen_ships = _fleet.select_transport_ships(d_ships, cargo_tot, miner_spec_level=miner_spec)
-            if not chosen_ships:
-                continue
-            flight_s = _fleet.estimate_fleet_flight_seconds(
-                donor.coords,
-                dest.coords,
-                chosen_ships,
-                researches=state.researches,
-                round_trip=True,
-            )
-            rph = _fleet.estimate_resource_per_hour(cargo_tot, flight_s)
-            if best_cand is None or (rph, cargo_tot) > (best_cand[0], best_cand[1]):
-                best_cand = (rph, cargo_tot, donor, cargo, chosen_ships, flight_s)
+            if sum(surp_vals) > 0:
+                cand = _trip_candidate(donor, d_ships, surp_vals)
+                if cand is not None and (best_cand is None or (cand[0], cand[1]) > (best_cand[0], best_cand[1])):
+                    best_cand = cand
+            lend_vals = donor_lend_rem.get(d_pid) if borrow_cap is not None else None
+            if lend_vals and step_rank_by_pid.get(d_pid, _PLAN_ORDER_NO_RANK) > dest_rank:
+                loan_vals = [
+                    max(surp_vals[i], min(surp_vals[i] + lend_vals[i], borrow_cap[i])) for i in range(4)
+                ]
+                if loan_vals != list(surp_vals):
+                    loan = _trip_candidate(donor, d_ships, loan_vals)
+                    loan_floor = min(
+                        need_tot, max(PLAN_ORDER_LOAN_MIN_CARGO, int(PLAN_ORDER_LOAN_MIN_SHARE * need_tot))
+                    )
+                    if (
+                        loan is not None
+                        and loan[1] >= loan_floor
+                        and (best_loan is None or (loan[1], loan[0]) > (best_loan[1], best_loan[0]))
+                    ):
+                        best_loan = loan
 
+        # A loan is used only when spare stock cannot cover the need and the loan delivers more.
+        use_loan = best_loan is not None and (
+            best_cand is None or (best_cand[1] < need_tot and best_loan[1] > best_cand[1])
+        )
+        if use_loan:
+            best_cand = best_loan
         if best_cand is None:
             continue
         _rph, _cargo_tot, donor, cargo, chosen_ships, _flight_s = best_cand
@@ -1828,6 +1944,14 @@ def plan_interplanet_transports(
             else:
                 d_rem_ships.pop(sk, None)
         d_rem_surp = donor_surplus_rem[donor.planet_id]
+        cargo_vals = (cargo.pig_iron, cargo.metal, cargo.kryptonite, cargo.spice)
+        lent_tot = 0
+        if use_loan:
+            d_rem_lend = donor_lend_rem[donor.planet_id]
+            for idx_r in range(4):
+                lent_r = max(0, cargo_vals[idx_r] - d_rem_surp[idx_r])
+                d_rem_lend[idx_r] = max(0, d_rem_lend[idx_r] - lent_r)
+                lent_tot += lent_r
         d_rem_surp[0] = max(0, d_rem_surp[0] - cargo.pig_iron)
         d_rem_surp[1] = max(0, d_rem_surp[1] - cargo.metal)
         d_rem_surp[2] = max(0, d_rem_surp[2] - cargo.kryptonite)
@@ -1841,6 +1965,9 @@ def plan_interplanet_transports(
                 "dest_free": dest_free,
                 "cargo": cargo,
                 "chosen_ships": dict(chosen_ships),
+                "lent_tot": lent_tot,
+                "lender_rank": step_rank_by_pid.get(donor.planet_id),
+                "borrower_rank": step_rank_by_pid.get(dest.planet_id),
             }
         )
 
@@ -1957,6 +2084,15 @@ def plan_interplanet_transports(
             if extra_added > 0
             else ""
         )
+        lent_tot = _safe_strategy_int(trip.get("lent_tot", 0), 0)
+        loan_note = (
+            (
+                f" {AI_PLAN_ORDER_LOAN_TAG} lends {game_data.fmt_compact_int(lent_tot, grouped=True)} "
+                f"held for its own step #{trip.get('lender_rank')} to step #{trip.get('borrower_rank')}"
+            )
+            if lent_tot > 0
+            else ""
+        )
         out_transports.append(
             PlannedAction(
                 priority="P1",
@@ -1971,6 +2107,7 @@ def plan_interplanet_transports(
                 reason=(
                     f"Supply {dest.name} [{norm_dest}] ({res_summary} · {game_data.fmt_compact_int(cargo_tot, grouped=True)} res"
                     f"{fill_note} / 1-way {ow_txt} · RT {dur_txt}, {rph_txt} res/h via {ship_desc}) for {need_label}"
+                    f"{loan_note}"
                 ),
                 executable_now=True,
             )
@@ -3756,6 +3893,9 @@ INFRA_TRANSPORT_MIN_UTILIZATION = 0.5
 # Plan-sized transport hulls ordered per Weapons factory order (one order costs the same page views
 # whatever the quantity). The 25%/h allowance still bounds what is spent.
 INFRA_TRANSPORT_MAX_BATCH = 10
+# Plan v4: hulls away on raids do not count toward the logistics target, and raids take every parked hull,
+# so the whole transport fleet (raiding hulls included) stops growing at this multiple of the target.
+INFRA_TRANSPORT_FLEET_CAP_RATIO = 2.0
 _TRANSPORT_HULL_KEYS: tuple[str, ...] = ("s1", "s2", "s3")
 _IN_FLIGHT_DETAIL_CAP = 140
 _SHIP_NAME_TO_KEY_CACHE: dict[str, str] = {}
@@ -3954,6 +4094,20 @@ def _max_affordable_units(resources: Any, unit_cost: Any) -> int:
     return max(0, units or 0)
 
 
+def _transport_hulls_on_raids(state: GameState) -> dict[str, int]:
+    """Transport hulls (`s1`/`s2`/`s3`) flying an Attack mission, outbound or returning."""
+    out: dict[str, int] = {k: 0 for k in _TRANSPORT_HULL_KEYS}
+    for q in getattr(state, "active_queues", None) or ():
+        if not is_in_flight_fleet_job(q):
+            continue
+        if not _safe_strategy_str(getattr(q, "name", "")).strip().lower().startswith("attack"):
+            continue
+        ships, _complete = _parse_in_flight_ship_detail(_safe_strategy_str(getattr(q, "detail", "")))
+        for k in _TRANSPORT_HULL_KEYS:
+            out[k] += max(0, _safe_strategy_int(ships.get(k, 0), 0))
+    return out
+
+
 def compute_infra_transport_targets(
     state: GameState,
     config: Optional[StrategyConfig],
@@ -3968,6 +4122,10 @@ def compute_infra_transport_targets(
     `s1`/`s2`/`s3` capacity, less `infra_cargo_ordered_last_hour` (hulls that may still be in a
     Weapons factory queue), is split evenly across shipyard colonies that can build Large transports
     (else Small transports). Returns `{}` with the switch off.
+
+    Plan v4: hulls flying an Attack mission are left out of that capacity (they move nothing between
+    colonies while they are away), and the whole transport fleet, raiding hulls included, never grows
+    past `INFRA_TRANSPORT_FLEET_CAP_RATIO` x the target.
     """
     if not _adaptive_enabled_cfg(config) or not isinstance(transport_demand, Mapping):
         return {}
@@ -3997,7 +4155,12 @@ def compute_infra_transport_targets(
         hulls[k] += max(0, _safe_strategy_int(empire_in_flight.get(k, 0), 0))
     current_cargo = _safe_strategy_int(_get_fleet().fleet_cargo_capacity(hulls), 0)
     pending_cargo = max(0, _safe_strategy_int(transport_demand.get("infra_cargo_ordered_last_hour", 0) or 0, 0))
-    deficit_cargo = target_cargo - current_cargo - pending_cargo
+    # Plan v4: a hull away on a raid carries nothing between colonies, so it does not count toward the
+    # logistics target. Raids take every parked hull, so the whole fleet has its own ceiling.
+    raid_cargo = _safe_strategy_int(_get_fleet().fleet_cargo_capacity(_transport_hulls_on_raids(state)), 0)
+    logistics_cargo = max(0, current_cargo - raid_cargo)
+    fleet_ceiling = int(target_cargo * INFRA_TRANSPORT_FLEET_CAP_RATIO)
+    deficit_cargo = min(target_cargo - logistics_cargo, fleet_ceiling - current_cargo) - pending_cargo
     if deficit_cargo <= 0:
         return {}
 
@@ -6382,6 +6545,10 @@ def _plan_blast_furnace_throttle(
 AI_THROTTLE_COOLDOWN_SECONDS: float = 60.0
 METAL_OVERFLOW_PAUSE_PCT: int = 100
 METAL_OVERFLOW_RESUME_PCT: int = 95
+# Plan v4 empire smelting arm: a furnace that is already on keeps smelting until the pooled Metal is this
+# much above what the waiting steps need, and a furnace turns on only with this much Pig iron to spare.
+EMPIRE_SMELT_HOLD_RATIO: float = 1.10
+EMPIRE_SMELT_MIN_SPARE_PIG: int = 50_000
 
 
 def _fallback_queue_remaining_seconds(
@@ -6440,9 +6607,22 @@ def _adaptive_colony_smelt_decision(
     metal_is_full: bool,
     donor_need: bool,
     donor_gap: int,
-    flying_ships: Mapping[str, int],
+    donor_hold: bool = False,
+    empire_pig_tight: bool = False,
+    empire_pig_short: bool = False,
+    empire_energy_ok: bool = True,
 ) -> tuple[bool, Optional[PlannedAction], int, int, Optional[str]]:
-    """Per-colony furnace decision for adaptive mode: `(want_smelt, step, metal_gap, pig_gap, on_reason)`."""
+    """Per-colony furnace decision for adaptive mode: `(want_smelt, step, metal_gap, pig_gap, on_reason)`.
+
+    The colony's own steps come first (smelt when they are short of Metal and the queue frees no later
+    than smelting closes the gap). When they do not ask for smelting, the empire arm (Plan v4) applies:
+    the colony smelts while the empire's waiting steps need more Metal than the pooled stock holds
+    (`donor_need`, or `donor_hold` for a furnace that is already on), unless Pig iron is the scarcer
+    resource: the empire's waiting steps need more Pig iron than the pooled stock holds
+    (`empire_pig_short`, or `empire_pig_tight` for a furnace that is off), or this colony has no Pig
+    iron to spare above the cost of its own waiting and ready steps. The empire arm never runs a
+    furnace the colony cannot power (`empire_energy_ok`).
+    """
     pid = planet.planet_id
     local_waiting = [a for a in waiting_ai if a.planet_id == pid]
     local_ready = [a for a in ready_ai if a.planet_id == pid]
@@ -6517,27 +6697,34 @@ def _adaptive_colony_smelt_decision(
                 f"AI-Planner: {trigger_lbl} needs {local_metal_gap:,} more Metal on this colony "
                 f"(queue free in {trigger_rem / 60.0:.0f} min, smelting closes gap in {trigger_smelt / 60.0:.0f} min)",
             )
-        # Step's queue still busy longer than smelting needs: wait (furnace already 0%, nothing to emit).
-        return False, active_step, local_metal_gap, pig_gap, None
+        # The step's queue stays busy longer than smelting needs: no local reason to smelt yet.
 
-    if donor_need and not metal_is_full:
-        ships_m = getattr(planet, "ships", None) or {}
-        hulls = sum(
-            max(0, _safe_strategy_int(ships_m.get(k, 0), 0)) + max(0, _safe_strategy_int(flying_ships.get(k, 0), 0))
-            for k in _TRANSPORT_HULL_KEYS
-        )
-        pig_ok = res_pig >= 50_000 or (sto_pig > 0 and res_pig * 2 >= sto_pig)
-        if hulls > 0 and pig_ok:
+    furnace_on = cur_b2_pct > 0
+    empire_short = donor_need or (furnace_on and donor_hold)
+    pig_blocked = empire_pig_short or (empire_pig_tight and not furnace_on)
+    if empire_short and empire_energy_ok and not metal_is_full and not pig_blocked:
+        pig_per_hour = 2.0 * max(0.0, float(local_b2_metal_per_hour))
+        pig_spare = max(0, res_pig - _sum(local_ready, "pig_iron")) - need_pig
+        if furnace_on:
+            pig_fine = pig_spare > 0
+        else:
+            pig_fine = pig_spare >= max(EMPIRE_SMELT_MIN_SPARE_PIG, pig_per_hour) or (
+                sto_pig > 0 and pig_spare * 2 >= sto_pig
+            )
+        if pig_fine:
+            if donor_gap > 0:
+                why = f"empire waiting steps need {donor_gap:,} more Metal than pooled + in-flight stock"
+            else:
+                why = "pooled Metal is still within 10% of what the empire's waiting steps need"
             return (
                 True,
                 active_step,
                 donor_gap,
                 pig_gap,
-                f"AI-Planner donor: empire waiting steps need {donor_gap:,} more Metal than pooled + in-flight "
-                f"stock; smelt exportable Metal ({hulls} transport hulls)",
+                f"AI-Planner empire: {why}; smelt this colony's spare Pig iron ({pig_spare:,} above its own steps)",
             )
 
-    return False, active_step, 0, pig_gap, None
+    return False, active_step, local_metal_gap, pig_gap, None
 
 
 def plan_ai_blast_furnace_throttles(
@@ -6576,9 +6763,12 @@ def plan_ai_blast_furnace_throttles(
     steps plus `inbound_cargo_by_planet` Metal. The furnace turns ON when the gap is positive and
     the colony's queue (`in_progress_rem_by_planet` seconds) frees no later than smelting closes
     the gap, stays ON while the gap is positive, and turns OFF otherwise. With
-    `enable_donor_smelting`, a covered colony holding transport hulls and ample Pig iron also smelts
-    when the empire-wide waiting Metal need exceeds pooled + in-flight Metal. The overflow pause,
-    resume, cooldown and master toggles are unchanged.
+    `enable_donor_smelting` (Plan v4 empire arm), a colony whose own steps do not ask for smelting
+    also smelts while the empire-wide waiting Metal need exceeds pooled + in-flight Metal, unless
+    Pig iron is the scarcer resource (the empire's waiting steps need more Pig iron than the pooled
+    stock holds, or the colony has no Pig iron to spare above its own steps). A furnace that is on
+    stays on until the pooled Metal is 10% above the need. Transport hulls are not required. The
+    overflow pause, resume, cooldown and master toggles are unchanged.
     """
     _ = (fleet_actions, storage_warn_ratio)
     adaptive = bool(getattr(cfg, "ai_adaptive_execution", False))
@@ -6667,13 +6857,15 @@ def plan_ai_blast_furnace_throttles(
             reserved_pig_gap = max(0, reserved_pig_cost - avail_empire_pig)
             empire_wants_smelt = reserved_metal_gap > 0
 
-    # Adaptive per-colony context (Plan v2 Step 1 + donor arm).
+    # Adaptive per-colony context (Plan v2 Step 1 + empire arm).
     inbound_map: Mapping[int, Any] = {}
     rem_q_map: Mapping[int, float] = {}
     rem_research_sec: float = 0.0
     empire_donor_need = False
+    empire_donor_hold = False
     empire_donor_gap = 0
-    flights_ships: Mapping[int, Mapping[str, int]] = {}
+    empire_pig_tight = False
+    empire_pig_short = False
     if adaptive:
         fb_build_rem, fb_res_rem = _fallback_queue_remaining_seconds(state, ref_now)
         rem_q_map = in_progress_rem_by_planet if in_progress_rem_by_planet is not None else fb_build_rem
@@ -6688,23 +6880,24 @@ def plan_ai_blast_furnace_throttles(
             else _fallback_inbound_cargo_by_planet(state)
         )
         if enable_donor_smelting:
-            emp_need_metal = sum(
-                max(0, _safe_strategy_int(getattr(a.cost, "metal", 0), 0)) for a in waiting_ai
-            )
-            emp_ready_metal = sum(
-                max(0, _safe_strategy_int(getattr(a.cost, "metal", 0), 0)) for a in ready_ai
-            )
-            emp_stock_metal = sum(
-                max(0, _safe_strategy_int(getattr(p.resources, "metal", 0), 0)) for p in normal_planets
-            )
-            emp_flying_metal = sum(
-                _inbound_resource_value(cargo, "metal") for cargo, _d, _o, _r in _friendly_cargo_flights(state)
-            )
-            pooled_metal = max(0, emp_stock_metal - emp_ready_metal) + emp_flying_metal
+            flying_cargo = [cargo for cargo, _d, _o, _r in _friendly_cargo_flights(state)]
+
+            def _empire_need_and_pool(res_key: str) -> tuple[int, int]:
+                need = sum(max(0, _safe_strategy_int(getattr(a.cost, res_key, 0), 0)) for a in waiting_ai)
+                ready = sum(max(0, _safe_strategy_int(getattr(a.cost, res_key, 0), 0)) for a in ready_ai)
+                stock = sum(
+                    max(0, _safe_strategy_int(getattr(p.resources, res_key, 0), 0)) for p in normal_planets
+                )
+                flying = sum(_inbound_resource_value(cargo, res_key) for cargo in flying_cargo)
+                return need, max(0, stock - ready) + flying
+
+            emp_need_metal, pooled_metal = _empire_need_and_pool("metal")
             empire_donor_gap = max(0, emp_need_metal - pooled_metal)
             empire_donor_need = empire_donor_gap > 0
-            if empire_donor_need:
-                flights_ships = _in_flight_ship_counts(state).get("by_planet_id") or {}
+            empire_donor_hold = emp_need_metal > 0 and pooled_metal < emp_need_metal * EMPIRE_SMELT_HOLD_RATIO
+            emp_need_pig, pooled_pig = _empire_need_and_pool("pig_iron")
+            empire_pig_short = pooled_pig < emp_need_pig
+            empire_pig_tight = pooled_pig < emp_need_pig * EMPIRE_SMELT_HOLD_RATIO
 
     out: list[PlannedAction] = []
 
@@ -6743,6 +6936,12 @@ def plan_ai_blast_furnace_throttles(
 
         on_reason: Optional[str] = None
         if adaptive:
+            # The empire arm only runs a furnace the colony can power: free energy has to cover what the
+            # furnace still has to draw to reach 100% (nothing more when it already runs at 100%).
+            extra_energy = int(
+                math.ceil(game_data.mine_energy_needed(BLAST_FURNACE, b2_lvl) * (100 - cur_b2_pct) / 100.0)
+            )
+            empire_energy_ok = (e_prod <= 0 and e_used <= 0) or (e_prod - e_used) >= extra_energy
             (
                 want_smelt,
                 active_step,
@@ -6761,7 +6960,10 @@ def plan_ai_blast_furnace_throttles(
                 metal_is_full=metal_is_full,
                 donor_need=empire_donor_need,
                 donor_gap=empire_donor_gap,
-                flying_ships=flights_ships.get(planet.planet_id) or {},
+                donor_hold=empire_donor_hold,
+                empire_pig_tight=empire_pig_tight,
+                empire_pig_short=empire_pig_short,
+                empire_energy_ok=empire_energy_ok,
             )
             scope_lbl = ""
         elif use_empire_pool:

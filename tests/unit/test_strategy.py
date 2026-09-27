@@ -5096,7 +5096,7 @@ class TestAdaptiveBlastFurnace(unittest.TestCase):
         acts_part = self.plan(_state((p_part,)), ai, [], self.cfg, now_ts=5000.0, in_progress_rem_by_planet={901: 1e9})
         self.assertEqual([a.target_level for a in acts_part], [100])
 
-    def test_donor_arm(self) -> None:
+    def test_empire_arm(self) -> None:
         needy = _colony(901, "02:380:04", metal=0, b2=0)
         donor = _colony(902, "02:380:08", metal=5_000, pig=60_000, b2_pct=0, ships={"s1": 2})
         st = _state((needy, donor))
@@ -5104,26 +5104,17 @@ class TestAdaptiveBlastFurnace(unittest.TestCase):
         self.assertEqual(self.plan(st, ai, [], self.cfg, now_ts=5000.0), [])
         acts = self.plan(st, ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True)
         self.assertEqual([(a.planet_id, a.target_level) for a in acts], [(902, 100)])
-        self.assertIn("donor", acts[0].reason)
-        # No transport hulls (parked or flying) -> no donor smelting.
+        self.assertIn("AI-Planner empire", acts[0].reason)
+        self.assertIn("75,000 more Metal", acts[0].reason)
+        # Plan v4: transport hulls are no longer required (the Metal is used here later or shipped
+        # when a hull is home), so a colony without hulls smelts too.
         st_no_hulls = _state((needy, replace(donor, ships={})))
-        self.assertEqual(self.plan(st_no_hulls, ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True), [])
-        # Hulls in flight from the donor count.
-        flight = QueueJob(
-            category="fleet",
-            name="Transport → 02:380:04",
-            remaining_seconds=900.0,
-            origin_coords="02:380:08",
-            detail="Outbound · 3 Small transport",
-            cargo=Resources(),
-        )
-        st_flying = _state((needy, replace(donor, ships={})), queues=(flight,))
-        acts_fly = self.plan(st_flying, ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True)
-        self.assertEqual([(a.planet_id, a.target_level) for a in acts_fly], [(902, 100)])
-        # Low Pig iron -> no donor smelting.
+        acts_no_hulls = self.plan(st_no_hulls, ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True)
+        self.assertEqual([(a.planet_id, a.target_level) for a in acts_no_hulls], [(902, 100)])
+        # Low Pig iron -> no empire smelting.
         st_low_pig = _state((needy, replace(donor, resources=Resources(10_000, 5_000, 0, 0))))
         self.assertEqual(self.plan(st_low_pig, ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True), [])
-        # Empire pool already covers the need -> no donor smelting.
+        # Empire pool already covers the need -> no empire smelting.
         rich = replace(donor, resources=Resources(60_000, 90_000, 0, 0))
         self.assertEqual(self.plan(_state((needy, rich)), ai, [], self.cfg, now_ts=5000.0, enable_donor_smelting=True), [])
 
