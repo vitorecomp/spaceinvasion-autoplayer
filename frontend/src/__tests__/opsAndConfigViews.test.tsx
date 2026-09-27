@@ -1404,7 +1404,28 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
       )
     ).toBe(true);
 
-    // 7. ConfigView renders spy_reserved_slots_only toggle and saves it via update_config
+    // 7. ConfigView renders spy_reserved_slots_only and ai_adaptive_execution toggles and saves via update_config
+    const adaptiveCheckbox = configView.querySelector(
+      "#cfg-ai_adaptive_execution"
+    ) as HTMLInputElement | null;
+    expect(adaptiveCheckbox).not.toBeNull();
+    expect(adaptiveCheckbox?.checked).toBe(false);
+    const adaptiveItem = adaptiveCheckbox!.closest(".config-item")!;
+    expect(adaptiveItem.querySelector(".config-item-key")?.textContent).toBe(
+      "ai_adaptive_execution"
+    );
+    expect(adaptiveItem.querySelector(".config-item-bounds")?.textContent).toContain(
+      "Boolean toggle"
+    );
+    expect(
+      (adaptiveItem.querySelector(".config-item-desc")?.textContent || "").length
+    ).toBeGreaterThan(80);
+    expect(
+      configView.querySelector('[aria-labelledby="cfg-grp-doctrine"] #cfg-ai_adaptive_execution')
+    ).not.toBeNull();
+    fireEvent.click(adaptiveCheckbox!);
+    expect(adaptiveCheckbox?.checked).toBe(true);
+
     const spyResOnlyCheckbox = configView.querySelector(
       "#cfg-spy_reserved_slots_only"
     ) as HTMLInputElement | null;
@@ -1417,7 +1438,10 @@ describe("Dashboard, Operations, Buildings, Logs, Config & ActionGraph React Vie
     await waitFor(() => {
       expect(
         postedCommands.some(
-          (c) => c.command === "update_config" && c.config?.spy_reserved_slots_only === true
+          (c) =>
+            c.command === "update_config" &&
+            c.config?.spy_reserved_slots_only === true &&
+            c.config?.ai_adaptive_execution === true
         )
       ).toBe(true);
     });

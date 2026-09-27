@@ -176,12 +176,14 @@ describe("ActionGraph 4-Tab Workspace", () => {
   let mockCustomPlanetNames: Record<string, string> = {};
   let mockConfigOptimizerActiveNull = false;
   let mockIncludePlaceholderPlanet = false;
+  let mockAdaptiveStatus: Record<string, any> | null = null;
 
   beforeEach(() => {
     postedCommands = [];
     mockCustomPlanetNames = {};
     mockConfigOptimizerActiveNull = false;
     mockIncludePlaceholderPlanet = false;
+    mockAdaptiveStatus = null;
     mockConflicts = [
       {
         conflict_key: "pid:100:blocked:b3:l22",
@@ -395,6 +397,14 @@ describe("ActionGraph 4-Tab Workspace", () => {
                 max_planets: mockDashboardState.max_planets,
                 live_ai_unlocked: mockDashboardState.live_ai_unlocked,
                 pending_field_conflicts: mockConflicts,
+                adaptive_status: mockAdaptiveStatus
+                  ? {
+                      ...mockAdaptiveStatus,
+                      enabled: Boolean(
+                        mockDashboardState.config?.ai_adaptive_execution ?? mockAdaptiveStatus.enabled
+                      ),
+                    }
+                  : null,
                 job: { status: "completed", progress_pct: 100, elapsed_ms: 318 },
                 active_summary: mockDashboardState.ai_planner_summary,
                 attack_telemetry: {
@@ -1364,5 +1374,273 @@ describe("ActionGraph 4-Tab Workspace", () => {
     // Zero SVGs inside the smelting strip or subview
     expect(document.getElementById("ag-ai-smelting-strip")?.querySelectorAll("svg").length).toBe(0);
     expect(smeltPane.querySelectorAll("svg").length).toBe(0);
+  });
+
+  it("renders Tab 3 #ag-ai-adaptive-strip, toggles ai_adaptive_execution, displays per-colony idle diagnostics, fleet cargo, and 24h gate shares with zero SVGs", async () => {
+    mockDashboardState = {
+      ...mockDashboardState,
+      custom_planet_names: { "101": "Smelter Prime" },
+      config: {
+        ...(mockDashboardState.config || {}),
+        ai_adaptive_execution: false,
+      },
+    };
+    mockAdaptiveStatus = {
+      enabled: false,
+      active_builders: 3,
+      total_colonies: 10,
+      idle_with_affordable_count: 1,
+      ready_not_started_count: 1,
+      counts: {
+        building: 1,
+        ready_not_started: 1,
+        waiting_metal: 1,
+        waiting_pig_iron: 1,
+        waiting_kryptonite: 1,
+        waiting_spice: 1,
+        transport_inbound: 1,
+        storage_blocked: 1,
+        field_conflict: 1,
+        idle_complete: 1,
+      },
+      window_24h: {
+        bucket_count: 24,
+        colony_samples: 240,
+        idle_with_affordable_share_pct: 12.5,
+        ready_not_started_share_pct: 3.2,
+        state_shares_pct: { building: 35.0, waiting_metal: 25.0 },
+      },
+      transport_fleet: {
+        owned_parked_cargo: 54000,
+        in_flight_cargo: 30000,
+        total_fleet_cargo: 84000,
+        target_fleet_cargo: 613000,
+        planned_cargo_per_hour_24h: 858000,
+        realized_utilization: 0.5,
+      },
+      auto_replan: {
+        cooldown_seconds: 1800,
+        last_auto_replan_ts: null,
+        last_trigger_reason: "plan_age_4h",
+        drift_ready: true,
+      },
+      colonies: [
+        {
+          planet_id: 100,
+          coords: "02:380:1",
+          name: "Homeworld",
+          state: "building",
+          reason: "Constructing Development center L13",
+          next_label: "Pig iron mine L14",
+          idle_with_affordable_target_step: false,
+          b2_level: 10,
+          b2_pct: 100,
+          energy_net: 400,
+          b2_energy_margin_at_100: 400,
+        },
+        {
+          planet_id: 101,
+          coords: "02:380:2",
+          name: "Colony 2",
+          state: "waiting_metal",
+          reason: "Short 4,200 Metal for Kryptonite mine L15",
+          next_label: "Kryptonite mine L15",
+          idle_with_affordable_target_step: false,
+          b2_level: 8,
+          b2_pct: 0,
+          energy_net: 180,
+          b2_energy_margin_at_100: 79,
+        },
+        {
+          planet_id: 102,
+          coords: "02:380:3",
+          name: "Colony 3",
+          state: "ready_not_started",
+          reason: "Affordable target step ready to start",
+          next_label: "Fusion plant L12",
+          idle_with_affordable_target_step: true,
+          b2_level: 6,
+          b2_pct: 100,
+          energy_net: 220,
+          b2_energy_margin_at_100: 220,
+        },
+        {
+          planet_id: 103,
+          coords: "02:380:4",
+          name: "Colony 4",
+          state: "waiting_pig_iron",
+          reason: "Short Pig iron",
+          idle_with_affordable_target_step: false,
+          b2_level: 5,
+          b2_pct: 0,
+          energy_net: 150,
+          b2_energy_margin_at_100: 150,
+        },
+        {
+          planet_id: 104,
+          coords: "02:380:5",
+          name: "Colony 5",
+          state: "waiting_kryptonite",
+          reason: "Short Kryptonite",
+          idle_with_affordable_target_step: false,
+          b2_level: 5,
+          b2_pct: 0,
+          energy_net: 150,
+          b2_energy_margin_at_100: 150,
+        },
+        {
+          planet_id: 105,
+          coords: "02:380:6",
+          name: "Colony 6",
+          state: "waiting_spice",
+          reason: "Short Spice",
+          idle_with_affordable_target_step: false,
+          b2_level: 5,
+          b2_pct: 0,
+          energy_net: 150,
+          b2_energy_margin_at_100: 150,
+        },
+        {
+          planet_id: 106,
+          coords: "02:380:7",
+          name: "Colony 7",
+          state: "transport_inbound",
+          reason: "Inbound cargo covers deficit",
+          idle_with_affordable_target_step: false,
+          b2_level: 4,
+          b2_pct: 100,
+          energy_net: 120,
+          b2_energy_margin_at_100: 120,
+        },
+        {
+          planet_id: 107,
+          coords: "02:380:8",
+          name: "Colony 8",
+          state: "storage_blocked",
+          reason: "Warehouse cap reached",
+          idle_with_affordable_target_step: false,
+          b2_level: 4,
+          b2_pct: 0,
+          energy_net: 120,
+          b2_energy_margin_at_100: 120,
+        },
+        {
+          planet_id: 108,
+          coords: "02:380:9",
+          name: "Colony 9",
+          state: "field_conflict",
+          reason: "Planet fields full",
+          idle_with_affordable_target_step: false,
+          b2_level: 4,
+          b2_pct: 0,
+          energy_net: 120,
+          b2_energy_margin_at_100: 120,
+        },
+        {
+          planet_id: 109,
+          coords: "02:380:10",
+          name: "Colony 10",
+          state: "idle_complete",
+          reason: "All planned horizon steps built",
+          idle_with_affordable_target_step: false,
+          b2_level: 0,
+          b2_pct: 0,
+          energy_net: 140,
+          b2_energy_margin_at_100: 140,
+        },
+      ],
+    };
+
+    const { container } = render(
+      <Harness initialDashboard={mockDashboardState}>
+        <ConfigView />
+        <ActionGraphView />
+      </Harness>
+    );
+
+    fireEvent.click(document.getElementById("ag-tab-btn-ai-planner")!);
+    await waitFor(() => {
+      expect(document.getElementById("ag-ai-colony-diag-list")?.textContent).toContain("Smelter Prime [02:380:2]");
+    });
+
+    const strip = document.getElementById("ag-ai-adaptive-strip")!;
+    expect(strip).not.toBeNull();
+    expect(strip.querySelectorAll("svg").length).toBe(0);
+
+    // Toggle starts OFF
+    const toggle = document.getElementById("ai-adaptive-exec-toggle") as HTMLInputElement;
+    expect(toggle).not.toBeNull();
+    expect(toggle.type).toBe("checkbox");
+    expect(toggle.checked).toBe(false);
+    expect(document.getElementById("ai-adaptive-exec-state")?.textContent).toBe("OFF");
+
+    // Summary badges
+    expect(document.getElementById("ai-adaptive-builders-badge")?.textContent).toBe("Builders 3/10");
+    expect(document.getElementById("ai-adaptive-fleet-badge")?.textContent).toBe("Cargo 84.0k / 613.0k");
+    expect(document.getElementById("ai-adaptive-gate24h-badge")?.textContent).toBe(
+      "Idle w/ affordable: 12.5% · Ready gap: 3.2%"
+    );
+    expect(document.getElementById("ai-adaptive-replan-badge")?.textContent).toContain("Drift ready");
+    expect(document.getElementById("ai-adaptive-replan-badge")?.textContent).toContain("plan_age_4h");
+
+    // Per-colony diagnostic chips: custom name, all 10 state pills, b2 %, low energy margin, and reason tooltip
+    const diagList = document.getElementById("ag-ai-colony-diag-list")!;
+    const chips = Array.from(diagList.querySelectorAll(".ag-adaptive-chip"));
+    expect(chips.length).toBe(10);
+    for (const expectedPill of [
+      "Building",
+      "Ready",
+      "Wait Metal",
+      "Wait Pig",
+      "Wait Kry",
+      "Wait Spice",
+      "Cargo Inbound",
+      "Storage Cap",
+      "Field Conflict",
+      "Idle",
+    ]) {
+      expect(diagList.textContent).toContain(expectedPill);
+    }
+
+    const smelterChip = diagList.querySelector('[data-planet-id="101"]') as HTMLElement;
+    expect(smelterChip.textContent).toContain("Smelter Prime [02:380:2]");
+    expect(smelterChip.textContent).toContain("Wait Metal");
+    expect(smelterChip.textContent).toContain("b2 0%");
+    expect(smelterChip.textContent).toContain("Low E (79)");
+    expect(smelterChip.getAttribute("title")).toContain("Short 4,200 Metal for Kryptonite mine L15");
+
+    const homeChip = diagList.querySelector('[data-planet-id="100"]') as HTMLElement;
+    expect(homeChip.textContent).toContain("b2 100%");
+    expect(homeChip.textContent).not.toContain("Low E");
+
+    const idleChip = diagList.querySelector('[data-planet-id="109"]') as HTMLElement;
+    expect(idleChip.textContent).toContain("no b2");
+
+    // Toggle adaptive execution ON -> dispatches update_config, refreshes dashboard + ai_planner_get, and syncs ConfigView
+    fireEvent.click(toggle);
+    await waitFor(() => {
+      const upd = postedCommands.find(
+        (c) => c.command === "update_config" && c.config?.ai_adaptive_execution === true
+      );
+      expect(upd).toBeDefined();
+      expect(toggle.checked).toBe(true);
+      expect(document.getElementById("ai-adaptive-exec-state")?.textContent).toBe("ON");
+    });
+
+    const cfgCheckbox = document.getElementById("cfg-ai_adaptive_execution") as HTMLInputElement;
+    expect(cfgCheckbox).not.toBeNull();
+    expect(cfgCheckbox.checked).toBe(true);
+
+    // Confirm ai_planner_get was re-fetched after update_config
+    const updIdx = postedCommands.findIndex(
+      (c) => c.command === "update_config" && c.config?.ai_adaptive_execution === true
+    );
+    expect(
+      postedCommands.slice(updIdx + 1).some((c) => c.command === "ai_planner_get")
+    ).toBe(true);
+
+    // Zero duplicate HTML IDs across entire rendered tree
+    const allIds = Array.from(container.querySelectorAll("[id]")).map((el) => el.id);
+    expect(new Set(allIds).size).toBe(allIds.length);
   });
 });

@@ -51,6 +51,16 @@ export const CONFIG_GROUPS: ConfigGroupSpec[] = [
         ],
       },
       {
+        key: "ai_adaptive_execution",
+        id: "cfg-ai_adaptive_execution",
+        title: "Adaptive AI-Planner Execution",
+        boundsLabel: "default: false · Boolean toggle",
+        description:
+          "Enables Plan v2 adaptive execution: per-colony Blast furnace (b2) 2:1 smelting control, immediate remote Research lab starts across colonies, in-flight ship hull ownership accounting, plan-sized transport fleet scaling up to 25% of hourly Metal and Kryptonite income, and drift-triggered background path re-tuning. Boolean toggle.",
+        control: "checkbox",
+        defaultValue: false,
+      },
+      {
         key: "playstyle",
         id: "cfg-playstyle",
         title: "Playstyle Doctrine",

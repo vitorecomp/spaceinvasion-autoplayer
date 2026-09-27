@@ -211,6 +211,7 @@ export interface PlannedActionData {
 
 export interface StrategyConfigData {
   planner_mode?: "priority" | "ai_planner" | "ga_nn" | string;
+  ai_adaptive_execution?: boolean;
   playstyle?: "fleeter" | "hybrid" | "miner" | string;
   merchant_mode?: boolean;
   auto_throttle_blast_furnace?: boolean;
@@ -488,6 +489,51 @@ export interface AiPlannerSmeltingSummary {
   planets?: AiPlannerSmeltingPlanet[];
 }
 
+export interface AiPlannerColonyDiag {
+  planet_id: number;
+  coords: string;
+  name: string;
+  state: string;
+  reason: string;
+  next_label?: string | null;
+  idle_with_affordable_target_step: boolean;
+  b2_level: number;
+  b2_pct: number;
+  energy_net: number;
+  b2_energy_margin_at_100: number;
+}
+
+export interface AiPlannerAdaptiveStatus {
+  enabled: boolean;
+  active_builders: number;
+  total_colonies: number;
+  colonies: AiPlannerColonyDiag[];
+  counts: Record<string, number>;
+  idle_with_affordable_count: number;
+  ready_not_started_count: number;
+  window_24h?: {
+    bucket_count: number;
+    colony_samples: number;
+    idle_with_affordable_share_pct: number;
+    ready_not_started_share_pct: number;
+    state_shares_pct: Record<string, number>;
+  } | null;
+  transport_fleet?: {
+    owned_parked_cargo: number;
+    in_flight_cargo: number;
+    total_fleet_cargo: number;
+    target_fleet_cargo: number;
+    planned_cargo_per_hour_24h: number;
+    realized_utilization: number;
+  } | null;
+  auto_replan?: {
+    cooldown_seconds: number;
+    last_auto_replan_ts: number | null;
+    last_trigger_reason: string;
+    drift_ready: boolean;
+  } | null;
+}
+
 export interface AiPlannerGetPayload {
   ok?: boolean;
   has_plan?: boolean;
@@ -507,6 +553,9 @@ export interface AiPlannerGetPayload {
     planets?: AiPlannerSmeltingPlanet[];
   } | null;
   transport_matrix?: Record<string, any> | null;
+  transport_demand?: Record<string, any> | null;
+  adaptive_status?: AiPlannerAdaptiveStatus | null;
+  search?: Record<string, any> | null;
   graph?: Record<string, any> | null;
   steps_page?: {
     items?: AiPlannerStepItem[];
