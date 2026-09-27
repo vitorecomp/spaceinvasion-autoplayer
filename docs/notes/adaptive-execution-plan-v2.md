@@ -14,7 +14,7 @@ All times are UTC on 2026-11-19 unless a date is given; everything about plan v4
   - Every colony saved for its own next step. At 06:40 seven colonies sat idle, each 2 to 7 hours from its step, while the empire's stock covered all seven steps at once.
   - 61 of 88 transports were flying raids, so little could be shipped between colonies.
 - Plan v4 changes four rules behind the same switch: furnaces smelt for the empire, a free builder starts a later plan step, colonies lend their savings in plan order, and the transport target leaves out hulls that are away on raids.
-- First ten minutes of plan v4, which are not evidence: builders busy went from 0 to 5 of 11, furnaces on from 8 to 10 of 11, Metal per hour from 308,500 to 376,100, and 8 Large transports were ordered.
+- First twenty minutes of plan v4, which are not evidence: builders busy went from 0 to between 3 and 5 of 11, furnaces on from 8 to 10 of 11, Metal per hour from 308,500 to 391,400, six steps were started by the fill rule, and 8 Large transports were ordered. No loan had flown yet.
 - **No verdict on plan v4 is possible before 07:52 on 2026-11-21**, and not before 12 running hours.
 - Outside this plan: another work session moved the stack into containers and the database to PostgreSQL between 06:56 and 07:22 on 2026-11-20. Its changes are uncommitted and were not reviewed here. Since that move the recorded series has no points between 04:54 and 06:48 of that day, so the script now reports plan v3 over fewer hours than the figures above, which were taken at 06:15.
 - The operator asked for the review and the changes to be made without being asked for decisions. Every decision taken on their behalf is listed in [Decisions taken for the operator](#decisions-taken-for-the-operator).
@@ -238,7 +238,8 @@ The operator asked on 2026-11-20 for the best result without being asked. These 
 | 2026-11-20 06:15 to 07:30 | Review of plan v3 (this note's review section) |
 | 2026-11-20 06:56 to 07:22 | Another work session moved the stack into containers with a PostgreSQL database. The recorded series has had no points between 04:54 and 06:48 since |
 | **2026-11-20 07:51:42** | **Plan v4 live** (commit `17a66a6`); API and commander restarted by the file change |
-| 2026-11-20 07:53 to 07:59 | First fills started: Kryptonite mine on 02:381:07, Blast furnace on 02:379:05 and on 02:380:08 (twice). Two furnaces turned on for the empire. Eight Large transports ordered |
+| 2026-11-20 07:53 to 08:05 | Six steps started by the fill rule: a Kryptonite mine on 02:381:07, two Blast furnace levels on 02:379:05 and three on 02:380:08. Two furnaces turned on for the empire. Eight Large transports ordered |
+| 2026-11-20 08:02:30 | API restarted by the other session's edits to `db/storage.py` and `runtime/api_server.py` |
 
 ## Baseline, before the change
 
@@ -307,20 +308,21 @@ The first reading of 5.06 was a burst after an 87-minute stop and two planner ru
 
 Since the database move of 2026-11-20 the script reports this period as 1.50 builders over 10.96 running hours and 257,460 Metal per hour, because about two hours of its points are no longer in the series.
 
-### Plan v4, first ten minutes (07:52 to 08:01 on 2026-11-20)
+### Plan v4, first twenty minutes (07:52 to 08:10 on 2026-11-20)
 
 Not evidence. Recorded to show the rules fire.
 
-| Measure | At 07:52 | At 08:01 |
+| Measure | At 07:52 | By 08:10 |
 |---|---|---|
-| Builders busy | 0 of 11 | 5 of 11 |
+| Builders busy | 0 of 11 | 5 of 11 at 08:01, 3 of 11 at 08:10 (the furnace levels take 4 to 10 minutes) |
 | Furnaces on | 8 of 11 | 10 of 11 |
-| Metal per hour | 308,500 | 376,120 of 427,080 the furnaces can make |
-| Building levels completed | 1,242 | 1,244 |
-| Started by the fill rule | | Kryptonite mine level 18 on 02:381:07; Blast furnace level 18 on 02:379:05; Blast furnace levels 16 and 17 on 02:380:08 |
+| Metal per hour | 308,500 | 391,440. The furnaces could make 427,080 before the new levels |
+| Building levels completed | 1,242 | 1,249 |
+| Started by the fill rule | | Kryptonite mine level 18 on 02:381:07; Blast furnace levels 18 and 19 on 02:379:05; Blast furnace levels 16, 17 and 18 on 02:380:08 |
 | Furnace orders | | 02:381:10 and 02:381:05 turned on for the empire. 02:380:06 turned off because its own step waits for Pig iron |
 | Large transports ordered | | 8, on 02:380:12 and 02:380:08 |
-| Loans in the plan | | 2,672 Metal and 29,610 Metal from 02:381:08 to steps 3 and 46 |
+| Loans | | Four in the plan at 08:10, none flown yet: their colonies had no free fleet slot. One of them sends 13,765 Metal and 21,155 Kryptonite to step 18, whose colony had spent Kryptonite on a fill |
+| Other shipments flown | | 90,000 Pig iron to 02:380:06 for a Pig iron mine, and two more |
 | Stock against the cost of every colony's next step | | Metal 1.25 million against 2.85 million. Pig iron 12.8 million against 1.0 million |
 
 ## Known problems
@@ -334,7 +336,7 @@ Plan v4, as of 2026-11-20 08:05:
 - **The Operator Console shows the old count.** Its fleet line compares all hulls with the target, so it can say the target is met while orders continue.
 - **Executed fills and loans cannot be counted afterwards.** The action log keeps the result message, not the reason. The script counts the ones in the current plan.
 - **The fill rule fails silently.** An error inside it is swallowed so that the plan's own steps still run. The sign would be no fills over a long time.
-- **After a restart the bot does nothing for about 8 minutes** while the bridge reads every colony again. Seen after the restarts at 07:22 and 07:51 on 2026-11-20. Each landing costs that.
+- **A restart can stop the bot for several minutes** while the bridge reads every colony again: about 8 minutes after the restarts at 07:22 and 07:51 on 2026-11-20, under a minute after the one at 08:02. Every edit of a watched file by any session restarts it.
 - **A cached furnace state can be stale right after a restart.** At 07:54 an order to turn a furnace on found it already on.
 - **Raids are far from what they could bring.** See [Not done](#not-done).
 
@@ -411,7 +413,7 @@ Decision gates from plan v2:
 - The series keeps the last 1,440 points, about a day of running time. Once that much has been recorded, periods A to C drop out of the script's output. The baseline then exists only in this note and as constants in the script.
 - The page-view limit was 24 per minute for the baseline and for period C, and 60 from about 18:35. A higher limit lets more actions through on its own.
 - The colony-idle buckets cover the last 24 hours by the clock, so a reading taken 24 hours after 07:52 on 2026-11-20 holds only plan v4 data. Before that it mixes both.
-- The other work session restarts the stack often. Each restart costs about 8 minutes, and its database move removed two hours of recorded points.
+- The other work session restarts the stack often. A restart can cost up to about 8 minutes, and its database move removed two hours of recorded points.
 - Furnace capacity grows as Blast furnace levels are built, so mark 1 compares the period's mean with today's capacity and reads slightly low.
 - The baseline is 2.10 of 11 colonies. If the number of colonies has changed, compare shares, not counts.
 - A planner run by hand releases a burst of builds. Note any in the window.
