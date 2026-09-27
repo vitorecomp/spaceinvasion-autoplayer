@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import asdict, replace
+from datetime import datetime
 import errno
 import functools
 import hashlib
@@ -98,6 +99,7 @@ from spaceinvasion.core.state import (
     Resources,
     count_allocated_normal_planets,
     count_in_flight_fleets_for_planet,
+    count_in_flight_ships_by_planet,
     count_in_flight_spy_fleets_for_planet,
     extract_in_flight_recycle_coords,
     homeworld_planet_id,
@@ -655,6 +657,7 @@ def _validate_config_patch(raw_cfg: Mapping[str, Any], *, strict_bools: bool = T
         "galaxy_scan_explore_first",
         "galaxy_scan_all_galaxies",
         "spy_reserved_slots_only",
+        "ai_adaptive_execution",
     )
     if strict_bools:
         for key in bool_keys:
@@ -1448,6 +1451,27 @@ class GameApiBridge:
     SHIPYARD_SYNC_TTL_S = 120.0
     SPIO_SYNC_TTL_S = 30.0
     FLEET_SLOT_COOLDOWN_S = 180.0
+    ADAPTIVE_IDLE_BUCKET_SECONDS = 600.0
+    ADAPTIVE_IDLE_MAX_BUCKETS = 144
+    AI_DRIFT_REPLAN_COOLDOWN_SECONDS = 1800.0
+    AI_DRIFT_REPLAN_MAX_AGE_SECONDS = 14400.0
+    AI_DRIFT_LOOT_SHIFT_RATIO = 0.25
+    TRANSPORT_UTIL_MIN = 0.2
+    TRANSPORT_UTIL_MAX = 0.9
+    TRANSPORT_UTIL_DEFAULT = 0.5
+    TRANSPORT_UTIL_EWMA_ALPHA = 0.15
+    _ADAPTIVE_IDLE_STATE_KEYS: tuple[str, ...] = (
+        "building",
+        "ready_not_started",
+        "field_conflict",
+        "storage_blocked",
+        "transport_inbound",
+        "waiting_metal",
+        "waiting_pig_iron",
+        "waiting_kryptonite",
+        "waiting_spice",
+        "idle_complete",
+    )
     _FLEET_SLOT_BUSY_MARKERS: tuple[str, ...] = (
         "no ship input fields found on internalfleet",
         "no free fleet slot",
@@ -1650,6 +1674,11 @@ class GameApiBridge:
         self._loot_recycle_cache: Optional[dict[str, Any]] = None
         self._field_conflicts_mem: dict[str, dict[str, Any]] = {}
         self._notified_field_conflict_keys: set[str] = set()
+        self._adaptive_idle_buckets: dict[int, dict[str, Any]] = {}
+        self._transport_realized_utilization: float = self.TRANSPORT_UTIL_DEFAULT
+        self._observed_transport_util_keys: deque[str] = deque(maxlen=256)
+        self._last_auto_ai_replan_ts: float = 0.0
+        self._last_auto_ai_replan_reason: str = ""
         self._hydrate_persisted_bridge_state()
         enforce_hourly = max_actions_per_hour is not None
         raw_budget = (
@@ -1826,6 +1855,76 @@ class GameApiBridge:
             self._last_shipyard_sync_at = _wall_to_mono("shipyard_sync_at_wall")
             self._last_spy_dispatched_at = _wall_to_mono("spy_dispatched_at_wall")
 
+            raw_util = rt.get("transport_realized_utilization")
+            if raw_util is not None and not isinstance(raw_util, bool):
+                util_f = _safe_api_float(raw_util, self.TRANSPORT_UTIL_DEFAULT)
+                if math.isfinite(util_f) and util_f > 0.0:
+                    self._transport_realized_utilization = round(
+                        min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, util_f)),
+                        4,
+                    )
+            raw_replan_ts = _safe_api_float(rt.get("last_auto_ai_replan_ts", 0.0), 0.0)
+            if math.isfinite(raw_replan_ts) and raw_replan_ts > 0.0:
+                self._last_auto_ai_replan_ts = raw_replan_ts
+            raw_replan_reason = rt.get("last_auto_ai_replan_reason")
+            if isinstance(raw_replan_reason, str) and raw_replan_reason.strip():
+                self._last_auto_ai_replan_reason = _bounded_api_str(raw_replan_reason, default="")[:128]
+
+            raw_buckets = rt.get("adaptive_idle_buckets")
+            loaded_buckets: dict[int, dict[str, Any]] = {}
+            bucket_items: list[tuple[Any, Any]] = []
+            if isinstance(raw_buckets, Mapping):
+                bucket_items = list(raw_buckets.items())
+            elif isinstance(raw_buckets, Sequence) and not isinstance(raw_buckets, (str, bytes)):
+                bucket_items = [
+                    (ent.get("bucket"), ent)
+                    for ent in raw_buckets
+                    if isinstance(ent, Mapping) and ent.get("bucket") is not None
+                ]
+            for raw_bk, raw_ent in bucket_items:
+                if not isinstance(raw_ent, Mapping):
+                    continue
+                bk_i = _safe_api_int(raw_bk, 0)
+                if bk_i <= 0:
+                    bk_i = _safe_api_int(raw_ent.get("bucket"), 0)
+                if bk_i <= 0:
+                    continue
+                raw_cnts = raw_ent.get("counts")
+                clean_cnts: dict[str, int] = {}
+                if isinstance(raw_cnts, Mapping):
+                    for ck, cv in raw_cnts.items():
+                        ck_s = str(ck or "").strip()
+                        if ck_s:
+                            clean_cnts[ck_s] = max(0, _safe_api_int(cv, 0))
+                tot_col = max(0, _safe_api_int(raw_ent.get("total_colonies", 0), 0))
+                if tot_col <= 0 and clean_cnts:
+                    tot_col = sum(clean_cnts.values())
+                if tot_col <= 0:
+                    continue
+                loaded_buckets[bk_i] = {
+                    "bucket": bk_i,
+                    "ts": round(_safe_api_float(raw_ent.get("ts"), float(bk_i * 600)), 3),
+                    "total_colonies": tot_col,
+                    "active_builders": max(
+                        0,
+                        _safe_api_int(
+                            raw_ent.get("active_builders", clean_cnts.get("building", 0)),
+                            0,
+                        ),
+                    ),
+                    "idle_with_affordable": max(0, _safe_api_int(raw_ent.get("idle_with_affordable", 0), 0)),
+                    "ready_not_started": max(
+                        0,
+                        _safe_api_int(
+                            raw_ent.get("ready_not_started", clean_cnts.get("ready_not_started", 0)),
+                            0,
+                        ),
+                    ),
+                    "counts": clean_cnts,
+                }
+            self._adaptive_idle_buckets = loaded_buckets
+            self._prune_adaptive_idle_buckets_locked(now_ts=now_wall)
+
         load_gs_fn = getattr(self._db, "load_latest_game_state", None)
         if callable(load_gs_fn):
             persisted_gs = load_gs_fn()
@@ -1930,6 +2029,11 @@ class GameApiBridge:
                 if rem > 0.0:
                     fsc_wall[str(int(pid))] = round(now_wall + rem, 3)
 
+        self._prune_adaptive_idle_buckets_locked(now_ts=now_wall)
+        serialized_buckets: dict[str, dict[str, Any]] = {
+            str(bk): dict(self._adaptive_idle_buckets[bk])
+            for bk in sorted(self._adaptive_idle_buckets.keys())
+        }
         payload: dict[str, Any] = {
             "bot_control": dict(self._bot_control),
             "economy_sync_timestamps": {
@@ -1951,6 +2055,19 @@ class GameApiBridge:
             "spy_dispatched_at_wall": _mono_to_wall(self._last_spy_dispatched_at),
             "last_url": _bounded_api_str(self._last_url, default="") if self._last_url else None,
             "last_optimizer_summary": self._last_optimizer_summary,
+            "adaptive_idle_buckets": serialized_buckets,
+            "transport_realized_utilization": round(
+                min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization))),
+                4,
+            ),
+            "last_auto_ai_replan_ts": (
+                round(float(self._last_auto_ai_replan_ts), 3)
+                if isinstance(self._last_auto_ai_replan_ts, (int, float))
+                and math.isfinite(self._last_auto_ai_replan_ts)
+                and self._last_auto_ai_replan_ts > 0.0
+                else 0.0
+            ),
+            "last_auto_ai_replan_reason": str(self._last_auto_ai_replan_reason or "")[:128],
         }
         save_rt_fn(payload, ts=now_wall)
 
@@ -3601,7 +3718,488 @@ class GameApiBridge:
             else:
                 enriched_jobs.append(q)
 
-        return replace(state, active_queues=tuple(enriched_jobs)) if changed else state
+        out_state = replace(state, active_queues=tuple(enriched_jobs)) if changed else state
+        if self._observe_transport_utilization_locked(out_state) and self._db is not None:
+            self._persist_runtime_state()
+        return out_state
+
+    def _observe_transport_utilization_locked(self, state: Optional[GameState]) -> bool:
+        """Update bounded EWMA of realized transport hull utilization from observed transport flights."""
+        if state is None:
+            return False
+        queues = getattr(state, "active_queues", ()) or ()
+        if not queues:
+            return False
+        miner_lvl = _safe_api_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
+        updated = False
+        for q in queues:
+            if not is_in_flight_fleet_job(q):
+                continue
+            name_s = str(getattr(q, "name", "") or "")
+            det_s = str(getattr(q, "detail", "") or "")
+            name_l = name_s.lower()
+            det_l = det_s.lower()
+            if not (
+                name_l.startswith("transport")
+                or "transport →" in name_l
+                or "transport ↩" in name_l
+                or "transport ->" in name_l
+            ):
+                continue
+            exp_cargo = getattr(q, "expected_cargo", None)
+            del_cargo = getattr(q, "delivered_cargo", None)
+            cur_cargo = getattr(q, "cargo", None)
+            carried_res = (
+                del_cargo
+                if isinstance(del_cargo, Resources) and not del_cargo.is_zero()
+                else (
+                    exp_cargo
+                    if isinstance(exp_cargo, Resources) and not exp_cargo.is_zero()
+                    else (
+                        cur_cargo
+                        if isinstance(cur_cargo, Resources) and not cur_cargo.is_zero()
+                        else None
+                    )
+                )
+            )
+            if carried_res is None:
+                continue
+            carried_total = max(
+                0,
+                _safe_api_int(carried_res.pig_iron, 0)
+                + _safe_api_int(carried_res.metal, 0)
+                + _safe_api_int(carried_res.kryptonite, 0)
+                + _safe_api_int(carried_res.spice, 0),
+            )
+            if carried_total <= 0:
+                continue
+            ships_map = _parse_ships_from_queue_detail(det_s)
+            cap = fleet_cargo_capacity(ships_map, miner_spec_level=miner_lvl) if ships_map else 0
+            raw_ratio: Optional[float] = None
+            if cap > 0:
+                raw_ratio = float(carried_total) / float(cap)
+            elif (
+                isinstance(exp_cargo, Resources)
+                and not exp_cargo.is_zero()
+                and isinstance(del_cargo, Resources)
+                and not del_cargo.is_zero()
+            ):
+                exp_total = max(
+                    0,
+                    _safe_api_int(exp_cargo.pig_iron, 0)
+                    + _safe_api_int(exp_cargo.metal, 0)
+                    + _safe_api_int(exp_cargo.kryptonite, 0)
+                    + _safe_api_int(exp_cargo.spice, 0),
+                )
+                del_total = max(
+                    0,
+                    _safe_api_int(del_cargo.pig_iron, 0)
+                    + _safe_api_int(del_cargo.metal, 0)
+                    + _safe_api_int(del_cargo.kryptonite, 0)
+                    + _safe_api_int(del_cargo.spice, 0),
+                )
+                if exp_total > 0 and del_total > 0:
+                    raw_ratio = float(del_total) / float(exp_total)
+            if raw_ratio is None or not math.isfinite(raw_ratio) or raw_ratio <= 0.0:
+                continue
+            is_ret = ("returning" in det_l) or ("↩" in name_s) or ("rück" in det_l) or ("rueck" in det_l)
+            orig_c = normalize_coords(str(getattr(q, "origin_coords", "") or ""))
+            dest_c = _extract_coords_from_text(name_s)
+            ships_part = det_s.split("·", 1)[1].strip().lower() if "·" in det_s else det_l.strip()
+            fin_bucket = int(_safe_api_float(getattr(q, "finish_ts", 0.0), 0.0) // 60.0)
+            obs_key = f"{orig_c}|{dest_c}|{int(is_ret)}|{carried_total}|{int(cap)}|{ships_part[:48]}|{fin_bucket}"
+            if obs_key in self._observed_transport_util_keys:
+                continue
+            self._observed_transport_util_keys.append(obs_key)
+            sample_u = min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(raw_ratio)))
+            prev_u = min(
+                self.TRANSPORT_UTIL_MAX,
+                max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization)),
+            )
+            alpha = self.TRANSPORT_UTIL_EWMA_ALPHA
+            next_u = round(
+                min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, (1.0 - alpha) * prev_u + alpha * sample_u)),
+                4,
+            )
+            if next_u != self._transport_realized_utilization:
+                self._transport_realized_utilization = next_u
+                updated = True
+        return updated
+
+    def _prune_adaptive_idle_buckets_locked(self, *, now_ts: Optional[float] = None) -> None:
+        if not self._adaptive_idle_buckets:
+            return
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        cur_bucket = int(eff_now // self.ADAPTIVE_IDLE_BUCKET_SECONDS)
+        min_bucket = cur_bucket - (self.ADAPTIVE_IDLE_MAX_BUCKETS - 1)
+        kept = {
+            bk: ent
+            for bk, ent in self._adaptive_idle_buckets.items()
+            if isinstance(bk, int) and min_bucket <= bk <= cur_bucket + 1
+        }
+        if len(kept) > self.ADAPTIVE_IDLE_MAX_BUCKETS:
+            top_keys = sorted(kept.keys())[-self.ADAPTIVE_IDLE_MAX_BUCKETS :]
+            kept = {bk: kept[bk] for bk in top_keys}
+        self._adaptive_idle_buckets = kept
+
+    def _record_adaptive_idle_bucket_locked(
+        self,
+        state: Optional[GameState],
+        active_plan_result: Optional[Mapping[str, Any]],
+        *,
+        ai_actions: Sequence[PlannedAction] = (),
+        cfg: Optional[StrategyConfig] = None,
+        field_conflicts: Sequence[Mapping[str, Any]] = (),
+        inbound_cargo_by_planet: Optional[Mapping[int, Resources]] = None,
+        ai_mod: Any = None,
+        now_ts: Optional[float] = None,
+    ) -> bool:
+        """Record at most one 10-minute colony-idle diagnostic tally per bucket (last 24h)."""
+        if state is None or not getattr(state, "planets", None):
+            return False
+        if not isinstance(active_plan_result, Mapping):
+            return False
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        bucket_idx = int(eff_now // self.ADAPTIVE_IDLE_BUCKET_SECONDS)
+        if bucket_idx in self._adaptive_idle_buckets:
+            return False
+        try:
+            mod = ai_mod if ai_mod is not None else self._load_ai_planner_mod()
+        except ApiRequestError:
+            return False
+        diag_fn = getattr(mod, "diagnose_ai_colony_idle_states", None)
+        if not callable(diag_fn):
+            return False
+        try:
+            diag = diag_fn(
+                state,
+                active_plan_result,
+                ai_actions=ai_actions,
+                config=cfg or self.strategy_config,
+                field_conflicts=field_conflicts,
+                inbound_cargo_by_planet=inbound_cargo_by_planet,
+            )
+        except Exception:
+            return False
+        if not isinstance(diag, Mapping):
+            return False
+        total_col = max(0, _safe_api_int(diag.get("total_colonies", 0), 0))
+        if total_col <= 0:
+            return False
+        raw_cnts = diag.get("counts")
+        clean_cnts: dict[str, int] = {k: 0 for k in self._ADAPTIVE_IDLE_STATE_KEYS}
+        if isinstance(raw_cnts, Mapping):
+            for ck, cv in raw_cnts.items():
+                ck_s = str(ck or "").strip()
+                if ck_s:
+                    clean_cnts[ck_s] = max(0, _safe_api_int(cv, 0))
+        self._adaptive_idle_buckets[bucket_idx] = {
+            "bucket": bucket_idx,
+            "ts": round(eff_now, 3),
+            "total_colonies": total_col,
+            "active_builders": max(0, _safe_api_int(diag.get("active_builders", 0), 0)),
+            "idle_with_affordable": max(0, _safe_api_int(diag.get("idle_with_affordable_count", 0), 0)),
+            "ready_not_started": max(0, _safe_api_int(diag.get("ready_not_started_count", 0), 0)),
+            "counts": clean_cnts,
+        }
+        self._prune_adaptive_idle_buckets_locked(now_ts=eff_now)
+        return True
+
+    def _summarize_adaptive_idle_window_24h_locked(
+        self,
+        *,
+        now_ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        self._prune_adaptive_idle_buckets_locked(now_ts=now_ts)
+        buckets = list(self._adaptive_idle_buckets.values())
+        colony_samples = 0
+        idle_aff_sum = 0
+        ready_sum = 0
+        state_totals: dict[str, int] = {k: 0 for k in self._ADAPTIVE_IDLE_STATE_KEYS}
+        for ent in buckets:
+            if not isinstance(ent, Mapping):
+                continue
+            colony_samples += max(0, _safe_api_int(ent.get("total_colonies", 0), 0))
+            idle_aff_sum += max(0, _safe_api_int(ent.get("idle_with_affordable", 0), 0))
+            ready_sum += max(0, _safe_api_int(ent.get("ready_not_started", 0), 0))
+            raw_c = ent.get("counts")
+            if isinstance(raw_c, Mapping):
+                for ck, cv in raw_c.items():
+                    ck_s = str(ck or "").strip()
+                    if ck_s:
+                        state_totals[ck_s] = state_totals.get(ck_s, 0) + max(0, _safe_api_int(cv, 0))
+        if colony_samples > 0:
+            idle_aff_pct = round(100.0 * float(idle_aff_sum) / float(colony_samples), 2)
+            ready_pct = round(100.0 * float(ready_sum) / float(colony_samples), 2)
+            shares = {
+                st: round(100.0 * float(cnt) / float(colony_samples), 2)
+                for st, cnt in state_totals.items()
+            }
+        else:
+            idle_aff_pct = 0.0
+            ready_pct = 0.0
+            shares = {st: 0.0 for st in state_totals}
+        return {
+            "bucket_count": len(buckets),
+            "colony_samples": colony_samples,
+            "idle_with_affordable_share_pct": idle_aff_pct,
+            "ready_not_started_share_pct": ready_pct,
+            "state_shares_pct": shares,
+        }
+
+    def _build_transport_fleet_summary_locked(
+        self,
+        state: Optional[GameState],
+        transport_demand: Optional[Mapping[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        if state is None:
+            return None
+        miner_lvl = _safe_api_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
+        parked_ships: dict[str, int] = {"s1": 0, "s2": 0, "s3": 0}
+        for p in getattr(state, "planets", ()) or ():
+            if normalize_planet_type(p) == "raid":
+                continue
+            ships_m = p.ships if isinstance(getattr(p, "ships", None), Mapping) else {}
+            for sk in ("s1", "s2", "s3"):
+                parked_ships[sk] += max(0, _safe_api_int(ships_m.get(sk, 0), 0))
+        owned_parked_cargo = int(fleet_cargo_capacity(parked_ships, miner_spec_level=miner_lvl))
+        in_flight_info = count_in_flight_ships_by_planet(state)
+        emp_if = (
+            in_flight_info.get("empire_in_flight")
+            if isinstance(in_flight_info, Mapping) and isinstance(in_flight_info.get("empire_in_flight"), Mapping)
+            else {}
+        )
+        if_ships = {sk: max(0, _safe_api_int(emp_if.get(sk, 0), 0)) for sk in ("s1", "s2", "s3")}
+        in_flight_cargo = int(fleet_cargo_capacity(if_ships, miner_spec_level=miner_lvl))
+        total_fleet_cargo = owned_parked_cargo + in_flight_cargo
+        util = round(
+            min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization))),
+            4,
+        )
+        planned_cph = 0.0
+        target_cargo = 0
+        if isinstance(transport_demand, Mapping):
+            planned_cph = round(max(0.0, _safe_api_float(transport_demand.get("cargo_per_hour_24h", 0.0), 0.0)), 2)
+            rt_per_h = max(0.25, _safe_api_float(transport_demand.get("round_trips_per_hour", 2.5), 2.5))
+            if planned_cph > 0.0:
+                target_cargo = int(math.ceil(planned_cph / rt_per_h / util))
+        return {
+            "owned_parked_cargo": owned_parked_cargo,
+            "in_flight_cargo": in_flight_cargo,
+            "total_fleet_cargo": total_fleet_cargo,
+            "target_fleet_cargo": target_cargo,
+            "planned_cargo_per_hour_24h": planned_cph,
+            "realized_utilization": util,
+        }
+
+    @staticmethod
+    def _extract_record_timestamp(
+        rec: Optional[Mapping[str, Any]],
+        result: Optional[Mapping[str, Any]] = None,
+    ) -> float:
+        for src in (rec, result):
+            if not isinstance(src, Mapping):
+                continue
+            for key in ("updated_ts", "created_ts", "generated_ts"):
+                val = _safe_api_float(src.get(key), 0.0)
+                if math.isfinite(val) and val > 0.0:
+                    return val
+            summary_m = src.get("summary")
+            if isinstance(summary_m, Mapping):
+                ls_ts = _safe_api_float(summary_m.get("live_snapshot_ts"), 0.0)
+                if math.isfinite(ls_ts) and ls_ts > 0.0:
+                    return ls_ts
+            raw_iso = src.get("generated_at")
+            if isinstance(raw_iso, str) and raw_iso.strip():
+                try:
+                    dt = datetime.fromisoformat(raw_iso.strip().replace("Z", "+00:00"))
+                    ts_v = dt.timestamp()
+                    if math.isfinite(ts_v) and ts_v > 0.0:
+                        return float(ts_v)
+                except ValueError:
+                    pass
+        return 0.0
+
+    @staticmethod
+    def _extract_telemetry_median_spice_eq(tel: Optional[Mapping[str, Any]]) -> float:
+        if not isinstance(tel, Mapping):
+            return 0.0
+        ml = tel.get("median_loot")
+        if isinstance(ml, Mapping) and ml.get("spice_eq") is not None:
+            return max(0.0, _safe_api_float(ml.get("spice_eq"), 0.0))
+        if tel.get("spice_eq") is not None:
+            return max(0.0, _safe_api_float(tel.get("spice_eq"), 0.0))
+        return 0.0
+
+    @staticmethod
+    def _extract_plan_colony_count(active_result: Mapping[str, Any]) -> int:
+        summary_m = active_result.get("summary")
+        if isinstance(summary_m, Mapping):
+            for key in ("colonies_founded", "planet_count", "colonies_count", "colonies_target"):
+                val = _safe_api_int(summary_m.get(key), 0)
+                if val > 0:
+                    return val
+        raw_planets = active_result.get("planets")
+        if isinstance(raw_planets, Sequence) and not isinstance(raw_planets, (str, bytes)):
+            cnt = sum(
+                1
+                for p in raw_planets
+                if isinstance(p, Mapping) and not bool(p.get("is_placeholder", False))
+            )
+            if cnt > 0:
+                return cnt
+        return 0
+
+    def _evaluate_ai_drift_replan_locked(
+        self,
+        state: Optional[GameState],
+        *,
+        cfg: Optional[StrategyConfig] = None,
+        now_ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        eff_cfg = cfg or self.strategy_config
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        gate = self._evaluate_ai_planner_gate_locked(state, cfg=eff_cfg)
+        active_rec = gate.get("active_rec")
+        active_result = gate.get("active_result")
+        active_plan_ts = self._extract_record_timestamp(active_rec, active_result)
+        with self._planner_jobs_lock:
+            co_running = self._config_opt_job.get("status") == "running"
+            ai_running = self._ai_planner_job.get("status") == "running"
+        any_running = bool(co_running or ai_running)
+
+        last_auto_ok = (
+            self._last_auto_ai_replan_ts <= 0.0
+            or (eff_now - self._last_auto_ai_replan_ts) >= self.AI_DRIFT_REPLAN_COOLDOWN_SECONDS
+        )
+        plan_cd_ok = (
+            active_plan_ts <= 0.0
+            or (eff_now - active_plan_ts) >= self.AI_DRIFT_REPLAN_COOLDOWN_SECONDS
+        )
+        cooldown_ok = bool(last_auto_ok and plan_cd_ok)
+        drift_ready = bool(cooldown_ok and not any_running)
+
+        adaptive_on = bool(getattr(eff_cfg, "ai_adaptive_execution", False))
+        gates_ok = bool(
+            adaptive_on
+            and not self._planner_closed
+            and state is not None
+            and gate.get("live_ai_unlocked")
+            and isinstance(active_rec, Mapping)
+            and isinstance(active_result, Mapping)
+            and not self._bot_control.get("paused")
+            and not self._bot_control.get("captcha_blocked")
+            and not any_running
+            and cooldown_ok
+        )
+        if not gates_ok:
+            return {
+                "eligible": False,
+                "cooldown_ok": cooldown_ok,
+                "drift_ready": drift_ready,
+                "reason": None,
+                "warm_genes": None,
+                "active_plan_ts": active_plan_ts,
+                "now_ts": eff_now,
+            }
+
+        reason: Optional[str] = None
+        # (a) Active Config Optimizer run_id / generated_at changed
+        active_co = self._get_active_config_optimizer_locked()
+        if isinstance(active_co, Mapping):
+            co_run_id = _safe_api_int(active_co.get("run_id"), 0)
+            ai_co_run_id = _safe_api_int(active_rec.get("config_run_id"), 0)
+            co_res = active_co.get("result") if isinstance(active_co.get("result"), Mapping) else {}
+            co_gen_at = str(co_res.get("generated_at") or "").strip()
+            ai_co_gen_at = str(
+                active_result.get("config_generated_at")
+                or active_result.get("target_config_generated_at")
+                or ""
+            ).strip()
+            if (co_run_id > 0 and ai_co_run_id > 0 and co_run_id != ai_co_run_id) or (
+                co_gen_at and ai_co_gen_at and co_gen_at != ai_co_gen_at
+            ):
+                reason = "config_optimizer_changed"
+
+        # (b) Normal colony count changed
+        if reason is None and state is not None:
+            live_colonies = count_allocated_normal_planets(state)
+            plan_colonies = self._extract_plan_colony_count(active_result)
+            if plan_colonies > 0 and live_colonies != plan_colonies:
+                reason = "colony_count_changed"
+
+        # (c) Live attack telemetry median_loot spice_eq shifted by >= 25%
+        if reason is None and state is not None:
+            plan_sp = self._extract_telemetry_median_spice_eq(active_result.get("attack_telemetry"))
+            live_tel = self._compute_live_attack_telemetry_locked(state)
+            live_sp = self._extract_telemetry_median_spice_eq(live_tel)
+            if (plan_sp <= 0.0 and live_sp > 0.0) or (
+                plan_sp > 0.0
+                and live_sp > 0.0
+                and (abs(live_sp - plan_sp) / plan_sp) >= self.AI_DRIFT_LOOT_SHIFT_RATIO
+            ):
+                reason = "loot_shift_25pct"
+
+        # (d) Active AI plan age >= 4 hours (14400s)
+        if (
+            reason is None
+            and active_plan_ts > 0.0
+            and (eff_now - active_plan_ts) >= self.AI_DRIFT_REPLAN_MAX_AGE_SECONDS
+        ):
+            reason = "plan_age_4h"
+
+        warm_genes: Optional[dict[str, Any]] = None
+        if reason is not None:
+            search_m = active_result.get("search")
+            if isinstance(search_m, Mapping):
+                raw_warm = search_m.get("tuned_genes") or search_m.get("best_parameters")
+                if isinstance(raw_warm, Mapping) and raw_warm:
+                    warm_genes = dict(raw_warm)
+
+        return {
+            "eligible": True,
+            "cooldown_ok": cooldown_ok,
+            "drift_ready": drift_ready,
+            "reason": reason,
+            "warm_genes": warm_genes,
+            "active_plan_ts": active_plan_ts,
+            "now_ts": eff_now,
+        }
+
+    def _maybe_trigger_ai_drift_replan(self, *, now_ts: Optional[float] = None) -> Optional[dict[str, Any]]:
+        """Check Step 6 drift triggers under `_lock`, then launch background AI replan OUTSIDE `_lock`."""
+        if not bool(getattr(self.strategy_config, "ai_adaptive_execution", False)) or self._planner_closed:
+            return None
+        reason: Optional[str] = None
+        warm_genes: Optional[dict[str, Any]] = None
+        with self._lock:
+            ev = self._evaluate_ai_drift_replan_locked(
+                self._last_state,
+                cfg=self.strategy_config,
+                now_ts=now_ts,
+            )
+            if not ev.get("eligible") or not ev.get("reason"):
+                return None
+            reason = str(ev["reason"])
+            warm_genes = ev.get("warm_genes")
+            self._last_auto_ai_replan_ts = float(ev["now_ts"])
+            self._last_auto_ai_replan_reason = reason
+            self._persist_runtime_state()
+        try:
+            return self._start_ai_planner_job(
+                params={"warm_start_genes": warm_genes} if warm_genes else None,
+                sync=False,
+                refresh=False,
+                trigger_source=f"auto_drift:{reason}",
+            )
+        except Exception:
+            return None
 
     def _build_building_resource_requests_locked(
         self,
@@ -4045,7 +4643,7 @@ class GameApiBridge:
                 pass
         return snap
 
-    def _get_hourly_production_history_locked(self, limit: int = 120) -> list[dict[str, Any]]:
+    def _get_hourly_production_history_locked(self, limit: int = 1440) -> list[dict[str, Any]]:
         if self._db is None:
             return []
         get_fn = getattr(self._db, "get_hourly_production_history", None)
@@ -5399,11 +5997,28 @@ class GameApiBridge:
         atk_tel = active_plan_result.get("attack_telemetry")
         if not isinstance(atk_tel, Mapping):
             atk_tel = self._compute_live_attack_telemetry_locked(enriched_state)
+        adaptive_on = bool(getattr(cfg, "ai_adaptive_execution", False))
+        inbound_fn = getattr(ai_mod, "compute_inbound_friendly_cargo_by_planet", None)
+        raw_inbound = inbound_fn(enriched_state) if callable(inbound_fn) else None
+        inbound_cargo = raw_inbound if isinstance(raw_inbound, Mapping) else {}
+        in_prog_fn = getattr(ai_mod, "compute_in_progress_build_rem_by_planet", None)
+        raw_in_prog = in_prog_fn(enriched_state) if callable(in_prog_fn) else None
+        in_prog_rem = raw_in_prog if isinstance(raw_in_prog, Mapping) else {}
+        raw_td = active_plan_result.get("transport_demand")
+        transport_demand: Optional[dict[str, Any]] = None
+        if isinstance(raw_td, Mapping):
+            transport_demand = dict(raw_td)
+            transport_demand["realized_utilization"] = round(
+                min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization))),
+                4,
+            )
         spare_budget = compute_spare_ship_budget(
             enriched_state,
             spare_pct,
             attack_telemetry=atk_tel,
             reserved_cost=reserved_cost,
+            adaptive_execution=adaptive_on,
+            config=cfg,
         )
         fleet_actions = plan_fleet_and_attack_actions(
             enriched_state,
@@ -5413,6 +6028,7 @@ class GameApiBridge:
             existing_plan=ai_actions,
             priority_resource_need=merged_priority_needs,
             spare_budget=spare_budget,
+            transport_demand=transport_demand,
         )
         fleet_actions = [a for a in fleet_actions if a.kind != "DEMOLISH_BUILDING"]
         cleared_overflow_pids: set[int] = set()
@@ -5425,14 +6041,28 @@ class GameApiBridge:
             storage_warn_ratio=cfg.storage_warn_ratio,
             metal_overflow_paused=tuple(self._metal_overflow_paused_planets.keys()),
             cleared_overflow_pids=cleared_overflow_pids,
+            inbound_cargo_by_planet=inbound_cargo,
+            in_progress_rem_by_planet=in_prog_rem,
+            enable_donor_smelting=bool(adaptive_on and transport_demand),
         )
+        runtime_dirty = False
         if record_conflicts and cleared_overflow_pids:
-            overflow_changed = False
             for cpid in cleared_overflow_pids:
                 if self._metal_overflow_paused_planets.pop(cpid, None) is not None:
-                    overflow_changed = True
-            if overflow_changed:
-                self._persist_runtime_state()
+                    runtime_dirty = True
+        if record_conflicts:
+            if self._record_adaptive_idle_bucket_locked(
+                enriched_state,
+                active_plan_result,
+                ai_actions=ai_actions,
+                cfg=cfg,
+                field_conflicts=field_conflicts,
+                inbound_cargo_by_planet=inbound_cargo,
+                ai_mod=ai_mod,
+            ):
+                runtime_dirty = True
+        if runtime_dirty:
+            self._persist_runtime_state()
 
         combined: list[PlannedAction] = [*ai_actions, *fleet_actions, *throttle_actions]
         prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
@@ -6438,8 +7068,19 @@ class GameApiBridge:
 
         merged = self._merge_economy_rates(self._merge_cached_offers(state))
         self._capture_observed_outbound_transports_locked(merged)
+        self._observe_transport_utilization_locked(merged)
         self._record_hourly_production_locked(merged)
         self._record_new_colonies_locked(prev, merged)
+        now_wall_bucket = time.time()
+        if int(now_wall_bucket // self.ADAPTIVE_IDLE_BUCKET_SECONDS) not in self._adaptive_idle_buckets:
+            active_ai_rec = self._get_active_ai_planner_locked()
+            if isinstance(active_ai_rec, Mapping) and isinstance(active_ai_rec.get("result"), Mapping):
+                self._record_adaptive_idle_bucket_locked(
+                    merged,
+                    active_ai_rec["result"],
+                    cfg=self.strategy_config,
+                    now_ts=now_wall_bucket,
+                )
         self._last_state = merged
         self._last_recorded_state_obj = merged
         self._invalidate_dashboard_cache()
@@ -6657,6 +7298,7 @@ class GameApiBridge:
                     plan_actions,
                     run_optimizer,
                     plan_fleet_and_attack_actions,
+                    round(float(self._transport_realized_utilization), 4),
                 )
                 if (
                     not refresh
@@ -6707,6 +7349,7 @@ class GameApiBridge:
                         plan_actions,
                         run_optimizer,
                         plan_fleet_and_attack_actions,
+                        round(float(self._transport_realized_utilization), 4),
                     )
                     self._dash_plan_cache_key = store_plan_key
                     self._dash_plan_cache_val = (list(actions), opt_summary, early_copy)
@@ -6852,7 +7495,7 @@ class GameApiBridge:
                 current_hourly_prod["active_builders"] = self._count_active_builders(dash_state, now_ts=now_dash_ts)
             else:
                 current_hourly_prod = self._compute_current_hourly_production(dash_state, now_ts=now_dash_ts)
-            hourly_prod_hist = self._get_hourly_production_history_locked(limit=120)
+            hourly_prod_hist = self._get_hourly_production_history_locked(limit=1440)
             loot_rec = self._get_loot_recycle_telemetry_locked(hours=24)
             db_summary_clean = self._get_db_summary_cached_locked()
 
@@ -6956,9 +7599,10 @@ class GameApiBridge:
                         + self._dash_plan_cache_key[4:]
                     )
             self._last_dashboard_payload = result
-            return result
         finally:
             self._lock.release()
+        self._maybe_trigger_ai_drift_replan()
+        return result
 
     get_dashboard = dashboard
 
@@ -7113,7 +7757,9 @@ class GameApiBridge:
                 custom_names=custom_names,
             )
             serialized["custom_planet_names"] = custom_names
-            return _sanitize_finite_json(_redact_api_payload(serialized))
+            state_resp = _sanitize_finite_json(_redact_api_payload(serialized))
+        self._maybe_trigger_ai_drift_replan()
+        return state_resp
 
     def _pick_executor(self, dry_run: bool) -> ActionExecutor:
         return self._dry_executor if dry_run else self._live_executor
@@ -9779,6 +10425,14 @@ class GameApiBridge:
     )
 
     def handle_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        resp = self._handle_command_impl(payload)
+        raw_cmd = payload.get("command") if isinstance(payload, Mapping) else None
+        cmd_norm = raw_cmd.strip().lower() if isinstance(raw_cmd, str) else ""
+        if cmd_norm in ("plan", "tick_once"):
+            self._maybe_trigger_ai_drift_replan()
+        return resp
+
+    def _handle_command_impl(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, Mapping) or not payload.get("command"):
             raise ApiRequestError("Request JSON must include a non-empty 'command' field.")
 
@@ -11990,6 +12644,36 @@ class GameApiBridge:
                 runs = self._list_ai_planner_runs_locked(limit=int(runs_limit))
                 active_result = gate["active_result"]
                 live_telemetry = self._compute_live_attack_telemetry_locked(snap_state)
+                cfg_snap = self.strategy_config
+                window_24h_snap = self._summarize_adaptive_idle_window_24h_locked()
+                realized_util_snap = round(
+                    min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization))),
+                    4,
+                )
+                raw_td_locked = (
+                    active_result.get("transport_demand")
+                    if isinstance(active_result, Mapping) and isinstance(active_result.get("transport_demand"), Mapping)
+                    else None
+                )
+                transport_demand_snap: Optional[dict[str, Any]] = None
+                if isinstance(raw_td_locked, Mapping):
+                    transport_demand_snap = dict(raw_td_locked)
+                    transport_demand_snap["realized_utilization"] = realized_util_snap
+                transport_fleet_snap = self._build_transport_fleet_summary_locked(
+                    snap_state,
+                    transport_demand_snap,
+                )
+                drift_eval = self._evaluate_ai_drift_replan_locked(snap_state, cfg=cfg_snap)
+                auto_replan_snap = {
+                    "cooldown_seconds": int(self.AI_DRIFT_REPLAN_COOLDOWN_SECONDS),
+                    "last_auto_replan_ts": (
+                        round(float(self._last_auto_ai_replan_ts), 3)
+                        if self._last_auto_ai_replan_ts > 0.0
+                        else None
+                    ),
+                    "last_trigger_reason": str(self._last_auto_ai_replan_reason or ""),
+                    "drift_ready": bool(drift_eval.get("drift_ready", False)),
+                }
 
             has_plan = isinstance(active_result, Mapping)
             active_summary = (
@@ -12081,6 +12765,74 @@ class GameApiBridge:
                 if hasattr(ai_mod, "summarize_live_blast_furnace_state")
                 else None
             )
+            search_snap: Optional[dict[str, Any]] = None
+            if has_plan and isinstance(active_result.get("search"), Mapping):
+                raw_s = active_result["search"]
+                search_snap = {
+                    "best_strategy": raw_s.get("best_strategy"),
+                    "best_parameters": (
+                        dict(raw_s["best_parameters"])
+                        if isinstance(raw_s.get("best_parameters"), Mapping)
+                        else None
+                    ),
+                    "tuned_genes": (
+                        dict(raw_s["tuned_genes"])
+                        if isinstance(raw_s.get("tuned_genes"), Mapping)
+                        else None
+                    ),
+                    "best_reward": raw_s.get("best_reward"),
+                    "genetic_algorithm_ran": bool(raw_s.get("genetic_algorithm_ran", False)),
+                    "why": raw_s.get("why"),
+                }
+            adaptive_status: Optional[dict[str, Any]] = None
+            diag_state = display_state if display_state is not None else snap_state
+            diag_fn = getattr(ai_mod, "diagnose_ai_colony_idle_states", None)
+            if diag_state is not None and callable(diag_fn):
+                raw_diag = diag_fn(
+                    diag_state,
+                    active_result if has_plan else {},
+                    config=cfg_snap,
+                    field_conflicts=jobs_snap.get("pending_field_conflicts") or (),
+                )
+                if isinstance(raw_diag, Mapping):
+                    diag_cols: list[dict[str, Any]] = []
+                    for col_item in raw_diag.get("colonies") or ():
+                        if not isinstance(col_item, Mapping):
+                            continue
+                        cd = dict(col_item)
+                        cpid = _safe_api_int(cd.get("planet_id"), 0)
+                        if cpid > 0 and custom_names.get(str(cpid)):
+                            cd["name"] = custom_names[str(cpid)]
+                        diag_cols.append(cd)
+                    adaptive_status = {
+                        "enabled": bool(getattr(cfg_snap, "ai_adaptive_execution", False)),
+                        "active_builders": max(0, _safe_api_int(raw_diag.get("active_builders", 0), 0)),
+                        "total_colonies": max(0, _safe_api_int(raw_diag.get("total_colonies", len(diag_cols)), len(diag_cols))),
+                        "colonies": diag_cols,
+                        "counts": (
+                            {str(k): max(0, _safe_api_int(v, 0)) for k, v in raw_diag["counts"].items()}
+                            if isinstance(raw_diag.get("counts"), Mapping)
+                            else {}
+                        ),
+                        "idle_with_affordable_count": max(0, _safe_api_int(raw_diag.get("idle_with_affordable_count", 0), 0)),
+                        "ready_not_started_count": max(0, _safe_api_int(raw_diag.get("ready_not_started_count", 0), 0)),
+                        "window_24h": window_24h_snap,
+                        "transport_fleet": transport_fleet_snap,
+                        "auto_replan": auto_replan_snap,
+                    }
+            if adaptive_status is None:
+                adaptive_status = {
+                    "enabled": bool(getattr(cfg_snap, "ai_adaptive_execution", False)),
+                    "active_builders": 0,
+                    "total_colonies": 0,
+                    "colonies": [],
+                    "counts": {k: 0 for k in self._ADAPTIVE_IDLE_STATE_KEYS},
+                    "idle_with_affordable_count": 0,
+                    "ready_not_started_count": 0,
+                    "window_24h": window_24h_snap,
+                    "transport_fleet": transport_fleet_snap,
+                    "auto_replan": auto_replan_snap,
+                }
             graph_obj = build_ai_graph(
                 display_state if display_state is not None else snap_state,
                 active_result,
@@ -12103,6 +12855,9 @@ class GameApiBridge:
                         "smelting": smelting_snap,
                         "live_blast_furnace": live_blast_furnace,
                         "transport_matrix": transport_matrix_snap,
+                        "transport_demand": transport_demand_snap,
+                        "search": search_snap,
+                        "adaptive_status": adaptive_status,
                         "graph": graph_obj,
                         "steps_page": {
                             "items": page_items,
@@ -12410,11 +13165,26 @@ class GameApiBridge:
                     ai_acts = []
 
                 if enriched_fp is not None:
+                    fp_adaptive_on = bool(getattr(effective_fp_cfg, "ai_adaptive_execution", False))
+                    raw_fp_td = (
+                        active_ai_res.get("transport_demand")
+                        if isinstance(active_ai_res, Mapping) and isinstance(active_ai_res.get("transport_demand"), Mapping)
+                        else None
+                    )
+                    fp_transport_demand: Optional[dict[str, Any]] = None
+                    if isinstance(raw_fp_td, Mapping):
+                        fp_transport_demand = dict(raw_fp_td)
+                        fp_transport_demand["realized_utilization"] = round(
+                            min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization))),
+                            4,
+                        )
                     spare_budget = compute_spare_ship_budget(
                         enriched_fp,
                         spare_pct,
                         attack_telemetry=atk_tel,
                         reserved_cost=reserved_cost,
+                        adaptive_execution=fp_adaptive_on,
+                        config=effective_fp_cfg,
                     )
                     fleet_actions = plan_fleet_and_attack_actions(
                         enriched_fp,
@@ -12424,6 +13194,7 @@ class GameApiBridge:
                         existing_plan=ai_acts,
                         priority_resource_need=priority_resource_need,
                         spare_budget=spare_budget,
+                        transport_demand=fp_transport_demand,
                     )
                     fleet_actions = self._apply_fleet_slot_cooldowns(fleet_actions, re_sort_priority=True)
                     fleet_actions = self._apply_fleet_slot_holds(

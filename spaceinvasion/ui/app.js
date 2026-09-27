@@ -15686,6 +15686,15 @@
           ]
         },
         {
+          key: "ai_adaptive_execution",
+          id: "cfg-ai_adaptive_execution",
+          title: "Adaptive AI-Planner Execution",
+          boundsLabel: "default: false · Boolean toggle",
+          description: "Enables Plan v2 adaptive execution: per-colony Blast furnace (b2) 2:1 smelting control, immediate remote Research lab starts across colonies, in-flight ship hull ownership accounting, plan-sized transport fleet scaling up to 25% of hourly Metal and Kryptonite income, and drift-triggered background path re-tuning. Boolean toggle.",
+          control: "checkbox",
+          defaultValue: false
+        },
+        {
           key: "playstyle",
           id: "cfg-playstyle",
           title: "Playstyle Doctrine",
@@ -16693,6 +16702,90 @@
       description: (meta == null ? void 0 : meta.desc) || `Target research level for ${title} funded automatically by Fleet Planner spare resources when allow_fleet_research is enabled.`
     };
   }
+  function formatAdaptiveColonyState(stateRaw) {
+    const norm = String(stateRaw || "").trim().toLowerCase();
+    switch (norm) {
+      case "building":
+        return { label: "Building", tone: "is-building" };
+      case "ready_not_started":
+      case "ready":
+        return { label: "Ready", tone: "is-ready" };
+      case "waiting_metal":
+        return { label: "Wait Metal", tone: "is-wait" };
+      case "waiting_pig_iron":
+      case "waiting_pig":
+        return { label: "Wait Pig", tone: "is-wait" };
+      case "waiting_kryptonite":
+      case "waiting_kry":
+        return { label: "Wait Kry", tone: "is-wait" };
+      case "waiting_spice":
+        return { label: "Wait Spice", tone: "is-wait" };
+      case "transport_inbound":
+      case "cargo_inbound":
+        return { label: "Cargo Inbound", tone: "is-inbound" };
+      case "storage_blocked":
+      case "storage_cap":
+        return { label: "Storage Cap", tone: "is-blocked" };
+      case "field_conflict":
+        return { label: "Field Conflict", tone: "is-blocked" };
+      case "idle_complete":
+      case "idle":
+      case "":
+        return { label: "Idle", tone: "is-idle" };
+      default:
+        return {
+          label: norm.split("_").filter(Boolean).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" "),
+          tone: "is-idle"
+        };
+    }
+  }
+  function formatSharePct(val) {
+    const n = safeFiniteNumber(val, 0) ?? 0;
+    return String(Number(n.toFixed(1)));
+  }
+  function countFallbackActiveBuilders(planets, activeQueues) {
+    const normalPlanets = planets.filter(
+      (p) => String((p == null ? void 0 : p.planet_type) || "normal").toLowerCase() === "normal"
+    );
+    const scoped = normalPlanets.length > 0 ? normalPlanets : planets;
+    const knownPid = /* @__PURE__ */ new Set();
+    const coordsToPid = /* @__PURE__ */ new Map();
+    for (const pl of scoped) {
+      const pid = Math.round(safeFiniteNumber(pl == null ? void 0 : pl.planet_id, 0) ?? 0);
+      if (pid > 0) {
+        knownPid.add(pid);
+        const c = String((pl == null ? void 0 : pl.coords) || "").trim();
+        if (c) coordsToPid.set(c, pid);
+      }
+    }
+    const nowSec = Math.floor(Date.now() / 1e3);
+    const activeKeys = /* @__PURE__ */ new Set();
+    for (const job of activeQueues) {
+      if (!job || String(job.category || "").toLowerCase() !== "building") continue;
+      const finTs = safeFiniteNumber(job.finish_ts, null);
+      const remSec = safeFiniteNumber(job.remaining_seconds, null);
+      let active = false;
+      if (finTs !== null && finTs > 0) {
+        active = finTs > nowSec;
+      } else if (remSec !== null) {
+        active = remSec > 0;
+      } else {
+        const remTxt = String(job.remaining_text || "").trim().toLowerCase();
+        active = remTxt.length > 0 && remTxt !== "0s" && remTxt !== "done" && remTxt !== "finished";
+      }
+      if (!active) continue;
+      const jobPid = Math.round(safeFiniteNumber(job.planet_id, 0) ?? 0);
+      const jobCoords = String(job.origin_coords || job.planet_coords || "").trim();
+      if (jobPid > 0 && (knownPid.size === 0 || knownPid.has(jobPid))) {
+        activeKeys.add(`pid:${jobPid}`);
+      } else if (jobCoords && coordsToPid.has(jobCoords)) {
+        activeKeys.add(`pid:${coordsToPid.get(jobCoords)}`);
+      } else if (jobCoords && knownPid.size === 0) {
+        activeKeys.add(`coords:${jobCoords}`);
+      }
+    }
+    return { active: activeKeys.size, total: scoped.length };
+  }
   function draftFromAiParams(raw) {
     if (!raw || typeof raw !== "object") {
       return {
@@ -16781,7 +16874,7 @@
     };
   }
   const AiPlannerTab = ({ hidden = false }) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
     const {
       dashboard,
       setDashboard,
@@ -16807,6 +16900,7 @@
     const [stepsPage, setStepsPage] = reactExports.useState(1);
     const [stepsPageSize, setStepsPageSize] = reactExports.useState(25);
     const [isSubmitting, setIsSubmitting] = reactExports.useState(false);
+    const [isTogglingAdaptive, setIsTogglingAdaptive] = reactExports.useState(false);
     const [resolvingConflictKey, setResolvingConflictKey] = reactExports.useState(null);
     const [selectedCandidateByConflict, setSelectedCandidateByConflict] = reactExports.useState({});
     const fetchAiState = reactExports.useCallback(
@@ -17011,6 +17105,41 @@
         setResolvingConflictKey(null);
       }
     };
+    const onToggleAdaptiveExecution = async (nextVal) => {
+      var _a2, _b2;
+      setIsTogglingAdaptive(true);
+      try {
+        const res = await apiCommand2({
+          command: "update_config",
+          config: { ai_adaptive_execution: nextVal }
+        });
+        if (res.config && typeof res.config === "object") {
+          (_a2 = globalThis.renderConfigForm) == null ? void 0 : _a2.call(globalThis, res.config);
+          const curDash = ((_b2 = globalThis.state) == null ? void 0 : _b2.dashboard) || dashboard;
+          const nextDash = curDash ? {
+            ...curDash,
+            config: res.config
+          } : {
+            config: res.config
+          };
+          if (globalThis.state) globalThis.state.dashboard = nextDash;
+          setDashboard(nextDash);
+        }
+        await loadDashboard({ refresh: false, preserveConfig: false, force: true });
+        await fetchAiState({ silent: true });
+        showFeedback(
+          `Adaptive AI-Planner execution ${nextVal ? "enabled" : "disabled"} (config.yaml saved).`,
+          "ok"
+        );
+      } catch (err) {
+        showFeedback(
+          `Adaptive execution update failed: ${err.message}`,
+          feedbackKindForError(err)
+        );
+      } finally {
+        setIsTogglingAdaptive(false);
+      }
+    };
     const onExportTxt = async () => {
       try {
         const res = await apiCommand2({ command: "ai_planner_export" });
@@ -17110,6 +17239,45 @@
       }
     }
     const liveModeLabel = totalB2Planets <= 0 ? "NONE" : `${initLiveMode.toUpperCase()} (${initLiveEnabledCount}/${totalB2Planets} ON)`;
+    const customPlanetNames = reactExports.useMemo(() => {
+      const raw = dashboard == null ? void 0 : dashboard.custom_planet_names;
+      if (!raw || typeof raw !== "object") return {};
+      const out = {};
+      for (const [k, v] of Object.entries(raw)) {
+        const clean = String(v || "").trim();
+        if (clean) out[String(k)] = clean;
+      }
+      return out;
+    }, [dashboard]);
+    const planetNameById = reactExports.useMemo(() => {
+      const map = /* @__PURE__ */ new Map();
+      for (const p of planets) {
+        const pid = Math.round(safeFiniteNumber(p == null ? void 0 : p.planet_id, 0) ?? 0);
+        const nm = String((p == null ? void 0 : p.name) || "").trim();
+        if (pid > 0 && nm) map.set(pid, nm);
+      }
+      return map;
+    }, [planets]);
+    const adaptiveStatus = (aiData == null ? void 0 : aiData.adaptive_status) || null;
+    const adaptiveEnabled = Boolean(
+      ((_i = dashboard == null ? void 0 : dashboard.config) == null ? void 0 : _i.ai_adaptive_execution) ?? (adaptiveStatus == null ? void 0 : adaptiveStatus.enabled) ?? false
+    );
+    const fallbackBuilders = reactExports.useMemo(
+      () => {
+        var _a2;
+        return countFallbackActiveBuilders(planets, ((_a2 = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _a2.active_queues) || []);
+      },
+      [planets, (_j = dashboard == null ? void 0 : dashboard.state) == null ? void 0 : _j.active_queues]
+    );
+    const adaptiveActiveBuilders = adaptiveStatus && typeof adaptiveStatus.active_builders === "number" ? Math.max(0, Math.round(adaptiveStatus.active_builders)) : fallbackBuilders.active;
+    const adaptiveTotalColonies = adaptiveStatus && typeof adaptiveStatus.total_colonies === "number" ? Math.max(0, Math.round(adaptiveStatus.total_colonies)) : fallbackBuilders.total;
+    const adaptiveColonies = Array.isArray(adaptiveStatus == null ? void 0 : adaptiveStatus.colonies) ? adaptiveStatus.colonies : [];
+    const transportFleet = (adaptiveStatus == null ? void 0 : adaptiveStatus.transport_fleet) || null;
+    const window24h = (adaptiveStatus == null ? void 0 : adaptiveStatus.window_24h) || null;
+    const hasWindow24hSamples = Boolean(
+      window24h && (safeFiniteNumber(window24h.colony_samples, 0) ?? 0) > 0
+    );
+    const autoReplan = (adaptiveStatus == null ? void 0 : adaptiveStatus.auto_replan) || null;
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-tab-split", id: "ag-pane-ai-planner", hidden, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("article", { className: "hud-window ag-main-window", id: "ag-ai-main-window", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "window-bar window-bar-wrap", children: [
@@ -17149,7 +17317,7 @@
                   className: `tab-btn${subView === "steps" ? " active" : ""}`,
                   id: "ai-subtab-steps",
                   onClick: () => setSubView("steps"),
-                  children: `Path (${((_i = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _i.total) ?? rawSteps.length})`
+                  children: `Path (${((_k = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _k.total) ?? rawSteps.length})`
                 }
               ),
               /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -17335,6 +17503,111 @@
             ]
           }
         ),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(
+          "div",
+          {
+            className: "ag-adaptive-strip",
+            id: "ag-ai-adaptive-strip",
+            role: "region",
+            "aria-label": "Adaptive execution switch and per-colony idle diagnostics",
+            children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-adaptive-strip-head", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-adaptive-strip-controls", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "ag-adaptive-toggle", htmlFor: "ai-adaptive-exec-toggle", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "checkbox",
+                        className: "config-checkbox",
+                        id: "ai-adaptive-exec-toggle",
+                        checked: adaptiveEnabled,
+                        disabled: isTogglingAdaptive,
+                        onChange: (e) => void onToggleAdaptiveExecution(e.target.checked)
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-code tabular", children: "V2" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-smelt-label", children: "Adaptive Execution" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "span",
+                      {
+                        className: `ag-smelt-pill tabular ${adaptiveEnabled ? "is-on" : "is-off"}`,
+                        id: "ai-adaptive-exec-state",
+                        children: adaptiveEnabled ? "ON" : "OFF"
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "span",
+                    {
+                      className: `ag-smelt-pill tabular ${adaptiveTotalColonies > 0 && adaptiveActiveBuilders >= adaptiveTotalColonies ? "is-on" : adaptiveActiveBuilders > 0 ? "is-toggle" : "is-off"}`,
+                      id: "ai-adaptive-builders-badge",
+                      children: `Builders ${adaptiveActiveBuilders}/${adaptiveTotalColonies}`
+                    }
+                  ),
+                  transportFleet ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "span",
+                    {
+                      className: `ag-smelt-pill tabular ${(safeFiniteNumber(transportFleet.target_fleet_cargo, 0) ?? 0) <= 0 || (safeFiniteNumber(transportFleet.total_fleet_cargo, 0) ?? 0) >= (safeFiniteNumber(transportFleet.target_fleet_cargo, 0) ?? 0) ? "is-on" : "is-toggle"}`,
+                      id: "ai-adaptive-fleet-badge",
+                      title: `Parked: ${fmtInt(transportFleet.owned_parked_cargo)} · In-flight: ${fmtInt(
+                        transportFleet.in_flight_cargo
+                      )} · Planned 24h flow: ${fmtCompact(transportFleet.planned_cargo_per_hour_24h)}/h · Util: ${Math.round(
+                        (safeFiniteNumber(transportFleet.realized_utilization, 0.5) ?? 0.5) * 100
+                      )}%`,
+                      children: `Cargo ${fmtCompact(transportFleet.total_fleet_cargo)} / ${fmtCompact(
+                        transportFleet.target_fleet_cargo
+                      )}`
+                    }
+                  ) : null,
+                  hasWindow24hSamples && window24h ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "span",
+                    {
+                      className: `ag-smelt-pill tabular ${(safeFiniteNumber(window24h.idle_with_affordable_share_pct, 0) ?? 0) > 15 || (safeFiniteNumber(window24h.ready_not_started_share_pct, 0) ?? 0) > 5 ? "is-toggle" : "is-on"}`,
+                      id: "ai-adaptive-gate24h-badge",
+                      title: `24h Step-5 diagnostics (${window24h.colony_samples} colony samples across ${window24h.bucket_count} x 10m buckets)`,
+                      children: `Idle w/ affordable: ${formatSharePct(
+                        window24h.idle_with_affordable_share_pct
+                      )}% · Ready gap: ${formatSharePct(window24h.ready_not_started_share_pct)}%`
+                    }
+                  ) : null
+                ] }),
+                autoReplan ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-smelt-strip-meta tabular", id: "ai-adaptive-replan-badge", children: `Auto-replan: ${autoReplan.drift_ready ? "Drift ready" : "Cooldown"}${autoReplan.last_trigger_reason ? ` · Last: ${autoReplan.last_trigger_reason}` : ""}` }) : null
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-adaptive-diag-list", id: "ag-ai-colony-diag-list", children: adaptiveColonies.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "action-sub", children: "Colony idle diagnostics appear once AI-Planner state is loaded." }) : adaptiveColonies.map((col) => {
+                const pid = Math.round(safeFiniteNumber(col.planet_id, 0) ?? 0);
+                const coords = String(col.coords || "").trim();
+                const displayName = customPlanetNames[String(pid)] || col.name || planetNameById.get(pid) || "Colony";
+                const stateMeta = formatAdaptiveColonyState(col.state);
+                const b2Lvl = Math.round(safeFiniteNumber(col.b2_level, 0) ?? 0);
+                const b2Pct = Math.round(safeFiniteNumber(col.b2_pct, 0) ?? 0);
+                const marginAt100 = safeFiniteNumber(col.b2_energy_margin_at_100, null);
+                const lowEnergyMargin = marginAt100 !== null && marginAt100 < 100;
+                const tooltipParts = [
+                  col.reason || stateMeta.label,
+                  col.next_label ? `Next: ${col.next_label}` : "",
+                  col.idle_with_affordable_target_step ? "Affordable target step waiting" : "",
+                  lowEnergyMargin ? `Energy margin at 100% b2: ${Math.round(marginAt100)}` : ""
+                ].filter(Boolean);
+                return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                  "div",
+                  {
+                    className: `ag-adaptive-chip ${stateMeta.tone}`,
+                    "data-planet-id": pid,
+                    "data-colony-state": col.state,
+                    title: tooltipParts.join(" · "),
+                    children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-adaptive-chip-name tabular", children: coords ? `${displayName} [${coords}]` : displayName }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `ag-adaptive-state-pill tabular ${stateMeta.tone}`, children: stateMeta.label }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-adaptive-b2-pill tabular", children: b2Lvl > 0 ? `b2 ${b2Pct}%` : "no b2" }),
+                      lowEnergyMargin ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ag-adaptive-energy-warn tabular", children: `Low E (${Math.round(marginAt100)})` }) : null
+                    ]
+                  },
+                  `${pid}-${coords || displayName}`
+                );
+              }) })
+            ]
+          }
+        ),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "ag-ai-subpane", id: "ai-view-dag", hidden: subView !== "dag", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ag-ai-window-bar", id: "ag-ai-window-controls", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-actions", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tab-group", role: "group", "aria-label": "DAG window slice", children: [
@@ -17434,7 +17707,7 @@
                 }
               }
             ) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", children: `${((_j = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _j.total) ?? stepSort.sortedRows.length} total actions` })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "module-meta tabular", children: `${((_l = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _l.total) ?? stepSort.sortedRows.length} total actions` })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "table-wrap table-scroll", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { id: "ag-ai-steps-table", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
@@ -17525,7 +17798,7 @@
               idPrefix: "ag-ai-steps",
               totalItems: Math.max(
                 stepSort.sortedRows.length,
-                Math.round(safeFiniteNumber((_k = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _k.total, 0) ?? 0)
+                Math.round(safeFiniteNumber((_m = aiData == null ? void 0 : aiData.steps_page) == null ? void 0 : _m.total, 0) ?? 0)
               ),
               page: stepsPage,
               pageSize: stepsPageSize,

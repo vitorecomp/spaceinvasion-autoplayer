@@ -9317,6 +9317,504 @@ class TestApiAndCommander(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_plan_v2_adaptive_config_24h_history_buckets_and_ai_planner_get(self) -> None:
+        """Verify Plan v2 Step 0/4a API contracts: ai_adaptive_execution config, 24h history limit, 10m idle buckets, transport util EWMA, and ai_planner_get enrichment."""
+        import time
+        from spaceinvasion.core.config import save_strategy_config
+
+        now_ts = time.time()
+        p1 = PlanetState(
+            planet_id=701,
+            name="Alpha",
+            coords="02:380:01",
+            planet_type="normal",
+            temperature=30,
+            fields_used=60,
+            fields_max=300,
+            resources=Resources(50_000, 10_000, 20_000, 15_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(800, 400),
+            buildings={"b1": 12, "b2": 8, "b3": 10, "b4": 8, "b5": 12, "b9": 6, "b10": 4},
+            economy_rates={"resource2": 0},
+            ships={"s1": 10, "s2": 2},
+        )
+        p2 = PlanetState(
+            planet_id=702,
+            name="Beta",
+            coords="02:380:02",
+            planet_type="normal",
+            temperature=25,
+            fields_used=55,
+            fields_max=300,
+            resources=Resources(40_000, 500, 15_000, 10_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(700, 350),
+            buildings={"b1": 10, "b2": 6, "b3": 9, "b4": 7, "b5": 11, "b9": 4, "b10": 3},
+            economy_rates={"resource2": 100},
+            ships={"s1": 4},
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Cmdr",
+            timestamp=now_ts,
+            planets=(p1, p2),
+            active_planet_id=701,
+            researches={"r1": 5, "r2": 6, "r6": 3},
+            specs={"miner": 0},
+            active_queues=(
+                QueueJob(
+                    category="building",
+                    name="Pig iron mine",
+                    origin_coords="02:380:01",
+                    building_id=1,
+                    target_level=13,
+                    remaining_seconds=600.0,
+                    finish_ts=now_ts + 600.0,
+                ),
+                QueueJob(
+                    category="fleet",
+                    name="Transport → 02:380:02",
+                    detail="Outbound · 5 Small transport",
+                    origin_coords="02:380:01",
+                    remaining_seconds=300.0,
+                    finish_ts=now_ts + 300.0,
+                    cargo=Resources(0, 24_000, 0, 0),
+                    expected_cargo=Resources(0, 24_000, 0, 0),
+                ),
+            ),
+        )
+        fake_plan = {
+            "schema_version": 1,
+            "generated_at": "2026-11-19T00:00:00+00:00",
+            "config_generated_at": "2026-11-19T00:00:00+00:00",
+            "summary": {
+                "colonies_founded": 2,
+                "colonies_target": 2,
+                "planned_cargo_per_hour_24h": 150_000.0,
+            },
+            "search": {
+                "best_strategy": "tuned_ga",
+                "best_parameters": {"patience": 0.3, "speed_weight": 1.6},
+                "tuned_genes": {"patience": 0.35, "speed_weight": 1.75},
+                "best_reward": 123456.0,
+                "genetic_algorithm_ran": True,
+                "why": "improved",
+            },
+            "transport_demand": {
+                "cargo_4h": 400_000,
+                "cargo_per_hour_4h": 100_000.0,
+                "cargo_24h": 3_600_000,
+                "cargo_per_hour_24h": 150_000.0,
+                "max_single_shipment_cargo": 60_000,
+                "shipment_steps_4h": 5,
+                "shipment_steps_24h": 20,
+                "avg_one_way_seconds": 720.0,
+                "round_trips_per_hour": 2.5,
+                "utilization_assumed": 0.5,
+                "recommended_cargo_capacity": 120_000,
+                "recommended_large_transports": 4,
+                "recommended_small_transports": 20,
+            },
+            "steps": [
+                {
+                    "seq": 1,
+                    "week": 1,
+                    "kind": "BUILD",
+                    "planet_id": 702,
+                    "planet_coords": "02:380:02",
+                    "planet_name": "Beta",
+                    "entity_key": "b3",
+                    "entity_name": "Kryptonite mine",
+                    "target_level": 10,
+                    "cost": {"pig_iron": 10_000, "metal": 120_000, "kryptonite": 5_000, "spice": 0},
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            cfg_path = tp / "config.yaml"
+            db_path = tp / "state.db"
+            save_strategy_config(StrategyConfig(planner_mode="ai_planner", max_planets=2), cfg_path)
+            bridge = GameApiBridge(
+                client_factory=lambda _p: MagicMock(),
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=None,
+            )
+            try:
+                # 1. Default ai_adaptive_execution is False; strict bool validation rejects non-bool
+                self.assertFalse(bridge.strategy_config.ai_adaptive_execution)
+                with self.assertRaises(ApiRequestError):
+                    bridge.handle_command(
+                        {"command": "action_graph", "config": {"ai_adaptive_execution": "yes"}}
+                    )
+                upd = bridge.handle_command(
+                    {"command": "update_config", "config": {"ai_adaptive_execution": True}}
+                )
+                self.assertTrue(upd["ok"])
+                self.assertTrue(upd["config"]["ai_adaptive_execution"])
+                self.assertTrue(bridge.strategy_config.ai_adaptive_execution)
+                upd_off = bridge.handle_command(
+                    {"command": "update_config", "config": {"ai_adaptive_execution": False}}
+                )
+                self.assertFalse(upd_off["config"]["ai_adaptive_execution"])
+
+                # 2. 24h hourly_production_history returns > 120 points (limit=1440)
+                base_min = (int(now_ts // 60) - 165) * 60
+                for idx in range(160):
+                    bridge._db.record_hourly_production(
+                        pig_iron_per_hour=1000.0 + idx,
+                        metal_per_hour=500.0,
+                        kryptonite_per_hour=300.0,
+                        spice_per_hour=100.0,
+                        total_per_hour=1900.0 + idx,
+                        speq_per_hour=800.0,
+                        planet_count=2,
+                        active_builders=1,
+                        ts=float(base_min + idx * 60),
+                    )
+                bridge._db.record_ai_planner_run(fake_plan, config_run_id=1, set_active=True)
+                bridge._record_state(st, fetched_buildings=True, fetched_home=True, observed_active_planet=True)
+                bridge.handle_command({"command": "rename_planet", "planet_id": 702, "name": "Smelter Prime"})
+
+                dash = bridge.dashboard(refresh=False)
+                self.assertFalse(dash["config"]["ai_adaptive_execution"])
+                self.assertGreaterEqual(len(dash["hourly_production_history"]), 160)
+
+                # 3. Transport realized utilization EWMA updated from 0.5 toward 24k / 30k = 0.8 (bounded [0.2, 0.9])
+                #    and repeated polls of the same flight do not double-count.
+                u_first = bridge._transport_realized_utilization
+                self.assertGreater(u_first, 0.5)
+                self.assertLessEqual(u_first, 0.9)
+                self.assertAlmostEqual(u_first, round(0.85 * 0.5 + 0.15 * 0.8, 4), places=4)
+                bridge._observe_transport_utilization_locked(st)
+                self.assertEqual(bridge._transport_realized_utilization, u_first)
+
+                # 4. 10-minute 24h idle bucket deduplication, pruning >24h, and persistence across restart
+                #    One bucket was already recorded by _record_state; re-recording in same 10m slot is a no-op
+                self.assertFalse(
+                    bridge._record_adaptive_idle_bucket_locked(st, fake_plan, now_ts=now_ts)
+                )
+                #    Record a previous 10m bucket + inject an expired (>24h) bucket
+                self.assertTrue(
+                    bridge._record_adaptive_idle_bucket_locked(st, fake_plan, now_ts=now_ts - 600.0)
+                )
+                old_bk = int((now_ts - 200 * 600.0) // 600.0)
+                bridge._adaptive_idle_buckets[old_bk] = {
+                    "bucket": old_bk,
+                    "ts": now_ts - 200 * 600.0,
+                    "total_colonies": 2,
+                    "active_builders": 0,
+                    "idle_with_affordable": 2,
+                    "ready_not_started": 0,
+                    "counts": {"waiting_metal": 2},
+                }
+                bridge._persist_runtime_state()
+                self.assertNotIn(old_bk, bridge._adaptive_idle_buckets)
+                self.assertEqual(len(bridge._adaptive_idle_buckets), 2)
+
+                # 5. ai_planner_get exposes search, transport_demand, and adaptive_status with custom names overlaid
+                ai_get = bridge.handle_command({"command": "ai_planner_get"})
+                self.assertTrue(ai_get["ok"])
+                self.assertEqual(ai_get["search"]["best_strategy"], "tuned_ga")
+                self.assertEqual(ai_get["search"]["tuned_genes"]["patience"], 0.35)
+                self.assertEqual(ai_get["search"]["best_parameters"]["speed_weight"], 1.6)
+                self.assertEqual(ai_get["transport_demand"]["cargo_per_hour_24h"], 150_000.0)
+                self.assertAlmostEqual(ai_get["transport_demand"]["realized_utilization"], u_first, places=4)
+
+                astat = ai_get["adaptive_status"]
+                self.assertIsNotNone(astat)
+                self.assertFalse(astat["enabled"])
+                self.assertEqual(astat["active_builders"], 1)
+                self.assertEqual(astat["total_colonies"], 2)
+                col_by_pid = {c["planet_id"]: c for c in astat["colonies"]}
+                self.assertEqual(col_by_pid[702]["name"], "Smelter Prime")
+                self.assertEqual(astat["window_24h"]["bucket_count"], 2)
+                self.assertEqual(astat["window_24h"]["colony_samples"], 4)
+                # Parked: 14*6000 + 2*30000 = 144,000; In-flight: 5*6000 = 30,000 -> total 174,000
+                tf = astat["transport_fleet"]
+                self.assertEqual(tf["owned_parked_cargo"], 144_000)
+                self.assertEqual(tf["in_flight_cargo"], 30_000)
+                self.assertEqual(tf["total_fleet_cargo"], 174_000)
+                self.assertEqual(tf["planned_cargo_per_hour_24h"], 150_000.0)
+                self.assertAlmostEqual(tf["realized_utilization"], u_first, places=4)
+                self.assertEqual(tf["target_fleet_cargo"], math.ceil(150_000.0 / 2.5 / u_first))
+                self.assertEqual(astat["auto_replan"]["cooldown_seconds"], 1800)
+            finally:
+                bridge.close()
+
+            # 6. Verify buckets & transport utilization persist across bridge restart (zero DB migration)
+            bridge2 = GameApiBridge(
+                client_factory=lambda _p: MagicMock(),
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=None,
+            )
+            try:
+                self.assertEqual(len(bridge2._adaptive_idle_buckets), 2)
+                self.assertAlmostEqual(bridge2._transport_realized_utilization, u_first, places=4)
+            finally:
+                bridge2.close()
+
+    def test_plan_v2_hybrid_wiring_and_step6_drift_auto_replan(self) -> None:
+        """Verify hybrid wiring (inbound cargo, in-progress rem, donor smelting, transport_demand) and Step 6 drift auto-replan + 30m cooldown without _lock deadlock."""
+        from dataclasses import replace
+        import time
+        from spaceinvasion.core.config import save_strategy_config
+
+        now_ts = time.time()
+        p1 = PlanetState(
+            planet_id=801,
+            name="Prime",
+            coords="02:380:01",
+            planet_type="normal",
+            temperature=30,
+            fields_used=60,
+            fields_max=300,
+            resources=Resources(100_000, 10_000, 20_000, 15_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(800, 400),
+            buildings={"b1": 12, "b2": 8, "b3": 10, "b4": 8, "b5": 12, "b9": 6, "b10": 4},
+            economy_rates={"resource2": 0},
+            ships={"s1": 10},
+        )
+        p2 = PlanetState(
+            planet_id=802,
+            name="Secundus",
+            coords="02:380:02",
+            planet_type="normal",
+            temperature=25,
+            fields_used=55,
+            fields_max=300,
+            resources=Resources(50_000, 5_000, 15_000, 10_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(700, 350),
+            buildings={"b1": 10, "b2": 6, "b3": 9, "b4": 7, "b5": 11, "b9": 4, "b10": 3},
+            economy_rates={"resource2": 0},
+            ships={"s1": 4},
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Cmdr",
+            timestamp=now_ts,
+            planets=(p1, p2),
+            active_planet_id=801,
+            researches={"r1": 5, "r2": 6, "r6": 3},
+            active_queues=(
+                QueueJob(
+                    category="building",
+                    name="Pig iron mine",
+                    origin_coords="02:380:01",
+                    building_id=1,
+                    target_level=13,
+                    remaining_seconds=900.0,
+                    finish_ts=now_ts + 900.0,
+                ),
+                QueueJob(
+                    category="fleet",
+                    name="Transport → 02:380:02",
+                    detail="Outbound · 5 Small transport",
+                    origin_coords="02:380:01",
+                    remaining_seconds=300.0,
+                    finish_ts=now_ts + 300.0,
+                    cargo=Resources(0, 15_000, 0, 0),
+                ),
+            ),
+        )
+        plan_res = {
+            "schema_version": 1,
+            "generated_at": "2026-11-19T00:00:00+00:00",
+            "config_generated_at": "2026-11-19T00:00:00+00:00",
+            "summary": {"colonies_founded": 2, "colonies_target": 2},
+            "attack_telemetry": {"median_loot": {"spice_eq": 10_000.0}},
+            "search": {
+                "best_strategy": "tuned",
+                "best_parameters": {"patience": 0.25},
+                "tuned_genes": {"patience": 0.42, "speed_weight": 1.8},
+            },
+            "transport_demand": {
+                "cargo_per_hour_24h": 200_000.0,
+                "round_trips_per_hour": 2.5,
+                "utilization_assumed": 0.5,
+            },
+            "steps": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tp = Path(tmp)
+            cfg_path = tp / "config.yaml"
+            db_path = tp / "state.db"
+            save_strategy_config(
+                StrategyConfig(planner_mode="ai_planner", max_planets=2, ai_adaptive_execution=False),
+                cfg_path,
+            )
+            bridge = GameApiBridge(
+                client_factory=lambda _p: MagicMock(),
+                config_path=cfg_path,
+                db_path=db_path,
+                log_dir=None,
+            )
+            try:
+                bridge._last_state = st
+                bridge._last_snapshot_at = time.monotonic()
+
+                # 1. Verify _plan_hybrid_ai_actions_locked wires new kwargs for both switch OFF and switch ON
+                for adaptive_flag in (False, True):
+                    cfg_cur = StrategyConfig(
+                        planner_mode="ai_planner",
+                        max_planets=2,
+                        ai_adaptive_execution=adaptive_flag,
+                    )
+                    with (
+                        patch(
+                            "spaceinvasion.runtime.api_server.compute_spare_ship_budget",
+                            return_value={
+                                "available_budget": {"pig_iron": 0.0, "metal": 0.0, "kryptonite": 0.0, "spice": 0.0},
+                                "infra_transport_budget": {"metal": 50_000.0, "kryptonite": 30_000.0},
+                                "urgent_zero_count_ships": [],
+                            },
+                        ) as m_budget,
+                        patch(
+                            "spaceinvasion.runtime.api_server.plan_fleet_and_attack_actions",
+                            return_value=[],
+                        ) as m_fleet,
+                        patch(
+                            "spaceinvasion.runtime.api_server.plan_ai_blast_furnace_throttles",
+                            return_value=[],
+                        ) as m_bf,
+                    ):
+                        bridge._plan_hybrid_ai_actions_locked(st, plan_res, cfg_cur, record_conflicts=False)
+                    self.assertEqual(m_budget.call_args.kwargs["adaptive_execution"], adaptive_flag)
+                    self.assertIs(m_budget.call_args.kwargs["config"], cfg_cur)
+                    td_arg = m_fleet.call_args.kwargs["transport_demand"]
+                    self.assertEqual(td_arg["cargo_per_hour_24h"], 200_000.0)
+                    self.assertIn("realized_utilization", td_arg)
+                    self.assertEqual(m_bf.call_args.kwargs["enable_donor_smelting"], adaptive_flag)
+                    self.assertEqual(m_bf.call_args.kwargs["inbound_cargo_by_planet"][802].metal, 15_000)
+                    self.assertGreater(m_bf.call_args.kwargs["in_progress_rem_by_planet"][801], 0.0)
+
+                # 2. Step 6 drift auto-replan: seed active config optimizer + active AI plan aged 5 hours
+                bridge._active_config_opt_mem = {
+                    "run_id": 10,
+                    "updated_ts": now_ts - 18_000.0,
+                    "result": {"generated_at": "2026-11-19T00:00:00+00:00"},
+                }
+                bridge._db.close()
+                bridge._db = None
+                bridge._active_ai_plan_mem = {
+                    "run_id": 20,
+                    "config_run_id": 10,
+                    "updated_ts": now_ts - 18_000.0,  # 5 hours old
+                    "result": dict(plan_res),
+                }
+
+                calls: list[dict[str, object]] = []
+
+                def _fake_start_ai(**kwargs: object) -> dict[str, object]:
+                    # Prove self._lock is NOT held (zero deadlock risk!)
+                    acquired = bridge._lock.acquire(blocking=False)
+                    self.assertTrue(acquired, "_start_ai_planner_job called while bridge._lock was held!")
+                    if acquired:
+                        bridge._lock.release()
+                    calls.append(dict(kwargs))
+                    return {"ok": True, "job": {"status": "running"}}
+
+                with (
+                    patch.object(bridge, "_start_ai_planner_job", side_effect=_fake_start_ai),
+                    patch.object(
+                        bridge,
+                        "_compute_live_attack_telemetry_locked",
+                        return_value={"median_loot": {"spice_eq": 10_000.0}},
+                    ),
+                ):
+                    # Switch OFF -> never triggers even when 5h old
+                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    self.assertEqual(len(calls), 0)
+
+                    # Switch ON, paused -> never triggers
+                    bridge.strategy_config = StrategyConfig(
+                        planner_mode="ai_planner", max_planets=2, ai_adaptive_execution=True
+                    )
+                    bridge._bot_control["paused"] = True
+                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    self.assertEqual(len(calls), 0)
+                    bridge._bot_control["paused"] = False
+
+                    # Switch ON, CAPTCHA blocked -> never triggers
+                    bridge._bot_control["captcha_blocked"] = True
+                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    self.assertEqual(len(calls), 0)
+                    bridge._bot_control["captcha_blocked"] = False
+
+                    # Switch ON, job running -> never triggers
+                    bridge._ai_planner_job["status"] = "running"
+                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    self.assertEqual(len(calls), 0)
+                    bridge._ai_planner_job["status"] = "idle"
+
+                    # Trigger (d): plan_age_4h via handle_command("plan", refresh=False)
+                    bridge.handle_command({"command": "plan", "refresh": False})
+                    self.assertEqual(len(calls), 1)
+                    self.assertEqual(calls[-1]["trigger_source"], "auto_drift:plan_age_4h")
+                    self.assertFalse(calls[-1]["sync"])
+                    self.assertFalse(calls[-1]["refresh"])
+                    self.assertEqual(calls[-1]["params"], {"warm_start_genes": {"patience": 0.42, "speed_weight": 1.8}})
+
+                    # Immediate retry within 30-min cooldown -> suppressed
+                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts + 600.0))
+                    self.assertEqual(len(calls), 1)
+
+                    # Trigger (a): config_optimizer_changed (after 30m cooldown, plan itself only 1h old)
+                    bridge._last_auto_ai_replan_ts = now_ts - 2000.0
+                    bridge._active_ai_plan_mem["updated_ts"] = now_ts - 3600.0
+                    bridge._active_config_opt_mem["run_id"] = 11
+                    bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts)
+                    self.assertEqual(len(calls), 2)
+                    self.assertEqual(calls[-1]["trigger_source"], "auto_drift:config_optimizer_changed")
+
+                    # Trigger (b): colony_count_changed (reset co_run_id match, add 3rd normal planet)
+                    bridge._active_config_opt_mem["run_id"] = 10
+                    bridge._last_auto_ai_replan_ts = now_ts - 2000.0
+                    p3 = replace(p2, planet_id=803, name="Tertius", coords="02:380:03")
+                    bridge._last_state = replace(st, planets=(p1, p2, p3))
+                    bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts)
+                    self.assertEqual(len(calls), 3)
+                    self.assertEqual(calls[-1]["trigger_source"], "auto_drift:colony_count_changed")
+
+                # Trigger (c): loot_shift_25pct (back to 2 colonies, live median spice_eq shifted 10k -> 13k = +30%)
+                bridge._last_state = st
+                bridge._last_auto_ai_replan_ts = now_ts - 2000.0
+                with (
+                    patch.object(bridge, "_start_ai_planner_job", side_effect=_fake_start_ai),
+                    patch.object(
+                        bridge,
+                        "_compute_live_attack_telemetry_locked",
+                        return_value={"median_loot": {"spice_eq": 13_000.0}},
+                    ),
+                ):
+                    bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts)
+                self.assertEqual(len(calls), 4)
+                self.assertEqual(calls[-1]["trigger_source"], "auto_drift:loot_shift_25pct")
+
+                # Plan younger than 30 min -> cooldown suppresses even when drift exists
+                bridge._last_auto_ai_replan_ts = 0.0
+                bridge._active_ai_plan_mem["updated_ts"] = now_ts - 600.0
+                with (
+                    patch.object(bridge, "_start_ai_planner_job", side_effect=_fake_start_ai),
+                    patch.object(
+                        bridge,
+                        "_compute_live_attack_telemetry_locked",
+                        return_value={"median_loot": {"spice_eq": 20_000.0}},
+                    ),
+                ):
+                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                self.assertEqual(len(calls), 4)
+            finally:
+                bridge.close()
+
 
 if __name__ == "__main__":
     unittest.main()
