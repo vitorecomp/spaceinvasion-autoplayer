@@ -4602,6 +4602,7 @@ def _plan_planet_shipyard_targets(
     out_ships: list[PlannedAction] = []
     waiting_ships: list[tuple[float, PlannedAction]] = []
     norm_shipyard_targets = _resolve_shipyard_targets(config.shipyard_targets)
+    configured_shipyard_floor = dict(norm_shipyard_targets)
     infra_slugs: set[str] = set()
     if adaptive:
         if infra_transport_targets is None and isinstance(transport_demand, Mapping):
@@ -4690,7 +4691,7 @@ def _plan_planet_shipyard_targets(
                 f" (requires {first_req['name']} "
                 f"{game_data.fmt_compact_int(first_req['current'])}/{game_data.fmt_compact_int(first_req['required'])})"
             )
-        if ship_slug in infra_slugs:
+        if ship_slug in infra_slugs and owned >= configured_shipyard_floor.get(ship_slug, 0):
             ship_reason += f" {AI_INFRA_CARGO_TAG}"
         ship_act = PlannedAction(
             priority="P2",
@@ -5297,14 +5298,20 @@ def filter_shipyard_actions_by_spare_budget(
             "kryptonite": float(max(0, _safe_strategy_int(cost_obj.kryptonite, 0))),
             "spice": float(max(0, _safe_strategy_int(cost_obj.spice, 0))),
         }
-        if AI_INFRA_CARGO_TAG in _safe_strategy_str(act.reason) and all(
-            infra_rem[rk] + 1e-6 >= need_c[rk] and free_rem[rk] + 1e-6 >= need_c[rk]
-            for rk in _BUDGET_RES_KEYS
-        ):
-            for rk in _BUDGET_RES_KEYS:
-                infra_rem[rk] = max(0.0, infra_rem[rk] - need_c[rk])
-                free_rem[rk] = max(0.0, free_rem[rk] - need_c[rk])
-            infra_spent = True
+        if AI_INFRA_CARGO_TAG in _safe_strategy_str(act.reason):
+            if all(
+                infra_rem[rk] + 1e-6 >= need_c[rk] and free_rem[rk] + 1e-6 >= need_c[rk]
+                for rk in _BUDGET_RES_KEYS
+            ):
+                for rk in _BUDGET_RES_KEYS:
+                    infra_rem[rk] = max(0.0, infra_rem[rk] - need_c[rk])
+                    free_rem[rk] = max(0.0, free_rem[rk] - need_c[rk])
+                infra_spent = True
+            else:
+                cur_r = _safe_strategy_str(act.reason)
+                infra_hold_tag = " (held: 25%/h infra transport cap)"
+                new_r = cur_r if infra_hold_tag.strip() in cur_r else f"{cur_r}{infra_hold_tag}"
+                out[idx] = replace(act, executable_now=False, reason=new_r)
             continue
         fits = all(rem[rk] + 1e-6 >= need_c[rk] for rk in _BUDGET_RES_KEYS) and (
             not infra_spent or all(free_rem[rk] + 1e-6 >= need_c[rk] for rk in _BUDGET_RES_KEYS)

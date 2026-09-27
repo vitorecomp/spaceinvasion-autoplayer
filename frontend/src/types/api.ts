@@ -525,6 +525,11 @@ export interface AiPlannerAdaptiveStatus {
     target_fleet_cargo: number;
     planned_cargo_per_hour_24h: number;
     realized_utilization: number;
+    delivered_cargo_24h?: number;
+    delivered_cargo_per_hour?: number;
+    delivered_cargo_per_hour_24h?: number;
+    delivered_flights_24h?: number;
+    delivered_vs_planned_pct?: number | null;
   } | null;
   auto_replan?: {
     cooldown_seconds: number;

@@ -1417,6 +1417,8 @@ describe("ActionGraph 4-Tab Workspace", () => {
         target_fleet_cargo: 613000,
         planned_cargo_per_hour_24h: 858000,
         realized_utilization: 0.5,
+        delivered_cargo_per_hour_24h: 214500,
+        delivered_vs_planned_pct: 25.0,
       },
       auto_replan: {
         cooldown_seconds: 1800,
@@ -1576,7 +1578,9 @@ describe("ActionGraph 4-Tab Workspace", () => {
 
     // Summary badges
     expect(document.getElementById("ai-adaptive-builders-badge")?.textContent).toBe("Builders 3/10");
-    expect(document.getElementById("ai-adaptive-fleet-badge")?.textContent).toBe("Cargo 84.0k / 613.0k");
+    const fleetBadge = document.getElementById("ai-adaptive-fleet-badge");
+    expect(fleetBadge?.textContent).toBe("Cargo 84.0k / 613.0k");
+    expect(fleetBadge?.getAttribute("title")).toContain("Delivered 24h: 214.5k/h (25% of plan)");
     expect(document.getElementById("ai-adaptive-gate24h-badge")?.textContent).toBe(
       "Idle w/ affordable: 12.5% · Ready gap: 3.2%"
     );

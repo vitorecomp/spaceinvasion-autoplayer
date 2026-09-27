@@ -9568,6 +9568,19 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(tf["target_fleet_cargo"], math.ceil(150_000.0 / 2.5 / tf["realized_utilization"]))
                 self.assertEqual(astat["auto_replan"]["cooldown_seconds"], 1800)
 
+                # R2: Tab 3 summary and planner share identical delivery-time capacity basis even if current fleet grows 5x
+                st_big_fleet = _dc_replace(
+                    st,
+                    planets=(
+                        _dc_replace(p1, ships={"s1": 50, "s2": 10}),
+                        _dc_replace(p2, ships={"s1": 20}),
+                    ),
+                )
+                tf_big = bridge._build_transport_fleet_summary_locked(st_big_fleet, fake_plan["transport_demand"])
+                u_planner_big = bridge._recompute_transport_utilization_locked(rt_per_hour=2.5, now_ts=now_ts)
+                self.assertEqual(tf_big["realized_utilization"], u_planner_big)
+                self.assertEqual(tf_big["realized_utilization"], bridge._transport_realized_utilization)
+
                 # F6: ai_planner_get gracefully degrades if diagnose_ai_colony_idle_states raises
                 import spaceinvasion.planner.ai_planner as _ai_mod_err
 

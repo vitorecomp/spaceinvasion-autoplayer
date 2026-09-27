@@ -17544,21 +17544,29 @@
                       children: `Builders ${adaptiveActiveBuilders}/${adaptiveTotalColonies}`
                     }
                   ),
-                  transportFleet ? /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "span",
-                    {
-                      className: `ag-smelt-pill tabular ${(safeFiniteNumber(transportFleet.target_fleet_cargo, 0) ?? 0) <= 0 || (safeFiniteNumber(transportFleet.total_fleet_cargo, 0) ?? 0) >= (safeFiniteNumber(transportFleet.target_fleet_cargo, 0) ?? 0) ? "is-on" : "is-toggle"}`,
-                      id: "ai-adaptive-fleet-badge",
-                      title: `Parked: ${fmtInt(transportFleet.owned_parked_cargo)} · In-flight: ${fmtInt(
-                        transportFleet.in_flight_cargo
-                      )} · Planned 24h flow: ${fmtCompact(transportFleet.planned_cargo_per_hour_24h)}/h · Util: ${Math.round(
-                        (safeFiniteNumber(transportFleet.realized_utilization, 0.5) ?? 0.5) * 100
-                      )}%`,
-                      children: `Cargo ${fmtCompact(transportFleet.total_fleet_cargo)} / ${fmtCompact(
-                        transportFleet.target_fleet_cargo
-                      )}`
-                    }
-                  ) : null,
+                  transportFleet ? (() => {
+                    const delivCph = safeFiniteNumber(
+                      transportFleet.delivered_cargo_per_hour_24h ?? transportFleet.delivered_cargo_per_hour,
+                      null
+                    );
+                    const delivPct = safeFiniteNumber(transportFleet.delivered_vs_planned_pct, null);
+                    const delivNote = delivCph !== null ? ` · Delivered 24h: ${fmtCompact(delivCph)}/h${delivPct !== null ? ` (${formatSharePct(delivPct)}% of plan)` : ""}` : "";
+                    return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "span",
+                      {
+                        className: `ag-smelt-pill tabular ${(safeFiniteNumber(transportFleet.target_fleet_cargo, 0) ?? 0) <= 0 || (safeFiniteNumber(transportFleet.total_fleet_cargo, 0) ?? 0) >= (safeFiniteNumber(transportFleet.target_fleet_cargo, 0) ?? 0) ? "is-on" : "is-toggle"}`,
+                        id: "ai-adaptive-fleet-badge",
+                        title: `Parked: ${fmtInt(transportFleet.owned_parked_cargo)} · In-flight: ${fmtInt(
+                          transportFleet.in_flight_cargo
+                        )} · Planned 24h flow: ${fmtCompact(transportFleet.planned_cargo_per_hour_24h)}/h${delivNote} · Util: ${Math.round(
+                          (safeFiniteNumber(transportFleet.realized_utilization, 0.5) ?? 0.5) * 100
+                        )}%`,
+                        children: `Cargo ${fmtCompact(transportFleet.total_fleet_cargo)} / ${fmtCompact(
+                          transportFleet.target_fleet_cargo
+                        )}`
+                      }
+                    );
+                  })() : null,
                   hasWindow24hSamples && window24h ? /* @__PURE__ */ jsxRuntimeExports.jsx(
                     "span",
                     {

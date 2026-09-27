@@ -5352,13 +5352,22 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         st = _state(planets, researches={"r4": 6})
         offers = {2: UnitOffer("ship", 2, "Large transport", 0, Resources(0, 8000, 6000, 0), True)}
         demand = {"cargo_per_hour_24h": 150_000.0, "round_trips_per_hour": 2.5, "realized_utilization": 0.5}
-        # 120000 cargo -> 4 Large transports
+        # 120000 cargo -> 4 Large transports.
+        # Below configured floor (owned=0 < floor=1): target raised to 4, NOT tagged so floor hull uses 10% spare path.
         cfg_on = _adaptive_cfg(True, allow_shipyard=True, shipyard_targets={"large-transport": 1})
-        acts = _plan_planet_shipyard_targets(st, planets[0], offers, cfg_on, transport_demand=demand)
+        acts_floor_hull = _plan_planet_shipyard_targets(st, planets[0], offers, cfg_on, transport_demand=demand)
+        s2_fh = [a for a in acts_floor_hull if a.target_id == 2]
+        self.assertEqual(len(s2_fh), 1)
+        self.assertNotIn(AI_INFRA_CARGO_TAG, s2_fh[0].reason)
+        self.assertIn("(0/4 Large transport)", s2_fh[0].reason)
+        # Once owned >= configured floor (owned=1 >= floor=1, or floor=0): above-floor infra build IS tagged!
+        planets_1s2 = [replace(planets[0], ships={"s2": 1})]
+        st_1s2 = _state(planets_1s2, researches={"r4": 6})
+        acts = _plan_planet_shipyard_targets(st_1s2, planets_1s2[0], offers, cfg_on, transport_demand=demand)
         s2 = [a for a in acts if a.target_id == 2]
         self.assertEqual(len(s2), 1)
         self.assertIn(AI_INFRA_CARGO_TAG, s2[0].reason)
-        self.assertIn("(0/4 Large transport)", s2[0].reason)
+        self.assertIn("(1/4 Large transport)", s2[0].reason)
         # Configured floor above the plan target wins (no tag).
         cfg_floor = _adaptive_cfg(True, allow_shipyard=True, shipyard_targets={"large-transport": 10})
         acts_floor = _plan_planet_shipyard_targets(st, planets[0], offers, cfg_floor, transport_demand=demand)
@@ -5414,16 +5423,27 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         b_tight = {**b, "free_after_reserve": {"pig_iron": 0.0, "metal": 9_000.0, "kryptonite": 100_000.0, "spice": 0.0}}
         out_t = filter_shipyard_actions_by_spare_budget(st, [_s2(True), _s2(True)], b_tight)
         self.assertEqual([a.executable_now for a in out_t], [True, False])
-        # Without infra budget (switch-off payloads) tagged builds fall back to the spare % budget.
+        # Without infra budget, tagged infra builds are strictly held (never bypass via 10% spare budget!)
         b_none = {k: v for k, v in b.items() if k != "infra_transport_budget"}
         self.assertEqual([a.executable_now for a in filter_shipyard_actions_by_spare_budget(st, [_s2(True)], b_none)], [False])
+        # R1: Exhausted 25%/h infra cap holds tagged build even when 10% spare budget is huge; below-floor untagged build still approved from 10%!
+        b_exhausted = {
+            "available_budget": {"pig_iron": 0.0, "metal": 100_000.0, "kryptonite": 100_000.0, "spice": 0.0},
+            "free_after_reserve": {"pig_iron": 0.0, "metal": 200_000.0, "kryptonite": 200_000.0, "spice": 0.0},
+            "infra_transport_budget": {"metal": 0.0, "kryptonite": 0.0},
+            "urgent_replacements": {"s10": False, "s1": False, "s2": False},
+        }
+        out_ex = filter_shipyard_actions_by_spare_budget(st, [_s2(True), _s2(False)], b_exhausted)
+        self.assertFalse(out_ex[0].executable_now)
+        self.assertIn("25%/h infra transport cap", out_ex[0].reason)
+        self.assertTrue(out_ex[1].executable_now)
 
     def test_fleet_planner_end_to_end_and_switch_off(self) -> None:
         from spaceinvasion.planner.strategy import AI_INFRA_CARGO_TAG, plan_fleet_and_attack_actions
 
         planets = self._yards(s2_ready=2, s1_only=0)
         st = _state(planets, researches={"r4": 6})
-        base = dict(allow_shipyard=True, allow_multi_planet=True, shipyard_targets={"large-transport": 1})
+        base = dict(allow_shipyard=True, allow_multi_planet=True, shipyard_targets={"large-transport": 0})
         demand = {"cargo_per_hour_24h": 300_000.0, "round_trips_per_hour": 2.5, "realized_utilization": 0.5}
         on = plan_fleet_and_attack_actions(st, config=_adaptive_cfg(True, **base), transport_demand=demand)
         tagged = [a for a in on if a.kind == "BUILD_SHIP" and AI_INFRA_CARGO_TAG in a.reason]

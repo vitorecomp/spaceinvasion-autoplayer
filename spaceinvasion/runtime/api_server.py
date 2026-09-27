@@ -3855,7 +3855,7 @@ class GameApiBridge:
         ):
             self._transport_realized_utilization = self.TRANSPORT_UTIL_DEFAULT
             return self._transport_realized_utilization
-        eff_fc = float(max(0, fallback_fleet_cargo)) if fallback_fleet_cargo > 0 else stats["avg_fleet_cargo"]
+        eff_fc = stats["avg_fleet_cargo"] if stats["avg_fleet_cargo"] > 0.0 else float(max(0, fallback_fleet_cargo))
         eff_rt = max(0.25, _safe_api_float(rt_per_hour, 2.5))
         theoretical_cph = max(1.0, eff_fc * eff_rt) if eff_fc > 0.0 else 0.0
         if theoretical_cph <= 0.0:
