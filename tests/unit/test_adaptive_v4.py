@@ -25,6 +25,7 @@ from spaceinvasion.planner.strategy import (
     AI_PLAN_ORDER_LOAN_TAG,
     EMPIRE_SMELT_MIN_SPARE_PIG,
     INFRA_TRANSPORT_FLEET_CAP_RATIO,
+    INFRA_TRANSPORT_RAID_ALLOWANCE_CARGO,
     PLAN_ORDER_LOAN_MIN_CARGO,
     PLAN_ORDER_LOAN_MIN_SHARE,
     PlannedAction,
@@ -563,6 +564,19 @@ class TestPlanOrderLoans(unittest.TestCase):
         acts = self._transports([self.borrower, poor], plan=plan, needs=needs)
         self.assertEqual([(a.planet_id, a.target_id, a.cost.metal) for a in acts], [(902, 901, 10_000)])
 
+    def test_no_loan_for_what_the_borrower_makes_before_the_cargo_lands(self) -> None:
+        # The step lacks 1 Metal. With its furnace off the colony cannot make it, so the loan is flown.
+        plan = [_wait(901, "02:380:04", 10, cost=50_001, missing=1), self.plan[1]]
+        needs = {901: _need(1), 902: _need(100_000)}
+        acts = self._transports([self.borrower, self.lender], plan=plan, needs=needs)
+        self.assertEqual([(a.planet_id, a.target_id, a.cost.metal) for a in acts], [(902, 901, 1)])
+        # With the furnace on it makes that Metal long before a transport could arrive: nothing is lent.
+        smelting = replace(self.borrower, economy_rates={**self.borrower.economy_rates, "resource2": 100})
+        self.assertEqual(self._transports([smelting, self.lender], plan=plan, needs=needs), [])
+        # A real shortage is still lent to a colony that smelts.
+        acts = self._transports([smelting, self.lender])
+        self.assertEqual([(a.planet_id, a.target_id, a.cost.metal) for a in acts], [(902, 901, 100_000)])
+
     def test_loan_covers_only_the_borrowers_own_waiting_step(self) -> None:
         # The colony's need also contains 80,000 Metal for research; only the building step may borrow.
         needs = {901: _need(180_000), 902: _need(100_000)}
@@ -627,6 +641,21 @@ class TestLogisticsTargetIgnoresRaidingHulls(unittest.TestCase):
         # Hulls at home count toward the target as before.
         self.assertEqual(self._targets(parked_s2=4), {})
         self.assertEqual(self._targets(parked_s2=2), {801: {"large-transport": 4}})
+
+    def test_fleet_never_exceeds_the_target_by_more_than_the_raid_allowance(self) -> None:
+        # A 3,000,000 cargo target: twice the target would allow 6,000,000, the allowance stops at 3,900,000.
+        self.assertEqual(INFRA_TRANSPORT_RAID_ALLOWANCE_CARGO, 900_000)
+        demand = {"cargo_per_hour_24h": 6_750_000.0, "round_trips_per_hour": 2.5, "realized_utilization": 0.9}
+        yard = _colony(801, "02:381:01", b2=0, buildings={"b9": 6}, metal=200_000)
+
+        def targets(raiding: int):
+            raid = self._flight("Attack → [02:340:02] Spacia Planet", f"Outbound · {raiding} Large transport")
+            st = _state((yard,), queues=(raid,), researches={"r4": 6})
+            return compute_infra_transport_targets(st, _adaptive_cfg(True), demand)
+
+        # 120 hulls raiding (3,600,000 cargo): 10 more reach the 3,900,000 ceiling.
+        self.assertEqual(targets(120), {801: {"large-transport": 130}})
+        self.assertEqual(targets(130), {})
 
 
 if __name__ == "__main__":

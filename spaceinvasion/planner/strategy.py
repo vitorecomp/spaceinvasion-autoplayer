@@ -1571,7 +1571,8 @@ def plan_interplanet_transports(
     that step to a colony whose waiting step comes earlier in the plan (`AI_PLAN_ORDER_LOAN_TAG` in the
     reason). A loan is only used when spare stock cannot cover the need, it covers only the borrower's
     own waiting building step, and it never touches what the lender keeps for a step it can already pay,
-    for research, for the cushion, or for fuel.
+    for research, for the cushion, or for fuel. It is not flown for an amount the borrower makes itself
+    before the cargo could land.
     """
     del now_ts
     if not getattr(cfg, "allow_transport", False) or not getattr(cfg, "allow_multi_planet", True):
@@ -1898,6 +1899,19 @@ def plan_interplanet_transports(
             else None
         )
 
+        # What the borrower makes per hour itself: a loan it would not need by the time it lands is not flown.
+        borrower_rates: Optional[tuple[float, float, float, float]] = None
+        if borrow_cap is not None:
+            from spaceinvasion.combat.ranking import estimate_planet_hourly_economy
+
+            econ_d = estimate_planet_hourly_economy(state, dest)
+            borrower_rates = (
+                max(0.0, _safe_strategy_float(econ_d.get("pig_iron_per_hr"), 0.0)),
+                max(0.0, _safe_strategy_float(econ_d.get("metal_per_hr"), 0.0)),
+                max(0.0, _safe_strategy_float(econ_d.get("kryptonite_per_hr"), 0.0)),
+                max(0.0, _safe_strategy_float(econ_d.get("spice_per_hr"), 0.0)),
+            )
+
         best_cand: Optional[tuple[float, int, PlanetState, Resources, dict[str, int], float]] = None
         best_loan: Optional[tuple[float, int, PlanetState, Resources, dict[str, int], float]] = None
         for d_pid, d_ships in donor_ships_rem.items():
@@ -1919,6 +1933,12 @@ def plan_interplanet_transports(
                     loan_floor = min(
                         need_tot, max(PLAN_ORDER_LOAN_MIN_CARGO, int(PLAN_ORDER_LOAN_MIN_SHARE * need_tot))
                     )
+                    if loan is not None and borrower_rates is not None:
+                        one_way_h = loan[5] / 7200.0
+                        if all(
+                            borrow_cap[i] <= borrower_rates[i] * one_way_h for i in range(4) if borrow_cap[i] > 0
+                        ):
+                            loan = None  # the borrower makes what it lacks before the cargo could land
                     if (
                         loan is not None
                         and loan[1] >= loan_floor
@@ -3894,8 +3914,10 @@ INFRA_TRANSPORT_MIN_UTILIZATION = 0.5
 # whatever the quantity). The 25%/h allowance still bounds what is spent.
 INFRA_TRANSPORT_MAX_BATCH = 10
 # Plan v4: hulls away on raids do not count toward the logistics target, and raids take every parked hull,
-# so the whole transport fleet (raiding hulls included) stops growing at this multiple of the target.
+# so the whole transport fleet (raiding hulls included) stops growing at this multiple of the target, and
+# never more than this much cargo above it (30 Large transports), however large the target becomes.
 INFRA_TRANSPORT_FLEET_CAP_RATIO = 2.0
+INFRA_TRANSPORT_RAID_ALLOWANCE_CARGO = 900_000
 _TRANSPORT_HULL_KEYS: tuple[str, ...] = ("s1", "s2", "s3")
 _IN_FLIGHT_DETAIL_CAP = 140
 _SHIP_NAME_TO_KEY_CACHE: dict[str, str] = {}
@@ -4125,7 +4147,8 @@ def compute_infra_transport_targets(
 
     Plan v4: hulls flying an Attack mission are left out of that capacity (they move nothing between
     colonies while they are away), and the whole transport fleet, raiding hulls included, never grows
-    past `INFRA_TRANSPORT_FLEET_CAP_RATIO` x the target.
+    past `INFRA_TRANSPORT_FLEET_CAP_RATIO` x the target or `INFRA_TRANSPORT_RAID_ALLOWANCE_CARGO` above it,
+    whichever is lower.
     """
     if not _adaptive_enabled_cfg(config) or not isinstance(transport_demand, Mapping):
         return {}
@@ -4159,7 +4182,10 @@ def compute_infra_transport_targets(
     # logistics target. Raids take every parked hull, so the whole fleet has its own ceiling.
     raid_cargo = _safe_strategy_int(_get_fleet().fleet_cargo_capacity(_transport_hulls_on_raids(state)), 0)
     logistics_cargo = max(0, current_cargo - raid_cargo)
-    fleet_ceiling = int(target_cargo * INFRA_TRANSPORT_FLEET_CAP_RATIO)
+    fleet_ceiling = min(
+        int(target_cargo * INFRA_TRANSPORT_FLEET_CAP_RATIO),
+        target_cargo + INFRA_TRANSPORT_RAID_ALLOWANCE_CARGO,
+    )
     deficit_cargo = min(target_cargo - logistics_cargo, fleet_ceiling - current_cargo) - pending_cargo
     if deficit_cargo <= 0:
         return {}

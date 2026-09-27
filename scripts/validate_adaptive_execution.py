@@ -75,6 +75,8 @@ GATE_PREQUEUE_PCT = 5.0  # ready but not started, share of colony time
 GATE_CARGO_DELIVERED_PCT = 80.0  # delivered vs planned cargo per hour
 
 RES_KEYS = ("pig_iron", "metal", "kryptonite", "spice")
+# Plan v4 fleet ceiling: twice the plan's cargo target, and never more than this above it.
+RAID_ALLOWANCE_CARGO = 900_000
 FILL_PREFIX = "AI-Planner fill #"
 LOAN_TAG = "[Plan order loan]"
 EMPIRE_SMELT_TAG = "AI-Planner empire"
@@ -300,7 +302,7 @@ def main() -> int:
     print(f"    cargo capacity {fleet.get('total_fleet_cargo')} of target {fleet.get('target_fleet_cargo')}")
     print(
         f"    plan v4 counts {total_cargo - raid_cargo:,.0f} toward the target ({raid_cargo:,.0f} is away on raids); "
-        f"the whole fleet stops growing at {2.0 * target_cargo:,.0f}"
+        f"the whole fleet stops growing at {min(2.0 * target_cargo, target_cargo + RAID_ALLOWANCE_CARGO):,.0f}"
     )
     print(
         f"    planned {demand.get('cargo_per_hour_24h')}/h   delivered {fleet.get('delivered_cargo_per_hour_24h')}/h "
