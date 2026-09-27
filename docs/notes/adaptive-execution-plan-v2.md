@@ -1,15 +1,19 @@
-# Adaptive AI-Planner execution (Plan v2): intent, what was built, and how to validate it
+# Adaptive AI-Planner execution (Plan v2 and v3): intent, what was built, and how to validate it
 
-This note records why the adaptive execution work was done, what was planned, what actually landed, and the numbers taken before and right after it was switched on. Its main purpose is to let someone later answer one question without the original conversation: **did the plan work?** The procedure for that is in [How to validate](#how-to-validate).
+This note records why the adaptive execution work was done, what was planned, what actually landed, and the numbers taken before and after. Its main purpose is to let someone later answer one question without the original conversation: **did the plan work?** The procedure for that is in [How to validate](#how-to-validate).
 
-All times are UTC. The operator's local time is UTC-03:00.
+All times are UTC on 2026-11-19 unless a date is given. The operator's local time is UTC-03:00.
 
-## Status at hand-off (2026-11-19 16:51)
+## Status at hand-off (18:40)
 
-- The switch `ai_adaptive_execution` has been **on since 2026-11-19 14:36:33**.
-- Working as designed: Blast furnaces now follow each colony's own Metal need (8 of 11 on, 0 of 11 before).
-- Slow to start: the transport fleet sized by the plan. The first Large transport was ordered at 16:43:59, after about 45 minutes of running time. Two existed at 16:51, against a target of about 100.
-- **No verdict is possible yet.** The bot ran for only 0.84 of those 2.2 hours; an anti-bot gate stopped it for 87 minutes, 107 seconds after the switch was turned on.
+- The switch `ai_adaptive_execution` has been **on since 14:36:33**. The plan v3 follow-up has been **live since 18:26:36** (commit `6ea7736`).
+- Working as designed:
+  - Blast furnaces follow each colony's Metal need. Metal produced per hour while the bot ran went from 50,600 before the switch to 202,400 after it.
+  - The planner and the ship budgets now use the raid income actually received. In the active plan, raid income pays for 6% of what the plan spends. Before the follow-up it paid for 112%.
+  - Ship spending is capped per hour, and the transport fleet has reached the size the plan asks for.
+- Not solved: **colonies still wait.** 71% of colony time is spent idle while some other target step is affordable. The plan computed on real income still waits for each colony's top-ranked step.
+- **No verdict is possible yet.** With plan v2 alone the bot ran 2.43 hours and had 3.07 of 11 builders busy, against 2.10 before. With plan v3 it has run 0.13 hours.
+- Two things outside this plan change the numbers from about 18:35 on. Another work session raised the page-view limit from 24 to 60 per minute, and it is still editing the API. Neither change is committed or reviewed here.
 
 ## Intent
 
@@ -27,27 +31,36 @@ The goal is colonies that advance as fast as the planner intends, without hand f
 
 A first plan (v1) proposed re-running the planner's decision step on live state every cycle. It was tested before any code was written and dropped: on a live snapshot with 9 of 11 builders free and 8 colonies able to pay for 44 steps, that decision step started 1 build, at patience 0, 0.25 and 1.0 alike.
 
-The measurements that shaped the second plan (v2), taken on 2026-11-19 between 06:39 and 07:45:
+The measurements that shaped the second plan (v2), taken between 06:39 and 07:45:
 
 - The saved plan said to turn every furnace on at once. All 11 were off. Six of nine idle colonies were waiting for Metal their own furnace could make in 1 to 3 hours.
 - The simulator ships any amount of cargo after a lead time. The empire owned 14 Small transports, 84,000 cargo in total.
 - Research started late: offers were only trusted when read on the lab colony.
 - Shipyards refused to build while any fleet was away, because ships in flight were not counted as owned.
 
-| Step | Plan v2 | Status |
+Plan v3 keeps the steps of v2 and adds five decisions, taken after four hours of running v2 (see [Why the follow-up](#why-the-follow-up)).
+
+| Step | Plan | Status |
 |---|---|---|
-| 0 | One switch, off by default, plus measurement | Built |
-| 1 | Furnaces follow the planner, per colony | Built |
-| 2 | Research starts when affordable | Built |
-| 3 | Ships in flight count as owned | Built |
-| 4a | Transport fleet sized by the plan | Built; 2 of about 100 ships at hand-off |
+| 0 | One switch, off by default, plus measurement | Built (v2) |
+| 1 | Furnaces follow the planner, per colony | Built (v2) |
+| 2 | Research starts when affordable | Built (v2) |
+| 3 | Ships in flight count as owned | Built (v2) |
+| 4a | Transport fleet sized by the plan | Built (v2), corrected (v3). Fleet at target since 18:27 |
 | 4b | Cargo limit inside the simulator | Not built; decided after 4a has run |
-| 5 | Fill idle builders, pre-queue the second build slot | Not built; decided on recorded data |
-| 6 | Background re-tune on drift | Built. Live re-evaluation every cycle was not built |
+| 5 | Fill idle builders, pre-queue the second build slot | Not built. The data so far points to building the fill rule |
+| 6 | Background re-tune on drift | Built (v2), corrected (v3). Live re-evaluation every cycle was not built |
+| v3 D1 | Raid income is what was received, not what a model predicts | Built |
+| v3 D2 | Re-tune once when that basis changes; stop re-tuning on the median loot of a raid | Built |
+| v3 D3 | Ship budgets are hourly rates on real income | Built |
+| v3 D4 | Plan-sized transports are ordered in batches, ahead of fleet missions | Built |
+| v3 D5 | A fleet measured as idle does not raise its own target | Built |
 
 ## What was built
 
-Code state: commits `6c08e97..1a1a8d3` on `main`, local only. Every behaviour below is inactive while `ai_adaptive_execution` is off.
+Every behaviour below is inactive while `ai_adaptive_execution` is off.
+
+### Plan v2, commits `6c08e97..1a1a8d3`
 
 | Step | Behaviour | Where |
 |---|---|---|
@@ -58,40 +71,90 @@ Code state: commits `6c08e97..1a1a8d3` on `main`, local only. Every behaviour be
 | 1 | Donor rule: a covered colony with at least one transport and ample Pig iron also smelts when the empire's waiting steps need more Metal than exists | same |
 | 2 | Cached research offers are trusted only when the lab colony is active; otherwise the start is allowed when affordable and unblocked | `reconcile_live_ai_actions` in `planner/ai_planner.py` |
 | 3 | Owned ships are parked plus in flight. The old hold stays only when flight details are missing or cut off | `count_in_flight_ships_by_planet` in `core/state.py` |
-| 4a | Target cargo = planned cargo per hour over 24 h, divided by round trips per hour, divided by utilization. Utilization is 0.5 until 3 deliveries over 1 hour exist, then the measured value, kept between 0.2 and 0.9. The shortfall becomes Large transport targets, split across shipyard colonies | `transport_demand` in `run_ai_planner`, `compute_infra_transport_targets` |
+| 4a | Target cargo = planned cargo per hour over 24 h, divided by round trips per hour, divided by utilization. The shortfall becomes Large transport targets, split across shipyard colonies | `transport_demand` in `run_ai_planner`, `compute_infra_transport_targets` |
 | 4a | Those builds are tagged `[Plan infra cargo target]` and paid only from a separate allowance: 25% of hourly Metal and Kryptonite income, with a spend ledger and up to 2 hours of carry-over | `compute_spare_ship_budget`, `filter_shipyard_actions_by_spare_budget` |
 | 6 | Re-tune in the background when the Config Optimizer result or colony count changes, loot shifts by 25%, or the plan is 4 hours old. 30-minute cooldown. Starts from the saved genes | `_evaluate_ai_drift_replan_locked` |
 
-Unchanged on purpose: furnaces are 100% or 0% only, with the Metal-overflow pause at 100% storage and resume below 95%; no demolitions; the simulator's maths and the 14-line export header.
+### Plan v3 follow-up, commit `6ea7736`
 
-Tests, as reported by the verifier agent at `1a1a8d3` and not re-run for this note: 664 unit tests with the same 11 failures as before the change, 62 frontend tests passing, 12 of 12 in two end-to-end files, database integrity check passing. With the switch off, the old and new code produced identical actions on a live snapshot. The full end-to-end suite was not run, and nothing was run live with the switch on before it was enabled.
+| Decision | Behaviour | Where |
+|---|---|---|
+| D1 | Raid income is the loot and recycling received over the last 24 hours, from the `loot_recycle_hourly` table. Income per fleet slot is that figure divided by the current slots. The old model stays in use when the switch is off or no loot ledger exists | `compute_attack_telemetry(realized_hourly_loot=...)`, `run_ai_planner`, `_get_realized_loot_hourly_locked` |
+| D1 | The stored telemetry carries `income_basis` (`realized_24h`, `attacks_per_day`, or absent for the model) and keeps the model's figure as `modelled_hourly_loot` | same |
+| D2 | One background re-tune, reason `income_basis_changed`, when live telemetry is on the realized basis and the active plan is not. A plan on the realized basis is not re-tuned when the median loot of a raid moves; the 4-hour age rule covers it | `_evaluate_ai_drift_replan_locked` |
+| D3 | Both ship allowances are shares of mine production plus received raid income | `_overlay_realized_loot_locked` |
+| D3 | The spare % budget is an hourly rate that can save up for 4 hours, less what it paid for in those 4 hours. It used to be a fresh allowance on every planning call | `compute_spare_ship_budget(spare_spend_in_window=...)`, `_record_spare_ship_spend_locked` |
+| D4 | One Weapons factory order for up to 10 plan-sized hulls, shrunk to what the 25% allowance and the colony's stock cover. The whole order is debited | `_plan_planet_shipyard_targets`, `filter_shipyard_actions_by_spare_budget`, `_record_infra_transport_spend_locked` |
+| D4 | Among P2 actions, plan-sized transport orders run before spy, transport, station, attack and recycle missions | `_hybrid_subrank`, `_fleet_subrank` |
+| D5 | Sizing never uses a utilization below 0.5. Measured utilization can still shrink the target | `compute_infra_transport_targets`, `_build_transport_fleet_summary_locked` |
+| D5 | Hulls ordered in the last hour count toward the fleet before they leave the Weapons factory | `_get_infra_cargo_ordered_last_hour_locked` |
 
-To turn the behaviour off: the Tab 3 toggle, or `{"command": "update_config", "config": {"ai_adaptive_execution": false}}`. The previous rules take over on the next planning cycle.
+Unchanged on purpose: furnaces are 100% or 0% only, with the Metal-overflow pause at 100% storage and resume below 95%; no demolitions; the simulator's maths and the 14-line export header; the page-view limit and every anti-bot safeguard.
+
+### Tests
+
+- Plan v2, as reported by the verifier agent at `1a1a8d3` and not re-run for this note: 664 unit tests with the same 11 failures as before the change, 62 frontend tests passing, 12 of 12 in two end-to-end files, database integrity check passing. With the switch off, the old and new code produced identical actions on a live snapshot.
+- Plan v3, run for this note in a clean worktree of the commit: 675 unit tests, 3 failing, the same 3 that fail without the change (`test_commander_backs_off_at_least_retry_after_on_rate_limit`, `test_notebook_is_saved_without_outputs`, `test_run_stack_and_game_api_main_redaction_reload_sigterm_and_cleanup`). The 11 new tests are in `tests/unit/test_adaptive_followup.py`.
+- Not run for v3: the end-to-end suite and the frontend tests. No frontend file was changed.
+
+### To turn it off
+
+The Tab 3 toggle, or `{"command": "update_config", "config": {"ai_adaptive_execution": false}}`. The previous rules take over on the next planning cycle. A plan already computed on real income stays active until the planner runs again.
+
+## Why the follow-up
+
+Measured between 17:30 and 18:25, with plan v2 running.
+
+| Finding | Measured |
+|---|---|
+| The planner assumed every fleet slot raids back to back | 989,000 to 1,073,000 Metal per hour of raid income in the plan, from 65 or 66 slots, a 5.6 to 6.0 minute round trip and 1,515 Metal per raid |
+| What the empire received | 47,000 to 53,000 Metal per hour over the last 24 hours, from 4 to 7 raids and 80 to 95 recycling runs. About 20 times less |
+| The plan was paid for by that income | Raid income covered 94% to 112% of everything the active plan spends in 26 weeks. Furnaces smelted 123 to 141 of 4,368 hours |
+| The spare % ship budget was not a budget | 124,000 Metal allowed on each planning call, on the modelled income, with no memory of earlier spending. Furnaces made 122,000 to 240,000 Metal per hour |
+| The 25% transport allowance was computed on the same income | Between 165,000 and 607,000 Metal allowed at the five times it was read |
+| Step 3 had removed the only brake on shipyards | Before the switch, the "fleet in transit" hold kept shipyards idle. After it, combat ships were ordered whenever a call allowed it |
+| An idle-looking fleet raised its own target | Measured utilization of 0.26, then 0.2, took the target from 1.63 million cargo to 3.12 and then 4.07 million, about 135 Large transports |
+| The re-tune chased noise | At 17:56 the plan was re-tuned because the median loot of a raid had moved 25%. It moved 33% again within 25 minutes |
+| Ship orders were starved of page views | One hull per order, after every fleet mission. One and five ship orders went through in the two rounds that could be seen |
+
+What a dry run of the planner on real income showed, on the cached live state and without touching the game:
+
+| Run | Blast furnace upgrades in the first 60 steps | Steps started in the first hour | In 24 hours | Planner score |
+|---|---|---|---|---|
+| Model income, 18:14 | at most 1 | 13 | 255 | 9.384 billion |
+| Real income, dry run at 18:14 | 25 | 32 | 194 | 7.183 billion |
+| Real income, live re-tune at 18:27 | 0 | 6 | 125 | 7.216 billion |
+| Real income, dry run at 18:31 | 0 | 6 | 151 | 7.207 billion |
+
+The three plans on real income score within 0.5% of each other. **The planner's score does not separate a plan that keeps builders busy from one that waits.** Which one it returns is close to chance.
 
 ## Timeline
 
 | Time (UTC) | Event |
 |---|---|
-| 2026-11-19 06:39 to 07:45 | Diagnosis and review of plan v1 |
-| 12:56:58 | First Plan v2 code merged into `main`; switch off |
-| 14:11 | Last fix commit, `1a1a8d3` |
-| 14:25 | Planner run by hand (run 11) |
+| 06:39 to 07:45 | Diagnosis and review of plan v1 |
+| 12:56:58 | First plan v2 code merged into `main`; switch off |
+| 14:11 | Last plan v2 fix commit, `1a1a8d3` |
+| 14:25 | Planner run by hand |
 | **14:36:33** | **Switch turned on** through the local API, at the operator's request |
 | 14:37:08 to 14:37:30 | Four furnaces set to 100% |
 | 14:38:20 | Anti-bot gate; bot stopped until 16:05 |
-| 16:07 | Planner run by hand (run 12) |
-| 16:31 | API restarted with uncommitted changes from another work session (dashboard screens). Not part of this plan and not reviewed here |
-| 16:36 | First ship orders seen since switch-on: 2 Small fighters, 1 Small transport |
-| 16:43:59 | First Large transport ordered, on 02:380:12 |
-| 16:45:20 | That Large transport sent on a raid with 4 Small fighters |
-| 16:47:26 | Second Large transport ordered, on 02:380:08 |
-| 16:47 | Third delivery recorded. Measured utilization (0.26) replaces the assumed 0.5 and the cargo target rises from 1,626,900 to 3,115,472 |
+| 16:07 | Planner run by hand |
+| 16:31 | API restarted with uncommitted changes from another work session (dashboard screens) |
+| 16:43:59 | First Large transport ordered, on 02:380:12. It left on a raid 81 seconds later |
+| 17:56 | First background re-tune: median loot of a raid had moved 25% |
+| **18:26:36** | **Plan v3 follow-up live** (planner files at 18:26:14, API at 18:26:36) |
+| 18:26:52 | Background re-tune started on its own, reason `income_basis_changed`. New plan active at 18:27:24 |
+| 18:29 to 18:31 | Furnaces set to 100% on four more colonies |
+| 18:34 | API restarted after edits from the other work session to `core/config.py` and `session/client.py` |
+| 18:35 | The whole stack was restarted, not by this work. Between 18:34 and 18:36 the page-view limit went from 24 to 60 per minute |
 
 ## Baseline, before the change
 
 | Measure | Value | How it was taken |
 |---|---|---|
 | Builders busy while the bot ran | **2.10 of 11** (19%) | Time-weighted over 6.24 running hours, 319 points, 01:26 to 12:57. Median 1, maximum 8 |
+| Metal produced per hour while the bot ran | 50,556 | Mean of the 405 points before the switch. Median 0 |
 | Colony time waiting for Metal | 81.8% | 9 ten-minute buckets, 99 colony samples, read at 14:28 with the switch still off |
 | Colony time idle with an affordable step | 81.8% | same |
 | Colony time ready but not started | 0% | same |
@@ -102,39 +165,60 @@ To turn the behaviour off: the Tab 3 toggle, or `{"command": "update_config", "c
 
 "Running" means consecutive points of the series are at most 5 minutes apart. A longer gap counts as stopped.
 
-## First readings with the switch on (16:51, 2.2 hours in)
+## Readings with the switch on
+
+### Plan v2 alone, 14:36:33 to 18:26:36
 
 | Measure | Value |
 |---|---|
-| Builders busy while the bot ran | 4.98 of 11, over 0.84 running hours and 42 points |
-| Furnaces on | 8 of 11. At 16:28 seven had a Metal gap of their own and one (02:379:05) had none, which matches the donor rule |
-| Transports | 20 Small, 2 Large, 180,000 cargo against a target of 3,161,484 |
-| Cargo delivered | 45,971 per hour, 3.3% of the 1,397,507 planned, from 3 recorded flights |
-| Building levels completed | 1,102 |
-| Plan adherence | 44 minutes into the current plan: 9 steps built of 17 scheduled to be finished |
-| Colony time idle with an affordable step | 67.6% over 16 buckets. At most 6 of them are from after the 16:05 restart |
+| Builders busy while the bot ran | 3.07 of 11, over 2.43 running hours and 124 points. Median 2, maximum 7 |
+| The same figure as it was read during the period | 5.06 at 16:40 (0.66 h), 4.14 at 17:29 (1.48 h), 3.08 at 18:25 (2.41 h) |
+| Metal produced per hour while the bot ran | 202,371. Median 226,600 |
+| Furnaces on | Between 4 and 9 of 11 |
+| Transports at 18:25 | 27 Small and 3 Large, 252,000 cargo, every hull in flight |
+| Building levels completed | 1,117 at 18:22 |
+| Colony time idle with an affordable step | 71.3% over 25 buckets, 9 of them from before the switch |
 
-The builder figure is not evidence yet. Besides the switch, two things changed in that window: the planner was re-run by hand twice, and resources piled up during the 87-minute stop.
+The first reading of 5.06 was a burst after an 87-minute stop and two planner runs by hand. It did not hold.
+
+### Plan v3, first readings at 18:36
+
+| Measure | Value |
+|---|---|
+| Builders busy while the bot ran | 3.27 of 11, over 0.13 running hours and 7 points. Not evidence |
+| Raid income basis | Live telemetry and active plan both `realized_24h` |
+| Raid income in the active plan | 52,862 Metal per hour. The model would have said 547,726 |
+| Share of the plan's spending paid by raid income | 6% |
+| Furnace smelting in the active plan | 406 of 4,368 hours |
+| Cargo the plan wants shipped | 274,653 per hour (1,081,614 before) |
+| Transport fleet | 264,000 cargo against a target of 193,058. No plan-sized order pending |
+| Spare % ship budget | 27,992 Metal per hour. 37,000 Metal spent in the first 10 minutes, 74,966 left of the 4-hour allowance |
+| 25% transport allowance | 57,979 Metal |
+| Furnaces on | 7 of 11 |
+| Blast furnace levels, all colonies | 150 |
+| First steps of the active plan | 6 in the first hour, 31 in 4 hours, 125 in 24 hours. No Blast furnace upgrade before hour 24 |
 
 ## Known problems at hand-off
 
-1. **Anti-bot stops dominate.** Counting the stop after switch-on, the bot was stopped for 7.0 of the 15.4 hours recorded that day (45%). One gate fired 107 seconds after switch-on, right after a burst of actions. Whether the burst caused it is unknown; gates had already fired five times that day.
-2. **The page-view limit of 24 per minute ends almost every round.** It was reached about every 2 minutes in the parts of the API log that could be seen between 16:21 and 16:50. A building order was rejected by it at 16:30:37.
-3. **Large transports arrive slowly.** Each ship order is for one unit and is followed by a planning call. In each colony Large transports are ordered after Small fighters, Small transports and Starcruisers. In the two complete rounds visible in the log, one and five ship orders went through before the page-view limit ended the round.
-4. **The 25% allowance is far larger than intended.** It is 25% of an income figure of 1,231,205 Metal per hour, of which 1,004,605 is modelled raid income and 226,600 is what the furnaces produce. It allowed 606,503 Metal at 16:29, which was all the free Metal in the empire, and 284,801 at 16:44, when 532,535 was free. A quarter of furnace production alone is about 56,650 per hour. Large transports can therefore take Metal that buildings are waiting for.
-5. **The cargo target moves.** It doubled at 16:47 when measured utilization replaced the assumed 0.5. The measured value rests on 3 flights.
-6. **The first new transport went on a raid** 81 seconds after it was ordered. Whether any rule keeps these ships for shipments between colonies was not checked.
-7. **Fleet orders abort after being planned as ready.** Between 16:45 and 16:49 a recycle, an attack, a station order and a transport each ended with "no ship input fields found". Each costs page views. Cause not investigated.
-8. **The commander log has no entry after 14:35:48**, although the commander is acting. Not investigated.
-9. **The donor rule is active now**, not after the fleet has grown as plan v2 intended.
-10. **Combat ships are being ordered while fleets are away**, because the hold was dropped for every hull type. They are paid from the existing 10% spare budget.
-11. Commits were made per component, not one per step.
+1. **Colonies still wait.** 71% of colony time is idle with an affordable target step. The plan on real income waits for each colony's top-ranked step, and the planner's score does not prefer a busier plan (see the dry runs above). This is what Step 5 was meant to address.
+2. **Anti-bot stops dominate.** The bot was stopped for 7.0 of the 17.2 hours recorded (41%). One gate fired 107 seconds after switch-on. Whether the switch caused it is unknown; gates had fired five times before it that day.
+3. **The page-view limit changed during the measurement.** It was 24 per minute until about 18:35 and 60 after, through uncommitted changes from another work session (`core/config.py`, `session/client.py`). More actions fit in a minute. The effect on anti-bot gates is unknown.
+4. **Other uncommitted changes are running live.** The other session is editing `runtime/api_server.py` and the frontend. They are not part of this plan and were not reviewed.
+5. **Ships still take Metal that buildings wait for**, now within a limit: 10% of real income for the spare budget (about 28,000 Metal per hour) and 25% for plan-sized transports while the fleet is below target. The operator has not confirmed the 25% or the 4-hour saving window.
+6. **The spare budget ledger has gaps.** Fleet research paid from the spare budget is not debited. Small transports built toward the operator's own shipyard target are debited from the transport ledger instead. At the moment the follow-up landed the ledger was empty, so four hours of allowance were available at once.
+7. **Ships in a Weapons factory queue are not counted as owned.** Plan-sized transports are covered by counting the last hour's orders. Other hulls can be ordered again before the first order completes.
+8. **Fleet orders abort after being planned as ready**, with "no ship input fields found". Each costs page views. The colony is then held for 180 seconds. Cause not investigated; it predates this work.
+9. **The commander's tick log has gaps.** A tick that ends on a page-view rejection skips the tick log, so the log goes quiet while the commander acts.
+10. **Delivered cargo is undercounted.** A delivery is recorded only if the bot sees the fleet on its way back, and the hourly average includes stopped time.
+11. **The donor rule is active now**, not after the fleet has grown as plan v2 intended. Kept: Pig iron is plentiful (2 colonies were at the warehouse cap) and Metal is what colonies wait for.
+12. **New transports can leave on raids.** Kept: nothing reserves them for shipments between colonies.
+13. Plan v2 commits were made per component, not one per step.
 
 ## How to validate
 
 ### When
 
-At least 24 hours after 2026-11-19 14:36:33, with at least 12 running hours recorded while the switch was on. Ask the operator whether the switch was turned off at any point, and whether they changed settings or queued work by hand.
+At least 24 hours after **18:26:36 on 2026-11-19**, with at least 12 running hours recorded under plan v3. Ask the operator whether the switch was turned off at any point, whether they changed settings or queued work by hand, and what the page-view limit was.
 
 ### Run
 
@@ -142,7 +226,7 @@ At least 24 hours after 2026-11-19 14:36:33, with at least 12 running hours reco
 python3 scripts/validate_adaptive_execution.py
 ```
 
-It reads the cached dashboard and two database queries through `http://127.0.0.1:8787`. It makes no browser page views, sends no game actions and writes nothing. The baseline and first readings above came from this script.
+It reads the cached dashboard, the planner view, the fleet view and the notification list through `http://127.0.0.1:8787`. It makes no browser page views, sends no game actions and writes nothing. The baseline and the readings above came from this script. It reports four periods: A before any code, B code landed with the switch off, C switch on with plan v2 only, D plan v3.
 
 ### Read the result
 
@@ -150,27 +234,32 @@ No single number settles it, because the empire also matures: builds get longer,
 
 | Question | Measure | Before | Reading |
 |---|---|---|---|
-| Is the Metal starvation gone? | Colony time waiting for Metal | 81.8% | Should fall sharply. This is the most direct evidence for Step 1 |
-| Are builders busier? | Builders busy while running, period C | 2.10 of 11 | Proposed: worked at 4.2 or more; no effect below 2.6 |
-| Is the empire keeping to its plan? | Plan adherence | none | Built steps against steps scheduled to be finished. Higher is better; no earlier value exists |
-| Are colonies advancing? | Building levels per hour | 4.5 per hour from 06:44 to 16:51, mostly before the switch | Compare like with like, and note the stops |
-| Is the fleet growing? | Large transports, capacity against target | 0 Large, 84,000 cargo | Should rise toward the target. The target itself moves with measured utilization |
-| Is cargo arriving? | Delivered against planned cargo per hour | no earlier value; 3.3% at hand-off | Should rise. Below 80% after the fleet has grown is the Step 4b gate |
+| Are builders busier? | Builders busy while running, period D | 2.10 of 11 before; 3.07 in period C | Proposed: worked at 4.2 or more; no effect below 2.6 |
+| Is the Metal starvation gone? | Colony time waiting for Metal | 81.8% before; 57% over the window at 18:36 | Should fall sharply |
+| Is Metal being made? | Metal per hour while running | 50,556 before; 202,371 in period C | Should hold or rise |
+| Is the plan built on real income? | Raid income basis; share of spending paid by raid income | Model; 94% to 112% | `realized_24h`; about the share raids really bring, 6% at hand-off |
+| Is the empire keeping to its plan? | Plan adherence | 9 built of 17 scheduled at 16:51, on the model plan | Built steps against steps scheduled to be finished. Should be higher on a plan that assumes real income |
+| Are colonies advancing? | Building levels per hour | 5.1 per hour from 06:44 to 18:36 | Compare like with like, and note the stops |
+| Are ships within budget? | Spare budget spent in the last 4 hours | No limit before | At most 4 times the hourly rate |
+| Is the fleet the right size? | Cargo capacity against target | 84,000 before; 264,000 against 193,058 at hand-off | Near the target, which moves with each re-tune |
+| Is cargo arriving? | Delivered against planned cargo per hour | 21% at hand-off | Should rise. Below 80% after 24 hours is the Step 4b gate |
 | Is the bot running? | Hours stopped, gate alerts | 42% stopped; gate alerts at 01:04, 04:14, 06:26, 06:37 and 07:58 | Must not get worse |
 
 The two builder thresholds are the assistant's proposal. The operator has not confirmed them.
 
-Decision gates from plan v2, to read from a 24-hour window recorded entirely with the switch on:
+Decision gates from plan v2, to read from a 24-hour window recorded entirely under plan v3:
 
-- Idle with an affordable step above 15%: build the fill rule (Step 5).
+- Idle with an affordable step above 15%: build the fill rule (Step 5). It was 71% at hand-off.
 - Ready but not started above 5%: build the second-slot pre-queue (Step 5).
-- Delivered cargo below 80% of planned, after the fleet has had 24 hours to grow: add the cargo limit to the simulator (Step 4b).
+- Delivered cargo below 80% of planned: add the cargo limit to the simulator (Step 4b).
 
 ### Before concluding
 
 - This is a before and after comparison, not a controlled test.
 - The series is recorded only while the bot runs. Judge on running hours, and report stopped hours separately.
-- The series keeps the last 1,440 points, about a day of running time. Once that much has been recorded with the switch on, periods A and B drop out of the script's output. The baseline then exists only in this note and as a constant in the script.
+- The series keeps the last 1,440 points, about a day of running time. Once that much has been recorded, periods A to C drop out of the script's output. The baseline then exists only in this note and as constants in the script.
+- The page-view limit was 24 per minute for the baseline and for period C, and 60 from about 18:35. A higher limit lets more actions through on its own.
+- The colony-idle buckets cover the last 24 hours by the clock, so a reading taken 24 hours after 18:26 holds only plan v3 data.
 - The baseline is 2.10 of 11 colonies. If the number of colonies has changed, compare shares, not counts.
 - A planner run by hand releases a burst of builds. Note any in the window.
 - Check `git log` and `git status`: other changes may be running.
@@ -178,17 +267,20 @@ Decision gates from plan v2, to read from a 24-hour window recorded entirely wit
 ### If it did not work, look here first
 
 1. Hours stopped at anti-bot gates.
-2. Page-view rejections in the API log, and what kind of order they hit.
-3. How many Large transports exist, what they are used for, and where Metal is going.
-4. Whether transports are dispatched at all: aborted fleet orders in the API log.
-5. Whether colonies are still waiting for Metal with their furnace on (smelting too slow) or off (rule not firing).
+2. Colony time idle with an affordable step. If it is still far above 15%, the missing piece is the fill rule, not the income model.
+3. The first steps of the active plan: how many start in the first hour, and whether cheap steps such as Blast furnace upgrades are postponed.
+4. Whether colonies are still waiting for Metal with their furnace on (smelting too slow) or off (rule not firing).
+5. Page-view rejections in the API log, and what kind of order they hit.
+6. Ship spending against the hourly rates.
 
 ## Not done
 
 - Step 4b, Step 5, and live re-evaluation every cycle.
+- A rule that makes the planner prefer the busier of two plans with nearly the same score.
 - A recorded measure of how stale the saved step list gets.
 - A mention of the switch in `AGENTS.md`.
+- Showing the income basis and the ship ledgers in the Operator Console.
 
 ## Sources on the operator's machine
 
-Under `~/.gemini/jetski/brain/026d1b30-9575-4530-9d39-3a9b581bb0a6/`: `adaptive_mpc_planner_plan.md` (plan v2), `adaptive_mpc_planner_plan_review.md` (why v1 was dropped), `adaptive_mpc_planner_plan_v1_superseded.md`. The verifier's report is `~/.gemini/jetski/brain/ebfc1d3c-151e-44b0-bd08-4406261c07f0/plan_v2_verification_report.md`.
+Under `~/.gemini/jetski/brain/026d1b30-9575-4530-9d39-3a9b581bb0a6/`: `adaptive_mpc_planner_plan.md` (plan v3), `adaptive_mpc_planner_plan_v2_superseded.md` (plan v2), `adaptive_mpc_planner_plan_review.md` (why v1 was dropped), `adaptive_mpc_planner_plan_v1_superseded.md`. The plan v2 verifier's report is `~/.gemini/jetski/brain/ebfc1d3c-151e-44b0-bd08-4406261c07f0/plan_v2_verification_report.md`.
