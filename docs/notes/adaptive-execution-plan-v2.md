@@ -192,8 +192,8 @@ The first reading of 5.06 was a burst after an 87-minute stop and two planner ru
 | Furnace smelting in the active plan | 406 of 4,368 hours |
 | Cargo the plan wants shipped | 274,653 per hour (1,081,614 before) |
 | Transport fleet | 264,000 cargo against a target of 193,058. No plan-sized order pending |
-| Spare % ship budget | 27,992 Metal per hour. 37,000 Metal spent in the first 10 minutes, 74,966 left of the 4-hour allowance |
-| 25% transport allowance | 57,979 Metal |
+| Spare % ship budget | 27,992 Metal per hour. 37,000 Metal spent in the first 10 minutes and 66,000 in the first 20, out of a 4-hour allowance of about 112,000 |
+| 25% transport allowance | About 70,000 Metal per hour; 57,979 left for the hour |
 | Furnaces on | 7 of 11 |
 | Blast furnace levels, all colonies | 150 |
 | First steps of the active plan | 6 in the first hour, 31 in 4 hours, 125 in 24 hours. No Blast furnace upgrade before hour 24 |
