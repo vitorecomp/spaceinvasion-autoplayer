@@ -2805,6 +2805,45 @@ class AiPlannerUnitTests(unittest.TestCase):
         self.assertFalse(cheapest_bp_plan["search"]["warm_start_used"])
         self.assertEqual(len(cheapest_bp_plan["search"]["strategy_comparisons"]), 3)
 
+    def test_extract_live_in_progress_preserves_legacy_hostile_and_first_coord_semantics(self) -> None:
+        """Verify F7: _extract_live_in_progress_state keeps legacy job.hostile-only & first-coord semantics."""
+        p1 = _make_planet(201, "02:380:01", "Alpha")
+        p2 = _make_planet(202, "02:380:02", "Beta")
+        q_multi = QueueJob(
+            category="fleet",
+            name="Transport 02:380:01 → 02:380:02",
+            detail="Outbound · enemy_bait",
+            origin_coords="02:380:01",
+            remaining_seconds=300.0,
+            cargo=Resources(0, 5_000, 0, 0),
+        )
+        st = GameState(
+            universe_id=31,
+            user_id=1,
+            nickname="Legacy",
+            timestamp=1000.0,
+            planets=(p1, p2),
+            active_planet_id=201,
+            active_queues=(q_multi,),
+        )
+        prob_planets = [
+            {"index": 0, "planet_id": 201, "coords": "02:380:01", "name": "Alpha", "is_placeholder": False, "levels": {}},
+            {"index": 1, "planet_id": 202, "coords": "02:380:02", "name": "Beta", "is_placeholder": False, "levels": {}},
+        ]
+        _, _, arrivals = ap._extract_live_in_progress_state(
+            st,
+            prob_planets,
+            speedup=1.0,
+            research_now={},
+            base_hours_fn=lambda *a, **k: 1.0,
+            lab_planet_index=0,
+        )
+        # Legacy path: job.hostile=False -> accepted, first coord (02:380:01 -> planet 0) matched
+        self.assertEqual(len(arrivals), 1)
+        self.assertEqual(arrivals[0]["planet_id"], 201)
+        # Strict Step 1 helper skips text-hostile/enemy and uses destination (last) coord on normal jobs
+        self.assertEqual(ap.compute_inbound_friendly_cargo_by_planet(st), {})
+
 
 if __name__ == "__main__":
     unittest.main()

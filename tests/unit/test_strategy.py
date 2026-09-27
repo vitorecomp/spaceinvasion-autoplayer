@@ -5434,6 +5434,97 @@ class TestAdaptiveTransportFleet(unittest.TestCase):
         self.assertEqual([(a.kind, a.planet_id, a.target_id, a.reason) for a in off],
                          [(a.kind, a.planet_id, a.target_id, a.reason) for a in baseline])
 
+    def test_lab_research_gated_on_research_queue_and_infra_spend_ledger_cap(self) -> None:
+        """Verify F4 (research step uses research queue, not build queue + queue fallback) and F3 (1h spend ledger, zero income = 0, carryover)."""
+        from spaceinvasion.core import game_data
+        from spaceinvasion.planner.strategy import (
+            compute_spare_ship_budget,
+            plan_ai_blast_furnace_throttles,
+        )
+
+        # F4-A: research slot free, build queue busy 5h, 1h smelting gap -> turns ON immediately
+        rate = game_data.blast_furnace_pig_iron_used(10) / 2.0
+        gap = int(rate * 1.0)
+        lab = PlanetState(
+            planet_id=901,
+            name="Lab",
+            coords="02:380:04",
+            planet_type="normal",
+            temperature=25,
+            fields_used=70,
+            fields_max=300,
+            resources=Resources(60_000, 10_000, 50_000, 10_000),
+            storage=Resources(500_000, 500_000, 500_000, 500_000),
+            energy=EnergyBalance(4000, 1500),
+            buildings={"b1": 16, "b2": 10, "b3": 4, "b4": 4, "b5": 14, "b8": 5},
+            economy_rates={"resource1": 100, "resource2": 0, "resource3": 100, "resource4": 100},
+        )
+        res_step = PlannedAction(
+            priority="P1",
+            kind="RESEARCH",
+            planet_id=901,
+            planet_coords="02:380:04",
+            target_id=1,
+            target_name="Mining technology",
+            target_level=13,
+            cost=Resources(0, 10_000 + gap, 0, 0),
+            missing=Resources(0, gap, 0, 0),
+            reason="AI-Planner: Mining technology",
+            executable_now=False,
+        )
+        cfg = _adaptive_cfg(True, allow_multi_planet=True, allow_transport=True, auto_throttle_blast_furnace=True)
+        st_free_res = _state([lab], researches={"r1": 12})
+        acts_a = plan_ai_blast_furnace_throttles(
+            st_free_res, [res_step], [], cfg, now_ts=5000.0, in_progress_rem_by_planet={901: 5 * 3600.0}
+        )
+        self.assertEqual([(a.planet_id, a.target_level) for a in acts_a], [(901, 100)])
+
+        # F4-B: research slot busy 10h, build queue free, 1h smelting gap -> stays OFF
+        q_res = QueueJob(category="research", name="Energy technology", remaining_seconds=10 * 3600.0, finish_ts=5000.0 + 10 * 3600.0)
+        st_busy_res = _state([lab], researches={"r1": 12}, queues=(q_res,))
+        acts_b = plan_ai_blast_furnace_throttles(
+            st_busy_res, [res_step], [], cfg, now_ts=5000.0, in_progress_rem_by_planet={}
+        )
+        self.assertEqual(acts_b, [])
+
+        # F4-C: in_progress_rem_by_planet=None falls back to deriving busy build queue from state.active_queues
+        q_bld = QueueJob(category="building", name="Pig iron mine", origin_coords="02:380:04", building_id=1, target_level=17, remaining_seconds=5 * 3600.0, finish_ts=5000.0 + 5 * 3600.0)
+        bld_step = PlannedAction(
+            priority="P1",
+            kind="WAIT_RESOURCES",
+            planet_id=901,
+            planet_coords="02:380:04",
+            target_id=3,
+            target_name="Kryptonite mine",
+            target_level=5,
+            cost=Resources(0, 10_000 + gap, 0, 0),
+            missing=Resources(0, gap, 0, 0),
+            reason="AI-Planner: Kryptonite mine",
+            executable_now=False,
+        )
+        st_busy_bld = _state([lab], researches={"r1": 12}, queues=(q_bld,))
+        self.assertEqual(plan_ai_blast_furnace_throttles(st_busy_bld, [bld_step], [], cfg, now_ts=5000.0), [])
+
+        # F3: infra_spend_last_hour debits 1h cap, zero income -> 0.0, carryover accumulates up to 6h
+        st_yards = _state(self._yards(s2_ready=1, s1_only=0), researches={"r4": 6})
+        econ_zero = {"pig_iron_per_hr": 0.0, "metal_per_hr": 0.0, "kryptonite_per_hr": 0.0, "spice_per_hr": 0.0}
+        econ_low = {"pig_iron_per_hr": 0.0, "metal_per_hr": 16_000.0, "kryptonite_per_hr": 12_000.0, "spice_per_hr": 0.0}
+        with mock.patch("spaceinvasion.combat.ranking.estimate_hourly_economy", return_value=econ_zero):
+            b_zero = compute_spare_ship_budget(st_yards, 10.0)
+        self.assertEqual(b_zero["infra_transport_budget"], {"metal": 0.0, "kryptonite": 0.0})
+
+        with mock.patch("spaceinvasion.combat.ranking.estimate_hourly_economy", return_value=econ_low):
+            b_spent = compute_spare_ship_budget(
+                st_yards, 10.0, infra_spend_last_hour={"metal": 3_000.0, "kryptonite": 3_500.0}
+            )
+            b_carry = compute_spare_ship_budget(st_yards, 10.0, infra_carryover_hours=3.0)
+        # 25% of 16k = 4k minus 3k spent = 1k; 25% of 12k = 3k minus 3.5k spent = 0
+        self.assertAlmostEqual(b_spent["infra_transport_budget"]["metal"], 1_000.0)
+        self.assertAlmostEqual(b_spent["infra_transport_budget"]["kryptonite"], 0.0)
+        # 2h carryover cap on 4k/h = 8k Metal, 3k/h = 6k Kry (enough for 1 Large transport even when 3.0 requested)
+        self.assertAlmostEqual(b_carry["infra_transport_budget"]["metal"], 8_000.0)
+        self.assertAlmostEqual(b_carry["infra_transport_budget"]["kryptonite"], 6_000.0)
+
 
 if __name__ == "__main__":
     unittest.main()

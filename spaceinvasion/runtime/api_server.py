@@ -118,6 +118,7 @@ from spaceinvasion.core.state import (
 from spaceinvasion.db.migrations import DatabaseMigrationRegistry, LATEST_SCHEMA_VERSION
 from spaceinvasion.db.storage import GameDatabase, server_day_key
 from spaceinvasion.planner.strategy import (
+    AI_INFRA_CARGO_TAG,
     PlannedAction,
     _tutorial_colonize_task,
     compute_spare_ship_budget,
@@ -1455,11 +1456,18 @@ class GameApiBridge:
     ADAPTIVE_IDLE_MAX_BUCKETS = 144
     AI_DRIFT_REPLAN_COOLDOWN_SECONDS = 1800.0
     AI_DRIFT_REPLAN_MAX_AGE_SECONDS = 14400.0
+    AI_DRIFT_CHECK_MIN_INTERVAL_SECONDS = 60.0
     AI_DRIFT_LOOT_SHIFT_RATIO = 0.25
     TRANSPORT_UTIL_MIN = 0.2
     TRANSPORT_UTIL_MAX = 0.9
     TRANSPORT_UTIL_DEFAULT = 0.5
     TRANSPORT_UTIL_EWMA_ALPHA = 0.15
+    DELIVERED_TRANSPORT_WINDOW_SECONDS = 86400.0
+    DELIVERED_TRANSPORT_MAX_EVENTS = 500
+    DELIVERED_TRANSPORT_MIN_SAMPLES = 3
+    DELIVERED_TRANSPORT_MIN_SPAN_HOURS = 1.0
+    INFRA_TRANSPORT_SPEND_WINDOW_SECONDS = 3600.0
+    INFRA_TRANSPORT_MAX_CARRYOVER_HOURS = 2.0
     _ADAPTIVE_IDLE_STATE_KEYS: tuple[str, ...] = (
         "building",
         "ready_not_started",
@@ -1573,6 +1581,8 @@ class GameApiBridge:
         self._raid_targets_cache_key: Optional[Any] = None
         self._co_goals_cache_key: Optional[Any] = None
         self._co_goals_cache: Optional[dict[str, Any]] = None
+        self._active_ai_cache_key: Optional[Any] = None
+        self._active_ai_cache: Optional[dict[str, Any]] = None
         self._last_bot_control_payload: Optional[dict[str, Any]] = None
         self._last_dashboard_payload: Optional[dict[str, Any]] = None
         resolved_db = (
@@ -1676,9 +1686,12 @@ class GameApiBridge:
         self._notified_field_conflict_keys: set[str] = set()
         self._adaptive_idle_buckets: dict[int, dict[str, Any]] = {}
         self._transport_realized_utilization: float = self.TRANSPORT_UTIL_DEFAULT
-        self._observed_transport_util_keys: deque[str] = deque(maxlen=256)
+        self._delivered_transport_events: list[dict[str, Any]] = []
+        self._infra_transport_spend_ledger: list[dict[str, Any]] = []
+        self._infra_transport_last_spend_ts: float = time.time()
         self._last_auto_ai_replan_ts: float = 0.0
         self._last_auto_ai_replan_reason: str = ""
+        self._last_drift_check_mono: float = 0.0
         self._hydrate_persisted_bridge_state()
         enforce_hourly = max_actions_per_hour is not None
         raw_budget = (
@@ -1855,14 +1868,46 @@ class GameApiBridge:
             self._last_shipyard_sync_at = _wall_to_mono("shipyard_sync_at_wall")
             self._last_spy_dispatched_at = _wall_to_mono("spy_dispatched_at_wall")
 
-            raw_util = rt.get("transport_realized_utilization")
-            if raw_util is not None and not isinstance(raw_util, bool):
-                util_f = _safe_api_float(raw_util, self.TRANSPORT_UTIL_DEFAULT)
-                if math.isfinite(util_f) and util_f > 0.0:
-                    self._transport_realized_utilization = round(
-                        min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, util_f)),
-                        4,
+            raw_deliv = rt.get("delivered_transport_events")
+            loaded_deliv: list[dict[str, Any]] = []
+            seen_deliv_keys: set[str] = set()
+            if isinstance(raw_deliv, Sequence) and not isinstance(raw_deliv, (str, bytes)):
+                for ent in raw_deliv:
+                    if not isinstance(ent, Mapping):
+                        continue
+                    ek = str(ent.get("key") or "").strip()[:160]
+                    ets = _safe_api_float(ent.get("ts"), 0.0)
+                    ecargo = max(0, _safe_api_int(ent.get("cargo"), 0))
+                    efleet = max(0, _safe_api_int(ent.get("fleet_cargo"), 0))
+                    if not ek or ek in seen_deliv_keys or ecargo <= 0 or ets <= 0.0:
+                        continue
+                    seen_deliv_keys.add(ek)
+                    loaded_deliv.append(
+                        {"key": ek, "ts": round(ets, 3), "cargo": ecargo, "fleet_cargo": efleet}
                     )
+            self._delivered_transport_events = loaded_deliv
+            self._prune_delivered_transport_events_locked(now_ts=now_wall)
+            # Recompute realized throughput utilization from persisted 24h deliveries (keeps 0.5 baseline
+            # until sufficient real throughput samples exist, self-healing any legacy fill-ratio values).
+            self._recompute_transport_utilization_locked(now_ts=now_wall)
+
+            raw_spend = rt.get("infra_transport_spend_ledger")
+            loaded_spend: list[dict[str, Any]] = []
+            if isinstance(raw_spend, Sequence) and not isinstance(raw_spend, (str, bytes)):
+                for ent in raw_spend:
+                    if not isinstance(ent, Mapping):
+                        continue
+                    sts = _safe_api_float(ent.get("ts"), 0.0)
+                    smet = max(0, _safe_api_int(ent.get("metal"), 0))
+                    skry = max(0, _safe_api_int(ent.get("kryptonite"), 0))
+                    if sts > 0.0 and (smet > 0 or skry > 0):
+                        loaded_spend.append({"ts": round(sts, 3), "metal": smet, "kryptonite": skry})
+            self._infra_transport_spend_ledger = loaded_spend
+            self._prune_infra_transport_spend_locked(now_ts=now_wall)
+            raw_last_spend = _safe_api_float(rt.get("infra_transport_last_spend_ts", 0.0), 0.0)
+            if math.isfinite(raw_last_spend) and raw_last_spend > 0.0:
+                self._infra_transport_last_spend_ts = raw_last_spend
+
             raw_replan_ts = _safe_api_float(rt.get("last_auto_ai_replan_ts", 0.0), 0.0)
             if math.isfinite(raw_replan_ts) and raw_replan_ts > 0.0:
                 self._last_auto_ai_replan_ts = raw_replan_ts
@@ -2030,6 +2075,8 @@ class GameApiBridge:
                     fsc_wall[str(int(pid))] = round(now_wall + rem, 3)
 
         self._prune_adaptive_idle_buckets_locked(now_ts=now_wall)
+        self._prune_delivered_transport_events_locked(now_ts=now_wall)
+        self._prune_infra_transport_spend_locked(now_ts=now_wall)
         serialized_buckets: dict[str, dict[str, Any]] = {
             str(bk): dict(self._adaptive_idle_buckets[bk])
             for bk in sorted(self._adaptive_idle_buckets.keys())
@@ -2056,6 +2103,15 @@ class GameApiBridge:
             "last_url": _bounded_api_str(self._last_url, default="") if self._last_url else None,
             "last_optimizer_summary": self._last_optimizer_summary,
             "adaptive_idle_buckets": serialized_buckets,
+            "delivered_transport_events": [dict(e) for e in self._delivered_transport_events],
+            "infra_transport_spend_ledger": [dict(e) for e in self._infra_transport_spend_ledger],
+            "infra_transport_last_spend_ts": (
+                round(float(self._infra_transport_last_spend_ts), 3)
+                if isinstance(self._infra_transport_last_spend_ts, (int, float))
+                and math.isfinite(self._infra_transport_last_spend_ts)
+                and self._infra_transport_last_spend_ts > 0.0
+                else 0.0
+            ),
             "transport_realized_utilization": round(
                 min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization))),
                 4,
@@ -3723,15 +3779,116 @@ class GameApiBridge:
             self._persist_runtime_state()
         return out_state
 
-    def _observe_transport_utilization_locked(self, state: Optional[GameState]) -> bool:
-        """Update bounded EWMA of realized transport hull utilization from observed transport flights."""
+    def _prune_delivered_transport_events_locked(self, *, now_ts: Optional[float] = None) -> None:
+        if not self._delivered_transport_events:
+            return
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        cutoff = eff_now - self.DELIVERED_TRANSPORT_WINDOW_SECONDS
+        kept = [
+            e
+            for e in self._delivered_transport_events
+            if isinstance(e, Mapping)
+            and _safe_api_float(e.get("ts"), 0.0) >= cutoff
+            and _safe_api_int(e.get("cargo"), 0) > 0
+        ]
+        if len(kept) > self.DELIVERED_TRANSPORT_MAX_EVENTS:
+            kept = kept[-self.DELIVERED_TRANSPORT_MAX_EVENTS :]
+        self._delivered_transport_events = kept
+
+    def _compute_delivered_transport_stats_locked(
+        self,
+        *,
+        now_ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        self._prune_delivered_transport_events_locked(now_ts=eff_now)
+        events = self._delivered_transport_events
+        if not events:
+            return {
+                "delivered_cargo_24h": 0,
+                "delivered_cargo_per_hour": 0.0,
+                "delivered_flights_24h": 0,
+                "span_hours": 0.0,
+                "avg_fleet_cargo": 0.0,
+            }
+        total_cargo = sum(max(0, _safe_api_int(e.get("cargo"), 0)) for e in events)
+        oldest_ts = min(_safe_api_float(e.get("ts"), eff_now) for e in events)
+        span_hours = max(0.0, (eff_now - oldest_ts) / 3600.0)
+        obs_hours = max(1.0, min(24.0, span_hours))
+        cph = round(float(total_cargo) / obs_hours, 2) if total_cargo > 0 else 0.0
+        fleet_caps = [
+            max(0, _safe_api_int(e.get("fleet_cargo"), 0))
+            for e in events
+            if _safe_api_int(e.get("fleet_cargo"), 0) > 0
+        ]
+        avg_fc = (float(sum(fleet_caps)) / float(len(fleet_caps))) if fleet_caps else 0.0
+        return {
+            "delivered_cargo_24h": int(total_cargo),
+            "delivered_cargo_per_hour": cph,
+            "delivered_flights_24h": len(events),
+            "span_hours": round(span_hours, 4),
+            "avg_fleet_cargo": avg_fc,
+        }
+
+    def _recompute_transport_utilization_locked(
+        self,
+        *,
+        rt_per_hour: float = 2.5,
+        fallback_fleet_cargo: int = 0,
+        now_ts: Optional[float] = None,
+    ) -> float:
+        """Compute realized transport throughput utilization from persisted 24h deliveries.
+
+        Keeps the Plan v2 0.5 baseline until at least `DELIVERED_TRANSPORT_MIN_SAMPLES`
+        completed deliveries spanning >= `DELIVERED_TRANSPORT_MIN_SPAN_HOURS` have been recorded,
+        then compares actual delivered cargo/h against theoretical `fleet_cargo * rt_per_hour`,
+        clamped to `[0.2, 0.9]`.
+        """
+        stats = self._compute_delivered_transport_stats_locked(now_ts=now_ts)
+        if (
+            stats["delivered_flights_24h"] < self.DELIVERED_TRANSPORT_MIN_SAMPLES
+            or stats["span_hours"] < self.DELIVERED_TRANSPORT_MIN_SPAN_HOURS
+        ):
+            self._transport_realized_utilization = self.TRANSPORT_UTIL_DEFAULT
+            return self._transport_realized_utilization
+        eff_fc = float(max(0, fallback_fleet_cargo)) if fallback_fleet_cargo > 0 else stats["avg_fleet_cargo"]
+        eff_rt = max(0.25, _safe_api_float(rt_per_hour, 2.5))
+        theoretical_cph = max(1.0, eff_fc * eff_rt) if eff_fc > 0.0 else 0.0
+        if theoretical_cph <= 0.0:
+            self._transport_realized_utilization = self.TRANSPORT_UTIL_DEFAULT
+            return self._transport_realized_utilization
+        raw_util = float(stats["delivered_cargo_per_hour"]) / theoretical_cph
+        clamped = round(min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, raw_util)), 4)
+        self._transport_realized_utilization = clamped
+        return clamped
+
+    def _observe_transport_utilization_locked(
+        self,
+        state: Optional[GameState],
+        *,
+        now_ts: Optional[float] = None,
+    ) -> bool:
+        """Record each completed returning transport delivery once (persisted 24h ring) and update throughput utilization."""
         if state is None:
             return False
         queues = getattr(state, "active_queues", ()) or ()
         if not queues:
             return False
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
         miner_lvl = _safe_api_int((getattr(state, "specs", None) or {}).get("miner", 0), 0)
-        updated = False
+        seen_keys = {
+            str(e.get("key") or "")
+            for e in self._delivered_transport_events
+            if isinstance(e, Mapping)
+        }
+        total_fleet_cargo: Optional[int] = None
+        added = False
         for q in queues:
             if not is_in_flight_fleet_job(q):
                 continue
@@ -3746,85 +3903,134 @@ class GameApiBridge:
                 or "transport ->" in name_l
             ):
                 continue
-            exp_cargo = getattr(q, "expected_cargo", None)
+            # Sample strictly on the returning leg (after delivery) so outbound + returning are never double-counted.
+            is_ret = (
+                bool(getattr(q, "delivered", False))
+                or ("returning" in det_l)
+                or ("↩" in name_s)
+                or ("rück" in det_l)
+                or ("rueck" in det_l)
+            )
+            if not is_ret:
+                continue
             del_cargo = getattr(q, "delivered_cargo", None)
-            cur_cargo = getattr(q, "cargo", None)
-            carried_res = (
-                del_cargo
-                if isinstance(del_cargo, Resources) and not del_cargo.is_zero()
-                else (
-                    exp_cargo
-                    if isinstance(exp_cargo, Resources) and not exp_cargo.is_zero()
-                    else (
-                        cur_cargo
-                        if isinstance(cur_cargo, Resources) and not cur_cargo.is_zero()
-                        else None
-                    )
-                )
-            )
-            if carried_res is None:
+            if not isinstance(del_cargo, Resources) or del_cargo.is_zero():
                 continue
-            carried_total = max(
+            delivered_total = max(
                 0,
-                _safe_api_int(carried_res.pig_iron, 0)
-                + _safe_api_int(carried_res.metal, 0)
-                + _safe_api_int(carried_res.kryptonite, 0)
-                + _safe_api_int(carried_res.spice, 0),
+                _safe_api_int(del_cargo.pig_iron, 0)
+                + _safe_api_int(del_cargo.metal, 0)
+                + _safe_api_int(del_cargo.kryptonite, 0)
+                + _safe_api_int(del_cargo.spice, 0),
             )
-            if carried_total <= 0:
+            if delivered_total <= 0:
                 continue
-            ships_map = _parse_ships_from_queue_detail(det_s)
-            cap = fleet_cargo_capacity(ships_map, miner_spec_level=miner_lvl) if ships_map else 0
-            raw_ratio: Optional[float] = None
-            if cap > 0:
-                raw_ratio = float(carried_total) / float(cap)
-            elif (
-                isinstance(exp_cargo, Resources)
-                and not exp_cargo.is_zero()
-                and isinstance(del_cargo, Resources)
-                and not del_cargo.is_zero()
-            ):
-                exp_total = max(
-                    0,
-                    _safe_api_int(exp_cargo.pig_iron, 0)
-                    + _safe_api_int(exp_cargo.metal, 0)
-                    + _safe_api_int(exp_cargo.kryptonite, 0)
-                    + _safe_api_int(exp_cargo.spice, 0),
-                )
-                del_total = max(
-                    0,
-                    _safe_api_int(del_cargo.pig_iron, 0)
-                    + _safe_api_int(del_cargo.metal, 0)
-                    + _safe_api_int(del_cargo.kryptonite, 0)
-                    + _safe_api_int(del_cargo.spice, 0),
-                )
-                if exp_total > 0 and del_total > 0:
-                    raw_ratio = float(del_total) / float(exp_total)
-            if raw_ratio is None or not math.isfinite(raw_ratio) or raw_ratio <= 0.0:
-                continue
-            is_ret = ("returning" in det_l) or ("↩" in name_s) or ("rück" in det_l) or ("rueck" in det_l)
             orig_c = normalize_coords(str(getattr(q, "origin_coords", "") or ""))
             dest_c = _extract_coords_from_text(name_s)
-            ships_part = det_s.split("·", 1)[1].strip().lower() if "·" in det_s else det_l.strip()
-            fin_bucket = int(_safe_api_float(getattr(q, "finish_ts", 0.0), 0.0) // 60.0)
-            obs_key = f"{orig_c}|{dest_c}|{int(is_ret)}|{carried_total}|{int(cap)}|{ships_part[:48]}|{fin_bucket}"
-            if obs_key in self._observed_transport_util_keys:
+            fin_ts = _safe_api_float(getattr(q, "finish_ts", 0.0), 0.0)
+            fin_bucket = int(round(fin_ts / 180.0)) if fin_ts > 0.0 else int(eff_now // 600.0)
+            ev_key = f"{orig_c}|{dest_c}|{delivered_total}|{fin_bucket}"
+            if ev_key in seen_keys:
                 continue
-            self._observed_transport_util_keys.append(obs_key)
-            sample_u = min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(raw_ratio)))
-            prev_u = min(
-                self.TRANSPORT_UTIL_MAX,
-                max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization)),
+            if total_fleet_cargo is None:
+                parked_s: dict[str, int] = {"s1": 0, "s2": 0, "s3": 0}
+                for p in getattr(state, "planets", ()) or ():
+                    if normalize_planet_type(p) == "raid":
+                        continue
+                    sm = p.ships if isinstance(getattr(p, "ships", None), Mapping) else {}
+                    for sk in ("s1", "s2", "s3"):
+                        parked_s[sk] += max(0, _safe_api_int(sm.get(sk, 0), 0))
+                if_info = count_in_flight_ships_by_planet(state)
+                emp_if = (
+                    if_info.get("empire_in_flight")
+                    if isinstance(if_info, Mapping) and isinstance(if_info.get("empire_in_flight"), Mapping)
+                    else {}
+                )
+                for sk in ("s1", "s2", "s3"):
+                    parked_s[sk] += max(0, _safe_api_int(emp_if.get(sk, 0), 0))
+                total_fleet_cargo = int(fleet_cargo_capacity(parked_s, miner_spec_level=miner_lvl))
+                if total_fleet_cargo <= 0:
+                    ships_m = _parse_ships_from_queue_detail(det_s)
+                    total_fleet_cargo = int(fleet_cargo_capacity(ships_m, miner_spec_level=miner_lvl)) if ships_m else 0
+            seen_keys.add(ev_key)
+            self._delivered_transport_events.append(
+                {
+                    "key": ev_key,
+                    "ts": round(eff_now, 3),
+                    "cargo": int(delivered_total),
+                    "fleet_cargo": int(total_fleet_cargo or 0),
+                }
             )
-            alpha = self.TRANSPORT_UTIL_EWMA_ALPHA
-            next_u = round(
-                min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, (1.0 - alpha) * prev_u + alpha * sample_u)),
-                4,
+            added = True
+        if added:
+            self._recompute_transport_utilization_locked(
+                fallback_fleet_cargo=int(total_fleet_cargo or 0),
+                now_ts=eff_now,
             )
-            if next_u != self._transport_realized_utilization:
-                self._transport_realized_utilization = next_u
-                updated = True
-        return updated
+        return added
+
+    def _prune_infra_transport_spend_locked(self, *, now_ts: Optional[float] = None) -> None:
+        if not self._infra_transport_spend_ledger:
+            return
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        cutoff = eff_now - self.INFRA_TRANSPORT_SPEND_WINDOW_SECONDS
+        self._infra_transport_spend_ledger = [
+            e
+            for e in self._infra_transport_spend_ledger
+            if isinstance(e, Mapping)
+            and _safe_api_float(e.get("ts"), 0.0) >= cutoff
+            and (_safe_api_int(e.get("metal"), 0) > 0 or _safe_api_int(e.get("kryptonite"), 0) > 0)
+        ][-200:]
+
+    def _get_infra_transport_spend_last_hour_locked(
+        self,
+        *,
+        now_ts: Optional[float] = None,
+    ) -> tuple[dict[str, float], float]:
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        self._prune_infra_transport_spend_locked(now_ts=eff_now)
+        spent_m = float(sum(max(0, _safe_api_int(e.get("metal"), 0)) for e in self._infra_transport_spend_ledger))
+        spent_k = float(sum(max(0, _safe_api_int(e.get("kryptonite"), 0)) for e in self._infra_transport_spend_ledger))
+        carryover_h = 1.0
+        if spent_m <= 0.0 and spent_k <= 0.0 and self._infra_transport_last_spend_ts > 0.0:
+            idle_h = (eff_now - self._infra_transport_last_spend_ts) / 3600.0
+            if idle_h > 1.0:
+                carryover_h = round(min(self.INFRA_TRANSPORT_MAX_CARRYOVER_HOURS, idle_h), 4)
+        return {"metal": spent_m, "kryptonite": spent_k}, carryover_h
+
+    def _record_infra_transport_spend_locked(
+        self,
+        action: PlannedAction,
+        *,
+        now_ts: Optional[float] = None,
+    ) -> None:
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        cost_obj = getattr(action, "cost", None)
+        met = max(0, _safe_api_int(getattr(cost_obj, "metal", 0), 0)) if cost_obj is not None else 0
+        kry = max(0, _safe_api_int(getattr(cost_obj, "kryptonite", 0), 0)) if cost_obj is not None else 0
+        if met <= 0 and kry <= 0:
+            sid = game_data.safe_optional_int(getattr(action, "target_id", None), None)
+            qty = max(1, _safe_api_int(getattr(action, "target_level", 1), 1))
+            if sid is not None:
+                slug = SHIP_SLUG_BY_KEY.get(f"s{sid}")
+                info = game_data.resolve_unit("ships", slug) if slug else None
+                base_c = (info or {}).get("base_cost") if isinstance(info, Mapping) else {}
+                if isinstance(base_c, Mapping):
+                    met = max(0, _safe_api_int(base_c.get("metal", 0), 0)) * qty
+                    kry = max(0, _safe_api_int(base_c.get("kryptonite", 0), 0)) * qty
+        if met <= 0 and kry <= 0:
+            return
+        self._infra_transport_spend_ledger.append(
+            {"ts": round(eff_now, 3), "metal": int(met), "kryptonite": int(kry)}
+        )
+        self._infra_transport_last_spend_ts = eff_now
+        self._prune_infra_transport_spend_locked(now_ts=eff_now)
 
     def _prune_adaptive_idle_buckets_locked(self, *, now_ts: Optional[float] = None) -> None:
         if not self._adaptive_idle_buckets:
@@ -3976,17 +4182,22 @@ class GameApiBridge:
         if_ships = {sk: max(0, _safe_api_int(emp_if.get(sk, 0), 0)) for sk in ("s1", "s2", "s3")}
         in_flight_cargo = int(fleet_cargo_capacity(if_ships, miner_spec_level=miner_lvl))
         total_fleet_cargo = owned_parked_cargo + in_flight_cargo
-        util = round(
-            min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization))),
-            4,
-        )
         planned_cph = 0.0
-        target_cargo = 0
+        rt_per_h = 2.5
         if isinstance(transport_demand, Mapping):
             planned_cph = round(max(0.0, _safe_api_float(transport_demand.get("cargo_per_hour_24h", 0.0), 0.0)), 2)
             rt_per_h = max(0.25, _safe_api_float(transport_demand.get("round_trips_per_hour", 2.5), 2.5))
-            if planned_cph > 0.0:
-                target_cargo = int(math.ceil(planned_cph / rt_per_h / util))
+        util = self._recompute_transport_utilization_locked(
+            rt_per_hour=rt_per_h,
+            fallback_fleet_cargo=total_fleet_cargo,
+        )
+        deliv_stats = self._compute_delivered_transport_stats_locked()
+        target_cargo = int(math.ceil(planned_cph / rt_per_h / util)) if planned_cph > 0.0 else 0
+        delivered_vs_planned = (
+            round(100.0 * float(deliv_stats["delivered_cargo_per_hour"]) / planned_cph, 2)
+            if planned_cph > 0.0 and deliv_stats["delivered_flights_24h"] > 0
+            else None
+        )
         return {
             "owned_parked_cargo": owned_parked_cargo,
             "in_flight_cargo": in_flight_cargo,
@@ -3994,6 +4205,11 @@ class GameApiBridge:
             "target_fleet_cargo": target_cargo,
             "planned_cargo_per_hour_24h": planned_cph,
             "realized_utilization": util,
+            "delivered_cargo_24h": deliv_stats["delivered_cargo_24h"],
+            "delivered_cargo_per_hour": deliv_stats["delivered_cargo_per_hour"],
+            "delivered_cargo_per_hour_24h": deliv_stats["delivered_cargo_per_hour"],
+            "delivered_flights_24h": deliv_stats["delivered_flights_24h"],
+            "delivered_vs_planned_pct": delivered_vs_planned,
         }
 
     @staticmethod
@@ -4060,24 +4276,48 @@ class GameApiBridge:
         *,
         cfg: Optional[StrategyConfig] = None,
         now_ts: Optional[float] = None,
+        gate: Optional[Mapping[str, Any]] = None,
     ) -> dict[str, Any]:
         eff_cfg = cfg or self.strategy_config
         eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
         if eff_now <= 0.0:
             eff_now = time.time()
-        gate = self._evaluate_ai_planner_gate_locked(state, cfg=eff_cfg)
-        active_rec = gate.get("active_rec")
-        active_result = gate.get("active_result")
-        active_plan_ts = self._extract_record_timestamp(active_rec, active_result)
         with self._planner_jobs_lock:
             co_running = self._config_opt_job.get("status") == "running"
             ai_running = self._ai_planner_job.get("status") == "running"
         any_running = bool(co_running or ai_running)
-
         last_auto_ok = (
             self._last_auto_ai_replan_ts <= 0.0
             or (eff_now - self._last_auto_ai_replan_ts) >= self.AI_DRIFT_REPLAN_COOLDOWN_SECONDS
         )
+        adaptive_on = bool(getattr(eff_cfg, "ai_adaptive_execution", False))
+        mode_is_ai = normalize_planner_mode(getattr(eff_cfg, "planner_mode", "priority")) == "ai_planner"
+
+        # Fast-exit before loading the full active AI plan from SQLite when caller did not supply `gate`.
+        if gate is None and (
+            not adaptive_on
+            or not mode_is_ai
+            or self._planner_closed
+            or state is None
+            or self._bot_control.get("paused")
+            or self._bot_control.get("captcha_blocked")
+            or any_running
+            or not last_auto_ok
+        ):
+            return {
+                "eligible": False,
+                "cooldown_ok": bool(last_auto_ok),
+                "drift_ready": bool(last_auto_ok and not any_running),
+                "reason": None,
+                "warm_genes": None,
+                "active_plan_ts": 0.0,
+                "now_ts": eff_now,
+            }
+
+        eff_gate = gate if isinstance(gate, Mapping) else self._evaluate_ai_planner_gate_locked(state, cfg=eff_cfg)
+        active_rec = eff_gate.get("active_rec")
+        active_result = eff_gate.get("active_result")
+        active_plan_ts = self._extract_record_timestamp(active_rec, active_result)
         plan_cd_ok = (
             active_plan_ts <= 0.0
             or (eff_now - active_plan_ts) >= self.AI_DRIFT_REPLAN_COOLDOWN_SECONDS
@@ -4085,12 +4325,12 @@ class GameApiBridge:
         cooldown_ok = bool(last_auto_ok and plan_cd_ok)
         drift_ready = bool(cooldown_ok and not any_running)
 
-        adaptive_on = bool(getattr(eff_cfg, "ai_adaptive_execution", False))
         gates_ok = bool(
             adaptive_on
+            and eff_gate.get("effective_planner_mode") == "ai_planner"
             and not self._planner_closed
             and state is not None
-            and gate.get("live_ai_unlocked")
+            and eff_gate.get("live_ai_unlocked")
             and isinstance(active_rec, Mapping)
             and isinstance(active_result, Mapping)
             and not self._bot_control.get("paused")
@@ -4173,12 +4413,51 @@ class GameApiBridge:
         }
 
     def _maybe_trigger_ai_drift_replan(self, *, now_ts: Optional[float] = None) -> Optional[dict[str, Any]]:
-        """Check Step 6 drift triggers under `_lock`, then launch background AI replan OUTSIDE `_lock`."""
-        if not bool(getattr(self.strategy_config, "ai_adaptive_execution", False)) or self._planner_closed:
+        """Check Step 6 drift triggers non-blockingly under `_lock`, then launch background AI replan OUTSIDE `_lock`."""
+        cfg_ref = self.strategy_config
+        if (
+            not bool(getattr(cfg_ref, "ai_adaptive_execution", False))
+            or self._planner_closed
+            or normalize_planner_mode(getattr(cfg_ref, "planner_mode", "priority")) != "ai_planner"
+            or self._bot_control.get("paused")
+            or self._bot_control.get("captcha_blocked")
+        ):
+            return None
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        if (
+            self._last_auto_ai_replan_ts > 0.0
+            and (eff_now - self._last_auto_ai_replan_ts) < self.AI_DRIFT_REPLAN_COOLDOWN_SECONDS
+        ):
+            return None
+        now_mono = time.monotonic()
+        if (
+            now_ts is None
+            and self._last_drift_check_mono > 0.0
+            and (now_mono - self._last_drift_check_mono) < self.AI_DRIFT_CHECK_MIN_INTERVAL_SECONDS
+        ):
+            return None
+        with self._planner_jobs_lock:
+            if (
+                self._config_opt_job.get("status") == "running"
+                or self._ai_planner_job.get("status") == "running"
+            ):
+                return None
+
+        if not self._lock.acquire(blocking=False):
             return None
         reason: Optional[str] = None
         warm_genes: Optional[dict[str, Any]] = None
-        with self._lock:
+        try:
+            if now_ts is None:
+                now_mono_in = time.monotonic()
+                if (
+                    self._last_drift_check_mono > 0.0
+                    and (now_mono_in - self._last_drift_check_mono) < self.AI_DRIFT_CHECK_MIN_INTERVAL_SECONDS
+                ):
+                    return None
+                self._last_drift_check_mono = now_mono_in
             ev = self._evaluate_ai_drift_replan_locked(
                 self._last_state,
                 cfg=self.strategy_config,
@@ -4191,6 +4470,8 @@ class GameApiBridge:
             self._last_auto_ai_replan_ts = float(ev["now_ts"])
             self._last_auto_ai_replan_reason = reason
             self._persist_runtime_state()
+        finally:
+            self._lock.release()
         try:
             return self._start_ai_planner_job(
                 params={"warm_start_genes": warm_genes} if warm_genes else None,
@@ -4833,6 +5114,8 @@ class GameApiBridge:
         self._dash_ag_cache_json = None
         self._co_goals_cache_key = None
         self._co_goals_cache = None
+        self._active_ai_cache_key = None
+        self._active_ai_cache = None
 
     def _serialize_action(
         self,
@@ -5055,7 +5338,15 @@ class GameApiBridge:
 
     def _get_active_ai_planner_locked(self) -> Optional[dict[str, Any]]:
         if self._db is not None and hasattr(self._db, "get_active_ai_planner"):
-            return self._db.get_active_ai_planner()
+            tok = self._db_total_changes_token()
+            ckey = (tok, id(self._db)) if tok is not None else None
+            if ckey is not None and self._active_ai_cache_key == ckey:
+                return dict(self._active_ai_cache) if isinstance(self._active_ai_cache, Mapping) else None
+            rec = self._db.get_active_ai_planner()
+            if ckey is not None:
+                self._active_ai_cache_key = ckey
+                self._active_ai_cache = rec if isinstance(rec, Mapping) else None
+            return dict(rec) if isinstance(rec, Mapping) else None
         return dict(self._active_ai_plan_mem) if isinstance(self._active_ai_plan_mem, Mapping) else None
 
     def _list_ai_planner_runs_locked(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -5670,9 +5961,12 @@ class GameApiBridge:
 
         base_params = dict(getattr(ai_mod, "DEFAULT_AI_PLANNER_PARAMS", {}) or {})
         if isinstance(active_ai, Mapping) and isinstance(active_ai.get("params"), Mapping):
-            base_params.update(dict(active_ai["params"]))
+            base_params.update(
+                {k: v for k, v in active_ai["params"].items() if k != "warm_start_genes"}
+            )
         if isinstance(params, Mapping):
             base_params.update(dict(params))
+        persisted_params = {k: v for k, v in base_params.items() if k != "warm_start_genes"}
 
         with self._planner_jobs_lock:
             if not sync and self._ai_planner_job.get("status") == "running":
@@ -5766,7 +6060,7 @@ class GameApiBridge:
                 run_id = self._persist_ai_planner_result(
                     res,
                     config_run_id=config_run_id,
-                    params=base_params,
+                    params=persisted_params,
                     trigger_source=str(trigger_source or "manual"),
                     elapsed_ms=elapsed_ms,
                 )
@@ -5998,20 +6292,32 @@ class GameApiBridge:
         if not isinstance(atk_tel, Mapping):
             atk_tel = self._compute_live_attack_telemetry_locked(enriched_state)
         adaptive_on = bool(getattr(cfg, "ai_adaptive_execution", False))
-        inbound_fn = getattr(ai_mod, "compute_inbound_friendly_cargo_by_planet", None)
-        raw_inbound = inbound_fn(enriched_state) if callable(inbound_fn) else None
-        inbound_cargo = raw_inbound if isinstance(raw_inbound, Mapping) else {}
-        in_prog_fn = getattr(ai_mod, "compute_in_progress_build_rem_by_planet", None)
-        raw_in_prog = in_prog_fn(enriched_state) if callable(in_prog_fn) else None
-        in_prog_rem = raw_in_prog if isinstance(raw_in_prog, Mapping) else {}
-        raw_td = active_plan_result.get("transport_demand")
+        inbound_cargo: Optional[Mapping[int, Any]] = None
+        in_prog_rem: Optional[Mapping[int, float]] = None
+        in_prog_res_rem: Optional[float] = None
         transport_demand: Optional[dict[str, Any]] = None
-        if isinstance(raw_td, Mapping):
-            transport_demand = dict(raw_td)
-            transport_demand["realized_utilization"] = round(
-                min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization))),
-                4,
-            )
+        if adaptive_on:
+            inbound_fn = getattr(ai_mod, "compute_inbound_friendly_cargo_by_planet", None)
+            raw_inbound = inbound_fn(enriched_state) if callable(inbound_fn) else None
+            inbound_cargo = raw_inbound if isinstance(raw_inbound, Mapping) else {}
+            in_prog_fn = getattr(ai_mod, "compute_in_progress_build_rem_by_planet", None)
+            raw_in_prog = in_prog_fn(enriched_state) if callable(in_prog_fn) else None
+            in_prog_rem = raw_in_prog if isinstance(raw_in_prog, Mapping) else {}
+            in_prog_res_fn = getattr(ai_mod, "compute_in_progress_research_rem_seconds", None)
+            raw_res_rem = in_prog_res_fn(enriched_state) if callable(in_prog_res_fn) else None
+            if isinstance(raw_res_rem, (int, float)) and not isinstance(raw_res_rem, bool) and math.isfinite(raw_res_rem):
+                in_prog_res_rem = max(0.0, float(raw_res_rem))
+            raw_td = active_plan_result.get("transport_demand")
+            if isinstance(raw_td, Mapping):
+                transport_demand = dict(raw_td)
+                td_rt = max(0.25, _safe_api_float(transport_demand.get("round_trips_per_hour", 2.5), 2.5))
+                transport_demand["realized_utilization"] = self._recompute_transport_utilization_locked(
+                    rt_per_hour=td_rt,
+                )
+        infra_spend_1h: Optional[dict[str, float]] = None
+        infra_carryover_h = 1.0
+        if adaptive_on:
+            infra_spend_1h, infra_carryover_h = self._get_infra_transport_spend_last_hour_locked()
         spare_budget = compute_spare_ship_budget(
             enriched_state,
             spare_pct,
@@ -6019,6 +6325,8 @@ class GameApiBridge:
             reserved_cost=reserved_cost,
             adaptive_execution=adaptive_on,
             config=cfg,
+            infra_spend_last_hour=infra_spend_1h,
+            infra_carryover_hours=infra_carryover_h,
         )
         fleet_actions = plan_fleet_and_attack_actions(
             enriched_state,
@@ -6043,6 +6351,7 @@ class GameApiBridge:
             cleared_overflow_pids=cleared_overflow_pids,
             inbound_cargo_by_planet=inbound_cargo,
             in_progress_rem_by_planet=in_prog_rem,
+            in_progress_research_rem_seconds=in_prog_res_rem,
             enable_donor_smelting=bool(adaptive_on and transport_demand),
         )
         runtime_dirty = False
@@ -7068,7 +7377,6 @@ class GameApiBridge:
 
         merged = self._merge_economy_rates(self._merge_cached_offers(state))
         self._capture_observed_outbound_transports_locked(merged)
-        self._observe_transport_utilization_locked(merged)
         self._record_hourly_production_locked(merged)
         self._record_new_colonies_locked(prev, merged)
         now_wall_bucket = time.time()
@@ -10094,6 +10402,18 @@ class GameApiBridge:
                         ships=_bounded_api_str(res.message, default="")[:140],
                         source="dispatch",
                     )
+            if (
+                res.executed
+                and res.action.kind == "BUILD_SHIP"
+                and (
+                    AI_INFRA_CARGO_TAG in str(getattr(res.action, "reason", "") or "")
+                    or (
+                        bool(getattr(self.strategy_config, "ai_adaptive_execution", False))
+                        and game_data.safe_optional_int(res.action.target_id, None) in (1, 2)
+                    )
+                )
+            ):
+                self._record_infra_transport_spend_locked(res.action)
             if res.action.kind in ("COLONIZE", "ABANDON_COLONY"):
                 self._record_colony_attempt_from_result_locked(state, res, cmd)
         if self._db is not None:
@@ -12646,24 +12966,29 @@ class GameApiBridge:
                 live_telemetry = self._compute_live_attack_telemetry_locked(snap_state)
                 cfg_snap = self.strategy_config
                 window_24h_snap = self._summarize_adaptive_idle_window_24h_locked()
-                realized_util_snap = round(
-                    min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization))),
-                    4,
-                )
                 raw_td_locked = (
                     active_result.get("transport_demand")
                     if isinstance(active_result, Mapping) and isinstance(active_result.get("transport_demand"), Mapping)
                     else None
                 )
+                transport_fleet_snap = self._build_transport_fleet_summary_locked(
+                    snap_state,
+                    raw_td_locked,
+                )
+                realized_util_snap = (
+                    transport_fleet_snap["realized_utilization"]
+                    if isinstance(transport_fleet_snap, Mapping)
+                    and transport_fleet_snap.get("realized_utilization") is not None
+                    else round(
+                        min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization))),
+                        4,
+                    )
+                )
                 transport_demand_snap: Optional[dict[str, Any]] = None
                 if isinstance(raw_td_locked, Mapping):
                     transport_demand_snap = dict(raw_td_locked)
                     transport_demand_snap["realized_utilization"] = realized_util_snap
-                transport_fleet_snap = self._build_transport_fleet_summary_locked(
-                    snap_state,
-                    transport_demand_snap,
-                )
-                drift_eval = self._evaluate_ai_drift_replan_locked(snap_state, cfg=cfg_snap)
+                drift_eval = self._evaluate_ai_drift_replan_locked(snap_state, cfg=cfg_snap, gate=gate)
                 auto_replan_snap = {
                     "cooldown_seconds": int(self.AI_DRIFT_REPLAN_COOLDOWN_SECONDS),
                     "last_auto_replan_ts": (
@@ -12788,12 +13113,15 @@ class GameApiBridge:
             diag_state = display_state if display_state is not None else snap_state
             diag_fn = getattr(ai_mod, "diagnose_ai_colony_idle_states", None)
             if diag_state is not None and callable(diag_fn):
-                raw_diag = diag_fn(
-                    diag_state,
-                    active_result if has_plan else {},
-                    config=cfg_snap,
-                    field_conflicts=jobs_snap.get("pending_field_conflicts") or (),
-                )
+                try:
+                    raw_diag = diag_fn(
+                        diag_state,
+                        active_result if has_plan else {},
+                        config=cfg_snap,
+                        field_conflicts=jobs_snap.get("pending_field_conflicts") or (),
+                    )
+                except Exception:
+                    raw_diag = None
                 if isinstance(raw_diag, Mapping):
                     diag_cols: list[dict[str, Any]] = []
                     for col_item in raw_diag.get("colonies") or ():
@@ -13172,12 +13500,16 @@ class GameApiBridge:
                         else None
                     )
                     fp_transport_demand: Optional[dict[str, Any]] = None
-                    if isinstance(raw_fp_td, Mapping):
-                        fp_transport_demand = dict(raw_fp_td)
-                        fp_transport_demand["realized_utilization"] = round(
-                            min(self.TRANSPORT_UTIL_MAX, max(self.TRANSPORT_UTIL_MIN, float(self._transport_realized_utilization))),
-                            4,
-                        )
+                    fp_infra_spend: Optional[dict[str, float]] = None
+                    fp_infra_carryover = 1.0
+                    if fp_adaptive_on:
+                        fp_infra_spend, fp_infra_carryover = self._get_infra_transport_spend_last_hour_locked()
+                        if isinstance(raw_fp_td, Mapping):
+                            fp_transport_demand = dict(raw_fp_td)
+                            fp_rt = max(0.25, _safe_api_float(fp_transport_demand.get("round_trips_per_hour", 2.5), 2.5))
+                            fp_transport_demand["realized_utilization"] = self._recompute_transport_utilization_locked(
+                                rt_per_hour=fp_rt,
+                            )
                     spare_budget = compute_spare_ship_budget(
                         enriched_fp,
                         spare_pct,
@@ -13185,6 +13517,8 @@ class GameApiBridge:
                         reserved_cost=reserved_cost,
                         adaptive_execution=fp_adaptive_on,
                         config=effective_fp_cfg,
+                        infra_spend_last_hour=fp_infra_spend,
+                        infra_carryover_hours=fp_infra_carryover,
                     )
                     fleet_actions = plan_fleet_and_attack_actions(
                         enriched_fp,

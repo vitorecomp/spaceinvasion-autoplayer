@@ -5014,6 +5014,8 @@ def compute_spare_ship_budget(
     window_hours: float = 1.0,
     adaptive_execution: bool = False,
     config: Optional[StrategyConfig] = None,
+    infra_spend_last_hour: Optional[Mapping[str, Any]] = None,
+    infra_carryover_hours: float = 1.0,
 ) -> dict[str, Any]:
     """Compute Soft Reserve + Rolling `spare %` Shipyard resource budget for hybrid AI-Planner + Fleet mode.
 
@@ -5121,12 +5123,18 @@ def compute_spare_ship_budget(
         available_budget[rk] = round(max(0.0, avail), 2)
 
     infra_transport_budget: dict[str, float] = {}
+    eff_infra_window_h = max(
+        eff_window_h,
+        min(2.0, max(1.0, _safe_strategy_float(infra_carryover_hours, 1.0))),
+    )
     for rk in ("metal", "kryptonite"):
         inc_r = mine_hourly[rk] + attack_hourly[rk]
+        spent_r = max(0.0, _safe_strategy_float((infra_spend_last_hour or {}).get(rk, 0.0), 0.0))
         if inc_r > 0.0:
-            infra_v = min(free_after_reserve[rk], inc_r * INFRA_TRANSPORT_INCOME_SHARE * eff_window_h)
+            hourly_cap_r = inc_r * INFRA_TRANSPORT_INCOME_SHARE * eff_infra_window_h
+            infra_v = min(free_after_reserve[rk], max(0.0, hourly_cap_r - spent_r))
         else:
-            infra_v = INFRA_TRANSPORT_INCOME_SHARE * free_after_reserve[rk]
+            infra_v = 0.0
         infra_transport_budget[rk] = round(max(0.0, infra_v), 2)
 
     urgent_replacements = {
@@ -6312,13 +6320,57 @@ METAL_OVERFLOW_PAUSE_PCT: int = 100
 METAL_OVERFLOW_RESUME_PCT: int = 95
 
 
+def _fallback_queue_remaining_seconds(
+    state: GameState,
+    now_ts: float,
+) -> tuple[dict[int, float], float]:
+    """Derive `(build_rem_by_planet_id, research_rem_seconds)` from `state.active_queues`."""
+    build_rem: dict[int, float] = {}
+    res_rem = 0.0
+    norm_fn = _get_fleet().normalize_coords
+    by_coords: dict[str, int] = {}
+    for p in getattr(state, "planets", None) or ():
+        nc = norm_fn(getattr(p, "coords", "") or "")
+        if nc:
+            by_coords[nc] = p.planet_id
+    active_p = state.active_planet()
+    active_pid = active_p.planet_id if active_p is not None else None
+    ref_ts = max(0.0, _safe_strategy_float(now_ts, 0.0))
+    if ref_ts <= 0.0:
+        ref_ts = max(0.0, _safe_strategy_float(getattr(state, "timestamp", 0.0), 0.0))
+
+    for q in getattr(state, "active_queues", None) or ():
+        cat = _safe_strategy_str(getattr(q, "category", "")).strip().lower()
+        if cat not in ("building", "research"):
+            continue
+        rem_s = 0.0
+        fin_ts = _safe_strategy_float(getattr(q, "finish_ts", None), 0.0)
+        if fin_ts > 0.0 and ref_ts > 0.0:
+            rem_s = max(0.0, fin_ts - ref_ts)
+        else:
+            raw_rem = _safe_strategy_float(getattr(q, "remaining_seconds", None), 0.0)
+            rem_s = max(0.0, raw_rem)
+        if rem_s <= 0.0:
+            continue
+        if cat == "research":
+            if rem_s > res_rem:
+                res_rem = rem_s
+        else:
+            orig_c = norm_fn(getattr(q, "origin_coords", "") or "")
+            pid = by_coords.get(orig_c) if orig_c else active_pid
+            if pid is not None and rem_s > build_rem.get(pid, 0.0):
+                build_rem[pid] = rem_s
+    return build_rem, res_rem
+
+
 def _adaptive_colony_smelt_decision(
     planet: PlanetState,
     *,
     waiting_ai: Sequence[PlannedAction],
     ready_ai: Sequence[PlannedAction],
     inbound: Any,
-    rem_q_sec: float,
+    rem_build_sec: float,
+    rem_research_sec: float,
     local_b2_metal_per_hour: float,
     cur_b2_pct: int,
     metal_is_full: bool,
@@ -6358,17 +6410,50 @@ def _adaptive_colony_smelt_decision(
                 pig_gap,
                 f"AI-Planner: {step_lbl} needs {local_metal_gap:,} more Metal on this colony (stay smelting)",
             )
-        smelt_sec = (local_metal_gap / max(1e-6, float(local_b2_metal_per_hour))) * 3600.0
-        if max(0.0, rem_q_sec) <= smelt_sec:
+        rate_m_hr = max(1e-6, float(local_b2_metal_per_hour))
+        build_waiting = [a for a in local_waiting if a.kind != "RESEARCH"]
+        res_waiting = [a for a in local_waiting if a.kind == "RESEARCH"]
+        eff_rem_build = max(0.0, float(rem_build_sec))
+        eff_rem_res = max(0.0, float(rem_research_sec))
+
+        trigger_rem: Optional[float] = None
+        trigger_smelt: Optional[float] = None
+        trigger_lbl = step_lbl
+
+        if build_waiting:
+            b_gap = max(0, _sum(build_waiting, "metal") - have_metal)
+            if b_gap > 0:
+                b_smelt = (b_gap / rate_m_hr) * 3600.0
+                if eff_rem_build <= b_smelt:
+                    trigger_rem = eff_rem_build
+                    trigger_smelt = b_smelt
+                    trigger_lbl = build_waiting[0].target_name
+        if trigger_rem is None and res_waiting:
+            r_gap = max(0, _sum(res_waiting, "metal") - have_metal)
+            if r_gap > 0:
+                r_smelt = (r_gap / rate_m_hr) * 3600.0
+                if eff_rem_res <= r_smelt:
+                    trigger_rem = eff_rem_res
+                    trigger_smelt = r_smelt
+                    trigger_lbl = res_waiting[0].target_name
+        if trigger_rem is None and build_waiting and res_waiting:
+            # Combined gap across both queues: needed once both queues free up.
+            comb_rem = max(eff_rem_build, eff_rem_res)
+            comb_smelt = (local_metal_gap / rate_m_hr) * 3600.0
+            if comb_rem <= comb_smelt:
+                trigger_rem = comb_rem
+                trigger_smelt = comb_smelt
+
+        if trigger_rem is not None and trigger_smelt is not None:
             return (
                 True,
                 active_step,
                 local_metal_gap,
                 pig_gap,
-                f"AI-Planner: {step_lbl} needs {local_metal_gap:,} more Metal on this colony "
-                f"(queue free in {max(0.0, rem_q_sec) / 60.0:.0f} min, smelting closes gap in {smelt_sec / 60.0:.0f} min)",
+                f"AI-Planner: {trigger_lbl} needs {local_metal_gap:,} more Metal on this colony "
+                f"(queue free in {trigger_rem / 60.0:.0f} min, smelting closes gap in {trigger_smelt / 60.0:.0f} min)",
             )
-        # Queue still busy longer than smelting needs: wait (furnace already 0%, nothing to emit).
+        # Step's queue still busy longer than smelting needs: wait (furnace already 0%, nothing to emit).
         return False, active_step, local_metal_gap, pig_gap, None
 
     if donor_need and not metal_is_full:
@@ -6404,6 +6489,7 @@ def plan_ai_blast_furnace_throttles(
     cleared_overflow_pids: Optional[set[int]] = None,
     inbound_cargo_by_planet: Optional[Mapping[int, Any]] = None,
     in_progress_rem_by_planet: Optional[Mapping[int, float]] = None,
+    in_progress_research_rem_seconds: Optional[float] = None,
     enable_donor_smelting: bool = False,
 ) -> list[PlannedAction]:
     """Strict binary (`100%` / `0%`) Blast furnace (`b2`) control for active `ai_planner` mode.
@@ -6519,11 +6605,19 @@ def plan_ai_blast_furnace_throttles(
 
     # Adaptive per-colony context (Plan v2 Step 1 + donor arm).
     inbound_map: Mapping[int, Any] = {}
-    rem_q_map: Mapping[int, float] = in_progress_rem_by_planet or {}
+    rem_q_map: Mapping[int, float] = {}
+    rem_research_sec: float = 0.0
     empire_donor_need = False
     empire_donor_gap = 0
     flights_ships: Mapping[int, Mapping[str, int]] = {}
     if adaptive:
+        fb_build_rem, fb_res_rem = _fallback_queue_remaining_seconds(state, ref_now)
+        rem_q_map = in_progress_rem_by_planet if in_progress_rem_by_planet is not None else fb_build_rem
+        rem_research_sec = (
+            max(0.0, _safe_strategy_float(in_progress_research_rem_seconds, 0.0))
+            if in_progress_research_rem_seconds is not None
+            else fb_res_rem
+        )
         inbound_map = (
             inbound_cargo_by_planet
             if inbound_cargo_by_planet is not None
@@ -6596,7 +6690,8 @@ def plan_ai_blast_furnace_throttles(
                 waiting_ai=waiting_ai,
                 ready_ai=ready_ai,
                 inbound=inbound_map.get(planet.planet_id),
-                rem_q_sec=_safe_strategy_float(rem_q_map.get(planet.planet_id, 0.0) or 0.0, 0.0),
+                rem_build_sec=_safe_strategy_float(rem_q_map.get(planet.planet_id, 0.0) or 0.0, 0.0),
+                rem_research_sec=rem_research_sec,
                 local_b2_metal_per_hour=bf_pig_used_full / 2.0,
                 cur_b2_pct=cur_b2_pct,
                 metal_is_full=metal_is_full,

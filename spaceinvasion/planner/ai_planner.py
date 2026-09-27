@@ -918,6 +918,8 @@ def _extract_live_in_progress_state(
             idx_by_coords,
             state_ts=state_ts,
             skip_expired=False,
+            strict_hostile_text=False,
+            use_last_coords=False,
         )
         if parsed_fleet is None:
             continue
@@ -951,6 +953,8 @@ def _parse_friendly_inbound_fleet_job(
     *,
     state_ts: float = 0.0,
     skip_expired: bool = False,
+    strict_hostile_text: bool = True,
+    use_last_coords: bool = True,
 ) -> Optional[tuple[Any, tuple[float, float, float, float], bool, str]]:
     """Parse one non-hostile fleet `QueueJob` into `(dest_key, cargo_tuple, is_returning, name)` if inbound."""
     if str(getattr(job, "category", "") or "").strip().lower() != "fleet":
@@ -961,9 +965,10 @@ def _parse_friendly_inbound_fleet_job(
     q_det = str(getattr(job, "detail", "") or "")
     q_name_l = q_name.lower()
     q_det_l = q_det.lower()
-    if (
-        bool(getattr(job, "hostile", False))
-        or "hostile" in q_name_l
+    if bool(getattr(job, "hostile", False)):
+        return None
+    if strict_hostile_text and (
+        "hostile" in q_name_l
         or "hostile" in q_det_l
         or "enemy" in q_name_l
         or "enemy" in q_det_l
@@ -995,7 +1000,7 @@ def _parse_friendly_inbound_fleet_job(
     elif any(tok in q_name_l or tok in q_det_l for tok in ("transport", "station")):
         coord_matches = _EMBEDDED_COORDS_RE.findall(q_name) or _EMBEDDED_COORDS_RE.findall(q_det)
         if coord_matches:
-            raw_dst = coord_matches[-1]
+            raw_dst = coord_matches[-1] if use_last_coords else coord_matches[0]
             dest_key = coords_to_key.get(raw_dst)
             if dest_key is None:
                 dest_key = coords_to_key.get(normalize_coords(raw_dst))

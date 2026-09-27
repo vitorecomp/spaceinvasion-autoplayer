@@ -9483,14 +9483,34 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertFalse(dash["config"]["ai_adaptive_execution"])
                 self.assertGreaterEqual(len(dash["hourly_production_history"]), 160)
 
-                # 3. Transport realized utilization EWMA updated from 0.5 toward 24k / 30k = 0.8 (bounded [0.2, 0.9])
-                #    and repeated polls of the same flight do not double-count.
-                u_first = bridge._transport_realized_utilization
-                self.assertGreater(u_first, 0.5)
+                # 3. F2: Outbound-only transport does NOT skew realized_utilization away from 0.5 baseline;
+                #    only persisted returning-leg deliveries update throughput utilization once >=4 deliveries span >=1h!
+                self.assertAlmostEqual(bridge._transport_realized_utilization, 0.5, places=4)
+                from dataclasses import replace as _dc_replace
+
+                # Simulate 4 returning transport deliveries over 2 hours (20k each -> 80k / 2h = 40k/h on 174k*2.5 = 435k/h -> clamped 0.2;
+                # use 80k each -> 320k / 2h = 160k/h vs 174k * 2.5 = 435k/h -> 0.3678 throughput utilization)
+                deliv_offsets = (7200.0, 5400.0, 3600.0, 1800.0)
+                for idx_d, age_s in enumerate(deliv_offsets):
+                    q_ret = QueueJob(
+                        category="fleet",
+                        name="Transport ↩ 02:380:02",
+                        detail="Returning · 5 Small transport",
+                        origin_coords="02:380:01",
+                        remaining_seconds=120.0,
+                        finish_ts=(now_ts - age_s) + 120.0,
+                        delivered=True,
+                        delivered_cargo=Resources(0, 80_000, 0, 0),
+                    )
+                    st_ret = _dc_replace(st, active_queues=(st.active_queues[0], q_ret))
+                    self.assertTrue(bridge._observe_transport_utilization_locked(st_ret, now_ts=now_ts - age_s))
+                    # Repeating the exact same returning flight does NOT double-count
+                    self.assertFalse(bridge._observe_transport_utilization_locked(st_ret, now_ts=now_ts - age_s + 15.0))
+                u_first = bridge._recompute_transport_utilization_locked(rt_per_hour=2.5, now_ts=now_ts)
+                # 320,000 / 2.0h = 160,000/h; theoretical = 174,000 * 2.5 = 435,000/h -> 0.3678
+                self.assertAlmostEqual(u_first, round(160_000.0 / 435_000.0, 4), places=3)
+                self.assertGreaterEqual(u_first, 0.2)
                 self.assertLessEqual(u_first, 0.9)
-                self.assertAlmostEqual(u_first, round(0.85 * 0.5 + 0.15 * 0.8, 4), places=4)
-                bridge._observe_transport_utilization_locked(st)
-                self.assertEqual(bridge._transport_realized_utilization, u_first)
 
                 # 4. 10-minute 24h idle bucket deduplication, pruning >24h, and persistence across restart
                 #    One bucket was already recorded by _record_state; re-recording in same 10m slot is a no-op
@@ -9515,14 +9535,14 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertNotIn(old_bk, bridge._adaptive_idle_buckets)
                 self.assertEqual(len(bridge._adaptive_idle_buckets), 2)
 
-                # 5. ai_planner_get exposes search, transport_demand, and adaptive_status with custom names overlaid
+                # 5. ai_planner_get exposes search, transport_demand, and adaptive_status with custom names & delivered/h
                 ai_get = bridge.handle_command({"command": "ai_planner_get"})
                 self.assertTrue(ai_get["ok"])
                 self.assertEqual(ai_get["search"]["best_strategy"], "tuned_ga")
                 self.assertEqual(ai_get["search"]["tuned_genes"]["patience"], 0.35)
                 self.assertEqual(ai_get["search"]["best_parameters"]["speed_weight"], 1.6)
                 self.assertEqual(ai_get["transport_demand"]["cargo_per_hour_24h"], 150_000.0)
-                self.assertAlmostEqual(ai_get["transport_demand"]["realized_utilization"], u_first, places=4)
+                self.assertAlmostEqual(ai_get["transport_demand"]["realized_utilization"], u_first, places=3)
 
                 astat = ai_get["adaptive_status"]
                 self.assertIsNotNone(astat)
@@ -9539,13 +9559,27 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(tf["in_flight_cargo"], 30_000)
                 self.assertEqual(tf["total_fleet_cargo"], 174_000)
                 self.assertEqual(tf["planned_cargo_per_hour_24h"], 150_000.0)
-                self.assertAlmostEqual(tf["realized_utilization"], u_first, places=4)
-                self.assertEqual(tf["target_fleet_cargo"], math.ceil(150_000.0 / 2.5 / u_first))
+                self.assertEqual(tf["delivered_cargo_24h"], 320_000)
+                self.assertEqual(tf["delivered_flights_24h"], 4)
+                self.assertGreater(tf["delivered_cargo_per_hour_24h"], 150_000.0)
+                self.assertEqual(tf["delivered_cargo_per_hour_24h"], tf["delivered_cargo_per_hour"])
+                self.assertIsNotNone(tf["delivered_vs_planned_pct"])
+                self.assertAlmostEqual(tf["realized_utilization"], u_first, places=3)
+                self.assertEqual(tf["target_fleet_cargo"], math.ceil(150_000.0 / 2.5 / tf["realized_utilization"]))
                 self.assertEqual(astat["auto_replan"]["cooldown_seconds"], 1800)
+
+                # F6: ai_planner_get gracefully degrades if diagnose_ai_colony_idle_states raises
+                import spaceinvasion.planner.ai_planner as _ai_mod_err
+
+                with patch.object(_ai_mod_err, "diagnose_ai_colony_idle_states", side_effect=RuntimeError("boom")):
+                    ai_get_err = bridge.handle_command({"command": "ai_planner_get"})
+                self.assertTrue(ai_get_err["ok"])
+                self.assertIsNotNone(ai_get_err["adaptive_status"])
+                self.assertEqual(ai_get_err["adaptive_status"]["colonies"], [])
             finally:
                 bridge.close()
 
-            # 6. Verify buckets & transport utilization persist across bridge restart (zero DB migration)
+            # 6. Verify buckets, delivered events & throughput util persist across restart (zero re-sampling!)
             bridge2 = GameApiBridge(
                 client_factory=lambda _p: MagicMock(),
                 config_path=cfg_path,
@@ -9554,7 +9588,8 @@ class TestApiAndCommander(unittest.TestCase):
             )
             try:
                 self.assertEqual(len(bridge2._adaptive_idle_buckets), 2)
-                self.assertAlmostEqual(bridge2._transport_realized_utilization, u_first, places=4)
+                self.assertEqual(len(bridge2._delivered_transport_events), 4)
+                self.assertAlmostEqual(bridge2._transport_realized_utilization, u_first, places=3)
             finally:
                 bridge2.close()
 
@@ -9690,11 +9725,45 @@ class TestApiAndCommander(unittest.TestCase):
                     self.assertEqual(m_budget.call_args.kwargs["adaptive_execution"], adaptive_flag)
                     self.assertIs(m_budget.call_args.kwargs["config"], cfg_cur)
                     td_arg = m_fleet.call_args.kwargs["transport_demand"]
-                    self.assertEqual(td_arg["cargo_per_hour_24h"], 200_000.0)
-                    self.assertIn("realized_utilization", td_arg)
                     self.assertEqual(m_bf.call_args.kwargs["enable_donor_smelting"], adaptive_flag)
-                    self.assertEqual(m_bf.call_args.kwargs["inbound_cargo_by_planet"][802].metal, 15_000)
-                    self.assertGreater(m_bf.call_args.kwargs["in_progress_rem_by_planet"][801], 0.0)
+                    if adaptive_flag:
+                        self.assertEqual(td_arg["cargo_per_hour_24h"], 200_000.0)
+                        self.assertIn("realized_utilization", td_arg)
+                        self.assertEqual(m_bf.call_args.kwargs["inbound_cargo_by_planet"][802].metal, 15_000)
+                        self.assertGreater(m_bf.call_args.kwargs["in_progress_rem_by_planet"][801], 0.0)
+                        self.assertIsNotNone(m_bf.call_args.kwargs["in_progress_research_rem_seconds"])
+                        self.assertIsNotNone(m_budget.call_args.kwargs["infra_spend_last_hour"])
+                    else:
+                        # F6: switch-off path executes zero adaptive helpers and passes None
+                        self.assertIsNone(td_arg)
+                        self.assertIsNone(m_bf.call_args.kwargs["inbound_cargo_by_planet"])
+                        self.assertIsNone(m_bf.call_args.kwargs["in_progress_rem_by_planet"])
+                        self.assertIsNone(m_bf.call_args.kwargs["in_progress_research_rem_seconds"])
+                        self.assertIsNone(m_budget.call_args.kwargs["infra_spend_last_hour"])
+
+                # F3: infra transport spend ledger records live builds and debits 1h spend
+                bridge._record_infra_transport_spend_locked(
+                    PlannedAction(
+                        priority="P2",
+                        kind="BUILD_SHIP",
+                        planet_id=801,
+                        planet_coords="02:380:01",
+                        target_id=2,
+                        target_name="Large transport",
+                        target_level=2,
+                        cost=Resources(0, 16_000, 12_000, 0),
+                        reason="Fleet build target [Plan infra cargo target]",
+                        executable_now=True,
+                    ),
+                    now_ts=now_ts,
+                )
+                sp_1h, carry_1h = bridge._get_infra_transport_spend_last_hour_locked(now_ts=now_ts + 60.0)
+                self.assertEqual(sp_1h, {"metal": 16_000.0, "kryptonite": 12_000.0})
+                self.assertEqual(carry_1h, 1.0)
+                # After 1h expires + 2h idle, ledger drains to 0 and carryover reaches 2h
+                sp_after, carry_after = bridge._get_infra_transport_spend_last_hour_locked(now_ts=now_ts + 7200.0)
+                self.assertEqual(sp_after, {"metal": 0.0, "kryptonite": 0.0})
+                self.assertAlmostEqual(carry_after, 2.0, places=2)
 
                 # 2. Step 6 drift auto-replan: seed active config optimizer + active AI plan aged 5 hours
                 bridge._active_config_opt_mem = {
@@ -9755,6 +9824,21 @@ class TestApiAndCommander(unittest.TestCase):
                     self.assertEqual(len(calls), 0)
                     bridge._ai_planner_job["status"] = "idle"
 
+                    # F8: planner_mode != ai_planner -> never triggers even with switch ON and 5h old plan
+                    bridge.strategy_config = StrategyConfig(
+                        planner_mode="priority", max_planets=2, ai_adaptive_execution=True
+                    )
+                    self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    self.assertEqual(len(calls), 0)
+                    bridge.strategy_config = StrategyConfig(
+                        planner_mode="ai_planner", max_planets=2, ai_adaptive_execution=True
+                    )
+
+                    # F5: when bridge._lock is held, _maybe_trigger_ai_drift_replan returns None non-blockingly
+                    with bridge._lock:
+                        self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
+                    self.assertEqual(len(calls), 0)
+
                     # Trigger (d): plan_age_4h via handle_command("plan", refresh=False)
                     bridge.handle_command({"command": "plan", "refresh": False})
                     self.assertEqual(len(calls), 1)
@@ -9812,6 +9896,46 @@ class TestApiAndCommander(unittest.TestCase):
                 ):
                     self.assertIsNone(bridge._maybe_trigger_ai_drift_replan(now_ts=now_ts))
                 self.assertEqual(len(calls), 4)
+
+                # F1: warm_start_genes passed to one auto_drift run NEVER persists or leaks into later manual runs
+                import spaceinvasion.planner.ai_planner as _ai_mod_warm
+
+                captured_params: list[dict[str, object]] = []
+
+                def _fake_run_ai(state_arg, target_cfg, attack_telemetry=None, params=None, progress_cb=None):
+                    captured_params.append(dict(params or {}))
+                    return {
+                        "schema_version": 1,
+                        "summary": {"colonies_founded": 2},
+                        "steps": [],
+                        "search": {"tuned_genes": {"patience": 0.5}},
+                    }
+
+                with (
+                    patch.object(_ai_mod_warm, "run_ai_planner", side_effect=_fake_run_ai),
+                    patch.object(_ai_mod_warm, "compute_attack_telemetry", return_value={}),
+                ):
+                    bridge._start_ai_planner_job(
+                        params={"warm_start_genes": {"patience": 0.42, "speed_weight": 1.8}},
+                        sync=True,
+                        refresh=False,
+                        trigger_source="auto_drift:plan_age_4h",
+                    )
+                    self.assertIn("warm_start_genes", captured_params[-1])
+                    self.assertNotIn(
+                        "warm_start_genes",
+                        (bridge._active_ai_plan_mem or {}).get("params", {}),
+                    )
+                    # Turn switch OFF and trigger manual run with draft params + empty params -> NO leak!
+                    bridge.strategy_config = StrategyConfig(
+                        planner_mode="ai_planner", max_planets=2, ai_adaptive_execution=False
+                    )
+                    bridge.handle_command(
+                        {"command": "ai_planner_run", "sync": True, "params": {"patience": 0.25}}
+                    )
+                    self.assertNotIn("warm_start_genes", captured_params[-1])
+                    bridge.handle_command({"command": "ai_planner_run", "sync": True})
+                    self.assertNotIn("warm_start_genes", captured_params[-1])
             finally:
                 bridge.close()
 
