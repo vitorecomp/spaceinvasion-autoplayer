@@ -9565,7 +9565,9 @@ class TestApiAndCommander(unittest.TestCase):
                 self.assertEqual(tf["delivered_cargo_per_hour_24h"], tf["delivered_cargo_per_hour"])
                 self.assertIsNotNone(tf["delivered_vs_planned_pct"])
                 self.assertAlmostEqual(tf["realized_utilization"], u_first, places=3)
-                self.assertEqual(tf["target_fleet_cargo"], math.ceil(150_000.0 / 2.5 / tf["realized_utilization"]))
+                # Sizing never uses a utilization below the assumed 0.5: an idle fleet does not grow the target.
+                self.assertEqual(tf["sizing_utilization"], max(0.5, tf["realized_utilization"]))
+                self.assertEqual(tf["target_fleet_cargo"], math.ceil(150_000.0 / 2.5 / tf["sizing_utilization"]))
                 self.assertEqual(astat["auto_replan"]["cooldown_seconds"], 1800)
 
                 # R2: Tab 3 summary and planner share identical delivery-time capacity basis even if current fleet grows 5x

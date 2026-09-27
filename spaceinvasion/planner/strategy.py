@@ -3750,6 +3750,12 @@ def _resolve_prereq_chain(
 
 AI_INFRA_CARGO_TAG = "[Plan infra cargo target]"
 INFRA_TRANSPORT_INCOME_SHARE = 0.25
+# Measured utilization may shrink the plan-sized fleet target (a busy fleet delivers more per hull)
+# but never grow it: an idle fleet is not evidence that more hulls are needed.
+INFRA_TRANSPORT_MIN_UTILIZATION = 0.5
+# Plan-sized transport hulls ordered per Weapons factory order (one order costs the same page views
+# whatever the quantity). The 25%/h allowance still bounds what is spent.
+INFRA_TRANSPORT_MAX_BATCH = 10
 _TRANSPORT_HULL_KEYS: tuple[str, ...] = ("s1", "s2", "s3")
 _IN_FLIGHT_DETAIL_CAP = 140
 _SHIP_NAME_TO_KEY_CACHE: dict[str, str] = {}
@@ -3935,6 +3941,19 @@ def _ship_cargo_per_hull(slug: str, default: int) -> int:
     return cargo if cargo > 0 else default
 
 
+def _max_affordable_units(resources: Any, unit_cost: Any) -> int:
+    """Return how many units costing `unit_cost` each `resources` can pay for (0 for a free unit)."""
+    units: Optional[int] = None
+    for rk in ("pig_iron", "metal", "kryptonite", "spice"):
+        per_unit = max(0, _safe_strategy_int(getattr(unit_cost, rk, 0), 0))
+        if per_unit <= 0:
+            continue
+        have = max(0, _safe_strategy_int(getattr(resources, rk, 0), 0))
+        fit = have // per_unit
+        units = fit if units is None else min(units, fit)
+    return max(0, units or 0)
+
+
 def compute_infra_transport_targets(
     state: GameState,
     config: Optional[StrategyConfig],
@@ -3944,9 +3963,11 @@ def compute_infra_transport_targets(
 ) -> dict[int, dict[str, int]]:
     """Plan-sized transport fleet targets (Plan v2 Step 4a) as `{planet_id: {ship_slug: target}}`.
 
-    Target cargo = `cargo_per_hour_24h / round_trips_per_hour / utilization`. The deficit against
-    the empire's parked + in-flight `s1`/`s2`/`s3` capacity is split evenly across shipyard colonies
-    that can build Large transports (else Small transports). Returns `{}` with the switch off.
+    Target cargo = `cargo_per_hour_24h / round_trips_per_hour / utilization`, with utilization never
+    below `INFRA_TRANSPORT_MIN_UTILIZATION`. The deficit against the empire's parked + in-flight
+    `s1`/`s2`/`s3` capacity, less `infra_cargo_ordered_last_hour` (hulls that may still be in a
+    Weapons factory queue), is split evenly across shipyard colonies that can build Large transports
+    (else Small transports). Returns `{}` with the switch off.
     """
     if not _adaptive_enabled_cfg(config) or not isinstance(transport_demand, Mapping):
         return {}
@@ -3956,7 +3977,7 @@ def compute_infra_transport_targets(
     planned_cph = max(0.0, _safe_strategy_float(transport_demand.get("cargo_per_hour_24h", 0.0) or 0.0, 0.0))
     rt_per_h = max(0.25, _safe_strategy_float(transport_demand.get("round_trips_per_hour", 2.5) or 2.5, 2.5))
     util_raw = transport_demand.get("realized_utilization", transport_demand.get("utilization_assumed", 0.5))
-    util = min(0.9, max(0.2, _safe_strategy_float(util_raw or 0.5, 0.5)))
+    util = min(0.9, max(INFRA_TRANSPORT_MIN_UTILIZATION, _safe_strategy_float(util_raw or 0.5, 0.5)))
     target_cargo = int(math.ceil(planned_cph / rt_per_h / util)) if planned_cph > 0 else 0
     if target_cargo <= 0:
         return {}
@@ -3975,7 +3996,8 @@ def compute_infra_transport_targets(
     for k in _TRANSPORT_HULL_KEYS:
         hulls[k] += max(0, _safe_strategy_int(empire_in_flight.get(k, 0), 0))
     current_cargo = _safe_strategy_int(_get_fleet().fleet_cargo_capacity(hulls), 0)
-    deficit_cargo = target_cargo - current_cargo
+    pending_cargo = max(0, _safe_strategy_int(transport_demand.get("infra_cargo_ordered_last_hour", 0) or 0, 0))
+    deficit_cargo = target_cargo - current_cargo - pending_cargo
     if deficit_cargo <= 0:
         return {}
 
@@ -4691,8 +4713,17 @@ def _plan_planet_shipyard_targets(
                 f" (requires {first_req['name']} "
                 f"{game_data.fmt_compact_int(first_req['current'])}/{game_data.fmt_compact_int(first_req['required'])})"
             )
-        if ship_slug in infra_slugs and owned >= configured_shipyard_floor.get(ship_slug, 0):
+        is_infra_build = ship_slug in infra_slugs and owned >= configured_shipyard_floor.get(ship_slug, 0)
+        order_qty = 1
+        if is_infra_build:
             ship_reason += f" {AI_INFRA_CARGO_TAG}"
+            if can_exec:
+                # One Weapons factory order for the whole affordable batch; `cost` stays per unit and
+                # `target_level` carries the quantity, as for every other BUILD_SHIP action.
+                order_qty = max(
+                    1,
+                    min(need, INFRA_TRANSPORT_MAX_BATCH, _max_affordable_units(planet.resources, cost)),
+                )
         ship_act = PlannedAction(
             priority="P2",
             kind="BUILD_SHIP",
@@ -4700,7 +4731,7 @@ def _plan_planet_shipyard_targets(
             planet_coords=_safe_strategy_str(planet.coords),
             target_id=sid_num,
             target_name=ship_name,
-            target_level=1,
+            target_level=order_qty,
             cost=cost,
             missing=missing,
             reason=ship_reason,
@@ -5017,6 +5048,8 @@ def compute_spare_ship_budget(
     config: Optional[StrategyConfig] = None,
     infra_spend_last_hour: Optional[Mapping[str, Any]] = None,
     infra_carryover_hours: float = 1.0,
+    spare_spend_in_window: Optional[Mapping[str, Any]] = None,
+    spare_window_hours: float = 1.0,
 ) -> dict[str, Any]:
     """Compute Soft Reserve + Rolling `spare %` Shipyard resource budget for hybrid AI-Planner + Fleet mode.
 
@@ -5030,6 +5063,10 @@ def compute_spare_ship_budget(
 
     With `adaptive_execution=True` (or `config.ai_adaptive_execution`), ships in flight count toward
     the zero-count urgency test so a fleet that is merely out flying does not trigger replacements.
+    Also, when `spare_spend_in_window` is given (what the spare % budget already paid for over the
+    last `spare_window_hours`), the allowance becomes `spare % x income x spare_window_hours` minus
+    that spend: an hourly rate that can save up for `spare_window_hours`, instead of a fresh
+    allowance on every call.
     """
     from spaceinvasion.combat.ranking import estimate_hourly_economy
 
@@ -5108,6 +5145,13 @@ def compute_spare_ship_budget(
     hourly_spare_allowance: dict[str, float] = {}
     free_after_reserve: dict[str, float] = {}
     available_budget: dict[str, float] = {}
+    spare_spent: dict[str, float] = {rk: 0.0 for rk in _BUDGET_RES_KEYS}
+    track_spare_spend = adaptive and isinstance(spare_spend_in_window, Mapping)
+    spare_window_h = eff_window_h
+    if track_spare_spend:
+        spare_window_h = max(eff_window_h, min(24.0, max(1.0, _safe_strategy_float(spare_window_hours, 1.0))))
+        for rk in _BUDGET_RES_KEYS:
+            spare_spent[rk] = max(0.0, _safe_strategy_float(spare_spend_in_window.get(rk, 0.0), 0.0))
     for rk in _BUDGET_RES_KEYS:
         inc = mine_hourly[rk] + attack_hourly[rk]
         hourly_income[rk] = round(inc, 2)
@@ -5118,7 +5162,7 @@ def compute_spare_ship_budget(
         if norm_pct[rk] <= 0.0:
             avail = 0.0
         elif inc > 0.0:
-            avail = min(free_r, sp_hr * eff_window_h)
+            avail = min(free_r, max(0.0, sp_hr * spare_window_h - spare_spent[rk]))
         else:
             avail = free_r * (norm_pct[rk] / 100.0)
         available_budget[rk] = round(max(0.0, avail), 2)
@@ -5145,7 +5189,15 @@ def compute_spare_ship_budget(
     }
     urgent_zero_count_ships = [k for k in ("s10", "s1", "s2") if urgent_replacements[k]]
 
+    extra_out: dict[str, Any] = {}
+    if track_spare_spend:
+        extra_out["spare_spend_in_window"] = {rk: round(spare_spent[rk], 2) for rk in _BUDGET_RES_KEYS}
+        extra_out["spare_window_hours"] = round(spare_window_h, 2)
+    if isinstance(attack_telemetry, Mapping) and attack_telemetry.get("income_basis"):
+        extra_out["income_basis"] = _safe_strategy_str(attack_telemetry.get("income_basis"))
+
     return {
+        **extra_out,
         "spare_percent": {rk: round(norm_pct[rk], 2) for rk in _BUDGET_RES_KEYS},
         "window_hours": round(eff_window_h, 2),
         "empire_stock": {rk: int(round(empire_stock[rk])) for rk in _BUDGET_RES_KEYS},
@@ -5179,8 +5231,10 @@ def filter_shipyard_actions_by_spare_budget(
     - Spends any remaining `spare_budget` on non-urgent `BUILD_SHIP` actions while always exempting
       0-count Spy probe (`s10`) and Transport (`s1`/`s2`) replacements and manual-queue items.
     - `BUILD_SHIP` actions tagged `[Plan infra cargo target]` (adaptive Plan v2 Step 4a) are funded
-      first from `infra_transport_budget` (outside the spare % budget), never exceeding
-      `free_after_reserve` in total, and fall back to the regular spare budget.
+      only from `infra_transport_budget` (outside the spare % budget), never exceeding
+      `free_after_reserve` in total. A batch (`target_level` > 1) is shrunk to the units both still
+      cover and held when not even one fits.
+    - Every `BUILD_SHIP` cost is `cost` (per unit) times `target_level` (quantity).
     """
     if not isinstance(spare_budget, Mapping):
         return list(actions)
@@ -5279,34 +5333,33 @@ def filter_shipyard_actions_by_spare_budget(
         if sid in (1, 2) and urg_tr:
             continue
 
-        cost_obj = act.cost
-        if cost_obj.is_zero() and sid is not None:
+        # `cost` is per unit and `target_level` the quantity for every BUILD_SHIP action.
+        qty = max(1, _safe_strategy_int(act.target_level, 1))
+        unit_obj = act.cost
+        if unit_obj.is_zero() and sid is not None:
             slug = SHIP_SLUG_BY_KEY.get(f"s{sid}")
             if slug:
                 info = game_data.resolve_unit("ships", slug) or {}
-                base_c = _resources_from_dict(info.get("base_cost", {}))
-                qty = max(1, _safe_strategy_int(act.target_level, 1))
-                cost_obj = Resources(
-                    pig_iron=base_c.pig_iron * qty,
-                    metal=base_c.metal * qty,
-                    kryptonite=base_c.kryptonite * qty,
-                    spice=base_c.spice * qty,
-                )
-        need_c = {
-            "pig_iron": float(max(0, _safe_strategy_int(cost_obj.pig_iron, 0))),
-            "metal": float(max(0, _safe_strategy_int(cost_obj.metal, 0))),
-            "kryptonite": float(max(0, _safe_strategy_int(cost_obj.kryptonite, 0))),
-            "spice": float(max(0, _safe_strategy_int(cost_obj.spice, 0))),
+                unit_obj = _resources_from_dict(info.get("base_cost", {}))
+        unit_c = {
+            rk: float(max(0, _safe_strategy_int(getattr(unit_obj, rk, 0), 0))) for rk in _BUDGET_RES_KEYS
         }
+        need_c = {rk: unit_c[rk] * qty for rk in _BUDGET_RES_KEYS}
         if AI_INFRA_CARGO_TAG in _safe_strategy_str(act.reason):
-            if all(
-                infra_rem[rk] + 1e-6 >= need_c[rk] and free_rem[rk] + 1e-6 >= need_c[rk]
-                for rk in _BUDGET_RES_KEYS
-            ):
+            # Shrink the batch to what the infra allowance and the free stock still cover.
+            fit_units = qty
+            for rk in _BUDGET_RES_KEYS:
+                if unit_c[rk] > 0.0:
+                    fit_units = min(
+                        fit_units, int((min(infra_rem[rk], free_rem[rk]) + 1e-6) // unit_c[rk])
+                    )
+            if fit_units >= 1:
                 for rk in _BUDGET_RES_KEYS:
-                    infra_rem[rk] = max(0.0, infra_rem[rk] - need_c[rk])
-                    free_rem[rk] = max(0.0, free_rem[rk] - need_c[rk])
+                    infra_rem[rk] = max(0.0, infra_rem[rk] - unit_c[rk] * fit_units)
+                    free_rem[rk] = max(0.0, free_rem[rk] - unit_c[rk] * fit_units)
                 infra_spent = True
+                if fit_units != qty:
+                    out[idx] = replace(act, target_level=fit_units)
             else:
                 cur_r = _safe_strategy_str(act.reason)
                 infra_hold_tag = " (held: 25%/h infra transport cap)"
@@ -5464,6 +5517,10 @@ def plan_fleet_and_attack_actions(
                 return (0, 7)
             return (1, 0)
         if act.priority == "P2":
+            if act.kind == "BUILD_SHIP" and AI_INFRA_CARGO_TAG in _safe_strategy_str(act.reason):
+                # Plan-sized transport orders are batched and capped per hour, so they go first
+                # instead of waiting behind every fleet mission for a spare page view.
+                return (0, 5)
             if act.kind == "SPY":
                 return (1 if "(free slot)" in _safe_strategy_str(act.target_name).lower() else 2, 0)
             if act.kind == "TRANSPORT":

@@ -73,6 +73,9 @@ PATH_ACCELERATOR_KEYS: tuple[str, ...] = ("b7", "b17")
 PATH_HOURS_PER_WEEK: float = 168.0
 PATH_NEVER: float = float("inf")
 DEFAULT_MEDIAN_ROUND_TRIP_SECONDS: float = 1800.0
+# `attack_telemetry["income_basis"]` value when raid income is the loot and recycling the empire
+# actually received over the trailing window, instead of fleet slots x median round-trip x median loot.
+REALIZED_INCOME_BASIS: str = "realized_24h"
 
 DEFAULT_AI_PLANNER_PARAMS: dict[str, Any] = {
     "reward_weeks": 26,
@@ -253,13 +256,30 @@ def _extract_battle_rows_from_messages(message_rows: Sequence[Mapping[str, Any]]
     return battles
 
 
+def is_realized_income_basis(telemetry: Any) -> bool:
+    """Return True when `telemetry` carries raid income measured from received loot and recycling."""
+    if not isinstance(telemetry, Mapping):
+        return False
+    return str(telemetry.get("income_basis") or "").strip().lower().startswith("realized")
+
+
 def compute_attack_telemetry(
     raid_rows: Sequence[Mapping[str, Any]],
     message_rows: Sequence[Mapping[str, Any]] | None = None,
     *,
     state: GameState | None = None,
+    realized_hourly_loot: Mapping[str, Any] | None = None,
+    realized_missions_per_hour: float | None = None,
 ) -> dict[str, Any]:
-    """Compute live median attack loot, round-trip flight time, fleet slots, and hourly loot."""
+    """Compute live median attack loot, round-trip flight time, fleet slots, and hourly loot.
+
+    By default hourly loot is modelled as `fleet slots x (3600 / median round-trip) x median loot`,
+    i.e. every fleet slot raiding back to back. When `realized_hourly_loot` is given (per-resource
+    loot plus recycling actually received per hour), it replaces that model: `hourly_loot` becomes
+    the realized figure, `income_per_slot_per_hour` is the realized figure divided by the current
+    fleet slots, `income_basis` is `REALIZED_INCOME_BASIS`, and the modelled figure is kept as
+    `modelled_hourly_loot`. The output is unchanged when `realized_hourly_loot` is None.
+    """
     normal_planets = [
         p for p in (getattr(state, "planets", ()) or ()) if normalize_planet_type(p) == "normal"
     ]
@@ -421,6 +441,25 @@ def compute_attack_telemetry(
     }
     hourly_loot["spice_eq"] = float(game_data.spice_equivalent({r: hourly_loot[r] for r in RESOURCE_KEYS}))
 
+    realized_extra: dict[str, Any] = {}
+    if isinstance(realized_hourly_loot, Mapping):
+        modelled_hourly_loot = dict(hourly_loot)
+        realized = {
+            r: max(0.0, game_data.safe_finite_float(realized_hourly_loot.get(r), 0.0)) for r in RESOURCE_KEYS
+        }
+        slot_div = float(max(1, current_fleet_slots))
+        income_per_slot_per_hour = {r: realized[r] / slot_div for r in RESOURCE_KEYS}
+        hourly_loot = dict(realized)
+        hourly_loot["spice_eq"] = float(game_data.spice_equivalent(realized))
+        realized_mph = game_data.safe_finite_float(realized_missions_per_hour, -1.0)
+        if realized_missions_per_hour is not None and realized_mph >= 0.0:
+            estimated_attacks_per_hour = realized_mph
+            attacks_per_slot_per_hour = realized_mph / slot_div
+        realized_extra = {
+            "income_basis": REALIZED_INCOME_BASIS,
+            "modelled_hourly_loot": {k: round(v, 2) for k, v in modelled_hourly_loot.items()},
+        }
+
     return _json_ready(
         {
             "source": source,
@@ -436,6 +475,7 @@ def compute_attack_telemetry(
             "estimated_attacks_per_hour": round(estimated_attacks_per_hour, 4),
             "income_per_slot_per_hour": {r: round(income_per_slot_per_hour[r], 2) for r in RESOURCE_KEYS},
             "hourly_loot": {k: round(v, 2) for k, v in hourly_loot.items()},
+            **realized_extra,
         }
     )
 
@@ -4577,11 +4617,31 @@ def run_ai_planner(
     has_active_loot = (sample_count > 0) or (sample_count < 0 and any(v > 0.0 for v in median_loot.values()))
     per_slot_hour = (3600.0 / median_rt) if (has_active_loot and median_rt > 0.0) else 0.0
 
+    # Realized basis: raid income per fleet slot comes from loot and recycling actually received,
+    # not from every slot raiding back to back. Only the API passes it (adaptive execution on).
+    # An explicit `attacks_per_day` still wins over either basis.
+    raw_realized_slot = telemetry.get("income_per_slot_per_hour")
+    use_realized_income = (
+        cfg["attacks_per_day"] is None
+        and is_realized_income_basis(telemetry)
+        and isinstance(raw_realized_slot, Mapping)
+    )
+
     fixed_cc = cfg["fleet_command_center_level"]
     if fixed_cc is not None and fixed_cc < 0:
         raise ValueError(f"fleet_command_center_level must be >= 0 or None, got {fixed_cc!r}")
 
-    if cfg["attacks_per_day"] is None:
+    if use_realized_income:
+        slot_attack_income = {
+            r: max(0.0, game_data.safe_finite_float(raw_realized_slot.get(r), 0.0)) for r in RESOURCE_KEYS
+        }
+        fixed_attack_income = {r: 0.0 for r in RESOURCE_KEYS}
+        pace_set_by = (
+            "realized loot and recycling per Fleet base (b10) slot"
+            if fixed_cc is None
+            else f"realized loot and recycling per fleet_command_center_level ({fixed_cc}) slot"
+        )
+    elif cfg["attacks_per_day"] is None:
         slot_attack_income = {r: median_loot[r] * per_slot_hour for r in RESOURCE_KEYS}
         fixed_attack_income = {r: 0.0 for r in RESOURCE_KEYS}
         pace_set_by = (
@@ -4885,6 +4945,18 @@ def run_ai_planner(
     income_now = {
         r: fixed_attack_income[r] + start_slots * slot_attack_income[r] for r in RESOURCE_KEYS
     }
+    if cfg["attacks_per_day"] is not None:
+        tel_per_slot = per_slot_hour
+        tel_attacks_per_hour = float(cfg["attacks_per_day"]) / 24.0
+    elif use_realized_income:
+        # Keep the measured mission rate that came with the realized telemetry.
+        tel_per_slot = max(0.0, game_data.safe_finite_float(telemetry.get("attacks_per_slot_per_hour"), 0.0))
+        tel_attacks_per_hour = max(
+            0.0, game_data.safe_finite_float(telemetry.get("estimated_attacks_per_hour"), 0.0)
+        )
+    else:
+        tel_per_slot = per_slot_hour
+        tel_attacks_per_hour = start_slots * per_slot_hour
     enriched_telemetry = {
         **telemetry,
         "median_loot": {
@@ -4896,11 +4968,8 @@ def run_ai_planner(
         "median_round_trip_seconds": round(median_rt, 2),
         "sample_count": max(0, sample_count) if sample_count >= 0 else (1 if has_active_loot else 0),
         "current_fleet_slots": start_slots,
-        "attacks_per_slot_per_hour": round(per_slot_hour, 4),
-        "estimated_attacks_per_hour": round(
-            (float(cfg["attacks_per_day"]) / 24.0) if cfg["attacks_per_day"] is not None else (start_slots * per_slot_hour),
-            4,
-        ),
+        "attacks_per_slot_per_hour": round(tel_per_slot, 4),
+        "estimated_attacks_per_hour": round(tel_attacks_per_hour, 4),
         "pace_set_by": pace_set_by,
         "income_per_slot_per_hour": {r: round(slot_attack_income[r], 2) for r in RESOURCE_KEYS},
         "hourly_loot": {
@@ -4908,6 +4977,9 @@ def run_ai_planner(
             "spice_eq": round(float(game_data.spice_equivalent(income_now)), 2),
         },
     }
+    if cfg["attacks_per_day"] is not None and "income_basis" in telemetry:
+        # The realized figure was offered but the fixed attacks-per-day pace was used instead.
+        enriched_telemetry["income_basis"] = "attacks_per_day"
 
     disc_reward = float(best_run["discounted_reward"])
     total_net_sp = float(best_run["total_spice_eq_produced"])
@@ -5111,7 +5183,8 @@ def run_ai_planner(
         "colonies_target": int(simulator.planet_count),
         "start_fleet_slots": start_slots,
         "final_fleet_slots": int(best_run["final_fleet_slots"]),
-        "attacks_per_slot_per_hour": round(per_slot_hour, 4),
+        "attacks_per_slot_per_hour": round(tel_per_slot, 4),
+        **({"attack_income_basis": REALIZED_INCOME_BASIS} if use_realized_income else {}),
         "spare_percent": dict(zip(RESOURCE_KEYS, simulator.spare_percent)),
         "spare_diverted": {r: int(round(spare_diverted[pos])) for pos, r in enumerate(RESOURCE_KEYS)},
         "max_building_levels_reached": buildings_reached,

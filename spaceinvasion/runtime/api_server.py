@@ -1468,6 +1468,13 @@ class GameApiBridge:
     DELIVERED_TRANSPORT_MIN_SPAN_HOURS = 1.0
     INFRA_TRANSPORT_SPEND_WINDOW_SECONDS = 3600.0
     INFRA_TRANSPORT_MAX_CARRYOVER_HOURS = 2.0
+    # Adaptive execution: the spare % ship budget is an hourly rate that may save up for this many
+    # hours (so a hull costing more than one hour's allowance can still be afforded); a ledger of
+    # what it paid for over the same window is subtracted.
+    SPARE_SHIP_BUDGET_WINDOW_HOURS = 4.0
+    # Adaptive execution: raid income is the loot and recycling actually received over this window.
+    REALIZED_LOOT_WINDOW_HOURS = 24
+    REALIZED_INCOME_BASIS = "realized_24h"  # mirrors `ai_planner.REALIZED_INCOME_BASIS`
     _ADAPTIVE_IDLE_STATE_KEYS: tuple[str, ...] = (
         "building",
         "ready_not_started",
@@ -1689,6 +1696,7 @@ class GameApiBridge:
         self._delivered_transport_events: list[dict[str, Any]] = []
         self._infra_transport_spend_ledger: list[dict[str, Any]] = []
         self._infra_transport_last_spend_ts: float = time.time()
+        self._spare_ship_spend_ledger: list[dict[str, Any]] = []
         self._last_auto_ai_replan_ts: float = 0.0
         self._last_auto_ai_replan_reason: str = ""
         self._last_drift_check_mono: float = 0.0
@@ -1901,12 +1909,32 @@ class GameApiBridge:
                     smet = max(0, _safe_api_int(ent.get("metal"), 0))
                     skry = max(0, _safe_api_int(ent.get("kryptonite"), 0))
                     if sts > 0.0 and (smet > 0 or skry > 0):
-                        loaded_spend.append({"ts": round(sts, 3), "metal": smet, "kryptonite": skry})
+                        spend_row: dict[str, Any] = {"ts": round(sts, 3), "metal": smet, "kryptonite": skry}
+                        scargo = max(0, _safe_api_int(ent.get("cargo"), 0))
+                        if scargo > 0:
+                            spend_row["cargo"] = scargo
+                        loaded_spend.append(spend_row)
             self._infra_transport_spend_ledger = loaded_spend
             self._prune_infra_transport_spend_locked(now_ts=now_wall)
             raw_last_spend = _safe_api_float(rt.get("infra_transport_last_spend_ts", 0.0), 0.0)
             if math.isfinite(raw_last_spend) and raw_last_spend > 0.0:
                 self._infra_transport_last_spend_ts = raw_last_spend
+
+            raw_spare_spend = rt.get("spare_ship_spend_ledger")
+            loaded_spare: list[dict[str, Any]] = []
+            if isinstance(raw_spare_spend, Sequence) and not isinstance(raw_spare_spend, (str, bytes)):
+                for ent in raw_spare_spend:
+                    if not isinstance(ent, Mapping):
+                        continue
+                    sp_ts = _safe_api_float(ent.get("ts"), 0.0)
+                    sp_row = {
+                        rk: max(0, _safe_api_int(ent.get(rk), 0))
+                        for rk in ("pig_iron", "metal", "kryptonite", "spice")
+                    }
+                    if sp_ts > 0.0 and any(v > 0 for v in sp_row.values()):
+                        loaded_spare.append({"ts": round(sp_ts, 3), **sp_row})
+            self._spare_ship_spend_ledger = loaded_spare
+            self._prune_spare_ship_spend_locked(now_ts=now_wall)
 
             raw_replan_ts = _safe_api_float(rt.get("last_auto_ai_replan_ts", 0.0), 0.0)
             if math.isfinite(raw_replan_ts) and raw_replan_ts > 0.0:
@@ -2077,6 +2105,7 @@ class GameApiBridge:
         self._prune_adaptive_idle_buckets_locked(now_ts=now_wall)
         self._prune_delivered_transport_events_locked(now_ts=now_wall)
         self._prune_infra_transport_spend_locked(now_ts=now_wall)
+        self._prune_spare_ship_spend_locked(now_ts=now_wall)
         serialized_buckets: dict[str, dict[str, Any]] = {
             str(bk): dict(self._adaptive_idle_buckets[bk])
             for bk in sorted(self._adaptive_idle_buckets.keys())
@@ -2105,6 +2134,7 @@ class GameApiBridge:
             "adaptive_idle_buckets": serialized_buckets,
             "delivered_transport_events": [dict(e) for e in self._delivered_transport_events],
             "infra_transport_spend_ledger": [dict(e) for e in self._infra_transport_spend_ledger],
+            "spare_ship_spend_ledger": [dict(e) for e in self._spare_ship_spend_ledger],
             "infra_transport_last_spend_ts": (
                 round(float(self._infra_transport_last_spend_ts), 3)
                 if isinstance(self._infra_transport_last_spend_ts, (int, float))
@@ -4007,30 +4037,156 @@ class GameApiBridge:
         action: PlannedAction,
         *,
         now_ts: Optional[float] = None,
+        quantity: Optional[int] = None,
     ) -> None:
+        """Debit a transport build from the 25%/h infra ledger.
+
+        `action.cost` is taken as the amount spent. Pass `quantity` when `action.cost` is the cost
+        of one unit (as on actions built by `_find_ship_action`), so the whole order is debited.
+        """
         eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
         if eff_now <= 0.0:
             eff_now = time.time()
         cost_obj = getattr(action, "cost", None)
-        met = max(0, _safe_api_int(getattr(cost_obj, "metal", 0), 0)) if cost_obj is not None else 0
-        kry = max(0, _safe_api_int(getattr(cost_obj, "kryptonite", 0), 0)) if cost_obj is not None else 0
+        mult = max(1, _safe_api_int(quantity, 1)) if quantity is not None else 1
+        met = (max(0, _safe_api_int(getattr(cost_obj, "metal", 0), 0)) if cost_obj is not None else 0) * mult
+        kry = (max(0, _safe_api_int(getattr(cost_obj, "kryptonite", 0), 0)) if cost_obj is not None else 0) * mult
+        sid = game_data.safe_optional_int(getattr(action, "target_id", None), None)
+        units = max(1, _safe_api_int(getattr(action, "target_level", 1), 1))
         if met <= 0 and kry <= 0:
-            sid = game_data.safe_optional_int(getattr(action, "target_id", None), None)
-            qty = max(1, _safe_api_int(getattr(action, "target_level", 1), 1))
             if sid is not None:
                 slug = SHIP_SLUG_BY_KEY.get(f"s{sid}")
                 info = game_data.resolve_unit("ships", slug) if slug else None
                 base_c = (info or {}).get("base_cost") if isinstance(info, Mapping) else {}
                 if isinstance(base_c, Mapping):
-                    met = max(0, _safe_api_int(base_c.get("metal", 0), 0)) * qty
-                    kry = max(0, _safe_api_int(base_c.get("kryptonite", 0), 0)) * qty
+                    met = max(0, _safe_api_int(base_c.get("metal", 0), 0)) * units
+                    kry = max(0, _safe_api_int(base_c.get("kryptonite", 0), 0)) * units
         if met <= 0 and kry <= 0:
             return
-        self._infra_transport_spend_ledger.append(
-            {"ts": round(eff_now, 3), "metal": int(met), "kryptonite": int(kry)}
-        )
+        entry: dict[str, Any] = {"ts": round(eff_now, 3), "metal": int(met), "kryptonite": int(kry)}
+        if sid in (1, 2, 3):
+            # Cargo of the hulls ordered: they may sit in the Weapons factory queue, uncounted, for a while.
+            try:
+                ordered_cargo = int(fleet_cargo_capacity({f"s{sid}": units}))
+            except Exception:  # noqa: BLE001 - never let a catalog gap block the ledger
+                ordered_cargo = 0
+            if ordered_cargo > 0:
+                entry["cargo"] = ordered_cargo
+        self._infra_transport_spend_ledger.append(entry)
         self._infra_transport_last_spend_ts = eff_now
         self._prune_infra_transport_spend_locked(now_ts=eff_now)
+
+    def _get_infra_cargo_ordered_last_hour_locked(self, *, now_ts: Optional[float] = None) -> int:
+        """Cargo capacity of the transport hulls ordered in the last hour (may still be in production)."""
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        self._prune_infra_transport_spend_locked(now_ts=eff_now)
+        return int(sum(max(0, _safe_api_int(e.get("cargo"), 0)) for e in self._infra_transport_spend_ledger))
+
+    def _prune_spare_ship_spend_locked(self, *, now_ts: Optional[float] = None) -> None:
+        if not self._spare_ship_spend_ledger:
+            return
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        cutoff = eff_now - self.SPARE_SHIP_BUDGET_WINDOW_HOURS * 3600.0
+        self._spare_ship_spend_ledger = [
+            e
+            for e in self._spare_ship_spend_ledger
+            if isinstance(e, Mapping) and _safe_api_float(e.get("ts"), 0.0) >= cutoff
+        ][-400:]
+
+    def _get_spare_ship_spend_in_window_locked(self, *, now_ts: Optional[float] = None) -> dict[str, float]:
+        """What the spare % ship budget paid for over `SPARE_SHIP_BUDGET_WINDOW_HOURS`, per resource."""
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        self._prune_spare_ship_spend_locked(now_ts=eff_now)
+        return {
+            rk: float(sum(max(0, _safe_api_int(e.get(rk), 0)) for e in self._spare_ship_spend_ledger))
+            for rk in ("pig_iron", "metal", "kryptonite", "spice")
+        }
+
+    def _record_spare_ship_spend_locked(
+        self,
+        action: PlannedAction,
+        *,
+        now_ts: Optional[float] = None,
+        quantity: Optional[int] = None,
+    ) -> None:
+        """Debit a non-transport ship order (`action.cost` per unit times `quantity`) from the spare % ledger."""
+        eff_now = _safe_api_float(now_ts, time.time()) if now_ts is not None else time.time()
+        if eff_now <= 0.0:
+            eff_now = time.time()
+        cost_obj = getattr(action, "cost", None)
+        mult = max(1, _safe_api_int(quantity, 1)) if quantity is not None else 1
+        row = {
+            rk: (max(0, _safe_api_int(getattr(cost_obj, rk, 0), 0)) if cost_obj is not None else 0) * mult
+            for rk in ("pig_iron", "metal", "kryptonite", "spice")
+        }
+        if not any(v > 0 for v in row.values()):
+            sid = game_data.safe_optional_int(getattr(action, "target_id", None), None)
+            units = max(1, _safe_api_int(getattr(action, "target_level", 1), 1))
+            slug = SHIP_SLUG_BY_KEY.get(f"s{sid}") if sid is not None else None
+            info = game_data.resolve_unit("ships", slug) if slug else None
+            base_c = (info or {}).get("base_cost") if isinstance(info, Mapping) else {}
+            if isinstance(base_c, Mapping):
+                row = {rk: max(0, _safe_api_int(base_c.get(rk, 0), 0)) * units for rk in row}
+        if not any(v > 0 for v in row.values()):
+            return
+        self._spare_ship_spend_ledger.append({"ts": round(eff_now, 3), **{rk: int(v) for rk, v in row.items()}})
+        self._prune_spare_ship_spend_locked(now_ts=eff_now)
+
+    def _get_realized_loot_hourly_locked(self) -> Optional[dict[str, Any]]:
+        """Loot plus recycling actually received per hour over the trailing window.
+
+        Returns `{"hourly_loot": {resource: per hour}, "missions_per_hour": float, "window_hours": float}`,
+        or None when no loot ledger is available (the modelled raid income then stays in use).
+        """
+        if self._db is None or not callable(getattr(self._db, "get_loot_recycle_hourly", None)):
+            return None
+        tel = self._get_loot_recycle_telemetry_locked(self.REALIZED_LOOT_WINDOW_HOURS)
+        summ = tel.get("summary") if isinstance(tel, Mapping) else None
+        if not isinstance(summ, Mapping) or "stolen_metal" not in summ or "recycled_metal" not in summ:
+            return None
+        win_h = float(max(1, _safe_api_int(summ.get("window_hours"), self.REALIZED_LOOT_WINDOW_HOURS)))
+        hourly: dict[str, float] = {}
+        for rk in ("pig_iron", "metal", "kryptonite", "spice"):
+            got = max(0.0, _safe_api_float(summ.get(f"stolen_{rk}"), 0.0)) + max(
+                0.0, _safe_api_float(summ.get(f"recycled_{rk}"), 0.0)
+            )
+            hourly[rk] = round(got / win_h, 2)
+        missions = max(0, _safe_api_int(summ.get("attack_count"), 0)) + max(
+            0, _safe_api_int(summ.get("recycle_count"), 0)
+        )
+        return {
+            "hourly_loot": hourly,
+            "missions_per_hour": round(float(missions) / win_h, 4),
+            "window_hours": win_h,
+        }
+
+    def _overlay_realized_loot_locked(self, atk_tel: Any) -> Any:
+        """Return `atk_tel` with `hourly_loot` replaced by realized loot (unchanged without a loot ledger)."""
+        realized = self._get_realized_loot_hourly_locked()
+        if realized is None:
+            return atk_tel
+        out: dict[str, Any] = dict(atk_tel) if isinstance(atk_tel, Mapping) else {}
+        if str(out.get("income_basis") or "") != self.REALIZED_INCOME_BASIS and isinstance(
+            out.get("hourly_loot"), Mapping
+        ):
+            out["modelled_hourly_loot"] = dict(out["hourly_loot"])
+        hourly = dict(realized["hourly_loot"])
+        hourly["spice_eq"] = round(float(game_data.spice_equivalent(realized["hourly_loot"])), 2)
+        out["hourly_loot"] = hourly
+        out["income_basis"] = self.REALIZED_INCOME_BASIS
+        return out
+
+    @classmethod
+    def _telemetry_income_basis(cls, tel: Any) -> str:
+        if not isinstance(tel, Mapping):
+            return ""
+        return str(tel.get("income_basis") or "").strip().lower()
 
     def _prune_adaptive_idle_buckets_locked(self, *, now_ts: Optional[float] = None) -> None:
         if not self._adaptive_idle_buckets:
@@ -4192,7 +4348,10 @@ class GameApiBridge:
             fallback_fleet_cargo=total_fleet_cargo,
         )
         deliv_stats = self._compute_delivered_transport_stats_locked()
-        target_cargo = int(math.ceil(planned_cph / rt_per_h / util)) if planned_cph > 0.0 else 0
+        # Sizing never uses a utilization below the assumed baseline: an idle fleet is not evidence
+        # that more hulls are needed (matches `strategy.INFRA_TRANSPORT_MIN_UTILIZATION`).
+        sizing_util = max(self.TRANSPORT_UTIL_DEFAULT, util)
+        target_cargo = int(math.ceil(planned_cph / rt_per_h / sizing_util)) if planned_cph > 0.0 else 0
         delivered_vs_planned = (
             round(100.0 * float(deliv_stats["delivered_cargo_per_hour"]) / planned_cph, 2)
             if planned_cph > 0.0 and deliv_stats["delivered_flights_24h"] > 0
@@ -4205,6 +4364,8 @@ class GameApiBridge:
             "target_fleet_cargo": target_cargo,
             "planned_cargo_per_hour_24h": planned_cph,
             "realized_utilization": util,
+            "sizing_utilization": sizing_util,
+            "ordered_cargo_last_hour": self._get_infra_cargo_ordered_last_hour_locked(),
             "delivered_cargo_24h": deliv_stats["delivered_cargo_24h"],
             "delivered_cargo_per_hour": deliv_stats["delivered_cargo_per_hour"],
             "delivered_cargo_per_hour_24h": deliv_stats["delivered_cargo_per_hour"],
@@ -4374,17 +4535,34 @@ class GameApiBridge:
             if plan_colonies > 0 and live_colonies != plan_colonies:
                 reason = "colony_count_changed"
 
-        # (c) Live attack telemetry median_loot spice_eq shifted by >= 25%
+        # (c) Live attack telemetry median_loot spice_eq shifted by >= 25%. A plan computed on the
+        #     realized basis does not depend on the median loot, so it is not re-tuned for it; the
+        #     4-hour age rule picks up changes in realized loot.
+        live_tel: Optional[Mapping[str, Any]] = None
         if reason is None and state is not None:
-            plan_sp = self._extract_telemetry_median_spice_eq(active_result.get("attack_telemetry"))
+            plan_tel = active_result.get("attack_telemetry")
+            plan_sp = self._extract_telemetry_median_spice_eq(plan_tel)
             live_tel = self._compute_live_attack_telemetry_locked(state)
             live_sp = self._extract_telemetry_median_spice_eq(live_tel)
-            if (plan_sp <= 0.0 and live_sp > 0.0) or (
-                plan_sp > 0.0
-                and live_sp > 0.0
-                and (abs(live_sp - plan_sp) / plan_sp) >= self.AI_DRIFT_LOOT_SHIFT_RATIO
+            plan_on_realized = self._telemetry_income_basis(plan_tel) == self.REALIZED_INCOME_BASIS
+            if not plan_on_realized and (
+                (plan_sp <= 0.0 and live_sp > 0.0)
+                or (
+                    plan_sp > 0.0
+                    and live_sp > 0.0
+                    and (abs(live_sp - plan_sp) / plan_sp) >= self.AI_DRIFT_LOOT_SHIFT_RATIO
+                )
             ):
                 reason = "loot_shift_25pct"
+
+        # (c2) The active plan assumed modelled raid income while live telemetry now carries the
+        #      loot and recycling actually received: re-tune once on the realized figure. A plan
+        #      pinned to `attacks_per_day` reports its own basis and is left alone.
+        if reason is None and live_tel is not None:
+            live_basis = self._telemetry_income_basis(live_tel)
+            plan_basis = self._telemetry_income_basis(active_result.get("attack_telemetry"))
+            if live_basis == self.REALIZED_INCOME_BASIS and plan_basis in ("", "modelled"):
+                reason = "income_basis_changed"
 
         # (d) Active AI plan age >= 4 hours (14400s)
         if (
@@ -5493,8 +5671,23 @@ class GameApiBridge:
         self, state: Optional[GameState]
     ) -> dict[str, Any]:
         raid_rows, message_rows = self._snapshot_attack_history_locked()
+        realized = (
+            self._get_realized_loot_hourly_locked()
+            if bool(getattr(self.strategy_config, "ai_adaptive_execution", False))
+            else None
+        )
         try:
             ai_mod = self._load_ai_planner_mod()
+            if realized is not None:
+                return dict(
+                    ai_mod.compute_attack_telemetry(
+                        raid_rows,
+                        message_rows,
+                        state=state,
+                        realized_hourly_loot=realized["hourly_loot"],
+                        realized_missions_per_hour=realized["missions_per_hour"],
+                    )
+                )
             return dict(ai_mod.compute_attack_telemetry(raid_rows, message_rows, state=state))
         except ApiRequestError:
             cur_slots = 0
@@ -5947,6 +6140,13 @@ class GameApiBridge:
             uni_max = self._snapshot_universe_research_max_map_locked(snap_state)
             reserved_floors = self._get_reserved_floors_locked()
             cfg = self.strategy_config
+            # Adaptive execution: plan on the loot and recycling actually received, not on every
+            # fleet slot raiding back to back.
+            realized_loot = (
+                self._get_realized_loot_hourly_locked()
+                if bool(getattr(cfg, "ai_adaptive_execution", False))
+                else None
+            )
 
         target_config: Optional[Mapping[str, Any]] = override_config_result
         config_run_id: Optional[int] = override_config_run_id
@@ -6044,10 +6244,17 @@ class GameApiBridge:
                     target_config = co_res
 
                 _progress("attack_telemetry", 10.0)
+                tel_kwargs: dict[str, Any] = {}
+                if realized_loot is not None:
+                    tel_kwargs = {
+                        "realized_hourly_loot": realized_loot["hourly_loot"],
+                        "realized_missions_per_hour": realized_loot["missions_per_hour"],
+                    }
                 telemetry = ai_mod.compute_attack_telemetry(
                     raid_rows,
                     message_rows,
                     state=display_state,
+                    **tel_kwargs,
                 )
                 res = ai_mod.run_ai_planner(
                     display_state,
@@ -6292,6 +6499,13 @@ class GameApiBridge:
         if not isinstance(atk_tel, Mapping):
             atk_tel = self._compute_live_attack_telemetry_locked(enriched_state)
         adaptive_on = bool(getattr(cfg, "ai_adaptive_execution", False))
+        budget_extra: dict[str, Any] = {}
+        if adaptive_on:
+            # Both ship allowances (spare % and 25% infra) are shares of income that really arrived:
+            # the plan's stored raid income may be the modelled every-slot-raiding figure.
+            atk_tel = self._overlay_realized_loot_locked(atk_tel)
+            budget_extra["spare_spend_in_window"] = self._get_spare_ship_spend_in_window_locked()
+            budget_extra["spare_window_hours"] = self.SPARE_SHIP_BUDGET_WINDOW_HOURS
         inbound_cargo: Optional[Mapping[int, Any]] = None
         in_prog_rem: Optional[Mapping[int, float]] = None
         in_prog_res_rem: Optional[float] = None
@@ -6314,6 +6528,9 @@ class GameApiBridge:
                 transport_demand["realized_utilization"] = self._recompute_transport_utilization_locked(
                     rt_per_hour=td_rt,
                 )
+                transport_demand["infra_cargo_ordered_last_hour"] = (
+                    self._get_infra_cargo_ordered_last_hour_locked()
+                )
         infra_spend_1h: Optional[dict[str, float]] = None
         infra_carryover_h = 1.0
         if adaptive_on:
@@ -6327,6 +6544,7 @@ class GameApiBridge:
             config=cfg,
             infra_spend_last_hour=infra_spend_1h,
             infra_carryover_hours=infra_carryover_h,
+            **budget_extra,
         )
         fleet_actions = plan_fleet_and_attack_actions(
             enriched_state,
@@ -6403,6 +6621,10 @@ class GameApiBridge:
                     return (0, 0)
                 if a.kind == "THROTTLE_BUILDING":
                     return (0, 5)
+                if a.kind == "BUILD_SHIP" and AI_INFRA_CARGO_TAG in str(a.reason or ""):
+                    # Plan-sized transport orders are batched and capped per hour, so they run
+                    # before the fleet missions instead of waiting for a spare page view.
+                    return (0, 6)
                 if a.kind == "SPY":
                     return (1, 0)
                 if a.kind == "TRANSPORT":
@@ -10402,18 +10624,20 @@ class GameApiBridge:
                         ships=_bounded_api_str(res.message, default="")[:140],
                         source="dispatch",
                     )
-            if (
-                res.executed
-                and res.action.kind == "BUILD_SHIP"
-                and (
-                    AI_INFRA_CARGO_TAG in str(getattr(res.action, "reason", "") or "")
-                    or (
-                        bool(getattr(self.strategy_config, "ai_adaptive_execution", False))
-                        and game_data.safe_optional_int(res.action.target_id, None) in (1, 2)
-                    )
-                )
-            ):
-                self._record_infra_transport_spend_locked(res.action)
+            if res.executed and res.action.kind == "BUILD_SHIP":
+                ship_sid = game_data.safe_optional_int(res.action.target_id, None)
+                # `res.action` comes from `_find_ship_action`: `cost` is per unit, `target_level` the quantity.
+                ship_qty = max(1, _safe_api_int(getattr(res.action, "target_level", 1), 1))
+                adaptive_exec = bool(getattr(self.strategy_config, "ai_adaptive_execution", False))
+                if AI_INFRA_CARGO_TAG in str(getattr(res.action, "reason", "") or "") or (
+                    adaptive_exec and ship_sid in (1, 2)
+                ):
+                    self._record_infra_transport_spend_locked(res.action, quantity=ship_qty)
+                    self._persist_runtime_state()
+                elif adaptive_exec and ship_sid != 9:
+                    # Every other hull except Solar cells (s9, an energy build) draws on the spare % budget.
+                    self._record_spare_ship_spend_locked(res.action, quantity=ship_qty)
+                    self._persist_runtime_state()
             if res.action.kind in ("COLONIZE", "ABANDON_COLONY"):
                 self._record_colony_attempt_from_result_locked(state, res, cmd)
         if self._db is not None:
@@ -13502,13 +13726,20 @@ class GameApiBridge:
                     fp_transport_demand: Optional[dict[str, Any]] = None
                     fp_infra_spend: Optional[dict[str, float]] = None
                     fp_infra_carryover = 1.0
+                    fp_budget_extra: dict[str, Any] = {}
                     if fp_adaptive_on:
                         fp_infra_spend, fp_infra_carryover = self._get_infra_transport_spend_last_hour_locked()
+                        fp_budget_extra["spare_spend_in_window"] = self._get_spare_ship_spend_in_window_locked()
+                        fp_budget_extra["spare_window_hours"] = self.SPARE_SHIP_BUDGET_WINDOW_HOURS
+                        atk_tel = self._overlay_realized_loot_locked(atk_tel)
                         if isinstance(raw_fp_td, Mapping):
                             fp_transport_demand = dict(raw_fp_td)
                             fp_rt = max(0.25, _safe_api_float(fp_transport_demand.get("round_trips_per_hour", 2.5), 2.5))
                             fp_transport_demand["realized_utilization"] = self._recompute_transport_utilization_locked(
                                 rt_per_hour=fp_rt,
+                            )
+                            fp_transport_demand["infra_cargo_ordered_last_hour"] = (
+                                self._get_infra_cargo_ordered_last_hour_locked()
                             )
                     spare_budget = compute_spare_ship_budget(
                         enriched_fp,
@@ -13519,6 +13750,7 @@ class GameApiBridge:
                         config=effective_fp_cfg,
                         infra_spend_last_hour=fp_infra_spend,
                         infra_carryover_hours=fp_infra_carryover,
+                        **fp_budget_extra,
                     )
                     fleet_actions = plan_fleet_and_attack_actions(
                         enriched_fp,
