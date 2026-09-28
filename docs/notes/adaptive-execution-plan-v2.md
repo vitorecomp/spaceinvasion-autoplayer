@@ -4,7 +4,7 @@ This note records why the adaptive execution work was done, what was planned, wh
 
 All times are UTC on 2026-11-19 unless a date is given; everything about plan v4 happened on 2026-11-20 and says so. The operator's local time is UTC-03:00.
 
-## Status on 2026-11-20 at 08:05
+## Status on 2026-11-20 at 08:36
 
 - The switch `ai_adaptive_execution` has been on since 14:36:33 on 2026-11-19. Plan v3 was live from 18:26:36 that day. **Plan v4 has been live since 07:51:42 on 2026-11-20** (commit `17a66a6`; two refinements in `0ae95d1` live since 08:31:51).
 - **Plan v3 did not make builders busier.** Over 11.18 running hours it had 1.76 of 11 builders busy, against 2.10 before any change. Colonies did advance faster: building levels went from 5.1 to 9.3 per hour and Metal made per hour from 50,600 to 245,400. 23 of the 111 levels were cheap Blast furnace levels.
@@ -14,7 +14,7 @@ All times are UTC on 2026-11-19 unless a date is given; everything about plan v4
   - Every colony saved for its own next step. At 06:40 seven colonies sat idle, each 2 to 7 hours from its step, while the empire's stock covered all seven steps at once.
   - 61 of 88 transports were flying raids, so little could be shipped between colonies.
 - Plan v4 changes four rules behind the same switch: furnaces smelt for the empire, a free builder starts a later plan step, colonies lend their savings in plan order, and the transport target leaves out hulls that are away on raids.
-- First half hour of plan v4, which is not evidence: 3.63 of 11 builders busy over 0.50 running hours, furnaces on from 8 to 10 of 11, Metal per hour from 308,500 to 409,800, 10 building levels completed, and 8 Large transports ordered. Loans are in every plan since; whether one has flown cannot be read from the action log.
+- First half hour of plan v4, which is not evidence: 3.63 of 11 builders busy over 0.50 running hours, furnaces on from 8 to 10 of 11, Metal per hour from 308,500 to 409,800, 10 building levels completed, and 8 Large transports ordered. Loans are in every plan since; whether one has flown cannot be read from the action log. At 08:36, four minutes after the refinements landed and after the plan re-tuned itself, 8 of 11 builders were busy and the furnaces made 419,840 Metal per hour. That is one reading.
 - **No verdict on plan v4 is possible before 07:52 on 2026-11-21**, and not before 12 running hours.
 - Outside this plan: another work session moved the stack into containers and the database to PostgreSQL between 06:56 and 07:22 on 2026-11-20. Its changes are uncommitted and were not reviewed here. Since that move the recorded series has no points between 04:54 and 06:48 of that day, so the script now reports plan v3 over fewer hours than the figures above, which were taken at 06:15.
 - The operator asked for the review and the changes to be made without being asked for decisions. Every decision taken on their behalf is listed in [Decisions taken for the operator](#decisions-taken-for-the-operator).
@@ -243,6 +243,7 @@ The operator asked on 2026-11-20 for the best result without being asked. These 
 | 2026-11-20 08:02:30 | API restarted by the other session's edits to `db/storage.py` and `runtime/api_server.py` |
 | 2026-11-20 08:21 | A shipment from 02:381:08, a lending colony, to 02:381:07 (step 18). The action log does not record whether it was the planned loan |
 | 2026-11-20 08:31:51 | Refinements live (commit `0ae95d1`): the fleet allowance and the loan guard |
+| 2026-11-20 08:32 to 08:35 | The plan re-tuned itself in the background (its research step moved from number 100 to number 60). Six more steps started in those minutes |
 
 ## Baseline, before the change
 
@@ -346,7 +347,7 @@ Not evidence either: half an hour, right after a burst of cheap steps.
 
 ## Known problems
 
-Plan v4, as of 2026-11-20 08:05:
+Plan v4, as of 2026-11-20 08:36:
 
 - **Builders will stay partly idle.** Income decides how many steps can be paid for. Plan v4 uses the income better; it does not create more.
 - **Raids take every transport that is parked.** Loans and other shipments happen only in the minutes a colony's hulls are home. Shipments are planned before raids, so they get the hulls first.
